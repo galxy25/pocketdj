@@ -161,7 +161,7 @@ final class MusicWithFriendsStoreTests: XCTestCase {
         MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/state"] = 401
         MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/join"] = 401
         _ = await store.refresh("abcd2345")
-        XCTAssertNotNil(store.pollError)
+        XCTAssertNotNil(store.pollErrors["abcd2345"])
         XCTAssertTrue(store.lastErrors.isEmpty)
         XCTAssertEqual(store.sessions[0].memberKey, "mk_me", "no fake re-bind on failure")
         XCTAssertGreaterThanOrEqual(MwFURLProtocol.count(path: "/mwf/abcd2345/join"), 2,
@@ -205,7 +205,7 @@ final class MusicWithFriendsStoreTests: XCTestCase {
         _ = seedEntry(store, defaults: defaults)
         MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/state"] = 500
         _ = await store.refresh("abcd2345")
-        XCTAssertNotNil(store.pollError, "the poll reports on its own channel")
+        XCTAssertNotNil(store.pollErrors["abcd2345"], "the poll reports on its own channel")
         XCTAssertTrue(store.lastErrors.isEmpty, "…and never on the sheets' or the session banner's")
         // A create failing while that poll error stands returns ITS message.
         MwFURLProtocol.statusCodeByPath["/mwf"] = 500
@@ -218,8 +218,37 @@ final class MusicWithFriendsStoreTests: XCTestCase {
         MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/state"] = 200
         MwFURLProtocol.bodyByPath["/mwf/abcd2345/state"] = Data("{\"sessionId\":\"abcd2345\"}".utf8)
         _ = await store.refresh("abcd2345")
-        XCTAssertNil(store.pollError)
+        XCTAssertNil(store.pollErrors["abcd2345"])
         XCTAssertNotNil(err, "the sheet's message is local to the sheet")
+    }
+
+    /// The poll error is RENDERED on the session screen, so it carries the same
+    /// cross-session hazard the verb banner does: one session's dead broker must not paint
+    /// an "unreachable" banner inside another session's screen (two macOS windows).
+    func testPollErrorIsKeyedPerSession() async throws {
+        let (store, defaults) = makeStore()
+        let a = MwFSessionEntry(id: "abcd2345", memberId: "mb_a", memberKey: "mk_a", leaderKey: nil,
+                                name: nil, theme: nil, url: nil, apiBase: "https://broker.test",
+                                expiresAt: nil, pocketId: nil, joinedAt: 1)
+        let b = MwFSessionEntry(id: "efgh6789", memberId: "mb_b", memberKey: "mk_b", leaderKey: nil,
+                                name: nil, theme: nil, url: nil, apiBase: "https://broker.test",
+                                expiresAt: nil, pocketId: nil, joinedAt: 2)
+        defaults.set(try! JSONEncoder().encode([a, b]), forKey: "pdj.mwf.sessions.v1")
+        store.loadPersisted()
+        MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/state"] = 500
+        MwFURLProtocol.bodyByPath["/mwf/efgh6789/state"] = Data("{\"sessionId\":\"efgh6789\"}".utf8)
+
+        _ = await store.refresh("abcd2345")
+        _ = await store.refresh("efgh6789")
+
+        XCTAssertNotNil(store.pollErrors["abcd2345"])
+        XCTAssertNil(store.pollErrors["efgh6789"], "the healthy session's screen stays clean")
+        // …and the healthy session's success cannot clear the broken one's banner.
+        _ = await store.refresh("efgh6789")
+        XCTAssertNotNil(store.pollErrors["abcd2345"])
+        // Leaving forgets the entry AND its banner.
+        store.leave("abcd2345")
+        XCTAssertNil(store.pollErrors["abcd2345"])
     }
 
     // MARK: Refresh / final score

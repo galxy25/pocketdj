@@ -257,7 +257,7 @@ struct MusicWithFriendsSessionView: View {
                 }
                 // The poll's own channel: a dead/unreachable broker must not masquerade as
                 // a live session — say the leaderboard is STALE and since when.
-                if !ended, let perr = friends.pollError {
+                if !ended, let perr = friends.pollErrors[sessionId] {
                     Section {
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Can’t reach the server — showing the last known state.")

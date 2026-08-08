@@ -26,8 +26,11 @@ final class MusicWithFriendsStore {
     /// they RETURN their error so a sheet renders its OWN message, and the 4 s poll (which
     /// runs in every open window) can neither clear a sheet's error nor be mistaken for one.
     private(set) var lastErrors: [String: String] = [:]
-    /// The 4 s poll's own error, kept apart from every user-initiated verb's surface.
-    private(set) var pollError: String?
+    /// The 4 s poll's own error, kept apart from every user-initiated verb's surface — and
+    /// keyed PER SESSION for the same reason `lastErrors` is: the session screen renders it,
+    /// and every open window polls its own session, so a store-global field would paint
+    /// session A's unreachable-broker banner inside session B's screen.
+    private(set) var pollErrors: [String: String] = [:]
     /// Last-known state per session (the session screen's render source + the
     /// final-score fallback when the ended state is never observed).
     private(set) var lastState: [String: MwFState] = [:]
@@ -116,7 +119,7 @@ final class MusicWithFriendsStore {
         pendingOpenId = nil
         pendingJoin = nil
         lastErrors = [:]
-        pollError = nil
+        pollErrors = [:]
         queueAccepted = false
         defaults.removeObject(forKey: Self.sessionsKey)
         defaults.removeObject(forKey: Self.scoredKey)
@@ -255,7 +258,7 @@ final class MusicWithFriendsStore {
                 if changed { sessions[i] = e; persistSessions() }
             }
             if st.ended == true { recordFinalScoreIfNeeded(id) }
-            pollError = nil
+            pollErrors[id] = nil
             return st
         } catch JukeboxClient.ClientError.http(let code) where code == 401 {
             // The broker no longer recognizes our memberKey — a session.json restored from
@@ -264,14 +267,16 @@ final class MusicWithFriendsStore {
             // stored credentials. Recover HERE (single-flight): re-join with the stored
             // memberKey, then fall back to the joinSecret (which mints a fresh member when
             // the old one is gone), and retry the poll once.
-            if await recoverMembership(id), let rebound = entry(id),
+            // `self.` is load-bearing: the `entry` constant above shadows the METHOD for the
+            // whole function body, so a bare `entry(id)` would not even compile.
+            if await recoverMembership(id), let rebound = self.entry(id),
                let st = try? await client.state(rebound) {
                 lastState[id] = st
                 if st.ended == true { recordFinalScoreIfNeeded(id) }
-                pollError = nil
+                pollErrors[id] = nil
                 return st
             }
-            pollError = "The server no longer recognizes this device — try leaving and rejoining."
+            pollErrors[id] = "The server no longer recognizes this device — try leaving and rejoining."
             return lastState[id]
         } catch JukeboxClient.ClientError.http(let code) where code == 404 || code == 410 {
             if lastState[id] != nil {
@@ -285,7 +290,7 @@ final class MusicWithFriendsStore {
             recordFinalScoreIfNeeded(id)
             return lastState[id]
         } catch {
-            pollError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            pollErrors[id] = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             return lastState[id]
         }
     }
@@ -439,6 +444,7 @@ final class MusicWithFriendsStore {
         persistSessions()
         lastState[id] = nil
         lastErrors[id] = nil
+        pollErrors[id] = nil
     }
 
     // MARK: - Push
