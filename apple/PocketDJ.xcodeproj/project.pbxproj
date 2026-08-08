@@ -27,6 +27,7 @@
 		0881321A75A0851B5E4CDC58 /* PlaybackModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A44274EC530895D9DCA349DF /* PlaybackModeTests.swift */; };
 		08ADC6A2A38C3D63690F03C3 /* StudioMIDIImport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716F2667F0AAC0AADE06AAD0 /* StudioMIDIImport.swift */; };
 		08D5D95518CDE5EC9A4AFD08 /* StudioMicRecordView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 642B97D1FD3512E8004132F1 /* StudioMicRecordView.swift */; };
+		094B022E293E44E61FAC1345 /* PuzzleMacLayoutTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A23D8FE12BCCFAC43457049 /* PuzzleMacLayoutTests.swift */; };
 		09D1E11BFD1284A77A8E9620 /* PuzzleDecisionStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F421B48C4110B00AEDF1DF6C /* PuzzleDecisionStoreTests.swift */; };
 		0A048AF0DED167E8F14A121E /* DemuxMelodySwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 494A29267BF1E47AA92BE17D /* DemuxMelodySwitchTests.swift */; };
 		0A420C679FC34124D6A2F253 /* MixRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86121DD37BEE5F5D72A8A72 /* MixRecorderTests.swift */; };
@@ -151,6 +152,7 @@
 		4D0C744C62507A752563EFCF /* StudioFoldersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BDE5713FB04603512577AF2 /* StudioFoldersTests.swift */; };
 		4D2B471E5A6C13F4BA25A961 /* WidgetNowPlayingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4978B8669DF99AC562256F3 /* WidgetNowPlayingTests.swift */; };
 		4ED59E7A84025167F2AB1052 /* JukeboxClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADBD79D43E580685546B35DA /* JukeboxClient.swift */; };
+		4F0FABA111A21AB11C49C42E /* PuzzlePlayabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6847266CA8BB84DE6F265BE0 /* PuzzlePlayabilityTests.swift */; };
 		50AFF7753809D4765F5063E5 /* StudioSliceEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12B8946BC54B554F1789BD45 /* StudioSliceEditorView.swift */; };
 		50CC6524B0F24DC694BD30ED /* DemuxChordDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E03FA39CA13DD4EF52F719 /* DemuxChordDetailView.swift */; };
 		50D5B90D705DE20789DFEA36 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C814FEF25275F5A6AE683C1 /* Config.swift */; };
@@ -677,6 +679,7 @@
 		65E0EC3D7BF449A729CF9353 /* OnboardingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingUITests.swift; sourceTree = "<group>"; };
 		665B1CF3EFAC781C56438C40 /* StreamingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingStore.swift; sourceTree = "<group>"; };
 		67A794B2E1384DC5F2FF8E98 /* AudioSchema27.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSchema27.swift; sourceTree = "<group>"; };
+		6847266CA8BB84DE6F265BE0 /* PuzzlePlayabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PuzzlePlayabilityTests.swift; sourceTree = "<group>"; };
 		6860EB414894C76BE5230D4C /* DemuxInstrumentalUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxInstrumentalUITests.swift; sourceTree = "<group>"; };
 		6A3B38B92DD6CE2B3FD2DE88 /* ShazamResultSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShazamResultSheet.swift; sourceTree = "<group>"; };
 		6B6590AFA2752855DAC057C2 /* JukeboxFoundationModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JukeboxFoundationModel.swift; sourceTree = "<group>"; };
@@ -742,6 +745,7 @@
 		87C8C8E3B145646BD31D56A5 /* StemPlayerSeekProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StemPlayerSeekProbeTests.swift; sourceTree = "<group>"; };
 		89B92A03E8532F729E9503C9 /* PocketDJ.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PocketDJ.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		8A114DC2EBCE8E5F099E83AD /* PocketDJShortcuts.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketDJShortcuts.swift; sourceTree = "<group>"; };
+		8A23D8FE12BCCFAC43457049 /* PuzzleMacLayoutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PuzzleMacLayoutTests.swift; sourceTree = "<group>"; };
 		8A82E2D4A8E5C53F1CAC9691 /* AppleMusicCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicCatalog.swift; sourceTree = "<group>"; };
 		8ABF8191645BD48E1298D78D /* RealizeEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealizeEngineTests.swift; sourceTree = "<group>"; };
 		8C443AFD6A7310B3D2F70B7F /* MixDeckLayoutUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixDeckLayoutUITests.swift; sourceTree = "<group>"; };
@@ -1116,6 +1120,8 @@
 				B7F41C172125992A11EBB32D /* ProfileSourceStoreTests.swift */,
 				BC09231DE9985D77378914B6 /* PushRegistrationServiceTests.swift */,
 				F421B48C4110B00AEDF1DF6C /* PuzzleDecisionStoreTests.swift */,
+				8A23D8FE12BCCFAC43457049 /* PuzzleMacLayoutTests.swift */,
+				6847266CA8BB84DE6F265BE0 /* PuzzlePlayabilityTests.swift */,
 				4C32EE86465865DE9505E670 /* PuzzleSamplerTests.swift */,
 				8ABF8191645BD48E1298D78D /* RealizeEngineTests.swift */,
 				6E5A19100207C85EBAE83A88 /* RecEngineClientTests.swift */,
@@ -2019,6 +2025,8 @@
 				722350CBC3513EFA0C7A7617 /* ProfileSourceStoreTests.swift in Sources */,
 				12EFCFD9540842FFEACC66E3 /* PushRegistrationServiceTests.swift in Sources */,
 				09D1E11BFD1284A77A8E9620 /* PuzzleDecisionStoreTests.swift in Sources */,
+				094B022E293E44E61FAC1345 /* PuzzleMacLayoutTests.swift in Sources */,
+				4F0FABA111A21AB11C49C42E /* PuzzlePlayabilityTests.swift in Sources */,
 				5897B6BEBBB3AB777321BC27 /* PuzzleSamplerTests.swift in Sources */,
 				07DC21DBB1D0E63D969865AD /* RealizeEngineTests.swift in Sources */,
 				ABE011EB9EA8EABC9DC5E5EC /* RecEngineClientTests.swift in Sources */,

@@ -127,26 +127,23 @@ struct CollectorsPuzzleView: View {
                 Button("New Pocket…") { showNewPocket = true }
                     .accessibilityIdentifier("puzzle-new-pocket")
             }
-            Section {
-                Text("\(poolCount.map(String.init) ?? "…") songs match")
-                    .font(.footnote).foregroundStyle(Theme.fgDim)
-                    .accessibilityIdentifier("puzzle-pool-count")
-                if let err = puzzle.lastError {
-                    Text(err).font(.footnote).foregroundStyle(Theme.danger)
-                }
-                Button("Start Round") {
-                    if sequencer.isRunning {
-                        showReplaceConfirm = true
-                    } else {
-                        Task { await puzzle.startRound() }
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(draft.targetCollectionIds.isEmpty || poolCount == 0)
-                .accessibilityIdentifier("puzzle-start")
-            }
         }
+        // macOS `Form` defaults to `FormStyle.columns`, a two-column grid whose CONTENT
+        // column is sized to the widest row content. Every membership/target/genre row here
+        // is `HStack { Text … Spacer() … }`, and a `Spacer`'s ideal width is unbounded — so
+        // the content column grew past the window and shoved the whole grid off the right
+        // edge (only the tail of the label column stayed visible: the reported "collections
+        // jammed to the right, nothing else usable"). `.grouped` is the full-width,
+        // System-Settings-style form layout on macOS and the platform default look on iOS,
+        // so ONE style pins every platform to the layout this screen was designed for.
+        .formStyle(.grouped)
         .scrollContentBackground(.hidden)
+        // The primary action is PINNED, never a row at the bottom of the scroll. As a Form
+        // row it sat below every target collection, so it left the screen entirely once the
+        // user had more than a couple of playlists/pockets — "I can select my settings but
+        // never am able to start the game". A safe-area inset keeps it on screen at every
+        // window size, on every platform, regardless of how long the lists get.
+        .safeAreaInset(edge: .bottom) { startBar }
         .alert("Start round?", isPresented: $showReplaceConfirm) {
             Button("Start", role: .destructive) { Task { await puzzle.startRound() } }
                 .accessibilityIdentifier("puzzle-confirm-replace")
@@ -167,6 +164,48 @@ struct CollectorsPuzzleView: View {
             }
             Button("Cancel", role: .cancel) { newPocketName = "" }
         }
+    }
+
+    /// The pinned bottom bar: match count, the last sampler error, and Start. Lives OUTSIDE
+    /// the scrolling Form (see `.safeAreaInset` above) so it is reachable with zero scrolling
+    /// no matter how many collections the user has.
+    private var startBar: some View {
+        VStack(spacing: 6) {
+            if let err = puzzle.lastError {
+                Text(err).font(.footnote).foregroundStyle(Theme.danger)
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("puzzle-error")
+            }
+            // Wide windows put the count beside the button; narrow ones stack it above, so
+            // the button never gets squeezed below its tap target (no os fences).
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) { poolCountLabel; Spacer(minLength: 12); startButton }
+                VStack(spacing: 8) { poolCountLabel; startButton }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity)
+        .background(.bar)
+    }
+
+    private var poolCountLabel: some View {
+        Text("\(poolCount.map(String.init) ?? "…") songs match")
+            .font(.footnote).foregroundStyle(Theme.fgDim)
+            .accessibilityIdentifier("puzzle-pool-count")
+    }
+
+    private var startButton: some View {
+        Button("Start Round") {
+            if sequencer.isRunning {
+                showReplaceConfirm = true
+            } else {
+                Task { await puzzle.startRound() }
+            }
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(draft.targetCollectionIds.isEmpty || poolCount == 0)
+        .accessibilityIdentifier("puzzle-start")
     }
 
     private func yearRow(label: String, value: Binding<Int?>, a11y: String) -> some View {
