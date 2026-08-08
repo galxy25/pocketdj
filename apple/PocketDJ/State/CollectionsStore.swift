@@ -169,12 +169,17 @@ final class CollectionsStore {
 
     /// Testing seam: `PDJ_SEED_COLLECTIONS=1` (alongside PDJ_USE_FIXTURE) seeds a
     /// deterministic playlist with one fixture song so a setlist Play flow can be
-    /// driven headlessly without the multi-step Browser ▸ Add-to dance. No-op in
-    /// normal use.
+    /// driven headlessly without the multi-step Browser ▸ Add-to dance. A value ABOVE 1
+    /// seeds that many playlists ("Seeded Set", then "Crate 2"…"Crate N") — a long
+    /// collection list is what pushed the Collectors Puzzle's Start control off the
+    /// bottom of the screen, so a test needs to be able to reproduce that shape.
+    /// No-op in normal use.
     private func seedForUITestsIfRequested() {
-        if ProcessInfo.processInfo.environment["PDJ_SEED_COLLECTIONS"] != nil, playlists.isEmpty {
+        if let raw = ProcessInfo.processInfo.environment["PDJ_SEED_COLLECTIONS"], playlists.isEmpty {
             let pl = createPlaylist("Seeded Set")
             addSong("sng_1", toPlaylist: pl.id)
+            let extra = max(1, Int(raw) ?? 1)
+            if extra > 1 { for i in 2...extra { _ = createPlaylist("Crate \(i)") } }
         }
         // Clean-versions-only seam: a deterministic 3-song playlist over the fixture's
         // clean / substitutable / skip trio (sng_1 clean · sng_2 explicit WITH a clean id ·

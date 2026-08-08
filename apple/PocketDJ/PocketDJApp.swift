@@ -940,7 +940,18 @@ struct PocketDJApp: App {
         let puzzle = CollectorsPuzzleEngine(app: app, sequencer: setlistPlayer,
                                             collections: collections, favorites: favorites,
                                             playStats: playStats, scoreboard: gameScores,
-                                            decisions: puzzleDecisions)
+                                            decisions: puzzleDecisions,
+                                            defaults: CollectorsPuzzleEngine.launchDefaults())
+        // What audio can start RIGHT NOW — the puzzle sampler prefers it so a round never
+        // shows a card with nothing to play. Weak captures: the app owns these stores in
+        // @State, so the closure reads them without adding a second retain cycle through the
+        // engine (the `recEngine.puzzleEventsProvider` pattern).
+        puzzle.audioAvailability = { [weak rips, weak burns, weak coordinator] in
+            CollectorsPuzzleEngine.AudioAvailability(
+                ripManifest: rips?.manifest ?? [:],
+                burnedIds: burns?.readyBurnedIds ?? [],
+                canStreamAppleMusic: coordinator?.canStreamAppleMusic ?? false)
+        }
         let friends = MusicWithFriendsStore()
         friends.settings = settings
         friends.appModel = app

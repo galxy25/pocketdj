@@ -57,6 +57,14 @@ final class CollectorsPuzzleEngine {
     @ObservationIgnored private var tickerTask: Task<Void, Never>?
     /// Single-flight guard on the mid-round top-up sample.
     @ObservationIgnored private var toppingUp = false
+    /// Which ROUND-queue position the sequencer's own index 0 maps to. `startRound` hands
+    /// the whole queue over (0); the audio watchdog re-hands only the TAIL from the current
+    /// card, so the sequencer's index restarts at 0 against a later song — every read of
+    /// `sequencer.index` adds this back so the drift re-sync stays honest.
+    @ObservationIgnored private var audioBaseIndex = 0
+    /// The last queue position audio was armed for. The watchdog re-arms AT MOST ONCE per
+    /// card, so a card whose audio genuinely can't start costs one retry, never a loop.
+    @ObservationIgnored private var lastAudioArmIndex: Int?
     private static let settingsKey = "pdj.puzzle.settings.v1"
     @ObservationIgnored private let defaults: UserDefaults
 
@@ -78,6 +86,27 @@ final class CollectorsPuzzleEngine {
         } else {
             settings = PuzzleSettings()
         }
+        // A target/filter collection the user has since DELETED (or that never synced to this
+        // device) must not survive the reload: it leaves the setup screen with no checked row
+        // yet a live Start button, and a round then files songs into an assign button labelled
+        // "Collection" that writes nowhere. Prune to what exists right now.
+        settings.targetCollectionIds.removeAll { !collectionExists($0) }
+        settings.membershipCollectionIds = settings.membershipCollectionIds.filter(collectionExists)
+    }
+
+    /// Does this pls_/pkt_ id still resolve to a collection on this device?
+    private func collectionExists(_ id: String) -> Bool {
+        collections.pocket(id) != nil || collections.playlist(id) != nil
+    }
+
+    /// UI tests get an isolated defaults suite so a round's last-used settings can't leak
+    /// from one test launch into the next (the CollectionsStore/BurnStore `launchURL`
+    /// doctrine, applied to the one piece of puzzle state that lives in UserDefaults).
+    static func launchDefaults() -> UserDefaults {
+        guard ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil,
+              let suite = UserDefaults(suiteName: "pdj.uitest.puzzle") else { return .standard }
+        suite.removeObject(forKey: settingsKey)
+        return suite
     }
 
     /// Update + persist the round settings (last-used settings survive relaunch).
@@ -93,13 +122,31 @@ final class CollectorsPuzzleEngine {
     /// full-catalog walk on the main thread is a visible runloop stall (the Browse
     /// off-main doctrine).
     private func snapshotRawInputs() -> PuzzleSampler.RawInputs {
-        PuzzleSampler.RawInputs(
+        let audio = audioAvailability()
+        return PuzzleSampler.RawInputs(
             songs: app.songs,
             albumsById: app.albumsById,
             favoriteIds: favorites.favoriteIds,
             playCounts: playStats.playCountsSnapshot(),
             membershipCollections: settings.membershipCollectionIds.map { memberIds(of: $0) },
-            targetCollections: settings.targetCollectionIds.map { memberIds(of: $0) })
+            targetCollections: settings.targetCollectionIds.map { memberIds(of: $0) },
+            ripManifest: audio.ripManifest,
+            burnedIds: audio.burnedIds,
+            canStreamAppleMusic: audio.canStreamAppleMusic)
+    }
+
+    /// What audio this device can start RIGHT NOW, snapshotted on the main actor as raw COW
+    /// containers only (the id Sets are derived off-actor in `PuzzleSampler.Inputs`).
+    /// Injected as a closure so the engine keeps its narrow store list and unit tests can
+    /// declare exactly which songs are playable. The default reports "nothing known
+    /// playable": the sampler's playable-first pass then comes back empty and it falls back
+    /// to the whole catalog, so a bare engine (tests, previews) behaves exactly as before.
+    @ObservationIgnored var audioAvailability: () -> AudioAvailability = { AudioAvailability() }
+
+    struct AudioAvailability {
+        var ripManifest: [String: RipsStore.ManifestEntry] = [:]
+        var burnedIds: Set<String> = []
+        var canStreamAppleMusic: Bool = false
     }
 
     // MARK: - Sequencer ownership
@@ -176,13 +223,23 @@ final class CollectorsPuzzleEngine {
                 try? await Task.sleep(for: .seconds(1))
             }
         }
-        sequencer.play(queue.map { song in
-            SetlistPlayer.Item(id: song.id, title: song.name, artist: song.artist,
-                               lengthMs: song.length)
-        }, sourceSetlistId: runTag)
+        armAudio(fromQueueIndex: 0)
         deadlineEpoch = now().timeIntervalSince1970 + Double(settings.roundSeconds)
         phase = .running
         startTicker()
+    }
+
+    /// Hand the round's queue (from `i` onward) to the shared sequencer under THIS round's
+    /// tag and start it. The single place audio is ever armed, so `audioBaseIndex` and the
+    /// once-per-card guard can't drift apart.
+    private func armAudio(fromQueueIndex i: Int) {
+        guard i < queue.count else { return }
+        audioBaseIndex = i
+        lastAudioArmIndex = i
+        sequencer.play(queue[i...].map { song in
+            SetlistPlayer.Item(id: song.id, title: song.name, artist: song.artist,
+                               lengthMs: song.length)
+        }, sourceSetlistId: runTag)
     }
 
     private func startTicker() {
@@ -209,11 +266,22 @@ final class CollectorsPuzzleEngine {
             endRound()
             return
         }
+        // AUDIO WATCHDOG — the "a card on screen is a song you can hear" contract. The shared
+        // sequencer stops ITSELF when a run runs out of queue or when every remaining source
+        // failed to resolve, and from the round's side that is indistinguishable from silence
+        // with nobody owning the player. Re-hand the queue from the CURRENT card so the round
+        // gets its audio back instead of playing out mute. Not a takeover: `sequencerTakenOver`
+        // is checked above, so nothing else is playing when we get here.
+        if !sequencer.isRunning, current != nil, lastAudioArmIndex != queueIndex {
+            armAudio(fromQueueIndex: queueIndex)
+            return
+        }
         // Drift re-sync: the audio advanced past the engine's position (natural track
         // end, or a lock-screen ⏭ the engine never saw) — each passed song EXPIRED
         // without a player action; audio stays authoritative for position.
-        if ownsSequencer, sequencer.index > queueIndex {
-            let target = min(sequencer.index, queue.count)
+        let audioPosition = audioBaseIndex + sequencer.index
+        if ownsSequencer, audioPosition > queueIndex {
+            let target = min(audioPosition, queue.count)
             // ONE persist for the whole burst (a per-row save re-encodes the entire
             // ≤20k-row document — inside the 0.25 s ticker, per passed song).
             decisions.recordBatch((queueIndex..<target).map {

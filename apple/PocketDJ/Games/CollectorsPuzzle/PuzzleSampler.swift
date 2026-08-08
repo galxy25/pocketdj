@@ -19,6 +19,14 @@ enum PuzzleSampler {
         var membershipCollections: [[String]]
         /// …and of each `settings.targetCollectionIds` collection.
         var targetCollections: [[String]]
+        /// The rip manifest — songs whose mp3 already sits in S3. Passed as the raw COW
+        /// dictionary so the id Set is built OFF the main actor (it can hold thousands).
+        var ripManifest: [String: RipsStore.ManifestEntry] = [:]
+        /// Songs with a burned file ready ON THIS DEVICE (the user's downloads — small).
+        var burnedIds: Set<String> = []
+        /// Can Apple Music stream right now (enabled + authorized)? A song carrying an
+        /// `appleMusicId` is then playable too.
+        var canStreamAppleMusic: Bool = false
     }
 
     struct Inputs {
@@ -35,16 +43,30 @@ enum PuzzleSampler {
         /// Existing membership of EACH target collection — a song already in ALL of
         /// them has nothing left to assign and never samples.
         var perTargetMembership: [Set<String>]
+        /// Songs whose audio can START NOW with no capture: an already-ripped S3 mp3 or a
+        /// burned local file. (Rip-ON-DEMAND is deliberately excluded — see `pool`.)
+        var playableNowIds: Set<String> = []
+        /// Apple Music can stream right now, so any song with an `appleMusicId` is playable.
+        var canStreamAppleMusic: Bool = false
 
         init(songs: [IndexSong], genreBySongId: [String: String], favoriteIds: Set<String>,
              playCounts: [String: Int], membershipUnion: Set<String>,
-             perTargetMembership: [Set<String>]) {
+             perTargetMembership: [Set<String>],
+             playableNowIds: Set<String> = [], canStreamAppleMusic: Bool = false) {
             self.songs = songs
             self.genreBySongId = genreBySongId
             self.favoriteIds = favoriteIds
             self.playCounts = playCounts
             self.membershipUnion = membershipUnion
             self.perTargetMembership = perTargetMembership
+            self.playableNowIds = playableNowIds
+            self.canStreamAppleMusic = canStreamAppleMusic
+        }
+
+        /// Can THIS song make sound right now?
+        func isPlayableNow(_ song: IndexSong) -> Bool {
+            if playableNowIds.contains(song.id) { return true }
+            return canStreamAppleMusic && song.appleMusicId != nil
         }
 
         /// Build the derived structures from a main-actor `RawInputs` snapshot. CALL THIS
@@ -62,22 +84,51 @@ enum PuzzleSampler {
             }
             var membershipUnion = Set<String>()
             for ids in raw.membershipCollections { membershipUnion.formUnion(ids) }
+            // Built HERE (off the main actor): the manifest can hold thousands of ids and
+            // this runs on every debounced settings keystroke + the mid-round top-up.
+            var playable = Set(raw.ripManifest.keys)
+            playable.formUnion(raw.burnedIds)
             self.init(songs: raw.songs, genreBySongId: genreBySongId,
                       favoriteIds: raw.favoriteIds, playCounts: raw.playCounts,
                       membershipUnion: membershipUnion,
-                      perTargetMembership: raw.targetCollections.map(Set.init))
+                      perTargetMembership: raw.targetCollections.map(Set.init),
+                      playableNowIds: playable,
+                      canStreamAppleMusic: raw.canStreamAppleMusic)
         }
     }
 
     /// The filtered pool with per-song weights (hard filters applied; soft biases as
     /// multiplicative weights over base 1.0).
+    ///
+    /// PLAYABILITY ("if it's on screen you hear it") is preferred, not absolute: the pool is
+    /// built from playable-now songs, and ONLY if that comes back empty is it rebuilt over
+    /// everything. Why the filter exists: a round used to sample the whole catalog, so most
+    /// cards had audio no backend could start — and in cloud mode each unresolvable track
+    /// makes the shared sequencer advance immediately, so a queue of them burned itself down
+    /// to `stop()` within a frame and the round played out in total silence. Why the fallback
+    /// is on the RESULT and not on the inputs: "Apple Music can stream" is true on a device
+    /// whose catalog carries no catalog ids, so an input-shaped test would enforce a filter
+    /// that matches nothing, leave 0 songs, and disable Start forever — the very defect this
+    /// change is fixing. A silent round beats an unstartable one.
     static func pool(settings: PuzzleSettings, inputs: Inputs,
                      excluding: Set<String> = []) -> [(song: IndexSong, weight: Double)] {
+        let playable = pool(settings: settings, inputs: inputs, excluding: excluding,
+                            playableOnly: true)
+        if !playable.isEmpty { return playable }
+        return pool(settings: settings, inputs: inputs, excluding: excluding, playableOnly: false)
+    }
+
+    private static func pool(settings: PuzzleSettings, inputs: Inputs,
+                             excluding: Set<String>,
+                             playableOnly: Bool) -> [(song: IndexSong, weight: Double)] {
         var out: [(IndexSong, Double)] = []
         out.reserveCapacity(inputs.songs.count / 2)
         let hasYearBound = settings.yearMin != nil || settings.yearMax != nil
         for song in inputs.songs {
             if excluding.contains(song.id) { continue }
+            // Rip-ON-DEMAND deliberately does NOT count as playable: a fresh capture runs in
+            // real time (minutes), which is not audio for a timed rush.
+            if playableOnly, !inputs.isPlayableNow(song) { continue }
             // Year: a bound set drops out-of-range songs; nil-year songs drop only
             // when any bound is set (an unbounded round keeps them).
             if hasYearBound {
