@@ -139,9 +139,11 @@ extension XCUIApplication {
     /// betting on a particular AppKit class. Lazy on both, so `waitForExistence` still works
     /// for a picker that appears later.
     ///
-    /// PREFER a ⌘-shortcut where the view offers one (`selectKind`, `selectArtists`,
-    /// `selectStudioTab`): those drive the app's own shadow buttons and don't depend on the
-    /// segment being hittable at all.
+    /// PREFER a ⌘-shortcut where the view offers one (`selectKind`, `selectArtists`, and the
+    /// Producer sub-tabs' ⌘1–⌘7): those drive the app's own shadow buttons and don't depend on
+    /// the segment being hittable at all. Where a test already has a WORKING iOS path, split it
+    /// per-platform in the test rather than routing iOS through this — see
+    /// VUMeterAndCueUITests, where unifying the two regressed iOS.
     func segment(_ label: String) -> XCUIElement {
         #if os(macOS)
         return descendants(matching: .any)
@@ -160,29 +162,6 @@ extension XCUIApplication {
         typeKey("3", modifierFlags: .command)                          // ⌘3
         #else
         el("Artists").tap()
-        #endif
-    }
-
-    /// Producer ▸ a sub-tab, by its ⌘-number (⌘1 Samples … ⌘5 Cues … ⌘7 Tracks). The
-    /// `studio-tab-picker` is a segmented Picker, so on macOS it is driven by the shadow
-    /// shortcut rather than by tapping a segment.
-    ///
-    /// iOS keeps the INDEX-based tap and only falls back to the label. That is not redundancy:
-    /// on compact widths PerformanceView renders each segment as an ICON ONLY, so there is no
-    /// "Cues" label to match and a label-only lookup fails on iPhone. (Learned the hard way —
-    /// replacing the index tap with `segment(label)` turned this green suite red.)
-    func selectStudioTab(_ number: String, label: String, index: Int) {
-        #if os(macOS)
-        activate()
-        typeKey(number, modifierFlags: .command)
-        #else
-        let picker = segmentedControls["studio-tab-picker"].firstMatch
-        if picker.waitForExistence(timeout: 5) {
-            let seg = picker.buttons.element(boundBy: index)
-            if seg.exists { seg.tap(); return }
-        }
-        let byLabel = buttons[label].firstMatch
-        if byLabel.waitForExistence(timeout: 3) { byLabel.tap() }
         #endif
     }
 

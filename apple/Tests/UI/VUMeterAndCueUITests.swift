@@ -49,15 +49,32 @@ final class VUMeterAndCueUITests: XCTestCase {
         app.launchEnvironment["PDJ_START_SECTION"] = "Performance"
         app.launch()
 
-        // Cues is the 5th sub-tab. The sub-tab control is a `.segmented` Picker, which macOS
-        // renders as a RadioGroup — `app.segmentedControls[...]` resolves to nothing there — so
-        // the Mac drives it with the app's own ⌘5 shadow button (PerformanceView.tabShortcuts)
-        // while iOS taps the segment. Wait on the CONTENT, not the picker, so the assertion is
-        // about the tab actually being open on either platform.
-        XCTAssertTrue(app.any("studio-tab-picker").waitForExistence(timeout: 25)
-                      || app.el("cue-search").waitForExistence(timeout: 5),
-                      "Performance sub-tab shell should render")
-        app.selectStudioTab("5", label: "Cues", index: 4)
+        // Cues is the 5th sub-tab (index 4).
+        //
+        // The iOS branch is the ORIGINAL code, unchanged and deliberately not routed through a
+        // shared helper. A first attempt to unify the two platforms here REGRESSED iOS — the
+        // suite went from green to "Cue search field should exist" — because the pre-tap wait
+        // stopped being a 25s wait on `segmentedControls["studio-tab-picker"]` (which is what
+        // gives the Performance tab time to finish rendering) and became a fast type-agnostic
+        // match followed by a 5s wait inside the helper. The tap then fired before the picker
+        // was ready and the Cues tab never opened. Whatever gets refactored here, the iOS path
+        // must keep waiting on the SEGMENTED CONTROL for the full 25s before tapping.
+        //
+        // macOS gets its own branch because the segmented Picker is not a `segmentedControl`
+        // (nor a Button) there — `segmentedControls["studio-tab-picker"]` resolves to nothing,
+        // which is this test's macOS failure — so the Mac drives the app's own ⌘5 shadow button
+        // (PerformanceView.tabShortcuts) instead of tapping a segment.
+        #if os(macOS)
+        XCTAssertTrue(app.any("studio-tab-picker").waitForExistence(timeout: 25),
+                      "Performance sub-tab picker should render")
+        app.activate()
+        app.typeKey("5", modifierFlags: .command)
+        #else
+        let picker = app.segmentedControls["studio-tab-picker"].firstMatch
+        XCTAssertTrue(picker.waitForExistence(timeout: 25), "Performance sub-tab picker should exist")
+        let seg = picker.buttons.element(boundBy: 4)
+        if seg.exists { seg.tap() } else { app.buttons["Cues"].firstMatch.tap() }
+        #endif
 
         // Search + select the seeded track (sng_1 = "Neon", which has 2 seeded cues).
         let search = firstWith("cue-search")
