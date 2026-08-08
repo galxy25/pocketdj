@@ -5,9 +5,11 @@
 import { classifyExplicitness, findEditions } from './lib/explicit-variants.mjs';
 import { loadLibraryXML, indexLibrary, findInLibrary } from './lib/am-match.mjs';
 import { collectionSongIds } from './resolve-explicit-variants.mjs';
-import { writeFileSync, rmSync } from 'node:fs';
+import { writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 let failures = 0;
 function eq(actual, expected, label) {
@@ -100,13 +102,20 @@ const xml = `<?xml version="1.0"?>
 \t<key>Persistent ID</key><string>CCCC3333</string>
 \t<key>Explicit</key><false/>
 </dict>
+<key>103</key>
+<dict>
+\t<key>Name</key><string>Heat</string>
+\t<key>Artist</key><string>Vex</string>
+\t<key>Persistent ID</key><string>DDDD4444</string>
+\t<key>Explicit</key><true/>
+</dict>
 </dict></dict></plist>`;
 const xmlPath = join(tmpdir(), `pdj-test-lib-${process.pid}.xml`);
 writeFileSync(xmlPath, xml);
 const entries = loadLibraryXML(xmlPath);
 rmSync(xmlPath, { force: true });
 
-eq(entries.length, 3, 'XML fixture parses 3 entries');
+eq(entries.length, 4, 'XML fixture parses 4 entries');
 eq(entries[0].explicit, true, '<key>Explicit</key><true/> parsed');
 eq(entries[1].explicit, undefined, 'entry without the tag stays undefined');
 eq(entries[2].explicit, false, '<key>Explicit</key><false/> parsed');
@@ -118,12 +127,27 @@ eq(findInLibrary(lib, 'Childish Gambino', 'Late Night').match, 'exact', 'no-opts
 // Edition-required: pick the right entry from the two-edition set.
 eq(findInLibrary(lib, 'Childish Gambino', 'Late Night', { explicitness: 'explicit' }).hit?.persistentID, 'AAAA1111', 'explicitness explicit picks the explicit entry');
 eq(findInLibrary(lib, 'Childish Gambino', 'Late Night', { explicitness: 'clean' }).hit?.persistentID, 'BBBB2222', 'explicitness clean picks the clean entry');
-// Required edition ABSENT → NO exact hit (loose diagnostics may still fire; never 'exact').
+// Required edition ABSENT → match MUST be 'none', hit null. NOT merely "not exact":
+// the loose matcher never inspects `explicit`, and the rip caller captures any match
+// !== 'none' — a loose fall-through would capture wrong-edition audio under the
+// variant key (child-safety case). The edition gate is a hard stop.
 {
   const r = findInLibrary(lib, 'Aria', 'Solo Cut', { explicitness: 'explicit' });
-  eq(r.match === 'exact', false, 'required edition absent -> no exact hit');
+  eq(r.match, 'none', 'required edition absent -> match none (no loose fall-through)');
+  eq(r.hit, null, 'required edition absent -> hit null');
+}
+// The child-safety direction: library holds ONLY the explicit edition, 'clean' required.
+{
+  const r = findInLibrary(lib, 'Vex', 'Heat', { explicitness: 'clean' });
+  eq(r.match, 'none', 'clean required, only explicit in library -> match none');
+  eq(r.hit, null, 'clean required, only explicit in library -> hit null');
 }
 eq(findInLibrary(lib, 'Aria', 'Solo Cut', { explicitness: 'clean' }).hit?.persistentID, 'CCCC3333', 'clean requirement satisfied by explicit=false entry');
+// No-opts loose diagnostics still work (only edition-required lookups hard-stop).
+{
+  const r = findInLibrary(lib, 'Vex feat. Someone', 'Heat (Live)');
+  eq(r.match, 'loose', 'no-opts loose diagnostics unaffected');
+}
 
 // ---------------- collection scoping walk ----------------
 console.log('collectionSongIds');
@@ -148,6 +172,44 @@ console.log('collectionSongIds');
   const albums = new Map([['alb_1', ['sng_6']], ['alb_2', ['sng_7']]]);
   const got = [...collectionSongIds(doc, albums)].filter(Boolean).sort();
   eq(got, ['sng_1', 'sng_2', 'sng_3', 'sng_4', 'sng_5', 'sng_6', 'sng_7', 'sng_9'], 'pocket DAG + playlist walk + setlist tracks, cycle-guarded');
+}
+
+// ---------------- am-merge-catalog-ids: variant ids survive a full rebuild ----------------
+// The variant crawl stamps appleMusicIdExplicit/Clean into the COMMITTED index only (its
+// ndjson cache is gitignored), so the full-rebuild ship path (am-sync-agent / am-sync-deploy)
+// MUST forward-merge them or the first changeset ship after the crawl wipes every variant id.
+console.log('am-merge-catalog-ids variant carry-forward');
+{
+  const dir = tmpdir();
+  const oldP = join(dir, `pdj-test-merge-old-${process.pid}.json`);
+  const newP = join(dir, `pdj-test-merge-new-${process.pid}.json`);
+  const outP = join(dir, `pdj-test-merge-out-${process.pid}.json`);
+  // OLD (committed) index: crawl output present. NEW (rebuilt): variant fields stripped,
+  // one song carries its own fresh values (present-on-new must win — idempotency).
+  writeFileSync(oldP, JSON.stringify({ songs: [
+    { id: 'sng_1', appleMusicId: '10', appleMusicIdExplicit: '11', appleMusicIdClean: '12', explicit: true },
+    { id: 'sng_2', appleMusicId: '20', appleMusicIdClean: '22' },
+    { id: 'sng_3' },
+  ] }));
+  writeFileSync(newP, JSON.stringify({ songs: [
+    { id: 'sng_1' },
+    { id: 'sng_2', appleMusicIdClean: 'NEW22' },
+    { id: 'sng_3' },
+    { id: 'sng_4' },
+  ], manifest: { counts: {} } }));
+  const script = join(dirname(fileURLToPath(import.meta.url)), 'am-merge-catalog-ids.mjs');
+  execFileSync(process.execPath, [script, '--old', oldP, '--new', newP, '--out', outP], { stdio: ['ignore', 'ignore', 'ignore'] });
+  const merged = JSON.parse(readFileSync(outP, 'utf8'));
+  const by = new Map(merged.songs.map((s) => [s.id, s]));
+  eq(by.get('sng_1').appleMusicId, '10', 'appleMusicId carried forward');
+  eq(by.get('sng_1').appleMusicIdExplicit, '11', 'appleMusicIdExplicit carried forward');
+  eq(by.get('sng_1').appleMusicIdClean, '12', 'appleMusicIdClean carried forward');
+  eq(by.get('sng_1').explicit, true, 'explicit flag carried forward');
+  eq(by.get('sng_2').appleMusicIdClean, 'NEW22', 'present-on-new wins (idempotent)');
+  eq(by.get('sng_3').appleMusicIdExplicit, undefined, 'no variant id invented');
+  eq(merged.manifest.counts.songsWithExplicitVariant, 1, 'manifest explicit-variant count refreshed');
+  eq(merged.manifest.counts.songsWithCleanVariant, 2, 'manifest clean-variant count refreshed');
+  rmSync(oldP, { force: true }); rmSync(newP, { force: true }); rmSync(outP, { force: true });
 }
 
 if (failures) { console.error(`\n${failures} failure(s)`); process.exit(1); }

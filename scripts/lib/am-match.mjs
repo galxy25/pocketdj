@@ -187,13 +187,20 @@ export function findInLibrary(lib, artist, title, opts = {}) {
   // (cosmetic markers ignored). Only 'exact' is used to overwrite / cloud-capture.
   const list = lib.exact.get(na + '\x00' + ct) || [];
   let ex = list[0] || null;
-  if (opts.explicitness && list.length) {
+  if (opts.explicitness) {
     // Edition-required capture (variant rips): the library entry's Explicit flag must
     // agree; required edition absent → NO exact hit (never capture the wrong edition).
     // TSV entries carry no `explicit` (undefined !== true) → they satisfy 'clean' and
     // fail 'explicit' — fail-open clean / fail-closed explicit, acceptable.
     const want = opts.explicitness === 'explicit';
     ex = list.find((e) => !!e.explicit === want) || null;
+    // HARD STOP — an edition-required lookup must NEVER fall through to the loose
+    // matcher below: loose matches by paren-stripped title + artist WITHOUT inspecting
+    // `explicit`, so it would return the wrong-edition entry (the common case — the
+    // library holds exactly one edition) and the rip caller captures any match !==
+    // 'none', publishing wrong-edition audio under the variant key. Required edition
+    // absent ⇒ the track FAILS, by contract.
+    return ex ? { hit: ex, match: 'exact' } : { hit: null, match: 'none' };
   }
   if (ex) return { hit: ex, match: 'exact' };
   // loose: paren-stripped subset (diagnostics only — NEVER overwrites / captures).
