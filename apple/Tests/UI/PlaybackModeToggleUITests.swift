@@ -49,18 +49,29 @@ final class PlaybackModeToggleUITests: XCTestCase {
         // So there is deliberately NO XCTSkip fallback any more. If the row cannot be found the
         // test FAILS and prints the tree, because "can't find the seeded playlist on the
         // Playlists screen" is a real problem worth seeing, not something to route around.
-        let byName = app.descendants(matching: .any)
+        // Both queries are TYPE-SCOPED. An unscoped `descendants(matching: .any)` carrying a
+        // CONTAINS predicate evaluates against every element in the window, and on a loaded Mac
+        // that query does not merely miss — it dies with "Failed to get matching snapshots:
+        // Timed out while evaluating UI query" before the 20s wait is up, which reads as a
+        // missing row rather than as the cost of the lookup. Naming the element type keeps the
+        // walk small enough to finish. The id-prefix form is tried FIRST because it is exact.
+        let byId = app.buttons
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'playlist-pls_'")).firstMatch
+        let byName = app.staticTexts
             .matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@",
                                   "Seeded Set", "Seeded Set")).firstMatch
-        let byId = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH 'playlist-pls_'")).firstMatch
         let row: XCUIElement
-        if byName.waitForExistence(timeout: 20) {
-            row = byName
-        } else if byId.waitForExistence(timeout: 5) {
+        if byId.waitForExistence(timeout: 20) {
             row = byId
+        } else if byName.waitForExistence(timeout: 10) {
+            row = byName
         } else {
-            XCTFail("seeded playlist row not found on the Playlists screen.\n\(app.debugDescription)")
+            // Print rather than stuff the tree into the failure message: the assertion message
+            // gets truncated in the xcodebuild log, and this is the one place a real tree is
+            // worth having when the row genuinely is not where we think it is.
+            print("PDJDIAG playlists tree:\n\(app.debugDescription)")
+            fflush(stdout)
+            XCTFail("seeded playlist row not found on the Playlists screen (tree printed above)")
             return
         }
         row.tap()
