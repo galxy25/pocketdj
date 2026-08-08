@@ -49,21 +49,51 @@ mkdirSync(LOG_DIR, { recursive: true });
 const jobs = new Map(); // id -> {id, kind, args, status, exitCode, log, started, ended}
 
 // ---------------------------------------------------------------- session check
-// The whole point of this server is that it CAN see the display. Prove it rather
-// than assume it, so a misconfigured launch fails loudly at startup instead of
-// producing a pile of "failures" that look like code defects.
-function checkGuiAccess() {
+// What XCUITest actually needs is to be in the user's **Aqua** launchd session.
+// `launchctl managername` reports that directly and needs no permissions:
+//     Aqua        → GUI session. UI tests can run.
+//     Background  → SSH / daemon context. UI tests CANNOT run, at all.
+//
+// Deliberately NOT using `screencapture` as the gate: it requires the Screen
+// Recording TCC permission, which Terminal.app often lacks, so it fails in a
+// perfectly good Aqua session. Conflating "no Screen Recording permission" with
+// "no GUI session" is exactly the mistake this file exists to prevent — and it is
+// a mistake this file made in its first version. Screenshot capability is reported
+// separately as a nice-to-have, because XCUITest does not need it.
+function run(cmd, args) {
   return new Promise((res) => {
-    const tmp = join(LOG_DIR, `.probe-${Date.now()}.png`);
-    const p = spawn('screencapture', ['-x', tmp], { stdio: 'ignore' });
-    p.on('close', () => {
-      let ok = false, bytes = 0;
-      try { bytes = existsSync(tmp) ? readFileSync(tmp).length : 0; ok = bytes > 1000; } catch {}
-      try { if (existsSync(tmp)) spawn('rm', ['-f', tmp]); } catch {}
-      res({ ok, bytes });
-    });
-    p.on('error', () => res({ ok: false, bytes: 0 }));
+    let out = '';
+    const p = spawn(cmd, args);
+    p.stdout.on('data', (d) => { out += d; });
+    p.stderr.on('data', (d) => { out += d; });
+    p.on('close', (code) => res({ code, out: out.trim() }));
+    p.on('error', () => res({ code: -1, out: '' }));
   });
+}
+
+async function checkGuiAccess() {
+  const mgr = await run('launchctl', ['managername']);
+  const sessionType = mgr.out || 'unknown';
+  const ok = /Aqua/i.test(sessionType);
+
+  // Informational only — never gates anything.
+  let screenshotBytes = 0;
+  const tmp = join(LOG_DIR, `.probe-${Date.now()}.png`);
+  await run('screencapture', ['-x', tmp]);
+  try { screenshotBytes = existsSync(tmp) ? readFileSync(tmp).length : 0; } catch {}
+  try { if (existsSync(tmp)) spawn('rm', ['-f', tmp]); } catch {}
+
+  return {
+    ok,
+    sessionType,
+    screenshotBytes,
+    screenRecordingPermission: screenshotBytes > 1000,
+    note: ok
+      ? (screenshotBytes > 1000
+          ? 'Aqua session — macOS UI tests can run, and screenshots work.'
+          : 'Aqua session — macOS UI tests CAN run. (screencapture is blocked, which only means Terminal lacks Screen Recording permission; XCUITest does not need it.)')
+      : `Session is "${sessionType}", not Aqua — started over SSH or from a daemon. macOS UI tests cannot work here. Start this from Terminal.app ON the Mac.`,
+  };
 }
 
 // ---------------------------------------------------------------------- jobs
@@ -188,13 +218,7 @@ async function callTool(name, a = {}) {
   switch (name) {
     case 'mac_health': {
       const gui = await checkGuiAccess();
-      return {
-        ok: gui.ok, screenshotBytes: gui.bytes,
-        sessionType: 'GUI (this process was started from the Mac desktop)',
-        note: gui.ok ? 'Window server reachable — macOS UI tests can run.'
-                     : 'NO display access. Start this server from Terminal.app ON the Mac, not over SSH.',
-        logDir: LOG_DIR, root: ROOT,
-      };
+      return { ...gui, logDir: LOG_DIR, root: ROOT };
     }
     case 'mac_run_tests': return startJob('macos_tests', a);
     case 'mac_screenshot': return startJob('screenshot', a);
@@ -289,11 +313,18 @@ server.listen(PORT, '127.0.0.1', async () => {
   const gui = await checkGuiAccess();
   console.log(`\n  PocketDJ Mac GUI runner → http://127.0.0.1:${PORT}`);
   console.log(`  logs: ${LOG_DIR}`);
+  console.log(`  launchd session: ${gui.sessionType}`);
   if (gui.ok) {
-    console.log(`  ✅ GUI session OK (captured a ${gui.bytes}-byte screenshot) — macOS UI tests will run.\n`);
+    console.log(`  ✅ Aqua session — macOS UI tests WILL run.`);
+    if (!gui.screenRecordingPermission) {
+      console.log(`     (screencapture is blocked — Terminal lacks Screen Recording permission.`);
+      console.log(`      That is fine: XCUITest does not need it. Grant it in System Settings ▸`);
+      console.log(`      Privacy & Security ▸ Screen Recording only if you want screenshots.)`);
+    }
+    console.log('');
   } else {
-    console.log(`  ❌ NO GUI ACCESS. You appear to have started this over SSH or in a background session.`);
-    console.log(`     Start it from Terminal.app ON the Mac. macOS XCUITests cannot work without it.\n`);
+    console.log(`  ❌ NOT an Aqua session — macOS UI tests cannot work here.`);
+    console.log(`     Start this from Terminal.app ON the Mac (not SSH, not a daemon).\n`);
   }
   console.log(`  Leave this window open. Ctrl-C to stop.\n`);
 });
