@@ -99,4 +99,22 @@ final class ExplicitVariantModelTests: XCTestCase {
         // Variant is a playback parameter, not row identity — equality ignores it.
         XCTAssertEqual(plain, clean)
     }
+
+    /// The end-of-track / jump ownership test: a substituted row answers to BOTH its ids —
+    /// a stream/rip resolves under the VARIANT id while a burned file plays under the BASE
+    /// id — but a plain row never answers to a variant id (a foreign edition stays foreign).
+    @MainActor
+    func testSetlistPlayerItemMatches() {
+        let plain = SetlistPlayer.Item(id: "sng_1a7f6bc854af", title: "LN", artist: "CG")
+        XCTAssertTrue(plain.matches("sng_1a7f6bc854af"))
+        XCTAssertFalse(plain.matches("sng_1a7f6bc854af_clean"),
+                       "a plain row never answers to a variant id")
+
+        let clean = SetlistPlayer.Item(id: "sng_1a7f6bc854af", title: "LN", artist: "CG",
+                                       variant: .clean)
+        XCTAssertTrue(clean.matches("sng_1a7f6bc854af"), "burned-file plays stamp the base id")
+        XCTAssertTrue(clean.matches("sng_1a7f6bc854af_clean"), "stream/rip plays stamp the variant id")
+        XCTAssertFalse(clean.matches("sng_1a7f6bc854af_explicit"), "a different edition is a foreign play")
+        XCTAssertFalse(clean.matches("sng_ffffffffffff"), "a different song is a foreign play")
+    }
 }
