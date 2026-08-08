@@ -74,7 +74,7 @@ final class MusicWithFriendsStoreTests: XCTestCase {
                                      settings: MwFSettings(turnSeconds: 120, acceptOutsideTurn: false,
                                                            turnEndsOnFirstSuggestion: true))
         XCTAssertNil(err, "create RETURNS its error (the sheet owns the message, not a shared field)")
-        XCTAssertNil(store.lastError)
+        XCTAssertTrue(store.lastErrors.isEmpty)
         XCTAssertEqual(store.sessions.count, 1)
         let entry = store.sessions[0]
         XCTAssertTrue(entry.isLeader)
@@ -109,7 +109,7 @@ final class MusicWithFriendsStoreTests: XCTestCase {
         let link = MwFLink(url: URL(string: "https://jukebox.pocket-dj.com/mwf/abcd2345/")!)!
         let err = await store.join(link: link, name: "Beth")
         XCTAssertNil(err)
-        XCTAssertNil(store.lastError)
+        XCTAssertTrue(store.lastErrors.isEmpty)
         XCTAssertEqual(store.sessions.count, 1)
         XCTAssertFalse(store.sessions[0].isLeader)
         XCTAssertEqual(store.sessions[0].apiBase, "https://broker.test")
@@ -126,22 +126,63 @@ final class MusicWithFriendsStoreTests: XCTestCase {
                      "a first join presents no bearer — nothing to prove yet")
     }
 
-    /// A device that still holds a memberKey re-binds by PRESENTING it (the only way the
-    /// broker hands an existing member's key back).
-    func testRejoinPresentsTheMemberKeyAsBearer() async throws {
+    /// Broker-side member loss (a session.json restored from a backup): every verb 401s,
+    /// and `join()` early-returns for known sessions — so the STORE must recover from the
+    /// poll itself: re-join presenting the stored memberKey, adopt the reply's binding,
+    /// and retry the state fetch. This drives the store (not the bare client) so the
+    /// recovery path can never silently go unreachable again.
+    func testPoll401RecoversMembershipThroughTheStore() async throws {
         let (store, defaults) = makeStore()
         _ = seedEntry(store, defaults: defaults, id: "abcd2345", leader: false)
+        MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/state"] = 401
+        // The broker minted a FRESH member for us (the old one is gone from session.json).
         MwFURLProtocol.bodyByPath["/mwf/abcd2345/join"] = Data("""
-        { "memberId": "mb_me", "memberKey": "mk_me" }
+        { "memberId": "mb_new", "memberKey": "mk_new" }
         """.utf8)
-        // Force the network path: the local entry short-circuits join(), so drive the
-        // client the way a re-join after a failed state poll would.
-        let client = MwFClient(baseURL: "https://broker.test", token: "tok", session: store.urlSession)
-        _ = try await client.join(apiBase: nil, sessionId: "abcd2345", name: "Me",
-                                  clientId: "client-test", joinSecret: "secret-test",
-                                  memberKey: "mk_me")
+        _ = await store.refresh("abcd2345")
+        // The recovery re-join PRESENTED the stored memberKey as the bearer…
         XCTAssertEqual(MwFURLProtocol.last(path: "/mwf/abcd2345/join")?
             .value(forHTTPHeaderField: "Authorization"), "Bearer mk_me")
+        XCTAssertEqual(MwFURLProtocol.lastBodyJSON(path: "/mwf/abcd2345/join")?["joinSecret"] as? String,
+                       "secret-test", "…alongside the per-install re-join secret")
+        // …and the entry re-bound to the broker's reply.
+        XCTAssertEqual(store.sessions[0].memberKey, "mk_new")
+        XCTAssertEqual(store.sessions[0].memberId, "mb_new")
+        // The state retry still 401s in this script — the poll surface reports, the
+        // session is NOT folded as ended, and the entry keeps the recovered binding.
+        XCTAssertNotEqual(store.lastState["abcd2345"]?.ended, true)
+    }
+
+    /// When even the re-join fails (the whole session vanished), the poll surfaces the
+    /// problem on ITS channel and the cached state stands — no crash, no silent 401 loop.
+    func testPoll401WithFailedRecoveryReportsOnPollError() async throws {
+        let (store, defaults) = makeStore()
+        _ = seedEntry(store, defaults: defaults, id: "abcd2345", leader: false)
+        MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/state"] = 401
+        MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/join"] = 401
+        _ = await store.refresh("abcd2345")
+        XCTAssertNotNil(store.pollError)
+        XCTAssertTrue(store.lastErrors.isEmpty)
+        XCTAssertEqual(store.sessions[0].memberKey, "mk_me", "no fake re-bind on failure")
+        XCTAssertGreaterThanOrEqual(MwFURLProtocol.count(path: "/mwf/abcd2345/join"), 2,
+                                    "memberKey attempt, then the joinSecret fallback")
+    }
+
+    /// A raw 404 from POST /mwf (the live broker predates v3) turns into an actionable
+    /// "update the broker" message via the /health capability probe — not a bare HTTP 404.
+    func testCreate404ProbesHealthAndExplainsTheOldBroker() async throws {
+        let (store, _) = makeStore()
+        MwFURLProtocol.statusCodeByPath["/mwf"] = 404
+        MwFURLProtocol.bodyByPath["/health"] = Data("""
+        { "ok": true, "service": "jukebox", "version": 2 }
+        """.utf8)
+        let err = await store.create(name: "n", theme: "t", displayName: "Ada",
+                                     settings: MwFSettings(turnSeconds: 120, acceptOutsideTurn: false,
+                                                           turnEndsOnFirstSuggestion: true))
+        XCTAssertNotNil(err)
+        XCTAssertTrue(err?.contains("older version") == true,
+                      "the v2 broker case names the fix, got: \(err ?? "nil")")
+        XCTAssertEqual(MwFURLProtocol.count(path: "/health"), 1)
     }
 
     func testHandleOpenedLinkKnownOpensUnknownDrivesJoinSheet() {
@@ -165,14 +206,14 @@ final class MusicWithFriendsStoreTests: XCTestCase {
         MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/state"] = 500
         _ = await store.refresh("abcd2345")
         XCTAssertNotNil(store.pollError, "the poll reports on its own channel")
-        XCTAssertNil(store.lastError, "…and never on the sheets'")
+        XCTAssertTrue(store.lastErrors.isEmpty, "…and never on the sheets' or the session banner's")
         // A create failing while that poll error stands returns ITS message.
         MwFURLProtocol.statusCodeByPath["/mwf"] = 500
         let err = await store.create(name: "n", theme: "t", displayName: "Ada",
                                      settings: MwFSettings(turnSeconds: 120, acceptOutsideTurn: false,
                                                            turnEndsOnFirstSuggestion: true))
         XCTAssertNotNil(err)
-        XCTAssertNil(store.lastError)
+        XCTAssertTrue(store.lastErrors.isEmpty)
         // …and a later SUCCESSFUL poll can't retroactively "clear" it.
         MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/state"] = 200
         MwFURLProtocol.bodyByPath["/mwf/abcd2345/state"] = Data("{\"sessionId\":\"abcd2345\"}".utf8)
@@ -225,7 +266,7 @@ final class MusicWithFriendsStoreTests: XCTestCase {
                                        title: "Neon", artist: "Aria", createdAt: 1,
                                        status: "pending", decidedAt: nil, plusOnes: [], match: nil)
         await store.approve("abcd2345", suggestion: suggestion)
-        XCTAssertNil(store.lastError)
+        XCTAssertNil(store.lastErrors["abcd2345"])
         let body = MwFURLProtocol.lastBodyJSON(path: "/mwf/abcd2345/suggestions/sg_1/decision")
         XCTAssertEqual(body?["action"] as? String, "accepted")
         let match = body?["match"] as? [String: Any]
@@ -245,10 +286,12 @@ final class MusicWithFriendsStoreTests: XCTestCase {
         XCTAssertEqual(MwFURLProtocol.count(path: "/mwf/abcd2345/suggestions/sg_9/plusone"), 1)
         XCTAssertEqual(MwFURLProtocol.last(path: "/mwf/abcd2345/suggestions/sg_9/plusone")?
             .value(forHTTPHeaderField: "Authorization"), "Bearer mk_me")
-        // A server 409 (already +1'd) surfaces as lastError, not a crash.
+        // A server 409 (already +1'd) surfaces as THIS session's error, not a crash —
+        // and never as some OTHER session's banner (per-session keying).
         MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/suggestions/sg_9/plusone"] = 409
         await store.plusOne("abcd2345", suggestionId: "sg_9")
-        XCTAssertNotNil(store.lastError)
+        XCTAssertNotNil(store.lastErrors["abcd2345"])
+        XCTAssertNil(store.lastErrors["efgh6789"], "session B never paints session A's failure")
     }
 
     /// The leader's "queue accepted songs" nicety rides the app-scoped sequencer — but a

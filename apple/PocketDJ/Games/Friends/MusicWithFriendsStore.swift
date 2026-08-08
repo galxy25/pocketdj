@@ -19,11 +19,13 @@ final class MusicWithFriendsStore {
     var pendingJoin: MwFLink?
     private(set) var creating = false
     private(set) var joining = false
-    /// The last LEADER-VERB error (approve/reject/+1/config/end) — the session screen's
-    /// shared banner. `create`/`join` deliberately do NOT write here: they RETURN their
-    /// error so a sheet renders its OWN message, and the 4 s poll (which runs in every
-    /// open window) can neither clear a sheet's error nor be mistaken for one.
-    private(set) var lastError: String?
+    /// The last LEADER-VERB error (approve/reject/+1/config/end) PER SESSION — the session
+    /// screen's banner, keyed by session id (like `lastState`) so one session's failure can
+    /// never render inside another session's screen (two macOS windows on different
+    /// sessions must not both paint it). `create`/`join` deliberately do NOT write here:
+    /// they RETURN their error so a sheet renders its OWN message, and the 4 s poll (which
+    /// runs in every open window) can neither clear a sheet's error nor be mistaken for one.
+    private(set) var lastErrors: [String: String] = [:]
     /// The 4 s poll's own error, kept apart from every user-initiated verb's surface.
     private(set) var pollError: String?
     /// Last-known state per session (the session screen's render source + the
@@ -113,7 +115,7 @@ final class MusicWithFriendsStore {
         scoredSessionIds = []
         pendingOpenId = nil
         pendingJoin = nil
-        lastError = nil
+        lastErrors = [:]
         pollError = nil
         queueAccepted = false
         defaults.removeObject(forKey: Self.sessionsKey)
@@ -148,9 +150,28 @@ final class MusicWithFriendsStore {
             pendingOpenId = sid
             await registerPushIfPossible(for: entry)
             return nil
+        } catch JukeboxClient.ClientError.http(let code) where code == 404 {
+            return await mwfUnavailableMessage(base: nil)
         } catch {
             return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
+    }
+
+    /// A raw 404 from `/mwf` usually means the live broker predates v3 (no `/mwf` routes
+    /// at all — the deploy ordering between an app update and the iMac broker restart is
+    /// enforced by nothing). Probe `/health` (the capability flag exists for exactly this,
+    /// like the v2 played-history rollout) and turn the bare "HTTP 404" into an actionable
+    /// message when the server really is older.
+    private func mwfUnavailableMessage(base: String?) async -> String {
+        let probe = JukeboxClient(baseURL: base ?? settings?.jukeboxServerURL ?? "",
+                                  token: settings?.jukeboxToken ?? "",
+                                  profileId: profileIdProvider?() ?? "",
+                                  session: urlSession)
+        if let health = try? await probe.health(), (health.version ?? 0) < 3 || health.mwf != true {
+            return "The jukebox server is running an older version without Music with Friends"
+                + " — update it (scripts/update-jukeboxserver.sh on the host) and try again."
+        }
+        return "Music with Friends isn't available on this server (HTTP 404)."
     }
 
     /// A tapped `/mwf/` link: a known session opens; an unknown one drives the Join sheet.
@@ -208,6 +229,8 @@ final class MusicWithFriendsStore {
             pendingOpenId = link.sessionId
             await registerPushIfPossible(for: entry)
             return nil
+        } catch JukeboxClient.ClientError.http(let code) where code == 404 {
+            return await mwfUnavailableMessage(base: apiBase)
         } catch {
             return (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
@@ -234,6 +257,22 @@ final class MusicWithFriendsStore {
             if st.ended == true { recordFinalScoreIfNeeded(id) }
             pollError = nil
             return st
+        } catch JukeboxClient.ClientError.http(let code) where code == 401 {
+            // The broker no longer recognizes our memberKey — a session.json restored from
+            // a backup that predates this member loses it server-side, and `join()`
+            // early-returns for known sessions, so nothing else ever re-presents the
+            // stored credentials. Recover HERE (single-flight): re-join with the stored
+            // memberKey, then fall back to the joinSecret (which mints a fresh member when
+            // the old one is gone), and retry the poll once.
+            if await recoverMembership(id), let rebound = entry(id),
+               let st = try? await client.state(rebound) {
+                lastState[id] = st
+                if st.ended == true { recordFinalScoreIfNeeded(id) }
+                pollError = nil
+                return st
+            }
+            pollError = "The server no longer recognizes this device — try leaving and rejoining."
+            return lastState[id]
         } catch JukeboxClient.ClientError.http(let code) where code == 404 || code == 410 {
             if lastState[id] != nil {
                 lastState[id]?.ended = true
@@ -251,6 +290,35 @@ final class MusicWithFriendsStore {
         }
     }
 
+    /// Single-flight guard per session on the membership recovery below.
+    @ObservationIgnored private var recovering: Set<String> = []
+
+    /// Re-establish membership after the broker forgot us (a restored session.json missing
+    /// this member): first PRESENT the stored memberKey (re-binds the exact member when it
+    /// still exists), then fall back to the joinSecret-only join, which mints a fresh
+    /// member. Either success re-binds the entry's memberId/memberKey (the leaderKey — a
+    /// session-level credential — is kept as-is). Returns whether the entry was re-bound.
+    func recoverMembership(_ id: String) async -> Bool {
+        guard let e = entry(id), !recovering.contains(id) else { return false }
+        recovering.insert(id)
+        defer { recovering.remove(id) }
+        let name = (profileNameProvider?() ?? "").trimmingCharacters(in: .whitespaces)
+        let display = name.isEmpty ? "Player" : name
+        for presented in [e.memberKey, nil] {
+            guard let r = try? await client.join(apiBase: e.apiBase, sessionId: id,
+                                                 name: display, clientId: deviceClientId(),
+                                                 joinSecret: joinSecret(), memberKey: presented),
+                  let mid = r.memberId, let mk = r.memberKey else { continue }
+            if let i = sessions.firstIndex(where: { $0.id == id }) {
+                sessions[i].memberId = mid
+                sessions[i].memberKey = mk
+                persistSessions()
+            }
+            return true
+        }
+        return false
+    }
+
     /// Suggest a song. THROWS so the screen can surface the server's turn rejection
     /// (409 "not your turn") gracefully.
     func suggest(_ id: String, title: String, artist: String) async throws {
@@ -261,12 +329,12 @@ final class MusicWithFriendsStore {
 
     func plusOne(_ id: String, suggestionId: String) async {
         guard let entry = entry(id) else { return }
-        lastError = nil
+        lastErrors[id] = nil
         do {
             try await client.plusOne(entry, suggestionId: suggestionId)
             _ = await refresh(id)
         } catch {
-            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            lastErrors[id] = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
@@ -276,7 +344,7 @@ final class MusicWithFriendsStore {
     /// playable match (catalog id → appleMusicId → title/artist-only), then decide.
     func approve(_ id: String, suggestion: MwFSuggestion) async {
         guard let entry = entry(id), entry.isLeader, let sgId = suggestion.id else { return }
-        lastError = nil
+        lastErrors[id] = nil
         let title = suggestion.title ?? ""
         let artist = suggestion.artist ?? ""
         var match = MwFMatch(songId: nil, appleMusicId: nil, title: title, artist: artist, lengthMs: nil)
@@ -297,37 +365,37 @@ final class MusicWithFriendsStore {
             if queueAccepted { queueMatchIfPlayable(match) }
             _ = await refresh(id)
         } catch {
-            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            lastErrors[id] = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     func reject(_ id: String, suggestion: MwFSuggestion) async {
         guard let entry = entry(id), entry.isLeader, let sgId = suggestion.id else { return }
-        lastError = nil
+        lastErrors[id] = nil
         do {
             try await client.decide(entry, suggestionId: sgId, action: "rejected", match: nil)
             _ = await refresh(id)
         } catch {
-            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            lastErrors[id] = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     func updateSettings(_ id: String, _ s: MwFSettings) async {
         guard let entry = entry(id), entry.isLeader else { return }
-        lastError = nil
+        lastErrors[id] = nil
         do {
             let confirmed = try await client.configure(entry, settings: s)
             if lastState[id] != nil { lastState[id]?.settings = confirmed }
         } catch {
-            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            lastErrors[id] = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }
 
     func endSession(_ id: String) async {
         guard let entry = entry(id), entry.isLeader else { return }
-        lastError = nil
+        lastErrors[id] = nil
         do { try await client.end(entry) } catch {
-            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            lastErrors[id] = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
         // Local fold regardless — an unreachable broker must not trap the leader.
         if lastState[id] != nil { lastState[id]?.ended = true }
@@ -370,6 +438,7 @@ final class MusicWithFriendsStore {
         sessions.removeAll { $0.id == id }
         persistSessions()
         lastState[id] = nil
+        lastErrors[id] = nil
     }
 
     // MARK: - Push

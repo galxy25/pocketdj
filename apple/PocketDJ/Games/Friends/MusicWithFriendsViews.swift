@@ -187,6 +187,10 @@ struct MwFJoinSheet: View {
         }
         .onChange(of: pastedLink) { _, _ in
             previewTask?.cancel()
+            // The edited link may point at a DIFFERENT session (or none): the old theme
+            // must never render over the new target — the user would join B believing
+            // it is A. Clear first; the debounced fetch repaints when it lands.
+            themePreview = nil
             previewTask = Task {
                 try? await Task.sleep(for: .milliseconds(300))
                 guard !Task.isCancelled else { return }
@@ -241,13 +245,31 @@ struct MusicWithFriendsSessionView: View {
                 }
                 shareSection(entry)
                 // Leader-verb failures (approve/reject/+1/settings/end) surface HERE, where
-                // they happen — the create/join sheets keep their own local messages, and
-                // the 4 s poll reports on `pollError`, so these three never overwrite each
-                // other across windows.
-                if let err = friends.lastError {
+                // they happen — keyed by session id, so another session's window never
+                // paints THIS session's banner. The create/join sheets keep their own local
+                // messages, and the 4 s poll reports on `pollError` below, so these three
+                // never overwrite each other across windows.
+                if let err = friends.lastErrors[sessionId] {
                     Section {
                         Text(err).font(.footnote).foregroundStyle(Theme.danger)
                             .accessibilityIdentifier("mwf-session-error")
+                    }
+                }
+                // The poll's own channel: a dead/unreachable broker must not masquerade as
+                // a live session — say the leaderboard is STALE and since when.
+                if !ended, let perr = friends.pollError {
+                    Section {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Can’t reach the server — showing the last known state.")
+                                .font(.footnote).foregroundStyle(Theme.danger)
+                            Text(perr).font(.caption2).foregroundStyle(Theme.fgDim)
+                            if let at = state?.updatedAt {
+                                Text("Last updated \(Date(timeIntervalSince1970: at / 1000), style: .relative) ago")
+                                    .font(.caption2).foregroundStyle(Theme.fgDim)
+                            }
+                        }
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("mwf-poll-error")
                     }
                 }
                 leaderboard
