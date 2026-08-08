@@ -146,6 +146,9 @@ final class CollectorsPuzzleEngine {
         }
         lastError = nil
         poolExhausted = false
+        // A stale top-up from the PREVIOUS round may still be in flight; its continuation
+        // is round-guarded (see tickOnce) and so can never clear this flag for us.
+        toppingUp = false
         phase = .sampling
         let raw = snapshotRawInputs()
         let settings = settings
@@ -225,24 +228,32 @@ final class CollectorsPuzzleEngine {
             let raw = snapshotRawInputs()
             let settings = settings
             let rng = rng
+            // The round this top-up was armed FOR. `phase == .running` alone cannot tell
+            // "this round still runs" from "a DIFFERENT round now runs" — an End→Start
+            // while the sample is in flight would otherwise land round A's songs (wrong
+            // filters, possible dupes) in round B's queue and flip B's poolExhausted.
+            let armedRoundId = roundId
             Task { [weak self] in
                 let extra = await Task.detached(priority: .userInitiated) {
                     PuzzleSampler.sample(40, settings: settings,
                                          inputs: PuzzleSampler.Inputs(raw: raw),
                                          rng: rng, excluding: shown)
                 }.value
-                guard let self else { return }
+                // A stale round's continuation mutates NOTHING — not even `toppingUp`,
+                // which belongs to the new round now (startRound reset it).
+                guard let self, self.roundId == armedRoundId else { return }
                 self.toppingUp = false
                 guard self.phase == .running else { return }
                 if extra.isEmpty {
                     self.poolExhausted = true
                     return
                 }
-                self.queue.append(contentsOf: extra)
                 // The await above is a window in which someone else could have taken the
-                // sequencer — appending into THEIR queue would both corrupt this round's
-                // index mapping and hijack their playback.
+                // sequencer — appending into THEIR queue would hijack their playback, and
+                // appending to OUR queue alone would desync the index mapping the scoring
+                // relies on. Ownership lost ⇒ append NOWHERE (the next tick ends the round).
                 guard self.ownsSequencer else { return }
+                self.queue.append(contentsOf: extra)
                 self.sequencer.appendToQueue(extra.map {
                     SetlistPlayer.Item(id: $0.id, title: $0.name, artist: $0.artist,
                                        lengthMs: $0.length)

@@ -205,6 +205,48 @@ final class CollectorsPuzzleEngineTests: XCTestCase {
         XCTAssertFalse(s.engine.poolExhausted)
     }
 
+    /// End→Start while a top-up sample is in flight: the stale continuation was armed for
+    /// round A, so it must mutate NOTHING of round B — not the queue (A's filters/exclusions
+    /// don't apply), not `poolExhausted`, and not the single-flight flag (B resets it itself).
+    func testStaleTopUpFromAPreviousRoundNeverTouchesTheNextRound() async throws {
+        let s = await makeStack(loader: BigLoader(), roundSeconds: 60)
+        await s.engine.startRound()
+        for _ in 0..<51 { s.engine.skip() }
+        s.engine.tickOnce()                    // arms round A's top-up — sample now in flight
+        s.engine.endRound()
+        await s.engine.startRound()            // round B: fresh roundId, fresh 60-song queue
+        let bRound = s.engine.roundId
+        let bQueue = s.engine.queue.map(\.id)
+        try await Task.sleep(for: .milliseconds(400))   // round A's stale sample lands
+        XCTAssertEqual(s.engine.roundId, bRound)
+        XCTAssertEqual(s.engine.queue.map(\.id), bQueue,
+                       "round A's 40-song sample never lands in round B's queue")
+        XCTAssertEqual(s.sequencer.queue.count, bQueue.count,
+                       "…nor in the sequencer's")
+        XCTAssertFalse(s.engine.poolExhausted)
+        // Round B's own top-up still works — the stale round didn't latch the flag.
+        for _ in 0..<51 { s.engine.skip() }
+        s.engine.tickOnce()
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertGreaterThan(s.engine.queue.count, 60, "round B tops up normally")
+    }
+
+    /// Ownership lost DURING the top-up await: the extra songs must land in NEITHER queue —
+    /// appending to the engine's alone would desync the index mapping the scoring reads.
+    func testTopUpAfterTakeoverAppendsNowhere() async throws {
+        let s = await makeStack(loader: BigLoader(), roundSeconds: 60)
+        await s.engine.startRound()
+        for _ in 0..<51 { s.engine.skip() }
+        s.engine.tickOnce()                    // top-up in flight for THIS round
+        // A foreign play claims the sequencer while the sample is airborne.
+        s.sequencer.play([SetlistPlayer.Item(id: "other_1", title: "Theirs", artist: "Someone")],
+                         sourceSetlistId: "set_other")
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertEqual(s.engine.queue.count, 60,
+                       "no engine-only append — the queues stay in lockstep")
+        XCTAssertEqual(s.sequencer.queue.count, 1, "the foreign queue is untouched")
+    }
+
     func testPoolExhaustionFlagsCatalogExhausted() async throws {
         let s = await makeStack()   // 7-song fixture: the first sample IS the whole pool
         await s.engine.startRound()

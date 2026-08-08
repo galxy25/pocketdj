@@ -857,6 +857,30 @@ final class SetlistPlayerTests: XCTestCase {
         XCTAssertTrue(seq.shuffleEnabled, "restore reads the persisted shuffle state")
         XCTAssertTrue(seq.isRunning)
         XCTAssertTrue(seq.isHeldForResume, "a restored deck is held, not auto-playing")
+        XCTAssertEqual(seq.sourceSetlistId, "set_1", "an ordinary source id restores as-is")
+        seq.stop()
+    }
+
+    /// A snapshot written mid-Collectors-Puzzle carries the round's `puzzle_<id>` run tag —
+    /// but the round engine does not survive a relaunch, so restoring the tag would leave a
+    /// GHOST round owning the sequencer forever (the MwF queue-accepted append, among other
+    /// surfaces, silently refuses while that prefix stands). The queue restores; the tag dies.
+    func testRestoreDropsAPuzzleRunTag() {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        let snap = PlaybackSessionStore.Snapshot(
+            sessionId: "pses_puz",
+            source: .init(kind: PlayHistoryStore.PlaySource.setlist.rawValue,
+                          id: "\(CollectorsPuzzleEngine.runTagPrefix)\(UUID().uuidString)", name: "Round"),
+            queue: [.init(songId: "sng_1", title: "One", artist: "A"),
+                    .init(songId: "sng_2", title: "Two", artist: "A")],
+            index: 0, positionMs: 0, isPlaying: false, updatedAt: 0)
+        seq.restore(from: snap)
+        XCTAssertTrue(seq.isRunning)
+        XCTAssertEqual(seq.queue.count, 2, "the queue itself restores fine")
+        XCTAssertNil(seq.sourceSetlistId, "the dead round's tag must not outlive the relaunch")
         seq.stop()
     }
 

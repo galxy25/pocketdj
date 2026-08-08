@@ -1010,7 +1010,14 @@ final class SetlistPlayer {
                  lengthMs: $0.lengthMs, repeatCount: $0.repeatCount)
         }
         index = min(max(0, snap.index), queue.count - 1)
-        sourceSetlistId = snap.source.id
+        // A Collectors Puzzle run tags the sequencer with `puzzle_<roundId>` — but the round
+        // engine does NOT survive a relaunch, so a restored run-tag is a ghost: it would make
+        // every surface that treats the tag as "a live round owns the sequencer" (the MwF
+        // queue-accepted append, for one) silently refuse forever. The QUEUE restores fine;
+        // the round identity must not.
+        let restoredSourceId = snap.source.id
+        sourceSetlistId = restoredSourceId?.hasPrefix(CollectorsPuzzleEngine.runTagPrefix) == true
+            ? nil : restoredSourceId
         // Reconstruct the run's history origin from the stored kind + name, so plays after
         // the resume are attributed to the same set the pre-kill plays were.
         capturedHistoryContext = (PlayHistoryStore.PlaySource(rawValue: snap.source.kind) ?? .setlist,
