@@ -977,9 +977,15 @@ struct PocketDJApp: App {
         cloudSync.register("game-scores", fileURL: gameScores.syncFileURL) { [weak gameScores] in
             _ = gameScores?.reloadFromDisk() // union-by-run-id — a pull never clobbers local runs
         }
-        cloudSync.register("puzzle-decisions", fileURL: puzzleDecisions.syncFileURL) { [weak puzzleDecisions] in
+        cloudSync.register("puzzle-decisions", fileURL: puzzleDecisions.syncFileURL,
+                           reload: { [weak puzzleDecisions] in
             _ = puzzleDecisions?.reloadFromDisk()
-        }
+        }, applyPayload: { [weak puzzleDecisions] data in
+            // Route the pull's file write through the store's serial writer: an unordered
+            // direct write could be clobbered by an in-flight coalesced snapshot before
+            // reloadFromDisk ever read it (peer rows dropped locally AND, via LWW, in cloud).
+            puzzleDecisions?.applyPulledPayload(data)
+        })
         // ONBOARDING PUSH GATE (R1): until the first-run flow resolves, no push may run —
         // a store file materialized mid-onboarding (an empty flush, an intent-written doc)
         // must never LWW-overwrite a returning user's cloud data. Pulls stay allowed (the

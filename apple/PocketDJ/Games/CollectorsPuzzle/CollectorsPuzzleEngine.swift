@@ -304,7 +304,10 @@ final class CollectorsPuzzleEngine {
         tickerTask?.cancel()
         tickerTask = nil
         if stopAudio, ownsSequencer { sequencer.stop() }
-        decisions.flush()   // land the round's rows before the summary/suspension
+        // Land the round's rows now — WITHOUT blocking the main actor on an MB-scale
+        // encode right as the summary presents. The scenePhase-background flush() still
+        // drains synchronously if a suspension races the write.
+        decisions.flushAsync()
         phase = .finished
         let best = scoreboard.bestScore(.collectorsPuzzle) ?? 0
         isNewHighScore = score > best

@@ -126,6 +126,61 @@ final class PuzzleDecisionStoreTests: XCTestCase {
                        "the pulled row survives the in-flight local save")
     }
 
+    /// The RESIDUAL of the 35abdeb fix: task cancellation cannot retract a block already
+    /// handed to the write queue, so a stale pre-merge snapshot could land AFTER the pull
+    /// (dropping the peer's rows locally, then LWW-pushing the loss to the cloud). The
+    /// write-generation check inside the queued block + the `applyPulledPayload` ordering
+    /// seam close it: the stale block must skip itself.
+    func testStaleEnqueuedWriteSkipsAfterAnOrderedPullMerge() async throws {
+        let url = tempURL()
+        let store = PuzzleDecisionStore(fileURL: url)
+        let round = UUID()
+        store.record(roundId: round, songId: "sng_mine", action: "assigned", at: 2000)
+        XCTAssertTrue(store.hasUnsavedChanges, "the pre-merge snapshot is scheduled")
+        // CloudSync pulls a peer document through the ORDERED seam, then merges.
+        let peer = PuzzleDecisionStore.Decision(
+            id: UUID(), roundId: round, at: 500, songId: "sng_peer", action: "skipped",
+            collectionId: nil, collectionName: nil, positionInRound: nil,
+            settings: nil, originInstallId: "peer")
+        let payload = try JSONEncoder().encode(
+            PuzzleDecisionStore.Document(installId: "peer", decisions: [peer]))
+        store.applyPulledPayload(payload)
+        XCTAssertTrue(store.reloadFromDisk(), "we hold a row the pulled doc lacks → merge-save")
+        XCTAssertEqual(store.decisions.count, 2)
+        // Let the stale coalesced block fire (debounce is 600 ms) — it must write NOTHING.
+        try await Task.sleep(for: .milliseconds(1200))
+        let onDisk = PuzzleDecisionStore(fileURL: url)
+        XCTAssertEqual(Set(onDisk.decisions.map(\.songId)), ["sng_mine", "sng_peer"],
+                       "the stale snapshot never clobbers the merged document")
+    }
+
+    /// Round end uses `flushAsync()`: the rows land promptly (no 600 ms debounce) but the
+    /// main actor never blocks on the MB-scale encode while the summary presents.
+    func testFlushAsyncLandsImmediatelyWithoutTheDebounce() async throws {
+        let url = tempURL()
+        let store = PuzzleDecisionStore(fileURL: url)
+        store.record(roundId: UUID(), songId: "sng_1", action: "assigned")
+        store.flushAsync()
+        // Well inside the 600 ms debounce window: a debounced save could not have landed.
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(store.hasUnsavedChanges)
+        XCTAssertEqual(PuzzleDecisionStore(fileURL: url).decisions.count, 1,
+                       "the async flush skips the debounce entirely")
+    }
+
+    /// A synchronous write right after `flushAsync()` supersedes it — the async block must
+    /// skip itself rather than resurrect the pre-clear rows.
+    func testSaveAfterFlushAsyncWinsTheRace() async throws {
+        let url = tempURL()
+        let store = PuzzleDecisionStore(fileURL: url)
+        store.record(roundId: UUID(), songId: "sng_1", action: "assigned")
+        store.flushAsync()
+        store.clear()   // bumps the generation + writes the empty doc synchronously
+        try await Task.sleep(for: .milliseconds(600))
+        XCTAssertTrue(PuzzleDecisionStore(fileURL: url).decisions.isEmpty,
+                      "the in-flight async flush never lands on top of the clear")
+    }
+
     func testLenientDecode() throws {
         let url = tempURL()
         let good = PuzzleDecisionStore.Decision(

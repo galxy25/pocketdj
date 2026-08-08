@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os
 
 /// The recommendation-engine-readable log of every Collectors Puzzle decision — which
 /// song was ASSIGNED to which collection, SKIPPED, or EXPIRED (played out without the
@@ -58,6 +59,14 @@ final class PuzzleDecisionStore {
     @ObservationIgnored private var pendingSave = false
     @ObservationIgnored private let writeQueue =
         DispatchQueue(label: "com.levi.pocketdj.puzzle-decisions", qos: .utility)
+    /// Monotonic WRITE GENERATION, checked INSIDE every queued coalesced block. Task
+    /// cancellation cannot retract a block already handed to `writeQueue` — so a stale
+    /// snapshot enqueued before a `save()`/pull could land AFTER it and clobber the newer
+    /// document. Every supersession (a newer scheduled save, an immediate `save()`, a
+    /// cloud-pull write, a merge) bumps the generation; a queued block whose captured
+    /// generation is no longer current skips its write. Lock-protected: read from the
+    /// utility queue, bumped from the main actor.
+    @ObservationIgnored private let writeGeneration = OSAllocatedUnfairLock(initialState: 0)
     /// True while a recorded row has not reached disk yet.
     var hasUnsavedChanges: Bool { pendingSave }
 
@@ -134,9 +143,24 @@ final class PuzzleDecisionStore {
         decisions.filter { $0.roundId == roundId }
     }
 
+    /// CloudSync write seam (`Entry.applyPayload`): land the pulled payload through the
+    /// SAME serial queue the coalesced writer uses, bumping the write generation first —
+    /// so a stale enqueued snapshot either lands BEFORE the pull (and is overwritten by
+    /// it) or skips itself on the generation check. Without this ordering, the pull's
+    /// direct file write could be clobbered between write and merge-read, dropping the
+    /// peer's rows locally AND (via the next LWW push) in the cloud.
+    func applyPulledPayload(_ data: Data) {
+        writeGeneration.withLock { $0 &+= 1 }
+        let url = fileURL
+        writeQueue.sync { try? data.write(to: url, options: .atomic) }
+    }
+
     /// Union-by-id merge after a CloudSync pull (conditional save — see PlayHistoryStore).
     @discardableResult
     func reloadFromDisk() -> Bool {
+        // Invalidate any not-yet-run coalesced block before reading: its snapshot predates
+        // this merge, and letting it land afterwards would drop the rows pulled here.
+        writeGeneration.withLock { $0 &+= 1 }
         guard let data = try? Data(contentsOf: fileURL),
               let doc = try? JSONDecoder().decode(Document.self, from: data) else { return false }
         var byId = Dictionary(decisions.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -163,41 +187,64 @@ final class PuzzleDecisionStore {
         save()
     }
 
-    /// Write any pending coalesced save NOW (round end + scenePhase `.background`, the
+    /// Write any pending coalesced save NOW, synchronously (scenePhase `.background`, the
     /// mixSessions/studio flush doctrine — a suspension→kill must not lose the round).
     func flush() {
         guard pendingSave else { return }
         save()
     }
 
+    /// Round-end flush: land the pending rows NOW but WITHOUT blocking the main actor —
+    /// `flush()`'s synchronous drain pays an MB-scale encode right as the summary presents
+    /// (and can queue behind an in-flight coalesced encode on top). The write is enqueued
+    /// immediately (no debounce) on the serial writer; `pendingSave` stays true until it
+    /// lands, so a suspension's synchronous `flush()` still catches a racing kill.
+    func flushAsync() {
+        guard pendingSave else { return }
+        scheduleSave(debounce: false)
+    }
+
     /// Gameplay records arrive ~1/second — and in bursts from the ticker's drift re-sync —
     /// while a full document at the 20k cap is megabytes of JSON. So a burst COALESCES into
     /// one write, and the encode+write runs OFF the main actor on a serial queue (writes
     /// therefore land in schedule order, newest last). `flush()`/`save()` close the
-    /// suspension race by draining that queue synchronously.
-    private func scheduleSave() {
+    /// suspension race by draining that queue synchronously; the write GENERATION closes
+    /// the retraction race (a block already handed to the queue outlives task cancellation,
+    /// so it re-checks currency itself before writing).
+    private func scheduleSave(debounce: Bool = true) {
         pendingSave = true
         saveTask?.cancel()
         let doc = Document(installId: installId, decisions: decisions)  // cheap COW snapshot
         let url = fileURL
         let queue = writeQueue
+        let generation = writeGeneration
+        let gen = generation.withLock { (g: inout Int) -> Int in g &+= 1; return g }
         saveTask = Task { [weak self] in
-            try? await Task.sleep(for: Self.saveDebounce)
-            guard !Task.isCancelled else { return }
+            if debounce {
+                try? await Task.sleep(for: Self.saveDebounce)
+                guard !Task.isCancelled else { return }
+            }
             await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
-                queue.async { Self.write(doc, to: url); c.resume() }
+                queue.async {
+                    // Superseded (a newer save, a save()/clear(), or a cloud pull/merge
+                    // bumped the generation) ⇒ this snapshot is stale: write nothing.
+                    if generation.withLock({ $0 }) == gen { Self.write(doc, to: url) }
+                    c.resume()
+                }
             }
             guard !Task.isCancelled else { return }   // a newer save superseded this one
             self?.pendingSave = false
         }
     }
 
-    /// Immediate, ordered write (flush / clear / post-merge). `sync` on the serial queue so
-    /// it lands AFTER any already-enqueued coalesced write, never before it.
+    /// Immediate, ordered write (flush / clear / post-merge). Bumps the generation so any
+    /// already-enqueued coalesced block skips itself, then writes `sync` on the serial
+    /// queue so this write lands AFTER any block that is already mid-flight.
     private func save() {
         saveTask?.cancel()
         saveTask = nil
         pendingSave = false
+        writeGeneration.withLock { $0 &+= 1 }
         let doc = Document(installId: installId, decisions: decisions)
         let url = fileURL
         writeQueue.sync { Self.write(doc, to: url) }
