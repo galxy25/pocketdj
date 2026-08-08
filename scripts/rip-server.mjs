@@ -652,8 +652,13 @@ function cancelOne(songId, canceledAlbums) {
   const song = songId && songById.get(songId);
   if (!song) return 'notFound';
   if (manifest[songId]) return 'alreadyDone'; // already ripped (mirrors acceptRip 171)
-  // digital/cloud uses songId; analog vinyl uses albumId — try both.
-  const keys = song.albumId ? [songId, song.albumId] : [songId];
+  // digital/cloud uses songId; analog vinyl uses albumId — try both. EXCEPT variants:
+  // a variant row spreads its base (an ANALOG song's variant keeps the base's albumId),
+  // but acceptRip always keys variant jobs per-song (sourceType 'digital' → resourceKey
+  // = songId) — so an albumId hit here would by construction be a DIFFERENT job (the
+  // whole-album vinyl rip). Falling through would kill that unrelated capture when a
+  // collection Stop carries a variant id whose own job already failed/canceled.
+  const keys = song.albumId && !song.variant ? [songId, song.albumId] : [songId];
   let jobId = null;
   for (const k of keys) { const id = inflight.get(k); if (id && jobs.has(id)) { jobId = id; break; } }
   if (!jobId) return 'notFound';
@@ -2427,10 +2432,12 @@ const server = http.createServer(async (req, res) => {
     const results = ids.map((songId, i) => {
       let s = status[i];
       // Album-first fill: a sibling that missed its own lookup but whose album was canceled
-      // in THIS request still reports canceled.
+      // in THIS request still reports canceled. `!song.variant`: a variant row inherits its
+      // base's analog albumId but its jobs are per-song — it is never covered by an album
+      // cancellation, so it must not report 'canceled' off one.
       if (s === 'notFound') {
         const song = songById.get(songId);
-        if (song && !manifest[songId] && song.albumId && canceledAlbums.has(song.albumId)) s = 'canceled';
+        if (song && !song.variant && !manifest[songId] && song.albumId && canceledAlbums.has(song.albumId)) s = 'canceled';
       }
       return { songId, status: s };
     });
