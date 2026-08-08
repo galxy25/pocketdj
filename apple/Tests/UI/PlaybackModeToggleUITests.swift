@@ -33,14 +33,37 @@ final class PlaybackModeToggleUITests: XCTestCase {
         let app = makeApp(section: "Playlists")
         app.launch()
 
-        // Open the seeded playlist (PDJ_SEED_COLLECTIONS seeds one). Its row id is dynamic,
-        // so tap the first playlist row; fall back to skipping if the seed shape changed.
-        let firstPlaylist = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH 'playlist-'")).firstMatch
-        guard firstPlaylist.waitForExistence(timeout: 20) else {
-            throw XCTSkip("seeded playlist row not found — seed shape changed.\n\(app.debugDescription)")
+        // Open the seeded playlist. PDJ_SEED_COLLECTIONS creates exactly one, named "Seeded Set"
+        // (CollectionsStore.seedForUITestsIfRequested), with a dynamic `pls_…` id.
+        //
+        // Match on the NAME first and the `playlist-pls_` id prefix second. Two separate traps
+        // are being avoided here, both of which previously left this test asserting nothing:
+        //  • `identifier BEGINSWITH 'playlist-'` (the original) also matches
+        //    `playlist-mode-picker`, the Yours|Shared Picker, which sits EARLIER in the tree.
+        //    firstMatch resolved to the picker, the tap went there, no detail was ever pushed,
+        //    and the toolbar assertion then failed — reading for months as "playback-mode is
+        //    missing on macOS" when it was the selector.
+        //  • Tightening that to `playlist-pls_` stopped matching anything at all on macOS and the
+        //    test began SKIPPING, which is no better: a green suite with a test that never runs.
+        //
+        // So there is deliberately NO XCTSkip fallback any more. If the row cannot be found the
+        // test FAILS and prints the tree, because "can't find the seeded playlist on the
+        // Playlists screen" is a real problem worth seeing, not something to route around.
+        let byName = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "label CONTAINS %@ OR value CONTAINS %@",
+                                  "Seeded Set", "Seeded Set")).firstMatch
+        let byId = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'playlist-pls_'")).firstMatch
+        let row: XCUIElement
+        if byName.waitForExistence(timeout: 20) {
+            row = byName
+        } else if byId.waitForExistence(timeout: 5) {
+            row = byId
+        } else {
+            XCTFail("seeded playlist row not found on the Playlists screen.\n\(app.debugDescription)")
+            return
         }
-        firstPlaylist.tap()
+        row.tap()
 
         // The detail toolbar now carries the playback-mode toggle. It must be present + live.
         let toggle = app.el("playback-mode")

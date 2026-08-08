@@ -45,13 +45,10 @@ final class SettingsUITests: XCTestCase {
 
     /// Drive a SwiftUI Form Toggle to `on`. A center `.tap()` sometimes lands on the label and
     /// misses the switch, so if the value doesn't flip, tap the trailing thumb explicitly.
+    /// Reads state via `isToggledOn`, which normalizes iOS's "0"/"1" String against the
+    /// NSNumber a macOS CheckBox reports (a `value as? String` cast is nil on macOS).
     private func setToggle(_ toggle: XCUIElement, on: Bool) {
-        let want = on ? "1" : "0"
-        guard (toggle.value as? String) != want else { return }
-        toggle.tap()
-        if (toggle.value as? String) != want {
-            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
-        }
+        toggle.setToggled(on)
     }
 
     /// MISC4: capturing a debug session (on → off) archives it to the persisted list, and
@@ -62,14 +59,14 @@ final class SettingsUITests: XCTestCase {
         let debug = app.buttons["settings-debug"]
         XCTAssertTrue(reveal(app, debug), "the Debug navigation link")
         debug.tap()
-        let toggle = app.switches["debug-capture-toggle"].firstMatch
+        let toggle = app.toggleEl("debug-capture-toggle")
         XCTAssertTrue(toggle.waitForExistence(timeout: 10), "the Debug capture toggle")
         let emptyState = app.staticTexts["debug-no-sessions"]
         XCTAssertTrue(emptyState.waitForExistence(timeout: 5), "no saved sessions yet")
         // Turn capture ON and confirm it engaged (the switch value flips to "1").
         setToggle(toggle, on: true)
         snap("debug-capturing")
-        XCTAssertEqual(toggle.value as? String, "1", "capture engaged")
+        XCTAssertEqual(toggle.isToggledOn, true, "capture engaged")
         // Turn capture OFF ⇒ the frozen session is archived (the empty state clears).
         setToggle(toggle, on: false)
         snap("debug-after-stop")
@@ -135,11 +132,15 @@ final class SettingsUITests: XCTestCase {
     func testRipFromCloudTogglePresent() {
         let app = launch()
         XCTAssertTrue(app.buttons["settings-add-source"].waitForExistence(timeout: 15))
-        let toggle = app.switches["settings-rip-from-cloud"]
+        let toggle = app.toggleEl("settings-rip-from-cloud")
         XCTAssertTrue(reveal(app, toggle), "rip-from-cloud toggle should be in the Rip server section")
+        #if os(macOS)
+        XCTAssertTrue(toggle.isEnabled, "the toggle should be live")
+        #else
         XCTAssertTrue(toggle.isHittable, "the toggle should be tappable")
+        #endif
         // Defaults off (a fresh PDJ_USE_FIXTURE store).
-        XCTAssertEqual(toggle.value as? String, "0")
+        XCTAssertEqual(toggle.isToggledOn, false)
     }
 
     func testEditsExportImportPresent() {

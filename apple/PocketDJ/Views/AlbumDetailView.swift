@@ -152,14 +152,29 @@ struct AlbumDetailView: View {
             TrackRowHeader()
             ForEach(Array(tracks.enumerated()), id: \.element.id) { idx, song in
                 VStack(spacing: 0) {
-                    NavigationLink(value: song) {
-                        TrackRow(index: song.trackNumber ?? (idx + 1), song: song)
-                            .background(idx.isMultiple(of: 2) ? Color.clear : Theme.bgRaised.opacity(0.4))
-                            .contentShape(Rectangle())
+                    // The ♥ and the transport are SIBLINGS of the NavigationLink, never inside
+                    // its label. Nesting them was a real macOS bug: AppKit collapses a link's
+                    // label into one accessibility element, so `favorite-toggle-…` / `row-play-…`
+                    // vanished from the tree entirely and a click in that part of the row fell
+                    // through to the link and opened the song instead of favoriting it. (iOS
+                    // tolerated the nesting, which is why it went unnoticed.) Keeping them
+                    // outside costs nothing and makes the row behave the same on every platform.
+                    HStack(spacing: 10) {
+                        NavigationLink(value: song) {
+                            TrackRowInfo(index: song.trackNumber ?? (idx + 1), song: song)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("track-\(song.id)")
+                        .contextMenu { QueueMenuItems(songs: [song]) }
+
+                        FavoriteToggle(songId: song.id, appleMusicId: song.appleMusicId)
+                        RowTransport(song: (id: song.id, title: song.name, artist: song.artist),
+                                     startMs: nil)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityIdentifier("track-\(song.id)")
-                    .contextMenu { QueueMenuItems(songs: [song]) }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(idx.isMultiple(of: 2) ? Color.clear : Theme.bgRaised.opacity(0.4))
                     // Inline slide-out player below this track when it's the one playing.
                     InlinePlayerSlot(songId: song.id)
                 }
@@ -238,7 +253,10 @@ private struct TrackRowHeader: View {
     }
 }
 
-private struct TrackRow: View {
+/// The informational columns of a track row — #, title, BPM, key, time. The ♥ and the
+/// transport are deliberately NOT here: they are laid out beside this view so they stay
+/// outside the row's `NavigationLink` label (see `trackTable`).
+private struct TrackRowInfo: View {
     let index: Int
     let song: IndexSong
 
@@ -284,15 +302,6 @@ private struct TrackRow: View {
                 .font(.callout.monospacedDigit())
                 .foregroundStyle(Theme.fgDim)
                 .frame(width: 48, alignment: .trailing)
-
-            // Same ♥ + play / download controls as the browser + collection rows. The ♥ is
-            // intrinsically sized (it gets no fixed-width column) so the table's #/Title/BPM/
-            // Key/Time rhythm — and its header alignment — stay exactly as they were.
-            FavoriteToggle(songId: song.id, appleMusicId: song.appleMusicId)
-
-            RowTransport(song: (id: song.id, title: song.name, artist: song.artist), startMs: nil)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
     }
 }

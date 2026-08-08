@@ -44,14 +44,20 @@ final class OnboardingUITests: XCTestCase {
 
         // Stage 3 — all three shared catalogs preselected; unticking ALL is now allowed (the
         // own-library-only public configuration) and the note explains what a zero-pick means.
-        let vinyl = app.switches["onboarding-source-vinyl"].firstMatch
+        // `toggleEl` not `switches[...]`: a SwiftUI `Toggle` is a Switch on iOS but a CheckBox on
+        // macOS, so a `.switches` query matches nothing there. Same control either way.
+        let vinyl = app.toggleEl("onboarding-source-vinyl")
         XCTAssertTrue(vinyl.waitForExistence(timeout: 5), "stage 3 should show source cards")
-        let digital = app.switches["onboarding-source-digital"].firstMatch
-        let streaming = app.switches["onboarding-source-streaming"].firstMatch
+        let digital = app.toggleEl("onboarding-source-digital")
+        let streaming = app.toggleEl("onboarding-source-streaming")
         vinyl.tap(); digital.tap(); streaming.tap()
         let note = app.any("onboarding-own-library-note")
         XCTAssertTrue(note.waitForExistence(timeout: 5))
-        XCTAssertTrue(note.label.contains("No shared catalogs"),
+        // Read the text from `label` OR `value`. MEASURED on macOS: the element is found and the
+        // copy is on screen, but `label` does not contain it — this multi-line, centred `Text`
+        // carries its string in `value` there, while on iOS it is in `label`. (Same asymmetry as
+        // the History activity headline; short single-line rows keep using `label` on both.)
+        XCTAssertTrue(note.visibleText.contains("No shared catalogs"),
                       "zero picks should explain the own-library-only mode")
         XCTAssertTrue(app.el("onboarding-continue").isEnabled,
                       "Continue stays enabled with zero shared catalogs")

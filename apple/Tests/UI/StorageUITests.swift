@@ -72,9 +72,9 @@ final class StorageUITests: XCTestCase {
         let app = launch()
         openStorage(app)
         XCTAssertTrue(app.staticTexts["storage-usage-burns"].waitForExistence(timeout: 10))
-        let back = app.navigationBars.buttons.element(boundBy: 0)
-        XCTAssertTrue(back.waitForExistence(timeout: 5), "the pushed manager must have a back button")
-        back.tap()
+        // `goBack()` not `navigationBars.buttons[0]`: macOS has no navigationBars at all, so the
+        // old lookup could never resolve there — the back chevron lives in the window toolbar.
+        XCTAssertTrue(app.goBack(), "the pushed manager must have a back button")
         // The root Form pops back still scrolled to where we left — assert on the Storage
         // row (it was on-screen when tapped), not the top-of-form rows (lazy → absent).
         XCTAssertTrue(app.buttons["settings-storage"].waitForExistence(timeout: 10),
