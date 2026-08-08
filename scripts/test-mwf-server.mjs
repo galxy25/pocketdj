@@ -79,8 +79,8 @@ async function waitHealthyAt(port, timeoutMs = 5000) {
   throw new Error('server did not become healthy');
 }
 
-async function reqAt(port, method, path, { token, bearer, body } = {}) {
-  const headers = {};
+async function reqAt(port, method, path, { token, bearer, body, headers: extraHeaders } = {}) {
+  const headers = { ...(extraHeaders || {}) };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (token) headers['Authorization'] = `Bearer ${token}`;
   if (bearer) headers['Authorization'] = `Bearer ${bearer}`;
@@ -302,26 +302,51 @@ test('a hostile member name round-trips ESCAPED into the rendered landing page',
     bearer: s.leaderKey, body: { action: 'accepted' },
   });
 
-  // 1. Nothing executable reaches the rendered page (the server neutralizes on the way in).
+  // 1. Nothing executable reaches the rendered page: the server's escHtml entity-escapes
+  //    every template slot (escape-on-render — a destructive strip-on-ingest broke real
+  //    titles, see the segue test below).
   const page = readFileSync(join(HOME, 'dry-run', 'jukebox', 'mwf', s.sessionId, 'index.html'), 'utf8');
   assert.ok(!page.includes('<img src=x'), 'no raw tag in the rendered page');
-  assert.ok(page.includes('Party img src=x onerror=alert(1)'), 'the name still renders, minus the brackets');
+  assert.ok(page.includes('Party &lt;img src=x onerror=alert(1)&gt;'),
+            'the name renders FULLY, entity-escaped');
 
-  // 2. The POLLED payload is neutralized server-side, so no consumer sees a live tag.
+  // 2. The POLLED payload carries the text VERBATIM (JSON is not HTML — fidelity is the
+  //    contract; escaping belongs to the renderers, and every consumer escapes).
   await wait(1300); // the join/suggest publish is debounced 1 s
-  const pub = readMwfPublicState(s.sessionId);
-  const pubRaw = JSON.stringify(pub);
-  assert.ok(!pubRaw.includes('<') && !pubRaw.includes('>'), 'state.json carries no angle brackets at all');
-  const victim = pub.members.find((m) => m.name.includes('img src=x'));
-  assert.ok(victim, 'the member name still round-trips (minus the brackets)');
-  assert.equal(pub.collection[0].title, 'img src=x onerror=alert(1)');
+  const victim = readMwfPublicState(s.sessionId).members.find((m) => m.name === hostile);
+  assert.ok(victim, 'the member name round-trips exactly');
+  assert.equal(readMwfPublicState(s.sessionId).collection[0].title, hostile);
 
-  // 3. …and the page's renderer escapes what it does receive: the exact leaderboard/
+  // 3. …and the page's renderer escapes what it receives: the exact leaderboard/
   //    collection concatenation cannot produce an executable tag.
   const esc = templateEsc();
   const row = '<span class="grow t">' + esc(victim.name) + '</span>' +
-              '<span class="t">' + esc(pub.collection[0].title) + '</span>';
+              '<span class="t">' + esc(readMwfPublicState(s.sessionId).collection[0].title) + '</span>';
   assert.ok(!/<(img|svg|script|iframe)/i.test(row), `rendered row stays inert: ${row}`);
+});
+
+test('a segue title with angle brackets survives INTACT for catalog matching', async () => {
+  // "Scarlet Begonias > Fire on the Mountain" — the '>' is part of the real title. The old
+  // ingest strip mangled it ("Scarlet Begonias  Fire on the Mountain"), which broke the
+  // leader-side catalog match of exactly these suggestions. Fidelity end-to-end now.
+  const segue = 'Scarlet Begonias > Fire on the Mountain';
+  const s = await createSession({ settings: { acceptOutsideTurn: true } });
+  const sug = await req('POST', `/mwf/${s.sessionId}/suggest`, {
+    bearer: s.memberKey, body: { title: segue, artist: 'Grateful Dead' },
+  });
+  assert.equal(sug.status, 200);
+  const dec = await req('POST', `/mwf/${s.sessionId}/suggestions/${sug.json.suggestionId}/decision`, {
+    bearer: s.leaderKey, body: { action: 'accepted', match: { title: segue, artist: 'Grateful Dead' } },
+  });
+  assert.equal(dec.status, 200);
+  await wait(1300);
+  const pub = readMwfPublicState(s.sessionId);
+  assert.equal(pub.suggestions.find((g) => g.id === sug.json.suggestionId).title, segue,
+               'the suggestion title is byte-identical');
+  assert.equal(pub.collection[0].title, segue, 'the accepted match keeps the segue too');
+  // And the renderer still neutralizes it on the way INTO html.
+  const esc = templateEsc();
+  assert.equal(esc(segue), 'Scarlet Begonias &gt; Fire on the Mountain');
 });
 
 test('a session PERSISTED with hostile text (pre-fix bytes) still renders ESCAPED', async () => {
@@ -627,6 +652,156 @@ test('restart: session, members, suggestions, scores, deadline reload; jukebox l
   // A member key still works for a NEW suggestion after restart.
   const sug2 = await req('POST', `/mwf/${s.sessionId}/suggest`, { bearer: b.json.memberKey, body: { title: 'Again', artist: 'P' } });
   assert.equal(sug2.status, 200);
+});
+
+// ---------------- hardening: credentials, rate-limit keys, body caps, storage caps ----------------
+
+test('leaderKey/memberKey in the URL query are REFUSED — headers only (no secrets in access logs)', async () => {
+  const s = await createSession();
+  const memberQuery = await req('GET', `/mwf/${s.sessionId}/state?memberKey=${s.memberKey}`);
+  assert.equal(memberQuery.status, 401, 'a query-string memberKey is not a credential');
+  const leaderQuery = await req('POST', `/mwf/${s.sessionId}/config?leaderKey=${s.leaderKey}`,
+                                { body: { turnSeconds: 90 } });
+  assert.equal(leaderQuery.status, 401, 'a query-string leaderKey is not a credential');
+  const viaHeader = await req('GET', `/mwf/${s.sessionId}/state`, { bearer: s.memberKey });
+  assert.equal(viaHeader.status, 200, 'the Authorization bearer still authenticates');
+});
+
+test('a forged leftmost X-Forwarded-For cannot mint fresh rate-limit windows', async () => {
+  await withServer({ JUKEBOX_IP_WINDOW_MAX: '2', JUKEBOX_IP_WINDOW_MS: '60000' }, async (port) => {
+    const created = await reqAt(port, 'POST', '/mwf', {
+      token: TOKEN, body: { theme: 'Spoofed', leaderName: 'Ada', settings: { turnSeconds: 60 } },
+    });
+    const s = created.json;
+    // The funnel model: the client controls the LEFTMOST entries; the trusted hop appends
+    // the real address LAST. Rotating the forged leftmost value must not reset the window.
+    const join = (n, forged) => reqAt(port, 'POST', `/mwf/${s.sessionId}/join`, {
+      body: { name: n, joinSecret: `spoof-${n}` },
+      headers: { 'X-Forwarded-For': `${forged}, 10.0.0.7` },
+    });
+    assert.equal((await join('a', '9.9.9.1')).status, 200);
+    assert.equal((await join('b', '9.9.9.2')).status, 200);
+    const third = await join('c', '9.9.9.3');
+    assert.equal(third.status, 429,
+      'the limiter keys on the trusted rightmost hop, never the attacker-chosen leftmost');
+  });
+});
+
+test('oversized bodies answer 413 on the public routes and create nothing', async () => {
+  await withServer({ JUKEBOX_MAX_BODY_BYTES: '1024' }, async (port) => {
+    const created = await reqAt(port, 'POST', '/mwf', {
+      token: TOKEN, body: { theme: 'Bounded', leaderName: 'Ada', settings: { turnSeconds: 60 } },
+    });
+    const s = created.json;
+    const big = 'x'.repeat(4096);
+    const joined = await reqAt(port, 'POST', `/mwf/${s.sessionId}/join`,
+                               { body: { name: big, joinSecret: 'j1' } });
+    assert.equal(joined.status, 413, 'the unauthenticated join buffers nothing past the cap');
+    const st = await reqAt(port, 'GET', `/mwf/${s.sessionId}/state`, { bearer: s.memberKey });
+    assert.equal(st.json.members.length, 1, 'no ghost member from the oversized body');
+    // The pre-existing public jukebox guest route is capped by the same reader.
+    const jb = (await reqAt(port, 'POST', '/jukebox', { token: TOKEN, body: { name: 'JB' } })).json;
+    const guest = await reqAt(port, 'POST', `/jukebox/${jb.jukeboxId}/request`,
+                              { body: { title: big, clientId: 'g1' } });
+    assert.equal(guest.status, 413);
+    const polled = await reqAt(port, 'GET', `/jukebox/${jb.jukeboxId}/requests?since=0`, { bearer: jb.hostKey });
+    assert.equal(polled.json.requests.length, 0, 'no request row from the oversized body');
+    // Normal-sized traffic is untouched.
+    const ok = await reqAt(port, 'POST', `/mwf/${s.sessionId}/join`, { body: { name: 'ok', joinSecret: 'j2' } });
+    assert.equal(ok.status, 200);
+  });
+});
+
+test('suggestion storage caps: per-member 429; per-session evicts rejected-then-pending, never accepted', async () => {
+  await withServer({ JUKEBOX_MWF_SUGGEST_MAX_PER_MEMBER: '3',
+                     JUKEBOX_MWF_SUGGEST_MAX_PER_SESSION: '3' }, async (port, home) => {
+    const created = await reqAt(port, 'POST', '/mwf', {
+      token: TOKEN, body: { theme: 'Capped feed', leaderName: 'Ada',
+                            settings: { turnSeconds: 60, acceptOutsideTurn: true } },
+    });
+    const s = created.json;
+    const suggest = (bearer, title) =>
+      reqAt(port, 'POST', `/mwf/${s.sessionId}/suggest`, { bearer, body: { title, artist: 'X' } });
+    const sgFile = (id) => join(home, 'mwf', s.sessionId, 'suggestions', `${id}.json`);
+
+    const a1 = (await suggest(s.memberKey, 'A1')).json.suggestionId;
+    const a2 = (await suggest(s.memberKey, 'A2')).json.suggestionId;
+    const a3 = (await suggest(s.memberKey, 'A3')).json.suggestionId;
+    // Per-member ceiling: the 4th from the same member is refused outright.
+    const fourth = await suggest(s.memberKey, 'A4');
+    assert.equal(fourth.status, 429);
+    assert.match(fourth.json.error, /suggestion limit/);
+    // Reject A1, then a second member pushes the session past the cap → the REJECTED row
+    // is evicted first (map + file), never an accepted one.
+    await reqAt(port, 'POST', `/mwf/${s.sessionId}/suggestions/${a1}/decision`,
+                { bearer: s.leaderKey, body: { action: 'rejected' } });
+    await reqAt(port, 'POST', `/mwf/${s.sessionId}/suggestions/${a2}/decision`,
+                { bearer: s.leaderKey, body: { action: 'accepted' } });
+    const b = await reqAt(port, 'POST', `/mwf/${s.sessionId}/join`, { body: { name: 'B', joinSecret: 'jb' } });
+    const b1 = (await suggest(b.json.memberKey, 'B1')).json.suggestionId;
+    let st = (await reqAt(port, 'GET', `/mwf/${s.sessionId}/state`, { bearer: s.memberKey })).json;
+    let ids = st.suggestions.map((g) => g.id);
+    assert.ok(!ids.includes(a1), 'the rejected row was evicted first');
+    assert.ok(ids.includes(a2) && ids.includes(a3) && ids.includes(b1), 'accepted + newer rows survive');
+    assert.ok(!existsSync(sgFile(a1)), 'the evicted suggestion file is unlinked');
+    // Ada is back under her ceiling (A1 evicted) — her next push evicts the OLDEST PENDING.
+    const a5 = (await suggest(s.memberKey, 'A5')).json.suggestionId;
+    st = (await reqAt(port, 'GET', `/mwf/${s.sessionId}/state`, { bearer: s.memberKey })).json;
+    ids = st.suggestions.map((g) => g.id);
+    assert.ok(!ids.includes(a3), 'with no rejected rows left, the oldest PENDING goes');
+    assert.ok(ids.includes(a2), 'the accepted row is NEVER evicted (it is the collection)');
+    assert.ok(ids.includes(b1) && ids.includes(a5));
+    assert.ok(!existsSync(sgFile(a3)));
+    assert.equal(st.collection.length, 1, 'the session collection is intact');
+  });
+});
+
+test('an over-cap persisted roster still rotates within the PUBLISHED members', async () => {
+  // A session persisted by an older build (or an env cap lowered between restarts) can
+  // carry more members than the cap. The published members[] is capped — the turn pointer
+  // must never name a member outside that list (guests would render an unknown "whose
+  // turn" while a hidden member burns an invisible slot).
+  const home = mkdtempSync(join(tmpdir(), 'mwf-overcap-'));
+  const id = 'overcap2';
+  const member = (n) => ({ memberId: `mb_${n}`, memberKey: `key_${n}`, name: `P${n}`,
+                           clientId: null, profileId: null, joinHash: null, joinedAt: n,
+                           deviceToken: null, devicePlatform: null });
+  mkdirSync(join(home, 'mwf', id), { recursive: true });
+  writeFileSync(join(home, 'mwf', id, 'session.json'), JSON.stringify({
+    id, name: 'Over-cap', theme: 'T', leaderKey: 'lk_over',
+    createdAt: Date.now(), expiresAt: Date.now() + 3_600_000, ended: false,
+    settings: { turnSeconds: 60, acceptOutsideTurn: false, turnEndsOnFirstSuggestion: true },
+    members: [member(1), member(2), member(3)],
+    turn: { index: 2, deadline: Date.now() + 60_000 },   // the OLD rotation: index 2 ⇒ hidden mb_3
+    seqCounter: 0,
+  }));
+  const port = await freePort();
+  const c = spawn(process.execPath, [SERVER], {
+    env: {
+      ...process.env,
+      JUKEBOX_PORT: String(port), JUKEBOX_HOME: home, JUKEBOX_TOKEN: TOKEN, JUKEBOX_DRY_RUN: '1',
+      JUKEBOX_MWF_MIN_TURN_S: '1', JUKEBOX_MWF_SUGGEST_GAP_MS: '0', JUKEBOX_MWF_MAX_MEMBERS: '2',
+      APNS_KEY_FILE: '', APNS_KEY_ID: '', APNS_TEAM_ID: '',
+    },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  try {
+    await waitHealthyAt(port);
+    for (let i = 0; i < 4; i++) {
+      const st = (await reqAt(port, 'GET', `/mwf/${id}/state`, { bearer: 'key_1' })).json;
+      const publishedIds = st.members.map((m) => m.memberId);
+      assert.equal(publishedIds.length, 2, 'the published roster is capped');
+      assert.ok(publishedIds.includes(st.turn.memberId),
+        `turn.memberId ${st.turn.memberId} must be in the published roster (round ${i})`);
+      // Advance the rotation: the on-turn member suggests (turnEndsOnFirstSuggestion).
+      const key = st.turn.memberId.replace('mb_', 'key_');
+      const sug = await reqAt(port, 'POST', `/mwf/${id}/suggest`,
+                              { bearer: key, body: { title: `S${i}`, artist: 'X' } });
+      assert.equal(sug.status, 200);
+    }
+  } finally {
+    c.kill('SIGKILL');
+  }
 });
 
 // ---------------- jukebox regression (same server binary) ----------------
