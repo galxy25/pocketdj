@@ -24,11 +24,19 @@ struct AddToCollectionView: View {
     @Environment(PlaylistAppleMusicSync.self) private var playlistSync: PlaylistAppleMusicSync?
     /// Optional-degrade too — nil (or engine off) just hides the Suggested section.
     @Environment(RecommendationService.self) private var recEngine: RecommendationService?
+    /// Optional-degrade (previews/tests render this sheet standalone). Only used to park the
+    /// app-wide ⌘A select-all shadow while the search field has focus — see `searchField`.
+    @Environment(RowSelection.self) private var rowSelection: RowSelection?
     @Environment(\.dismiss) private var dismiss
     let item: Item
 
     @State private var newPocket = ""
     @State private var newPlaylist = ""
+    /// Fuzzy filter over every collection this sheet lists (Levi 2026-08). Empty ⇒ the sheet
+    /// is exactly what it was; non-empty ⇒ each section keeps only the names that match and
+    /// orders them best-first (`FuzzyMatch`, so "80snght" finds "80s Night").
+    @State private var search = ""
+    @FocusState private var searchFocused: Bool
     /// Total plays for a performance item before the collection advances (spec: repeat count).
     /// Studio items only; 1 = normal single play. Applied to whichever target is tapped.
     @State private var repeatCount = 1
@@ -72,6 +80,85 @@ struct AddToCollectionView: View {
     }
     private var sortedPlaylists: [Playlist] {
         collections.playlists.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    // MARK: - Fuzzy search (filters every listed collection by name)
+
+    /// A query is "on" only once it has a non-whitespace character — a field holding a space
+    /// must not empty the sheet.
+    private var isSearching: Bool { !search.trimmingCharacters(in: .whitespaces).isEmpty }
+
+    /// EVERY section that lists a target runs through the same filter, so a query can never
+    /// leave a non-matching row stranded above the matches. `FuzzyMatch.rank` returns the
+    /// input untouched for an empty query, which is what keeps the no-search sheet identical
+    /// (A–Z pockets/playlists, MRU-ordered Recent, engine-ordered Suggested).
+    private var filteredPockets: [Pocket] {
+        FuzzyMatch.rank(sortedPockets, query: search) { $0.name }
+    }
+    private var filteredPlaylists: [Playlist] {
+        FuzzyMatch.rank(sortedPlaylists, query: search) { $0.name }
+    }
+    private var filteredSourcePlaylists: [SourcePlaylist] {
+        FuzzyMatch.rank(sourcePlaylists, query: search) { $0.name }
+    }
+    /// Recent/Suggested rows are named by the STORE (`lastTargetLabel`), not by the target.
+    private func filterTargets(_ targets: [AddTarget]) -> [AddTarget] {
+        FuzzyMatch.rank(targets, query: search) { collections.lastTargetLabel($0) ?? "" }
+    }
+    private var filteredRecentTargets: [AddTarget] { filterTargets(recentTargets) }
+    private var filteredSuggestedTargets: [AddTarget] { filterTargets(suggestedTargets) }
+
+    /// Nothing anywhere matches the query — the sheet says so instead of looking broken.
+    /// (The "New pocket"/"New playlist" rows stay on screen: not finding it is exactly when
+    /// you want to make it.)
+    private var hasNoMatches: Bool {
+        isSearching && filteredPockets.isEmpty && filteredPlaylists.isEmpty
+            && filteredSourcePlaylists.isEmpty && filteredRecentTargets.isEmpty
+            && filteredSuggestedTargets.isEmpty
+    }
+
+    /// Pinned above the list (a `safeAreaInset`, not a Section — a Section header scrolls
+    /// away, and the field has to stay reachable while you scan a long list).
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass").foregroundStyle(Theme.fgDim)
+            TextField("Filter playlists and pockets", text: $search)
+                .textFieldStyle(.plain)
+                .focused($searchFocused)
+                #if os(iOS)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.done)
+                #endif
+                .accessibilityIdentifier("add-search-field")
+            if !search.isEmpty {
+                Button { search = ""; searchFocused = true } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.fgDim)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("add-search-clear")
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .background(Theme.bgRaised)
+        .overlay(alignment: .bottom) { Divider().overlay(Theme.border) }
+        // ⌘A belongs to the FIELD while it has focus. The app-wide select-all shadow
+        // (RootView) is present whenever a selectable song list is registered — which it is,
+        // because this sheet is presented FROM one — so without parking it here, ⌘A in this
+        // field would re-select every song in the list behind the sheet. Same seam BrowseView
+        // uses for its own search field.
+        .onChange(of: searchFocused) { _, focused in rowSelection?.textEntryFocused = focused }
+        .onDisappear { rowSelection?.textEntryFocused = false }
+    }
+
+    @ViewBuilder private var noMatchesSection: some View {
+        if hasNoMatches {
+            Section {
+                Text("No playlists or pockets match “\(search.trimmingCharacters(in: .whitespaces))”.")
+                    .font(.callout).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("add-search-no-matches")
+            }
+        }
     }
 
     var body: some View {
@@ -122,9 +209,9 @@ struct AddToCollectionView: View {
                 // SUGGESTED (recommendation engine): the server's collection matches for this
                 // song, above Recent. Deduped against Recent by (kind,id); hidden when the
                 // engine is off, the song has no suggestions, or none still resolve locally.
-                if !suggestedTargets.isEmpty {
+                if !filteredSuggestedTargets.isEmpty {
                     Section("Suggested") {
-                        ForEach(Array(suggestedTargets.enumerated()), id: \.offset) { idx, target in
+                        ForEach(Array(filteredSuggestedTargets.enumerated()), id: \.offset) { idx, target in
                             Button { toggleTarget(target) } label: {
                                 HStack {
                                     Image(systemName: target.kind == .pocket ? "rectangle.stack" : "music.note.list")
@@ -143,9 +230,9 @@ struct AddToCollectionView: View {
                 // RECENT quick-add (F11): the last few collections you added to, most-recent
                 // first — one tap re-adds. Supersedes the single "Last used" row. Filtered to
                 // targets that still RESOLVE (a deleted collection drops out) and capped at 3.
-                if !recentTargets.isEmpty {
+                if !filteredRecentTargets.isEmpty {
                     Section("Recent") {
-                        ForEach(Array(recentTargets.enumerated()), id: \.offset) { idx, target in
+                        ForEach(Array(filteredRecentTargets.enumerated()), id: \.offset) { idx, target in
                             Button { toggleTarget(target) } label: {
                                 HStack {
                                     Image(systemName: target.kind == .pocket ? "rectangle.stack" : "music.note.list")
@@ -163,7 +250,7 @@ struct AddToCollectionView: View {
                 }
 
                 Section {
-                    ForEach(sortedPockets) { pocket in
+                    ForEach(filteredPockets) { pocket in
                         Button { togglePocket(pocket) } label: {
                             HStack {
                                 Label(pocket.name, systemImage: "rectangle.stack")
@@ -173,7 +260,7 @@ struct AddToCollectionView: View {
                         }
                         .accessibilityIdentifier("add-pocket-\(pocket.id)")
                     }
-                    newRow("New pocket", text: $newPocket) { name in
+                    newRow("New pocket", idKind: "pocket", text: $newPocket) { name in
                         let p = collections.createPocket(name)
                         addTo(AddTarget(kind: .pocket, id: p.id))
                     }
@@ -184,7 +271,7 @@ struct AddToCollectionView: View {
                 }
 
                 Section {
-                    ForEach(sortedPlaylists) { pl in
+                    ForEach(filteredPlaylists) { pl in
                         // Tap toggles WHOLE-playlist membership: add lands in the default chapter
                         // (sequences[0]), remove clears the item from every chapter. The per-chapter
                         // rows below add to a specific chapter when you want one.
@@ -211,7 +298,7 @@ struct AddToCollectionView: View {
                             }
                         }
                     }
-                    newRow("New playlist", text: $newPlaylist) { name in
+                    newRow("New playlist", idKind: "playlist", text: $newPlaylist) { name in
                         let p = collections.createPlaylist(name)
                         addTo(AddTarget(kind: .playlist, id: p.id, sequenceId: p.sequences.first?.nodeId))
                     }
@@ -222,7 +309,11 @@ struct AddToCollectionView: View {
                 }
 
                 sourcePlaylistsSection
+                noMatchesSection
             }
+            // The filter field rides the top edge of the list on every platform (iPhone,
+            // iPad, Mac, Vision Pro) — pinned, so it stays put while the list scrolls.
+            .safeAreaInset(edge: .top, spacing: 0) { searchField }
             .navigationTitle("Add to…")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -271,9 +362,9 @@ struct AddToCollectionView: View {
     /// Song-only, and hidden entirely when the catalog carries no source playlists.
     @ViewBuilder
     private var sourcePlaylistsSection: some View {
-        if songId != nil, !sourcePlaylists.isEmpty {
+        if songId != nil, !filteredSourcePlaylists.isEmpty {
             Section {
-                ForEach(sourcePlaylists) { source in
+                ForEach(filteredSourcePlaylists) { source in
                     Button { addToSource(source) } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "music.note.list").foregroundStyle(Theme.accent2)
@@ -542,16 +633,20 @@ struct AddToCollectionView: View {
         return "waveform"
     }
 
-    private func newRow(_ placeholder: String, text: Binding<String>,
+    /// `idKind` is "pocket"/"playlist" — the field and its Add button carry stable ids
+    /// (`new-pocket-field` / `new-pocket-add`) because BOTH rows label their button "Add".
+    private func newRow(_ placeholder: String, idKind: String, text: Binding<String>,
                         action: @escaping (String) -> Void) -> some View {
         HStack {
             TextField(placeholder, text: text)
                 .pocketField()
+                .accessibilityIdentifier("new-\(idKind)-field")
             Button("Add") {
                 let n = text.wrappedValue.trimmingCharacters(in: .whitespaces)
                 if !n.isEmpty { action(n); text.wrappedValue = "" }
             }
             .disabled(text.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
+            .accessibilityIdentifier("new-\(idKind)-add")
         }
     }
 }

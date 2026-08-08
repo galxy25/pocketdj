@@ -251,6 +251,24 @@ final class PlayHistoryStore {
             }
             return
         }
+        // FIXTURE variant (PDJ_SEED_HISTORY=fixture): plays of songs that exist in the bundled
+        // fixture catalog, so a test can act on a History row against real catalog state —
+        // add the selection to a playlist and see the playlist's song count move. The default
+        // seed below deliberately uses ids the catalog does NOT know (it proves the snapshot
+        // fallback renders), which no collection can resolve.
+        if env["PDJ_SEED_HISTORY"] == "fixture" {
+            let fixtures: [(id: String, title: String, artist: String, ago: Double)] = [
+                ("sng_2", "Pulse", "Aria", 2 * hour),
+                ("sng_3", "Drift", "Aria", 26 * hour),
+                ("sng_4", "Swing Low", "Bento", 50 * hour),
+            ]
+            for f in fixtures {
+                record(songId: f.id, title: f.title, artist: f.artist,
+                       context: PlayContext(source: .playlist, contextId: "d", contextName: "Roadtrip"),
+                       at: now - f.ago)
+            }
+            return
+        }
         let demos: [(id: String, title: String, artist: String, ctx: PlayContext, ago: Double)] = [
             ("seed_1", "Midnight City", "M83", PlayContext(source: .mix, contextId: "d", contextName: "Friday Night Mix"), 2 * hour),
             ("seed_2", "Roygbiv", "Boards of Canada", PlayContext(source: .playlist, contextId: "d", contextName: "Roadtrip"), 26 * hour),

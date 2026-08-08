@@ -121,4 +121,30 @@ final class HistoryRewindSliceTests: XCTestCase {
         let a = ev("s1", at: 1_000, context: "set_A")
         XCTAssertTrue(HistoryView.rewindSlice(from: UUID(), in: [a]).isEmpty)
     }
+
+    // MARK: - Multi-select universe (one entry per SONG, not per play)
+
+    /// History renders one row per PLAY, so the same song appears many times. The multi-select
+    /// id space (⌘A's universe, the ⇧-click range order, and the Share/Copy export) has to be
+    /// the DEDUPED displayed order — otherwise a range between two rows of the same song is
+    /// ambiguous and the count double-reports.
+    func testDistinctSongsCollapsesRepeatPlaysKeepingFirstPosition() {
+        let items = [playRow("s1", at: 3_000), playRow("s2", at: 2_000),
+                     playRow("s1", at: 1_000), playRow("s3", at: 500)]
+        XCTAssertEqual(HistoryView.distinctSongs(items).map(\.id), ["s1", "s2", "s3"])
+    }
+
+    /// One History row (a song + its play), like `HistoryView.makeRow` builds per event.
+    private func playRow(_ id: String, at ms: Double) -> BrowseItem {
+        let song = IndexSong.minimal(id: id, name: id.uppercased(), artist: "A")
+        return .song(song, albumName: "",
+                     play: PlayRef(eventId: UUID(), playedAt: ms, source: .browser, contextName: nil))
+    }
+
+    /// Non-song rows (and an empty result set) contribute nothing.
+    func testDistinctSongsIgnoresNonSongItems() throws {
+        let albums = try TestData.albumItemsTagged()
+        XCTAssertTrue(HistoryView.distinctSongs(albums).isEmpty)
+        XCTAssertTrue(HistoryView.distinctSongs([]).isEmpty)
+    }
 }
