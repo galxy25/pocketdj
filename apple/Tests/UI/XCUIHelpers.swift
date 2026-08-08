@@ -207,9 +207,11 @@ extension XCUIApplication {
         ).firstMatch
     }
 
-    /// Pop one level of the pushed detail stack. `navigationBars` is a UIKit concept that does
-    /// NOT exist on macOS, so `navigationBars.buttons.element(boundBy: 0)` never resolves there;
-    /// AppKit puts the NavigationStack's back chevron in the WINDOW TOOLBAR instead.
+    /// Pop one level of the pushed detail stack. MEASURED: on macOS
+    /// `navigationBars.buttons.element(boundBy: 0)` never resolves — that is the whole of
+    /// StorageUITests.testBackReturnsToSettingsRoot's failure ("the pushed manager must have a
+    /// back button"), while the same lookup works on iOS. So the Mac asks for the back control
+    /// by NAME instead of by position in a bar that isn't there.
     ///
     /// Deliberately does NOT fall back to "tap the toolbar's first button" on macOS: that
     /// toolbar also carries New Window / New Playlist / Import, and a blind boundBy-0 tap fires

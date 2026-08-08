@@ -23,8 +23,10 @@ final class VUMeterAndCueUITests: XCTestCase {
         XCTAssertTrue(firstWith("deck-B-vu").exists, "Deck B VU meter should render")
         save(app, "01-mix-vu-meters")
 
-        // Long-press (== right-click on macOS) opens the pre/post-fader context menu.
-        vu.press(forDuration: 1.0)
+        // Open the pre/post-fader context menu. macOS opens a `contextMenu` on a RIGHT-CLICK —
+        // a synthesized long press does NOT produce one there — so `openContextMenu()` splits
+        // rightClick (Mac) from press-and-hold (iOS/iPadOS).
+        vu.openContextMenu()
         let pre = app.buttons["deck-A-vu-pre"].firstMatch
         let post = app.buttons["deck-A-vu-post"].firstMatch
         XCTAssertTrue(pre.waitForExistence(timeout: 6), "Long-press reveals the Pre-fader option")
@@ -44,11 +46,15 @@ final class VUMeterAndCueUITests: XCTestCase {
         app.launchEnvironment["PDJ_START_SECTION"] = "Performance"
         app.launch()
 
-        // Cues is the 5th sub-tab (index 4). Fall back to the text label on regular-width layouts.
-        let picker = app.segmentedControls["studio-tab-picker"].firstMatch
-        XCTAssertTrue(picker.waitForExistence(timeout: 25), "Performance sub-tab picker should exist")
-        let seg = picker.buttons.element(boundBy: 4)
-        if seg.exists { seg.tap() } else { app.buttons["Cues"].firstMatch.tap() }
+        // Cues is the 5th sub-tab. The sub-tab control is a `.segmented` Picker, which macOS
+        // renders as a RadioGroup — `app.segmentedControls[...]` resolves to nothing there — so
+        // the Mac drives it with the app's own ⌘5 shadow button (PerformanceView.tabShortcuts)
+        // while iOS taps the segment. Wait on the CONTENT, not the picker, so the assertion is
+        // about the tab actually being open on either platform.
+        XCTAssertTrue(app.any("studio-tab-picker").waitForExistence(timeout: 25)
+                      || app.el("cue-search").waitForExistence(timeout: 5),
+                      "Performance sub-tab shell should render")
+        app.selectStudioTab("5", label: "Cues")
 
         // Search + select the seeded track (sng_1 = "Neon", which has 2 seeded cues).
         let search = firstWith("cue-search")

@@ -33,6 +33,20 @@ final class FavoritesUITests: XCTestCase {
         return app
     }
 
+    /// The ♥ for a song, by id. Deliberately `any(_:)` (identifier across ALL element types)
+    /// rather than `el(_:)` (a `.buttons` query): on macOS `buttons["favorite-toggle-sng_1"]`
+    /// resolves to NOTHING while the identical lookup works on iOS, and that single miss is the
+    /// whole of this class's macOS failure (baseline: "each album track row has a ♥", both tests).
+    ///
+    /// It is NOT that the track table is unreachable on macOS — `BrowseUITests`
+    /// `testSongDetailFromTrackTable` taps `el("track-sng_1")` on the SAME screen and passes
+    /// there, so the row's own NavigationLink is a `.buttons` match. The difference is confined
+    /// to `FavoriteToggle`, whose label is a bare `Image` with no text; which AppKit element that
+    /// actually becomes is not established, so match by identifier and don't name a type.
+    private func heart(_ app: XCUIApplication, _ songId: String) -> XCUIElement {
+        app.any("favorite-toggle-\(songId)")
+    }
+
     /// The album track table carries a ♥ per track, and tapping it favorites that track
     /// WITHOUT navigating into the song (the tap-through hazard for a button living inside
     /// a NavigationLink label).
@@ -43,7 +57,7 @@ final class FavoritesUITests: XCTestCase {
         card.tap()
         XCTAssertTrue(app.staticTexts["3 tracks"].waitForExistence(timeout: 5))
 
-        let heart = app.el("favorite-toggle-sng_1")
+        let heart = self.heart(app, "sng_1")
         XCTAssertTrue(heart.waitForExistence(timeout: 5), "each album track row has a ♥")
         XCTAssertEqual(heart.label, "Favorite", "starts unfavorited")
 
@@ -51,10 +65,10 @@ final class FavoritesUITests: XCTestCase {
         // Still on the album screen — the ♥ must not have triggered the row's NavigationLink.
         XCTAssertTrue(app.staticTexts["3 tracks"].waitForExistence(timeout: 3),
                       "tapping ♥ must not navigate into the song detail page")
-        XCTAssertEqual(app.el("favorite-toggle-sng_1").label, "Unfavorite", "now favorited")
+        XCTAssertEqual(self.heart(app, "sng_1").label, "Unfavorite", "now favorited")
 
-        app.el("favorite-toggle-sng_1").tap()
-        XCTAssertEqual(app.el("favorite-toggle-sng_1").label, "Favorite", "un-♥ returns to the base state")
+        self.heart(app, "sng_1").tap()
+        XCTAssertEqual(self.heart(app, "sng_1").label, "Favorite", "un-♥ returns to the base state")
     }
 
     /// A ♥ survives a relaunch — i.e. it reached the on-disk document, not just view state.
@@ -63,10 +77,10 @@ final class FavoritesUITests: XCTestCase {
         let card = app.el("album-alb_1")
         XCTAssertTrue(card.waitForExistence(timeout: 15))
         card.tap()
-        let heart = app.el("favorite-toggle-sng_1")
+        let heart = self.heart(app, "sng_1")
         XCTAssertTrue(heart.waitForExistence(timeout: 5))
         heart.tap()
-        XCTAssertEqual(app.el("favorite-toggle-sng_1").label, "Unfavorite")
+        XCTAssertEqual(self.heart(app, "sng_1").label, "Unfavorite")
 
         // Relaunch WITHOUT re-clearing the fixture document: PDJ_USE_FIXTURE points the
         // store at a fixed temp path that is cleared on construction, so terminate+launch
@@ -77,8 +91,8 @@ final class FavoritesUITests: XCTestCase {
         let card2 = app.el("album-alb_1")
         XCTAssertTrue(card2.waitForExistence(timeout: 15))
         card2.tap()
-        XCTAssertTrue(app.el("favorite-toggle-sng_1").waitForExistence(timeout: 5))
-        XCTAssertEqual(app.el("favorite-toggle-sng_1").label, "Unfavorite",
+        XCTAssertTrue(self.heart(app, "sng_1").waitForExistence(timeout: 5))
+        XCTAssertEqual(self.heart(app, "sng_1").label, "Unfavorite",
                        "the ♥ was persisted and re-decoded at launch")
     }
 
