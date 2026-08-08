@@ -94,4 +94,24 @@ final class GameScoreboardStoreTests: XCTestCase {
         store.seedFixture()
         XCTAssertEqual(store.runs.count, 4, "seed is a no-op when runs already exist")
     }
+
+    /// The lockstep invariant AccountDeletionService documents: every games doc registered
+    /// with CloudSyncService in PocketDJApp.init must be in `cloudDocKeys`, or its cloud
+    /// copy survives an account deletion (the 5.1.1(v) erasure guarantee).
+    func testAccountDeletionCloudDocKeysCoverTheGamesDocs() {
+        XCTAssertTrue(AccountDeletionService.cloudDocKeys.contains("game-scores"))
+        XCTAssertTrue(AccountDeletionService.cloudDocKeys.contains("puzzle-decisions"))
+    }
+
+    /// Account deletion wipes the scoreboard: state resets AND the persisted document no
+    /// longer resurrects the old runs on a reload.
+    func testClearResetsStateAndPersistedDocument() {
+        let url = tempURL()
+        let store = GameScoreboardStore(fileURL: url)
+        store.record(game: .collectorsPuzzle, score: 7, settingsSummary: nil)
+        store.clear()
+        XCTAssertTrue(store.runs.isEmpty)
+        let reloaded = GameScoreboardStore(fileURL: url)
+        XCTAssertTrue(reloaded.runs.isEmpty, "the persisted doc is empty too")
+    }
 }

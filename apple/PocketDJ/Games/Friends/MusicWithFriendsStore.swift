@@ -102,6 +102,25 @@ final class MusicWithFriendsStore {
         defaults.set(Array(scoredSessionIds), forKey: Self.scoredKey)
     }
 
+    /// Account-deletion seam: forget EVERY Music-with-Friends trace this store owns — the
+    /// session entries (which hold bearer memberKeys/leaderKeys), the scored-session set,
+    /// the queue-accepted preference, the cached states, and any pending link signals —
+    /// including the persisted UserDefaults copies. The per-install re-join secret is reset
+    /// separately (`MwFJoinSecret.reset()`, beside the other identity resets).
+    func eraseAll() {
+        sessions = []
+        lastState = [:]
+        scoredSessionIds = []
+        pendingOpenId = nil
+        pendingJoin = nil
+        lastError = nil
+        pollError = nil
+        queueAccepted = false
+        defaults.removeObject(forKey: Self.sessionsKey)
+        defaults.removeObject(forKey: Self.scoredKey)
+        defaults.removeObject(forKey: Self.queueAcceptedKey)
+    }
+
     // MARK: - Create / join / open
 
     /// Create a session. Returns the error to show (nil = success) — the CALLER owns the

@@ -994,7 +994,7 @@ struct PocketDJApp: App {
 
         // ── Account deletion (App Store Guideline 5.1.1(v)) ────────────────────
         // Constructed with the LIVE stores/services it must wipe (no globals of its own). It
-        // deletes the same 12 PDJDoc keys registered above, via its OWN CKCloudDocDatabase()
+        // deletes the same PDJDoc keys registered above, via its OWN CKCloudDocDatabase()
         // (a stateless struct, identical to the one cloudSync holds). `cloudDeleteEnabled` is
         // `{ !fixtureRun }` — UI-test runs must never touch a real iCloud account — and the
         // background-transfer cancel is wired to the process-wide TransferCoordinator here so
@@ -1011,6 +1011,7 @@ struct PocketDJApp: App {
             profileSource: profileSource, playlistWriteBack: playlistWriteBack,
             mixSessions: mixSessions, playbackSession: playbackSession,
             mixDeckSession: mixDeckSession, burns: burns, studio: studio,
+            gameScores: gameScores, puzzleDecisions: puzzleDecisions, friends: friends,
             streaming: streaming, settings: settings, cloudSync: cloudSync, profile: profile)
         _accountDeletion = State(initialValue: accountDeletion)
 

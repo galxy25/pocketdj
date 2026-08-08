@@ -335,6 +335,50 @@ final class MusicWithFriendsStoreTests: XCTestCase {
         XCTAssertEqual(collections.pocket(first!)?.songIds, ["sng_1", "sng_2"], "no duplicates")
     }
 
+    // MARK: Account deletion
+
+    /// Account deletion must leave NO MwF trace: entries (bearer memberKeys), the scored
+    /// set, the queue-accepted preference, cached states, pending link signals — and the
+    /// UserDefaults copies of all of it (a fresh store on the same defaults sees nothing).
+    func testEraseAllForgetsEveryLocalTrace() async throws {
+        let (store, defaults) = makeStore()
+        _ = seedEntry(store, defaults: defaults)
+        defaults.set(["abcd2345"], forKey: "pdj.mwf.scored.v1")
+        store.loadPersisted()
+        store.queueAccepted = true
+        store.pendingOpenId = "abcd2345"
+        // Cache a state + a poll error so the wipe covers the render surfaces too.
+        MwFURLProtocol.bodyByPath["/mwf/abcd2345/state"] = Data("{\"sessionId\":\"abcd2345\"}".utf8)
+        _ = await store.refresh("abcd2345")
+        XCTAssertFalse(store.sessions.isEmpty)
+
+        store.eraseAll()
+
+        XCTAssertTrue(store.sessions.isEmpty)
+        XCTAssertTrue(store.lastState.isEmpty)
+        XCTAssertNil(store.pendingOpenId)
+        XCTAssertNil(store.pendingJoin)
+        XCTAssertFalse(store.queueAccepted)
+        XCTAssertNil(defaults.data(forKey: "pdj.mwf.sessions.v1"))
+        XCTAssertNil(defaults.stringArray(forKey: "pdj.mwf.scored.v1"))
+        XCTAssertNil(defaults.object(forKey: "pdj.mwf.queueAccepted.v1"))
+        // A fresh store over the same defaults starts clean.
+        let store2 = MusicWithFriendsStore(defaults: defaults)
+        store2.loadPersisted()
+        XCTAssertTrue(store2.sessions.isEmpty)
+    }
+
+    /// The per-install re-join secret is identity: after a reset the next mint must be a
+    /// DIFFERENT value, or a re-join would sha256-match the deleted account's member.
+    func testJoinSecretResetMintsAFreshSecret() {
+        let before = MwFJoinSecret.current
+        XCTAssertEqual(before, MwFJoinSecret.current, "stable until reset")
+        MwFJoinSecret.reset()
+        let after = MwFJoinSecret.current
+        XCTAssertNotEqual(before, after)
+        XCTAssertEqual(after.count, 32)
+    }
+
     // MARK: Push token
 
     func testUpdateDeviceTokenReRegistersAllSessions() async throws {

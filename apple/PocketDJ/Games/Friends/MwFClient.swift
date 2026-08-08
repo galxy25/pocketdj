@@ -18,6 +18,14 @@ enum MwFJoinSecret {
         defaults.set(minted, forKey: defaultsKey)
         return minted
     }
+
+    /// Account deletion (the `DeviceIdentity.reset()` sibling): forget the secret so the next
+    /// join mints a fresh one. Without this, re-joining a previously joined session would
+    /// server-side sha256-match the OLD secret and silently resurrect the deleted account's
+    /// memberId + display name.
+    static func reset() {
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+    }
 }
 
 /// Thin async client for the broker's Music with Friends routes (`/mwf/...` on the SAME
