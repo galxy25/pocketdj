@@ -181,7 +181,12 @@ final class BurnStore {
         // index (`launchURL`), so seeding can never write tone files into a real library.
         guard env["PDJ_SEED_BURNS"] == "1", env["PDJ_USE_FIXTURE"] != nil,
               let dir = appBurnsDir() else { return }
-        for i in 1...7 {
+        // A SUBSET on purpose, not all 7. If every fixture song had audio, a round would
+        // sound fine even with the playability filter removed, and the UI test that asserts
+        // "the card on screen plays" would stay green against the broken sampler. With a mix,
+        // an unfiltered draw lands on a silent card and the test goes red — which is the only
+        // reason to have the test.
+        for i in [2, 3, 5, 7] {
             let songId = "sng_\(i)"
             // `.wav`, NOT `.mp3`: AVAudioFile picks its writer from the EXTENSION and cannot
             // write mp3, so a `.mp3` name silently produced no file and seeded nothing.
