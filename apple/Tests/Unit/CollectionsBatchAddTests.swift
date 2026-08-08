@@ -122,4 +122,122 @@ final class CollectionsBatchAddTests: XCTestCase {
         XCTAssertEqual(added, 2)
         XCTAssertEqual(store.pocket(p.id)?.songIds, ["smp_abc", "sng_1"])
     }
+
+    // MARK: Chapter-scoped dedupe (the Add-to sheet's deliberate-duplication path)
+
+    /// `.targetChapter` dedupe: a song already in ANOTHER chapter still lands in the chosen
+    /// one — parity with the single-song sheet path, which never dedups. (`.wholeCollection`
+    /// stays the drop/paste default, pinned by testAddSongsToPlaylistDedupsAcrossChapters.)
+    func testAddSongsTargetChapterDedupePlacesCrossChapterDuplicate() {
+        let store = makeStore()
+        let pl = store.createPlaylist("Set")
+        store.addSequence("B side", toPlaylist: pl.id)
+        store.addSong("sng_1", toPlaylist: pl.id)                    // chapter 0 member
+        let chapterId = store.playlist(pl.id)!.sequences[1].nodeId
+        let added = store.addSongs(["sng_1", "sng_2"],
+                                   to: AddTarget(kind: .playlist, id: pl.id, sequenceId: chapterId),
+                                   dedupe: .targetChapter)
+        XCTAssertEqual(added, 2)                                     // sng_1 deliberately duplicated
+        XCTAssertEqual(playlistSongIds(store, pl.id, chapter: 0), ["sng_1"])
+        XCTAssertEqual(playlistSongIds(store, pl.id, chapter: 1), ["sng_1", "sng_2"])
+    }
+
+    func testAddSongsTargetChapterStillDedupsWithinThatChapter() {
+        let store = makeStore()
+        let pl = store.createPlaylist("Set")
+        store.addSequence("B side", toPlaylist: pl.id)
+        let chapterId = store.playlist(pl.id)!.sequences[1].nodeId
+        store.addSong("sng_1", toPlaylist: pl.id, sequenceId: chapterId)
+        let added = store.addSongs(["sng_1"],
+                                   to: AddTarget(kind: .playlist, id: pl.id, sequenceId: chapterId),
+                                   dedupe: .targetChapter)
+        XCTAssertEqual(added, 0)
+        XCTAssertEqual(playlistSongIds(store, pl.id, chapter: 1), ["sng_1"])
+    }
+
+    // MARK: Empty-chapter self-heal (lossy decode / foreign import)
+
+    /// A playlist that decoded with NO chapters ("sequences": [] — reachable via lossy decode
+    /// of an unknown node kind, or a doctored import) self-heals the default chapter instead
+    /// of reporting a phantom success (the old guard bailed inside the mutation but still
+    /// stamped MRU, emitted History rows, and would have queued Apple Music write-backs).
+    func testAddSongsSelfHealsEmptySequencesAndReportsTruthfully() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-batchadd-heal-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let seed = CollectionsStore(fileURL: url)
+        let pl = seed.createPlaylist("Set")
+        // Doctor the on-disk document into the representable-but-never-UI-minted state.
+        var doc = try CollectionsCodec.decode(Data(contentsOf: url))
+        doc.playlists[0].sequences = []
+        try CollectionsCodec.encode(doc).write(to: url)
+
+        let store = CollectionsStore(fileURL: url)
+        XCTAssertEqual(store.playlist(pl.id)?.sequences.count, 0)    // precondition holds
+        var emitted = 0
+        store.onActivity = { _ in emitted += 1 }
+        let added = store.addSongs(["sng_1", "sng_2"], to: AddTarget(kind: .playlist, id: pl.id))
+        XCTAssertEqual(added, 2)                                     // healed AND landed
+        XCTAssertEqual(store.playlist(pl.id)?.sequences.count, 1)
+        XCTAssertEqual(playlistSongIds(store, pl.id), ["sng_1", "sng_2"])
+        XCTAssertEqual(emitted, 2)                                   // History told the truth
+    }
+
+    // MARK: Batch activity emission (ONE log write per gesture)
+
+    /// With the batch seam wired, N added songs emit ONE batch (and zero per-id hooks) —
+    /// the recorder does one document write for the whole gesture.
+    func testAddSongsEmitsOneBatchWhenWired() {
+        let store = makeStore()
+        let p = store.createPocket("Crate")
+        var batches: [[CollectionsStore.ActivityHook]] = []
+        var singles = 0
+        store.onActivityBatch = { batches.append($0) }
+        store.onActivity = { _ in singles += 1 }
+        _ = store.addSongs(["sng_1", "sng_2", "sng_3"], to: AddTarget(kind: .pocket, id: p.id))
+        XCTAssertEqual(batches.count, 1)
+        XCTAssertEqual(batches[0].map(\.itemId), ["sng_1", "sng_2", "sng_3"])
+        XCTAssertEqual(singles, 0)
+    }
+
+    // MARK: Batch removes (the Add sheet's multi-song toggle-OFF)
+
+    func testRemoveSongsFromPocketBatchesAndSkipsNonMembers() {
+        let store = makeStore()
+        let p = store.createPocket("Crate")
+        _ = store.addSongs(["sng_1", "sng_2", "sng_3"], to: AddTarget(kind: .pocket, id: p.id))
+        var batches: [[CollectionsStore.ActivityHook]] = []
+        store.onActivityBatch = { batches.append($0) }
+        store.removeSongs(["sng_1", "sng_3", "sng_missing"], fromPocket: p.id)
+        XCTAssertEqual(store.pocket(p.id)?.songIds, ["sng_2"])
+        XCTAssertEqual(batches.count, 1)
+        XCTAssertEqual(batches[0].map(\.itemId), ["sng_1", "sng_3"])  // only actual members
+        XCTAssertTrue(batches[0].allSatisfy { $0.kind == .remove })
+    }
+
+    /// The batch membership set: every chapter's `.song` nodes, one tree walk — what the
+    /// Add-to sheet's `.songs` checkmark resolves against instead of per-id tree walks.
+    func testPlaylistSongIdSetCoversAllChapters() {
+        let store = makeStore()
+        let pl = store.createPlaylist("Set")
+        store.addSequence("B side", toPlaylist: pl.id)
+        let chapterId = store.playlist(pl.id)!.sequences[1].nodeId
+        store.addSong("sng_1", toPlaylist: pl.id)
+        store.addSong("sng_2", toPlaylist: pl.id, sequenceId: chapterId)
+        XCTAssertEqual(store.playlistSongIdSet(pl.id), ["sng_1", "sng_2"])
+        XCTAssertEqual(store.playlistSongIdSet("pl_missing"), [])
+    }
+
+    func testRemoveSongsFromPlaylistClearsEveryChapter() {
+        let store = makeStore()
+        let pl = store.createPlaylist("Set")
+        store.addSequence("B side", toPlaylist: pl.id)
+        let chapterId = store.playlist(pl.id)!.sequences[1].nodeId
+        store.addSong("sng_1", toPlaylist: pl.id)
+        store.addSong("sng_1", toPlaylist: pl.id, sequenceId: chapterId)
+        store.addSong("sng_2", toPlaylist: pl.id)
+        store.removeSongs(["sng_1", "sng_9"], fromPlaylist: pl.id)
+        XCTAssertEqual(playlistSongIds(store, pl.id, chapter: 0), ["sng_2"])
+        XCTAssertEqual(playlistSongIds(store, pl.id, chapter: 1), [])
+    }
 }

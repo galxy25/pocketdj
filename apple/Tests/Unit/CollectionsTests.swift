@@ -1367,4 +1367,118 @@ final class WriteBackSourceSyncTests: XCTestCase {
         s.linkPocketToSource(p.id, source: amSource("ipl_new", "New", ["sng_am1"]))
         XCTAssertFalse(s.pocket(p.id)!.syncsWithSource, "re-link must not flip sync back on")
     }
+
+    // MARK: Batch write-back (multi-select adds) — one resolution, confirmation gate
+
+    /// Like AMLoader but with `count` generated, catalog-id-carrying songs — enough to cross
+    /// `CollectionsStore.writeBackConfirmThreshold` in the large-batch tests.
+    private struct ManyLoader: CatalogLoading {
+        let count: Int
+        func loadIndex() async throws -> IndexJSON {
+            let ids = (1...count).map { "\"sng_m\($0)\"" }.joined(separator: ",")
+            let songs = (1...count).map {
+                """
+                { "id": "sng_m\($0)", "albumId": "alb_m", "artist": "Aria", "name": "M\($0)",
+                  "trackNumber": \($0), "year": 2020, "length": 180000, "explicit": false,
+                  "appleMusicId": "am_m\($0)" }
+                """
+            }.joined(separator: ",")
+            let json = """
+            { "manifest": { "sourceName": "Apple Music (Local)", "counts": { "albums": 1, "songs": \(count) } },
+              "albums": [ { "id": "alb_m", "artist": "Aria", "name": "AMM", "genre": "Pop", "year": 2020,
+                            "country": "US", "trackList": [\(ids)], "fileType": "m4a" } ],
+              "songs": [ \(songs) ] }
+            """
+            return try JSONDecoder().decode(IndexJSON.self, from: Data(json.utf8))
+        }
+    }
+
+    @MainActor
+    private func wiredMany(_ count: Int) async -> (CollectionsStore, Capture) {
+        let app = AppModel(loader: ManyLoader(count: count))
+        await app.loadIfNeeded()
+        appHold = app
+        let s = CollectionsStore(fileURL: FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-wb-many-\(UUID().uuidString).json"))
+        s.app = app
+        let cap = Capture()
+        s.enqueueSourceWriteBack = { cap.enqueue($0, $1, $2, $3, $4, $5, $6, $7) }
+        return (s, cap)
+    }
+
+    /// A small batch enqueues immediately (parity with the per-add path), one call per
+    /// eligible song, and never parks a confirmation. `sng_am1` proves the SNAPSHOT guard
+    /// carries over to the batch path: removed locally then re-added, it's no longer a
+    /// member (so it passes membership dedup) but IS still in the source snapshot — already
+    /// upstream, so re-adding must not enqueue a duplicating write.
+    @MainActor
+    func testBatchAddBelowThresholdEnqueuesImmediately() async {
+        let (s, cap) = await wired()
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        s.removeSong("sng_am1", fromPocket: p.id)
+        let added = s.addSongs(["sng_am1", "sng_am2", "sng_plain"], to: AddTarget(kind: .pocket, id: p.id))
+        XCTAssertEqual(added, 3)
+        XCTAssertEqual(cap.calls.map(\.sid), ["sng_am2", "sng_plain"])   // identity-only sng_plain too
+        XCTAssertNil(s.pendingWriteBackBatch)
+    }
+
+    /// With the batch seam wired, the whole batch goes through it as ONE call (one queue
+    /// prune/save downstream) and the per-song seam is not touched.
+    @MainActor
+    func testBatchAddPrefersBatchSeamWhenWired() async {
+        let (s, cap) = await wired()
+        var batchCalls: [[PlaylistWriteBack.EnqueueItem]] = []
+        s.enqueueSourceWriteBackBatch = { items in batchCalls.append(items); return items.count }
+        let p = s.convertToPocket(source: amSource("ipl_am", "AM Mix", ["sng_am1"]))
+        _ = s.addSongs(["sng_am2", "sng_plain"], to: AddTarget(kind: .pocket, id: p.id))
+        XCTAssertEqual(batchCalls.count, 1)
+        XCTAssertEqual(batchCalls[0].map(\.songId), ["sng_am2", "sng_plain"])
+        XCTAssertEqual(batchCalls[0][0].indexPlaylistId, "ipl_am")
+        XCTAssertTrue(cap.calls.isEmpty)
+    }
+
+    /// Above the threshold the upstream leg PARKS for explicit confirmation — upstream adds
+    /// are irreversible, so a select-all-sized batch never pushes implicitly. Confirming
+    /// pushes the parked items; the local add already stood either way.
+    @MainActor
+    func testBatchAddAboveThresholdParksForConfirmation() async {
+        let n = CollectionsStore.writeBackConfirmThreshold + 10
+        let (s, cap) = await wiredMany(n)
+        let p = s.convertToPocket(source: amSource("ipl_m", "Big Mix", []))
+        let ids = (1...n).map { "sng_m\($0)" }
+        XCTAssertEqual(s.addSongs(ids, to: AddTarget(kind: .pocket, id: p.id)), n)
+        XCTAssertTrue(cap.calls.isEmpty, "nothing may reach Apple Music without consent")
+        XCTAssertEqual(s.pendingWriteBackBatch?.count, n)
+        XCTAssertEqual(s.pendingWriteBackBatch?.playlistName, "Big Mix")
+        s.confirmPendingWriteBackBatch()
+        XCTAssertEqual(cap.calls.count, n)
+        XCTAssertNil(s.pendingWriteBackBatch)
+    }
+
+    /// Declining keeps the local add and leaves Apple Music untouched.
+    @MainActor
+    func testBatchAddConfirmationDiscardKeepsLocalOnly() async {
+        let n = CollectionsStore.writeBackConfirmThreshold + 1
+        let (s, cap) = await wiredMany(n)
+        let p = s.convertToPocket(source: amSource("ipl_m", "Big Mix", []))
+        let ids = (1...n).map { "sng_m\($0)" }
+        _ = s.addSongs(ids, to: AddTarget(kind: .pocket, id: p.id))
+        s.discardPendingWriteBackBatch()
+        XCTAssertNil(s.pendingWriteBackBatch)
+        XCTAssertTrue(cap.calls.isEmpty)
+        XCTAssertEqual(s.pocket(p.id)?.songIds.count, n, "the LOCAL add stands")
+    }
+
+    /// A session that can't deliver upstream (macOS unauthorized etc.) must never park a
+    /// confirmation dialog for a push that could not happen.
+    @MainActor
+    func testBatchAddSkipsConfirmationWhenCannotWriteBack() async {
+        let n = CollectionsStore.writeBackConfirmThreshold + 1
+        let (s, cap) = await wiredMany(n)
+        s.canWriteBackUpstream = { false }
+        let p = s.convertToPocket(source: amSource("ipl_m", "Big Mix", []))
+        _ = s.addSongs((1...n).map { "sng_m\($0)" }, to: AddTarget(kind: .pocket, id: p.id))
+        XCTAssertNil(s.pendingWriteBackBatch)
+        XCTAssertTrue(cap.calls.isEmpty)
+    }
 }

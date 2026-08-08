@@ -388,6 +388,19 @@ struct PocketDJApp: App {
                                        collectionId: hook.collectionId, collectionKind: hook.collectionKind,
                                        collectionName: hook.collectionName)
         }
+        // Batch adds/removes (multi-select, drag-&-drop, paste) emit ONE batch so the log is
+        // encoded + written ONCE per gesture — the per-hook path above costs a full-document
+        // write each, which a select-all-sized batch must never pay per song.
+        collections.onActivityBatch = { [weak collectionActivity] hooks in
+            collectionActivity?.recordBatch(hooks.map {
+                CollectionActivityStore.BatchEntry(kind: $0.kind == .add ? .add : .remove,
+                                                   itemId: $0.itemId, itemTitle: $0.itemTitle,
+                                                   itemArtist: $0.itemArtist,
+                                                   collectionId: $0.collectionId,
+                                                   collectionKind: $0.collectionKind,
+                                                   collectionName: $0.collectionName)
+            })
+        }
         let storage = StorageManager(burns: burns, playStats: playStats, settings: settings)
         _storage = State(initialValue: storage)
         // ── Studio (Performance tab) stores + engines ──────────────────────────
@@ -726,6 +739,19 @@ struct PocketDJApp: App {
         // write-backs for that pocket's songs (so an offline add can't land in the wrong playlist).
         collections.cancelPendingWriteBacks = { [weak playlistWriteBack] indexPlaylistId, songIds in
             playlistWriteBack?.cancelPending(indexPlaylistId: indexPlaylistId, songIds: songIds)
+        }
+        // Batch adds ride `enqueueMany` (ONE queue prune/save + ONE drain kick for N songs) —
+        // the per-song closure above would re-encode the whole queue file per id.
+        collections.enqueueSourceWriteBackBatch = { [weak playlistWriteBack] items in
+            guard let wb = playlistWriteBack, wb.canWriteBack else { return 0 }
+            let queued = wb.enqueueMany(items)
+            if queued > 0 { wb.runSoon() }
+            return queued
+        }
+        // Consulted before parking a LARGE batch for confirmation — a session that can't
+        // deliver upstream must never show the "add N songs to Apple Music?" dialog.
+        collections.canWriteBackUpstream = { [weak playlistWriteBack] in
+            playlistWriteBack?.canWriteBack ?? false
         }
 
         // ── Discover adds: provisional catalog entries (eventual consistency) ──

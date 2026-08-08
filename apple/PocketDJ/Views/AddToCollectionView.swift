@@ -35,6 +35,10 @@ struct AddToCollectionView: View {
     /// adding); the alert exists because adding to a shared source silently CREATES a local
     /// playlist and may write to the user's Apple Music library — it has to say so.
     @State private var sourceResult: SourceAddResult?
+    /// A `.songs` batch add that landed NOTHING (every id deduped). Non-nil ⇒ a small alert
+    /// says so — the sheet never dismisses on add, so a silent no-op would be
+    /// indistinguishable from success.
+    @State private var batchNotice: String?
 
     private var isStudio: Bool { if case .studio = item { return true }; return false }
 
@@ -169,7 +173,11 @@ struct AddToCollectionView: View {
                         if pl.sequences.count > 1 {
                             ForEach(pl.sequences) { seq in
                                 Button {
-                                    addTo(AddTarget(kind: .playlist, id: pl.id, sequenceId: seq.nodeId))
+                                    // Chapter rows dedup against THIS chapter only — placing
+                                    // songs that already live in another chapter is exactly
+                                    // what these rows are for (see addTo).
+                                    addTo(AddTarget(kind: .playlist, id: pl.id, sequenceId: seq.nodeId),
+                                          dedupe: .targetChapter)
                                 } label: {
                                     Label(seq.name ?? "Chapter", systemImage: "chevron.right")
                                         .font(.caption).foregroundStyle(Theme.fgDim).padding(.leading, 20)
@@ -202,6 +210,13 @@ struct AddToCollectionView: View {
                 sourceAlertActions(result)
             } message: { result in
                 Text(result.message)
+            }
+            .alert("Nothing to add",
+                   isPresented: Binding(get: { batchNotice != nil },
+                                        set: { if !$0 { batchNotice = nil } })) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(batchNotice ?? "")
             }
         }
     }
@@ -362,12 +377,21 @@ struct AddToCollectionView: View {
         var queuedForSync = false
     }
 
-    /// Adds the item and records the target (incl. chapter) as "last used".
-    private func addTo(_ target: AddTarget) {
+    /// Adds the item and records the target (incl. chapter) as "last used". `dedupe` matters
+    /// only to the `.songs` batch: the explicit per-chapter rows pass `.targetChapter` so the
+    /// sheet stays the deliberate-duplication path (a song already in ANOTHER chapter still
+    /// lands in the chosen one — parity with the single-song `addSong`, which never dedups).
+    private func addTo(_ target: AddTarget,
+                       dedupe: CollectionsStore.BatchDedupe = .wholeCollection) {
         switch item {
         case .song(let s): collections.addSong(s, to: target)
         // The batch choke point: ONE document write, deduped against current membership.
-        case .songs(let ids): collections.addSongs(ids, to: target)
+        // A batch that adds NOTHING (every id already present) must not look identical to a
+        // successful one — say so (the sheet deliberately never dismisses on add).
+        case .songs(let ids):
+            if collections.addSongs(ids, to: target, dedupe: dedupe) == 0 {
+                batchNotice = "All \(ids.count) selected songs are already in this list."
+            }
         case .album(let a): collections.addAlbum(a, to: target)
         // Studio ids ride the SAME string-id plumbing as songs (spec §8's namespaced-id
         // mechanism): pockets keep them in `songIds`, playlists as `.song` nodes; every
@@ -379,7 +403,13 @@ struct AddToCollectionView: View {
     private func inPocket(_ p: Pocket) -> Bool {
         switch item {
         case .song(let s): return p.songIds.contains(s)
-        case .songs(let ids): return !ids.isEmpty && ids.allSatisfy { p.songIds.contains($0) }
+        case .songs(let ids):
+            // Membership as ONE set: `ids.allSatisfy { songIds.contains }` is
+            // O(selection × members) linear scans per row per body render — a select-all
+            // batch froze the sheet. One O(members) Set build, then N O(1) lookups.
+            guard !ids.isEmpty else { return false }
+            let members = Set(p.songIds)
+            return ids.allSatisfy { members.contains($0) }
         case .album(let a): return p.albumIds.contains(a)
         case .studio(let id, _): return p.songIds.contains(id)   // rides songIds (see addTo)
         }
@@ -404,7 +434,12 @@ struct AddToCollectionView: View {
     /// batch is a member only when EVERY id is (mirrors `inPocket`).
     private func inPlaylist(_ pl: Playlist) -> Bool {
         if let ids = multiSongIds {
-            return !ids.isEmpty && ids.allSatisfy { collections.playlist(pl.id, contains: $0) }
+            // Per-id `playlist(_:contains:)` walks the playlist's WHOLE node tree per call
+            // — for a batch that's O(selection) tree walks per row per body render. One
+            // walk (`playlistSongIdSet`), then N O(1) lookups.
+            guard !ids.isEmpty else { return false }
+            let members = collections.playlistSongIdSet(pl.id)
+            return ids.allSatisfy { members.contains($0) }
         }
         if let s = toggleSongId { return collections.playlist(pl.id, contains: s) }
         if let a = toggleAlbumId { return collections.playlist(pl.id, containsAlbum: a) }
@@ -422,12 +457,14 @@ struct AddToCollectionView: View {
         else { addTo(AddTarget(kind: .playlist, id: pl.id, sequenceId: pl.sequences.first?.nodeId)) }
     }
     private func removeFromPocket(_ id: String) {
-        if let ids = multiSongIds { ids.forEach { collections.removeSong($0, fromPocket: id) } }
+        // Batch removes go through the batch choke point: ONE document write (a per-id loop
+        // re-encodes the whole multi-MB collections document N times on the main actor).
+        if let ids = multiSongIds { collections.removeSongs(ids, fromPocket: id) }
         else if let s = toggleSongId { collections.removeSong(s, fromPocket: id) }
         else if let a = toggleAlbumId { collections.removeAlbum(a, fromPocket: id) }
     }
     private func removeFromPlaylist(_ id: String) {
-        if let ids = multiSongIds { ids.forEach { collections.removeSong($0, fromPlaylist: id) } }
+        if let ids = multiSongIds { collections.removeSongs(ids, fromPlaylist: id) }
         else if let s = toggleSongId { collections.removeSong(s, fromPlaylist: id) }
         else if let a = toggleAlbumId { collections.removeAlbum(a, fromPlaylist: id) }
     }

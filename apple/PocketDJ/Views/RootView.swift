@@ -179,6 +179,21 @@ struct RootView: View {
             paste: { rowSelection.performPaste() }))
         .background { navigationShortcuts }
         .overlay(alignment: .bottomTrailing) { testProbe }
+        // A LARGE multi-select add to an Apple-Music-linked collection parks its upstream leg
+        // for explicit confirmation (CollectionsStore.writeBackConfirmThreshold): pushes to
+        // the user's REAL Apple Music playlist are append-only and not undoable from this
+        // app, so a select-all-sized batch never writes upstream implicitly. The LOCAL add
+        // has already landed either way. Every window presents from the same store; the
+        // first answer wins (confirm/discard clears the shared pending state).
+        .alert("Add to Apple Music?",
+               isPresented: Binding(get: { collections.pendingWriteBackBatch != nil },
+                                    set: { if !$0 { collections.discardPendingWriteBackBatch() } }),
+               presenting: collections.pendingWriteBackBatch) { pending in
+            Button("Add \(pending.count) songs") { collections.confirmPendingWriteBackBatch() }
+            Button("Keep local only", role: .cancel) { collections.discardPendingWriteBackBatch() }
+        } message: { pending in
+            Text("Also add these \(pending.count) songs to your Apple Music playlist “\(pending.playlistName)”? PocketDJ can’t undo Apple Music adds.")
+        }
         // Intent-driven navigation (Spotlight "Open playlist/pocket"): the intent parks a
         // route on the bridge; this view owns the NavigationPath, so it consumes it —
         // whether the app was already open (`onChange`) or launched by the intent (`.task`).
