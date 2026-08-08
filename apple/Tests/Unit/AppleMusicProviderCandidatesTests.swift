@@ -20,37 +20,52 @@ final class AppleMusicProviderCandidatesTests: XCTestCase {
         song(#"{"id":"sng_1a7f6bc854af","artist":"A","name":"N","explicit":false,"appleMusicId":"P","appleMusicIdExplicit":"E"}"#)
     }
 
+    private func ids(_ song: IndexSong, _ preference: Bool?) -> [String] {
+        AppleMusicProvider.streamCandidates(for: song, preference: preference).map(\.id)
+    }
+
     func testUnsetPreferenceNeverSubstitutes() {
         // The CRITICAL tri-state gate: nil preference ⇒ ONLY the primary, even when a
         // variant is resolved — the re-index must never flip existing streams by itself.
-        XCTAssertEqual(AppleMusicProvider.streamCandidates(for: explicitWithClean, preference: nil), ["P"])
-        XCTAssertEqual(AppleMusicProvider.streamCandidates(for: cleanWithExplicit, preference: nil), ["P"])
+        XCTAssertEqual(ids(explicitWithClean, nil), ["P"])
+        XCTAssertEqual(ids(cleanWithExplicit, nil), ["P"])
     }
 
     func testPreferCleanOrdersCleanVariantFirst() {
-        XCTAssertEqual(AppleMusicProvider.streamCandidates(for: explicitWithClean, preference: false),
-                       ["C", "P"])
+        XCTAssertEqual(ids(explicitWithClean, false), ["C", "P"])
         // Clean primary + prefer clean: the primary IS the preferred edition → just it.
-        XCTAssertEqual(AppleMusicProvider.streamCandidates(for: cleanWithExplicit, preference: false),
-                       ["P"])
+        XCTAssertEqual(ids(cleanWithExplicit, false), ["P"])
     }
 
     func testPreferExplicitOrdersExplicitVariantFirst() {
-        XCTAssertEqual(AppleMusicProvider.streamCandidates(for: cleanWithExplicit, preference: true),
-                       ["E", "P"])
+        XCTAssertEqual(ids(cleanWithExplicit, true), ["E", "P"])
         // Explicit primary + prefer explicit: fallback resolves to the primary itself → just it.
-        XCTAssertEqual(AppleMusicProvider.streamCandidates(for: explicitWithClean, preference: true),
-                       ["P"])
+        XCTAssertEqual(ids(explicitWithClean, true), ["P"])
     }
 
     func testMissingVariantFallsBackToPrimaryAlone() {
         let bare = song(#"{"id":"sng_1a7f6bc854af","artist":"A","name":"N","explicit":true,"appleMusicId":"P"}"#)
-        XCTAssertEqual(AppleMusicProvider.streamCandidates(for: bare, preference: false), ["P"])
+        XCTAssertEqual(ids(bare, false), ["P"])
         // No primary at all but a variant present + preference set → the variant alone.
         let variantOnly = song(#"{"id":"sng_1a7f6bc854af","artist":"A","name":"N","explicit":true,"appleMusicIdClean":"C"}"#)
-        XCTAssertEqual(AppleMusicProvider.streamCandidates(for: variantOnly, preference: false), ["C"])
+        XCTAssertEqual(ids(variantOnly, false), ["C"])
         // …and with the preference unset, nothing (no primary to verify).
-        XCTAssertEqual(AppleMusicProvider.streamCandidates(for: variantOnly, preference: nil), [])
+        XCTAssertEqual(ids(variantOnly, nil), [])
+    }
+
+    func testCandidateEditionClaims() {
+        // The preference-derived variant id CLAIMS its edition (resolve must verify the
+        // fetched row's isExplicit agrees); the primary carries NO claim (existence-only,
+        // the pre-variant trust model). A mis-resolved / tampered appleMusicIdClean must
+        // not stream unverified just because the catalog id exists.
+        XCTAssertEqual(AppleMusicProvider.streamCandidates(for: explicitWithClean, preference: false),
+                       [.init(id: "C", wantExplicit: false), .init(id: "P", wantExplicit: nil)])
+        XCTAssertEqual(AppleMusicProvider.streamCandidates(for: cleanWithExplicit, preference: true),
+                       [.init(id: "E", wantExplicit: true), .init(id: "P", wantExplicit: nil)])
+        // The primary reached via the preference accessor (primary IS the preferred
+        // edition) keeps its existence-only behavior — no claim attached.
+        XCTAssertEqual(AppleMusicProvider.streamCandidates(for: cleanWithExplicit, preference: false),
+                       [.init(id: "P", wantExplicit: nil)])
     }
 
     // MARK: editionMatches — the tight edition filter

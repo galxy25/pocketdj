@@ -248,7 +248,14 @@ final class AppleMusicProvider: StreamingProvider, StreamingSearch, SongRecogniz
         //    path that lets "Apple Music (Local)" songs (ids shaped `sng_…`, which 2
         //    can't decode) stream instead of always falling through to a rip.
         for candidate in Self.streamCandidates(for: song, preference: preferExplicitVersions()) {
-            if let row = try? await Self.fetchRow(storeID: candidate) {
+            if let row = try? await Self.fetchRow(storeID: candidate.id) {
+                // An edition-CLAIMING candidate (the preference-derived variant id) must
+                // have its claim verified against the row MusicKit actually returned — an
+                // existence hit alone is no edition check, and these ids are minted by the
+                // out-of-app resolver (mis-resolution / stale or tampered index). On a
+                // mismatch fall through to the next candidate (the verified-behavior
+                // primary) instead of streaming a wrong edition under this song's identity.
+                if let want = candidate.wantExplicit, row.isExplicit != want { continue }
                 return AppleMusicCatalog.track(from: row)
             }
         }
@@ -518,20 +525,33 @@ extension AppleMusicProvider: MusicLibraryContributor {
 // ============================================================================
 
 extension AppleMusicProvider {
+    /// One ordered stream candidate: the catalog id to try, plus the edition the fetched
+    /// row MUST carry. `wantExplicit` non-nil ⇒ the candidate CLAIMS an edition (it came
+    /// from the preference-derived variant fields, which are minted by the network-facing
+    /// resolver and are only a claim) — `resolve` verifies `row.isExplicit` agrees before
+    /// playing, else falls through. nil ⇒ no edition claim: the primary id keeps its
+    /// historical existence-only check (the pre-variant trust model, unregressed).
+    struct StreamCandidate: Equatable {
+        let id: String
+        let wantExplicit: Bool?
+    }
+
     /// Ordered, de-duplicated catalog-id candidates for a NON-variant song. `preference`
     /// is the TRI-STATE explicit-versions setting: nil (UNSET) ⇒ just the primary id —
     /// an existing song's stream is never substituted until the user has explicitly
     /// chosen a direction (the substitution-default safety ruling); false/true ⇒ the
     /// preferred edition's catalog id first (when resolved and distinct), primary next.
-    static func streamCandidates(for song: IndexSong, preference: Bool?) -> [String] {
-        var out: [String] = []
+    static func streamCandidates(for song: IndexSong, preference: Bool?) -> [StreamCandidate] {
+        var out: [StreamCandidate] = []
         if let preferExplicit = preference {
             let pref: SongVariant = preferExplicit ? .explicit : .clean
             if let v = song.appleMusicId(for: pref), !v.isEmpty, v != song.appleMusicId {
-                out.append(v)
+                out.append(.init(id: v, wantExplicit: preferExplicit))
             }
         }
-        if let p = song.appleMusicId, !p.isEmpty, !out.contains(p) { out.append(p) }
+        if let p = song.appleMusicId, !p.isEmpty, !out.contains(where: { $0.id == p }) {
+            out.append(.init(id: p, wantExplicit: nil))
+        }
         return out
     }
 
