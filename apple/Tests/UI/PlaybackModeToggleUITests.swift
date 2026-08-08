@@ -49,6 +49,17 @@ final class PlaybackModeToggleUITests: XCTestCase {
         // So there is deliberately NO XCTSkip fallback any more. If the row cannot be found the
         // test FAILS and prints the tree, because "can't find the seeded playlist on the
         // Playlists screen" is a real problem worth seeing, not something to route around.
+        // FIRST select the "Yours" tab. The Yours|Shared mode is `@AppStorage("pdj.playlists.mode")`
+        // (PlaylistsView.swift:77) — real UserDefaults, PERSISTED ACROSS LAUNCHES and not reset by
+        // PDJ_USE_FIXTURE. This test's original selector matched `playlist-mode-picker` and tapped
+        // IT instead of a row, which flipped this Mac to Shared and left it there; every run since
+        // has opened on the Shared tab, which lists source playlists and is empty here. MEASURED
+        // (runner job 347a1035): the Playlists tree carried RadioButton 'Shared' value 1 and two
+        // `playlists-shared-empty` labels, and no `playlist-pls_` row — the row was not missing,
+        // the app was on the wrong tab. So never trust the persisted default; state it.
+        let yours = app.radioButtons["Yours"]
+        if yours.waitForExistence(timeout: 15), yours.isToggledOn != true { yours.tap() }
+
         // Both queries are TYPE-SCOPED. An unscoped `descendants(matching: .any)` carrying a
         // CONTAINS predicate evaluates against every element in the window, and on a loaded Mac
         // that query does not merely miss — it dies with "Failed to get matching snapshots:
