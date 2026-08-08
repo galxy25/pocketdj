@@ -39,13 +39,16 @@ final class FavoritesUITests: XCTestCase {
 
     // MARK: Album track table — every platform
     //
-    // These two RUN ON macOS, and they are the regression guard for a real macOS product bug
-    // fixed on this branch: the ♥ and the ▶/⤓ transport used to be nested inside the row's
-    // `NavigationLink` label, and AppKit collapses a link's label into ONE accessibility
-    // element — so `favorite-toggle-…` was absent from the macOS tree entirely and a click in
-    // that part of the row fell through to the link and opened the song instead. The controls
-    // are now siblings of the link (AlbumDetailView.trackTable), which is what makes these
-    // pass here. If they start failing on macOS again, suspect that nesting has come back.
+    // These two RUN ON macOS. They could not before: the ♥ and the ▶/⤓ transport used to be
+    // nested inside the row's `NavigationLink` label, and AppKit collapses a link's label into
+    // ONE accessibility element, so `favorite-toggle-…` was absent from the macOS tree entirely
+    // — invisible to XCUITest and unreachable by VoiceOver. The controls are now siblings of the
+    // link (AlbumDetailView.trackTable), which is what makes these pass here. If they start
+    // failing on macOS again, suspect that nesting has come back.
+    //
+    // Scope, so nobody overstates it downstream: that was an ACCESSIBILITY/testability gap, not
+    // a broken mouse path — a measured 4pt click sweep across the pre-fix row favorited the
+    // track from the ♥ without navigating.
 
     /// The ♥ for a song, by id. `any(_:)` (identifier across ALL element types) rather than
     /// `el(_:)` (a `.buttons` query), because `FavoriteToggle`'s label is a bare `Image` and the

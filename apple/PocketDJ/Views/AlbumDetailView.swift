@@ -153,12 +153,18 @@ struct AlbumDetailView: View {
             ForEach(Array(tracks.enumerated()), id: \.element.id) { idx, song in
                 VStack(spacing: 0) {
                     // The ♥ and the transport are SIBLINGS of the NavigationLink, never inside
-                    // its label. Nesting them was a real macOS bug: AppKit collapses a link's
+                    // its label. Nesting them cost macOS ACCESSIBILITY: AppKit collapses a link's
                     // label into one accessibility element, so `favorite-toggle-…` / `row-play-…`
-                    // vanished from the tree entirely and a click in that part of the row fell
-                    // through to the link and opened the song instead of favoriting it. (iOS
-                    // tolerated the nesting, which is why it went unnoticed.) Keeping them
-                    // outside costs nothing and makes the row behave the same on every platform.
+                    // vanished from the tree entirely — unreachable by VoiceOver, and invisible to
+                    // XCUITest, which is why the two FavoritesUITests could not run here. (iOS
+                    // keeps them in the tree, which is why it went unnoticed.)
+                    //
+                    // MOUSE CLICKS WERE NEVER BROKEN — measured, don't re-derive it. A 4pt sweep
+                    // across the pre-fix row, resetting the favorite before every click, put the ♥
+                    // at screen x≈3259 and clicks there favorited the track without navigating;
+                    // only the GAPS between controls fell through to the link, which is correct.
+                    // An earlier claim that the click "opened the song instead" came from clicking
+                    // the Key/Time columns by mistake and is wrong.
                     HStack(spacing: 10) {
                         NavigationLink(value: song) {
                             TrackRowInfo(index: song.trackNumber ?? (idx + 1), song: song)
