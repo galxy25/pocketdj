@@ -563,6 +563,38 @@ test('register-device validates the token and stores it; all routes 410 after en
   }
 });
 
+/// Account deletion (Guideline 5.1.1(v)) must be able to WITHDRAW the APNs token it pushed
+/// to a broker the user may not own — waiting out the session's 24 h TTL is not erasure.
+test('DELETE register-device withdraws the token; member-authenticated and idempotent', async () => {
+  const s = await createSession();
+  const b = await req('POST', `/mwf/${s.sessionId}/join`, { body: { name: 'Beth', clientId: 'unreg-B' } });
+  const token64 = 'ef'.repeat(32);
+  assert.equal((await req('POST', `/mwf/${s.sessionId}/register-device`,
+    { bearer: b.json.memberKey, body: { platform: 'ios', token: token64 } })).status, 200);
+  const sessionFile = join(HOME, 'mwf', s.sessionId, 'session.json');
+  assert.ok(readFileSync(sessionFile, 'utf8').includes(token64), 'the token was persisted');
+
+  // Unauthenticated / wrong bearer cannot strip someone else's registration.
+  assert.equal((await req('DELETE', `/mwf/${s.sessionId}/register-device`)).status, 401);
+  assert.equal((await req('DELETE', `/mwf/${s.sessionId}/register-device`, { bearer: 'mk_bogus' })).status, 401);
+  assert.ok(readFileSync(sessionFile, 'utf8').includes(token64), 'still registered after the refusals');
+
+  const del = await req('DELETE', `/mwf/${s.sessionId}/register-device`, { bearer: b.json.memberKey });
+  assert.equal(del.status, 200);
+  assert.equal(del.json.unregistered, true);
+  const persisted = JSON.parse(readFileSync(sessionFile, 'utf8'));
+  assert.ok(!JSON.stringify(persisted).includes(token64), 'the token is gone from disk, not just memory');
+  const beth = persisted.members.find((m) => m.memberId === b.json.memberId);
+  assert.equal(beth.deviceToken, undefined);
+  assert.equal(beth.devicePlatform, undefined);
+  assert.equal(beth.memberKey, b.json.memberKey, 'membership itself survives — only the token is withdrawn');
+
+  // Idempotent: erasing twice (or with nothing registered) is a success, never a 4xx that
+  // would make the deletion flow look failed.
+  assert.equal((await req('DELETE', `/mwf/${s.sessionId}/register-device`, { bearer: b.json.memberKey })).status, 200);
+  assert.equal((await req('DELETE', `/mwf/${s.sessionId}/register-device`, { bearer: s.memberKey })).status, 200);
+});
+
 test('end requires the leaderKey; a memberKey cannot end or decide', async () => {
   const s = await createSession({ settings: { acceptOutsideTurn: true, turnEndsOnFirstSuggestion: false } });
   const b = await req('POST', `/mwf/${s.sessionId}/join`, { body: { name: 'Beth', clientId: 'auth-B' } });

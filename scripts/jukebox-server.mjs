@@ -886,6 +886,17 @@ function registerMwfDevice(s, member, body) {
   return { status: 200, json: { ok: true } };
 }
 
+// The UNREGISTER half (DELETE /mwf/:id/register-device). An APNs device token is personal
+// data tied to the installing device: when the app erases the account (Guideline 5.1.1(v))
+// it must be able to withdraw the token it pushed here, not merely wait out the session's
+// 24 h TTL on a broker it does not own. Idempotent — a member with no token answers 200.
+function unregisterMwfDevice(s, member) {
+  delete member.deviceToken;
+  delete member.devicePlatform;
+  persistMwfSession(s);
+  return { status: 200, json: { ok: true, unregistered: true } };
+}
+
 function endMwf(s) {
   s.ended = true;
   clearTimeout(s.turnTimer); clearTimeout(s.warnTimer);
@@ -951,7 +962,7 @@ function send(res, status, body) {
     'Content-Type': typeof body === 'string' ? 'text/plain' : 'application/json',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'authorization,content-type',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
   });
   res.end(payload);
 }
@@ -1090,6 +1101,10 @@ const server = http.createServer(async (req, res) => {
       const body = await readJsonBounded(req, res);
       if (body === null) return;
       const r = registerMwfDevice(s, member, body);
+      return send(res, r.status, r.json);
+    }
+    if (rest === '/register-device' && req.method === 'DELETE') {
+      const r = unregisterMwfDevice(s, member);
       return send(res, r.status, r.json);
     }
     return send(res, 404, { error: 'not found' });

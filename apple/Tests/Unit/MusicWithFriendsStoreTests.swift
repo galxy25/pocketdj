@@ -411,6 +411,35 @@ final class MusicWithFriendsStoreTests: XCTestCase {
         XCTAssertTrue(store2.sessions.isEmpty)
     }
 
+    /// The APNs device token pushed to the broker is personal data on a server the user may
+    /// not own. Deletion must WITHDRAW it from every session while the memberKeys that
+    /// authorize the call still exist — `eraseAll()` destroys them immediately after.
+    func testUnregisterPushWithdrawsTheTokenFromEverySession() async throws {
+        let (store, defaults) = makeStore()
+        let a = MwFSessionEntry(id: "abcd2345", memberId: "mb_a", memberKey: "mk_a", leaderKey: nil,
+                                name: nil, theme: nil, url: nil, apiBase: "https://broker.test",
+                                expiresAt: nil, pocketId: nil, joinedAt: 1)
+        let b = MwFSessionEntry(id: "efgh6789", memberId: "mb_b", memberKey: "mk_b", leaderKey: "lk_b",
+                                name: nil, theme: nil, url: nil, apiBase: "https://broker.test",
+                                expiresAt: nil, pocketId: nil, joinedAt: 2)
+        defaults.set(try! JSONEncoder().encode([a, b]), forKey: "pdj.mwf.sessions.v1")
+        store.loadPersisted()
+
+        await store.unregisterPushEverywhere()
+
+        for (id, key) in [("abcd2345", "mk_a"), ("efgh6789", "mk_b")] {
+            let req = MwFURLProtocol.last(path: "/mwf/\(id)/register-device")
+            XCTAssertEqual(req?.httpMethod, "DELETE", "the withdraw verb, not another register")
+            XCTAssertEqual(req?.value(forHTTPHeaderField: "Authorization"), "Bearer \(key)",
+                           "each session's OWN memberKey authorizes its retraction")
+        }
+        // An unreachable broker must not trap the deletion — the local wipe still runs.
+        MwFURLProtocol.statusCodeByPath["/mwf/abcd2345/register-device"] = 500
+        await store.unregisterPushEverywhere()
+        store.eraseAll()
+        XCTAssertTrue(store.sessions.isEmpty)
+    }
+
     /// The per-install re-join secret is identity: after a reset the next mint must be a
     /// DIFFERENT value, or a re-join would sha256-match the deleted account's member.
     func testJoinSecretResetMintsAFreshSecret() {

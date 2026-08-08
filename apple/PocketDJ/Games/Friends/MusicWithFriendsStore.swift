@@ -455,6 +455,24 @@ final class MusicWithFriendsStore {
         try? await client.registerDevice(entry, platform: push.platformString, token: hex)
     }
 
+    /// Account-deletion counterpart of `registerPushIfPossible`: withdraw this device's APNs
+    /// token from EVERY session it was registered with, while the memberKeys that authorize
+    /// the call still exist (`eraseAll()` destroys them a moment later). Best-effort and
+    /// bounded — every call carries a 6 s timeout and they run concurrently, so an
+    /// unreachable broker costs the deletion one timeout, not one per session. A failure is
+    /// survivable (the registration dies with the session's 24 h TTL); silently keeping a
+    /// live token on someone else's broker after "delete everything" is not.
+    func unregisterPushEverywhere() async {
+        let live = sessions.filter { !$0.memberKey.isEmpty }
+        guard !live.isEmpty else { return }
+        // MainActor-inheriting Tasks (like `updateDeviceToken`) — started together, awaited
+        // together, no value crosses an isolation boundary.
+        let inFlight = live.map { entry in
+            Task { try? await self.client.unregisterDevice(entry) }
+        }
+        for task in inFlight { _ = await task.value }
+    }
+
     /// Token rotation / late arrival: re-register on every live session (fire-and-forget).
     func updateDeviceToken(_ hex: String) {
         guard let push else { return }

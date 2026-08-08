@@ -218,9 +218,12 @@ final class AccountDeletionService {
         gameScores.clear()       // the synced "game-scores" doc
         puzzleDecisions.clear()  // the synced "puzzle-decisions" doc — per-song behavioral data
         // Music with Friends: session entries carry bearer memberKeys/leaderKeys; the scored
-        // set and cached states are per-account too. Broker-side device-token registrations
-        // cannot be unregistered (no such endpoint) but die with each session's 24 h TTL —
-        // and the keys that could ever re-register them are erased right here.
+        // set and cached states are per-account too. WITHDRAW the APNs device tokens FIRST —
+        // they are personal data sitting on a broker the user may not own, and only the
+        // memberKeys `eraseAll()` is about to destroy can authorize the retraction. Bounded
+        // and best-effort (a dead broker costs one 6 s timeout; the registration would then
+        // die with the session's 24 h TTL anyway).
+        await friends.unregisterPushEverywhere()
         friends.eraseAll()
 
         // ── 4) CLEAR THE KEYCHAIN (streaming account links) ──────────────────

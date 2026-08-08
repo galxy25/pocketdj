@@ -199,6 +199,18 @@ struct MwFClient {
             as: Ack.self)
     }
 
+    /// Withdraw this device's APNs token from the session (`DELETE .../register-device`).
+    /// The account-deletion counterpart of `registerDevice`: the token is personal data on
+    /// a broker the user may not own, so erasing the account must retract it rather than
+    /// wait out the session's 24 h TTL. Short timeout — deletion must never hang on it.
+    func unregisterDevice(_ entry: MwFSessionEntry) async throws {
+        struct Ack: Decodable { let ok: Bool? }
+        _ = try await run(
+            try request(base: normalizedBase(entry.apiBase), "/mwf/\(entry.id)/register-device",
+                        method: "DELETE", bearer: entry.memberKey, timeout: 6),
+            as: Ack.self)
+    }
+
     func end(_ entry: MwFSessionEntry) async throws {
         struct Ack: Decodable { let ok: Bool? }
         guard let leaderKey = entry.leaderKey else { throw ClientError.http(401) }
