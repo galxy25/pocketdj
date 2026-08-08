@@ -62,6 +62,36 @@ final class NowPlayingDSPTests: XCTestCase {
 
     private func makeDSP() -> NowPlayingDSP { NowPlayingDSP(burns: makeBurns(makeRips())) }
 
+    /// 4 REAL decodable sine-WAV stems for `songId`, wired through the "Pocket DJ" profile lane
+    /// (`NowPlayingDSP.profileStemResolve`) — `songId` MUST carry the `pdj_` prefix.
+    ///
+    /// Why not the BURN lane: `BurnStore` names burned stems `stem-<id>-<part>.mp3`, and
+    /// `AVAudioFile(forReading:)` picks its decoder from the file EXTENSION, not the bytes — a WAV
+    /// body under an `.mp3` name fails to open (`dta?` / kAudioFileInvalidFileError). Apple platforms
+    /// ship no MP3 *encoder*, so a test can't synthesize a genuinely-`.mp3` stem at all. The profile
+    /// lane takes arbitrary URLs and reaches the IDENTICAL `wireStems` → `scheduleStems` →
+    /// `generation` code under test (`NowPlayingDSP.wireStems` line 1 of its source split), so the
+    /// regression coverage is the same; only the URL resolution differs.
+    private func stemURLs(seconds: Double) throws -> [String: URL] {
+        var urls: [String: URL] = [:]
+        for name in MixEngine.stemNames {
+            let u = try makeSineWAV(seconds: seconds)
+            addTeardownBlock { try? FileManager.default.removeItem(at: u) }
+            urls[name] = u
+        }
+        return urls
+    }
+
+    /// A DSP that resolves REAL decodable stems for `songId` (see `stemURLs`).
+    private func makeStemmedDSP(songId: String, stemSeconds: Double) throws -> NowPlayingDSP {
+        XCTAssertTrue(ProfileSourceStore.isProfileSongId(songId),
+                      "the stem fixture rides the profile lane — songId needs the pdj_ prefix")
+        let urls = try stemURLs(seconds: stemSeconds)
+        let d = makeDSP()
+        d.profileStemResolve = { $0 == songId ? urls : nil }   // set BEFORE engage (drives stemsAvailable)
+        return d
+    }
+
     /// A short sine WAV on disk (mirrors MixEngineTests) so `engage` exercises the real decode +
     /// schedule path.
     private func makeSineWAV(seconds: Double, sr: Double = 44_100) throws -> URL {
@@ -466,6 +496,229 @@ final class NowPlayingDSPTests: XCTestCase {
         XCTAssertEqual(seq.index, 1, "the DSP's natural end advanced the set")
         XCTAssertFalse(seq.mixEngaged, "the engagement was torn down before advancing")
         XCTAssertFalse(dsp.isEngaged, "the DSP handed the audio back")
+    }
+
+    // MARK: - Stems-toggle regression (the toggle must never fake an end-of-track)
+    //
+    // `AVAudioPlayerNode.stop()` FIRES the flushed segment's completion handler. `setStemMode`
+    // stops voices in both directions, and without a `generation` bump at its commit points the
+    // flushed completion passed `handleReachedEnd`'s staleness guard, faked a natural end, and
+    // `SetlistPlayer.handleDSPEnded` advanced the set — enabling stems mid-song SKIPPED the song
+    // (and `advanceToNext` rewrote the durable-session row at position 0).
+
+    func testEnablingStemsDoesNotEndTheTrack() async throws {
+        let d = try makeStemmedDSP(songId: "pdj_stx1", stemSeconds: 3)
+        let url = try makeSineWAV(seconds: 3)
+        defer { try? FileManager.default.removeItem(at: url) }
+        d.engage(url: url, startMs: nil, lengthMs: nil, atSeconds: 0, songId: "pdj_stx1", play: true)
+        try XCTSkipUnless(d.isReady, "no audio device on this test host")
+        var ends = 0
+        d.onReachedEnd = { ends += 1 }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        let before = d.currentTime
+        XCTAssertTrue(d.setStemMode(true), "burned stems → the toggle engages")
+        // Long enough for the flushed main-file completion's main-actor hop, far short of the 3 s end.
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(ends, 0, "the toggle's flushed completion must read stale — no fake end")
+        XCTAssertTrue(d.stemMode)
+        XCTAssertTrue(d.isPlaying, "still playing, now through the stems")
+        XCTAssertLessThan(d.currentTime, d.duration, "nowhere near the end")
+        XCTAssertGreaterThanOrEqual(d.currentTime, before - 0.05,
+                                    "position continued from the toggle point (no reset to 0)")
+        d.disengage()
+    }
+
+    func testDisablingStemsDoesNotEndTheTrack() async throws {
+        let d = try makeStemmedDSP(songId: "pdj_stx2", stemSeconds: 3)
+        let url = try makeSineWAV(seconds: 3)
+        defer { try? FileManager.default.removeItem(at: url) }
+        d.engage(url: url, startMs: nil, lengthMs: nil, atSeconds: 0, songId: "pdj_stx2", play: true)
+        try XCTSkipUnless(d.isReady, "no audio device on this test host")
+        var ends = 0
+        d.onReachedEnd = { ends += 1 }
+        XCTAssertTrue(d.setStemMode(true))
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertTrue(d.setStemMode(false), "toggling back OFF mid-song")
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(ends, 0, "the flushed lead-stem completion must read stale — no fake end")
+        XCTAssertFalse(d.stemMode)
+        XCTAssertTrue(d.isPlaying, "still playing, back through the single file")
+        XCTAssertLessThan(d.currentTime, d.duration)
+        d.disengage()
+    }
+
+    func testStemToggleWhilePausedKeepsPosition() async throws {
+        let d = try makeStemmedDSP(songId: "pdj_stx3", stemSeconds: 3)
+        let url = try makeSineWAV(seconds: 3)
+        defer { try? FileManager.default.removeItem(at: url) }
+        d.engage(url: url, startMs: nil, lengthMs: nil, atSeconds: 1.0, songId: "pdj_stx3", play: false)
+        try XCTSkipUnless(d.isReady, "no audio device on this test host")
+        var ends = 0
+        d.onReachedEnd = { ends += 1 }
+        XCTAssertTrue(d.setStemMode(true))
+        XCTAssertTrue(d.setStemMode(false))
+        try await Task.sleep(nanoseconds: 250_000_000)
+        XCTAssertEqual(ends, 0, "no end fires from a paused toggle")
+        XCTAssertFalse(d.isPlaying, "still paused")
+        XCTAssertEqual(d.currentTime, 1.0, accuracy: 0.05, "the paused position survives both toggles")
+        d.disengage()
+    }
+
+    /// The OFF path's `scheduleMain`-failure branch: toggling stems off once the playhead has reached
+    /// the slice end leaves nothing to schedule, so the track really IS over. It must report that end
+    /// EXACTLY once and land on a coherent stopped state — before this fix it returned `true` with
+    /// `isPlaying` stale-true and no end at all (the set would hang on a finished track).
+    ///
+    /// Driven deterministically by `lengthMs`: the slice is 1 s of a 3 s file while the stems run the
+    /// full 3 s, so the stems are still sounding (no natural end yet) once `currentTime` has clamped to
+    /// `duration` — exactly the state the branch guards.
+    func testTogglingStemsOffAtTheSliceEndReportsTheEndExactlyOnce() async throws {
+        let d = try makeStemmedDSP(songId: "pdj_stx9", stemSeconds: 3)
+        let url = try makeSineWAV(seconds: 3)
+        defer { try? FileManager.default.removeItem(at: url) }
+        d.engage(url: url, startMs: nil, lengthMs: 1_000, atSeconds: 0, songId: "pdj_stx9", play: true)
+        try XCTSkipUnless(d.isReady, "no audio device on this test host")
+        XCTAssertEqual(d.duration, 1.0, accuracy: 0.01, "lengthMs bounds the slice to 1 s")
+        var ends = 0
+        d.onReachedEnd = { ends += 1 }
+        XCTAssertTrue(d.setStemMode(true))
+        try await Task.sleep(nanoseconds: 1_300_000_000)   // past the 1 s slice; the 3 s stems play on
+        XCTAssertEqual(ends, 0, "the stems have not reached their own end")
+        XCTAssertEqual(d.currentTime, d.duration, accuracy: 1e-9, "the playhead clamped to the slice end")
+
+        XCTAssertTrue(d.setStemMode(false), "the toggle still succeeds — it just reports the end")
+        try await Task.sleep(nanoseconds: 250_000_000)     // the deferred Task hop
+        XCTAssertEqual(ends, 1, "the end is reported exactly once, deferred out of setStemMode")
+        XCTAssertFalse(d.isPlaying)
+        XCTAssertFalse(d.stemMode)
+        XCTAssertEqual(d.currentTime, d.duration, accuracy: 1e-9)
+        d.disengage()
+    }
+
+    /// The anti-over-correction test: after a toggle the NEW voices' natural end must still fire —
+    /// a naive top-of-function `generation` bump (or a bump AFTER `scheduleStems` captured its
+    /// generation) would swallow it and the set would stall forever.
+    func testNaturalEndStillFiresAfterAStemToggle() async throws {
+        let d = try makeStemmedDSP(songId: "pdj_stx4", stemSeconds: 0.3)
+        let url = try makeSineWAV(seconds: 0.3)
+        defer { try? FileManager.default.removeItem(at: url) }
+        d.engage(url: url, startMs: nil, lengthMs: nil, atSeconds: 0, songId: "pdj_stx4", play: true)
+        try XCTSkipUnless(d.isReady, "no audio device on this test host")
+        var ends = 0
+        d.onReachedEnd = { ends += 1 }
+        XCTAssertTrue(d.setStemMode(true), "toggle on while playing")
+        await waitUntil("the stems' NATURAL end fires") { ends > 0 }
+        try await Task.sleep(nanoseconds: 200_000_000)   // room for any stale double-fire to land
+        XCTAssertEqual(ends, 1, "exactly one end — the real one")
+        d.disengage()
+    }
+
+    /// The refusal path must not invalidate the armed end: `setStemMode(true)` without burned stems
+    /// returns false BEFORE any generation bump or stop, so the main file's natural end still fires.
+    func testStemToggleRefusedWithoutStemsLeavesTheEndArmed() async throws {
+        let d = makeDSP()   // no stems burned for this song
+        let url = try makeSineWAV(seconds: 0.3)
+        defer { try? FileManager.default.removeItem(at: url) }
+        d.engage(url: url, startMs: nil, lengthMs: nil, atSeconds: 0, songId: "np_stx5", play: true)
+        try XCTSkipUnless(d.isReady, "no audio device on this test host")
+        var ends = 0
+        d.onReachedEnd = { ends += 1 }
+        XCTAssertFalse(d.setStemMode(true), "no burned stems → refused")
+        XCTAssertFalse(d.stemMode)
+        XCTAssertTrue(d.isPlaying, "the refusal must not touch the playing main file")
+        await waitUntil("the main file's natural end still fires") { ends > 0 }
+        XCTAssertEqual(ends, 1)
+        d.disengage()
+    }
+
+    /// Rapid on→off→on with no render time in between: every flushed completion (main file and lead
+    /// stem) must read stale against the LATEST generation — zero fake ends, still playing.
+    func testRapidDoubleToggleKeepsPlayingWithoutAFakeEnd() async throws {
+        let d = try makeStemmedDSP(songId: "pdj_stx7", stemSeconds: 3)
+        let url = try makeSineWAV(seconds: 3)
+        defer { try? FileManager.default.removeItem(at: url) }
+        d.engage(url: url, startMs: nil, lengthMs: nil, atSeconds: 0, songId: "pdj_stx7", play: true)
+        try XCTSkipUnless(d.isReady, "no audio device on this test host")
+        var ends = 0
+        d.onReachedEnd = { ends += 1 }
+        XCTAssertTrue(d.setStemMode(true))
+        XCTAssertTrue(d.setStemMode(false))
+        XCTAssertTrue(d.setStemMode(true))
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertEqual(ends, 0, "three rapid toggles, zero fake ends")
+        XCTAssertTrue(d.stemMode)
+        XCTAssertTrue(d.isPlaying)
+        XCTAssertLessThan(d.currentTime, d.duration)
+        d.disengage()
+    }
+
+    /// "Toggle mid-seek" is unreachable — the DSP exposes no seek, and `beginExternalNowPlaying`
+    /// wires only play/pause — so the closest real race is a toggle landing right after `resume()`
+    /// (re)scheduled the main file but before its voice renders (inside the 60 ms start lead). The
+    /// toggle must supersede the resume via the higher generation: no fake end, stems playing.
+    func testToggleImmediatelyAfterResumeDoesNotEndTheTrack() async throws {
+        let d = try makeStemmedDSP(songId: "pdj_stx8", stemSeconds: 3)
+        let url = try makeSineWAV(seconds: 3)
+        defer { try? FileManager.default.removeItem(at: url) }
+        d.engage(url: url, startMs: nil, lengthMs: nil, atSeconds: 0.5, songId: "pdj_stx8", play: true)
+        try XCTSkipUnless(d.isReady, "no audio device on this test host")
+        var ends = 0
+        d.onReachedEnd = { ends += 1 }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        d.pause()
+        d.resume()                            // reschedules the main file (its own generation bump)
+        XCTAssertTrue(d.setStemMode(true))    // lands inside the resume's start lead
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(ends, 0, "the superseded resume's completion reads stale — no fake end")
+        XCTAssertTrue(d.stemMode)
+        XCTAssertTrue(d.isPlaying)
+        XCTAssertLessThan(d.currentTime, d.duration)
+        d.disengage()
+    }
+
+    /// The integration shape of the bug (modeled on `testDSPNaturalEndAdvancesTheSet`, but with a
+    /// 3 s WAV so the real end can't confound it): enabling stems mid-song must NOT advance the set,
+    /// must NOT tear the engagement down, and must NOT rewrite the durable-session row.
+    func testStemToggleDoesNotAdvanceTheSet() async throws {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        let dsp = NowPlayingDSP(burns: burns)
+        seq.dsp = dsp
+        addTeardownBlock { @MainActor in seq.stop() }
+
+        // Track 0 is a "Pocket DJ" profile row: `profileResolve` plays a REAL 3 s WAV (long enough
+        // that its natural end can't confound the assertion) and `profileStemResolve` supplies 4 real
+        // decodable stems. It is ALSO burned, because `currentTrackMixable` gates on a burned-or-studio
+        // id — the panel's own eligibility check, not something this fix touches. Track 1 is burned so
+        // a wrong advance PARKS the set at index 1 instead of running off the end.
+        let wav = try makeSineWAV(seconds: 3)
+        defer { try? FileManager.default.removeItem(at: wav) }
+        let stems = try stemURLs(seconds: 3)
+        seq.profileResolve = { $0 == "pdj_stx6a" ? (url: wav, release: nil, title: "S1", lengthMs: 3_000) : nil }
+        dsp.profileStemResolve = { $0 == "pdj_stx6a" ? stems : nil }
+        await burn(rips, burns, songId: "pdj_stx6a")
+        await burn(rips, burns, songId: "np_stx6b")
+
+        seq.play([.init(id: "pdj_stx6a", title: "S1", artist: "A"),
+                  .init(id: "np_stx6b", title: "S2", artist: "A")])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "pdj_stx6a" }
+        XCTAssertTrue(seq.currentTrackMixable)
+
+        seq.engageMix()
+        try XCTSkipUnless(dsp.isReady, "no audio device on this test host")
+        XCTAssertTrue(seq.mixEngaged, "precondition: the DSP owns the audio")
+        if !dsp.isPlaying { dsp.resume() }
+        XCTAssertTrue(dsp.isPlaying)
+
+        XCTAssertTrue(dsp.setStemMode(true), "real stems → the toggle engages")
+        try await Task.sleep(nanoseconds: 400_000_000)
+        XCTAssertEqual(seq.index, 0, "the toggle must NOT advance the set (the reported skip)")
+        XCTAssertTrue(seq.mixEngaged, "the engagement survives — no teardown, no session-row rewrite")
+        XCTAssertTrue(dsp.isEngaged)
+        XCTAssertTrue(dsp.stemMode)
+        XCTAssertTrue(dsp.isPlaying)
     }
 }
 
