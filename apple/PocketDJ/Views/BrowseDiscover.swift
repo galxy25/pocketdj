@@ -123,9 +123,19 @@ final class DiscoverSearchModel {
 /// once all three are true.
 struct DiscoverResultsList: View {
     @Environment(RipsStore.self) private var rips
+    @Environment(SettingsStore.self) private var settings
     let model: DiscoverSearchModel
     let query: String
     var artist: String = ""
+
+    /// Edition-preference re-rank at DISPLAY time (pure + stable, so the model's merge
+    /// ranking survives): clean editions lead by default; explicit leads when the user
+    /// prefers explicit versions. NEW-song discovery defaults clean even while the
+    /// tri-state preference is unset (the ruling: only stream substitution waits).
+    private var rankedHits: [RipsStore.DiscoverHit] {
+        RipsStore.DiscoverExplicitRanking.rank(model.hits,
+                                               preferExplicit: settings.preferExplicitVersions)
+    }
 
     var body: some View {
         Group {
@@ -198,7 +208,7 @@ struct DiscoverResultsList: View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 // Index-keyed a11y ids (`discover-row-<i>`), identity by songId.
-                ForEach(Array(model.hits.enumerated()), id: \.element.id) { index, hit in
+                ForEach(Array(rankedHits.enumerated()), id: \.element.id) { index, hit in
                     DiscoverRow(hit: hit, index: index)
                     // Same inline player the browser song rows get — a playing
                     // discover hit shows the standard transport under its row.
@@ -261,7 +271,18 @@ private struct DiscoverRow: View {
         HStack(spacing: 12) {
             artwork
             VStack(alignment: .leading, spacing: 2) {
-                Text(hit.title).font(.callout.weight(.semibold)).foregroundStyle(Theme.fg).lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(hit.title).font(.callout.weight(.semibold)).foregroundStyle(Theme.fg).lineLimit(1)
+                    // "E" edition badge (mirrors CollectionSongRow's) so clean vs explicit
+                    // editions of the same track are tellable apart in Discover results.
+                    if hit.explicit == true {
+                        Text("E").font(.system(size: 9, weight: .bold))
+                            .padding(.horizontal, 3).padding(.vertical, 1)
+                            .background(Theme.fgDim.opacity(0.3), in: RoundedRectangle(cornerRadius: 3))
+                            .foregroundStyle(Theme.fg)
+                            .accessibilityIdentifier("discover-explicit-badge")
+                    }
+                }
                 Text(subtitle).font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
             }
             Spacer()

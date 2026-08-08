@@ -9,6 +9,10 @@ struct SongDetailView: View {
     @Environment(RipsStore.self) private var rips
     @Environment(StreamingStore.self) private var streaming
     @Environment(IntentServices.self) private var intents
+    @Environment(CollectionsStore.self) private var collections
+    /// Optional-degrade (the AddToCollectionView `writeBack` pattern): previews/tests that
+    /// render the detail standalone lose only the Suggested-collections rows.
+    @Environment(RecommendationService.self) private var recEngine: RecommendationService?
     @Environment(\.dismiss) private var dismiss
     let song: IndexSong
     @State private var showEdit = false
@@ -28,6 +32,10 @@ struct SongDetailView: View {
     /// `StemPlayer` so playback survives the panel's internal re-renders. Stopped on disappear.
     @State private var showStems = false
     @State private var stemPlayer = StemPlayer()
+    /// Recommendation-engine collection suggestions for THIS song (empty = section hidden).
+    @State private var collectionSuggestions: [RecommendationService.CollectionSuggestion] = []
+    /// Suggestions the user tapped "Add" on this visit — render as checkmarks immediately.
+    @State private var addedSuggestionIds: Set<String> = []
 
     /// Always read the latest (possibly edited) version from the catalog.
     private var current: IndexSong { app.songsById[song.id] ?? song }
@@ -49,6 +57,7 @@ struct SongDetailView: View {
                 if let lyrics, !lyrics.isEmpty { lyricsSection(lyrics) }
                 playback
                 appleMusicLibrary
+                suggestedCollections
                 catalogLibrary
             }
             .padding(20)
@@ -104,6 +113,68 @@ struct SongDetailView: View {
             libraryResolution = await contributor.resolveForLibrary(
                 storeID: storeID, title: current.name, artist: current.artist)
         }
+        // Recommendation-engine collection suggestions — gated on the engine (nothing fires
+        // while it's off; the service's own `isEnabled` guard is the privacy gate).
+        .task(id: current.id) {
+            collectionSuggestions = []; addedSuggestionIds = []
+            if let rec = recEngine, rec.isEnabled {
+                collectionSuggestions = await rec.collectionSuggestions(for: current.id)
+            }
+        }
+    }
+
+    /// "Suggested collections" rows — the engine's per-song collection matches. Hidden when
+    /// there are none (engine off, offline, nothing above threshold). Rows whose collection no
+    /// longer resolves locally are dropped at render.
+    @ViewBuilder private var suggestedCollections: some View {
+        let rows = collectionSuggestions.filter { resolvesLocally($0) }
+        if !rows.isEmpty {
+            Divider().overlay(Theme.border)
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Suggested collections").font(.caption.weight(.semibold)).textCase(.uppercase)
+                    .foregroundStyle(Theme.fgDim)
+                ForEach(Array(rows.prefix(5).enumerated()), id: \.element.id) { idx, sug in
+                    HStack(spacing: 10) {
+                        Image(systemName: sug.kind == "pocket" ? "rectangle.stack" : "music.note.list")
+                            .foregroundStyle(Theme.accent2)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(sug.name).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
+                            if let reason = sug.reasons.first {
+                                Text(reason).font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
+                            }
+                        }
+                        Spacer()
+                        if addedSuggestionIds.contains(sug.id) || isMember(sug) {
+                            Image(systemName: "checkmark").foregroundStyle(Theme.accent)
+                        } else {
+                            Button("Add") { addToSuggestion(sug) }
+                                .buttonStyle(.bordered)
+                                .tint(Theme.accent2)
+                        }
+                    }
+                    .accessibilityIdentifier("song-suggested-collection-\(idx)")
+                }
+            }
+        }
+    }
+
+    private func resolvesLocally(_ sug: RecommendationService.CollectionSuggestion) -> Bool {
+        sug.kind == "pocket" ? collections.pocket(sug.id) != nil : collections.playlist(sug.id) != nil
+    }
+
+    /// Already a member (stale server snapshot) → checkmark, no dup add.
+    private func isMember(_ sug: RecommendationService.CollectionSuggestion) -> Bool {
+        sug.kind == "pocket"
+            ? collections.pocket(sug.id)?.songIds.contains(current.id) ?? false
+            : collections.playlist(sug.id, contains: current.id)
+    }
+
+    private func addToSuggestion(_ sug: RecommendationService.CollectionSuggestion) {
+        let kind: AddTarget.Kind = sug.kind == "pocket" ? .pocket : .playlist
+        // The generic addSong(_:to:) choke point — stamps activity + write-back via the
+        // existing seams, exactly like the Add sheet.
+        collections.addSong(current.id, to: AddTarget(kind: kind, id: sug.id, sequenceId: nil))
+        addedSuggestionIds.insert(sug.id)
     }
 
     /// The library row: membership state or the ＋ Add affordance (macOS, where MusicKit

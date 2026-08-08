@@ -144,6 +144,11 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var sourceSyncEnabled: Bool?
     /// Per-pocket Apple Music sync direction (raw `CollectionSyncDirection`). nil ⇒ two-way.
     var amSyncDirection: String?
+    /// Clean-versions-only playback/rip for this pocket (see `CleanOnly`). ADDITIVE-OPTIONAL,
+    /// NO schema bump (the amPlaylistId precedent — a version bump discards existing
+    /// documents): nil ⇒ off, the pre-feature behavior. Deliberately TRAVELS in
+    /// `.pdjcollection` exports (not privacy-sensitive, unlike amPlaylistId).
+    var cleanOnly: Bool?
     /// The APPLE MUSIC library playlist this collection is bound to, captured from the sync's push
     /// result. ADDITIVE-OPTIONAL (nil = never pushed, or pushed before this field existed), so no
     /// schema bump — a version bump discards existing documents.
@@ -179,21 +184,22 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, kind, description, songIds, albumIds, childPocketIds, notes, folderId, songRepeats,
              sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt, lastPlayedAt,
-             amSyncDirection, createdAt, updatedAt
+             amSyncDirection, cleanOnly, createdAt, updatedAt
     }
     init(id: String, name: String, kind: PocketKind = .harmonic, description: String? = nil,
          songIds: [String] = [], albumIds: [String] = [], childPocketIds: [String] = [],
          notes: [PocketNote] = [], folderId: String? = nil, songRepeats: [String: Int] = [:],
          sourcePlaylistId: String? = nil, sourceName: String? = nil, sourceSongIds: [String]? = nil,
          sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil, lastPlayedAt: Double? = nil,
-         amSyncDirection: String? = nil, createdAt: Double = 0, updatedAt: Double = 0) {
+         amSyncDirection: String? = nil, cleanOnly: Bool? = nil,
+         createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.kind = kind; self.description = description
         self.songIds = songIds; self.albumIds = albumIds; self.childPocketIds = childPocketIds
         self.notes = notes; self.folderId = folderId; self.songRepeats = songRepeats
         self.sourcePlaylistId = sourcePlaylistId; self.sourceName = sourceName
         self.sourceSongIds = sourceSongIds; self.sourceSyncEnabled = sourceSyncEnabled
         self.sourceSyncedAt = sourceSyncedAt; self.lastPlayedAt = lastPlayedAt
-        self.amSyncDirection = amSyncDirection
+        self.amSyncDirection = amSyncDirection; self.cleanOnly = cleanOnly
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
     init(from decoder: Decoder) throws {
@@ -215,6 +221,7 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
         sourceSyncedAt = try? c.decode(Double.self, forKey: .sourceSyncedAt)
         lastPlayedAt = try? c.decode(Double.self, forKey: .lastPlayedAt)
         amSyncDirection = try? c.decode(String.self, forKey: .amSyncDirection)
+        cleanOnly = try? c.decode(Bool.self, forKey: .cleanOnly)
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
         updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
     }
@@ -376,6 +383,9 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     var sourceSyncedAt: Double?
     /// Per-playlist Apple Music sync direction (raw `CollectionSyncDirection`). nil ⇒ two-way.
     var amSyncDirection: String?
+    /// Clean-versions-only playback/rip for this playlist (see `CleanOnly` + the Pocket twin's
+    /// docs). ADDITIVE-OPTIONAL, NO schema bump: nil ⇒ off. Travels in exports.
+    var cleanOnly: Bool?
     /// The APPLE MUSIC library playlist this collection is bound to, captured from the sync's push
     /// result. ADDITIVE-OPTIONAL (nil = never pushed, or pushed before this field existed), so no
     /// schema bump — a version bump discards existing documents.
@@ -406,7 +416,7 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, description, sequences, targetMs, folderId,
              sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt,
-             amSyncDirection, lastPlayedAt,
+             amSyncDirection, cleanOnly, lastPlayedAt,
              createdAt, updatedAt
     }
 
@@ -416,14 +426,14 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
          targetMs: Int? = nil, folderId: String? = nil,
          sourcePlaylistId: String? = nil, sourceName: String? = nil, sourceSongIds: [String]? = nil,
          sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil,
-         amSyncDirection: String? = nil, lastPlayedAt: Double? = nil,
+         amSyncDirection: String? = nil, cleanOnly: Bool? = nil, lastPlayedAt: Double? = nil,
          createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.description = description
         self.sequences = sequences; self.targetMs = targetMs; self.folderId = folderId
         self.sourcePlaylistId = sourcePlaylistId; self.sourceName = sourceName
         self.sourceSongIds = sourceSongIds; self.sourceSyncEnabled = sourceSyncEnabled
         self.sourceSyncedAt = sourceSyncedAt; self.amSyncDirection = amSyncDirection
-        self.lastPlayedAt = lastPlayedAt
+        self.cleanOnly = cleanOnly; self.lastPlayedAt = lastPlayedAt
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
 
@@ -446,6 +456,9 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
         sourceSyncEnabled = try c.decodeIfPresent(Bool.self, forKey: .sourceSyncEnabled)
         sourceSyncedAt = try c.decodeIfPresent(Double.self, forKey: .sourceSyncedAt)
         amSyncDirection = try c.decodeIfPresent(String.self, forKey: .amSyncDirection)
+        // Lenient on purpose (unlike the required fields above): a malformed cleanOnly
+        // value must never cost the whole playlist via the lossy [Playlist] decode.
+        cleanOnly = try? c.decode(Bool.self, forKey: .cleanOnly)
         lastPlayedAt = try c.decodeIfPresent(Double.self, forKey: .lastPlayedAt)
         createdAt = try c.decode(Double.self, forKey: .createdAt)
         updatedAt = try c.decode(Double.self, forKey: .updatedAt)
@@ -493,6 +506,13 @@ struct SetlistTrack: Codable, Hashable, Sendable, Identifiable {
     /// Frozen loop count (a performance item's repeat count, snapshotted from the template
     /// node / pocket at ▶ Play). nil/absent ⇒ once. Read via `CollectionMembership.normalizedRepeat`.
     var repeatCount: Int?
+    /// Frozen EDITION override (a cleanOnly collection substituting the clean cut) — a raw
+    /// `SongVariant` string on the wire for forward tolerance (an unknown future value decodes
+    /// and re-encodes; `songVariant` just reads nil). nil/absent ⇒ play the primary cut.
+    var variant: String?
+
+    /// The typed edition override (nil for a plain/unknown value).
+    var songVariant: SongVariant? { variant.flatMap(SongVariant.init(rawValue:)) }
 
     // Stable per-row id for SwiftUI (songId may repeat for cues / blanks).
     var id: String { "\(songId)#\(name)" }
@@ -510,17 +530,17 @@ struct SetlistTrack: Codable, Hashable, Sendable, Identifiable {
     var shownMs: Int { perPlayMs * CollectionMembership.normalizedRepeat(repeatCount) }
 
     enum CodingKeys: String, CodingKey {
-        case songId, artist, name, bpm, camelot, lengthMs, source, sequenceName, note, isText, pocketId, mixSuggestions, repeatCount
+        case songId, artist, name, bpm, camelot, lengthMs, source, sequenceName, note, isText, pocketId, mixSuggestions, repeatCount, variant
     }
     init(songId: String, artist: String, name: String, bpm: Double?, camelot: String?,
          lengthMs: Int? = nil, source: TrackSource = .explicit, sequenceName: String? = nil,
          note: String? = nil, isText: Bool? = nil, pocketId: String? = nil,
-         mixSuggestions: [MixSuggestion]? = nil, repeatCount: Int? = nil) {
+         mixSuggestions: [MixSuggestion]? = nil, repeatCount: Int? = nil, variant: String? = nil) {
         self.songId = songId; self.artist = artist; self.name = name
         self.bpm = bpm; self.camelot = camelot; self.lengthMs = lengthMs
         self.source = source; self.sequenceName = sequenceName; self.note = note
         self.isText = isText; self.pocketId = pocketId; self.mixSuggestions = mixSuggestions
-        self.repeatCount = repeatCount
+        self.repeatCount = repeatCount; self.variant = variant
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -537,6 +557,7 @@ struct SetlistTrack: Codable, Hashable, Sendable, Identifiable {
         pocketId = try? c.decode(String.self, forKey: .pocketId)
         mixSuggestions = try? c.decode([MixSuggestion].self, forKey: .mixSuggestions)
         repeatCount = try? c.decode(Int.self, forKey: .repeatCount)
+        variant = try? c.decode(String.self, forKey: .variant)
     }
 }
 

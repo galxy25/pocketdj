@@ -40,6 +40,15 @@ final class CloudSyncService {
         /// Re-decode the (just-overwritten) file into the live store. nil ⇒ file-only
         /// (the restore-later stores, whose files are read after `syncAtLaunch`).
         var reload: (() -> Void)?
+        /// OPTIONAL write seam for the pulled payload. When set, `applyPull` hands the
+        /// bytes HERE instead of writing `fileURL` itself — for a store whose own writer
+        /// runs off-main on a serial queue (`PuzzleDecisionStore`), an unordered direct
+        /// file write could land between an in-flight coalesced snapshot and the reload's
+        /// read, letting a STALE snapshot clobber the pulled document before the merge
+        /// ever saw it. The seam routes the pull through the store's queue, restoring a
+        /// total order. The closure MUST write the payload to `fileURL` synchronously
+        /// (the mtime watermark is read immediately after).
+        var applyPayload: ((Data) -> Void)?
     }
 
     /// Clock/mtime slack under which two copies count as "the same write".
@@ -93,8 +102,9 @@ final class CloudSyncService {
         return dir.appendingPathComponent("pocketdj-cloudsync-state.json")
     }
 
-    func register(_ key: String, fileURL: URL, reload: (() -> Void)? = nil) {
-        entries.append(Entry(key: key, fileURL: fileURL, reload: reload))
+    func register(_ key: String, fileURL: URL, reload: (() -> Void)? = nil,
+                  applyPayload: ((Data) -> Void)? = nil) {
+        entries.append(Entry(key: key, fileURL: fileURL, reload: reload, applyPayload: applyPayload))
     }
 
     /// True when a pass may run at all (account availability is checked async per pass).
@@ -335,7 +345,11 @@ final class CloudSyncService {
             try? fm.removeItem(at: backup)
             try? fm.copyItem(at: entry.fileURL, to: backup)
         }
-        try doc.payload.write(to: entry.fileURL, options: .atomic)
+        if let applyPayload = entry.applyPayload {
+            applyPayload(doc.payload)   // the store's serialized writer — see Entry.applyPayload
+        } else {
+            try doc.payload.write(to: entry.fileURL, options: .atomic)
+        }
         // Watermark the mtime of the bytes we JUST PULLED, and do it BEFORE `reload()`.
         //
         // The watermark's job is "don't bounce the identical bytes straight back up". Reading the

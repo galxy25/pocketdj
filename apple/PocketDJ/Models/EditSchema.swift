@@ -212,6 +212,7 @@ extension IndexSong {
                          key: e.key ?? key, camelot: e.camelot ?? camelot,
                          length: length, fileType: fileType, lyricsStatus: lyricsStatus,
                          appleMusicId: appleMusicId,
-                         appleMusicUrl: appleMusicUrl, spotifyUrl: spotifyUrl, youtubeUrl: youtubeUrl)
+                         appleMusicUrl: appleMusicUrl, spotifyUrl: spotifyUrl, youtubeUrl: youtubeUrl,
+                         appleMusicIdExplicit: appleMusicIdExplicit, appleMusicIdClean: appleMusicIdClean)
     }
 }

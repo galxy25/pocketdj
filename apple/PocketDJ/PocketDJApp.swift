@@ -20,6 +20,8 @@ struct PocketDJApp: App {
     /// A jukebox deep-link tapped during onboarding — deferred (like `pendingOpenURL`) and joined
     /// once onboarding completes, so a first-run link never joins behind the onboarding modal.
     @State private var pendingJukeboxLink: JukeboxLink?
+    /// A Music with Friends deep-link tapped during onboarding — same deferral doctrine.
+    @State private var pendingMwFLink: MwFLink?
 
     /// Import a tapped collection file and route to the newly-created item, so the open visibly
     /// lands on it. Mirrors the manual pickers (security-scoped access + collections.importAny);
@@ -200,6 +202,16 @@ struct PocketDJApp: App {
     /// polls guest song requests into the host's inbox. App-scoped so the party survives
     /// navigation; its session persists so it survives relaunches too.
     @State private var jukebox: JukeboxStore
+    /// Games tab — durable game-run scoreboard (CloudSync doc "game-scores").
+    @State private var gameScores: GameScoreboardStore
+    /// Games tab — the Collectors Puzzle's recommendation-readable decision log.
+    @State private var puzzleDecisions: PuzzleDecisionStore
+    /// APP-SCOPED Collectors Puzzle round engine — a running round survives tab switches;
+    /// audio rides the app-scoped SetlistPlayer (no new audio owner).
+    @State private var puzzle: CollectorsPuzzleEngine
+    /// APP-SCOPED Music with Friends engine — turn-based suggestion sessions on the
+    /// SAME jukebox broker; holds the persisted session list + deep-link signals.
+    @State private var friends: MusicWithFriendsStore
     /// The App Intents bridge (Siri/Shortcuts/Spotlight → live stores). Constructed +
     /// registered with `AppDependencyManager` in `init()` so an intent that background-
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
@@ -232,6 +244,9 @@ struct PocketDJApp: App {
     @State private var profileSource: ProfileSourceStore
     /// The user's synced identity (PocketDJ name + durable id) — see ProfileStore.
     @State private var profile: ProfileStore
+    /// The cloud recommendation-engine orchestrator (WS-E) — inert (zero network) unless the
+    /// Settings toggle "Use PocketDJ Recommendation Engine" is ON. See RecommendationService.
+    @State private var recEngine: RecommendationService
     /// iCloud (CloudKit private DB) sync of profile + session-data documents. RootView's
     /// launch task awaits its launch pass BEFORE the durable-session restores so a fresh
     /// device restores cloud session files, not empty ones.
@@ -388,6 +403,19 @@ struct PocketDJApp: App {
                                        collectionId: hook.collectionId, collectionKind: hook.collectionKind,
                                        collectionName: hook.collectionName)
         }
+        // Batch adds/removes (multi-select, drag-&-drop, paste) emit ONE batch so the log is
+        // encoded + written ONCE per gesture — the per-hook path above costs a full-document
+        // write each, which a select-all-sized batch must never pay per song.
+        collections.onActivityBatch = { [weak collectionActivity] hooks in
+            collectionActivity?.recordBatch(hooks.map {
+                CollectionActivityStore.BatchEntry(kind: $0.kind == .add ? .add : .remove,
+                                                   itemId: $0.itemId, itemTitle: $0.itemTitle,
+                                                   itemArtist: $0.itemArtist,
+                                                   collectionId: $0.collectionId,
+                                                   collectionKind: $0.collectionKind,
+                                                   collectionName: $0.collectionName)
+            })
+        }
         let storage = StorageManager(burns: burns, playStats: playStats, settings: settings)
         _storage = State(initialValue: storage)
         // ── Studio (Performance tab) stores + engines ──────────────────────────
@@ -443,6 +471,13 @@ struct PocketDJApp: App {
         // streaming first. (Captured by closure; AppModel is a long-lived @Observable.)
         coordinator.sourceOfSong = { [weak app] id in app?.source(ofSong: id) }
         coordinator.appleMusicIdOfSong = { [weak app] id in app?.songsById[id]?.appleMusicId }
+        // Edition plumbing: variant catalog-id lookup for cleanOnly-substituted plays, and
+        // the TRI-STATE explicit-versions preference (raw: nil = never chosen ⇒ existing
+        // songs stream their primary cut untouched — the substitution-default safety gate).
+        coordinator.variantAppleMusicIdOfSong = { [weak app] id, v in
+            app?.songsById[id]?.appleMusicId(for: v)
+        }
+        amProvider.preferExplicitVersions = { [weak settings] in settings?.preferExplicitVersionsRaw }
         // Play-tracking hooks — every surface that starts a song notes it to BOTH the aggregate
         // playStats (for the storage prune) AND the append-only playHistory timeline (History
         // mode). Both stores share a 30 s re-count window that absorbs the burned-play overlap
@@ -472,12 +507,25 @@ struct PocketDJApp: App {
             }
             playHistory.record(songId: songId, title: title, artist: artist, context: context)
         }
-        rips.onPlay = { [weak playStats] in playStats?.notePlayed($0); recordNonMixHistory($0) }
+        // NORMALIZE to the base song id: a variant play via the rip path fires this hook with
+        // the VARIANT id ("sng_…_clean") while the coordinator's hook fires the base — two
+        // DIFFERENT ids, so the 30s per-id re-count window can't dedupe them and history/stats
+        // gain ghost rows keyed to an id no catalog knows. Both hooks converging on the base id
+        // restores the window's dedup AND keys the play to the real song (a plain id is a no-op).
+        rips.onPlay = { [weak playStats] in
+            let id = SongVariant.baseId($0)
+            playStats?.notePlayed(id); recordNonMixHistory(id)
+        }
         // A download asked for before the song had a file: the rip has now landed, so finish the
         // burn. Fires without the user returning to the row — that is what makes ⤓ on an unripped
         // track a real request rather than an error message.
         rips.onRipReady = { [weak burns] _ in Task { await burns?.drainPendingAfterRip() } }
-        coordinator.onPlay = { [weak playStats] in playStats?.notePlayed($0); recordNonMixHistory($0) }
+        coordinator.onPlay = { [weak playStats] in
+            // Defense in depth: the coordinator already reports statsId (the base id) for its
+            // own variant plays — normalize anyway so no future call path can mint a ghost id.
+            let id = SongVariant.baseId($0)
+            playStats?.notePlayed(id); recordNonMixHistory(id)
+        }
         mix.onSongPlayed = { [weak playStats, weak playHistory, weak mix, weak mixSessions, weak app] songId in
             playStats?.notePlayed(songId)
             guard let playHistory else { return }
@@ -727,6 +775,19 @@ struct PocketDJApp: App {
         collections.cancelPendingWriteBacks = { [weak playlistWriteBack] indexPlaylistId, songIds in
             playlistWriteBack?.cancelPending(indexPlaylistId: indexPlaylistId, songIds: songIds)
         }
+        // Batch adds ride `enqueueMany` (ONE queue prune/save + ONE drain kick for N songs) —
+        // the per-song closure above would re-encode the whole queue file per id.
+        collections.enqueueSourceWriteBackBatch = { [weak playlistWriteBack] items in
+            guard let wb = playlistWriteBack, wb.canWriteBack else { return 0 }
+            let queued = wb.enqueueMany(items)
+            if queued > 0 { wb.runSoon() }
+            return queued
+        }
+        // Consulted before parking a LARGE batch for confirmation — a session that can't
+        // deliver upstream must never show the "add N songs to Apple Music?" dialog.
+        collections.canWriteBackUpstream = { [weak playlistWriteBack] in
+            playlistWriteBack?.canWriteBack ?? false
+        }
 
         // ── Discover adds: provisional catalog entries (eventual consistency) ──
         // "＋ Add" makes the song a catalog citizen NOW; the nightly indexer's real
@@ -869,6 +930,73 @@ struct PocketDJApp: App {
         jukebox.profileIdProvider = { [weak profile] in profile?.id ?? "" }
         jukebox.loadJoinedSessions()
         _profile = State(initialValue: profile)
+
+        // ── Games tab: scoreboard + Collectors Puzzle + Music with Friends ─────
+        // Scoreboard + decision log are durable synced JSON (the PlayHistory union
+        // doctrine); the puzzle engine reuses the app-scoped sequencer (one audio
+        // owner); MwF rides the SAME jukebox broker settings + matcher seams.
+        let gameScores = GameScoreboardStore(fileURL: GameScoreboardStore.launchURL())
+        let puzzleDecisions = PuzzleDecisionStore(fileURL: PuzzleDecisionStore.launchURL())
+        let puzzle = CollectorsPuzzleEngine(app: app, sequencer: setlistPlayer,
+                                            collections: collections, favorites: favorites,
+                                            playStats: playStats, scoreboard: gameScores,
+                                            decisions: puzzleDecisions)
+        let friends = MusicWithFriendsStore()
+        friends.settings = settings
+        friends.appModel = app
+        friends.collectionsStore = collections
+        friends.scoreboard = gameScores
+        friends.sequencer = setlistPlayer
+        friends.searchAppleMusic = { [weak amProvider] term in
+            guard let amProvider, amProvider.canSearch else { return [] }
+            return (try? await amProvider.search(term, limit: 5)) ?? []
+        }
+        friends.push = PushRegistrationService.shared
+        friends.profileIdProvider = { [weak profile] in profile?.id ?? "" }
+        friends.profileNameProvider = { [weak profile] in profile?.name ?? "" }
+        friends.loadPersisted()
+        _gameScores = State(initialValue: gameScores)
+        _puzzleDecisions = State(initialValue: puzzleDecisions)
+        _puzzle = State(initialValue: puzzle)
+        _friends = State(initialValue: friends)
+        // Token receipt (first grant + rotation) re-registers every live MwF session;
+        // a tapped push routes to the Games tab via the pendingOpenId consume.
+        PushRegistrationService.shared.onToken = { [weak friends] hex in
+            Task { @MainActor in friends?.updateDeviceToken(hex) }
+        }
+        NotificationRouter.shared.install()
+        NotificationRouter.shared.onOpenMwFSession = { [weak friends] id in
+            Task { @MainActor in friends?.pendingOpenId = id }
+        }
+        // ── Recommendation engine (WS-E) ───────────────────────────────────────
+        // Batch-uploads deltas from the EXISTING stores (no new recording hooks) and serves
+        // History ▸ For You + the Suggested-collections rows — ONLY while the Settings toggle
+        // is on (default OFF; the service guards every network call).
+        // Fixture guard (the cloudKitOff doctrine): a UI-test run that flips the toggle must
+        // never write fixture data to the REAL endpoint — swap in a stub transport.
+        let recClient: RecEngineClient
+        if ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil {
+            recClient = RecEngineClient(transport: { req in
+                (Data("{}".utf8), HTTPURLResponse(url: req.url ?? Config.recEngineBase,
+                                                  statusCode: 200, httpVersion: nil,
+                                                  headerFields: nil)!)
+            })
+        } else {
+            recClient = RecEngineClient()
+        }
+        let recEngine = RecommendationService(
+            client: recClient, settings: settings, history: playHistory,
+            favorites: favorites, activity: collectionActivity, collections: collections,
+            profileIdProvider: { [weak profile] in profile?.id ?? "" })
+        // WS-D (Games tab) seam, now CLOSED: the Collector's Puzzle decision log feeds the
+        // engine through `PuzzleRecEventBridge` (only `assigned` filings leave the device —
+        // see that file for why a skip must never ride this wire). Weak so the provider can
+        // never keep the store's graph alive past the app; nil store ⇒ no puzzle events,
+        // exactly the pre-merge behaviour.
+        recEngine.puzzleEventsProvider = { [weak puzzleDecisions] sinceMs in
+            puzzleDecisions?.recPuzzleEvents(sinceMs: sinceMs) ?? []
+        }
+        _recEngine = State(initialValue: recEngine)
         // Fixture guard lives HERE (not inside the service): UI-test runs must never
         // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
         // globally and the sync engine itself must stay drivable by tests.
@@ -924,6 +1052,21 @@ struct PocketDJApp: App {
         cloudSync.register("studio-cues", fileURL: studio.cueSyncFileURL) { [weak studio] in
             studio?.reloadCuesFromDisk()     // cue points follow the Apple ID (media-free; NOT the full studio doc)
         }
+        cloudSync.register("game-scores", fileURL: gameScores.syncFileURL) { [weak gameScores] in
+            _ = gameScores?.reloadFromDisk() // union-by-run-id — a pull never clobbers local runs
+        }
+        cloudSync.register("puzzle-decisions", fileURL: puzzleDecisions.syncFileURL,
+                           reload: { [weak puzzleDecisions] in
+            _ = puzzleDecisions?.reloadFromDisk()
+        }, applyPayload: { [weak puzzleDecisions] data in
+            // Route the pull's file write through the store's serial writer: an unordered
+            // direct write could be clobbered by an in-flight coalesced snapshot before
+            // reloadFromDisk ever read it (peer rows dropped locally AND, via LWW, in cloud).
+            puzzleDecisions?.applyPulledPayload(data)
+        })
+        cloudSync.register("rec-key", fileURL: recEngine.keySyncFileURL) { [weak recEngine] in
+            recEngine?.reloadKeyFromDisk()   // the rec bearer key follows the Apple ID (TOFU-per-profile)
+        }
         // ONBOARDING PUSH GATE (R1): until the first-run flow resolves, no push may run —
         // a store file materialized mid-onboarding (an empty flush, an intent-written doc)
         // must never LWW-overwrite a returning user's cloud data. Pulls stay allowed (the
@@ -938,7 +1081,7 @@ struct PocketDJApp: App {
 
         // ── Account deletion (App Store Guideline 5.1.1(v)) ────────────────────
         // Constructed with the LIVE stores/services it must wipe (no globals of its own). It
-        // deletes the same 12 PDJDoc keys registered above, via its OWN CKCloudDocDatabase()
+        // deletes the same PDJDoc keys registered above, via its OWN CKCloudDocDatabase()
         // (a stateless struct, identical to the one cloudSync holds). `cloudDeleteEnabled` is
         // `{ !fixtureRun }` — UI-test runs must never touch a real iCloud account — and the
         // background-transfer cancel is wired to the process-wide TransferCoordinator here so
@@ -955,7 +1098,21 @@ struct PocketDJApp: App {
             profileSource: profileSource, playlistWriteBack: playlistWriteBack,
             mixSessions: mixSessions, playbackSession: playbackSession,
             mixDeckSession: mixDeckSession, burns: burns, studio: studio,
+            gameScores: gameScores, puzzleDecisions: puzzleDecisions, friends: friends,
             streaming: streaming, settings: settings, cloudSync: cloudSync, profile: profile)
+        // Recommendation engine rides account deletion via seams (the service's fixed store
+        // list stays test-buildable without the rec graph): best-effort server delete while
+        // the key still exists, then the local key + cursor wipe.
+        // The Bool is load-bearing: a failed server delete (offline/503) must NOT take the key
+        // with it, or the profile's cloud state is orphaned forever (no key ⇒ no DELETE, and
+        // the bucket has no expiry). A missing engine means nothing is owed → true.
+        accountDeletion.recDeleteCloudData = { [weak recEngine] in
+            guard let recEngine else { return true }
+            return await recEngine.deleteCloudData()
+        }
+        accountDeletion.recClearLocal = { [weak recEngine] cloudDeleted in
+            recEngine?.clearLocal(cloudDeleted: cloudDeleted)
+        }
         _accountDeletion = State(initialValue: accountDeletion)
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
@@ -1023,6 +1180,10 @@ struct PocketDJApp: App {
                 .environment(instrumentEngine)
                 .environment(instrumentPacks)
                 .environment(jukebox)
+                .environment(gameScores)
+                .environment(puzzleDecisions)
+                .environment(puzzle)
+                .environment(friends)
                 .environment(intents)
                 .environment(profile)
                 .environment(cloudSync)
@@ -1032,11 +1193,20 @@ struct PocketDJApp: App {
                 .environment(playlistWriteBack)
                 .environment(playlistSync)
                 .environment(accountDeletion)
+                .environment(recEngine)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through
                 // here; route it to the owning provider.
                 .onOpenURL { url in
+                    // A Music with Friends link (https://jukebox.pocket-dj.com/mwf/<id>/ OR
+                    // pocketdj://mwf/<id>) — parsed BEFORE JukeboxLink. No collision risk:
+                    // "mwf" is 3 chars, so JukeboxLink's id validation rejects these URLs
+                    // anyway; the explicit order just documents the precedence.
+                    if let mwf = MwFLink(url: url) {
+                        if onboarding.isComplete { friends.handleOpenedLink(mwf) } else { pendingMwFLink = mwf }
+                        return
+                    }
                     // A shared jukebox link (Universal Link https://jukebox.pocket-dj.com/<id>/ OR
                     // the pocketdj://jukebox/<id> fallback) → JOIN it as a client. Parsed first
                     // because it's a non-file URL that would otherwise fall into the OAuth branch;
@@ -1060,6 +1230,7 @@ struct PocketDJApp: App {
                 .onChange(of: onboarding.isComplete) { _, done in
                     if done, let u = pendingOpenURL { pendingOpenURL = nil; importCollectionFile(u) }
                     if done, let link = pendingJukeboxLink { pendingJukeboxLink = nil; jukebox.addJoined(link) }
+                    if done, let mwf = pendingMwFLink { pendingMwFLink = nil; friends.handleOpenedLink(mwf) }
                     if done { syncFavoritesIfReady() }
                 }
                 // The LAUNCH favorites pass. It hangs off the catalog reaching `.loaded`
@@ -1067,6 +1238,9 @@ struct PocketDJApp: App {
                 // catalog ids against the catalog — running it earlier would ask about an
                 // empty id space and pull nothing.
                 .onChange(of: app.state) { _, _ in syncFavoritesIfReady() }
+                // Recommendation-engine auto-flush: idempotent, and internally a no-op while
+                // the Settings toggle is off (re-armed by enabledDidChange when it flips on).
+                .task { recEngine.startAutoFlush() }
                 // Periodic while-active tick for the DAILY auto-sync: an app left open across
                 // its fire time (default 4:20 PM) still runs the pass — launch/foreground alone
                 // would miss it. 15-min cadence; every check is cheap and single-flighted.
@@ -1109,6 +1283,10 @@ struct PocketDJApp: App {
                         widgetSync.drainPendingCommand(now: Date().timeIntervalSince1970)
                         // Resume the background transfer reconcile on foreground (idempotent).
                         TransferCoordinator.shared.reconcileOnLaunch()
+                        // Finish an account deletion's rec-engine server wipe that the network
+                        // refused earlier (no tombstone ⇒ no request; runs toggle-independent
+                        // because the user asked for that data to be gone).
+                        Task { await recEngine.retryPendingCloudDelete() }
                         // Foreground fallback for the daily soft-cap prune (macOS has no
                         // BGTaskScheduler; iOS BGTasks are best-effort). Gated inside; a
                         // plain Task defers it past the activation tick so foregrounding
@@ -1118,6 +1296,7 @@ struct PocketDJApp: App {
                         streaming.onScenePhaseBackground()
                         mixSessions.flush()    // persist the latest session state before suspension
                         studio.flush()         // studio document too — same suspension-race doctrine
+                        puzzleDecisions.flush() // …and any coalesced gameplay decisions
                         // Last-known collection subtitles, so the next cold launch shows real
                         // counts instead of "0 songs" while the ~50 MB catalog decodes.
                         collections.flushStatsCache()
@@ -1130,6 +1309,9 @@ struct PocketDJApp: App {
                         // Mix-deck session: same doctrine — the decks' latest playheads (and any
                         // debounced slider value still in memory) land before a suspension→kill.
                         mixDeckSession.flush()
+                        // Recommendation engine: land the pending deltas before a possible
+                        // suspension→kill (5 s debounce; inert while the toggle is off).
+                        recEngine.flushSoon()
                         // Push any session documents whose files advanced since the last
                         // sync — AFTER the flushes above so the freshest bytes upload.
                         // (pushAllowed also refuses inside while onboarding is unresolved.)
@@ -1150,7 +1332,40 @@ struct PocketDJApp: App {
         // ⌘N → New Window. Lets the user run e.g. a Performance surface in one window and the Mix
         // surface in another without switching tabs. Applies on every platform, but the command
         // registers only where a second window can actually show (macOS + iPadOS; NOT iPhone).
-        .commands { NewWindowCommands() }
+        .commands { NewWindowCommands(); SongEditCommands() }
+    }
+}
+
+/// Edit ▸ Copy Songs (⌘C) / Paste Songs (⌘V) — macOS only (other platforms use RootView's
+/// per-window shadow buttons; registering BOTH would double-bind the keys). Reads the focused
+/// window's selection through FocusedValues, the one channel a Commands struct has (it does
+/// NOT inherit the WindowGroup environment — see NewWindowCommands). The key equivalents are
+/// attached ONLY while actionable, so the Collections ⌘C tab-jump shadow (conditionally
+/// hidden then — RootView) never coexists with a live Copy binding. AppKit resolves the
+/// remaining overlap with the SYSTEM Copy/Paste items by menu order: a focused text field
+/// enables system Copy first, which is the precedence we want.
+private struct SongEditCommands: Commands {
+    @FocusedValue(\.songSelectionActions) private var actions
+
+    var body: some Commands {
+        #if os(macOS)
+        CommandGroup(after: .pasteboard) {
+            if let actions, actions.canCopy {
+                Button("Copy Songs") { actions.copy() }
+                    .keyboardShortcut("c", modifiers: .command)
+            } else {
+                Button("Copy Songs") {}.disabled(true)
+            }
+            if let actions, actions.canPaste {
+                Button("Paste Songs") { actions.paste() }
+                    .keyboardShortcut("v", modifiers: .command)
+            } else {
+                Button("Paste Songs") {}.disabled(true)
+            }
+        }
+        #else
+        EmptyCommands()
+        #endif
     }
 }
 

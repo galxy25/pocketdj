@@ -19,16 +19,18 @@
 import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync, writeFileSync, renameSync, readdirSync, rmSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import * as apns from './apns.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Bump when the server gains capabilities the app must detect (health.version).
 // v2: per-session played history (now-playing transitions logged; state.json `played`).
-const VERSION = 2;
+// v3: Music with Friends (/mwf routes) + APNs.
+const VERSION = 3;
 
 const CFG = {
   port: parseInt(process.env.JUKEBOX_PORT || '8788', 10),
@@ -58,7 +60,29 @@ const CFG = {
   ttlMs: parseInt(process.env.JUKEBOX_TTL_MS || String(24 * 60 * 60 * 1000), 10),
   deleteMs: parseInt(process.env.JUKEBOX_DELETE_MS || String(7 * 24 * 60 * 60 * 1000), 10),
   sweepMs: parseInt(process.env.JUKEBOX_SWEEP_MS || String(10 * 60 * 1000), 10),
+  // Music with Friends turn-length clamp (tests shrink the floor to 1s).
+  mwfMinTurnSeconds: parseInt(process.env.JUKEBOX_MWF_MIN_TURN_S || '30', 10),
+  mwfMaxTurnSeconds: 3600,
+  mwfTemplate: process.env.JUKEBOX_MWF_TEMPLATE || join(__dirname, 'jukebox-site', 'mwf-template.html'),
+  // Hard cap on members per MwF session. /join is PUBLIC (the id is the QR payload), and
+  // join order is turn order — without a cap a join flood fills the rotation with ghosts
+  // that each burn a full turn, and bloats session.json + the published state.json.
+  mwfMaxMembers: parseInt(process.env.JUKEBOX_MWF_MAX_MEMBERS || '64', 10),
 };
+
+// Music with Friends limits.
+const MWF_THEME_MAX = 144;
+const MWF_NAME_MAX = 40;
+const MWF_SUGGEST_GAP_MS = parseInt(process.env.JUKEBOX_MWF_SUGGEST_GAP_MS || '5000', 10);
+const MWF_SUGGESTIONS_PUBLISH = 100;
+// STORAGE caps on suggestions — the publish slice above is not one. /join is public, so
+// without these a scripted member (or 64 colluders trading turns) grows the suggestions
+// Map + one-file-per-suggestion on disk without bound, and every publish sorts the ENTIRE
+// map (advanceTurn publishes un-debounced). Per-member: hard 429, mirroring RL.maxPending.
+// Per-session: evict decided-oldest (rejected first, then pending — NEVER accepted rows:
+// they ARE the session collection).
+const MWF_SUGGEST_MAX_PER_MEMBER = parseInt(process.env.JUKEBOX_MWF_SUGGEST_MAX_PER_MEMBER || '100', 10);
+const MWF_SUGGEST_MAX_PER_SESSION = parseInt(process.env.JUKEBOX_MWF_SUGGEST_MAX_PER_SESSION || '2000', 10);
 
 // Public guest URL for a session, e.g. https://jukebox.pocket-dj.com/<id>/ .
 // The S3 keys are always jukebox/<id>/… — the distribution's origin path supplies
@@ -87,7 +111,27 @@ const log = (...a) => console.log(`[jukebox ${new Date().toISOString()}]`, ...a)
 const B32 = 'abcdefghijklmnopqrstuvwxyz234567';
 function genId(n) { let s = ''; for (const b of randomBytes(n)) s += B32[b & 31]; return s; }
 const clean = (s, max = RL.maxLen) => String(s == null ? '' : s).replace(/[\x00-\x1f]/g, ' ').trim().slice(0, max);
+// Display text that ends up in HTML somewhere downstream (MwF names/themes/titles ride the
+// world-readable state.json the landing page renders). Escaping is the render-time defense —
+// the landing pages esc()/textContent every interpolation, the server's own renders go
+// through escHtml — so this deliberately does NOT strip angle brackets: real titles carry
+// them ("Scarlet Begonias > Fire on the Mountain" — Dead segues), and a lossy strip broke
+// the leader-side catalog matching of exactly those suggestions. Control chars still go.
+const cleanText = (s, max = RL.maxLen) => clean(s, max);
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+// Entity-escape for values baked into rendered HTML (the landing pages' static slots). The
+// polled-JSON surfaces escape client-side with the SAME rules — see jukebox-site/*.html.
+const escHtml = (x) => String(x == null ? '' : x)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+// Per-IP sliding window shared by the public guest-request and MwF-join paths: prune the
+// IP's hits down to the window and hand the caller the live array (push on accept). A
+// venue-wifi crowd NATs to ONE public ip, so this is a WINDOW, never a per-IP gap.
+function ipWindowHits(map, ip, now) {
+  const hits = (map.get(ip) || []).filter((t) => now - t < RL.ipWindowMs);
+  map.set(ip, hits);
+  return hits;
+}
 
 function writeAtomic(file, body) {
   mkdirSync(dirname(file), { recursive: true });
@@ -326,8 +370,8 @@ function postRequest(s, body, ip) {
   const lastClient = s.lastByClient.get(clientId) || 0;
   if (now - lastClient < RL.minGapMs) return { status: 429, json: { error: 'too many requests — wait a moment' } };
   // Per-IP sliding window: keep only hits inside the window, reject once the cap is reached.
-  const hits = (s.ipHits.get(ip) || []).filter((t) => now - t < RL.ipWindowMs);
-  if (hits.length >= RL.ipWindowMax) { s.ipHits.set(ip, hits); return { status: 429, json: { error: 'this network is sending too many requests' } }; }
+  const hits = ipWindowHits(s.ipHits, ip, now);
+  if (hits.length >= RL.ipWindowMax) return { status: 429, json: { error: 'this network is sending too many requests' } };
   const pending = [...s.requests.values()].filter((r) => r.clientId === clientId && r.status === 'pending').length;
   if (pending >= RL.maxPending) return { status: 429, json: { error: 'too many pending requests' } };
   const r = { id: `rq_${randomBytes(6).toString('hex')}`, seq: ++s.seqCounter, jukeboxId: s.id, title, artist, clientId, ip, createdAt: now, status: 'pending' };
@@ -417,6 +461,22 @@ function sweep() {
         .catch((e) => log(`page re-put ${s.id} failed:`, e.message));
     }
   }
+  // Music with Friends sessions: 24 h end + 7 d delete (no timeless mode), and the
+  // same landing-page self-heal for live ones.
+  for (const s of [...mwfSessions.values()]) {
+    if (now > s.createdAt + CFG.deleteMs) { deleteMwfSession(s); continue; }
+    if (!s.ended && s.expiresAt != null && now > s.expiresAt) {
+      s.ended = true;
+      clearTimeout(s.turnTimer); clearTimeout(s.warnTimer);
+      persistMwfSession(s);
+      publishMwfState(s);
+      log(`swept-expired mwf ${s.id}`);
+    }
+    if (!s.ended) {
+      s3Put(`jukebox/mwf/${s.id}/index.html`, renderMwfPage(s), 'text/html')
+        .catch((e) => log(`mwf page re-put ${s.id} failed:`, e.message));
+    }
+  }
 }
 
 // ---------------- page render ----------------
@@ -426,12 +486,473 @@ function renderPage(s) {
     try { templateCache = readFileSync(CFG.template, 'utf8'); }
     catch (e) { log('template read failed:', e.message); templateCache = '<!doctype html><title>__JUKEBOX_NAME__</title><body>Jukebox __JUKEBOX_ID__</body>'; }
   }
-  const esc = (x) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  const esc = escHtml;
   return templateCache
     .replace(/__JUKEBOX_ID__/g, esc(s.id))
     .replace(/__JUKEBOX_NAME__/g, esc(s.name))
     .replace(/__API_BASE__/g, esc(CFG.publicBase))
     .replace(/__STATE_URL__/g, esc(`${guestUrl(s.id)}state.json`));
+}
+
+// ================= Music with Friends (v3) =================
+// Turn-based suggestion game riding this broker: sessions under <home>/mwf/<id>/
+// (session.json + suggestions/<sgId>.json), public landing page + state.json under the
+// S3 prefix jukebox/mwf/<id>/ (deploy.sh's jukebox/* exclude protects it too). The id
+// route matcher below can NEVER swallow /mwf/... — "mwf" is 3 chars, the id shape is
+// [a-z2-7]{4,32} — but /mwf dispatch still runs FIRST for clarity.
+const mwfSessions = new Map(); // id -> live session
+
+const mwfRoot = () => join(CFG.home, 'mwf');
+const mwfSessionDir = (id) => join(mwfRoot(), id);
+const mwfSessionFile = (id) => join(mwfSessionDir(id), 'session.json');
+const mwfSuggestionsDir = (id) => join(mwfSessionDir(id), 'suggestions');
+const mwfSuggestionFile = (id, sgId) => join(mwfSuggestionsDir(id), `${sgId}.json`);
+const mwfGuestUrl = (id) => `${CFG.siteBase}${CFG.guestPrefix ? '/' + CFG.guestPrefix : ''}/mwf/${id}/`;
+
+function persistMwfSession(s) {
+  writeJson(mwfSessionFile(s.id), {
+    id: s.id, name: s.name, theme: s.theme, leaderKey: s.leaderKey,
+    createdAt: s.createdAt, expiresAt: s.expiresAt, ended: !!s.ended,
+    settings: s.settings, members: s.members, turn: s.turn, seqCounter: s.seqCounter,
+  });
+}
+function persistMwfSuggestion(s, sg) { writeJson(mwfSuggestionFile(s.id, sg.id), sg); }
+
+// Enforce the per-session suggestion storage cap: evict decided-oldest first (rejected,
+// then pending — never accepted), from both the in-memory Map and the on-disk file, so
+// composeMwfState's full-map sort and the suggestions dir stay bounded for the session's
+// whole 24 h life.
+function pruneMwfSuggestions(s) {
+  if (s.suggestions.size <= MWF_SUGGEST_MAX_PER_SESSION) return;
+  const rank = (sg) => (sg.status === 'rejected' ? 0 : sg.status === 'pending' ? 1 : 2);
+  const evictable = [...s.suggestions.values()].filter((sg) => sg.status !== 'accepted')
+    .sort((a, b) => (rank(a) - rank(b)) || (a.seq - b.seq));
+  for (const sg of evictable) {
+    if (s.suggestions.size <= MWF_SUGGEST_MAX_PER_SESSION) break;
+    s.suggestions.delete(sg.id);
+    try { rmSync(mwfSuggestionFile(s.id, sg.id), { force: true }); } catch { /* best-effort */ }
+  }
+}
+
+// Reload on boot (restart-safe: the deadline is persisted; timers are re-armed, and a
+// deadline that passed while we were down advances immediately). Ended tombstones
+// reload too so the 7-day S3 delete still fires across a restart.
+function loadMwfSessions() {
+  let ids = [];
+  try { ids = readdirSync(mwfRoot(), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => d.name); } catch { return; }
+  let n = 0;
+  for (const id of ids) {
+    const meta = readJsonFile(mwfSessionFile(id));
+    if (!meta || !meta.id) continue;
+    const s = {
+      id: meta.id, name: meta.name, theme: meta.theme || '', leaderKey: meta.leaderKey,
+      createdAt: meta.createdAt, expiresAt: meta.expiresAt ?? (meta.createdAt + CFG.ttlMs),
+      ended: !!meta.ended,
+      settings: {
+        turnSeconds: (meta.settings && meta.settings.turnSeconds) || 120,
+        acceptOutsideTurn: !!(meta.settings && meta.settings.acceptOutsideTurn),
+        turnEndsOnFirstSuggestion: meta.settings ? meta.settings.turnEndsOnFirstSuggestion !== false : true,
+      },
+      members: Array.isArray(meta.members) ? meta.members : [],
+      turn: meta.turn && Number.isFinite(meta.turn.index) ? meta.turn : { index: 0, deadline: 0 },
+      seqCounter: meta.seqCounter || 0,
+      suggestions: new Map(), lastSuggestByMember: new Map(), joinIpHits: new Map(),
+      saveChain: Promise.resolve(), stateTimer: null, turnTimer: null, warnTimer: null,
+    };
+    let sgFiles = [];
+    try { sgFiles = readdirSync(mwfSuggestionsDir(id)).filter((f) => f.endsWith('.json')); } catch { /* none */ }
+    for (const f of sgFiles) {
+      const sg = readJsonFile(join(mwfSuggestionsDir(id), f));
+      if (!sg || !sg.id) continue;
+      s.suggestions.set(sg.id, sg);
+      if (sg.memberId) s.lastSuggestByMember.set(sg.memberId, Math.max(s.lastSuggestByMember.get(sg.memberId) || 0, sg.createdAt || 0));
+    }
+    mwfSessions.set(id, s);
+    if (!s.ended) {
+      if (s.turn.deadline && Date.now() > s.turn.deadline) advanceTurn(s, 'boot-expired');
+      else armTurnTimers(s);
+    }
+    n++;
+  }
+  if (n) log(`resumed ${n} mwf session(s)`);
+}
+
+// ---- derived scores + state composition (keys/clientIds/deviceTokens NEVER serialized)
+function mwfScores(s) {
+  const scores = new Map(s.members.map((m) => [m.memberId, 0]));
+  for (const sg of s.suggestions.values()) {
+    if (sg.status !== 'accepted') continue;
+    scores.set(sg.memberId, (scores.get(sg.memberId) || 0) + 1 + (sg.plusOnes ? sg.plusOnes.length : 0));
+  }
+  return scores;
+}
+
+// The TURN ROSTER is the same capped view composeMwfState publishes. Joins enforce the cap,
+// but a session persisted by an older build (or an env cap lowered between restarts) can
+// hold more members than the cap — and rotating over the FULL array would point turn.memberId
+// at a member absent from the published members[] (guests render an unknown "whose turn",
+// hidden members burn invisible turns). Rotation and publication must walk the same list.
+const mwfRosterCount = (s) => Math.min(s.members.length, Math.max(1, CFG.mwfMaxMembers));
+
+function currentMwfMember(s) { return s.members[s.turn.index % mwfRosterCount(s)]; }
+
+function composeMwfState(s, forMemberId) {
+  const scores = mwfScores(s);
+  const leaderId = s.members.length ? s.members[0].memberId : null;
+  const suggestions = [...s.suggestions.values()].sort((a, b) => a.seq - b.seq).slice(-MWF_SUGGESTIONS_PUBLISH)
+    .map((sg) => ({ id: sg.id, seq: sg.seq, memberId: sg.memberId, title: sg.title, artist: sg.artist,
+                    createdAt: sg.createdAt, status: sg.status, decidedAt: sg.decidedAt ?? null,
+                    plusOnes: sg.plusOnes || [], match: sg.match || null }));
+  const collection = [...s.suggestions.values()].filter((sg) => sg.status === 'accepted')
+    .sort((a, b) => (a.decidedAt || 0) - (b.decidedAt || 0))
+    .map((sg) => ({ songId: (sg.match && sg.match.songId) || null,
+                    appleMusicId: (sg.match && sg.match.appleMusicId) || null,
+                    title: (sg.match && sg.match.title) || sg.title,
+                    artist: (sg.match && sg.match.artist) || sg.artist,
+                    lengthMs: (sg.match && sg.match.lengthMs) || null,
+                    suggestedBy: sg.memberId, acceptedAt: sg.decidedAt ?? null }));
+  const st = {
+    v: 1, sessionId: s.id, name: s.name, theme: s.theme, updatedAt: Date.now(),
+    ended: !!s.ended, expiresAt: s.expiresAt ?? null,
+    settings: s.settings,
+    // Members are CAPPED in the published payload exactly like suggestions above, so a
+    // state.json can never balloon (the cap also bounds joins, but a session persisted by
+    // an older build could carry more). The turn rotation walks the SAME capped roster
+    // (mwfRosterCount), so turn.memberId below is always present in this list.
+    members: s.members.slice(0, CFG.mwfMaxMembers)
+      .map((m) => ({ memberId: m.memberId, name: m.name, joinedAt: m.joinedAt,
+                     score: scores.get(m.memberId) || 0, isLeader: m.memberId === leaderId })),
+    turn: s.members.length ? { memberId: currentMwfMember(s).memberId, index: s.turn.index, deadline: s.turn.deadline } : null,
+    suggestions, collection,
+    apiBase: CFG.publicBase,
+  };
+  if (forMemberId) st.you = { memberId: forMemberId };
+  return st;
+}
+
+// Public S3 state (the landing page's poll + the app's join preview): same shape minus
+// `you`. Debounced 1 s like the jukebox state; decisions/turn-advances publish direct.
+function publishMwfState(s) {
+  const key = `jukebox/mwf/${s.id}/state.json`;
+  const body = JSON.stringify(composeMwfState(s, null));
+  s.saveChain = s.saveChain.then(() => s3Put(key, body, 'application/json'))
+    .catch((e) => log(`publishMwfState ${s.id} failed:`, e.message));
+  return s.saveChain;
+}
+function scheduleMwfState(s) {
+  if (s.stateTimer) return;
+  s.stateTimer = setTimeout(() => { s.stateTimer = null; publishMwfState(s); }, STATE_DEBOUNCE_MS);
+  s.stateTimer.unref?.();
+}
+
+// ---- APNs (the exact four-event matrix; no-op when disabled / no token) ----
+function apnsSendMwf(member, event, s, extra = {}) {
+  if (!member || !member.deviceToken || !apns.enabled()) return;
+  const bodies = {
+    'new-suggestion': { title: s.name, body: `${extra.byName} suggested “${extra.title}” — ${extra.artist}` },
+    'song-accepted': { title: s.name, body: `Accepted: “${extra.title}” — ${extra.artist} (+1 ${extra.byName})` },
+    'your-turn': { title: s.name, body: `Your turn to suggest! (${s.settings.turnSeconds}s)` },
+    'turn-ending': { title: s.name, body: `Hurry — under ${Math.ceil(s.settings.turnSeconds / 10)}s left in your turn` },
+  };
+  apns.send(member.deviceToken,
+    { aps: { alert: bodies[event], sound: 'default' },
+      pdj: { kind: 'mwf', sessionId: s.id, event, suggestionId: extra.suggestionId || null } },
+    { collapseId: `mwf-${s.id}-${event}` })
+    .then((r) => { if (r && r.gone) { member.deviceToken = null; persistMwfSession(s); } })
+    .catch((e) => log(`apns ${event} failed:`, e.message));
+}
+
+// ---- turn engine (deadline persisted; timers in-memory, restart-safe) ----
+function advanceTurn(s, reason) {
+  if (s.ended || !s.members.length) return;
+  s.turn.index = (s.turn.index + 1) % mwfRosterCount(s);
+  s.turn.deadline = Date.now() + s.settings.turnSeconds * 1000;
+  persistMwfSession(s);
+  publishMwfState(s);
+  apnsSendMwf(currentMwfMember(s), 'your-turn', s);
+  armTurnTimers(s);
+}
+function armTurnTimers(s) {
+  clearTimeout(s.turnTimer); clearTimeout(s.warnTimer);
+  if (s.ended) return;
+  const warnAt = s.turn.deadline - s.settings.turnSeconds * 1000 * 0.10; // <10% remains
+  s.warnTimer = setTimeout(() => apnsSendMwf(currentMwfMember(s), 'turn-ending', s), Math.max(0, warnAt - Date.now()));
+  s.turnTimer = setTimeout(() => advanceTurn(s, 'expired'), Math.max(0, s.turn.deadline - Date.now()));
+  s.warnTimer.unref?.(); s.turnTimer.unref?.();
+}
+
+// ---- handlers ----
+const clampTurnSeconds = (v, fallback) => Math.max(CFG.mwfMinTurnSeconds,
+  Math.min(CFG.mwfMaxTurnSeconds, parseInt(v, 10) || fallback));
+
+async function createMwf(body) {
+  const theme = cleanText(body && body.theme, MWF_THEME_MAX);
+  if (!theme) return { status: 400, json: { error: 'theme required' } };
+  const leaderName = cleanText(body && body.leaderName, MWF_NAME_MAX) || 'Leader';
+  const settingsIn = (body && body.settings) || {};
+  const s = {
+    id: genId(8), name: cleanText(body && body.name, 80) || 'Music with Friends', theme,
+    leaderKey: randomBytes(16).toString('hex'), createdAt: Date.now(), ended: false,
+    settings: {
+      turnSeconds: clampTurnSeconds(settingsIn.turnSeconds, 120),
+      acceptOutsideTurn: !!settingsIn.acceptOutsideTurn,
+      turnEndsOnFirstSuggestion: settingsIn.turnEndsOnFirstSuggestion == null ? true : !!settingsIn.turnEndsOnFirstSuggestion,
+    },
+    members: [], turn: { index: 0, deadline: 0 }, seqCounter: 0,
+    suggestions: new Map(), lastSuggestByMember: new Map(), joinIpHits: new Map(),
+    saveChain: Promise.resolve(), stateTimer: null, turnTimer: null, warnTimer: null,
+  };
+  // Expiry is ALWAYS createdAt + ttl (24 h — no timeless mode for MwF).
+  s.expiresAt = s.createdAt + CFG.ttlMs;
+  const leader = {
+    memberId: `mb_${randomBytes(4).toString('hex')}`, memberKey: randomBytes(16).toString('hex'),
+    name: leaderName, clientId: clean(body && body.clientId, 100) || null, profileId: null,
+    joinHash: hashJoinSecret(clean(body && body.joinSecret, 128)),
+    joinedAt: s.createdAt, deviceToken: null, devicePlatform: null,
+  };
+  s.members.push(leader);
+  s.turn.deadline = Date.now() + s.settings.turnSeconds * 1000;
+  mwfSessions.set(s.id, s);
+  persistMwfSession(s);
+  await s3Put(`jukebox/mwf/${s.id}/index.html`, renderMwfPage(s), 'text/html');
+  await publishMwfState(s);
+  armTurnTimers(s);
+  log(`created mwf ${s.id} "${s.name}"`);
+  return { status: 200, json: { sessionId: s.id, leaderKey: s.leaderKey, memberId: leader.memberId,
+                                memberKey: leader.memberKey, name: s.name, theme: s.theme,
+                                url: mwfGuestUrl(s.id), expiresAt: s.expiresAt, settings: s.settings } };
+}
+
+const mwfJoinReply = (s, member) => ({
+  memberId: member.memberId, memberKey: member.memberKey, name: member.name,
+  theme: s.theme, settings: s.settings, expiresAt: s.expiresAt, sessionName: s.name,
+});
+
+/// Re-join credential. The app mints a per-install RANDOM secret for this and nothing else;
+/// only its sha256 is ever stored, so neither session.json nor a broker operator holds a
+/// replayable value. NEVER logged.
+const hashJoinSecret = (v) => (v ? createHash('sha256').update(String(v)).digest('hex') : null);
+
+/// `POST /mwf/:id/join` — PUBLIC (the session id is the QR payload), so it defends itself:
+///
+///  1. Re-join proves POSSESSION of a credential. A presented memberKey (bearer or body)
+///     must match a member — a wrong one is 401, never a silent new member. Otherwise the
+///     hashed joinSecret matches a prior join. A `clientId` is a BROADCAST correlation id
+///     (it rides every server call as X-PocketDJ-Device and is handed to jukebox hosts), so
+///     it can NEVER return an existing member's memberKey — that made it bearer-equivalent.
+///  2. New members pay the same per-IP sliding window the guest-request path uses, plus a
+///     hard member cap (join order is turn order; ghosts would burn the rotation).
+function joinMwf(s, body, req, ip) {
+  const presented = (req ? bearer(req) : '') || clean(body && body.memberKey, 64);
+  if (presented) {
+    const mine = s.members.find((m) => m.memberKey === presented);
+    return mine ? { status: 200, json: mwfJoinReply(s, mine) }
+                : { status: 401, json: { error: 'unauthorized' } };
+  }
+  const joinHash = hashJoinSecret(clean(body && body.joinSecret, 128));
+  if (joinHash) {
+    // Idempotent by join secret — a re-join returns the SAME member (no double turn slot).
+    const existing = s.members.find((m) => m.joinHash === joinHash);
+    if (existing) return { status: 200, json: mwfJoinReply(s, existing) };
+  }
+  const now = Date.now();
+  const hits = ipWindowHits(s.joinIpHits, ip || 'unknown', now);
+  if (hits.length >= RL.ipWindowMax) return { status: 429, json: { error: 'this network is sending too many joins' } };
+  if (s.members.length >= CFG.mwfMaxMembers) return { status: 429, json: { error: 'session is full' } };
+  const name = cleanText(body && body.name, MWF_NAME_MAX) || `Player ${s.members.length + 1}`;
+  const member = {
+    memberId: `mb_${randomBytes(4).toString('hex')}`, memberKey: randomBytes(16).toString('hex'),
+    name, clientId: clean(body && body.clientId, 100) || null, profileId: null,
+    joinHash, joinedAt: now, deviceToken: null, devicePlatform: null,
+  };
+  // JOIN ORDER = TURN ORDER; the current turn is unaffected by an append.
+  s.members.push(member);
+  hits.push(now);
+  persistMwfSession(s);
+  scheduleMwfState(s);
+  log(`mwf join ${s.id}: ${member.memberId} "${name}"`);
+  return { status: 200, json: mwfJoinReply(s, member) };
+}
+
+function suggestMwf(s, member, body) {
+  const title = cleanText(body && body.title, 200);
+  const artist = cleanText(body && body.artist, 200);
+  if (!title) return { status: 400, json: { error: 'title required' } };
+  const isTurn = currentMwfMember(s).memberId === member.memberId;
+  if (!s.settings.acceptOutsideTurn && !isTurn) return { status: 409, json: { error: 'not your turn' } };
+  const now = Date.now();
+  const last = s.lastSuggestByMember.get(member.memberId) || 0;
+  if (MWF_SUGGEST_GAP_MS > 0 && now - last < MWF_SUGGEST_GAP_MS) {
+    return { status: 429, json: { error: 'too many suggestions — wait a moment' } };
+  }
+  // Per-member session ceiling — the 5 s gap alone lets a scripted member file ~17k rows
+  // over the 24 h TTL; a hard cap bounds the worst case at members × this.
+  let mine = 0;
+  for (const g of s.suggestions.values()) if (g.memberId === member.memberId) mine += 1;
+  if (mine >= MWF_SUGGEST_MAX_PER_MEMBER) {
+    return { status: 429, json: { error: 'suggestion limit reached for this session' } };
+  }
+  const sg = { id: `sg_${randomBytes(6).toString('hex')}`, seq: ++s.seqCounter, memberId: member.memberId,
+               title, artist, createdAt: now, status: 'pending', plusOnes: [] };
+  s.suggestions.set(sg.id, sg);
+  s.lastSuggestByMember.set(member.memberId, now);
+  persistMwfSuggestion(s, sg);
+  pruneMwfSuggestions(s);
+  persistMwfSession(s);
+  scheduleMwfState(s);
+  const leader = s.members[0];
+  if (leader && leader.memberId !== member.memberId) {
+    apnsSendMwf(leader, 'new-suggestion', s, { byName: member.name, title, artist, suggestionId: sg.id });
+  }
+  let turnAdvanced = false;
+  if (isTurn && s.settings.turnEndsOnFirstSuggestion) { advanceTurn(s, 'suggested'); turnAdvanced = true; }
+  log(`mwf suggestion ${sg.id} on ${s.id}: "${title}" — "${artist}"`);
+  return { status: 200, json: { suggestionId: sg.id, status: 'pending', turnAdvanced } };
+}
+
+function decideMwf(s, sgId, body) {
+  const sg = s.suggestions.get(sgId);
+  if (!sg) return { status: 404, json: { error: 'unknown suggestion' } };
+  const action = clean(body && body.action, 20);
+  if (!['accepted', 'rejected'].includes(action)) return { status: 400, json: { error: 'bad action' } };
+  if (sg.status !== 'pending') return { status: 409, json: { error: 'already decided' } };
+  sg.status = action;
+  sg.decidedAt = Date.now();
+  sg.seq = ++s.seqCounter;
+  if (body && body.match && typeof body.match === 'object') {
+    const m = body.match;
+    sg.match = {
+      songId: m.songId ? clean(m.songId, 120) : null,
+      appleMusicId: m.appleMusicId ? clean(m.appleMusicId, 40) : null,
+      title: m.title ? cleanText(m.title, 200) : null,
+      artist: m.artist ? cleanText(m.artist, 200) : null,
+      lengthMs: num(m.lengthMs) || null,
+    };
+  }
+  persistMwfSuggestion(s, sg);
+  persistMwfSession(s);
+  publishMwfState(s); // immediate — the collection/status flip must not lag guests
+  if (action === 'accepted') {
+    const suggester = s.members.find((m) => m.memberId === sg.memberId);
+    const leaderId = s.members.length ? s.members[0].memberId : null;
+    for (const m of s.members) {
+      if (m.memberId === leaderId) continue;
+      apnsSendMwf(m, 'song-accepted', s, {
+        title: (sg.match && sg.match.title) || sg.title,
+        artist: (sg.match && sg.match.artist) || sg.artist,
+        byName: suggester ? suggester.name : 'someone', suggestionId: sg.id,
+      });
+    }
+  }
+  log(`mwf decision ${sgId} on ${s.id}: ${action}`);
+  return { status: 200, json: { ok: true, suggestionId: sgId, status: sg.status } };
+}
+
+function plusOneMwf(s, member, sgId) {
+  const sg = s.suggestions.get(sgId);
+  if (!sg) return { status: 404, json: { error: 'unknown suggestion' } };
+  if (sg.status !== 'accepted') return { status: 409, json: { error: 'only accepted suggestions take +1' } };
+  if (sg.memberId === member.memberId) return { status: 409, json: { error: 'no +1 on your own suggestion' } };
+  sg.plusOnes = sg.plusOnes || [];
+  if (sg.plusOnes.includes(member.memberId)) return { status: 409, json: { error: 'already +1' } };
+  sg.plusOnes.push(member.memberId);
+  sg.seq = ++s.seqCounter;
+  persistMwfSuggestion(s, sg);
+  persistMwfSession(s);
+  scheduleMwfState(s);
+  return { status: 200, json: { ok: true, plusOnes: sg.plusOnes.length } };
+}
+
+function configMwf(s, body) {
+  if (body && body.turnSeconds != null) {
+    // Applies from the NEXT turn — the current deadline is deliberately untouched.
+    s.settings.turnSeconds = clampTurnSeconds(body.turnSeconds, s.settings.turnSeconds);
+  }
+  if (body && body.acceptOutsideTurn != null) s.settings.acceptOutsideTurn = !!body.acceptOutsideTurn;
+  if (body && body.turnEndsOnFirstSuggestion != null) s.settings.turnEndsOnFirstSuggestion = !!body.turnEndsOnFirstSuggestion;
+  persistMwfSession(s);
+  publishMwfState(s);
+  log(`mwf config ${s.id}: ${JSON.stringify(s.settings)}`);
+  return { status: 200, json: { settings: s.settings } };
+}
+
+function registerMwfDevice(s, member, body) {
+  const token = clean(body && body.token, 200);
+  const platform = clean(body && body.platform, 20);
+  if (!/^[a-f0-9]{64,}$/i.test(token)) return { status: 400, json: { error: 'bad token' } };
+  member.deviceToken = token;
+  member.devicePlatform = platform === 'macos' ? 'macos' : 'ios';
+  persistMwfSession(s);
+  return { status: 200, json: { ok: true } };
+}
+
+// The UNREGISTER half (DELETE /mwf/:id/register-device). An APNs device token is personal
+// data tied to the installing device: when the app erases the account (Guideline 5.1.1(v))
+// it must be able to withdraw the token it pushed here, not merely wait out the session's
+// 24 h TTL on a broker it does not own. Idempotent — a member with no token answers 200.
+function unregisterMwfDevice(s, member) {
+  delete member.deviceToken;
+  delete member.devicePlatform;
+  persistMwfSession(s);
+  return { status: 200, json: { ok: true, unregistered: true } };
+}
+
+function endMwf(s) {
+  s.ended = true;
+  clearTimeout(s.turnTimer); clearTimeout(s.warnTimer);
+  persistMwfSession(s);
+  publishMwfState(s);
+  log(`ended mwf ${s.id}`);
+  return { status: 200, json: { ok: true, ended: true } };
+}
+
+// ---- lifecycle (mirrors ensureExpiry/deleteSession; MwF has NO timeless mode) ----
+function ensureMwfExpiry(s) {
+  if (s.ended) return true;
+  if (s.expiresAt != null && Date.now() > s.expiresAt) {
+    s.ended = true;
+    clearTimeout(s.turnTimer); clearTimeout(s.warnTimer);
+    persistMwfSession(s);
+    publishMwfState(s);
+    log(`expired mwf ${s.id}`);
+    return true;
+  }
+  return false;
+}
+function deleteMwfSession(s) {
+  mwfSessions.delete(s.id);
+  clearTimeout(s.turnTimer); clearTimeout(s.warnTimer); clearTimeout(s.stateTimer);
+  if (CFG.dryRun) { try { rmSync(join(CFG.home, 'dry-run', 'jukebox', 'mwf', s.id), { recursive: true, force: true }); } catch { /* best-effort */ } }
+  else aws(['s3', 'rm', `s3://${CFG.bucket}/jukebox/mwf/${s.id}/`, '--recursive']).catch((e) => log(`s3 rm mwf ${s.id} failed:`, e.message));
+  try { rmSync(mwfSessionDir(s.id), { recursive: true, force: true }); } catch { /* best-effort */ }
+  log(`deleted mwf ${s.id}`);
+}
+
+// ---- landing page (view-only v1: leaderboard + accepted songs + Open in PocketDJ) ----
+let mwfTemplateCache = null;
+function renderMwfPage(s) {
+  if (mwfTemplateCache == null) {
+    try { mwfTemplateCache = readFileSync(CFG.mwfTemplate, 'utf8'); }
+    catch (e) { log('mwf template read failed:', e.message); mwfTemplateCache = '<!doctype html><title>__MWF_NAME__</title><body>Music with Friends __MWF_ID__</body>'; }
+  }
+  const esc = escHtml;
+  return mwfTemplateCache
+    .replace(/__MWF_ID__/g, esc(s.id))
+    .replace(/__MWF_NAME__/g, esc(s.name))
+    .replace(/__MWF_THEME__/g, esc(s.theme))
+    .replace(/__STATE_URL__/g, esc(`${mwfGuestUrl(s.id)}state.json`));
+}
+
+// ---- auth helpers ----
+// MwF keys ride the Authorization header ONLY — never the URL. leaderKey/memberKey are
+// bearer credentials, and a query-string copy is written verbatim into funnel/proxy access
+// logs and browser history (CWE-598). The first-party app always sends the header; the
+// query fallback was dead code and is deliberately gone.
+const mwfLeaderOk = (s, req) => !!s && !!s.leaderKey && bearer(req) === s.leaderKey;
+function mwfMemberOf(s, req) {
+  const key = bearer(req);
+  if (!key) return null;
+  return s.members.find((m) => m.memberKey === key) || null;
 }
 
 // ---------------- HTTP ----------------
@@ -441,15 +962,57 @@ function send(res, status, body) {
     'Content-Type': typeof body === 'string' ? 'text/plain' : 'application/json',
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Headers': 'authorization,content-type',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
+    'Access-Control-Allow-Methods': 'GET,POST,DELETE,OPTIONS',
   });
   res.end(payload);
 }
+// Body reader with a HARD SIZE CAP. The broker serves unauthenticated public POSTs
+// (POST /:id/request, POST /mwf/:id/join) over the funnel, and the old unbounded concat let a
+// single multi-hundred-MB body drive Node into V8 heap exhaustion before any field-level
+// clamp ever ran. Overflow (or a stream error — which previously left the promise pending
+// forever) resolves `null`; dispatch answers 413 via readJsonBounded below. Every real
+// payload here is well under a KB; 64 KB leaves generous headroom.
+const MAX_BODY_BYTES = parseInt(process.env.JUKEBOX_MAX_BODY_BYTES || String(64 * 1024), 10);
 async function readJson(req) {
-  return new Promise((res) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { try { res(b ? JSON.parse(b) : {}); } catch { res({}); } }); });
+  return new Promise((res) => {
+    let b = '';
+    let n = 0;
+    let done = false;
+    req.on('data', (c) => {
+      if (done) return;
+      n += c.length;
+      if (n > MAX_BODY_BYTES) { done = true; b = ''; return res(null); }
+      b += c;
+    });
+    req.on('end', () => {
+      if (done) return;
+      done = true;
+      try { res(b ? JSON.parse(b) : {}); } catch { res({}); }
+    });
+    req.on('error', () => { if (!done) { done = true; res(null); } });
+  });
+}
+// Dispatch wrapper: a null body (over-cap / errored stream) answers 413 and drops the
+// connection so the client stops streaming. Callers `return` on null.
+async function readJsonBounded(req, res) {
+  const body = await readJson(req);
+  if (body === null) {
+    send(res, 413, { error: 'request body too large' });
+    req.destroy();
+    return null;
+  }
+  return body;
 }
 function bearer(req) { const m = (req.headers['authorization'] || '').match(/^Bearer\s+(.+)$/i); return m ? m[1] : ''; }
-function clientIp(req) { return (req.headers['x-forwarded-for'] || '').split(',')[0].trim() || req.socket.remoteAddress || 'unknown'; }
+// The per-IP limiter's key. X-Forwarded-For is CLIENT-controlled except for the entry the
+// trusted proxy hop (Tailscale funnel) APPENDS — so take the RIGHTMOST entry, never the
+// attacker-chosen leftmost (which handed every forged value its own fresh rate-limit
+// window and let one client fill the MwF member cap with ghost players). No proxy hop ⇒
+// the socket address.
+function clientIp(req) {
+  const parts = (req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+  return parts[parts.length - 1] || req.socket.remoteAddress || 'unknown';
+}
 const tokenOk = (req) => !CFG.token || bearer(req) === CFG.token;
 const hostKeyOf = (req, url) => bearer(req) || url.searchParams.get('hostKey') || '';
 const hostOk = (s, req, url) => !!s && hostKeyOf(req, url) === s.hostKey;
@@ -467,13 +1030,92 @@ const server = http.createServer(async (req, res) => {
   else if (path.startsWith('/jukebox/')) path = path.slice('/jukebox'.length);
 
   if (path === '/health') {
-    return send(res, 200, { ok: true, service: 'jukebox', version: VERSION, host: hostname(), bucket: CFG.bucket, sessions: sessions.size, auth: !!CFG.token });
+    return send(res, 200, { ok: true, service: 'jukebox', version: VERSION, host: hostname(), bucket: CFG.bucket, sessions: sessions.size, auth: !!CFG.token, mwf: true, apns: apns.enabled() });
+  }
+
+  // ---- Music with Friends dispatch (BEFORE the jukebox id matcher; "mwf" is 3 chars
+  // so that matcher could never swallow these, but explicit order documents it).
+  if (path === '/mwf' && req.method === 'POST') {
+    if (!tokenOk(req)) return send(res, 401, { error: 'unauthorized' });
+    const body = await readJsonBounded(req, res);
+    if (body === null) return;
+    const r = await createMwf(body);
+    return send(res, r.status, r.json);
+  }
+  const mwfM = path.match(/^\/mwf\/([a-z2-7]{4,32})(\/.*)?$/);
+  if (mwfM) {
+    const s = mwfSessions.get(mwfM[1]);
+    const rest = mwfM[2] || '';
+    if (!s) return send(res, 404, { error: 'unknown session' });
+    if (ensureMwfExpiry(s)) return send(res, 410, { error: 'session ended' });
+
+    // Public join (idempotent by joinSecret / memberKey; per-IP windowed + member-capped).
+    if (rest === '/join' && req.method === 'POST') {
+      const body = await readJsonBounded(req, res);
+      if (body === null) return;
+      const r = joinMwf(s, body, req, clientIp(req));
+      return send(res, r.status, r.json);
+    }
+    // Leader-only routes.
+    if (rest === '/end' && req.method === 'POST') {
+      if (!mwfLeaderOk(s, req)) return send(res, 401, { error: 'unauthorized' });
+      const r = endMwf(s);
+      return send(res, r.status, r.json);
+    }
+    if (rest === '/config' && req.method === 'POST') {
+      if (!mwfLeaderOk(s, req)) return send(res, 401, { error: 'unauthorized' });
+      const body = await readJsonBounded(req, res);
+      if (body === null) return;
+      const r = configMwf(s, body);
+      return send(res, r.status, r.json);
+    }
+    const dmwf = rest.match(/^\/suggestions\/(sg_[a-f0-9]+)\/decision$/);
+    if (dmwf && req.method === 'POST') {
+      if (!mwfLeaderOk(s, req)) return send(res, 401, { error: 'unauthorized' });
+      const body = await readJsonBounded(req, res);
+      if (body === null) return;
+      const r = decideMwf(s, dmwf[1], body);
+      return send(res, r.status, r.json);
+    }
+    // Member routes (memberKey bearer; state also accepts the leaderKey).
+    if (rest === '/state' && req.method === 'GET') {
+      const member = mwfMemberOf(s, req);
+      if (member) return send(res, 200, composeMwfState(s, member.memberId));
+      if (mwfLeaderOk(s, req)) return send(res, 200, composeMwfState(s, s.members.length ? s.members[0].memberId : null));
+      return send(res, 401, { error: 'unauthorized' });
+    }
+    const member = mwfMemberOf(s, req);
+    if (!member) return send(res, 401, { error: 'unauthorized' });
+    if (rest === '/suggest' && req.method === 'POST') {
+      const body = await readJsonBounded(req, res);
+      if (body === null) return;
+      const r = suggestMwf(s, member, body);
+      return send(res, r.status, r.json);
+    }
+    const pmwf = rest.match(/^\/suggestions\/(sg_[a-f0-9]+)\/plusone$/);
+    if (pmwf && req.method === 'POST') {
+      const r = plusOneMwf(s, member, pmwf[1]);
+      return send(res, r.status, r.json);
+    }
+    if (rest === '/register-device' && req.method === 'POST') {
+      const body = await readJsonBounded(req, res);
+      if (body === null) return;
+      const r = registerMwfDevice(s, member, body);
+      return send(res, r.status, r.json);
+    }
+    if (rest === '/register-device' && req.method === 'DELETE') {
+      const r = unregisterMwfDevice(s, member);
+      return send(res, r.status, r.json);
+    }
+    return send(res, 404, { error: 'not found' });
   }
 
   // POST / (create) — token-gated when JUKEBOX_TOKEN is set.
   if ((path === '/' || path === '') && req.method === 'POST') {
     if (!tokenOk(req)) return send(res, 401, { error: 'unauthorized' });
-    const r = await createJukebox(await readJson(req));
+    const body = await readJsonBounded(req, res);
+    if (body === null) return;
+    const r = await createJukebox(body);
     return send(res, r.status, r.json);
   }
 
@@ -488,7 +1130,9 @@ const server = http.createServer(async (req, res) => {
   if (rest === '/request' && req.method === 'POST') {
     if (!s) return send(res, 404, { error: 'unknown jukebox' });
     if (ensureExpiry(s)) return send(res, 410, { error: 'jukebox ended' });
-    const r = postRequest(s, await readJson(req), clientIp(req));
+    const body = await readJsonBounded(req, res);
+    if (body === null) return;
+    const r = postRequest(s, body, clientIp(req));
     return send(res, r.status, r.json);
   }
 
@@ -498,11 +1142,23 @@ const server = http.createServer(async (req, res) => {
   if (ensureExpiry(s)) return send(res, 410, { error: 'jukebox ended' });
 
   if (rest === '/end' && req.method === 'POST') return finish(res, endJukebox(s));
-  if (rest === '/state' && req.method === 'POST') return finish(res, postState(s, await readJson(req)));
-  if (rest === '/config' && req.method === 'POST') return finish(res, configJukebox(s, await readJson(req)));
+  if (rest === '/state' && req.method === 'POST') {
+    const body = await readJsonBounded(req, res);
+    if (body === null) return;
+    return finish(res, postState(s, body));
+  }
+  if (rest === '/config' && req.method === 'POST') {
+    const body = await readJsonBounded(req, res);
+    if (body === null) return;
+    return finish(res, configJukebox(s, body));
+  }
   if (rest === '/requests' && req.method === 'GET') return finish(res, getRequests(s, parseInt(url.searchParams.get('since') || '0', 10)));
   const dm = rest.match(/^\/requests\/(rq_[a-f0-9]+)\/decision$/);
-  if (dm && req.method === 'POST') return finish(res, decideRequest(s, dm[1], await readJson(req)));
+  if (dm && req.method === 'POST') {
+    const body = await readJsonBounded(req, res);
+    if (body === null) return;
+    return finish(res, decideRequest(s, dm[1], body));
+  }
 
   return send(res, 404, { error: 'not found' });
 
@@ -512,7 +1168,9 @@ const server = http.createServer(async (req, res) => {
 // ---------------- boot ----------------
 if (process.argv.includes('--version')) { console.log(VERSION); process.exit(0); }
 log('PocketDJ jukebox-server starting…');
+if (!apns.enabled()) log('APNs disabled (no key configured) — members rely on polling');
 loadSessions();
+loadMwfSessions();
 sweep(); // end/delete anything that aged out while we were down
 setInterval(sweep, CFG.sweepMs).unref?.();
 server.listen(CFG.port, () => {

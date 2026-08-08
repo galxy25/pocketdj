@@ -45,5 +45,13 @@
   <array>
     <string>applinks:jukebox.pocket-dj.com</string>
   </array>
+  <!-- APNs (Music with Friends pushes). Like CloudKit above, this genuinely needs an
+       entitlement key: the Push Notifications capability must be enabled on the App ID
+       (com.levi.pocketdj) — a portal step at ship time. "development" here is correct
+       for local builds; the App Store/TestFlight distribution re-sign flips it to
+       "production" automatically. Same key across the iOS/visionOS app entitlement
+       files; macOS uses the com.apple.developer.-prefixed variant. -->
+  <key>aps-environment</key>
+  <string>development</string>
 </dict>
 </plist>

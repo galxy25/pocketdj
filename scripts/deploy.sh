@@ -32,6 +32,14 @@ echo "▶ Deploying PocketDJ [$ENV] -> s3://$BUCKET ($REGION)"
 if [ "${SKIP_BUILD:-}" != "1" ]; then
   # Ensure demo data exists so the live "Load demo data" button works.
   [ -f public/mock-index.json ] || npm run gen:mock --silent -- --albums 280 --out public/mock-index.json
+  # Regenerate the recommendation-engine feature file from the CURRENT catalog indexes so the
+  # rec Lambda never scores against a stale committed snapshot (the indexes churn nightly:
+  # am-sync 04:00, digital-sync 05:00, streaming-links 06:00 — which also regens + publishes
+  # this file on its own). Soft-fail: a regen bug must not block a catalog/PWA ship; the
+  # previous rec-features.json keeps serving.
+  echo "▶ Regenerating rec-features.json…"
+  node scripts/build-rec-features.mjs \
+    || echo "⚠ rec-features regeneration failed — deploying the previous rec-features.json"
   echo "▶ Building…"
   npm run build --silent
 fi
@@ -44,7 +52,9 @@ fi
 # catalog-id resolver crawl (scripts/resolve-apple-music-catalog.mjs), and the native
 # app fetches it at runtime from CloudFront — immutable caching would pin clients to a
 # stale, under-resolved copy for a year.
-NOCACHE=(index.html sw.js registerSW.js manifest.webmanifest current-index.json apple-music-index.json)
+# rec-features.json: regenerated every deploy (above) + nightly; the rec-engine Lambda
+# refetches it with If-None-Match on a 15-min TTL, so it must revalidate, never pin.
+NOCACHE=(index.html sw.js registerSW.js manifest.webmanifest current-index.json apple-music-index.json rec-features.json)
 EXCL=()
 for f in "${NOCACHE[@]}"; do EXCL+=(--exclude "$f"); done
 

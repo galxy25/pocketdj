@@ -176,6 +176,44 @@ final class CollectionActivityStore {
         return event
     }
 
+    /// One `recordBatch` entry — `record`'s parameters as data, so a batch caller (the
+    /// multi-select/drag/paste adds) can hand over N events for ONE encode + ONE atomic write.
+    struct BatchEntry {
+        var kind: ActivityKind
+        var itemId: String
+        var itemTitle: String?
+        var itemArtist: String?
+        var collectionId: String?
+        var collectionKind: String?
+        var collectionName: String?
+    }
+
+    /// A single user gesture can never contribute more than this many rows: past it, one
+    /// select-all-sized add would trim the user's ENTIRE prior history out of the `maxEvents`
+    /// cap. The batch keeps its NEWEST rows (parity with `trimToCap`'s oldest-first eviction).
+    nonisolated static let maxBatchContribution = maxEvents / 4
+
+    /// Batch twin of `record`: appends every (non-empty-id) entry, trims ONCE, bumps
+    /// `revision` ONCE, saves ONCE — the per-event path costs a full-document encode +
+    /// atomic write each, which is exactly the main-actor freeze a batch add must not pay
+    /// per song. Returns the number of events actually recorded.
+    @discardableResult
+    func recordBatch(_ entries: [BatchEntry],
+                     at nowMs: Double = Date().timeIntervalSince1970 * 1000) -> Int {
+        let kept = entries.filter { !$0.itemId.isEmpty }.suffix(Self.maxBatchContribution)
+        guard !kept.isEmpty else { return 0 }
+        events.append(contentsOf: kept.map { e in
+            ActivityEvent(id: UUID(), at: nowMs, kind: e.kind, itemId: e.itemId,
+                          itemTitle: e.itemTitle, itemArtist: e.itemArtist,
+                          collectionId: e.collectionId, collectionKind: e.collectionKind,
+                          collectionName: e.collectionName, originInstallId: installId)
+        })
+        if events.count > Self.maxEvents { trimToCap() }
+        revision &+= 1
+        save()
+        return kept.count
+    }
+
     /// UI-test seam (`PDJ_SEED_ACTIVITY`): seed three rows that exercise the THREE resolution
     /// states an activity row can be in, so a UI test can prove the R3 rendering on a real device
     /// rather than in a unit test. No-op outside the seam and once the log is non-empty.

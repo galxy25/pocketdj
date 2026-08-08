@@ -66,6 +66,17 @@ final class CollectionsStore {
     /// separately from the app's `FavoritesStore.onChanged`, not here.
     var onActivity: ((ActivityHook) -> Void)?
 
+    /// Batch twin of `onActivity` — ONE emission per user gesture so the recorder can do ONE
+    /// document write (the multi-select / drag-&-drop / paste batch adds; per-hook recording
+    /// costs a full activity-log encode + atomic write EACH). Optional: when unwired the
+    /// store falls back to per-hook `onActivity`, keeping every existing test seam working.
+    var onActivityBatch: (([ActivityHook]) -> Void)?
+
+    private func emitActivityBatch(_ hooks: [ActivityHook]) {
+        guard !hooks.isEmpty else { return }
+        if let onActivityBatch { onActivityBatch(hooks) } else { for h in hooks { onActivity?(h) } }
+    }
+
     /// The payload of an `onActivity` emission — a user add/remove, snapshotted at fire time.
     struct ActivityHook {
         enum Kind: String { case add, remove }
@@ -107,6 +118,17 @@ final class CollectionsStore {
                                   _ songId: String, _ appleMusicId: String?,
                                   _ title: String, _ artist: String,
                                   _ album: String?, _ durationMs: Int?) -> Bool)?
+
+    /// Batch twin of `enqueueSourceWriteBack` (wired to `PlaylistWriteBack.enqueueMany` +
+    /// ONE `runSoon`): a multi-select batch add owes N upstream writes as ONE queue
+    /// prune/save, not N. Falls back to N single enqueues when unwired (tests).
+    var enqueueSourceWriteBackBatch: ((_ items: [PlaylistWriteBack.EnqueueItem]) -> Int)?
+
+    /// Whether THIS build/session can deliver upstream writes at all (wired to
+    /// `PlaylistWriteBack.canWriteBack`). Consulted before parking a large batch for user
+    /// confirmation — a platform that can't write must never show the confirm dialog.
+    /// Unwired (tests) ⇒ treated as capable so the gate itself stays unit-testable.
+    var canWriteBackUpstream: (() -> Bool)?
 
     /// Cancel still-undelivered write-backs owed to `indexPlaylistId` for `songIds` (wired to
     /// `PlaylistWriteBack.cancelPending`). Fired when a pocket is re-linked away from a source, so a
@@ -150,10 +172,21 @@ final class CollectionsStore {
     /// driven headlessly without the multi-step Browser ▸ Add-to dance. No-op in
     /// normal use.
     private func seedForUITestsIfRequested() {
-        guard ProcessInfo.processInfo.environment["PDJ_SEED_COLLECTIONS"] != nil,
-              playlists.isEmpty else { return }
-        let pl = createPlaylist("Seeded Set")
-        addSong("sng_1", toPlaylist: pl.id)
+        if ProcessInfo.processInfo.environment["PDJ_SEED_COLLECTIONS"] != nil, playlists.isEmpty {
+            let pl = createPlaylist("Seeded Set")
+            addSong("sng_1", toPlaylist: pl.id)
+        }
+        // Clean-versions-only seam: a deterministic 3-song playlist over the fixture's
+        // clean / substitutable / skip trio (sng_1 clean · sng_2 explicit WITH a clean id ·
+        // sng_6 explicit WITHOUT one). Keyed on the playlist NAME (not `playlists.isEmpty`)
+        // so it composes with PDJ_SEED_COLLECTIONS.
+        if ProcessInfo.processInfo.environment["PDJ_SEED_CLEANONLY"] != nil,
+           !playlists.contains(where: { $0.name == "Clean Test" }) {
+            let pl = createPlaylist("Clean Test")
+            addSong("sng_1", toPlaylist: pl.id)
+            addSong("sng_2", toPlaylist: pl.id)
+            addSong("sng_6", toPlaylist: pl.id)
+        }
     }
 
     nonisolated static func defaultURL() -> URL {
@@ -256,6 +289,26 @@ final class CollectionsStore {
         let name = pocket(id)?.name
         mutatePocket(id) { $0.songIds.removeAll { $0 == songId }; $0.songRepeats[songId] = nil }
         emitRemoveActivity(itemId: songId, collectionId: id, kind: .pocket, name: name)
+    }
+    /// Batch remove — the multi-select Add sheet's toggle-OFF. ONE mutate → ONE document
+    /// write (the per-id loop re-encoded the multi-MB document N times on the main actor),
+    /// one activity-batch emission for the ids that were actually members.
+    func removeSongs(_ songIds: [String], fromPocket id: String) {
+        let drop = Set(songIds)
+        guard !drop.isEmpty, let p = pocket(id) else { return }
+        let removed = p.songIds.filter { drop.contains($0) }
+        guard !removed.isEmpty else { return }
+        mutatePocket(id) { p in
+            p.songIds.removeAll { drop.contains($0) }
+            for s in drop { p.songRepeats[s] = nil }
+        }
+        let name = pocket(id)?.name
+        emitActivityBatch(removed.map { ActivityHook(kind: .remove, itemId: $0,
+                                                     itemTitle: activityTitle($0),
+                                                     itemArtist: activityArtist($0),
+                                                     collectionId: id,
+                                                     collectionKind: AddTarget.Kind.pocket.rawValue,
+                                                     collectionName: name) })
     }
     /// Set a pocket member's repeat (loop) count. A count ≤ 1 clears the key.
     func setSongRepeat(_ songId: String, count: Int, inPocket id: String) {
@@ -587,6 +640,15 @@ final class CollectionsStore {
         return songIdsInNodes(pl.sequences).contains(songId)
     }
 
+    /// Every `.song` node id in the playlist as ONE set — the batch membership check.
+    /// Per-id `playlist(_:contains:)` walks the whole node tree per call, so an N-song
+    /// batch (the Add-to sheet's `.songs` item) must resolve membership against this
+    /// instead: one tree walk, N O(1) lookups.
+    func playlistSongIdSet(_ id: String) -> Set<String> {
+        guard let pl = playlist(id) else { return [] }
+        return songIdsInNodes(pl.sequences)
+    }
+
     /// Every song id referenced by a node tree (recursing into sub-chapters) — membership,
     /// not resolution, so albums/pockets are NOT expanded.
     private func songIdsInNodes(_ nodes: [PlaylistNode]) -> Set<String> {
@@ -632,6 +694,31 @@ final class CollectionsStore {
             }
         }
         emitRemoveActivity(itemId: songId, collectionId: id, kind: .playlist, name: name)
+    }
+    /// Batch twin of `removeSong(_:fromPlaylist:)` (the multi-song Add-sheet toggle-OFF):
+    /// ONE mutate → ONE document write, one activity-batch emission for the actual members.
+    func removeSongs(_ songIds: [String], fromPlaylist id: String) {
+        let drop = Set(songIds)
+        guard !drop.isEmpty else { return }
+        let members = playlistSongIdSet(id)          // one tree walk, not one per id
+        let removed = songIds.filter { members.contains($0) }
+        guard !removed.isEmpty else { return }
+        let name = playlist(id)?.name
+        mutatePlaylist(id) { pl in
+            for i in pl.sequences.indices {
+                var kids = pl.sequences[i].children ?? []
+                CollectionsStore.pruneNodes(&kids) { n in
+                    n.kind == .song && (n.songId.map(drop.contains) ?? false)
+                }
+                pl.sequences[i].children = kids
+            }
+        }
+        emitActivityBatch(removed.map { ActivityHook(kind: .remove, itemId: $0,
+                                                     itemTitle: activityTitle($0),
+                                                     itemArtist: activityArtist($0),
+                                                     collectionId: id,
+                                                     collectionKind: AddTarget.Kind.playlist.rawValue,
+                                                     collectionName: name) })
     }
 
     /// Toggle-OFF for an `.album` node (all chapters). No-op when absent; one remove activity.
@@ -801,6 +888,15 @@ final class CollectionsStore {
     }
     func setAMSyncDirection(_ direction: CollectionSyncDirection, forPlaylist id: String) {
         mutatePlaylist(id) { $0.amSyncDirection = direction.rawValue }
+    }
+
+    /// Clean-versions-only toggle (see `CleanOnly`). Stored as `true`/nil (never `false`)
+    /// so an untouched collection's serialized bytes are unchanged (CloudSync byte-compare).
+    func setCleanOnly(_ on: Bool, forPlaylist id: String) {
+        mutatePlaylist(id) { $0.cleanOnly = on ? true : nil }
+    }
+    func setCleanOnly(_ on: Bool, forPocket id: String) {
+        mutatePocket(id) { $0.cleanOnly = on ? true : nil }
     }
 
     func setSourceSyncEnabled(_ enabled: Bool, forPocket id: String) {
@@ -1080,6 +1176,73 @@ final class CollectionsStore {
         emitAddActivity(itemId: albumId, target: target)
     }
 
+    /// What a playlist batch add dedups against. `.wholeCollection` (drops/pastes): a song
+    /// already ANYWHERE in the playlist is skipped — a fumbled self-drop never mints
+    /// duplicate nodes. `.targetChapter` (the Add-to sheet's per-chapter rows): only the
+    /// chosen chapter's members block, so the sheet stays the deliberate-duplication path
+    /// exactly like its single-song `addSong` twin. Pocket adds always dedup on membership.
+    enum BatchDedupe { case wholeCollection, targetChapter }
+
+    /// Batch membership add — the drag-&-drop / paste / multi-select "Add to" choke point.
+    /// ONE mutate → ONE collections-document write, ONE activity-batch emission (the
+    /// recorder does one log write for it), ONE write-back resolution for the whole batch.
+    /// Ids are prefix-agnostic (studio ids ride verbatim, same doctrine as
+    /// addSong(toPocket:)). MRU/lastAddTarget stamped once. Returns the count actually
+    /// added; 0 ⇒ nothing saved, nothing emitted, nothing queued upstream.
+    @discardableResult
+    func addSongs(_ songIds: [String], to target: AddTarget,
+                  dedupe: BatchDedupe = .wholeCollection) -> Int {
+        var toAdd: [String] = []
+        switch target.kind {
+        case .pocket:
+            guard let p = pocket(target.id) else { return 0 }
+            var seen = Set(p.songIds)
+            toAdd = songIds.filter { seen.insert($0).inserted }
+            guard !toAdd.isEmpty else { return 0 }
+            mutatePocket(target.id) { $0.songIds.append(contentsOf: toAdd) }
+        case .playlist:
+            guard let pl = playlist(target.id) else { return 0 }
+            let targetIdx = target.sequenceId.flatMap { sid in
+                pl.sequences.firstIndex { $0.nodeId == sid } } ?? 0
+            let dedupeScope: [PlaylistNode] = (dedupe == .targetChapter
+                && pl.sequences.indices.contains(targetIdx)) ? [pl.sequences[targetIdx]] : pl.sequences
+            var seen = Set(dedupeScope.flatMap { ($0.children ?? [])
+                .compactMap { $0.kind == .song ? $0.songId : nil } })
+            toAdd = songIds.filter { seen.insert($0).inserted }
+            guard !toAdd.isEmpty else { return 0 }
+            var appended = false
+            mutatePlaylist(target.id) { pl in
+                // A playlist that decoded with NO chapters (lossy decode dropped an unknown
+                // node kind, or an imported doc carried "sequences": []) self-heals: the
+                // default chapter is a schema invariant, not user content (same repair the
+                // source-sync reconcile applies).
+                if pl.sequences.isEmpty { pl.sequences = [CollectionsFactory.makeSequence("Default")] }
+                let seqIdx = target.sequenceId.flatMap { sid in
+                    pl.sequences.firstIndex { $0.nodeId == sid } } ?? 0
+                guard pl.sequences.indices.contains(seqIdx) else { return }
+                var children = pl.sequences[seqIdx].children ?? []
+                children.append(contentsOf: toAdd.map {
+                    PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: $0) })
+                pl.sequences[seqIdx].children = children
+                appended = true
+            }
+            // Nothing landed ⇒ report the truth: no MRU stamp, no History rows, and above all
+            // no irreversible Apple Music write-back for songs that were never added locally.
+            guard appended else { return 0 }
+        }
+        noteRecentTarget(target)
+        setLastAddTarget(target)
+        let collectionName = plainCollectionName(target)   // loop-invariant: resolved once
+        emitActivityBatch(toAdd.map { ActivityHook(kind: .add, itemId: $0,
+                                                   itemTitle: activityTitle($0),
+                                                   itemArtist: activityArtist($0),
+                                                   collectionId: target.id,
+                                                   collectionKind: target.kind.rawValue,
+                                                   collectionName: collectionName) })
+        writeBackAddIfSourced(toAdd, target: target)
+        return toAdd.count
+    }
+
     // MARK: Two-way source sync — push a converted/duplicated collection's add upstream
 
     /// Resolve `target`'s Apple Music provenance and, if this collection came from an Apple
@@ -1090,6 +1253,82 @@ final class CollectionsStore {
     private func writeBackAddIfSourced(_ songId: String, target: AddTarget) {
         _ = writeBackSong(songId, forTargetKind: target.kind, collectionId: target.id)
     }
+
+    // MARK: Batch write-back (multi-select / drag / paste adds)
+
+    /// Above this many upstream-owed songs, a batch add PARKS the Apple Music write-back
+    /// behind an explicit confirmation instead of enqueueing: upstream adds are append-only
+    /// and not retractable from this app, so a select-all-sized batch must never push
+    /// implicitly (one drag-release must not rewrite the user's real library).
+    static let writeBackConfirmThreshold = 50
+
+    /// A large batch's upstream leg, awaiting the user's OK (see the threshold). Transient
+    /// UI state — never persisted; RootView presents the confirmation alert. The LOCAL add
+    /// has already been committed when this appears; only the Apple Music push waits.
+    struct PendingWriteBackBatch: Identifiable {
+        let id = UUID()
+        var items: [PlaylistWriteBack.EnqueueItem]
+        /// The real Apple Music playlist the items would be appended to.
+        var playlistName: String
+        var count: Int { items.count }
+    }
+    var pendingWriteBackBatch: PendingWriteBackBatch?
+
+    /// Batch twin of the per-add write-back: resolves the target's provenance ONCE, builds
+    /// every eligible item (same per-song eligibility as `writeBackAddedSong`, via the shared
+    /// `writeBackPayload`), then either enqueues the whole batch as ONE queue write (small)
+    /// or parks it behind the confirmation gate (large).
+    private func writeBackAddIfSourced(_ songIds: [String], target: AddTarget) {
+        guard !songIds.isEmpty,
+              enqueueSourceWriteBack != nil || enqueueSourceWriteBackBatch != nil else { return }
+        let plId: String?, sourceName: String?, allowsPush: Bool
+        let collectionName: String, snapshot: [String]?
+        switch target.kind {
+        case .pocket:
+            guard let p = pocket(target.id) else { return }
+            (plId, sourceName, allowsPush, collectionName, snapshot) =
+                (p.sourcePlaylistId, p.sourceName, p.amSyncDir.allowsPush, p.name, p.sourceSongIds)
+        case .playlist:
+            guard let pl = playlist(target.id) else { return }
+            (plId, sourceName, allowsPush, collectionName, snapshot) =
+                (pl.sourcePlaylistId, pl.sourceName, pl.amSyncDir.allowsPush, pl.name, pl.sourceSongIds)
+        }
+        guard allowsPush, plId != nil, PlaylistWriteBack.isAppleMusicSource(sourceName ?? "") else { return }
+        let snap = Set(snapshot ?? [])   // the snapshot is scanned per song — Set it once
+        let items = songIds.compactMap {
+            writeBackPayload($0, sourcePlaylistId: plId, sourceName: sourceName,
+                             sourceSnapshot: snap, collectionName: collectionName, force: false).item
+        }
+        guard !items.isEmpty else { return }
+        if items.count > Self.writeBackConfirmThreshold {
+            // A platform/session that can't deliver must never show a confirm dialog for nothing.
+            if let can = canWriteBackUpstream, !can() { return }
+            pendingWriteBackBatch = PendingWriteBackBatch(items: items,
+                                                          playlistName: items[0].playlistName)
+        } else {
+            enqueueWriteBackItems(items)
+        }
+    }
+
+    private func enqueueWriteBackItems(_ items: [PlaylistWriteBack.EnqueueItem]) {
+        if let batch = enqueueSourceWriteBackBatch {
+            _ = batch(items)
+        } else if let enqueue = enqueueSourceWriteBack {
+            for i in items {
+                _ = enqueue(i.indexPlaylistId, i.playlistName, i.songId, i.appleMusicId,
+                            i.title, i.artist, i.album, i.durationMs)
+            }
+        }
+    }
+
+    /// The user confirmed the parked batch — push it upstream (one queue write + one drain).
+    func confirmPendingWriteBackBatch() {
+        guard let pending = pendingWriteBackBatch else { return }
+        pendingWriteBackBatch = nil
+        enqueueWriteBackItems(pending.items)
+    }
+    /// The user declined — the local add stands; Apple Music is left untouched.
+    func discardPendingWriteBackBatch() { pendingWriteBackBatch = nil }
 
     /// The outcome of a single write-back decision — rich enough to drive the force-sync UI's
     /// "queued / already-queued / why-not" feedback. The per-add path + backfill only ever care
@@ -1173,28 +1412,55 @@ final class CollectionsStore {
     private func writeBackAddedSong(_ songId: String, sourcePlaylistId: String?,
                                     sourceName: String?, sourceSnapshot: [String]?,
                                     collectionName: String, force: Bool = false) -> WriteBackAttempt {
-        guard let enqueue = enqueueSourceWriteBack,
-              let plId = sourcePlaylistId,
-              PlaylistWriteBack.isAppleMusicSource(sourceName ?? "") else { return .notLinked }
+        guard let enqueue = enqueueSourceWriteBack else { return .notLinked }
+        switch writeBackPayload(songId, sourcePlaylistId: sourcePlaylistId, sourceName: sourceName,
+                                sourceSnapshot: Set(sourceSnapshot ?? []),
+                                collectionName: collectionName, force: force) {
+        case .ineligible(let verdict):
+            return verdict
+        case .eligible(let item):
+            return enqueue(item.indexPlaylistId, item.playlistName, item.songId, item.appleMusicId,
+                           item.title, item.artist, item.album, item.durationMs) ? .queued : .deduped
+        }
+    }
+
+    /// One song's write-back eligibility, resolved to either the enqueue-able payload or the
+    /// verdict explaining why there is none. The SINGLE implementation both the per-add path
+    /// (`writeBackAddedSong`) and the batch path (`writeBackAddIfSourced(_:[String]:)`) run,
+    /// so their eligibility can never drift.
+    private enum WriteBackResolution {
+        case eligible(PlaylistWriteBack.EnqueueItem)
+        case ineligible(WriteBackAttempt)
+        var item: PlaylistWriteBack.EnqueueItem? {
+            if case .eligible(let i) = self { return i }
+            return nil
+        }
+    }
+
+    private func writeBackPayload(_ songId: String, sourcePlaylistId: String?, sourceName: String?,
+                                  sourceSnapshot: Set<String>, collectionName: String,
+                                  force: Bool) -> WriteBackResolution {
+        guard let plId = sourcePlaylistId,
+              PlaylistWriteBack.isAppleMusicSource(sourceName ?? "") else { return .ineligible(.notLinked) }
         // Only CATALOG songs can be written back. Studio performance items aren't in `songsById`
         // (excluded by construction), but "Pocket DJ" PROFILE items ARE full songsById citizens —
         // device-local custom audio has NO Apple Music counterpart, so fence it EXPLICITLY, else a
         // title/artist match could push a WRONG track into the user's real Apple Music playlist.
-        guard !ProfileSourceStore.isProfileSongId(songId) else { return .notCatalogSong }
-        guard let song = app?.songsById[songId] else { return .notCatalogSong }
+        guard !ProfileSourceStore.isProfileSongId(songId) else { return .ineligible(.notCatalogSong) }
+        guard let song = app?.songsById[songId] else { return .ineligible(.notCatalogSong) }
         let amId = (song.appleMusicId ?? "").trimmingCharacters(in: .whitespaces)
         let title = song.name.trimmingCharacters(in: .whitespaces)
         let artist = song.artist.trimmingCharacters(in: .whitespaces)
         // Need a KNOWN catalog id, or enough identity to resolve one on-device (the case our
         // indexer missed — e.g. "The Magic Clap" by The Coup, an Apple Music (Local) song with no
         // `appleMusicId`). With neither, there's nothing to write; the local add is the whole op.
-        guard !amId.isEmpty || (!title.isEmpty && !artist.isEmpty) else { return .noIdentity }
+        guard !amId.isEmpty || (!title.isEmpty && !artist.isEmpty) else { return .ineligible(.noIdentity) }
         // The snapshot IS Apple Music's membership as of the last catalog refresh, so a song already
         // in it is already upstream and re-adding would DUPLICATE the track. A FORCE sync overrides
         // this: the user is explicitly telling us the song is NOT actually in the real playlist
         // (a stale / over-broad snapshot — the same failure the re-link flow rescues), and the
         // transport's own "already in the playlist?" pre-check is the backstop against a true dup.
-        if !force, (sourceSnapshot ?? []).contains(songId) { return .alreadyUpstream }
+        if !force, sourceSnapshot.contains(songId) { return .ineligible(.alreadyUpstream) }
         let album = song.albumId.flatMap { app?.albumsById[$0]?.name }
         // The join key is the source playlist id; the NAME is only the first-resolve bootstrap
         // (`PlaylistWriteBack` remembers the MusicKit id thereafter). Prefer the live source
@@ -1202,8 +1468,9 @@ final class CollectionsStore {
         // value at convert/duplicate time — when the catalog isn't loaded, because `enqueue`
         // rejects an empty name.
         let name = liveSourcePlaylist(id: plId, sourceName: sourceName)?.name ?? collectionName
-        return enqueue(plId, name, songId, amId.isEmpty ? nil : amId, title, artist, album, song.length)
-            ? .queued : .deduped
+        return .eligible(.init(indexPlaylistId: plId, playlistName: name, songId: songId,
+                               appleMusicId: amId.isEmpty ? nil : amId, title: title, artist: artist,
+                               album: album, durationMs: song.length))
     }
 
     /// The default look-back for the write-back backfill, and the ceiling the UI clamps to.
@@ -1424,6 +1691,37 @@ final class CollectionsStore {
     /// A read-only "From your sources" playlist's song ids (already a flat list).
     func songIds(forSource source: SourcePlaylist) -> [String] { source.songIds }
 
+    // MARK: Collection → ripIds (the rip/burn/stem funnels — cleanOnly-aware)
+    //
+    // Same catalog-only resolution as `songIds(...)` but routed through `CleanOnly.ripIds`
+    // when the collection's cleanOnly toggle is on: explicit songs become their VARIANT id
+    // ("<baseId>_clean" — a distinct S3/burn key) or drop. `songIds(...)` itself is
+    // deliberately untouched — it also feeds CSV export + StorageView, where variant ids
+    // must never leak into tracklists.
+
+    /// Rip/burn/stem id list for a playlist (variant-substituted under cleanOnly).
+    func ripIds(forPlaylist id: String) -> [String] {
+        let ids = songIds(forPlaylist: id)
+        guard playlist(id)?.cleanOnly == true, let app else { return ids }
+        return CleanOnly.ripIds(ids: ids, songsById: app.songsById)
+    }
+    /// Rip/burn/stem id list for a pocket (variant-substituted under cleanOnly).
+    func ripIds(forPocket id: String) -> [String] {
+        let ids = songIds(forPocket: id)
+        guard pocket(id)?.cleanOnly == true, let app else { return ids }
+        return CleanOnly.ripIds(ids: ids, songsById: app.songsById)
+    }
+    /// Rip/burn/stem id list for a FROZEN setlist: same filters as `songIds(forSetlist:)`,
+    /// but each track's frozen `variant` stamp (a cleanOnly realize/playNow substitution)
+    /// yields its variant id — the freeze decided the edition, so rips follow it.
+    func ripIds(forSetlist id: String) -> [String] {
+        guard let sl = setlist(id) else { return [] }
+        return sl.tracks
+            .filter { $0.isText != true && !$0.songId.isEmpty && !StudioFactory.isStudioId($0.songId)
+                      && !ProfileSourceStore.isProfileSongId($0.songId) }
+            .map { t in t.songVariant.map { SongVariant.variantId(t.songId, $0) } ?? t.songId }
+    }
+
     // MARK: Collection → playableIds (playback companions — studio rows KEPT)
     //
     // Same resolution + order as `songIds(...)` but KEEPING studio ids: samples /
@@ -1476,8 +1774,12 @@ final class CollectionsStore {
     func burnTuples(_ songIds: [String]) -> [(id: String, title: String, artist: String)] {
         // Profile ("Pocket DJ") ids ARE in songsById (unlike studio ids), so skip them here too —
         // a device-local custom item must never be named into a BURN sidecar (a fourth fence).
+        // Metadata resolves by the BASE id (a variant id "sng_…_clean" isn't in the catalog);
+        // the tuple keeps the VARIANT id so the burn downloads + names the variant file.
         songIds.filter { !ProfileSourceStore.isProfileSongId($0) }
-            .compactMap { id in app?.songsById[id].map { (id: id, title: $0.name, artist: $0.artist) } }
+            .compactMap { id in
+                app?.songsById[SongVariant.baseId(id)].map { (id: id, title: $0.name, artist: $0.artist) }
+            }
     }
 
     // MARK: Setlists (Play → realize → freeze)
@@ -1552,7 +1854,21 @@ final class CollectionsStore {
         guard let pl = playlist(playlistId), let ctx = makeCtx(for: pl) else { return nil }
         let theSeed = seed ?? CollectionsFactory.uid()   // fresh seed ⇒ a different take each Play
         let theName = name ?? nextSetlistName(forPlaylist: playlistId)
-        let setlist = RealizeEngine.buildSetlist(pl, ctx, seed: theSeed, name: theName, now: now)
+        var setlist = RealizeEngine.buildSetlist(pl, ctx, seed: theSeed, name: theName, now: now)
+        // Clean-versions-only playlist: FREEZE the decision into the setlist — skipped
+        // songs drop, substituted ones carry `variant = "clean"` — so the frozen set plays
+        // (and rips) the same editions forever, even if the toggle later flips.
+        if pl.cleanOnly == true, let app {
+            setlist.tracks = setlist.tracks.compactMap { t in
+                guard t.isText != true, let s = app.songsById[t.songId] else { return t }
+                if CleanOnly.isSkipped(s) { return nil }
+                guard s.explicit == true else { return t }
+                var out = t
+                out.variant = SongVariant.clean.rawValue
+                return out
+            }
+            setlist.totalMs = setlist.tracks.reduce(0) { $0 + $1.shownMs }
+        }
         setlists.append(setlist)
         save()
         return setlist
@@ -1590,7 +1906,7 @@ final class CollectionsStore {
     @discardableResult
     func playNow(songIds: [String], name: String = "Now Playing", shuffle: Bool = false,
                  source: PlayHistoryStore.PlaySource? = nil, repeats: [String: Int] = [:],
-                 originId: String? = nil) -> Setlist? {
+                 originId: String? = nil, variants: [String: SongVariant] = [:]) -> Setlist? {
         guard let app else { return nil }
         nowPlayingSource = source
         nowPlayingOriginId = originId
@@ -1603,7 +1919,7 @@ final class CollectionsStore {
             // invents the 210 s fallback for a 4 s loop, bpm/camelot when known, and a
             // "Studio" artist so the row + Now Playing label read sensibly. Unresolvable
             // (seam unwired / item deleted) drops the row, exactly like an unknown
-            // catalog id on the line below.
+            // catalog id on the line below. (Variants never apply to studio rows.)
             if StudioFactory.isStudioId(id) {
                 guard let info = studioLookup?(id) else { return nil }
                 return SetlistTrack(songId: id, artist: studioArtist, name: info.title,
@@ -1613,7 +1929,8 @@ final class CollectionsStore {
             guard let s = app.songsById[id] else { return nil }   // drop unresolvable ids
             return SetlistTrack(songId: s.id, artist: s.artist, name: s.name,
                                 bpm: s.bpm, camelot: s.camelot, lengthMs: s.length,
-                                source: .explicit, repeatCount: rep)
+                                source: .explicit, repeatCount: rep,
+                                variant: variants[id]?.rawValue)
         }
         if shuffle { tracks.shuffle() }
         let totalMs = tracks.reduce(0) { $0 + $1.shownMs }
@@ -1668,9 +1985,18 @@ final class CollectionsStore {
         // Stamp "recently played" here — the single funnel every collection-play entry point
         // (detail views, CarPlay, Siri/App Intents via IntentServices.playPlaylist) routes through.
         markPlayed(playlistId: playlistId)
-        return playNow(songIds: playableIds(forPlaylist: playlistId),
+        // Clean-versions-only: resolve the queue THROUGH CleanOnly at this single funnel
+        // (covers detail ▶, shuffle, CarPlay, Siri/App Intents) — explicit songs substitute
+        // their clean edition or drop; everything else passes untouched.
+        var ids = playableIds(forPlaylist: playlistId)
+        var variants: [String: SongVariant] = [:]
+        if playlist(playlistId)?.cleanOnly == true, let app {
+            let r = CleanOnly.resolve(ids: ids, songsById: app.songsById)
+            ids = r.ids; variants = r.variants
+        }
+        return playNow(songIds: ids,
                 name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle, source: .playlist,
-                repeats: playlistRepeatMap(playlistId), originId: playlistId)
+                repeats: playlistRepeatMap(playlistId), originId: playlistId, variants: variants)
     }
     /// ▶ Play a pocket into the reusable Now Playing setlist (DAG-resolved order).
     /// `playableIds` for the same reason as the playlist variant above.
@@ -1679,9 +2005,15 @@ final class CollectionsStore {
         // Stamp "recently played" here — the single funnel every pocket-play entry point
         // (PocketsView, CarPlay, Siri/App Intents via IntentServices.playPocket) routes through.
         markPlayed(pocketId: pocketId)
-        return playNow(songIds: playableIds(forPocket: pocketId),
+        var ids = playableIds(forPocket: pocketId)
+        var variants: [String: SongVariant] = [:]
+        if pocket(pocketId)?.cleanOnly == true, let app {
+            let r = CleanOnly.resolve(ids: ids, songsById: app.songsById)
+            ids = r.ids; variants = r.variants
+        }
+        return playNow(songIds: ids,
                 name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle, source: .pocket,
-                repeats: pocket(pocketId)?.songRepeats ?? [:], originId: pocketId)
+                repeats: pocket(pocketId)?.songRepeats ?? [:], originId: pocketId, variants: variants)
     }
 
     /// Best-effort songId → repeat-count map for a playlist's `.song` nodes (recursing into

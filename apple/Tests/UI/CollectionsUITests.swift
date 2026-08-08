@@ -158,8 +158,17 @@ final class PlaylistsUITests: XCTestCase {
         XCTAssertTrue(app.navigationBars["BBQ Mix"].waitForExistence(timeout: 5))
 
         // Delete via the detail menu → confirmation → pops back to the list.
+        // OVERFLOW-AWARE (the toolbar-overflow lesson applied to the menu itself): the
+        // playlist ⋯ menu grew past one iPhone-portrait screen (the Clean-versions-only
+        // toggle tipped it), so iOS makes it scrollable and the off-screen tail — Delete
+        // is the LAST row — isn't in the a11y tree until scrolled into view.
         app.buttons["playlist-menu"].tap()
-        app.buttons["delete-playlist"].tap()
+        let delete = app.buttons["delete-playlist"]
+        if !delete.waitForExistence(timeout: 2) {
+            app.swipeUp()   // scrolls the open menu
+        }
+        XCTAssertTrue(delete.waitForExistence(timeout: 5))
+        delete.tap()
         let confirm = app.buttons.matching(identifier: "delete-playlist-confirm").firstMatch
         XCTAssertTrue(confirm.waitForExistence(timeout: 5))
         confirm.tap()

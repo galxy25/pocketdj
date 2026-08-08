@@ -18,11 +18,16 @@ struct SettingsView: View {
     @Environment(CloudSyncService.self) private var cloudSync
     // Account-deletion orchestrator (5.1.1(v)) — wired in PocketDJApp with every store it wipes.
     @Environment(AccountDeletionService.self) private var accountDeletion
+    /// Optional-degrade (the `writeBack` pattern): always injected by the app; a preview/test
+    /// host that renders Settings standalone loses only the Recommendations status rows.
+    @Environment(RecommendationService.self) private var recEngine: RecommendationService?
     @State private var ripTesting = false
     @State private var ripStatus: RipStatus?
     @State private var jukeboxTesting = false
     @State private var jukeboxStatus: RipStatus?
     @State private var confirmingReset = false
+    /// "Delete cloud data" (Recommendations) confirmation gate.
+    @State private var showRecDeleteConfirm = false
     /// Account deletion (5.1.1(v)): the confirm dialog + the in-progress guard (disables the row
     /// and shows a spinner while the orchestrator runs).
     @State private var confirmingAccountDeletion = false
@@ -54,6 +59,7 @@ struct SettingsView: View {
             searchSection
             ripSection
             jukeboxSection
+            recommendationsSection
             mixSection
             storageSection
             editsSection
@@ -666,6 +672,57 @@ struct SettingsView: View {
             //       session. Needs `timeless` removed and per-session signed, expiring audio URLs.
             Text("The jukebox session broker your guests' phones talk to. Start a jukebox from the Jukebox Hero tab (⌘J); guests scan its QR code to see what's playing and request songs. A session is bounded to your event: the link carries a token, the listener count is capped, and the session expires when the night is over.")
         }
+    }
+
+    // MARK: Recommendations (cloud PocketDJ recommendation engine — WS-E)
+
+    /// The opt-in cloud recommendation engine: OFF (default) sends nothing anywhere; ON
+    /// batch-uploads listening/collection deltas and lights up History ▸ For You + the
+    /// Suggested-collections rows. "Delete cloud data" is a separate, explicit destructive
+    /// action — toggling OFF retains the server state so a flip stays cheap/reversible.
+    private var recommendationsSection: some View {
+        Section {
+            Toggle("Use PocketDJ Recommendation Engine", isOn: $settings.recEngineEnabled)
+                .accessibilityIdentifier("rec-engine-toggle")
+            if settings.recEngineEnabled {
+                LabeledContent("Last sent") {
+                    Text(recLastSentLabel)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("rec-last-sent")
+                }
+                if let err = recEngine?.syncError {
+                    Text(err).font(.caption).foregroundStyle(Theme.danger)
+                }
+                Button("Send now") { Task { await recEngine?.flushNow() } }
+                    .accessibilityIdentifier("rec-send-now")
+                Button("Delete cloud data", role: .destructive) { showRecDeleteConfirm = true }
+                    .accessibilityIdentifier("rec-delete-cloud")
+            }
+        } header: {
+            Text("Recommendations")
+        } footer: {
+            Text("When on, your listening history, favorites, collection updates, and Collector's Puzzle results are sent to PocketDJ to compute suggestions. When off, nothing leaves your device.")
+        }
+        .onChange(of: settings.recEngineEnabled) {
+            settings.persist()
+            recEngine?.enabledDidChange()
+        }
+        .confirmationDialog("Delete your recommendation data from PocketDJ's servers?",
+                            isPresented: $showRecDeleteConfirm, titleVisibility: .visible) {
+            Button("Delete cloud data", role: .destructive) {
+                Task { await recEngine?.deleteCloudData() }
+            }
+            .accessibilityIdentifier("rec-delete-cloud-confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes the uploaded listening history, favorites, and collection data from the recommendation service. Your on-device history is untouched. If the engine stays on, fresh data is uploaded again from now on.")
+        }
+    }
+
+    private var recLastSentLabel: String {
+        guard let at = recEngine?.lastSyncedAtMs else { return "Never" }
+        return Date(timeIntervalSince1970: at / 1000)
+            .formatted(.relative(presentation: .named))
     }
 
     @ViewBuilder private var jukeboxStatusView: some View {

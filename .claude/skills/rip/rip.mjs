@@ -27,6 +27,8 @@
 //   node .claude/skills/rip/rip.mjs --setlist "<csv>" --ah-session "<name>" [options]
 //   node .claude/skills/rip/rip.mjs --probe                 # list Audio Hijack sessions
 //   node .claude/skills/rip/rip.mjs --setlist "<csv>" --dry-run   # resolve matches only
+//   --require-explicitness clean|explicit   # variant rips: the library match must carry
+//       that Explicit flag; absent edition ⇒ the track FAILS (never --search-fallback'd)
 
 import fs from 'node:fs';
 import os from 'node:os';
@@ -63,6 +65,12 @@ const SETTLE_MS = parseInt(args['settle-ms'] || '1500', 10); // pause between st
 // search instead. Used by ad-hoc / freshly-added rips (e.g. recognizer add-to-library), where
 // the song reaches the live library via iCloud sync but isn't in the frozen XML yet.
 const SEARCH_FALLBACK = !!args['search-fallback'];
+// Require a specific EDITION ('clean' | 'explicit') of every track — variant rips
+// ("<songId>_clean|_explicit" keys). The library match must carry the matching Explicit
+// flag; when the required edition is absent the track FAILS (it is NEVER rescued by
+// --search-fallback): a variant key must never hold wrong-edition audio.
+const REQUIRE_EXPL = args['require-explicitness'] === 'clean' || args['require-explicitness'] === 'explicit'
+  ? args['require-explicitness'] : null;
 const TAIL_MS = parseInt(args['tail-ms'] || '1200', 10);     // record a moment past track end
 const MAX_SECONDS = args['max-seconds'] ? parseInt(args['max-seconds'], 10) : 0; // cap per-song record (0 = full track; for quick test samples)
 const LIMIT = args.limit ? parseInt(args.limit, 10) : Infinity;
@@ -181,10 +189,10 @@ data.forEach((r, i) => {
   const artist = song?.artist || (cArtist >= 0 ? r[cArtist] : '');
   const title = song?.name || (cTitle >= 0 ? r[cTitle] : '');
   const pos = cNum >= 0 ? (r[cNum] || '').trim() : String(i + 1);
-  let { hit, match } = findInLibrary(lib, artist, title);
+  let { hit, match } = findInLibrary(lib, artist, title, { explicitness: REQUIRE_EXPL });
   if (match === 'none' && backfillById.has(songId)) {        // fallback to the resolved catalog title
     const bf = backfillById.get(songId);
-    const r2 = findInLibrary(lib, bf.artist, bf.title);
+    const r2 = findInLibrary(lib, bf.artist, bf.title, { explicitness: REQUIRE_EXPL });
     if (r2.match !== 'none') { hit = r2.hit; match = 'backfill'; }
   }
   plan.push({ pos, order: String(pos).padStart(pad, '0'), artist, title, songId, hit, match,
@@ -193,8 +201,12 @@ data.forEach((r, i) => {
 
 // With --search-fallback, keep not-in-static-XML tracks in the plan and play them via a
 // live Music.app search (their p.hit is null → ripOne goes straight to searchAndPlay).
-const inLib = plan.filter(p => p.match !== 'none' || SEARCH_FALLBACK);
-const skipped = plan.filter(p => p.match === 'none' && !SEARCH_FALLBACK);
+// EXCEPT under --require-explicitness: a track whose required edition isn't verifiably in
+// the library must NOT be live-search captured — the search can't guarantee the edition,
+// and a variant key holding wrong-edition audio is data corruption. Those tracks skip
+// (the caller reports no-matching-edition).
+const inLib = plan.filter(p => p.match !== 'none' || (SEARCH_FALLBACK && !REQUIRE_EXPL));
+const skipped = plan.filter(p => p.match === 'none' && !(SEARCH_FALLBACK && !REQUIRE_EXPL));
 
 // output folder: <unixSeconds>_<setlist name>_ripped
 const setName = safeName(path.basename(SETLIST).replace(/\.[^.]+$/, '')) || 'setlist';

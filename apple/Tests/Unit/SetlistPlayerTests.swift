@@ -234,6 +234,58 @@ final class SetlistPlayerTests: XCTestCase {
         cleanBurnedFiles(["sng_1.mp3", "sng_1.txt", "sng_2.mp3", "sng_2.txt"])
     }
 
+    // MARK: cleanOnly substitution — a variant play advances at its natural end
+
+    /// REGRESSION (critical, cleanOnly stall): a substituted row's stream/rip resolves under
+    /// the VARIANT id ("sng_…_clean" — the rip pipeline keys variant audio by it) while the
+    /// queue row keeps the BASE id. The end-of-track ownership guard must recognize that
+    /// play as its own (`Item.matches`) — comparing the base id alone made the guard fail,
+    /// so every substituted track silently STOPPED the set at its natural end. Also proves
+    /// the stats hook fires the BASE id (no ghost "sng_…_clean" history/stats rows) and
+    /// that the sequencer's own variant play is not adopted as a foreign jump.
+    func testVariantTrackAutoAdvancesOnNaturalEndAndReportsBaseIdToStats() async {
+        cleanBurnedFiles(["sng_2.mp3", "sng_2.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_2")
+        // The clean variant's rip is cached (manifest keyed by the VARIANT id) but NOT
+        // burned → the coordinator streams it via the rip provider under the variant id.
+        // AFTER burn(): setManifest REPLACES the manifest wholesale (test seam), and
+        // burn() uses it for its own song.
+        rips.setManifest([
+            "sng_1a7f6bc854af_clean": .init(key: "rips/sng_1a7f6bc854af_clean.mp3", source: "digital"),
+            "sng_2": .init(key: "rips/sng_2.mp3", source: "digital"),
+        ])
+        var statsIds: [String] = []
+        rips.onPlay = { statsIds.append($0) }
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "sng_1a7f6bc854af", title: "Substituted", artist: "A", variant: .clean),
+            .init(id: "sng_2", title: "Two", artist: "A"),
+        ])
+
+        await waitUntil("variant streams under its variant id") {
+            rips.nowPlaying?.songId == "sng_1a7f6bc854af_clean"
+        }
+        XCTAssertEqual(seq.index, 0, "the sequencer's own variant play is not a foreign jump")
+        XCTAssertTrue(seq.isRunning)
+        XCTAssertEqual(statsIds, ["sng_1a7f6bc854af"],
+                       "the stats hook reports the BASE id — never the variant ghost id")
+
+        // Natural end of the substituted track: the ownership guard matches the row via its
+        // resolving identity and ADVANCES — pre-fix it returned early and the set stalled.
+        player.onTrackEnded?()
+        await waitUntil("advanced past the substituted track") { rips.nowPlaying?.songId == "sng_2" }
+        XCTAssertEqual(seq.index, 1)
+        XCTAssertTrue(seq.isRunning)
+        XCTAssertEqual(statsIds, ["sng_1a7f6bc854af", "sng_2"])
+        seq.stop()
+        cleanBurnedFiles(["sng_2.mp3", "sng_2.txt"])
+    }
+
     // MARK: Repeat count — a track loops N times before advancing
 
     /// A track with `repeatCount` loops IN PLACE on each natural end until its plays are used up,
@@ -857,6 +909,30 @@ final class SetlistPlayerTests: XCTestCase {
         XCTAssertTrue(seq.shuffleEnabled, "restore reads the persisted shuffle state")
         XCTAssertTrue(seq.isRunning)
         XCTAssertTrue(seq.isHeldForResume, "a restored deck is held, not auto-playing")
+        XCTAssertEqual(seq.sourceSetlistId, "set_1", "an ordinary source id restores as-is")
+        seq.stop()
+    }
+
+    /// A snapshot written mid-Collectors-Puzzle carries the round's `puzzle_<id>` run tag —
+    /// but the round engine does not survive a relaunch, so restoring the tag would leave a
+    /// GHOST round owning the sequencer forever (the MwF queue-accepted append, among other
+    /// surfaces, silently refuses while that prefix stands). The queue restores; the tag dies.
+    func testRestoreDropsAPuzzleRunTag() {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        let snap = PlaybackSessionStore.Snapshot(
+            sessionId: "pses_puz",
+            source: .init(kind: PlayHistoryStore.PlaySource.setlist.rawValue,
+                          id: "\(CollectorsPuzzleEngine.runTagPrefix)\(UUID().uuidString)", name: "Round"),
+            queue: [.init(songId: "sng_1", title: "One", artist: "A"),
+                    .init(songId: "sng_2", title: "Two", artist: "A")],
+            index: 0, positionMs: 0, isPlaying: false, updatedAt: 0)
+        seq.restore(from: snap)
+        XCTAssertTrue(seq.isRunning)
+        XCTAssertEqual(seq.queue.count, 2, "the queue itself restores fine")
+        XCTAssertNil(seq.sourceSetlistId, "the dead round's tag must not outlive the relaunch")
         seq.stop()
     }
 

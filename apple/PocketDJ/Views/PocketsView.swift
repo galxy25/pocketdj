@@ -13,6 +13,7 @@ struct PocketDetailView: View {
     /// Optional like the other app-scoped services: always injected, but a preview/test host
     /// rendering this standalone should degrade rather than trap.
     @Environment(PlaylistAppleMusicSync.self) private var playlistSync: PlaylistAppleMusicSync?
+    @Environment(RowSelection.self) private var rowSelection
     @Environment(\.dismiss) private var dismiss
     let pocketId: String
     @Binding var path: NavigationPath
@@ -48,15 +49,35 @@ struct PocketDetailView: View {
 
     private var pocket: Pocket? { collections.pocket(pocketId) }
 
-    /// A catalog-song row in the pocket's Songs section (nav link + inline player + swipe-remove).
+    /// A catalog-song row in the pocket's Songs section (selectable/draggable row + inline
+    /// player + swipe-remove). `selectableSongRow` replaces the old NavigationLink — plain
+    /// tap still opens the song; modifier-clicks / Select mode multi-select; the row is the
+    /// drag source. Select/Copy fold into the SAME force-sync context menu (one-menu rule).
     @ViewBuilder private func pocketSongRow(_ song: IndexSong) -> some View {
         VStack(spacing: 0) {
-            NavigationLink(value: song) {
-                CollectionSongRow(song: song, syncsToSource: collections.pocket(pocketId)?.syncsWithSource ?? false)
-            }
-            .forceSyncContextMenu(song: song, kind: .pocket, collectionId: pocketId)
+            CollectionSongRow(song: song, syncsToSource: collections.pocket(pocketId)?.syncsWithSource ?? false)
+                // reorderHost: this ForEach owns .onMove — the drag source attaches only to
+                // selected rows so plain row-drags still reorder (macOS's only reorder path).
+                .selectableSongRow(id: song.id, scope: selectionScope, reorderHost: true,
+                                   orderedIds: { displayedSongIds() },
+                                   payload: { dragPayload(for: song) },
+                                   onOpen: { path.append(song) })
+                .forceSyncContextMenu(song: song, kind: .pocket, collectionId: pocketId) {
+                    Button { rowSelection.enterSelectMode(scope: selectionScope, initial: song.id) } label: {
+                        Label("Select", systemImage: "checklist")
+                    }
+                    .accessibilityIdentifier("select-pocket-song-\(song.id)")
+                    Button { rowSelection.copyRowOrSelection(rowId: song.id, scope: selectionScope,
+                        single: SongTransfer.make(ids: [song.id], songsById: app.songsById)) } label: {
+                        Label("Copy", systemImage: "doc.on.doc")
+                    }
+                    .accessibilityIdentifier("copy-pocket-song-\(song.id)")
+                }
             InlinePlayerSlot(songId: song.id)
         }
+        // Clean-versions-only skip indicator (see the PlaylistsView twin): a row this
+        // pocket would SKIP at ▶ Play dims. Styling only, no new a11y id.
+        .opacity(pocket?.cleanOnly == true && CleanOnly.isSkipped(song) ? 0.45 : 1)
         .swipeActions { Button("Remove", role: .destructive) { collections.removeSong(song.id, fromPocket: pocketId) } }
     }
 
@@ -78,6 +99,38 @@ struct PocketDetailView: View {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
     private var hasSongs: Bool { !collections.songIds(forPocket: pocketId).isEmpty }
+
+    // MARK: Multi-select (song-id keys; studio members stay outside the selection)
+
+    private var selectionScope: String { "pocket-\(pocketId)" }
+
+    /// The pocket's CATALOG songs in display order (stored order, or the sorted/filtered
+    /// Browse pipeline when a per-pocket sort/filter is active) — the range/⌘A universe.
+    private func displayedSongIds() -> [String] {
+        guard let pocket else { return [] }
+        if browse.sortKeys.isEmpty && browse.activeFilterCount == 0 {
+            return pocket.songIds.filter { app.songsById[$0] != nil }
+        }
+        return app.sortedFilteredSongs(ids: pocket.songIds, browse: browse,
+                                       collections: collections, favorites: favorites).map(\.id)
+    }
+    private func selectionPayload() -> SongTransfer? {
+        let ids = rowSelection.orderedSelection(in: displayedSongIds())
+        guard !ids.isEmpty else { return nil }
+        return SongTransfer.make(ids: ids, songsById: app.songsById)
+    }
+    private func dragPayload(for song: IndexSong) -> SongTransfer {
+        rowSelection.payloadForRow(song.id, scope: selectionScope,
+            single: SongTransfer.make(ids: [song.id], songsById: app.songsById))
+    }
+    private func acceptDrop(_ items: [SongTransfer]) -> Bool {
+        // Studio ids RESOLVE through studioLookup (the id must be backed by a real item on
+        // this device) — a bare prefix test would persist any foreign "smp_…" string from
+        // the cross-process pasteboard into the cloud-synced document.
+        let ids = SongDrop.acceptableIds(items) { app.songsById[$0] != nil || collections.studioLookup?($0) != nil }
+        guard !ids.isEmpty else { return false }
+        return collections.addSongs(ids, to: AddTarget(kind: .pocket, id: pocketId)) > 0
+    }
 
     // Split into memberList (the List) + chromeApplied (the toolbar/alert/dialog chain):
     // one combined expression exceeded the type-checker's budget once the source-sync
@@ -175,6 +228,11 @@ struct PocketDetailView: View {
                                     app: app, collections: collections)
         .navigationTitle(pocket?.name ?? "Pocket")
         .accessibilityIdentifier("pocket-detail")
+        // Selection bar + whole-list drop target + paste registration (song-id keys).
+        .modifier(CollectionSelectionChrome(scope: selectionScope,
+                                            allIds: { displayedSongIds() },
+                                            payload: { selectionPayload() },
+                                            acceptDrop: { acceptDrop($0) }))
         .scrollContentBackground(.hidden).background(Theme.bg)
         .collectionRipBurn(ripBurn)
         .onAppear { nowPlayingPushed = false }
@@ -199,6 +257,16 @@ struct PocketDetailView: View {
                     // Per-pocket sort + filter (folded into the ⋯ menu so the compact toolbar stays
                     // at 4 items). Reuses the Browser's sort/filter machinery.
                     CollectionSortFilterMenuButtons(browse: browse, showSort: $showSort, showFilter: $showFilter)
+                    // Multi-select: arm Select mode for this list / paste the copied songs (deduped).
+                    Button { rowSelection.enterSelectMode(scope: selectionScope, initial: nil) } label: {
+                        Label("Select songs", systemImage: "checklist")
+                    }
+                    .accessibilityIdentifier("select-songs")
+                    Button { rowSelection.performPaste() } label: {
+                        Label("Paste songs", systemImage: "doc.on.clipboard")
+                    }
+                    .disabled(!SongPasteboard.hasSongs)
+                    .accessibilityIdentifier("paste-songs")
                     Divider()
                     Button { noteDraft = ""; addingNote = true } label: { Label("Add note", systemImage: "text.badge.plus") }
                         .accessibilityIdentifier("add-pocket-note")
@@ -220,8 +288,9 @@ struct PocketDetailView: View {
                         }
                         .accessibilityIdentifier("pocket-link-source")
                     }
+                    cleanOnlyMenuItem
                     Divider()
-                    CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPocket: pocketId) }, noun: "pocket")
+                    CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.ripIds(forPocket: pocketId) }, noun: "pocket")
                     Divider()
                     Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete pocket", systemImage: "trash") }
                         .accessibilityIdentifier("delete-pocket")
@@ -298,6 +367,15 @@ struct PocketDetailView: View {
     /// the type-checker budget for the whole List expression).
     private var syncResultShowing: Binding<Bool> {
         Binding(get: { syncResult != nil }, set: { if !$0 { syncResult = nil } })
+    }
+
+    /// Clean-versions-only toggle (see `CleanOnly`): explicit songs play/rip their clean
+    /// edition when one is resolved, else are skipped for this pocket.
+    @ViewBuilder private var cleanOnlyMenuItem: some View {
+        let b = Binding<Bool>(get: { pocket?.cleanOnly == true },
+                              set: { collections.setCleanOnly($0, forPocket: pocketId) })
+        Toggle(isOn: b) { Label("Clean versions only", systemImage: "c.square") }
+            .accessibilityIdentifier("pocket-clean-only")
     }
 
     /// Source-sync ⋯-menu items — shown only for a pocket converted from a source

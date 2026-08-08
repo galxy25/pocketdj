@@ -22,6 +22,9 @@ struct BrowseView: View {
     @Environment(IntentServices.self) private var intents
     @Environment(SetlistPlayer.self) private var sequencer
     @Environment(MixEngine.self) private var mix
+    /// Per-window multi-select (RootView-owned). Song rows register through it; the
+    /// SelectionBar + ⌘A/⌘C shadows read it.
+    @Environment(RowSelection.self) private var rowSelection
     /// Shared navigation path (owned by RootView) — lets keyboard "open" push an
     /// album/song detail programmatically, alongside the row-tap NavigationLinks.
     @Binding var path: NavigationPath
@@ -50,6 +53,9 @@ struct BrowseView: View {
     /// server-paged (OnlineSearchModel) and ignores this.
     @State private var visibleCount = BrowsePaging.pageSize
     @State private var visibleKey = ""
+    /// The Add-to sheet payload (WS-C): a single song/album from a row context menu, or the
+    /// whole multi-selection when the menu was invoked on a selected row.
+    @State private var addToItem: BrowseAddToItem?
 
     private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16)] }
 
@@ -104,8 +110,12 @@ struct BrowseView: View {
             .toolbar { toolbarItems }
             .sheet(isPresented: $showFilter) { FilterSheet(browse: browse, app: app, collections: collections) }
             .sheet(isPresented: $showSort) { SortSheet(browse: browse) }
+            .sheet(item: $addToItem) { AddToCollectionView(item: $0.item) }
         return chrome
-        .onChange(of: browse.kind) { browse.persist(); if browse.searchOnline { triggerOnline() } }
+        .onChange(of: browse.kind) {
+            browse.persist(); if browse.searchOnline { triggerOnline() }
+            registerSelectionList()
+        }
         .onChange(of: browse.layout) { browse.persist() }
         .onChange(of: browse.clauses) { browse.persist(); if browse.searchOnline { triggerOnline() } }
         // Sort changes RESET + re-fetch online (the server sorts the full result
@@ -118,6 +128,7 @@ struct BrowseView: View {
             visibleKey = ""
             if browse.searchOnline { triggerOnline() } else { online.cancel() }
             if effectiveDiscover { triggerDiscover() } else { discover.cancel(); discoverAlbums.cancel() }
+            registerSelectionList()   // Discover has no selectable song list
         }
         .onChange(of: browse.query) {
             if browse.searchOnline { triggerOnline() }
@@ -148,7 +159,30 @@ struct BrowseView: View {
         // In online/discover mode the id is a constant so the on-device recompute doesn't run per
         // keystroke; toggling back to on-device flips the id and recomputes for the current query.
         .task(id: effectiveDiscover ? "discover" : (effectiveOnline ? "online" : browse.recomputeSignature(app))) {
-            if !effectiveOnline && !effectiveDiscover { await browse.refreshResults(app) }
+            if !effectiveOnline && !effectiveDiscover {
+                await browse.refreshResults(app)
+                // Filter/search changes drop now-hidden ids from the selection. hasSelection
+                // gate: never pay the full-universe id-set walk for an EMPTY selection (a
+                // cleared selection would otherwise cost a catalog pass per keystroke).
+                if rowSelection.scopeId == Self.songSelectionScope, rowSelection.hasSelection {
+                    rowSelection.prune(validIds: Set(selectionAllIds()))
+                }
+            }
+        }
+        // Online (server-paged) results land async and are REPLACED per query — the .task above
+        // never sees them (its id is the constant "online"), so prune on the page itself.
+        .onChange(of: online.items.map(\.id)) { _, ids in
+            guard effectiveOnline, rowSelection.scopeId == Self.songSelectionScope,
+                  rowSelection.hasSelection else { return }
+            rowSelection.prune(validIds: Set(ids))
+        }
+        // ⌘A stays the search field's own select-all while it has focus (the shadow's presence
+        // is gated on this through RowSelection.canSelectAll).
+        .onChange(of: searchFocused) { _, focused in rowSelection.textEntryFocused = focused }
+        .onAppear { registerSelectionList() }
+        .onDisappear {
+            rowSelection.unregisterActiveList(scope: Self.songSelectionScope)
+            rowSelection.textEntryFocused = false   // never leave ⌘A suspended by a stale focus
         }
     }
 
@@ -606,6 +640,7 @@ struct BrowseView: View {
                         if case .album(let album, _) = item {
                             NavigationLink(value: album) { AlbumCard(album: album) }
                                 .buttonStyle(.plain)
+                                .contextMenu { albumAddToMenuItems(album) }
                                 // Keyboard-focus highlight — ↑/↓ cursor walks album order
                                 // linearly through the grid; Return/⌘O opens the album.
                                 .padding(6)
@@ -625,6 +660,7 @@ struct BrowseView: View {
                         if case .album(let album, _) = item {
                             NavigationLink(value: album) { AlbumRow(album: album) }
                                 .buttonStyle(.plain)
+                                .contextMenu { albumAddToMenuItems(album) }
                                 // Keyboard-focus highlight (↑/↓ cursor; Return/⌘O opens).
                                 .background(focusedRowId == album.id
                                             ? Theme.accent.opacity(0.16) : .clear,
@@ -640,6 +676,16 @@ struct BrowseView: View {
             }
         }
         .background(Theme.bg)
+    }
+
+    /// WS-C: "Add to Playlist…" on Browse ALBUM rows — the same AddToCollectionView sheet
+    /// AlbumDetailView presents. Single-album only (album multi-select is out of v1 scope).
+    /// The album rows had no context menu before, so no fold conflict.
+    @ViewBuilder private func albumAddToMenuItems(_ album: IndexAlbum) -> some View {
+        Button { addToItem = BrowseAddToItem(item: .album(album.id)) } label: {
+            Label("Add to Playlist…", systemImage: "music.note.list.badge.plus")
+        }
+        .accessibilityIdentifier("add-to-album-\(album.id)")
     }
 
     /// The last RENDERED row scrolled into view — page in more. Online: pull the next
@@ -701,12 +747,17 @@ struct BrowseView: View {
                         // (a Button on macOS) swallows those nested buttons — XCUITest
                         // can't reach them and a click navigates instead of playing
                         // (the "row ▶ freezes" bug). So the tap-to-open is a row-level
-                        // .onTapGesture (NOT a wrapping link), and the transport buttons
-                        // sit on top and intercept their own taps first — only taps
-                        // OUTSIDE them fall through here and navigate.
-                        SongRow(song: song, albumName: albumName)
-                            .contentShape(Rectangle())
-                            .onTapGesture { path.append(song) }
+                        // tap gesture (NOT a wrapping link) — now inside
+                        // `selectableSongRow`, which keeps plain-tap = navigate and adds
+                        // modifier-click / Select-mode multi-select + the drag source —
+                        // and the transport buttons sit on top and intercept their own
+                        // taps first — only taps OUTSIDE them fall through and navigate.
+                        SongRow(song: song, albumName: albumName,
+                                onAddTo: { presentAddTo(song) })
+                            .selectableSongRow(id: song.id, scope: Self.songSelectionScope,
+                                               orderedIds: { renderedSongIds(items) },
+                                               payload: { dragPayload(for: song) },
+                                               onOpen: { path.append(song) })
                             // `.contain` keeps the row a CONTAINER (not a merged leaf), so its
                             // own `song-<id>` id stays queryable for the tap-to-navigate test
                             // WHILE the nested transport buttons keep their own `row-play-<id>`
@@ -736,6 +787,48 @@ struct BrowseView: View {
         }
         .background(Theme.bg)
         .accessibilityIdentifier("song-list")
+        .safeAreaInset(edge: .top, spacing: 0) { SelectionBar(scope: Self.songSelectionScope) }
+    }
+
+    // MARK: - Multi-select (per-window RowSelection) — song mode only
+
+    static let songSelectionScope = "browse-songs"
+
+    private func renderedSongIds(_ items: [BrowseItem]) -> [String] {
+        items.compactMap { if case .song(let s, _, _, _, _) = $0 { return s.id } else { return nil } }
+    }
+    /// FULL filtered universe (not the paged prefix) — what ⌘A selects; mirrors
+    /// HistoryView.selectAllMatching. Online mode: the loaded page (server-paged).
+    private func selectionAllIds() -> [String] {
+        guard browse.kind == .song else { return [] }
+        if effectiveOnline { return renderedSongIds(online.items) }
+        return renderedSongIds(browse.visibleResults(collections, favorites: favorites,
+                                                     profileLocal: profileLocal))
+    }
+    private func selectionPayload() -> SongTransfer? {
+        let ordered = rowSelection.orderedSelection(in: selectionAllIds())
+        guard !ordered.isEmpty else { return nil }
+        return SongTransfer.make(ids: ordered, songsById: app.songsById)
+    }
+    private func dragPayload(for song: IndexSong) -> SongTransfer {
+        rowSelection.payloadForRow(song.id, scope: Self.songSelectionScope,
+                                   single: SongTransfer.make(ids: [song.id], songsById: app.songsById))
+    }
+    private func registerSelectionList() {
+        guard browse.kind == .song, !effectiveDiscover else {
+            rowSelection.unregisterActiveList(scope: Self.songSelectionScope); return
+        }
+        rowSelection.registerActiveList(scope: Self.songSelectionScope,
+                                        allIds: { selectionAllIds() },
+                                        payload: { selectionPayload() })
+    }
+    /// WS-C: present the shared Add-to sheet for a row's context menu. Invoked on a row
+    /// that is part of the active selection ⇒ the add applies to the WHOLE selection.
+    private func presentAddTo(_ song: IndexSong) {
+        let selected = rowSelection.isSelected(song.id, scope: Self.songSelectionScope)
+            ? rowSelection.orderedSelection(in: selectionAllIds()) : []
+        let ids = selected.count > 1 ? selected : [song.id]
+        addToItem = BrowseAddToItem(item: ids.count == 1 ? .song(ids[0]) : .songs(ids))
     }
 
     private var loadingView: some View {
@@ -820,15 +913,27 @@ struct AlbumRow: View {
     }
 }
 
+/// Identifiable wrapper so a Browse row's context menu can present the shared
+/// `AddToCollectionView` via `.sheet(item:)` (WS-C) — one sheet on the Browse chrome,
+/// driven by whichever row's menu fired.
+struct BrowseAddToItem: Identifiable {
+    let id = UUID()
+    let item: AddToCollectionView.Item
+}
+
 /// Browser song row — the SHARED `SongRowView`, so it reads identically to the
 /// collection + setlist rows (now gaining a thumbnail, explicit badge, year, genre,
 /// BPM tiers, and the transport slot it previously lacked). No delete/reorder/notes here.
 struct SongRow: View {
     @Environment(AppModel.self) private var app
+    @Environment(RowSelection.self) private var rowSelection
     let song: IndexSong
     /// Accepted for source compatibility with the browser pipeline; the shared row
     /// resolves the album (and thus year/genre/art) from the catalog itself.
     var albumName: String = ""
+    /// Presents the shared Add-to sheet (WS-C). nil hides the menu item (hosts without
+    /// the sheet plumbing).
+    var onAddTo: (() -> Void)? = nil
 
     private var album: IndexAlbum? { song.albumId.flatMap { app.albumsById[$0] } }
 
@@ -839,6 +944,22 @@ struct SongRow: View {
                 // Folded INTO the existing menu, never nested as a submenu: a row that already
                 // owns a `.contextMenu` and then adds another loses one of them.
                 QueueMenuItems(songs: [song])
+                Divider()
+                if let onAddTo {
+                    Button { onAddTo() } label: {
+                        Label("Add to Playlist…", systemImage: "music.note.list.badge.plus")
+                    }
+                    .accessibilityIdentifier("add-to-song-\(song.id)")
+                }
+                Button {
+                    rowSelection.enterSelectMode(scope: BrowseView.songSelectionScope, initial: song.id)
+                } label: { Label("Select", systemImage: "checklist") }
+                    .accessibilityIdentifier("select-song-\(song.id)")
+                Button {
+                    rowSelection.copyRowOrSelection(rowId: song.id, scope: BrowseView.songSelectionScope,
+                        single: SongTransfer.make(ids: [song.id], songsById: app.songsById))
+                } label: { Label("Copy", systemImage: "doc.on.doc") }
+                    .accessibilityIdentifier("copy-song-\(song.id)")
                 ShareLink(item: ShareText.forSong(song),
                           subject: Text("\(song.name) — \(song.artist)")) {
                     Label("Share", systemImage: "square.and.arrow.up")

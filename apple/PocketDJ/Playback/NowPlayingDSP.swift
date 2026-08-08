@@ -253,9 +253,7 @@ final class NowPlayingDSP {
     @discardableResult
     func disengage() -> Double {
         let pos = currentTime
-        generation += 1
-        player.stop()
-        for n in stemNodes.values { n.stop() }
+        stopVoices(main: true, stems: true)
         if engine.isRunning { engine.stop() }   // idle the graph so the AVPlayer owns audio alone
         file = nil
         stemFiles = [:]
@@ -336,23 +334,51 @@ final class NowPlayingDSP {
 
     /// Enter/leave stem mode. Returns FALSE (and stays in single-file mode) when the track has no
     /// burned stems — so the panel can degrade the stem sub-section independently while tempo/pitch/
-    /// gain/effects keep working. Mirrors `MixEngine.setStemMode`.
+    /// gain/effects keep working. Mirrors `MixEngine.setStemMode` — MINUS its persistence: control
+    /// state here is ephemeral by design (see the header), so nothing is ever written.
+    ///
+    /// GENERATION DISCIPLINE (the stems-toggle-skips-the-song regression): `AVAudioPlayerNode.stop()`
+    /// FIRES the flushed segment's completion handler, so every stop below must be preceded by a
+    /// `generation` bump — at the COMMIT point, not the top of the function — or the flushed
+    /// completion passes `handleReachedEnd`'s staleness guard, fakes a natural end, and
+    /// `SetlistPlayer` advances the set mid-song. A top-of-function bump is just as wrong the other
+    /// way: the refusal paths would leave the main file playing with an end handler whose generation
+    /// no longer matches, so the track would play out and never auto-advance.
     @discardableResult
     func setStemMode(_ on: Bool) -> Bool {
         guard isEngaged, built else { return false }
         let was = isPlaying
         let pos = currentTime
         if on {
-            guard wireStems() else { return false }                       // no local stems → refuse
-            guard scheduleStems(fromSongSeconds: min(pos, maxStemSeconds())) else { return false }
-            player.stop()                                                 // only NOW silence the single file
+            guard wireStems() else { return false }   // refused BEFORE any bump/stop — main file untouched
+            // COMMIT: from here we stop the single file. Bump FIRST so its flushed completion reads
+            // as stale, and so the stems scheduled below capture the NEW generation (their real end
+            // must still fire). Not `stopVoices` — the bump must precede `scheduleStems`, while the
+            // main file must keep sounding until the stems verifiably scheduled (the MixEngine
+            // silent-deck ordering, see `MixEngine.setStemMode`).
+            generation += 1
+            guard scheduleStems(fromSongSeconds: min(pos, maxStemSeconds())) else {
+                // Zero-length / truncated stem files: re-arm the main file AT THE NEW generation,
+                // or its natural end would be swallowed forever (play out, never advance).
+                if scheduleMain(fromSongSeconds: pos), was { startScheduled(stemMode: false, fromSongSeconds: pos) }
+                return false
+            }
+            player.stop()                             // stale completion → generation mismatch → ignored
             _stemMode = true
             applyStemGains()
             if was { startScheduled(stemMode: true, fromSongSeconds: pos) }
         } else {
-            for n in stemNodes.values { n.stop() }
+            stopVoices(main: false, stems: true)      // invalidate the lead stem's armed end, then flush
             _stemMode = false
-            guard scheduleMain(fromSongSeconds: pos) else { return true }
+            guard scheduleMain(fromSongSeconds: pos) else {
+                // Nothing schedulable (at/past the slice end): the track IS over — report it like a
+                // natural end, but DEFERRED so `onReachedEnd` (which tears this engine down via
+                // `SetlistPlayer.handleDSPEnded` → `disengage`) never re-enters mid-`setStemMode`.
+                isPlaying = false
+                pausedAt = duration
+                if was { Task { @MainActor [weak self] in self?.onReachedEnd?() } }
+                return true
+            }
             if was { startScheduled(stemMode: false, fromSongSeconds: pos) }
         }
         return true
@@ -507,6 +533,19 @@ final class NowPlayingDSP {
         isPlaying = false
         pausedAt = duration
         onReachedEnd?()
+    }
+
+    /// The ONE sanctioned way to stop scheduled voices outside a reschedule: bump `generation`
+    /// FIRST, then stop. `AVAudioPlayerNode.stop()` flushes the armed segment AND fires its
+    /// completion handler, so a stop without the bump lets that callback pass `handleReachedEnd`'s
+    /// staleness guard and fake a natural end (`setStemMode` once forgot exactly this, and toggling
+    /// stems mid-song skipped to the next track). Route any future stop site through here — the one
+    /// sanctioned exception is `setStemMode`'s ON path, which must bump BEFORE `scheduleStems` (so
+    /// the stems capture the new generation) and only then stop the main file.
+    private func stopVoices(main: Bool, stems: Bool) {
+        generation += 1
+        if main { player.stop() }
+        if stems { for n in stemNodes.values { n.stop() } }
     }
 
     /// Open the 4 burned stem files + reconnect each stem node at the file's format (only that link).

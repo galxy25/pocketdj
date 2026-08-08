@@ -22,6 +22,8 @@ struct RootView: View {
     @Environment(JukeboxStore.self) private var jukebox
     @Environment(PlaybackCoordinator.self) private var coordinator
     @Environment(DemuxStore.self) private var demux
+    @Environment(MusicWithFriendsStore.self) private var friends
+    @Environment(GameScoreboardStore.self) private var gameScores
     // System actions behind the leading "+" (open a New Window). supportsMultipleWindows is
     // false on iPhone (can't show two windows) and true on iPad/macOS/visionOS — it gates the
     // button so it self-hides exactly where ⌘N does (see NewWindowCommands in PocketDJApp).
@@ -38,6 +40,9 @@ struct RootView: View {
     @State private var section: Section?
     #endif
     @State private var path = NavigationPath()   // heterogeneous: albums + songs
+    /// Per-window multi-select (⌘-click range / ⌥-click toggle / drag / ⌘C⌘V). One per
+    /// window BY DESIGN — see RowSelection. Injected into both split-view columns below.
+    @State private var rowSelection = RowSelection()
     #if os(iOS)
     /// Now Playing collapsed to the thin bottom strip (Levi 2026-07-18). Persisted so the
     /// home screen comes back in the shape it was left in.
@@ -55,6 +60,7 @@ struct RootView: View {
         // name is `title` ("Producer" — renamed 2026-07; the token stays "Performance" forever).
         case performance = "Performance"
         case jukebox = "Jukebox Hero"
+        case games = "Games"          // pinned token — never rename
         case settings = "Settings"
         var id: String { rawValue }
         /// User-visible sidebar/menu label. Diverges from `rawValue` only where a tab was
@@ -74,6 +80,7 @@ struct RootView: View {
             case .mix:         return "slider.horizontal.3"
             case .performance: return "pianokeys"
             case .jukebox:     return "qrcode"
+            case .games:       return "gamecontroller"
             case .settings:    return "gearshape"
             }
         }
@@ -164,10 +171,35 @@ struct RootView: View {
                     .navigationDestination(for: MixSessionRoute.self) { MixSessionDetailView(sessionId: $0.sessionId) }
                     .navigationDestination(for: JukeboxRoute.self) { _ in JukeboxView() }
                     .navigationDestination(for: JukeboxJoinRoute.self) { JukeboxJoinView(entry: $0.entry) }
+                    .navigationDestination(for: CollectorsPuzzleRoute.self) { _ in CollectorsPuzzleView(path: $path) }
+                    .navigationDestination(for: MwFSessionRoute.self) { MusicWithFriendsSessionView(sessionId: $0.sessionId, path: $path) }
             }
         }
+        .environment(rowSelection)
+        // macOS Edit ▸ Copy Songs / Paste Songs target the FOCUSED window through this
+        // (a Commands struct cannot read the WindowGroup environment — NewWindowCommands lesson).
+        .focusedSceneValue(\.songSelectionActions, SongSelectionActions(
+            canCopy: rowSelection.canCopy,
+            canPaste: rowSelection.canPaste,
+            copy: { rowSelection.performCopy() },
+            paste: { rowSelection.performPaste() }))
         .background { navigationShortcuts }
         .overlay(alignment: .bottomTrailing) { testProbe }
+        // A LARGE multi-select add to an Apple-Music-linked collection parks its upstream leg
+        // for explicit confirmation (CollectionsStore.writeBackConfirmThreshold): pushes to
+        // the user's REAL Apple Music playlist are append-only and not undoable from this
+        // app, so a select-all-sized batch never writes upstream implicitly. The LOCAL add
+        // has already landed either way. Every window presents from the same store; the
+        // first answer wins (confirm/discard clears the shared pending state).
+        .alert("Add to Apple Music?",
+               isPresented: Binding(get: { collections.pendingWriteBackBatch != nil },
+                                    set: { if !$0 { collections.discardPendingWriteBackBatch() } }),
+               presenting: collections.pendingWriteBackBatch) { pending in
+            Button("Add \(pending.count) songs") { collections.confirmPendingWriteBackBatch() }
+            Button("Keep local only", role: .cancel) { collections.discardPendingWriteBackBatch() }
+        } message: { pending in
+            Text("Also add these \(pending.count) songs to your Apple Music playlist “\(pending.playlistName)”? PocketDJ can’t undo Apple Music adds.")
+        }
         // Intent-driven navigation (Spotlight "Open playlist/pocket"): the intent parks a
         // route on the bridge; this view owns the NavigationPath, so it consumes it —
         // whether the app was already open (`onChange`) or launched by the intent (`.task`).
@@ -180,6 +212,8 @@ struct RootView: View {
         // onOpenURL adds the session then parks its id here; consume it to open the live join panel —
         // same atomic-take-across-windows discipline as the intent route above.
         .onChange(of: jukebox.pendingOpenId) { _, _ in consumeJukeboxOpen(jukebox.pendingOpenId) }
+        // MwF deep-link / tapped push: same atomic-take discipline as the jukebox consume.
+        .onChange(of: friends.pendingOpenId) { _, _ in consumeFriendsOpen(friends.pendingOpenId) }
         // ZERO-TO-HERO gate: a fresh install (or reinstall) walks the three-stage
         // onboarding before the app proper. fullScreenCover on iOS/visionOS; macOS has
         // no fullScreenCover, so a non-dismissable sheet. Every window of a multi-window
@@ -224,6 +258,8 @@ struct RootView: View {
             Task { await burns.drainPendingAfterRip() }
             // Collection-activity seed (PDJ_SEED_ACTIVITY) — the three row-resolution states.
             collectionActivity.seedFixtureIfRequested()
+            // Games scoreboard seed (PDJ_SEED_GAMES) — deterministic best/recent rows.
+            gameScores.seedFixtureIfRequested()
             // MUST precede the catalog load kicked off below: it can call
             // `settings.loadAppleMusic()`, and the load reads `settings.enabledSourceURLs` to
             // decide WHICH sources to fetch. Synchronous and env-only, so hoisting it here costs
@@ -289,6 +325,7 @@ struct RootView: View {
             }
             consumeIntentRoute(intents.pendingRoute)   // route parked by a cold intent launch
             consumeJukeboxOpen(jukebox.pendingOpenId)  // jukebox link tapped at cold launch
+            consumeFriendsOpen(friends.pendingOpenId)  // MwF link/push tapped at cold launch
         }
         // Remember where the user is so the next iOS launch reopens there (nil —
         // the home menu — persists as "" and restores as home).
@@ -433,6 +470,22 @@ struct RootView: View {
         }
     }
 
+    /// Consume a pending Music with Friends open (tapped link / tapped push): land on the
+    /// Games tab with the session screen pushed on a FRESH stack. Same atomic-take +
+    /// staged-push discipline as `consumeJukeboxOpen`. An id with no local entry (a link
+    /// for an unknown session) is left to the Join sheet (`friends.pendingJoin`).
+    private func consumeFriendsOpen(_ id: String?) {
+        guard let id else { return }
+        friends.pendingOpenId = nil
+        path = NavigationPath()
+        section = .games
+        guard friends.entry(id) != nil else { return }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(450))
+            path.append(MwFSessionRoute(sessionId: id))
+        }
+    }
+
     /// A tiny, always-in-the-a11y-tree readout of the shared `PlayerEngine` so a UI
     /// test can poll real playback state regardless of which surface drove play/pause.
     /// `player-state` value is "playing"/"paused"; `player-elapsed` is the seconds.
@@ -491,11 +544,46 @@ struct RootView: View {
             // XCUITest queries — even though the Playlists tab is now titled "Collections".
             Button("Performance-shadow") { section = .performance }
                 .keyboardShortcut("p", modifiers: .command)
-            // ⌘C → the Collections tab (was ⇧⌘P). NOTE: ⌘C is the system Copy shortcut; this
-            // registers it as a tab jump. Levi asked for the C-for-Collections mnemonic — if it
-            // ever shadows Copy in a focused text field, ⌘L is the conflict-free alternative.
-            Button("Playlists-shadow") { section = .playlists }
-                .keyboardShortcut("c", modifiers: .command)
+            // ⌘C = COPY while this window has a copyable selection (Levi's multi-select);
+            // otherwise the Collections tab jump keeps its mnemonic. Conditional PRESENCE —
+            // two live registrations of one key resolve ambiguously on macOS (the ⌘L lesson
+            // at BrowseView's Search-shadow). macOS gets Copy/Paste Songs from Edit ▸
+            // (SongEditCommands), so no copy shadow there.
+            if rowSelection.canCopy {
+                #if !os(macOS)
+                Button("CopySongs-shadow") { rowSelection.performCopy() }
+                    .keyboardShortcut("c", modifiers: .command)
+                #endif
+            } else {
+                // ⌘C → the Collections tab (was ⇧⌘P). NOTE: ⌘C is the system Copy shortcut; this
+                // registers it as a tab jump. Levi asked for the C-for-Collections mnemonic — if it
+                // ever shadows Copy in a focused text field, ⌘L is the conflict-free alternative.
+                Button("Playlists-shadow") { section = .playlists }
+                    .keyboardShortcut("c", modifiers: .command)
+            }
+            #if !os(macOS)
+            // ⌘V = paste songs while a collection detail (a paste target) is on screen. Never
+            // collides with Browse's Layout-shadow ⌘V: that one is live only in the Browse
+            // section, where no paste target is ever registered.
+            if rowSelection.canPaste {
+                Button("PasteSongs-shadow") { rowSelection.performPaste() }
+                    .keyboardShortcut("v", modifiers: .command)
+            }
+            #endif
+            // ⌘A = select all in the active song list (HistoryView's ⌘A precedent — and its
+            // documented tradeoff: while a selectable list is registered, a focused text
+            // field loses ⌘A. The search FocusState lives in BrowseView, not here, so a
+            // focus gate isn't cleanly reachable from this registration site).
+            if rowSelection.canSelectAll {
+                Button("SelectAllSongs-shadow") { rowSelection.selectAll() }
+                    .keyboardShortcut("a", modifiers: .command)
+            }
+            // Esc clears the selection / exits Select mode. Conditional presence again:
+            // with no selection, Escape keeps its system meaning for sheets/menus.
+            if rowSelection.hasSelection || rowSelection.selectMode {
+                Button("ClearSelection-shadow") { rowSelection.clearAndExit() }
+                    .keyboardShortcut(.escape, modifiers: [])
+            }
             // ⌘M → Mix. On macOS this INTENTIONALLY overrides the system "minimize" shortcut
             // (the user asked for it); the Mix tab exists on iPhone, iPad, AND Mac.
             Button("Mix-shadow") { section = .mix }
@@ -503,6 +591,9 @@ struct RootView: View {
             // ⌘J → Jukebox Hero (free key — nothing else claims J in the collision table).
             Button("Jukebox-shadow") { section = .jukebox; path = NavigationPath() }
                 .keyboardShortcut("j", modifiers: .command)
+            // ⌘G → Games (unclaimed per the collision table).
+            Button("Games-shadow") { section = .games; path = NavigationPath() }
+                .keyboardShortcut("g", modifiers: .command)
         }
         .frame(width: 1, height: 1).opacity(0.01)
     }
@@ -515,6 +606,7 @@ struct RootView: View {
         case .mix:         MixView(path: $path)
         case .performance: PerformanceView()
         case .jukebox:     JukeboxView()
+        case .games:       GamesView(path: $path)
         case .settings:    SettingsView(settings: settings)
         case .none:
             // No section = the iPhone HOME menu (the sidebar owns the screen; this detail isn't

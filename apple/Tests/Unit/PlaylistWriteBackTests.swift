@@ -583,6 +583,56 @@ final class PlaylistWriteBackTests: XCTestCase {
         queue.reloadFromDisk()
     }
 
+    // MARK: enqueueMany (the multi-select batch add path)
+
+    private func item(_ songId: String, amId: String? = nil, title: String = "", artist: String = "",
+                      playlist: String = "Mix", indexPlaylistId: String = "ipl") -> PlaylistWriteBack.EnqueueItem {
+        PlaylistWriteBack.EnqueueItem(indexPlaylistId: indexPlaylistId, playlistName: playlist,
+                                      songId: songId, appleMusicId: amId, title: title, artist: artist,
+                                      album: nil, durationMs: nil)
+    }
+
+    /// `enqueueMany` mirrors `enqueue`'s per-item semantics — queued/delivered dedup,
+    /// playlist-name and identity eligibility — plus in-batch dedup, with ONE save at the end.
+    func testEnqueueManyDedupesAndFiltersLikeEnqueue() {
+        let (queue, url) = makeQueue(nil)
+        queue.enqueue(indexPlaylistId: "ipl", playlistName: "Mix", songId: "s1", appleMusicId: "am1")
+        let queued = queue.enqueueMany([
+            item("s1", amId: "am1"),                 // dup of the queued job → skipped
+            item("s2", amId: "am2"),
+            item("s2", amId: "am2"),                 // in-batch dup → skipped
+            item("s3"),                              // no id, no identity → ineligible
+            item("s4", amId: "am4", playlist: ""),   // empty playlist name → ineligible
+            item("s5", title: "T", artist: "A"),     // identity-only → eligible
+        ])
+        XCTAssertEqual(queued, 2)
+        XCTAssertEqual(queue.jobs.map(\.songId), ["s1", "s2", "s5"])
+        XCTAssertTrue(queue.jobs.allSatisfy { $0.state == .queued })
+        // Persisted in the same document `enqueue` writes (one save for the whole batch).
+        let reopened = PlaylistWriteBack(fileURL: url, transport: nil)
+        XCTAssertEqual(reopened.jobs.map(\.songId), ["s1", "s2", "s5"])
+    }
+
+    /// The `.unresolvable` supersede rule carries over: a batch item that NOW has a real
+    /// catalog id replaces the stale terminal verdict; one without stays rejected.
+    func testEnqueueManySupersedesUnresolvableOnlyWithCatalogId() async {
+        let transport = StubTransport()
+        transport.resolutions["Mix"] = "p.MIX"       // catalogIds empty → identity resolves nil
+        let (queue, _) = makeQueue(transport)
+        queue.enqueue(indexPlaylistId: "ipl", playlistName: "Mix", songId: "s1", appleMusicId: nil,
+                      title: "Obscure", artist: "Nobody")
+        await queue.run()
+        XCTAssertEqual(queue.jobs.first?.state, .unresolvable)
+
+        XCTAssertEqual(queue.enqueueMany([item("s1", title: "Obscure", artist: "Nobody")]), 0)
+        XCTAssertEqual(queue.jobs.count, 1)          // still just the terminal verdict
+
+        XCTAssertEqual(queue.enqueueMany([item("s1", amId: "am_new")]), 1)
+        XCTAssertEqual(queue.jobs.count, 1)          // stale verdict dropped, fresh job queued
+        XCTAssertEqual(queue.jobs.first?.state, .queued)
+        XCTAssertEqual(queue.jobs.first?.appleMusicId, "am_new")
+    }
+
     /// A stand-in library that implements the transport contract the production MusicKit
     /// class implements against the real one: name matching in widening tiers (exact, then
     /// whitespace-trimmed, then case/diacritic-folded), then track overlap to break a tie,

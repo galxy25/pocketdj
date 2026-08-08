@@ -287,4 +287,49 @@ final class CollectionActivityStoreTests: XCTestCase {
         XCTAssertTrue(store.events.isEmpty)
         XCTAssertEqual(store.installId, install)
     }
+
+    // MARK: recordBatch (the multi-select batch-add choke point)
+
+    private func batchEntries(_ range: Range<Int>) -> [CollectionActivityStore.BatchEntry] {
+        range.map { CollectionActivityStore.BatchEntry(kind: .add, itemId: "sng_\($0)",
+                                                       itemTitle: nil, itemArtist: nil,
+                                                       collectionId: "pkt_1", collectionKind: "pocket",
+                                                       collectionName: "Crate") }
+    }
+
+    /// One batch = one mutation: revision bumps ONCE however many events landed (per-event
+    /// `record` bumps + saves each time — the main-actor freeze the batch path exists to avoid).
+    func testRecordBatchAppendsAllAndBumpsRevisionOnce() {
+        let (store, _) = makeStore()
+        let r0 = store.revision
+        XCTAssertEqual(store.recordBatch(batchEntries(0..<5), at: 1_000), 5)
+        XCTAssertEqual(store.events.count, 5)
+        XCTAssertEqual(store.events.map(\.itemId), (0..<5).map { "sng_\($0)" })
+        XCTAssertEqual(store.revision, r0 &+ 1)
+        XCTAssertTrue(store.events.allSatisfy { $0.originInstallId == store.installId })
+    }
+
+    func testRecordBatchSkipsEmptyItemIdsAndPersists() {
+        let (store, url) = makeStore()
+        var entries = batchEntries(0..<2)
+        entries.append(CollectionActivityStore.BatchEntry(kind: .add, itemId: "", itemTitle: nil,
+                                                          itemArtist: nil, collectionId: nil,
+                                                          collectionKind: nil, collectionName: nil))
+        XCTAssertEqual(store.recordBatch(entries, at: 1_000), 2)
+        let reopened = CollectionActivityStore(fileURL: url)
+        XCTAssertEqual(reopened.events.map(\.itemId), ["sng_0", "sng_1"])
+    }
+
+    /// A single oversized gesture can never evict the user's prior history: the batch's
+    /// contribution is clamped (keeping its NEWEST rows), so earlier events survive the cap.
+    func testRecordBatchClampKeepsPriorHistory() {
+        let (store, _) = makeStore()
+        store.record(kind: .add, itemId: "sng_old", at: 500)
+        let over = CollectionActivityStore.maxBatchContribution + 50
+        XCTAssertEqual(store.recordBatch(batchEntries(0..<over), at: 1_000),
+                       CollectionActivityStore.maxBatchContribution)
+        XCTAssertEqual(store.events.first?.itemId, "sng_old")        // prior history intact
+        XCTAssertEqual(store.events.last?.itemId, "sng_\(over - 1)") // batch keeps its tail
+        XCTAssertEqual(store.events.count, CollectionActivityStore.maxBatchContribution + 1)
+    }
 }

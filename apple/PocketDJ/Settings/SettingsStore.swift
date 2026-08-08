@@ -251,6 +251,23 @@ final class SettingsStore {
         get { appleMusicPrivateSyncRaw ?? !ripServerURL.isEmpty }
         set { appleMusicPrivateSyncRaw = newValue }
     }
+    /// EXPLICIT-VERSIONS preference (Settings ▸ Apple Music ▸ Syncing ▸ Explicit versions),
+    /// stored TRI-STATE on purpose:
+    ///   • nil (UNSET, the shipped default) — the user has never touched the toggle. NEW-song
+    ///     discovery/recognizer picks and future catalog resolutions default to the CLEAN
+    ///     edition, but streaming/playback of EXISTING catalog songs keeps playing each
+    ///     song's primary cut untouched — so the variant re-index can never silently switch
+    ///     the whole library's streams to clean out from under anyone's muscle memory.
+    ///   • false (explicitly set) — prefer clean everywhere (streams substitute the clean
+    ///     edition of an explicit-primary song when one is resolved).
+    ///   • true — prefer explicit everywhere (Levi's restore: streams resolve
+    ///     `appleMusicIdExplicit` first).
+    /// The UI binds the Bool projection below; flipping the toggle EITHER way sets the raw.
+    var preferExplicitVersionsRaw: Bool?
+    var preferExplicitVersions: Bool {
+        get { preferExplicitVersionsRaw ?? false }
+        set { preferExplicitVersionsRaw = newValue }
+    }
     /// TWO-WAY FAVORITES sync opt-in (Settings ▸ Apple Music ▸ Syncing ▸ Favorites): OFF by
     /// default — ♥ stays in the PocketDJ profile. ON pushes/pulls the user's OWN hearts with
     /// their OWN Music-User-Token (parity review: the old owner-allowlist gate made the verb a
@@ -276,6 +293,12 @@ final class SettingsStore {
     /// With this off, sync only touches collections the user EXPLICITLY linked — converted pockets
     /// and duplicated playlists. Turning it on restores the import-everything behaviour.
     var amImportNewPlaylists: Bool
+    /// Use the cloud PocketDJ RECOMMENDATION ENGINE (Settings ▸ Recommendations). OFF by
+    /// default — while off, NOTHING leaves the device: `RecommendationService` gates every
+    /// network call on this flag and no other code can reach its client. ON sends listening
+    /// history / favorites / collection updates / Collector's Puzzle results to
+    /// `Config.recEngineBase` to compute the For You + Suggested-collections surfaces.
+    var recEngineEnabled: Bool
     /// Minutes past local midnight for the daily auto-sync (default 4:20 PM = 980). Clamped.
     var amAutoSyncMinutes: Int {
         didSet {
@@ -374,10 +397,13 @@ final class SettingsStore {
         // Legacy migration: pre-rename check builds persisted "local"/"remote" — map to the Bool.
         self.appleMusicPrivateSyncRaw = data.appleMusicPrivateSync
             ?? data.appleMusicSyncMode.map { $0 == "local" }
+        // Tri-state on purpose: a missing key stays nil (UNSET) — never coalesced here.
+        self.preferExplicitVersionsRaw = data.preferExplicitVersions
         self.favoritesTwoWaySync = data.favoritesTwoWaySync ?? false
         self.applyOwnerFavoritesSeed = data.applyOwnerFavoritesSeed ?? false
         self.amAutoSyncEnabled = data.amAutoSyncEnabled ?? true
         self.amImportNewPlaylists = data.amImportNewPlaylists ?? false
+        self.recEngineEnabled = data.recEngineEnabled ?? false
         self.amAutoSyncMinutes = min(max(data.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes, 0), 1439)
         self.lastAMAutoSyncAtMs = data.lastAMAutoSyncAtMs
         self.writeBackBackfillDays = min(max(data.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
@@ -534,12 +560,14 @@ final class SettingsStore {
             defaultRecentlyAddedCount: defaultRecentlyAddedCount,
             appleMusicSyncMode: nil,   // legacy field — decode-only since the private-toggle rename
             appleMusicPrivateSync: appleMusicPrivateSyncRaw,
+            preferExplicitVersions: preferExplicitVersionsRaw,
             favoritesTwoWaySync: favoritesTwoWaySync,
             applyOwnerFavoritesSeed: applyOwnerFavoritesSeed,
             amAutoSyncEnabled: amAutoSyncEnabled,
             amImportNewPlaylists: amImportNewPlaylists,
             amAutoSyncMinutes: amAutoSyncMinutes,
-            lastAMAutoSyncAtMs: lastAMAutoSyncAtMs)
+            lastAMAutoSyncAtMs: lastAMAutoSyncAtMs,
+            recEngineEnabled: recEngineEnabled)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -595,10 +623,14 @@ final class SettingsStore {
         // Mirror init's capture (reset clears ripServerURL, so the derived default is public) —
         // leaving this nil would revive the live-derivation behavior until the next launch.
         appleMusicPrivateSyncRaw = false
+        // Back to UNSET (the fresh-install tri-state default), not false — a reset install
+        // must behave exactly like a new one (no stream substitution until the user chooses).
+        preferExplicitVersionsRaw = nil
         favoritesTwoWaySync = d.favoritesTwoWaySync ?? false
         applyOwnerFavoritesSeed = d.applyOwnerFavoritesSeed ?? false
         amAutoSyncEnabled = d.amAutoSyncEnabled ?? true
         amImportNewPlaylists = d.amImportNewPlaylists ?? false
+        recEngineEnabled = d.recEngineEnabled ?? false
         amAutoSyncMinutes = d.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes
         lastAMAutoSyncAtMs = d.lastAMAutoSyncAtMs
         writeBackBackfillDays = min(max(d.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
@@ -704,6 +736,10 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode (nil ⇒ captured at init: private iff an import
     /// server is configured). The Private-syncing toggle.
     var appleMusicPrivateSync: Bool?
+    /// Optional AND tri-state-meaningful: nil = the user never touched the Explicit-versions
+    /// toggle (UNSET — existing songs stream their primary cut untouched); false/true = an
+    /// explicit clean/explicit preference. Never coalesced at the persistence layer.
+    var preferExplicitVersions: Bool?
     /// Optional so older blobs still decode (coalesced to FALSE — two-way favorites sync is a
     /// deliberate opt-in).
     var favoritesTwoWaySync: Bool?
@@ -717,6 +753,11 @@ struct SettingsData: Codable {
     var amAutoSyncMinutes: Int?
     /// Optional — epoch ms of the last auto-sync claim.
     var lastAMAutoSyncAtMs: Double?
+    /// Optional so older `pdj.settings.v1` blobs (which lack this key) still decode — a
+    /// non-optional Bool would fail decode and silently reset ALL settings to defaults.
+    /// Coalesced to FALSE at the read sites: the recommendation engine is a deliberate opt-in
+    /// (nothing leaves the device while off).
+    var recEngineEnabled: Bool?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -763,10 +804,12 @@ struct SettingsData: Codable {
         defaultRecentlyAddedCount: nil,
         appleMusicSyncMode: nil,
         appleMusicPrivateSync: nil,
+        preferExplicitVersions: nil,
         favoritesTwoWaySync: nil,
         applyOwnerFavoritesSeed: nil,
         amAutoSyncEnabled: nil,
         amImportNewPlaylists: nil,
         amAutoSyncMinutes: nil,
-        lastAMAutoSyncAtMs: nil)
+        lastAMAutoSyncAtMs: nil,
+        recEngineEnabled: nil)
 }

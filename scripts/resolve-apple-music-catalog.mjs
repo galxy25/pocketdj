@@ -20,6 +20,8 @@
 //     --index public/apple-music-index.json \
 //     --cache index-out/apple-music/catalog-cache.ndjson \
 //     [--delay-ms 2000] [--limit N] [--retry-misses] [--save-every 250] [--out FILE]
+//     [--prefer-explicitness clean|explicit]   # edition TIE-BREAK (+5, below album +25)
+//        for FUTURE resolutions only — cache hits are never re-resolved. Default 'clean'.
 //
 // Resume: just re-run the same command. Songs already in the cache (hit OR miss)
 // are skipped; pass --retry-misses to re-attempt prior misses (e.g. after a
@@ -42,6 +44,7 @@ function parseArgs(argv) {
     delayMs: 2000,        // ~30/min baseline; bursts of 60/min tested clean
     saveEvery: 250,
     retryMisses: false,
+    preferExplicitness: 'clean',   // edition tie-break for NEW resolutions (req 1)
   };
   for (let i = 2; i < argv.length; i++) {
     const k = argv[i];
@@ -53,6 +56,7 @@ function parseArgs(argv) {
     else if (k === '--save-every') a.saveEvery = parseInt(next(), 10);
     else if (k === '--limit') a.limit = parseInt(next(), 10);
     else if (k === '--retry-misses') a.retryMisses = true;
+    else if (k === '--prefer-explicitness') a.preferExplicitness = next();
   }
   return a;
 }
@@ -88,7 +92,7 @@ const setEq = (a, b) => a.size === b.size && [...a].every((x) => b.has(x));
 
 // ---------- match scoring ----------
 // Pick the best catalog row for a library song. Returns {storeId, collectionId, ...} or null.
-export function bestMatch(song, albumName, results) {
+export function bestMatch(song, albumName, results, preferExplicitness = null) {
   const aArtist = normalize(song.artist);
   const aTitle = normalize(song.name);
   const aCore = coreTitle(song.name);
@@ -118,6 +122,13 @@ export function bestMatch(song, albumName, results) {
     else if (aAlbum && rAlbum.includes(aAlbum)) score += 8;
     if (setEq(aTags, rTags)) score += 15;              // version markers agree
     else if (rTags.size > aTags.size) score -= 40;     // catalog adds remix/sped-up the library track lacks
+    // Edition TIE-BREAK only (+5, well below album's +25): between otherwise-equal rows
+    // of the same recording, prefer the requested explicitness ('clean' by default —
+    // req 1). Existing cache hits are never re-resolved, so this shapes FUTURE runs only.
+    if (preferExplicitness) {
+      const isExp = r.trackExplicitness === 'explicit';
+      if ((preferExplicitness === 'explicit') === isExp) score += 5;
+    }
 
     if (score > bestScore) { bestScore = score; best = r; }
   }
@@ -234,7 +245,7 @@ async function main() {
       // hard failure for this term — record nothing (will retry next run)
       misses++;
     } else {
-      const m = bestMatch(s, albumName.get(s.albumId), results);
+      const m = bestMatch(s, albumName.get(s.albumId), results, args.preferExplicitness);
       // `collectionId` (the album catalog id) is written next to `storeId`; JSON.stringify
       // omits it when undefined, so the record stays backward-compatible. On re-runs, cache
       // HITS are skipped below (never re-appended), so an already-captured collectionId is

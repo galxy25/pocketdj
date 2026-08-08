@@ -17,6 +17,29 @@ extension XCUIApplication {
         descendants(matching: .any).matching(identifier: key).firstMatch
     }
 
+    /// Scroll-aware existence wait for LAZY containers (Form/List): off-screen rows
+    /// don't exist in the a11y tree, and splitting a "swipe until exists" loop from a
+    /// follow-up `waitForExistence` RACES — under heavy host load a mid-animation
+    /// snapshot can report the row, the loop exits, the scroll settles back, and the
+    /// wait (which never scrolls) starves for its whole timeout. Seen exactly once on
+    /// the puzzle setup form's Start row, 2026-08-07. Alternating short waits with
+    /// swipes keeps the scroll and the wait from diverging.
+    ///
+    /// iOS/iPadOS only IN PRACTICE — `swipeUp()` on the Application element can't resolve
+    /// a hit point on macOS, so every swipe throws. It carries no `#if` of its own because
+    /// it compiles everywhere and its only callers live inside `#if !os(macOS)` class
+    /// fences; a NEW macOS-running caller must fence itself (or take the touch-free path)
+    /// rather than un-fence this.
+    @discardableResult
+    func swipeTo(_ element: XCUIElement, maxSwipes: Int = 8) -> Bool {
+        if element.waitForExistence(timeout: 2) { return true }
+        for _ in 0..<maxSwipes {
+            swipeUp()
+            if element.waitForExistence(timeout: 2) { return true }
+        }
+        return false
+    }
+
     /// Bring the home Now Playing deck into view. The deck lives on the sidebar / home
     /// menu; since the launch default became History (2026-07-22), the COMPACT iPhone layout
     /// pushes the History detail IN FRONT of the sidebar, so pop the detail stack back until

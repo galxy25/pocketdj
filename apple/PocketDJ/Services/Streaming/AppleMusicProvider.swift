@@ -64,6 +64,12 @@ final class AppleMusicProvider: StreamingProvider, StreamingSearch, SongRecogniz
     let kind: StreamingProviderKind = .appleMusic
     private(set) var state: StreamingConnectionState
 
+    /// TRI-STATE explicit-versions preference seam, wired in PocketDJApp to
+    /// `SettingsStore.preferExplicitVersionsRaw`: nil = the user never chose (existing
+    /// catalog songs stream their PRIMARY cut untouched — edition substitution stays off),
+    /// false = prefer clean, true = prefer explicit. Default nil keeps tests inert.
+    var preferExplicitVersions: () -> Bool? = { nil }
+
     /// Available only when the build opted in. (MusicKit itself is always linked.)
     var isAvailable: Bool { AppleMusicCredentials.isEnabled }
 
@@ -206,18 +212,50 @@ final class AppleMusicProvider: StreamingProvider, StreamingSearch, SongRecogniz
 
     func resolve(_ song: IndexSong) async -> StreamingTrack? {
         guard canResolve else { return nil }
-        // 1) Index-resolved catalog id, when present. The indexer mints `appleMusicId`
-        //    from the *public iTunes Search API* (`trackId`); we treat it only as a
+        // 0) VARIANT songs ("<baseId>_clean" / "<baseId>_explicit" — a cleanOnly
+        //    substitution or a variant rip row): the minimal song's `appleMusicId` already
+        //    carries the VARIANT catalog id (the coordinator resolves it via
+        //    `variantAppleMusicIdOfSong`). Verify the id AND its edition; on a miss run an
+        //    EDITION-CONSTRAINED search. NEVER fall through to the unconstrained top-1
+        //    search below — that could stream the wrong edition under a variant identity;
+        //    a nil here lets the coordinator degrade to the variant rip instead.
+        if let (_, v) = SongVariant.parse(fromSongId: song.id) {
+            let wantExplicit = v == .explicit
+            if let candidate = song.appleMusicId, !candidate.isEmpty,
+               let row = try? await Self.fetchRow(storeID: candidate),
+               row.isExplicit == wantExplicit {
+                return AppleMusicCatalog.track(from: row)
+            }
+            let rows = (try? await Self.searchRows(term: "\(song.name) \(song.artist)", limit: 15)) ?? []
+            if let hit = rows.first(where: {
+                Self.editionMatches($0, name: song.name, artist: song.artist,
+                                    lengthMs: song.length, wantExplicit: wantExplicit)
+            }) {
+                return AppleMusicCatalog.track(from: hit)
+            }
+            return nil
+        }
+        // 1) Index-resolved catalog id candidates, when present, EDITION-PREFERENCE ordered
+        //    (`streamCandidates`: the preferred edition's variant id first — only when the
+        //    user has explicitly set the preference — then the primary). The indexer mints
+        //    these from the *public iTunes Search API* (`trackId`); each is only a
         //    CANDIDATE catalog id. The iTunes `trackId` is empirically the same value
         //    MusicKit uses for `MusicItemID`, but we never trust it blindly: the
         //    `fetchRow` below issues a real `MusicCatalogResourceRequest` keyed on that
         //    id, so a hit is the verification. On a miss (nil/throw — wrong id, region
-        //    gating, removed track) we fall through to (2)/(3) and ultimately let
-        //    PlaybackCoordinator degrade to ripping. This is the fast path that lets
-        //    "Apple Music (Local)" songs (ids shaped `sng_…`, which 2 can't decode)
-        //    stream instead of always falling through to a rip.
-        if let candidate = song.appleMusicId, !candidate.isEmpty {
-            if let row = try? await Self.fetchRow(storeID: candidate) {
+        //    gating, removed track) we fall through to the next candidate, then (2)/(3),
+        //    and ultimately let PlaybackCoordinator degrade to ripping. This is the fast
+        //    path that lets "Apple Music (Local)" songs (ids shaped `sng_…`, which 2
+        //    can't decode) stream instead of always falling through to a rip.
+        for candidate in Self.streamCandidates(for: song, preference: preferExplicitVersions()) {
+            if let row = try? await Self.fetchRow(storeID: candidate.id) {
+                // An edition-CLAIMING candidate (the preference-derived variant id) must
+                // have its claim verified against the row MusicKit actually returned — an
+                // existence hit alone is no edition check, and these ids are minted by the
+                // out-of-app resolver (mis-resolution / stale or tampered index). On a
+                // mismatch fall through to the next candidate (the verified-behavior
+                // primary) instead of streaming a wrong edition under this song's identity.
+                if let want = candidate.wantExplicit, row.isExplicit != want { continue }
                 return AppleMusicCatalog.track(from: row)
             }
         }
@@ -242,6 +280,25 @@ final class AppleMusicProvider: StreamingProvider, StreamingSearch, SongRecogniz
         req.limit = 1
         let resp = try await req.response()
         return resp.items.first.map(row(from:))
+    }
+
+    /// Raw-row catalog search (same request as `search`, mapped to the MusicKit-free row
+    /// so edition-aware callers can read `isExplicit`). Internal — the variant-resolve
+    /// path + `VariantResolver` filter these with `editionMatches`.
+    static func searchRows(term: String, limit: Int) async throws -> [AppleMusicSongRow] {
+        let q = term.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return [] }
+        var req = MusicCatalogSearchRequest(term: q, types: [MusicKit.Song.self])
+        req.limit = min(max(limit, 1), 25)
+        let resp = try await req.response()
+        return resp.songs.map(Self.row(from:))
+    }
+
+    /// Verified single-row fetch by store id (nil on miss/unauthorized) — the
+    /// `VariantResolver` passthrough.
+    func catalogRow(forStoreID id: String) async -> AppleMusicSongRow? {
+        guard canResolve, !id.isEmpty else { return nil }
+        return (try? await Self.fetchRow(storeID: id)) ?? nil
     }
 
     /// MusicKit.Song → the MusicKit-free `AppleMusicSongRow` the mapping consumes.
@@ -427,7 +484,13 @@ final class AppleMusicProvider: StreamingProvider, StreamingSearch, SongRecogniz
         .unavailable(reason: "MusicKit not available in this build.")
     var isAvailable: Bool { false }
 
+    /// Seam parity with the MusicKit implementation (see there) — inert here.
+    var preferExplicitVersions: () -> Bool? = { nil }
+
     init() {}
+
+    static func searchRows(term: String, limit: Int) async throws -> [AppleMusicSongRow] { [] }
+    func catalogRow(forStoreID id: String) async -> AppleMusicSongRow? { nil }
 
     func login() {}
     func logout() {}
@@ -456,3 +519,59 @@ extension AppleMusicProvider: MusicLibraryContributor {
     func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] { [] }
 }
 #endif
+
+// ============================================================================
+// MARK: - Edition selection (pure, MusicKit-free — shared by both class variants)
+// ============================================================================
+
+extension AppleMusicProvider {
+    /// One ordered stream candidate: the catalog id to try, plus the edition the fetched
+    /// row MUST carry. `wantExplicit` non-nil ⇒ the candidate CLAIMS an edition (it came
+    /// from the preference-derived variant fields, which are minted by the network-facing
+    /// resolver and are only a claim) — `resolve` verifies `row.isExplicit` agrees before
+    /// playing, else falls through. nil ⇒ no edition claim: the primary id keeps its
+    /// historical existence-only check (the pre-variant trust model, unregressed).
+    struct StreamCandidate: Equatable {
+        let id: String
+        let wantExplicit: Bool?
+    }
+
+    /// Ordered, de-duplicated catalog-id candidates for a NON-variant song. `preference`
+    /// is the TRI-STATE explicit-versions setting: nil (UNSET) ⇒ just the primary id —
+    /// an existing song's stream is never substituted until the user has explicitly
+    /// chosen a direction (the substitution-default safety ruling); false/true ⇒ the
+    /// preferred edition's catalog id first (when resolved and distinct), primary next.
+    static func streamCandidates(for song: IndexSong, preference: Bool?) -> [StreamCandidate] {
+        var out: [StreamCandidate] = []
+        if let preferExplicit = preference {
+            let pref: SongVariant = preferExplicit ? .explicit : .clean
+            if let v = song.appleMusicId(for: pref), !v.isEmpty, v != song.appleMusicId {
+                out.append(.init(id: v, wantExplicit: preferExplicit))
+            }
+        }
+        if let p = song.appleMusicId, !p.isEmpty, !out.contains(where: { $0.id == p }) {
+            out.append(.init(id: p, wantExplicit: nil))
+        }
+        return out
+    }
+
+    /// Tight EDITION filter shared by the variant `resolve` branch and `VariantResolver`:
+    /// the row must be the SAME recording (paren-stripped normalized title equality +
+    /// artist containment — the prefer-tight-matching doctrine), carry the REQUIRED
+    /// explicitness, and sit within 7 s of the known duration (both-known gate).
+    static func editionMatches(_ row: AppleMusicSongRow, name: String, artist: String,
+                               lengthMs: Int?, wantExplicit: Bool) -> Bool {
+        guard row.isExplicit == wantExplicit else { return false }
+        let nt = ShazamCatalogMatch.norm(name)
+        guard !nt.isEmpty, ShazamCatalogMatch.norm(row.title) == nt else { return false }
+        let na = ShazamCatalogMatch.norm(artist)
+        if !na.isEmpty {
+            let ra = ShazamCatalogMatch.norm(row.artist)
+            guard ra == na || ra.contains(na) || na.contains(ra) else { return false }
+        }
+        if let lengthMs, lengthMs > 0, let d = row.durationSeconds {
+            guard abs(Int((d * 1000).rounded()) - lengthMs) <= 7000 else { return false }
+        }
+        return true
+    }
+}

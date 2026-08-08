@@ -102,6 +102,9 @@ struct PlaylistsView: View {
     /// Live name filter (the `.searchable` field). Substring, case/diacritic-insensitive,
     /// matched against playlist / pocket / source-playlist NAMES — see `matchesQuery`.
     @State private var query = ""
+    /// The collection row currently hovered by a song drag (highlight). Playlist/pocket rows
+    /// only — folder headers and read-only source rows take no drops (v1).
+    @State private var dropTargetId: String?
 
     private var indexPlaylists: [SourcePlaylist] { app.indexPlaylists }
 
@@ -540,6 +543,18 @@ struct PlaylistsView: View {
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) { collections.deletePlaylist(pl.id) } label: { Label("Delete", systemImage: "trash") }
         }
+        // Multi-select drag & drop: dropping songs on the ROW adds them to the playlist's
+        // default chapter (deduped batch — CollectionsStore.addSongs).
+        .dropDestination(for: SongTransfer.self) { items, _ in
+            // Studio ids resolve through studioLookup (never a bare prefix test — foreign
+            // pasteboard strings must not persist into the cloud-synced document).
+            let ids = SongDrop.acceptableIds(items) { app.songsById[$0] != nil || collections.studioLookup?($0) != nil }
+            guard !ids.isEmpty else { return false }
+            return collections.addSongs(ids, to: AddTarget(kind: .playlist, id: pl.id)) > 0
+        } isTargeted: { over in
+            if over { dropTargetId = pl.id } else if dropTargetId == pl.id { dropTargetId = nil }
+        }
+        .listRowBackground(dropTargetId == pl.id ? Theme.accent.opacity(0.18) : nil)
     }
 
     @ViewBuilder private func playlistRowMenu(_ pl: Playlist) -> some View {
@@ -582,6 +597,17 @@ struct PlaylistsView: View {
         .swipeActions(edge: .trailing) {
             Button(role: .destructive) { collections.deletePocket(pocket.id) } label: { Label("Delete", systemImage: "trash") }
         }
+        // Multi-select drag & drop: dropping songs on the ROW adds them to the pocket
+        // (deduped batch — CollectionsStore.addSongs).
+        .dropDestination(for: SongTransfer.self) { items, _ in
+            // Same studio-id resolution rule as the playlist row above.
+            let ids = SongDrop.acceptableIds(items) { app.songsById[$0] != nil || collections.studioLookup?($0) != nil }
+            guard !ids.isEmpty else { return false }
+            return collections.addSongs(ids, to: AddTarget(kind: .pocket, id: pocket.id)) > 0
+        } isTargeted: { over in
+            if over { dropTargetId = pocket.id } else if dropTargetId == pocket.id { dropTargetId = nil }
+        }
+        .listRowBackground(dropTargetId == pocket.id ? Theme.accent.opacity(0.18) : nil)
     }
 
     @ViewBuilder private func pocketRowMenu(_ pocket: Pocket) -> some View {
@@ -747,6 +773,7 @@ struct IndexPlaylistDetailView: View {
     @Environment(AppModel.self) private var app
     @Environment(CollectionsStore.self) private var collections
     @Environment(FavoritesStore.self) private var favorites
+    @Environment(RowSelection.self) private var rowSelection
     let source: SourcePlaylist
     @Binding var path: NavigationPath
     @State private var ripBurn = CollectionRipBurnController()
@@ -793,6 +820,20 @@ struct IndexPlaylistDetailView: View {
     /// An on-device duplicate of THIS source already exists (see `duplicate()`).
     private var hasDuplicate: Bool { collections.existingDuplicate(forSource: source) != nil }
 
+    // MARK: Multi-select (copy/drag SOURCE only — song-id keys)
+
+    private var selectionScope: String { "source-\(source.id)" }
+
+    private func selectionPayload() -> SongTransfer? {
+        let ids = rowSelection.orderedSelection(in: songs.map(\.id))
+        guard !ids.isEmpty else { return nil }
+        return SongTransfer.make(ids: ids, songsById: app.songsById)
+    }
+    private func dragPayload(for song: IndexSong) -> SongTransfer {
+        rowSelection.payloadForRow(song.id, scope: selectionScope,
+            single: SongTransfer.make(ids: [song.id], songsById: app.songsById))
+    }
+
     var body: some View {
         List {
             Section {
@@ -829,7 +870,22 @@ struct IndexPlaylistDetailView: View {
                 let rows = songs
                 ForEach(rows.prefix(shown)) { song in
                     VStack(spacing: 0) {
-                        NavigationLink(value: song) { CollectionSongRow(song: song) }
+                        CollectionSongRow(song: song)
+                            .selectableSongRow(id: song.id, scope: selectionScope,
+                                               orderedIds: { songs.map(\.id) },
+                                               payload: { dragPayload(for: song) },
+                                               onOpen: { path.append(song) })
+                            .contextMenu {           // rows had no menu before — no fold conflict
+                                Button { rowSelection.enterSelectMode(scope: selectionScope, initial: song.id) } label: {
+                                    Label("Select", systemImage: "checklist")
+                                }
+                                .accessibilityIdentifier("select-source-song-\(song.id)")
+                                Button { rowSelection.copyRowOrSelection(rowId: song.id, scope: selectionScope,
+                                    single: SongTransfer.make(ids: [song.id], songsById: app.songsById)) } label: {
+                                    Label("Copy", systemImage: "doc.on.doc")
+                                }
+                                .accessibilityIdentifier("copy-source-song-\(song.id)")
+                            }
                         InlinePlayerSlot(songId: song.id)
                     }
                 }
@@ -842,6 +898,11 @@ struct IndexPlaylistDetailView: View {
         .collectionRipBurn(ripBurn)
         .collectionSortFilterToolbar(browse: browse, showSort: $showSort, showFilter: $showFilter,
                                      app: app, collections: collections)
+        // Copy/drag SOURCE only — no drop target, no paste (write-back semantics deferred).
+        .modifier(CollectionSelectionChrome(scope: selectionScope,
+                                            allIds: { songs.map(\.id) },
+                                            payload: { selectionPayload() },
+                                            acceptDrop: nil))
         // Resolves AFTER the first frame, so the push animation is never blocked. `.task(id:)`
         // also auto-cancels a stale run when the sort/filter changes mid-resolve.
         .task(id: resolveKey) {
@@ -890,6 +951,7 @@ struct PlaylistDetailView: View {
     /// Optional like the other app-scoped services here: always injected by the app, but a preview
     /// or test host rendering this view standalone should degrade rather than trap.
     @Environment(PlaylistAppleMusicSync.self) private var playlistSync: PlaylistAppleMusicSync?
+    @Environment(RowSelection.self) private var rowSelection
     let playlistId: String
     @Binding var path: NavigationPath
     /// Per-collection sort/filter (keyed by playlist id → remembered per playlist, on-device). Applies
@@ -933,6 +995,48 @@ struct PlaylistDetailView: View {
     private var setlists: [Setlist] { collections.setlists(forPlaylist: playlistId) }
     private var itemCount: Int { (playlist?.sequences ?? []).reduce(0) { $0 + ($1.children?.count ?? 0) } }
 
+    // MARK: Multi-select (NODE-id keyed — several nodes may reference one song)
+
+    private var selectionScope: String { "playlist-\(playlistId)" }
+
+    /// Display-ordered selectable node ids across ALL chapters (range-select universe).
+    private func displayedSongNodeIds() -> [String] {
+        guard let playlist else { return [] }
+        let isDefaultOrder = browse.sortKeys.isEmpty && browse.activeFilterCount == 0
+        return playlist.sequences.flatMap { seq -> [String] in
+            let children = seq.children ?? []
+            let displayed = isDefaultOrder ? children : displayChildren(children)
+            return displayed.compactMap { n in
+                guard n.kind == .song, let sid = n.songId, app.songsById[sid] != nil else { return nil }
+                return n.nodeId
+            }
+        }
+    }
+    /// Node ids → their song ids (payload translation), order-preserving.
+    private func nodeSongIds(_ nodeIds: [String]) -> [String] {
+        guard let playlist else { return [] }
+        let byNode = Dictionary((playlist.sequences.flatMap { $0.children ?? [] })
+            .compactMap { n in n.songId.map { (n.nodeId, $0) } }, uniquingKeysWith: { a, _ in a })
+        return nodeIds.compactMap { byNode[$0] }
+    }
+    private func selectionPayload() -> SongTransfer? {
+        let ids = nodeSongIds(rowSelection.orderedSelection(in: displayedSongNodeIds()))
+        guard !ids.isEmpty else { return nil }
+        return SongTransfer.make(ids: ids, songsById: app.songsById)
+    }
+    private func dragPayload(node: PlaylistNode, song: IndexSong) -> SongTransfer {
+        rowSelection.payloadForRow(node.nodeId, scope: selectionScope,
+                                   single: SongTransfer.make(ids: [song.id], songsById: app.songsById))
+    }
+    /// Drop/paste: dedup against every existing song node, land in the DEFAULT chapter
+    /// (sequences[0] — AddTarget.sequenceId nil). Documented v1 behavior.
+    private func acceptDrop(_ items: [SongTransfer]) -> Bool {
+        // Studio ids resolve through studioLookup — never a bare prefix test (see the row drops).
+        let ids = SongDrop.acceptableIds(items) { app.songsById[$0] != nil || collections.studioLookup?($0) != nil }
+        guard !ids.isEmpty else { return false }
+        return collections.addSongs(ids, to: AddTarget(kind: .playlist, id: playlistId)) > 0
+    }
+
     var body: some View {
         List {
             if let playlist {
@@ -962,6 +1066,11 @@ struct PlaylistDetailView: View {
                                     app: app, collections: collections)
         .navigationTitle(playlist?.name ?? "Playlist")
         .accessibilityIdentifier("playlist-detail")
+        // Selection bar + whole-list drop target (→ default chapter) + paste registration.
+        .modifier(CollectionSelectionChrome(scope: selectionScope,
+                                            allIds: { displayedSongNodeIds() },
+                                            payload: { selectionPayload() },
+                                            acceptDrop: { acceptDrop($0) }))
         .scrollContentBackground(.hidden).background(Theme.bg)
         // Reappears when the user pops back from Now Playing — allow the next Play to push.
         .onAppear { nowPlayingPushed = false }
@@ -988,6 +1097,17 @@ struct PlaylistDetailView: View {
                 Menu {
                     // Per-playlist sort + filter (folded into the ⋯ menu). Applies within each chapter.
                     CollectionSortFilterMenuButtons(browse: browse, showSort: $showSort, showFilter: $showFilter)
+                    // Multi-select: arm Select mode for this list / paste the copied songs
+                    // (→ default chapter, deduped).
+                    Button { rowSelection.enterSelectMode(scope: selectionScope, initial: nil) } label: {
+                        Label("Select songs", systemImage: "checklist")
+                    }
+                    .accessibilityIdentifier("select-songs")
+                    Button { rowSelection.performPaste() } label: {
+                        Label("Paste songs", systemImage: "doc.on.clipboard")
+                    }
+                    .disabled(!SongPasteboard.hasSongs)
+                    .accessibilityIdentifier("paste-songs")
                     Divider()
                     Button { realizeToSetlist() } label: { Label("Make set list", systemImage: "list.bullet.clipboard") }
                         .disabled(itemCount == 0)
@@ -1011,8 +1131,9 @@ struct PlaylistDetailView: View {
                     // the smart-playlist setting; "Off" = never sync either way.
                     amSyncDirectionMenuItem
                     amSyncNowMenuItem
+                    cleanOnlyMenuItem
                     Divider()
-                    CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.songIds(forPlaylist: playlistId) }, noun: "playlist")
+                    CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.ripIds(forPlaylist: playlistId) }, noun: "playlist")
                     Divider()
                     Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete playlist", systemImage: "trash") }
                         .accessibilityIdentifier("delete-playlist")
@@ -1094,6 +1215,15 @@ struct PlaylistDetailView: View {
             Label("Apple Music sync", systemImage: "arrow.up.arrow.down.circle")
         }
         .accessibilityIdentifier("playlist-am-sync-direction")
+    }
+
+    /// Clean-versions-only toggle (see `CleanOnly`): explicit songs play/rip their clean
+    /// edition when one is resolved, else are skipped for this playlist.
+    @ViewBuilder private var cleanOnlyMenuItem: some View {
+        let b = Binding<Bool>(get: { playlist?.cleanOnly == true },
+                              set: { collections.setCleanOnly($0, forPlaylist: playlistId) })
+        Toggle(isOn: b) { Label("Clean versions only", systemImage: "c.square") }
+            .accessibilityIdentifier("playlist-clean-only")
     }
 
     /// Send THIS playlist to Apple Music now, without waiting for (or sitting through) a whole-
@@ -1330,7 +1460,21 @@ struct PlaylistDetailView: View {
     }
 
     /// The Move up / Move down / Remove items shared by every chapter row's context menu.
+    /// Catalog-song rows lead with the multi-select Select / Copy actions (folded into the
+    /// SAME single menu via forceSyncContextMenu's extraMenuItems — the one-menu-per-row rule).
     @ViewBuilder private func nodeReorderMenu(_ node: PlaylistNode, idx: Int, count: Int) -> some View {
+        if node.kind == .song, let sid = node.songId, let song = app.songsById[sid] {
+            Button { rowSelection.enterSelectMode(scope: selectionScope, initial: node.nodeId) } label: {
+                Label("Select", systemImage: "checklist")
+            }
+            .accessibilityIdentifier("select-node-\(node.nodeId)")
+            Button { rowSelection.copyRowOrSelection(rowId: node.nodeId, scope: selectionScope,
+                single: SongTransfer.make(ids: [song.id], songsById: app.songsById)) } label: {
+                Label("Copy", systemImage: "doc.on.doc")
+            }
+            .accessibilityIdentifier("copy-node-\(node.nodeId)")
+            Divider()
+        }
         Button { collections.moveNodeUp(node.nodeId, inPlaylist: playlistId) } label: { Label("Move up", systemImage: "arrow.up") }
             .accessibilityIdentifier("move-up-\(node.nodeId)")
             .disabled(idx == 0)
@@ -1344,15 +1488,29 @@ struct PlaylistDetailView: View {
         switch node.kind {
         case .song:
             if let id = node.songId, let song = app.songsById[id] {
-                // One List row = nav link + (when this song is playing) the inline panel
-                // BELOW it, both in a VStack so the panel's taps don't hit the link and the
-                // 1:1 element↔row mapping `onMove`/`onDelete` rely on is preserved. The
+                // One List row = the row content + (when this song is playing) the inline
+                // panel BELOW it, both in a VStack so the panel's taps don't hit the row and
+                // the 1:1 element↔row mapping `onMove`/`onDelete` rely on is preserved.
+                // `selectableSongRow` replaces the old NavigationLink: plain tap still opens
+                // the song (path.append), modifier-clicks / Select mode multi-select, and the
+                // row is the drag source (selection-aware payload; NODE-id keyed). The
                 // force-sync context menu is attached by `nodeRowWithMenu` (folded with the
                 // chapter reorder items) — NOT here, or a second menu would shadow it.
                 VStack(spacing: 0) {
-                    NavigationLink(value: song) { CollectionSongRow(song: song, syncsToSource: playlist?.syncsWithSource ?? false) }
+                    CollectionSongRow(song: song, syncsToSource: playlist?.syncsWithSource ?? false)
+                        // reorderHost: this ForEach owns .onMove — drag source only on
+                        // selected rows so plain row-drags keep reordering (macOS path).
+                        .selectableSongRow(id: node.nodeId, scope: selectionScope,
+                                           reorderHost: true,
+                                           orderedIds: { displayedSongNodeIds() },
+                                           payload: { dragPayload(node: node, song: song) },
+                                           onOpen: { path.append(song) })
                     InlinePlayerSlot(songId: song.id)
                 }
+                // Clean-versions-only skip indicator: a row this playlist would SKIP at
+                // ▶ Play (explicit, no clean edition) dims. Styling only — verification is
+                // by queue count, and no new a11y id lands on a button container.
+                .opacity(playlist?.cleanOnly == true && CleanOnly.isSkipped(song) ? 0.45 : 1)
             } else if let id = node.songId, StudioFactory.isStudioId(id) {
                 // Performance items (sample/loop/sequence/instrumental) — studio-aware row with its
                 // repeat count. Previously fell to "(missing song)" because they aren't in the catalog.

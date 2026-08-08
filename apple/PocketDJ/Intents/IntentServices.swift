@@ -207,7 +207,8 @@ final class IntentServices {
     private func startNowPlaying(_ set: Setlist) {
         let items = set.tracks
             .filter { $0.isText != true && !$0.songId.isEmpty }
-            .map { SetlistPlayer.Item(id: $0.songId, title: $0.name, artist: $0.artist, lengthMs: $0.shownMs) }
+            .map { SetlistPlayer.Item(id: $0.songId, title: $0.name, artist: $0.artist,
+                                      lengthMs: $0.shownMs, variant: $0.songVariant) }
         setlistPlayer.play(items, sourceSetlistId: nowPlayingSetlistId)
     }
 

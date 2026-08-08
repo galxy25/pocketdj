@@ -42,7 +42,22 @@ final class AccountDeletionService {
         "profile", "collections", "edits", "favorites", "play-stats", "play-history",
         "collection-activity", "mix-sessions", "playback-session", "mix-decks",
         "discover-adds", "imported-songs", "profile-source", "apple-music-library", "studio-cues",
+        "game-scores", "puzzle-decisions", "rec-key",
     ]
+
+    /// Recommendation-engine wipe seams (WS-E), wired in PocketDJApp. Optional so tests that
+    /// construct the service without the rec engine degrade to a no-op:
+    ///  • `recDeleteCloudData` — DELETE of the profile's server-side rec state (needs the live
+    ///    key, so it runs BEFORE the local wipe removes it). It RETURNS whether the delete
+    ///    landed: unlike the CloudKit deletes above (the user's own iCloud account, which
+    ///    self-heals), this state lives in the developer's S3 bucket with no lifecycle expiry,
+    ///    so a swallowed failure orphans it permanently. Absent seam ⇒ `true` (nothing owed).
+    ///  • `recClearLocal` — removes the cursor document AND the key document; when the cloud
+    ///    delete failed, the credential first moves into a device-local tombstone (key + the
+    ///    profile id the delete must target) so a later launch can finish the erasure — a
+    ///    re-enable meanwhile mints a FRESH identity instead of resurrecting the erased one.
+    var recDeleteCloudData: (() async -> Bool)?
+    var recClearLocal: ((_ cloudDeleted: Bool) -> Void)?
 
     private static let log = Logger(subsystem: "com.levi.pocketdj", category: "account-deletion")
 
@@ -84,6 +99,14 @@ final class AccountDeletionService {
     private let mixDeckSession: MixDeckSessionStore
     private let burns: BurnStore
     private let studio: StudioStore
+    /// Games: the durable run scoreboard (cloud key "game-scores").
+    private let gameScores: GameScoreboardStore
+    /// Games: the Collectors Puzzle decision log — per-song behavioral data
+    /// (cloud key "puzzle-decisions").
+    private let puzzleDecisions: PuzzleDecisionStore
+    /// Games: Music with Friends session entries (bearer memberKeys/leaderKeys live in
+    /// UserDefaults, not a synced doc — but they are account data all the same).
+    private let friends: MusicWithFriendsStore
 
     // Keychain (streaming account links) + settings + cloud-sync state + identity.
     private let streaming: StreamingStore
@@ -113,6 +136,9 @@ final class AccountDeletionService {
          mixDeckSession: MixDeckSessionStore,
          burns: BurnStore,
          studio: StudioStore,
+         gameScores: GameScoreboardStore,
+         puzzleDecisions: PuzzleDecisionStore,
+         friends: MusicWithFriendsStore,
          streaming: StreamingStore,
          settings: SettingsStore,
          cloudSync: CloudSyncService,
@@ -139,6 +165,9 @@ final class AccountDeletionService {
         self.mixDeckSession = mixDeckSession
         self.burns = burns
         self.studio = studio
+        self.gameScores = gameScores
+        self.puzzleDecisions = puzzleDecisions
+        self.friends = friends
         self.streaming = streaming
         self.settings = settings
         self.cloudSync = cloudSync
@@ -163,7 +192,7 @@ final class AccountDeletionService {
         cancelTransfers()
 
         // ── 2) DELETE THE CLOUD COPIES (before the local wipe) ───────────────
-        // The 11 private-CloudKit PDJDoc records. Best-effort: no account / iCloud offline
+        // Every private-CloudKit PDJDoc record. Best-effort: no account / iCloud offline
         // throws here — we log and press on so the local wipe still completes. The delete is
         // idempotent (already-gone records are success), so a partial cloud state never fails.
         if cloudDeleteEnabled() {
@@ -175,6 +204,13 @@ final class AccountDeletionService {
             }
         } else {
             Self.log.notice("CloudKit deletion skipped (disabled / test run)")
+        }
+        // Recommendation-engine server state: must run while the bearer key still exists
+        // locally. NOT best-effort-and-forget — the result decides whether the local key can be
+        // erased (see the seam docs); a failure here leaves a retry tombstone instead.
+        let recCloudDeleted = await recDeleteCloudData?() ?? true
+        if !recCloudDeleted {
+            Self.log.error("Rec-engine cloud delete failed — tombstoned for retry on a later launch")
         }
 
         // ── 3) CLEAR EVERY LOCAL STORE ───────────────────────────────────────
@@ -200,6 +236,17 @@ final class AccountDeletionService {
         burns.removeAllBurns()
         for family in StudioFamily.allCases { studio.deleteAll(family: family) }
         studio.clearCues()   // the synced "studio-cues" doc — deleting the cloud copy must wipe local too
+        gameScores.clear()       // the synced "game-scores" doc
+        puzzleDecisions.clear()  // the synced "puzzle-decisions" doc — per-song behavioral data
+        // Music with Friends: session entries carry bearer memberKeys/leaderKeys; the scored
+        // set and cached states are per-account too. WITHDRAW the APNs device tokens FIRST —
+        // they are personal data sitting on a broker the user may not own, and only the
+        // memberKeys `eraseAll()` is about to destroy can authorize the retraction. Bounded
+        // and best-effort (a dead broker costs one 6 s timeout; the registration would then
+        // die with the session's 24 h TTL anyway).
+        await friends.unregisterPushEverywhere()
+        friends.eraseAll()
+        recClearLocal?(recCloudDeleted)   // rec-engine cursor doc (+ the key IF the cloud delete landed)
 
         // ── 4) CLEAR THE KEYCHAIN (streaming account links) ──────────────────
         // Each provider's `logout()` severs the link and forgets its stored token — for a
@@ -222,9 +269,13 @@ final class AccountDeletionService {
         // ── 7) RESET IDENTITY — LAST ─────────────────────────────────────────
         // Mint a brand-new profile id (empty name, fresh createdAt) and forget the per-install
         // device id, so a re-created account presents to the backend as a clean, brand-new user
-        // with nothing tying back to the deleted one.
+        // with nothing tying back to the deleted one. The MwF re-join secret is identity too:
+        // its sha256 lives in broker session files, and a surviving secret would re-bind the
+        // deleted account's memberId/display-name on the next join of a previously joined
+        // session.
         profile.reset()
         DeviceIdentity.reset()
+        MwFJoinSecret.reset()
 
         Self.log.notice("Account deletion complete")
     }
