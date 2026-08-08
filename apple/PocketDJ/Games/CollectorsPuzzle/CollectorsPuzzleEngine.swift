@@ -142,6 +142,10 @@ final class CollectorsPuzzleEngine {
     /// off-main doctrine).
     private func snapshotRawInputs() -> PuzzleSampler.RawInputs {
         let audio = audioAvailability()
+        // Similarity only applies when there IS something to be similar to. Skipping the
+        // snapshot when it can't be used keeps a target-less round's cost byte-identical to
+        // today's (and keeps `allCollectionMemberships` — the expensive one — unread).
+        let wantsSimilarity = settings.similarity != .off && !settings.targetCollectionIds.isEmpty
         return PuzzleSampler.RawInputs(
             songs: app.songs,
             albumsById: app.albumsById,
@@ -151,7 +155,11 @@ final class CollectorsPuzzleEngine {
             targetCollections: settings.targetCollectionIds.map { memberIds(of: $0) },
             ripManifest: audio.ripManifest,
             burnedIds: audio.burnedIds,
-            canStreamAppleMusic: audio.canStreamAppleMusic)
+            canStreamAppleMusic: audio.canStreamAppleMusic,
+            allCollections: wantsSimilarity ? allCollectionMemberships() : [],
+            plays: wantsSimilarity ? playHistorySnapshot() : [],
+            cloudRanks: wantsSimilarity ? cloudRanks : [:],
+            buildSimilarityProfile: wantsSimilarity)
     }
 
     /// What audio this device can start RIGHT NOW, snapshotted on the main actor as raw COW
@@ -167,6 +175,29 @@ final class CollectorsPuzzleEngine {
         var burnedIds: Set<String> = []
         var canStreamAppleMusic: Bool = false
     }
+
+    // MARK: - Similarity seams (injected closures, so `init` never grows)
+
+    /// The play log — the "playback history graph" similarity signal. Injected as a closure
+    /// for the same reason `audioAvailability` is: the engine keeps its narrow store list and
+    /// its four test files keep their existing constructions. A bare engine returns [], which
+    /// simply drops the co-play term from the profile's denominator. Hands over the raw COW
+    /// array; the (songId, atMs) projection happens OFF the main actor in `Inputs(raw:)`.
+    @ObservationIgnored var playHistorySnapshot: () -> [PlayHistoryStore.PlayEvent] = { [] }
+    /// EVERY collection's membership — the "shared with another collection" signal. Same
+    /// pattern, and CAPPED + memoized on the store side: `songIds(forPlaylist:)` walks a
+    /// playlist's whole node tree and this is read from the 0.25 s ticker's top-up.
+    @ObservationIgnored var allCollectionMemberships: () -> [[String]] = { [] }
+    /// The CLOUD similarity booster: collection ids → similar song ids, best first. Default
+    /// returns [] — the rec engine is off by default and the route may not be deployed, and
+    /// neither case is a failure. Fetched ONCE per round, under a hard budget, before the
+    /// sample; NEVER from the ticker (a timed game must never wait on a network).
+    @ObservationIgnored var cloudSimilarProvider: (_ collectionIds: [String]) async -> [String] = { _ in [] }
+    /// THIS round's cloud rank map (songId → 0…1). Frozen at `startRound`, reused by every
+    /// top-up so the round's character doesn't drift at song 51.
+    @ObservationIgnored private var cloudRanks: [String: Double] = [:]
+    /// Hard budget on the one cloud call. A slow server must lose, not stall the countdown.
+    static let cloudSimilarBudgetSeconds: Double = 2.5
 
     // MARK: - Sequencer ownership
 
@@ -194,12 +225,13 @@ final class CollectorsPuzzleEngine {
             : collections.songIds(forPlaylist: collectionId)
     }
 
-    /// How many songs match the current settings ("N songs match" in setup).
-    func poolCount() async -> Int {
+    /// How many songs match the current settings, and how many of those the similarity ranker
+    /// shortlists ("N songs match · M similar" in setup). ONE detached walk, not two.
+    func poolStats() async -> PuzzleSampler.PoolStats {
         let raw = snapshotRawInputs()
         let settings = settings
         return await Task.detached(priority: .userInitiated) {
-            PuzzleSampler.poolCount(settings: settings, inputs: PuzzleSampler.Inputs(raw: raw))
+            PuzzleSampler.poolStats(settings: settings, inputs: PuzzleSampler.Inputs(raw: raw))
         }.value
     }
 
@@ -222,6 +254,11 @@ final class CollectorsPuzzleEngine {
         // is round-guarded (see tickOnce) and so can never clear this flag for us.
         toppingUp = false
         phase = .sampling
+        // THE ONE CLOUD CALL, here and nowhere else: before the sample, so the wait hides
+        // behind the sampling spinner, and never in `tickOnce`'s top-up. Budgeted — if the
+        // budget expires the round starts local-only and stays that way, because a timed game
+        // must never wait on a network.
+        await refreshCloudRanks()
         let raw = snapshotRawInputs()
         let settings = settings
         let rng = rng
@@ -252,6 +289,34 @@ final class CollectorsPuzzleEngine {
         deadlineEpoch = now().timeIntervalSince1970 + Double(settings.roundSeconds)
         phase = .running
         startTicker()
+    }
+
+    /// Fetch (or clear) THIS round's cloud rank map. Never throws, never surfaces an error:
+    /// the engine being off, unreachable, or serving a 404 because the route isn't deployed
+    /// yet are all the SAME outcome — an empty map, and a round that runs local-only, which
+    /// is the default configuration rather than a fallback.
+    private func refreshCloudRanks() async {
+        cloudRanks = [:]
+        let ids = settings.targetCollectionIds
+        guard settings.similarity != .off, !ids.isEmpty else { return }
+        let provider = cloudSimilarProvider
+        let budget = Self.cloudSimilarBudgetSeconds
+        let ranked: [String] = await withTaskGroup(of: [String]?.self) { group in
+            group.addTask { await provider(ids) }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(budget))
+                return nil                       // the budget won the race
+            }
+            let first = await group.next() ?? nil
+            group.cancelAll()
+            return first ?? []
+        }
+        guard !ranked.isEmpty else { return }
+        let n = Double(ranked.count)
+        // `uniquingKeysWith` and not `uniqueKeysWithValues`: a duplicate id in a server
+        // response must not TRAP the app — the better (earlier) rank wins.
+        cloudRanks = Dictionary(ranked.enumerated().map { ($0.element, max(0, 1 - Double($0.offset) / n)) },
+                                uniquingKeysWith: { a, b in max(a, b) })
     }
 
     /// Hand the round's queue (from `i` onward) to the shared sequencer under THIS round's

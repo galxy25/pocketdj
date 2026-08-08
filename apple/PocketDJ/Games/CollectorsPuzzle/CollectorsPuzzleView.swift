@@ -16,7 +16,7 @@ struct CollectorsPuzzleView: View {
     /// Editable working copy — pushed to the engine (persisted) on every change.
     @State private var draft = PuzzleSettings()
     @State private var draftLoaded = false
-    @State private var poolCount: Int?
+    @State private var poolStats: PuzzleSampler.PoolStats?
     @State private var countTask: Task<Void, Never>?
     @State private var showReplaceConfirm = false
     @State private var showNewPocket = false
@@ -82,9 +82,9 @@ struct CollectorsPuzzleView: View {
         countTask = Task {
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
-            let n = await puzzle.poolCount()
+            let n = await puzzle.poolStats()
             guard !Task.isCancelled else { return }
-            poolCount = n
+            poolStats = n
         }
     }
 
@@ -145,6 +145,15 @@ struct CollectorsPuzzleView: View {
                 }
             }
             Section {
+                // Similarity only means something with a target to be similar TO.
+                if !draft.targetCollectionIds.isEmpty {
+                    Picker("Draw", selection: $draft.similarity) {
+                        Text("Anything").tag(PuzzleSettings.Similarity.off)
+                        Text("Similar").tag(PuzzleSettings.Similarity.on)
+                        Text("Very similar").tag(PuzzleSettings.Similarity.strict)
+                    }
+                    .accessibilityIdentifier("puzzle-similarity")
+                }
                 targetList
                 Button("New Pocket…") { showNewPocket = true }
                     .accessibilityIdentifier("puzzle-new-pocket")
@@ -218,9 +227,17 @@ struct CollectorsPuzzleView: View {
     }
 
     private var poolCountLabel: some View {
-        Text("\(poolCount.map(String.init) ?? "…") songs match")
+        Text(poolCountText)
             .font(.footnote).foregroundStyle(Theme.fgDim)
+            .lineLimit(1)
             .accessibilityIdentifier("puzzle-pool-count")
+    }
+
+    /// "N songs match", plus "· M similar" when the similarity ranker is actually shortlisting.
+    private var poolCountText: String {
+        guard let stats = poolStats else { return "… songs match" }
+        guard let similar = stats.similar else { return "\(stats.matched) songs match" }
+        return "\(stats.matched) match · \(similar) similar"
     }
 
     private var startButton: some View {
@@ -235,7 +252,7 @@ struct CollectorsPuzzleView: View {
         // Targets are OPTIONAL — the ONLY thing a round needs is songs to show. With no
         // targets every card is filed through the Add-to picker (`puzzle-file`), which is a
         // complete scoring path on its own.
-        .disabled(poolCount == 0)
+        .disabled(poolStats?.matched == 0)
         .accessibilityIdentifier("puzzle-start")
     }
 

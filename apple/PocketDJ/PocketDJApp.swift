@@ -952,6 +952,14 @@ struct PocketDJApp: App {
                 burnedIds: burns?.readyBurnedIds ?? [],
                 canStreamAppleMusic: coordinator?.canStreamAppleMusic ?? false)
         }
+        // The two LOCAL similarity signals that live outside the engine's own store list —
+        // the playback-history graph and membership in OTHER collections. Both hand over raw
+        // COW containers (the store memoizes the membership snapshot on its own revision), so
+        // the derivations stay off the main actor in `PuzzleSampler.Inputs(raw:)`.
+        puzzle.playHistorySnapshot = { [weak playHistory] in playHistory?.events ?? [] }
+        puzzle.allCollectionMemberships = { [weak collections] in
+            collections?.membershipSnapshotForSimilarity() ?? []
+        }
         let friends = MusicWithFriendsStore()
         friends.settings = settings
         friends.appModel = app
@@ -1006,6 +1014,12 @@ struct PocketDJApp: App {
         // exactly the pre-merge behaviour.
         recEngine.puzzleEventsProvider = { [weak puzzleDecisions] sinceMs in
             puzzleDecisions?.recPuzzleEvents(sinceMs: sinceMs) ?? []
+        }
+        // The CLOUD half of Gem Collector's similarity. It is a BOOSTER only: with the engine
+        // off (the default) — or the route not deployed yet — this returns [] and the round
+        // ranks entirely on device. Weak, like every other seam here.
+        puzzle.cloudSimilarProvider = { [weak recEngine] ids in
+            await recEngine?.similarSongs(toCollections: ids) ?? []
         }
         _recEngine = State(initialValue: recEngine)
         // Fixture guard lives HERE (not inside the service): UI-test runs must never

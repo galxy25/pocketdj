@@ -104,6 +104,23 @@ struct RecEngineClient {
             as: RecSongsResponse.self)
     }
 
+    /// `GET /recs/similar?collectionIds=…&limit=N` — songs similar to a set of collections
+    /// (Gem Collector's cloud booster). Reuses `RecSongsResponse` verbatim — the route returns
+    /// the same shape as `/recs/songs`, so there is no new wire type and no new decoder.
+    ///
+    /// SHORT timeout on purpose: this rides the countdown of a timed round, so a slow server
+    /// must lose. The caller also budgets the whole call independently.
+    func similarToCollections(collectionIds: [String], limit: Int, key: String,
+                              profileId: String) async throws -> RecSongsResponse {
+        try await run(
+            try request("recs/similar", method: "GET", key: key, profileId: profileId,
+                        query: [URLQueryItem(name: "collectionIds",
+                                             value: collectionIds.joined(separator: ",")),
+                                URLQueryItem(name: "limit", value: String(limit))],
+                        timeout: 6),
+            as: RecSongsResponse.self)
+    }
+
     /// `GET /recs/collections?songId=S` — collection suggestions for one song.
     func collectionSuggestions(songId: String, key: String, profileId: String) async throws -> RecCollectionsResponse {
         try await run(

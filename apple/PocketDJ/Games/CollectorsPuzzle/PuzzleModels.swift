@@ -20,14 +20,23 @@ struct PuzzleSettings: Codable, Equatable {
     /// HARD membership filter over `membershipCollectionIds`.
     var membershipMode: MembershipMode = .off
     var membershipCollectionIds: Set<String> = []  // pls_/pkt_ ids
-    /// 1–3 target collections; order = assign-button order.
+    /// How hard to bias the round's cards toward the TARGET collections.
+    enum Similarity: String, Codable, CaseIterable { case off, on, strict }
+
+    /// 0–3 target collections (OPTIONAL — with none, every card is filed through the Add-to
+    /// picker instead); order = assign-button order.
     var targetCollectionIds: [String] = []
+    /// Draw cards SIMILAR to the target collections — artist / genre / lyrical content / year /
+    /// membership in other collections / the playback-history graph. IGNORED when no targets
+    /// are selected (there is then nothing to be similar to).
+    var similarity: Similarity = .on
 
     init() {}
 
     enum CodingKeys: String, CodingKey {
         case roundSeconds, playCountBias, favoriteBias, genreCategories,
-             yearMin, yearMax, membershipMode, membershipCollectionIds, targetCollectionIds
+             yearMin, yearMax, membershipMode, membershipCollectionIds, targetCollectionIds,
+             similarity
     }
 
     init(from decoder: Decoder) throws {
@@ -41,6 +50,10 @@ struct PuzzleSettings: Codable, Equatable {
         membershipMode = (try? c.decode(MembershipMode.self, forKey: .membershipMode)) ?? .off
         membershipCollectionIds = (try? c.decode(Set<String>.self, forKey: .membershipCollectionIds)) ?? []
         targetCollectionIds = (try? c.decode([String].self, forKey: .targetCollectionIds)) ?? []
+        // Lenient decode IS the migration: a blob written by the build before similarity
+        // existed decodes to `.on`, and that older build ignores the key on a downgrade. No
+        // version bump, no migration step (the collections-schema doctrine above).
+        similarity = (try? c.decode(Similarity.self, forKey: .similarity)) ?? .on
     }
 
     /// mm:ss render of the round length ("2:00").
@@ -83,6 +96,14 @@ struct PuzzleSettings: Codable, Equatable {
         case 0: parts.append("free file")
         case 1: parts.append("1 target")
         case let n: parts.append("\(n) targets")
+        }
+        // Only when it applies AND isn't the default — the line has to stay short.
+        if !targetCollectionIds.isEmpty {
+            switch similarity {
+            case .strict: parts.append("similar+")
+            case .off: parts.append("any")
+            case .on: break
+            }
         }
         return parts.joined(separator: " · ")
     }
