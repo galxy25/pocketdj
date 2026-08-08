@@ -2569,7 +2569,55 @@ final class CollectionsStore {
         pockets[i].amPlaylistId = amPlaylistId; save()
     }
 
+    // MARK: - Membership snapshot (the Gem Collector similarity profile)
+
+    /// Monotonic, bumped on every persisted mutation and every reload/wipe. `@ObservationIgnored`
+    /// ON PURPOSE: it is a MEMO KEY for off-main derivations, not something a view should
+    /// re-render on.
+    @ObservationIgnored private(set) var membershipRevision = 0
+    @ObservationIgnored private var membershipSnapshotCache: (revision: Int, rows: [[String]])?
+
+    /// Every collection's membership as flat id arrays, for Gem Collector's similarity profile
+    /// (the "shared with another collection" signal).
+    ///
+    /// CAPPED like the rec-engine snapshot (300 collections / 5,000 members each / 200,000 ids
+    /// total) and MEMOIZED on `membershipRevision`, both load-bearing rather than polish:
+    /// `songIds(forPlaylist:)` walks a playlist's whole node tree and is `@MainActor`, and this
+    /// is read from the 0.25 s ticker's mid-round top-up as well as every debounced settings
+    /// keystroke — 300 playlists × thousands of nodes on the main thread is exactly the class
+    /// of runloop stall the Browse off-main work eliminated. During a round membership only
+    /// changes when the player files a song, so the cache hits on essentially every tick.
+    func membershipSnapshotForSimilarity() -> [[String]] {
+        if let cache = membershipSnapshotCache, cache.revision == membershipRevision {
+            return cache.rows
+        }
+        var rows: [[String]] = []
+        var total = 0
+        for p in pockets.prefix(Self.similarityCollectionCap) {
+            let ids = Array(songIds(forPocket: p.id).prefix(Self.similarityMemberCap))
+            guard !ids.isEmpty else { continue }
+            rows.append(ids); total += ids.count
+            if total >= Self.similarityTotalIdCap { break }
+        }
+        if total < Self.similarityTotalIdCap {
+            for pl in playlists.prefix(max(0, Self.similarityCollectionCap - rows.count)) {
+                let ids = Array(songIds(forPlaylist: pl.id).prefix(Self.similarityMemberCap))
+                guard !ids.isEmpty else { continue }
+                rows.append(ids); total += ids.count
+                if total >= Self.similarityTotalIdCap { break }
+            }
+        }
+        membershipSnapshotCache = (membershipRevision, rows)
+        return rows
+    }
+
+    private static let similarityCollectionCap = 300
+    private static let similarityMemberCap = 5_000
+    private static let similarityTotalIdCap = 200_000
+
     private func save() {
+        // Every mutator funnels through here, so this is the one honest memo key.
+        membershipRevision &+= 1
         let doc = CollectionsDocument(schemaVersion: collectionsSchemaVersion, pockets: pockets,
                                       playlists: playlists, setlists: setlists,
                                       folders: folders, lastAddTarget: lastAddTarget,
@@ -2591,6 +2639,7 @@ final class CollectionsStore {
         lastAddTarget = doc.lastAddTarget
         recentAddTargets = doc.recentAddTargets ?? []
         setlists.removeAll { $0.id == nowPlayingSetlistId || $0.playlistId == nowPlayingPlaylistId }
+        membershipRevision &+= 1
         onChange?()
     }
 
@@ -2606,6 +2655,7 @@ final class CollectionsStore {
         folders = []
         lastAddTarget = nil
         recentAddTargets = []
+        membershipRevision &+= 1
         try? FileManager.default.removeItem(at: fileURL)
         onChange?()
     }

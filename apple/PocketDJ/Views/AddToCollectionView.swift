@@ -29,6 +29,13 @@ struct AddToCollectionView: View {
     @Environment(RowSelection.self) private var rowSelection: RowSelection?
     @Environment(\.dismiss) private var dismiss
     let item: Item
+    /// Fired AFTER a successful ADD — never on a REMOVE (a checkmarked row toggles OFF), never
+    /// on a `.songs` batch that landed nothing, and never on a source-playlist add (that path
+    /// runs a two-way Apple Music write behind its own result alert; dismissing out from under
+    /// it would be wrong). The PRESENTER decides what to do with it: Gem Collector scores the
+    /// round's point and dismisses; every other caller passes nil (the default) and this sheet
+    /// behaves EXACTLY as before — multi-select, never self-dismissing.
+    var onAdded: ((AddTarget) -> Void)? = nil
 
     @State private var newPocket = ""
     @State private var newPlaylist = ""
@@ -522,19 +529,22 @@ struct AddToCollectionView: View {
     private func addTo(_ target: AddTarget,
                        dedupe: CollectionsStore.BatchDedupe = .wholeCollection) {
         switch item {
-        case .song(let s): collections.addSong(s, to: target)
+        case .song(let s): collections.addSong(s, to: target); onAdded?(target)
         // The batch choke point: ONE document write, deduped against current membership.
         // A batch that adds NOTHING (every id already present) must not look identical to a
         // successful one — say so (the sheet deliberately never dismisses on add).
         case .songs(let ids):
             if collections.addSongs(ids, to: target, dedupe: dedupe) == 0 {
                 batchNotice = "All \(ids.count) selected songs are already in this list."
+            } else {
+                onAdded?(target)
             }
-        case .album(let a): collections.addAlbum(a, to: target)
+        case .album(let a): collections.addAlbum(a, to: target); onAdded?(target)
         // Studio ids ride the SAME string-id plumbing as songs (spec §8's namespaced-id
         // mechanism): pockets keep them in `songIds`, playlists as `.song` nodes; every
         // consumer routes on the id prefix at resolve time.
-        case .studio(let id, _): collections.addSong(id, to: target, repeatCount: repeatCount)
+        case .studio(let id, _):
+            collections.addSong(id, to: target, repeatCount: repeatCount); onAdded?(target)
         }
     }
 

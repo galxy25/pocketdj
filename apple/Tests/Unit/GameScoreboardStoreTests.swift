@@ -141,6 +141,64 @@ final class GameScoreboardStoreTests: XCTestCase {
         XCTAssertTrue(AccountDeletionService.cloudDocKeys.contains("puzzle-decisions"))
     }
 
+    // MARK: - The rename guard ("Collector's Puzzle" → "Gem Collector", display only)
+
+    /// The persisted TOKEN and the DISPLAY name are different things. The game is now shown
+    /// as "Gem Collector", but its rawValue stays `collectorsPuzzle` because that string is
+    /// written into `pocketdj-game-scores.json`, into CloudKit-merged peer rows, and into
+    /// already-uploaded `RecPuzzleEventWire.gameId` — renaming it orphans every existing high
+    /// score and splits the scoreboard across devices with no repair path. It also silently
+    /// breaks the a11y ids `games-best-<rawValue>` / `games-run-<rawValue>-<i>` the UI suite
+    /// hunts. If someone "finishes" the rename later, THIS is the test that fails.
+    func testGameKindTokensAreFrozenWhileLabelsAreFree() {
+        XCTAssertEqual(GameKind.collectorsPuzzle.rawValue, "collectorsPuzzle",
+                       "persisted token — the display name is `label`")
+        XCTAssertEqual(GameKind.musicWithFriends.rawValue, "musicWithFriends")
+        XCTAssertEqual(GameKind.collectorsPuzzle.label, "Gem Collector")
+        XCTAssertEqual(GameKind.musicWithFriends.label, "Music with Friends")
+    }
+
+    /// THE MIGRATION PROOF: a scoreboard document written by the PREVIOUS build — rows
+    /// carrying `"game":"collectorsPuzzle"` — still resolves through the renamed enum. This is
+    /// the assertion that actually fails if the case is ever renamed; the label test above
+    /// only catches the symbol, this one catches the DATA.
+    func testHighScoresWrittenBeforeTheRenameStillResolve() throws {
+        let url = tempURL()
+        // Byte-for-byte what the shipped build wrote: the token, not the display name.
+        let doc = """
+        { "schemaVersion": 1, "installId": "old-install", "runs": [
+          { "id": "\(UUID().uuidString)", "game": "collectorsPuzzle", "score": 11,
+            "at": 1000, "settingsSummary": "2:00 · 3 targets", "originInstallId": "old-install" },
+          { "id": "\(UUID().uuidString)", "game": "collectorsPuzzle", "score": 4,
+            "at": 2000, "settingsSummary": "1:00 · 1 target", "originInstallId": "old-install" },
+          { "id": "\(UUID().uuidString)", "game": "musicWithFriends", "score": 6, "at": 3000 }
+        ] }
+        """
+        try Data(doc.utf8).write(to: url)
+        let store = GameScoreboardStore(fileURL: url)
+        XCTAssertEqual(store.bestScore(.collectorsPuzzle), 11,
+                       "pre-rename high score survives — the token never moved")
+        XCTAssertEqual(store.bestRun(.collectorsPuzzle)?.settingsSummary, "2:00 · 3 targets")
+        XCTAssertEqual(store.recentRuns(.collectorsPuzzle, limit: 5).count, 2)
+        XCTAssertEqual(store.bestScore(.musicWithFriends), 6)
+        // …and the a11y ids the UI suite hunts are still derived from that same token.
+        XCTAssertEqual("games-best-\(GameKind.collectorsPuzzle.rawValue)", "games-best-collectorsPuzzle")
+    }
+
+    /// The rec-engine bridge stamps the same token into every uploaded puzzle event. Rows
+    /// already sitting in S3 carry `"collectorsPuzzle"`; new rows must stay homogeneous with
+    /// them (the server stores `gameId` and never reads it, so a rename would be pure churn
+    /// with a split-token cost).
+    func testRecPuzzleEventsStillCarryTheFrozenGameToken() {
+        let decision = PuzzleDecisionStore.Decision(
+            id: UUID(), roundId: UUID(), at: 5000, songId: "sng_1", action: "assigned",
+            collectionId: "pkt_a", collectionName: "Crate A", positionInRound: 0,
+            settings: nil, originInstallId: nil)
+        let events = PuzzleRecEventBridge.events(from: [decision], sinceMs: 0)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.gameId, "collectorsPuzzle")
+    }
+
     /// Account deletion wipes the scoreboard: state resets AND the persisted document no
     /// longer resurrects the old runs on a reload.
     func testClearResetsStateAndPersistedDocument() {

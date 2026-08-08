@@ -58,13 +58,13 @@ struct GamesView: View {
             path.append(CollectorsPuzzleRoute())
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: "puzzlepiece.extension")
+                Image(systemName: "diamond.fill")
                     .font(.title2)
                     .foregroundStyle(Theme.accent2)
                     .frame(width: 36)
                 VStack(alignment: .leading, spacing: 3) {
                     HStack(spacing: 8) {
-                        Text("Collectors Puzzle").font(.headline).foregroundStyle(Theme.fg)
+                        Text(GameKind.collectorsPuzzle.label).font(.headline).foregroundStyle(Theme.fg)
                         if puzzleInProgress {
                             Text("Round in progress")
                                 .font(.caption2.weight(.semibold))
@@ -73,7 +73,7 @@ struct GamesView: View {
                                 .foregroundStyle(Theme.accent2)
                         }
                     }
-                    Text("Timed rush — file songs into your collections. One point per song.")
+                    Text("Timed rush — file songs into any collection. One point per song.")
                         .font(.subheadline).foregroundStyle(Theme.fgDim)
                     Text("Best: \(gameScores.bestScore(.collectorsPuzzle) ?? 0)")
                         .font(.caption).foregroundStyle(Theme.accent)

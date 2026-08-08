@@ -205,6 +205,10 @@ final class RecommendationService {
     /// cap 20, TTL 15 min.
     @ObservationIgnored private var suggestionCache: [String: (atMs: Double, wire: [RecCollectionSuggestionWire])] = [:]
     @ObservationIgnored private var suggestionCacheOrder: [String] = []
+    /// Gem Collector's collection-similarity cache: sorted-id-list key → song ids. LRU 8,
+    /// same 15-minute TTL as the suggestion cache.
+    @ObservationIgnored private var similarCache: [String: (atMs: Double, songIds: [String])] = [:]
+    @ObservationIgnored private var similarCacheOrder: [String] = []
 
     private static let cacheTTLMs: Double = 15 * 60 * 1000
     private static let batchCap = 500
@@ -799,6 +803,43 @@ final class RecommendationService {
             return resp.suggestions
         } catch {
             return []   // suggestion surfaces just stay hidden — never block UI
+        }
+    }
+
+    // MARK: - Collection similarity (Gem Collector's cloud booster)
+
+    /// Songs similar to a SET of collections, best first. Cached 15 min by sorted id list.
+    ///
+    /// Returns [] when the engine is disabled (the DEFAULT — the privacy gate is checked
+    /// first, as in every other network method here), when the service is unreachable, or when
+    /// the `/recs/similar` route is not deployed yet (a 404 through `ClientError.http(404)`).
+    /// All three are the same outcome to the caller: Gem Collector then ranks LOCALLY, which
+    /// is its normal configuration rather than a fallback — so nothing regresses if this
+    /// route's deploy is delayed or rolled back.
+    func similarSongs(toCollections ids: [String], limit: Int = 200) async -> [String] {
+        guard isEnabled, !ids.isEmpty else { return [] }
+        let cacheKey = ids.sorted().joined(separator: ",")
+        if fixtureOn {
+            // Deterministic canned list so UI tests are hermetic.
+            return Array(collections.pockets.flatMap(\.songIds).prefix(limit))
+        }
+        let now = Date().timeIntervalSince1970 * 1000
+        if let hit = similarCache[cacheKey], now - hit.atMs < Self.cacheTTLMs { return hit.songIds }
+        do {
+            let key = ensureKey()
+            let resp = try await client.similarToCollections(
+                collectionIds: Array(ids.prefix(3)), limit: limit, key: key,
+                profileId: scopedProfileId(key: key))
+            let songIds = resp.songs.map(\.songId)
+            similarCache[cacheKey] = (now, songIds)
+            similarCacheOrder.removeAll { $0 == cacheKey }
+            similarCacheOrder.append(cacheKey)
+            while similarCacheOrder.count > 8 {
+                similarCache.removeValue(forKey: similarCacheOrder.removeFirst())
+            }
+            return songIds
+        } catch {
+            return []   // never surfaced, never retried — a timed round runs local-only
         }
     }
 

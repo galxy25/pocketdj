@@ -127,7 +127,12 @@ final class GamesUITests: XCTestCase {
     /// The reported iOS defect: settings are selectable but the game can never be started.
     /// Start must be USABLE the moment the screen opens — no scrolling — even with a long
     /// collection list, which is what buried it as a Form row.
-    func testStartIsReachableWithoutScrollingEvenWithManyCollections() {
+    ///
+    /// INVERTED 2026-08 (Levi): targets are OPTIONAL now, so Start must also be LIVE with
+    /// none selected — this test used to assert the opposite (`isEnabled == false`), which is
+    /// exactly the refusal being removed. The pinned-Start-bar reachability assertions around
+    /// it are the freshly-repaired regression guard and are unchanged.
+    func testStartIsReachableAndLiveWithoutTargets() {
         let app = launch(extra: ["PDJ_SEED_COLLECTIONS": "40"])
         XCTAssertTrue(app.any("games-card-puzzle").waitForExistence(timeout: 15))
         app.any("games-card-puzzle").tap()
@@ -135,16 +140,19 @@ final class GamesUITests: XCTestCase {
         // NO swipeTo here on purpose — that is the crutch that made the old suite green.
         assertUsable(app.el("puzzle-start"), app, "Start Round (with 40 collections, unscrolled)")
         assertUsable(app.any("puzzle-pool-count"), app, "the pool-count readout")
-        // Start is correctly INERT until a target is chosen…
-        XCTAssertFalse(app.el("puzzle-start").isEnabled, "Start must stay disabled with no target")
-        // …and enables once one is, still without scrolling the button anywhere.
-        let target = app.buttons.matching(NSPredicate(
-            format: "identifier BEGINSWITH %@", "puzzle-target-")).firstMatch
-        scrollClearOfStartBar(target, app).tap()
+        // Start is LIVE with no target at all, once the debounced pool count settles >0.
         let start = app.el("puzzle-start")
         let deadline = Date().addingTimeInterval(15)
         while !start.isEnabled && Date() < deadline { usleep(300_000) }
-        XCTAssertTrue(start.isEnabled, "1 target selected ⇒ Start enables")
+        XCTAssertTrue(start.isEnabled, "targets are optional: Start is live with none selected")
+        assertUsable(start, app, "Start Round (no targets selected)")
+        // …and stays live once one IS selected, still without scrolling the button anywhere.
+        let target = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "puzzle-target-")).firstMatch
+        scrollClearOfStartBar(target, app).tap()
+        let deadline2 = Date().addingTimeInterval(15)
+        while !start.isEnabled && Date() < deadline2 { usleep(300_000) }
+        XCTAssertTrue(start.isEnabled, "1 target selected ⇒ Start still enabled")
         assertUsable(start, app, "Start Round (after picking a target)")
     }
 
@@ -207,6 +215,101 @@ final class GamesUITests: XCTestCase {
         let best = app.any("games-best-collectorsPuzzle")
         XCTAssertTrue(best.waitForExistence(timeout: 10))
         XCTAssertTrue(best.label.contains("2"), "scoreboard best updated (label: \(best.label))")
+    }
+
+    // MARK: - Gem Collector: file into ANY collection (no targets required)
+
+    /// THE REQUESTED USER PATH, end to end and with nothing synthetic: open the game, pick NO
+    /// target at all, Start, hear the song, tap the CARD, search in the picker, add to a
+    /// collection that was never a target — and score. Every control is asserted `assertUsable`
+    /// (hittable AND inside the window), because `exists` is what let a broken build ship.
+    func testFileIntoAnyCollectionWithNoTargetsScoresAPoint() {
+        let app = launch(extra: ["PDJ_SEED_COLLECTIONS": "40",
+                                 "PDJ_SEED_BURNS": "1",
+                                 "PDJ_TEST_PROBE": "1"])
+        XCTAssertTrue(app.any("games-card-puzzle").waitForExistence(timeout: 15))
+        app.any("games-card-puzzle").tap()
+        XCTAssertTrue(app.any("puzzle-round-length").waitForExistence(timeout: 10), "setup form opened")
+
+        // NO target selected — the whole point of the change.
+        let start = app.el("puzzle-start")
+        let deadline = Date().addingTimeInterval(15)
+        while !start.isEnabled && Date() < deadline { usleep(300_000) }
+        assertUsable(start, app, "Start Round (no targets)")
+        XCTAssertTrue(start.isEnabled, "targets are optional ⇒ Start is live")
+        start.tap()
+
+        // The running screen: with no targets there are no assign buttons, and "File into…"
+        // is the ONLY scoring control — so it had better be usable.
+        let file = app.el("puzzle-file")
+        XCTAssertTrue(file.waitForExistence(timeout: 15), "the File-into button never appeared")
+        assertUsable(file, app, "File into… (the only scoring control with no targets)")
+        assertUsable(app.el("puzzle-skip"), app, "Skip")
+        assertUsable(app.el("puzzle-end"), app, "End Round")
+        XCTAssertFalse(app.el("puzzle-assign-0").exists, "no targets ⇒ no one-tap assign buttons")
+        XCTAssertTrue(app.any("puzzle-current").exists, "a song card is on screen")
+        // THE CONTRACT: a card on screen is a song you can hear.
+        XCTAssertTrue(waitForPlaying(app),
+                      "no audio started for the song the round is showing (player-state=\(probeState(app)))")
+
+        file.tap()
+        // The shared Add-to sheet, with its fuzzy search field.
+        let search = app.textFields["add-search-field"]
+        XCTAssertTrue(search.waitForExistence(timeout: 10), "the add-to picker never opened")
+        assertUsable(search, app, "the picker's search field")
+        search.tap()
+        search.typeText("Crate")           // the seeded collections are named "Crate <n>"
+
+        let row = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "add-playlist-")).firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 10), "the search found no playlist to file into")
+        assertUsable(row, app, "a searched collection row")
+        row.tap()
+
+        // Filing scores the round's point, dismisses the sheet, and advances the card.
+        let score = app.any("puzzle-score")
+        XCTAssertTrue(score.waitForExistence(timeout: 10))
+        let scored = Date().addingTimeInterval(10)
+        while !score.label.contains("1") && Date() < scored { usleep(200_000) }
+        XCTAssertTrue(score.label.contains("1"),
+                      "filing through the picker scores one point (label: \(score.label))")
+        XCTAssertFalse(app.textFields["add-search-field"].exists, "the sheet dismissed on the add")
+        assertUsable(app.el("puzzle-file"), app, "File into… (still usable for the next card)")
+    }
+
+    /// Tapping the SONG CARD itself opens the picker (the affordance the user asked for), and
+    /// dismissing it without adding costs nothing — no point, and the same card stays.
+    func testTappingTheSongCardOpensThePickerAndCancelCostsNothing() {
+        let app = launch(extra: ["PDJ_SEED_COLLECTIONS": "40",
+                                 "PDJ_SEED_BURNS": "1"])
+        XCTAssertTrue(app.any("games-card-puzzle").waitForExistence(timeout: 15))
+        app.any("games-card-puzzle").tap()
+        XCTAssertTrue(app.any("puzzle-round-length").waitForExistence(timeout: 10))
+        let target = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "puzzle-target-")).firstMatch
+        scrollClearOfStartBar(target, app).tap()
+        let start = app.el("puzzle-start")
+        let deadline = Date().addingTimeInterval(15)
+        while !start.isEnabled && Date() < deadline { usleep(300_000) }
+        start.tap()
+
+        let card = app.any("puzzle-current")
+        XCTAssertTrue(card.waitForExistence(timeout: 15), "the running card never appeared")
+        assertUsable(card, app, "the current-song card")
+        // With a target selected the escape hatch is still there, labelled "Other…".
+        assertUsable(app.el("puzzle-file"), app, "Other… (the any-collection escape hatch)")
+        let before = card.label
+        card.tap()
+
+        XCTAssertTrue(app.textFields["add-search-field"].waitForExistence(timeout: 10),
+                      "tapping the song card must open the add-to picker")
+        app.buttons["Done"].firstMatch.tap()
+
+        XCTAssertTrue(app.any("puzzle-current").waitForExistence(timeout: 10))
+        XCTAssertTrue(app.any("puzzle-score").label.contains("0"),
+                      "cancelling the picker scores nothing")
+        XCTAssertEqual(app.any("puzzle-current").label, before,
+                       "cancel is not a skip — the same card is still on screen")
     }
 
     // MARK: - Music with Friends

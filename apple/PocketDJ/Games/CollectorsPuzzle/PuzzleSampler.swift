@@ -27,6 +27,23 @@ enum PuzzleSampler {
         /// Can Apple Music stream right now (enabled + authorized)? A song carrying an
         /// `appleMusicId` is then playable too.
         var canStreamAppleMusic: Bool = false
+
+        // ── Similarity inputs (all default-empty: a bare sampler behaves exactly as before) ──
+
+        /// EVERY collection's membership as flat id arrays — the "shared with another
+        /// collection" similarity signal. Passed as raw COW arrays; `CollectionsStore`
+        /// memoizes it on its membership revision so the 0.25 s ticker's top-up never walks
+        /// 300 playlist node trees on the main actor.
+        var allCollections: [[String]] = []
+        /// The play log, raw. Mapped to (songId, atMs) OFF the main actor in `Inputs(raw:)` —
+        /// handing over the COW array itself costs the caller one retain.
+        var plays: [PlayHistoryStore.PlayEvent] = []
+        /// songId → 0…1 cloud similarity rank, fetched ONCE per round (never in the ticker).
+        /// Empty is the default and the normal case — the rec engine is off by default.
+        var cloudRanks: [String: Double] = [:]
+        /// Skip the (catalog-walking) profile build entirely when the round can't use it —
+        /// no targets, or similarity off.
+        var buildSimilarityProfile: Bool = true
     }
 
     struct Inputs {
@@ -48,11 +65,18 @@ enum PuzzleSampler {
         var playableNowIds: Set<String> = []
         /// Apple Music can stream right now, so any song with an `appleMusicId` is playable.
         var canStreamAppleMusic: Bool = false
+        /// What the target collections LOOK like — the similarity ranker's whole input. Empty
+        /// (`isEmpty`) whenever there are no targets, so similarity is a no-op there.
+        var similarityProfile = PuzzleSimilarity.TargetProfile()
+        /// songId → 0…1 cloud rank bonus. Empty by default (the engine is off by default).
+        var cloudRanks: [String: Double] = [:]
 
         init(songs: [IndexSong], genreBySongId: [String: String], favoriteIds: Set<String>,
              playCounts: [String: Int], membershipUnion: Set<String>,
              perTargetMembership: [Set<String>],
-             playableNowIds: Set<String> = [], canStreamAppleMusic: Bool = false) {
+             playableNowIds: Set<String> = [], canStreamAppleMusic: Bool = false,
+             similarityProfile: PuzzleSimilarity.TargetProfile = .init(),
+             cloudRanks: [String: Double] = [:]) {
             self.songs = songs
             self.genreBySongId = genreBySongId
             self.favoriteIds = favoriteIds
@@ -61,6 +85,8 @@ enum PuzzleSampler {
             self.perTargetMembership = perTargetMembership
             self.playableNowIds = playableNowIds
             self.canStreamAppleMusic = canStreamAppleMusic
+            self.similarityProfile = similarityProfile
+            self.cloudRanks = cloudRanks
         }
 
         /// Can THIS song make sound right now?
@@ -76,7 +102,14 @@ enum PuzzleSampler {
             genreBySongId.reserveCapacity(raw.songs.count)
             // Genre lives on the ALBUM; category once per album, then fan out.
             var categoryByAlbum: [String: String] = [:]
+            // The similarity profile needs to resolve its members' rows; built in the SAME
+            // walk so the catalog is traversed once, and only when a profile is actually
+            // wanted (targets selected + similarity on).
+            let wantsProfile = raw.buildSimilarityProfile && !raw.targetCollections.isEmpty
+            var songsById: [String: IndexSong] = [:]
+            if wantsProfile { songsById.reserveCapacity(raw.songs.count) }
             for song in raw.songs {
+                if wantsProfile { songsById[song.id] = song }
                 guard let albumId = song.albumId else { continue }
                 let cat = categoryByAlbum[albumId] ?? Genre.category(raw.albumsById[albumId]?.genre)
                 categoryByAlbum[albumId] = cat
@@ -88,12 +121,21 @@ enum PuzzleSampler {
             // this runs on every debounced settings keystroke + the mid-round top-up.
             var playable = Set(raw.ripManifest.keys)
             playable.formUnion(raw.burnedIds)
+            let profile = wantsProfile
+                ? PuzzleSimilarity.profile(targetMemberIds: raw.targetCollections,
+                                           songsById: songsById,
+                                           genreBySongId: genreBySongId,
+                                           otherCollections: raw.allCollections,
+                                           plays: raw.plays.map { (songId: $0.songId, atMs: $0.playedAt) })
+                : PuzzleSimilarity.TargetProfile()
             self.init(songs: raw.songs, genreBySongId: genreBySongId,
                       favoriteIds: raw.favoriteIds, playCounts: raw.playCounts,
                       membershipUnion: membershipUnion,
                       perTargetMembership: raw.targetCollections.map(Set.init),
                       playableNowIds: playable,
-                      canStreamAppleMusic: raw.canStreamAppleMusic)
+                      canStreamAppleMusic: raw.canStreamAppleMusic,
+                      similarityProfile: profile,
+                      cloudRanks: raw.cloudRanks)
         }
     }
 
@@ -110,12 +152,49 @@ enum PuzzleSampler {
     /// whose catalog carries no catalog ids, so an input-shaped test would enforce a filter
     /// that matches nothing, leave 0 songs, and disable Start forever — the very defect this
     /// change is fixing. A silent round beats an unstartable one.
+    ///
+    /// SIMILARITY (Levi 2026-08) runs INSIDE this structure, never around it: playability is
+    /// the OUTER gate and similarity is the INNER ranker, so a similarity pick that cannot
+    /// play is never produced. It can only ever reorder and subset a set that already passed
+    /// the playable-now filter, and its starvation guard means it can never empty the pool.
     static func pool(settings: PuzzleSettings, inputs: Inputs,
-                     excluding: Set<String> = []) -> [(song: IndexSong, weight: Double)] {
+                     excluding: Set<String> = [],
+                     wanted: Int = 60) -> [(song: IndexSong, weight: Double)] {
         let playable = pool(settings: settings, inputs: inputs, excluding: excluding,
                             playableOnly: true)
-        if !playable.isEmpty { return playable }
-        return pool(settings: settings, inputs: inputs, excluding: excluding, playableOnly: false)
+        if !playable.isEmpty { return similar(playable, settings: settings, inputs: inputs, wanted: wanted) }
+        let all = pool(settings: settings, inputs: inputs, excluding: excluding, playableOnly: false)
+        return similar(all, settings: settings, inputs: inputs, wanted: wanted)
+    }
+
+    /// The similarity re-rank applied to ONE pass's result (see `pool`).
+    private static func similar(_ candidates: [(song: IndexSong, weight: Double)],
+                                settings: PuzzleSettings, inputs: Inputs,
+                                wanted: Int) -> [(song: IndexSong, weight: Double)] {
+        PuzzleSimilarity.shortlist(candidates, profile: inputs.similarityProfile,
+                                   genreBySongId: inputs.genreBySongId,
+                                   cloudRanks: inputs.cloudRanks,
+                                   mode: settings.similarity, wanted: wanted)
+    }
+
+    /// What the setup screen's readout needs: how many songs match the filters, and how many
+    /// of them the similarity ranker actually shortlists. ONE walk, not two detached samples.
+    struct PoolStats: Equatable {
+        var matched: Int = 0
+        /// nil ⇒ similarity is off or there is nothing to be similar to.
+        var similar: Int?
+    }
+
+    static func poolStats(settings: PuzzleSettings, inputs: Inputs, wanted: Int = 60) -> PoolStats {
+        var base = pool(settings: settings, inputs: inputs, excluding: [], playableOnly: true)
+        if base.isEmpty {
+            base = pool(settings: settings, inputs: inputs, excluding: [], playableOnly: false)
+        }
+        guard settings.similarity != .off, !inputs.similarityProfile.isEmpty else {
+            return PoolStats(matched: base.count, similar: nil)
+        }
+        let short = similar(base, settings: settings, inputs: inputs, wanted: wanted)
+        return PoolStats(matched: base.count, similar: short.count)
     }
 
     private static func pool(settings: PuzzleSettings, inputs: Inputs,
@@ -181,7 +260,7 @@ enum PuzzleSampler {
     /// swap-remove + lazy rebuild. `rng` injected (`PRNG.seededRng` in tests).
     static func sample(_ n: Int, settings: PuzzleSettings, inputs: Inputs,
                        rng: () -> Double, excluding: Set<String> = []) -> [IndexSong] {
-        var candidates = pool(settings: settings, inputs: inputs, excluding: excluding)
+        var candidates = pool(settings: settings, inputs: inputs, excluding: excluding, wanted: n)
         guard !candidates.isEmpty else { return [] }
         var picked: [IndexSong] = []
         picked.reserveCapacity(min(n, candidates.count))

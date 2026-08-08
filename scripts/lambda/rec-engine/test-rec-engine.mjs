@@ -43,7 +43,8 @@ process.env.REC_ENROLL_SECRET = 'enroll-secret-for-tests';
 /// so the flood cap is lifted here and driven deliberately in its own test.
 process.env.MAX_PROFILES = '1000';
 
-const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections, shedToFit } =
+const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections, shedToFit,
+        scoreSimilarToCollections } =
   await import('./index.mjs');
 
 const PROFILE = 'profile-test-1234';
@@ -570,4 +571,119 @@ test('scoreCollections coPlay window counts member plays near the song plays', (
   const withoutCo = scoreCollections(noCoState, byId, 'sng_e1', { nowMs: NOW, threshold: 0 });
   assert.ok(withCo.suggestions[0].score > withoutCo.suggestions[0].score,
             'the ±30 min co-play adds score');
+});
+
+// ── Gem Collector: GET /recs/similar (songs similar to a SET of collections) ─────────────────────
+
+const featureIndex = () => new Map(fixture.songs.map((s) => [s.i, s]));
+
+/// A state whose one target collection is the electronic Aria cluster.
+function similarState(extra = {}) {
+  return {
+    v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+    collections: { atMs: 0, list: [
+      { id: 'pkt_target', kind: 'pocket', name: 'Crate', songIds: ['sng_e1', 'sng_e2'] },
+      ...(extra.extraCollections || []),
+    ] },
+    ...extra.overrides,
+  };
+}
+
+test('scoreSimilarToCollections excludes the collection’s existing members', () => {
+  const out = scoreSimilarToCollections(similarState(), featureIndex(), ['pkt_target'], { nowMs: NOW });
+  const ids = out.songs.map((s) => s.songId);
+  assert.ok(!ids.includes('sng_e1'), 'a song already filed is a card the player cannot score');
+  assert.ok(!ids.includes('sng_e2'));
+  assert.ok(ids.length > 0, 'and it still returns candidates');
+});
+
+test('scoreSimilarToCollections ranks same-artist / same-genre above unrelated', () => {
+  const out = scoreSimilarToCollections(similarState(), featureIndex(), ['pkt_target'], { nowMs: NOW });
+  const rank = (id) => out.songs.findIndex((s) => s.songId === id);
+  assert.ok(rank('sng_e3') >= 0, 'the third Aria track is a candidate');
+  assert.ok(rank('sng_j1') === -1 || rank('sng_e3') < rank('sng_j1'),
+            'same-artist electronic outranks unrelated jazz');
+  assert.ok(rank('sng_e4') === -1 || rank('sng_e3') < rank('sng_e4'),
+            'same artist outranks same-genre-different-artist');
+});
+
+test('scoreSimilarToCollections honours the max-2-per-artist diversity cap', () => {
+  const wide = {
+    v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+    collections: { atMs: 0, list: [{ id: 'pkt_t', kind: 'pocket', name: 'T', songIds: ['sng_x1'] }] },
+  };
+  const out = scoreSimilarToCollections(wide, featureIndex(), ['pkt_t'], { nowMs: NOW, limit: 50 });
+  const perArtist = new Map();
+  for (const s of out.songs) perArtist.set(s.artist, (perArtist.get(s.artist) || 0) + 1);
+  for (const [artist, n] of perArtist) assert.ok(n <= 2, `${artist} appears ${n} times (cap is 2)`);
+});
+
+test('scoreSimilarToCollections returns an empty list for unknown collection ids', () => {
+  const out = scoreSimilarToCollections(similarState(), featureIndex(), ['pkt_nope'], { nowMs: NOW });
+  assert.deepEqual(out.songs, []);
+  assert.equal(out.v, 1);
+});
+
+test('scoreSimilarToCollections co-membership and co-play lift a song', () => {
+  const base = scoreSimilarToCollections(similarState(), featureIndex(), ['pkt_target'], { nowMs: NOW });
+  const lifted = scoreSimilarToCollections(
+    similarState({
+      extraCollections: [{ id: 'pkt_other', kind: 'pocket', name: 'Other',
+                           songIds: ['sng_e1', 'sng_j3'] }],
+      overrides: { plays: [play('sng_e1', NOW - 2 * HOUR),
+                           play('sng_j3', NOW - 2 * HOUR + 5 * 60 * 1000)] },
+    }),
+    featureIndex(), ['pkt_target'], { nowMs: NOW });
+  const scoreOf = (out, id) => out.songs.find((s) => s.songId === id)?.score ?? 0;
+  assert.ok(scoreOf(lifted, 'sng_j3') > scoreOf(base, 'sng_j3'),
+            'sharing another crate + a listening session with a member raises the score');
+});
+
+test('scoreSimilarToCollections is deterministic', () => {
+  const a = scoreSimilarToCollections(similarState(), featureIndex(), ['pkt_target'], { nowMs: NOW });
+  const b = scoreSimilarToCollections(similarState(), featureIndex(), ['pkt_target'], { nowMs: NOW });
+  assert.deepEqual(a.songs, b.songs);
+});
+
+test('GET /recs/similar: 400 without ids, 200+empty without state, then real rows', async () => {
+  const profile = 'profile-similar-1';
+  const bad = await call('GET', '/recs/similar', { profile });
+  assert.equal(bad.status, 400, 'no collectionIds is a bad request');
+
+  const empty = await call('GET', '/recs/similar', { profile, qs: { collectionIds: 'pkt_a' } });
+  assert.equal(empty.status, 200, 'no state object is not an error');
+  assert.deepEqual(empty.json.songs, []);
+
+  const up = await call('POST', '/events', {
+    profile,
+    body: { v: 1, collectionsSnapshot: { atMs: NOW, collections: [
+      { id: 'pkt_a', kind: 'pocket', name: 'A', songIds: ['sng_e1', 'sng_e2'] }] } },
+  });
+  assert.equal(up.status, 200);
+  assert.equal(up.json.totals.collections, 1, 'the snapshot landed');
+  const real = await call('GET', '/recs/similar', { profile, qs: { collectionIds: 'pkt_a' } });
+  assert.equal(real.status, 200);
+  assert.ok(real.json.songs.length > 0, 'similar songs come back');
+  assert.ok(!real.json.songs.some((s) => s.songId === 'sng_e1'), 'members excluded');
+
+  // A mismatched key is refused exactly like the other read routes.
+  const wrong = await call('GET', '/recs/similar',
+                           { profile, key: OTHER_KEY, qs: { collectionIds: 'pkt_a' } });
+  assert.equal(wrong.status, 403);
+  assert.equal(wrong.json.error, 'key-mismatch');
+});
+
+/// The renamed reason string RENDERS INSIDE THE APP (AddToCollectionView's Suggested section),
+/// so it is user-visible server output. Assert the literal so the rename can't silently regress.
+test('the Gem Collector reason string is the one the app renders', () => {
+  const state = {
+    v: 1, plays: [], favorites: {}, activity: [],
+    puzzle: [{ id: 'p1', atMs: NOW, songId: 'sng_e1', collectionId: 'pls_x', action: 'added' }],
+    collections: { atMs: 0, list: [{ id: 'pls_x', kind: 'playlist', name: 'X', songIds: ['sng_e2'] }] },
+  };
+  const out = scoreCollections(state, featureIndex(), 'sng_e3', { nowMs: NOW, threshold: 0 });
+  const reasons = out.suggestions.flatMap((s) => s.reasons);
+  assert.ok(reasons.includes('Matches your Gem Collector picks'),
+            `renamed reason string missing: ${JSON.stringify(reasons)}`);
+  assert.ok(!reasons.some((r) => r.includes('Puzzle')), 'the old name is gone');
 });

@@ -178,10 +178,12 @@
 		5D4F33D757216C3E23A658CF /* CollectionRipBurnControllerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5699B98E5ECF46FBDDFB34C0 /* CollectionRipBurnControllerTests.swift */; };
 		5D7F079408A49731738024B8 /* BurnStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7304C1DA297093F0EA312C68 /* BurnStoreTests.swift */; };
 		5E7B2D5DCDF33E16AC01FAF5 /* BrowseModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = F7257571E557F27140C1C7A1 /* BrowseModel.swift */; };
+		5EC25B31E39A8A1BF851146E /* PuzzleSimilarity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B6CD1A964B3080843BA5539 /* PuzzleSimilarity.swift */; };
 		5ECBE194A0D903030FA468B4 /* ArrangerChannelStripTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C8B0DD1221CA3AB83290638 /* ArrangerChannelStripTests.swift */; };
 		5F565246A69D7F36C9ACF0EE /* CloudSyncOnboardingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA26669FF3F14F5E34CE5460 /* CloudSyncOnboardingTests.swift */; };
 		5F6EA6897418DE94CC18B31B /* PlayStatsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D5980E93946D7C929149EE0 /* PlayStatsStoreTests.swift */; };
 		5FCFD11EF0E507D083FE771E /* LyricsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F657F3CC2CA8A462CFEE474C /* LyricsStore.swift */; };
+		60259F672469851D5D0ED87E /* PuzzleSimilarityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 41B85BBEB78B4699F0354C37 /* PuzzleSimilarityTests.swift */; };
 		622BEFCF94097199A6D682C7 /* DemuxTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0885F3744213F8187192B18C /* DemuxTests.swift */; };
 		62985C9AA0B6ABB576D2BAD7 /* DemuxStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 786074973E211907F5A59456 /* DemuxStore.swift */; };
 		63F9F587C52F7386447269B8 /* AppleMusicRecognitionSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19A262975190BC47ADA4E675 /* AppleMusicRecognitionSection.swift */; };
@@ -616,6 +618,7 @@
 		3FC6EB4CB3F90A6696F5FF23 /* PushRegistrationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistrationService.swift; sourceTree = "<group>"; };
 		40BAE935519168E903EE8ACD /* FilterSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilterSheet.swift; sourceTree = "<group>"; };
 		40CF414ED4DEBB411C60395F /* studio-fixture.m4a */ = {isa = PBXFileReference; path = "studio-fixture.m4a"; sourceTree = "<group>"; };
+		41B85BBEB78B4699F0354C37 /* PuzzleSimilarityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PuzzleSimilarityTests.swift; sourceTree = "<group>"; };
 		41C0707685392D86CEAE5E62 /* AppleMusicLibraryIndexer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicLibraryIndexer.swift; sourceTree = "<group>"; };
 		4200963C08D1FEDC7CB0E0FB /* JukeboxGuest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JukeboxGuest.swift; sourceTree = "<group>"; };
 		42CBB5530D61B41C0DA9FA74 /* ProfileStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ProfileStore.swift; sourceTree = "<group>"; };
@@ -776,6 +779,7 @@
 		9A26FB1782AD3927FBAA0BDD /* ShazamButton.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShazamButton.swift; sourceTree = "<group>"; };
 		9A7F3EA6577FAC86338DB9B4 /* BrowseStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseStateTests.swift; sourceTree = "<group>"; };
 		9B49EA6D5C5DB8ACED8309E9 /* AddToCollectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AddToCollectionView.swift; sourceTree = "<group>"; };
+		9B6CD1A964B3080843BA5539 /* PuzzleSimilarity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PuzzleSimilarity.swift; sourceTree = "<group>"; };
 		9B7AF8DC01677AD77010FA5C /* DebugSessionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugSessionStore.swift; sourceTree = "<group>"; };
 		9B9937C62AF0BC45009823AB /* StudioRenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRenderTests.swift; sourceTree = "<group>"; };
 		9B9B9B7FD84BD26BBFECC5C5 /* StudioMicRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioMicRecorder.swift; sourceTree = "<group>"; };
@@ -1132,6 +1136,7 @@
 				8A23D8FE12BCCFAC43457049 /* PuzzleMacLayoutTests.swift */,
 				6847266CA8BB84DE6F265BE0 /* PuzzlePlayabilityTests.swift */,
 				4C32EE86465865DE9505E670 /* PuzzleSamplerTests.swift */,
+				41B85BBEB78B4699F0354C37 /* PuzzleSimilarityTests.swift */,
 				8ABF8191645BD48E1298D78D /* RealizeEngineTests.swift */,
 				6E5A19100207C85EBAE83A88 /* RecEngineClientTests.swift */,
 				A26EB9756A3F6BE9900D9478 /* RecModelsTests.swift */,
@@ -1197,6 +1202,7 @@
 				E31C32FD6DB5015C6BCCCC57 /* PuzzleModels.swift */,
 				22A16829C44B131DF2180318 /* PuzzleRecEventBridge.swift */,
 				6F96A6B05DE187E15E99EA3C /* PuzzleSampler.swift */,
+				9B6CD1A964B3080843BA5539 /* PuzzleSimilarity.swift */,
 			);
 			path = CollectorsPuzzle;
 			sourceTree = "<group>";
@@ -2043,6 +2049,7 @@
 				094B022E293E44E61FAC1345 /* PuzzleMacLayoutTests.swift in Sources */,
 				4F0FABA111A21AB11C49C42E /* PuzzlePlayabilityTests.swift in Sources */,
 				5897B6BEBBB3AB777321BC27 /* PuzzleSamplerTests.swift in Sources */,
+				60259F672469851D5D0ED87E /* PuzzleSimilarityTests.swift in Sources */,
 				07DC21DBB1D0E63D969865AD /* RealizeEngineTests.swift in Sources */,
 				ABE011EB9EA8EABC9DC5E5EC /* RecEngineClientTests.swift in Sources */,
 				78D5D207E3E13213F6FCA306 /* RecModelsTests.swift in Sources */,
@@ -2269,6 +2276,7 @@
 				A1714094CADBCA3D616BABC0 /* PuzzleModels.swift in Sources */,
 				78DB341E8C25943C1D932771 /* PuzzleRecEventBridge.swift in Sources */,
 				5CE092AE4750EFDE93619CDB /* PuzzleSampler.swift in Sources */,
+				5EC25B31E39A8A1BF851146E /* PuzzleSimilarity.swift in Sources */,
 				346413F3F2C99B2F0AABCF1F /* QueueMenu.swift in Sources */,
 				7E35B738A41A9B816A97D4D6 /* RealizeEngine.swift in Sources */,
 				84D057E284CC58FC36F91002 /* RecEngineClient.swift in Sources */,

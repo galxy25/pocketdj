@@ -56,6 +56,7 @@
 //   POST   /events                       -> ingest batch (id-deduped, capped) -> accepted/totals
 //   GET    /recs/songs?limit=50          -> For You suggestions
 //   GET    /recs/collections?songId=S    -> collection suggestions for a song
+//   GET    /recs/similar?collectionIds=… -> songs similar to a SET of collections (Gem Collector)
 //   DELETE /state                        -> delete the state object
 //
 // ── Test seams (zero AWS) ───────────────────────────────────────────────────────────────────────
@@ -674,7 +675,11 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
       terms.push(['recency', 0.5 * Math.exp(-days / 14), 'Recently updated']);
     }
     if (puzzleGenreCols.has(col.id)) {
-      terms.push(['puzzle', 0.5, 'Matches your Collector’s Puzzle picks']);
+      // The game is SHOWN as "Gem Collector" (its persisted token stays `collectorsPuzzle`).
+      // This string renders inside the app's Suggested section, so it only changes on a
+      // Lambda deploy — a stale chip after an app ship is cosmetic and self-healing within
+      // the client's 15-minute suggestion cache.
+      terms.push(['puzzle', 0.5, 'Matches your Gem Collector picks']);
     }
 
     const score = terms.reduce((s, [, v]) => s + v, 0);
@@ -685,6 +690,141 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
   }
   scored.sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1));
   return { v: 1, songId, suggestions: scored.filter((s) => s.score >= threshold).slice(0, 5) };
+}
+
+// ── Similar-to-collections (GET /recs/similar?collectionIds=…) ──────────────────────────────────
+
+/**
+ * Songs similar to a SET of collections — Gem Collector's cloud booster. Deliberately the same
+ * shape as `scoreForYou`'s stages 2–5 so the two stay reviewable side by side, and it returns
+ * the EXACT `RecSongsResponse` wire ({v, generatedAtMs, songs}) so the client needs no new type.
+ *
+ * The client treats an absent route (404), an unreachable service, and a disabled engine
+ * identically — it ranks locally — so this can deploy independently of any app ship. Pure.
+ */
+export function scoreSimilarToCollections(state, featuresById, collectionIds,
+                                          { nowMs = Date.now(), limit = 200 } = {}) {
+  limit = Math.min(Math.max(Math.trunc(limit) || 200, 1), 500);
+  const wanted = new Set((collectionIds || []).filter(Boolean));
+  const targets = (state.collections?.list || []).filter((c) => wanted.has(c.id));
+  const members = new Set();
+  for (const c of targets) for (const id of c.songIds || []) members.add(id);
+  if (members.size === 0) return { v: 1, generatedAtMs: nowMs, songs: [] };
+
+  // 1) Taste aggregates over the members' feature rows (unweighted — a crate has no recency).
+  const genreCount = new Map(); const seedGenreN = new Map(); const artistCount = new Map();
+  let yearN = 0; let yearSum = 0; let bpmN = 0; let bpmSum = 0;
+  const neighborSet = new Set(); const kwCount = new Map();
+  let resolved = 0;
+  for (const id of members) {
+    const row = featuresById.get(id);
+    if (!row) continue;
+    resolved += 1;
+    if (row.g) {
+      genreCount.set(row.g, (genreCount.get(row.g) || 0) + 1);
+      seedGenreN.set(row.g, (seedGenreN.get(row.g) || 0) + 1);
+    }
+    if (row.a) artistCount.set(row.a, (artistCount.get(row.a) || 0) + 1);
+    if (row.y != null) { yearN += 1; yearSum += row.y; }
+    if (row.b != null) { bpmN += 1; bpmSum += row.b; }
+    for (const c of camelotNeighbors(row.c)) neighborSet.add(c);
+    for (const kw of row.s || []) kwCount.set(kw, (kwCount.get(kw) || 0) + 1);
+  }
+  if (resolved === 0) return { v: 1, generatedAtMs: nowMs, songs: [] };
+  const maxGenre = Math.max(0, ...genreCount.values());
+  const yearMean = yearN > 0 ? yearSum / yearN : null;
+  const mu = bpmN > 0 ? bpmSum / bpmN : null;
+  const top20 = new Set([...kwCount.entries()]
+    .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+    .slice(0, 20).map(([k]) => k));
+
+  // 2) Co-membership: songs sharing ANOTHER collection with a member.
+  const coMemberIds = new Set(); const coMemberName = new Map();
+  for (const col of state.collections?.list || []) {
+    if (wanted.has(col.id)) continue;
+    if (!col.songIds?.some((id) => members.has(id))) continue;
+    for (const id of col.songIds) {
+      if (members.has(id)) continue;
+      coMemberIds.add(id);
+      if (!coMemberName.has(id)) coMemberName.set(id, col.name);
+    }
+  }
+
+  // 3) Co-play: played within 30 min of a member's play.
+  const memberPlayTimes = state.plays.filter((p) => members.has(p.songId)).map((p) => p.atMs);
+  const coPlayCount = new Map();
+  if (memberPlayTimes.length) {
+    memberPlayTimes.sort((a, b) => a - b);
+    for (const p of state.plays) {
+      if (members.has(p.songId)) continue;
+      if (memberPlayTimes.some((t) => Math.abs(p.atMs - t) <= 30 * 60 * 1000)) {
+        coPlayCount.set(p.songId, (coPlayCount.get(p.songId) || 0) + 1);
+      }
+    }
+  }
+
+  // 4) Puzzle seed bonus: songs the player already filed INTO these collections.
+  const puzzleSongs = new Set(
+    state.puzzle.filter((e) => e.collectionId && wanted.has(e.collectionId))
+      .map((e) => e.songId).filter(Boolean));
+
+  const scored = [];
+  for (const row of featuresById.values()) {
+    // 5) EXCLUDE EXISTING MEMBERS — they are already filed, and a card the player cannot
+    //    score is dead weight in a timed game.
+    if (members.has(row.i)) continue;
+    const terms = [];
+    if (row.g && maxGenre > 0 && genreCount.has(row.g)) {
+      const n = seedGenreN.get(row.g) || 1;
+      terms.push(['genre', 2.0 * (genreCount.get(row.g) / maxGenre),
+                  `Mostly ${row.g} like ${n} song${n === 1 ? '' : 's'} in these collections`]);
+    }
+    if (row.a && (artistCount.get(row.a) || 0) > 0) {
+      terms.push(['artist', 1.5, `Artist already in these collections: ${row.a}`]);
+    }
+    if (row.y != null && yearMean != null) {
+      terms.push(['year', 0.5 * Math.exp(-Math.abs(row.y - yearMean) / 10), `Era fits (~${Math.round(yearMean)})`]);
+    }
+    if (row.b != null && mu != null) {
+      terms.push(['bpm', 0.5 * Math.exp(-((row.b - mu) ** 2) / (2 * 15 * 15)), `BPM fits (~${Math.round(mu)})`]);
+    }
+    if (row.c && neighborSet.has(row.c)) {
+      terms.push(['camelot', 0.5, `Harmonically compatible key (${row.c})`]);
+    }
+    if (row.s?.length && top20.size) {
+      const overlap = row.s.reduce((n, k) => n + (top20.has(k) ? 1 : 0), 0);
+      if (overlap > 0) {
+        terms.push(['sentiment', overlap / Math.max(1, Math.min(row.s.length, 5)), 'Similar mood']);
+      }
+    }
+    if (coMemberIds.has(row.i)) {
+      terms.push(['collection', 1.5, `In your collection ${coMemberName.get(row.i) || ''}`.trim()]);
+    }
+    const cp = coPlayCount.get(row.i) || 0;
+    if (cp > 0) terms.push(['coplay', 1.25 * Math.min(1, cp / 3), 'Often played together']);
+    if (puzzleSongs.has(row.i)) terms.push(['puzzle', 0.5, 'Matches your Gem Collector picks']);
+
+    const score = terms.reduce((s, [, v]) => s + v, 0);
+    if (score <= 0) continue;
+    const reasons = [...terms].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([, , r]) => r);
+    scored.push({ row, score, reasons });
+  }
+
+  // 6) Deterministic order + the same diversity caps as For You, then top `limit`.
+  scored.sort((a, b) => b.score - a.score || (a.row.i < b.row.i ? -1 : 1));
+  const perArtist = new Map(); const perAlbum = new Map();
+  const out = [];
+  for (const { row, score, reasons } of scored) {
+    if (out.length >= limit) break;
+    const a = row.a || ''; const al = row.al || '';
+    if (a && (perArtist.get(a) || 0) >= 2) continue;
+    if (al && (perAlbum.get(al) || 0) >= 3) continue;
+    if (a) perArtist.set(a, (perArtist.get(a) || 0) + 1);
+    if (al) perAlbum.set(al, (perAlbum.get(al) || 0) + 1);
+    out.push({ songId: row.i, name: row.n ?? null, artist: row.a ?? null,
+               score: Math.round(score * 100) / 100, reasons });
+  }
+  return { v: 1, generatedAtMs: nowMs, songs: out };
 }
 
 // ── HTTP plumbing ───────────────────────────────────────────────────────────────────────────────
@@ -802,6 +942,17 @@ export async function handler(event) {
       const features = await loadFeatures();
       const limit = parseInt(qs.limit || '50', 10) || 50;
       return reply(200, scoreForYou(read.state, features.byId, { limit }));
+    }
+
+    if (method === 'GET' && path === '/recs/similar') {
+      const ids = String(qs.collectionIds || '').split(',').map((s) => s.trim()).filter(Boolean).slice(0, 3);
+      if (!ids.length) return reply(400, { error: 'bad-request' });
+      const read = await readState(auth.profileHash);
+      if (!read) return reply(200, { v: 1, generatedAtMs: Date.now(), songs: [] });
+      if (read.state.keyHash && read.state.keyHash !== auth.keyHash) return reply(403, { error: 'key-mismatch' });
+      const features = await loadFeatures();
+      const limit = Math.min(parseInt(qs.limit || '200', 10) || 200, 500);
+      return reply(200, scoreSimilarToCollections(read.state, features.byId, ids, { limit }));
     }
 
     if (method === 'GET' && path === '/recs/collections') {

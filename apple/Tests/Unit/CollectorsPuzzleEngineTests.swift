@@ -93,14 +93,22 @@ final class CollectorsPuzzleEngineTests: XCTestCase {
         XCTAssertGreaterThan(s.engine.remainingSeconds, 100)
     }
 
-    func testStartRoundRequiresTargetsAndMatchingSongs() async {
+    /// INVERTED 2026-08 (Levi): targets are no longer required. The ONE thing a round needs
+    /// is a non-empty sample. (Previously this asserted `phase == .idle` + a "Pick 1–3 target
+    /// collections." error — that refusal is the defect being fixed.) The second half is
+    /// unchanged: a settings combination matching zero songs still refuses, with its message.
+    func testStartRoundWithNoTargetsStillRuns() async {
         let s = await makeStack()
         var none = s.engine.settings
         none.targetCollectionIds = []
         s.engine.updateSettings(none)
         await s.engine.startRound()
-        XCTAssertEqual(s.engine.phase, .idle)
-        XCTAssertNotNil(s.engine.lastError)
+        XCTAssertEqual(s.engine.phase, .running, "targets are optional — the round starts")
+        XCTAssertGreaterThan(s.engine.queue.count, 0, "…with a real queue")
+        XCTAssertNil(s.engine.lastError)
+        XCTAssertNotNil(s.engine.current, "…and a card on screen to file")
+        s.engine.endRound()
+        s.engine.reset()
 
         // A settings combination matching zero songs refuses to start with the message.
         var impossible = s.engine.settings
@@ -324,6 +332,187 @@ final class CollectorsPuzzleEngineTests: XCTestCase {
         s.engine.endRound()   // the End button, after someone else took the sequencer
         XCTAssertEqual(s.engine.phase, .finished)
         XCTAssertTrue(s.sequencer.isRunning, "End must never stop unrelated playback")
+        XCTAssertEqual(s.sequencer.sourceSetlistId, "set_other")
+    }
+
+    // MARK: - Filing through the Add-to picker ("file into ANY collection")
+
+    /// The whole point of change 3: with NO targets a round is still fully scorable, because
+    /// the card is filed through the Add-to sheet into any collection at all.
+    func testSheetFilingScoresAdvancesAndLogs() async {
+        let s = await makeStack()
+        var none = s.engine.settings
+        none.targetCollectionIds = []          // the no-targets mode
+        s.engine.updateSettings(none)
+        await s.engine.startRound()
+        let first = s.engine.current!
+        // A collection that is NOT a round target — "any collection" is the requirement.
+        let elsewhere = s.collections.createPocket("Somewhere Else", songIds: [], description: nil)
+
+        XCTAssertTrue(s.engine.beginFiling(), "the sheet opens for the current card")
+        XCTAssertEqual(s.engine.filingSongId, first.id)
+        s.engine.endFiling(assignedTo: AddTarget(kind: .pocket, id: elsewhere.id))
+
+        XCTAssertEqual(s.engine.score, 1, "a sheet filing is worth the same point as a target tap")
+        XCTAssertEqual(s.engine.queueIndex, 1, "…and advances the round")
+        XCTAssertNil(s.engine.filingSongId)
+        XCTAssertEqual(s.engine.assignedThisRound.last?.collectionId, elsewhere.id)
+        let row = s.decisions.decisions.last!
+        XCTAssertEqual(row.action, "assigned", "the rec-engine signal is identical to a target filing")
+        XCTAssertEqual(row.songId, first.id)
+        XCTAssertEqual(row.collectionId, elsewhere.id)
+        XCTAssertEqual(row.positionInRound, 0)
+        // …and it exports over the SAME wire with no bridge change.
+        let events = PuzzleRecEventBridge.events(from: s.decisions.decisions, sinceMs: 0)
+        XCTAssertEqual(events.count, 1)
+        XCTAssertEqual(events.first?.action, "added")
+        XCTAssertEqual(events.first?.collectionId, elsewhere.id)
+    }
+
+    /// ONE POINT PER CARD, not per collection. The picker is multi-select by design, so if the
+    /// point were credited per ADD a single card would be worth five points and every historical
+    /// score would become meaningless. The card advances on the FIRST successful add, which is
+    /// what makes the farm structurally impossible.
+    func testASecondFilingOfTheSameCardCannotScoreTwice() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        let first = s.engine.current!
+        let a = s.collections.createPocket("Crate B", songIds: [], description: nil)
+        let b = s.collections.createPocket("Crate C", songIds: [], description: nil)
+        s.engine.beginFiling()
+        s.engine.endFiling(assignedTo: AddTarget(kind: .pocket, id: a.id))
+        XCTAssertEqual(s.engine.score, 1)
+        // The sheet's second tap arrives after the callback already dismissed + advanced.
+        s.engine.endFiling(assignedTo: AddTarget(kind: .pocket, id: b.id))
+        XCTAssertEqual(s.engine.score, 1, "a second add in the same opening scores nothing")
+        XCTAssertEqual(s.engine.queueIndex, 1, "…and does not double-advance")
+        XCTAssertNotEqual(s.engine.current?.id, first.id)
+        XCTAssertEqual(s.decisions.decisions.filter { $0.action == "assigned" }.count, 1)
+    }
+
+    /// Cancel is NOT a skip: no point, no decision row, and — critically — the card STAYS.
+    /// A player may cancel to hit a target button instead; burning their card would be the
+    /// worst possible surprise in a timed game.
+    func testCancelledFilingScoresNothingAndKeepsTheCard() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        let first = s.engine.current!
+        let rows = s.decisions.decisions.count
+        s.engine.beginFiling()
+        s.engine.endFiling(assignedTo: nil)
+        XCTAssertEqual(s.engine.score, 0)
+        XCTAssertEqual(s.engine.queueIndex, 0)
+        XCTAssertEqual(s.engine.current?.id, first.id, "the card is still on screen")
+        XCTAssertEqual(s.decisions.decisions.count, rows, "cancel is not a 'skipped' signal either")
+        // …and the card is still filable afterwards.
+        XCTAssertTrue(s.engine.beginFiling())
+    }
+
+    /// THE TIMER DECISION, asserted: the round clock is HELD while the sheet is open and the
+    /// held time is credited back on dismiss — capped, so an open picker can't turn a timed
+    /// rush into an untimed one.
+    func testFilingHoldsTheClockUpToTheCap() async {
+        let s = await makeStack(roundSeconds: 120)
+        var t: TimeInterval = 1_000_000
+        s.engine.now = { Date(timeIntervalSince1970: t) }
+        await s.engine.startRound()
+        let before = s.engine.remainingSeconds
+
+        s.engine.beginFiling()
+        t += 8                                   // 8 s reading the picker
+        XCTAssertEqual(s.engine.remainingSeconds, before,
+                       "the displayed clock FREEZES behind the sheet")
+        s.engine.endFiling(assignedTo: nil)
+        XCTAssertEqual(s.engine.remainingSeconds, before, "…and the 8 s are credited back")
+
+        // Past the cap: leave the picker open for five minutes and only
+        // `maxFilingCreditSeconds` are bought back — you burned the round, you keep the point.
+        let deadlineBefore = s.engine.deadlineEpoch
+        s.engine.beginFiling()
+        t += 300
+        XCTAssertEqual(s.engine.remainingSeconds, before,
+                       "still frozen — an open sheet is not an untimed game, it is a HELD one")
+        s.engine.endFiling(assignedTo: nil)
+        XCTAssertEqual(s.engine.deadlineEpoch - deadlineBefore,
+                       CollectorsPuzzleEngine.maxFilingCreditSeconds, accuracy: 0.001,
+                       "a 5-minute sheet buys back exactly the 20 s cap, no more")
+        XCTAssertEqual(s.engine.remainingSeconds, 0)
+        s.engine.tickOnce()
+        XCTAssertEqual(s.engine.phase, .finished, "the very next tick ends the spent round")
+    }
+
+    /// THE DANGEROUS RACE (there is no pause API on SetlistPlayer, so audio runs on behind the
+    /// sheet): if the ticker's drift re-sync were live during a filing, a song ending naturally
+    /// under the open picker would write "expired" rows and advance PAST the card being filed —
+    /// the point would then score against the wrong song and the round would double-advance.
+    func testFilingSuspendsDriftExpiryAndReArmsOnClose() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        let card = s.engine.current!
+        s.engine.beginFiling()
+        // Audio runs on past the card while the picker is open (3 tracks' worth).
+        s.sequencer.skipNext(); s.sequencer.skipNext(); s.sequencer.skipNext()
+        for _ in 0..<4 { s.engine.tickOnce() }
+        XCTAssertEqual(s.engine.queueIndex, 0, "the ticker is HELD — the card did not move")
+        XCTAssertEqual(s.engine.current?.id, card.id)
+        XCTAssertTrue(s.decisions.decisions.allSatisfy { $0.action != "expired" },
+                      "no phantom 'expired' rows for a card the player is still filing")
+
+        // Closing re-marries the audio to the card the round is showing.
+        s.engine.endFiling(assignedTo: nil)
+        XCTAssertEqual(s.engine.current?.id, card.id)
+        XCTAssertEqual(s.sequencer.sourceSetlistId, "puzzle_\(s.engine.roundId.uuidString)",
+                       "audio was re-armed under THIS round's tag")
+        XCTAssertEqual(s.sequencer.queue.first?.id, card.id, "…starting at the card on screen")
+    }
+
+    /// A stale sheet — the round ended under it — must file NOTHING rather than score against
+    /// a finished round.
+    func testStaleFilingAfterTheRoundEndedFilesNothing() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        s.engine.beginFiling()
+        s.engine.endRound()
+        let rows = s.decisions.decisions.count
+        let recorded = s.engine.lastRunRecord?.score
+        s.engine.endFiling(assignedTo: AddTarget(kind: .pocket,
+                                                 id: s.collections.pockets[0].id))
+        XCTAssertEqual(s.engine.score, 0)
+        XCTAssertEqual(s.decisions.decisions.count, rows)
+        XCTAssertEqual(s.engine.lastRunRecord?.score, recorded, "the recorded run is untouched")
+    }
+
+    /// `endFiling` is reachable from BOTH the sheet's completion callback and the binding's
+    /// `onChange` (the callback nils the binding, which fires onChange), so it must credit the
+    /// clock once and score once.
+    func testEndFilingIsIdempotent() async {
+        let s = await makeStack()
+        var t: TimeInterval = 2_000_000
+        s.engine.now = { Date(timeIntervalSince1970: t) }
+        await s.engine.startRound()
+        let target = AddTarget(kind: .pocket, id: s.collections.pockets[0].id)
+        let deadlineBefore = s.engine.deadlineEpoch
+        s.engine.beginFiling()
+        t += 5
+        s.engine.endFiling(assignedTo: target)   // the callback
+        s.engine.endFiling(assignedTo: nil)      // …then onChange, for the same opening
+        XCTAssertEqual(s.engine.score, 1)
+        XCTAssertEqual(s.engine.queueIndex, 1)
+        XCTAssertEqual(s.engine.deadlineEpoch - deadlineBefore, 5, accuracy: 0.001,
+                       "the held time is credited exactly once")
+    }
+
+    /// A filing cannot begin against a sequencer someone else owns (same contract as
+    /// `assign`/`skip`): the round ends instead of scoring into a foreign queue.
+    func testBeginFilingAfterTakeoverEndsTheRoundAndOpensNothing() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        s.sequencer.play([SetlistPlayer.Item(id: "other_1", title: "Theirs", artist: "Someone")],
+                         sourceSetlistId: "set_other")
+        XCTAssertFalse(s.engine.beginFiling(), "no sheet opens")
+        XCTAssertNil(s.engine.filingSongId)
+        XCTAssertEqual(s.engine.phase, .finished)
+        XCTAssertTrue(s.sequencer.isRunning, "their playback is untouched")
         XCTAssertEqual(s.sequencer.sourceSetlistId, "set_other")
     }
 

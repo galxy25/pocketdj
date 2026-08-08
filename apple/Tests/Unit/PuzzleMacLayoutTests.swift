@@ -44,6 +44,22 @@ final class PuzzleMacLayoutTests: XCTestCase {
     /// Host the setup screen offscreen over a fixture catalog with `collectionCount`
     /// collections and return every identified control with its frame in the window.
     private func probeSetup(size: CGSize, collectionCount: Int) async throws -> [String: CGRect] {
+        try await probe(size: size, collectionCount: collectionCount, startRound: false, targets: 1)
+    }
+
+    /// The RUNNING screen, measured the same way. Added with the "file into any collection"
+    /// change (2026-08): that change puts a NEW button row and a tappable card on a screen this
+    /// file had never measured, and all three of this game's shipped defects were macOS layout
+    /// — on a platform where XCUITest cannot run headlessly, so nothing else would catch a
+    /// repeat. `targets: 0` drives the no-targets mode, where `puzzle-file` is the ONLY scoring
+    /// control and therefore the one that absolutely must be on screen.
+    private func probeRunning(size: CGSize, collectionCount: Int,
+                              targets: Int) async throws -> [String: CGRect] {
+        try await probe(size: size, collectionCount: collectionCount, startRound: true, targets: targets)
+    }
+
+    private func probe(size: CGSize, collectionCount: Int,
+                       startRound: Bool, targets: Int) async throws -> [String: CGRect] {
         let app = AppModel(loader: TestData.StubLoader())
         await app.loadIfNeeded()
         let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!,
@@ -65,7 +81,19 @@ final class PuzzleMacLayoutTests: XCTestCase {
             scoreboard: scoreboard,
             decisions: PuzzleDecisionStore(fileURL: tempURL("dec")),
             defaults: UserDefaults(suiteName: "test.maclayout.\(UUID().uuidString)")!)
+        if startRound {
+            var settings = engine.settings
+            settings.targetCollectionIds = collections.playlists.prefix(targets).map(\.id)
+            engine.updateSettings(settings)
+            engine.countdownEnabled = false
+            engine.rng = PRNG.seededRng("mac-layout")
+            await engine.startRound()
+            XCTAssertEqual(engine.phase, .running, "the probe needs a live round to measure")
+        }
 
+        // `AppModel` is injected too: the running screen presents `AddToCollectionView`, which
+        // requires it NON-optionally from the environment — a probe that reaches the running
+        // phase without it traps the moment the sheet is built.
         let view = NavigationStack {
             CollectorsPuzzleView(path: .constant(NavigationPath()))
         }
@@ -73,6 +101,7 @@ final class PuzzleMacLayoutTests: XCTestCase {
         .environment(collections)
         .environment(scoreboard)
         .environment(sequencer)
+        .environment(app)
 
         let host = NSHostingView(rootView: view)
         host.frame = CGRect(origin: .zero, size: size)
@@ -157,6 +186,56 @@ final class PuzzleMacLayoutTests: XCTestCase {
         let start = try frame(probes, "puzzle-start")
         XCTAssertTrue(CGRect(origin: .zero, size: size).contains(start),
                       "Start is outside the narrow \(size) window: \(start)")
+    }
+
+    // MARK: - The RUNNING screen (never measured before the "file into any collection" change)
+
+    /// With NO targets, `puzzle-file` is the ONLY way to score a point. If it renders
+    /// off-screen or zero-sized on macOS the game is unplayable in exactly the way the last
+    /// three defects were — and no iOS test and no XCUITest can see it.
+    func testRunningControlsAreOnScreenWithNoTargets() async throws {
+        let size = CGSize(width: 900, height: 700)
+        let probes = try await probeRunning(size: size, collectionCount: 6, targets: 0)
+        let window = CGRect(origin: .zero, size: size)
+        for id in ["puzzle-timer", "puzzle-score", "puzzle-current", "puzzle-file",
+                   "puzzle-skip", "puzzle-end"] {
+            let f = try frame(probes, id)
+            XCTAssertFalse(f.isEmpty, "\(id) has an EMPTY frame — it draws nothing: \(f)")
+            XCTAssertTrue(window.contains(f), "\(id) is outside the \(size) window: \(f)")
+        }
+        XCTAssertNil(probes["puzzle-assign-0"], "no targets ⇒ no one-tap assign buttons")
+        let file = try frame(probes, "puzzle-file")
+        XCTAssertLessThanOrEqual(file.width, size.width,
+                                 "the File-into button is wider than the window: \(file)")
+        XCTAssertGreaterThanOrEqual(file.height, 30, "…and it is a real tap target: \(file)")
+    }
+
+    /// With three targets the row is at its widest — three assign buttons PLUS the "Other…"
+    /// escape hatch. `ViewThatFits` has to fall back to the vertical stack rather than let a
+    /// button run off the edge.
+    func testRunningControlsAreOnScreenWithThreeTargetsPlusTheEscapeHatch() async throws {
+        let size = CGSize(width: 900, height: 700)
+        let probes = try await probeRunning(size: size, collectionCount: 6, targets: 3)
+        let window = CGRect(origin: .zero, size: size)
+        for id in ["puzzle-current", "puzzle-assign-0", "puzzle-assign-1", "puzzle-assign-2",
+                   "puzzle-file", "puzzle-skip", "puzzle-end"] {
+            let f = try frame(probes, id)
+            XCTAssertFalse(f.isEmpty, "\(id) has an EMPTY frame: \(f)")
+            XCTAssertTrue(window.contains(f), "\(id) is outside the \(size) window: \(f)")
+        }
+    }
+
+    /// …and in a narrow window, where the horizontal button row cannot possibly fit.
+    func testRunningControlsAreOnScreenInANarrowWindow() async throws {
+        let size = CGSize(width: 520, height: 700)
+        let probes = try await probeRunning(size: size, collectionCount: 6, targets: 2)
+        let window = CGRect(origin: .zero, size: size)
+        for id in ["puzzle-current", "puzzle-assign-0", "puzzle-assign-1", "puzzle-file",
+                   "puzzle-skip", "puzzle-end"] {
+            let f = try frame(probes, id)
+            XCTAssertFalse(f.isEmpty, "\(id) has an EMPTY frame in a narrow window: \(f)")
+            XCTAssertTrue(window.contains(f), "\(id) is outside the narrow \(size) window: \(f)")
+        }
     }
 }
 #endif

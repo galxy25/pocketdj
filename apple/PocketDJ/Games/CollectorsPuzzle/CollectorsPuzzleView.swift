@@ -16,11 +16,18 @@ struct CollectorsPuzzleView: View {
     /// Editable working copy — pushed to the engine (persisted) on every change.
     @State private var draft = PuzzleSettings()
     @State private var draftLoaded = false
-    @State private var poolCount: Int?
+    @State private var poolStats: PuzzleSampler.PoolStats?
     @State private var countTask: Task<Void, Never>?
     @State private var showReplaceConfirm = false
     @State private var showNewPocket = false
     @State private var newPocketName = ""
+    /// Non-nil ⇒ the Add-to picker is up for THIS song (change 3: tap the card / "File into…"
+    /// to file it into ANY collection, not just a preselected target). Carrying the SONG (not
+    /// a Bool) means a mid-sheet drift or top-up can never make the sheet file the wrong card.
+    /// Declared here in the body-level `@State` block on purpose — the only platform fence in
+    /// this file is inside `yearRow`, and a shared property that lands inside an `#if os(iOS)`
+    /// ships on iOS while the macOS/visionOS ARCHIVES fail at ship time.
+    @State private var filingSong: IndexSong?
 
     var body: some View {
         Group {
@@ -38,8 +45,23 @@ struct CollectorsPuzzleView: View {
                 summaryView
             }
         }
-        .navigationTitle("Collectors Puzzle")
+        .navigationTitle(GameKind.collectorsPuzzle.label)
         .background(Theme.bg)
+        // THE "file into ANY collection" PATH (change 3). Reuses the app's ONE add-to sheet
+        // verbatim — same fuzzy search field, same pockets/playlists/source lists — so the
+        // player can search and file the card anywhere, targets or no targets.
+        .sheet(item: $filingSong) { song in
+            AddToCollectionView(item: .song(song.id)) { target in
+                puzzle.endFiling(assignedTo: target)
+                filingSong = nil          // scored → dismiss → the round advances
+            }
+        }
+        // Cancel / swipe-down / Esc / Done: no point, no advance, the card stays, and the
+        // clock resumes with the credited pause. `endFiling` is idempotent, so the callback
+        // above (which sets `filingSong = nil` and therefore fires this too) is harmless.
+        .onChange(of: filingSong) { _, new in
+            if new == nil { puzzle.endFiling(assignedTo: nil) }
+        }
         .task {
             guard !draftLoaded else { return }
             draft = puzzle.settings
@@ -60,9 +82,9 @@ struct CollectorsPuzzleView: View {
         countTask = Task {
             try? await Task.sleep(for: .milliseconds(300))
             guard !Task.isCancelled else { return }
-            let n = await puzzle.poolCount()
+            let n = await puzzle.poolStats()
             guard !Task.isCancelled else { return }
-            poolCount = n
+            poolStats = n
         }
     }
 
@@ -122,10 +144,25 @@ struct CollectorsPuzzleView: View {
                     membershipList
                 }
             }
-            Section("Targets (1–3)") {
+            Section {
+                // Similarity only means something with a target to be similar TO.
+                if !draft.targetCollectionIds.isEmpty {
+                    Picker("Draw", selection: $draft.similarity) {
+                        Text("Anything").tag(PuzzleSettings.Similarity.off)
+                        Text("Similar").tag(PuzzleSettings.Similarity.on)
+                        Text("Very similar").tag(PuzzleSettings.Similarity.strict)
+                    }
+                    .accessibilityIdentifier("puzzle-similarity")
+                }
                 targetList
                 Button("New Pocket…") { showNewPocket = true }
                     .accessibilityIdentifier("puzzle-new-pocket")
+            } header: {
+                Text("Targets (optional, up to 3)")
+            } footer: {
+                Text(draft.targetCollectionIds.isEmpty
+                     ? "No targets: every card opens the full Add-to picker, so you can file it into any collection. Cards come from your whole catalog."
+                     : "One-tap buttons during the round — plus “Other…” for anything else. Combine with the “Not in” collection filter to hunt songs LIKE these crates that aren’t in them yet.")
             }
         }
         // macOS `Form` defaults to `FormStyle.columns`, a two-column grid whose CONTENT
@@ -190,9 +227,17 @@ struct CollectorsPuzzleView: View {
     }
 
     private var poolCountLabel: some View {
-        Text("\(poolCount.map(String.init) ?? "…") songs match")
+        Text(poolCountText)
             .font(.footnote).foregroundStyle(Theme.fgDim)
+            .lineLimit(1)
             .accessibilityIdentifier("puzzle-pool-count")
+    }
+
+    /// "N songs match", plus "· M similar" when the similarity ranker is actually shortlisting.
+    private var poolCountText: String {
+        guard let stats = poolStats else { return "… songs match" }
+        guard let similar = stats.similar else { return "\(stats.matched) songs match" }
+        return "\(stats.matched) match · \(similar) similar"
     }
 
     private var startButton: some View {
@@ -204,7 +249,10 @@ struct CollectorsPuzzleView: View {
             }
         }
         .buttonStyle(.borderedProminent)
-        .disabled(draft.targetCollectionIds.isEmpty || poolCount == 0)
+        // Targets are OPTIONAL — the ONLY thing a round needs is songs to show. With no
+        // targets every card is filed through the Add-to picker (`puzzle-file`), which is a
+        // complete scoring path on its own.
+        .disabled(poolStats?.matched == 0)
         .accessibilityIdentifier("puzzle-start")
     }
 
@@ -346,7 +394,7 @@ struct CollectorsPuzzleView: View {
                 ProgressView()
             }
 
-            assignButtons
+            actionButtons
                 .disabled(puzzle.current == nil)
 
             HStack(spacing: 16) {
@@ -365,34 +413,82 @@ struct CollectorsPuzzleView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
 
+    /// THE CARD IS A BUTTON (change 3): tapping the song opens the Add-to picker for it. The
+    /// `plus.circle` in the corner is not decoration — a bare tappable card is invisible UI.
     private func currentCard(_ song: IndexSong) -> some View {
-        VStack(spacing: 6) {
-            Text(song.name).font(.title2.weight(.semibold)).foregroundStyle(Theme.fg)
-                .multilineTextAlignment(.center)
-            Text(song.artist).font(.headline).foregroundStyle(Theme.fgDim)
-            HStack(spacing: 8) {
-                if let year = song.year {
-                    Text(String(year)).font(.caption)
-                        .padding(.horizontal, 8).padding(.vertical, 2)
-                        .background(Theme.bgOverlay, in: Capsule())
-                        .foregroundStyle(Theme.fgDim)
+        Button {
+            beginFiling()
+        } label: {
+            VStack(spacing: 6) {
+                HStack(alignment: .top) {
+                    Spacer(minLength: 0)
+                    Text(song.name).font(.title2.weight(.semibold)).foregroundStyle(Theme.fg)
+                        .multilineTextAlignment(.center)
+                    Spacer(minLength: 0)
+                }
+                .overlay(alignment: .topTrailing) {
+                    Image(systemName: "plus.circle").foregroundStyle(Theme.accent2)
+                }
+                Text(song.artist).font(.headline).foregroundStyle(Theme.fgDim)
+                HStack(spacing: 8) {
+                    if let year = song.year {
+                        Text(String(year)).font(.caption)
+                            .padding(.horizontal, 8).padding(.vertical, 2)
+                            .background(Theme.bgOverlay, in: Capsule())
+                            .foregroundStyle(Theme.fgDim)
+                    }
                 }
             }
+            .padding()
+            .frame(maxWidth: .infinity)
+            .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius))
+            .contentShape(Rectangle())
         }
-        .padding()
-        .frame(maxWidth: .infinity)
-        .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius))
+        .buttonStyle(.plain)
+        // `puzzle-current` stays on the OUTER element: `GamesUITests` matches it through
+        // `descendants(matching: .any)`, which survives the change from static text to button.
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityHint("Double tap to file this song into any collection")
         .accessibilityIdentifier("puzzle-current")
     }
 
-    /// 1–3 big assign buttons: full-width stack where narrow, one row where wide
-    /// (`ViewThatFits` — no os fences).
-    private var assignButtons: some View {
+    /// The scoring controls: 0–3 one-tap target buttons plus the ALWAYS-present "file into any
+    /// collection" button. Full-width stack where narrow, one row where wide (`ViewThatFits`
+    /// — no os fences).
+    private var actionButtons: some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 10) { assignButtonList }
-            VStack(spacing: 10) { assignButtonList }
+            HStack(spacing: 10) { assignButtonList; fileIntoButton }
+            VStack(spacing: 10) { assignButtonList; fileIntoButton }
         }
+    }
+
+    /// ALWAYS present — the "any collection" path. With no targets it is the ONLY scoring
+    /// control (and therefore the prominent one); with targets it sits beside them as the
+    /// escape hatch for a song that belongs somewhere else.
+    @ViewBuilder private var fileIntoButton: some View {
+        if puzzle.settings.targetCollectionIds.isEmpty {
+            Button { beginFiling() } label: { fileIntoLabel("File into…") }
+                .buttonStyle(.borderedProminent)
+                .accessibilityIdentifier("puzzle-file")
+        } else {
+            Button { beginFiling() } label: { fileIntoLabel("Other…") }
+                .buttonStyle(.bordered)
+                .accessibilityIdentifier("puzzle-file")
+        }
+    }
+
+    private func fileIntoLabel(_ text: String) -> some View {
+        Label(text, systemImage: "plus.rectangle.on.folder")
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, minHeight: 44)
+    }
+
+    /// Open the Add-to picker for the current card — engine first (it holds the round clock
+    /// and refuses when there is nothing to file), then present.
+    private func beginFiling() {
+        guard let song = puzzle.current, puzzle.beginFiling() else { return }
+        filingSong = song
     }
 
     private var assignButtonList: some View {
