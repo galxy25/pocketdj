@@ -64,4 +64,32 @@ final class SongTransferTests: XCTestCase {
         let ids = SongDrop.acceptableIds(items) { known.contains($0) || $0.hasPrefix("smp_") }
         XCTAssertEqual(ids, ["sng_2", "sng_1", "smp_7"])   // unknown dropped, dup deduped, order kept
     }
+
+    /// The payload crosses a process boundary (any app can author the UTI), so a junk id
+    /// beyond any real namespaced-id length never reaches the persisted document.
+    func testSongDropDropsOverlongIds() {
+        let long = "smp_" + String(repeating: "x", count: SongDrop.maxIdLength)
+        let ids = SongDrop.acceptableIds([SongTransfer(songIds: [long, "sng_1"], text: nil)]) { _ in true }
+        XCTAssertEqual(ids, ["sng_1"])
+    }
+
+    /// A hostile payload can't balloon the document either — total accepted ids are capped.
+    func testSongDropCapsTotalCount() {
+        let ids = (0..<(SongDrop.maxIds + 5)).map { "sng_\($0)" }
+        let out = SongDrop.acceptableIds([SongTransfer(songIds: ids, text: nil)]) { _ in true }
+        XCTAssertEqual(out.count, SongDrop.maxIds)
+        XCTAssertEqual(out.first, "sng_0")                 // order preserved; the TAIL is dropped
+    }
+
+    /// The paste decode boundary refuses oversized foreign blobs BEFORE JSONDecoder
+    /// materializes them; a legitimate payload still round-trips.
+    func testPasteboardDecodeEnforcesByteCap() throws {
+        let legit = try JSONEncoder().encode(SongTransfer(songIds: ["sng_1", "sng_2"], text: nil))
+        XCTAssertEqual(SongPasteboard.decode(legit)?.songIds, ["sng_1", "sng_2"])
+        // VALID JSON past the cap — only the byte gate (not a decode failure) can reject it.
+        let oversized = try JSONEncoder().encode(SongTransfer(
+            songIds: ["sng_1"], text: String(repeating: "x", count: SongPasteboard.maxPayloadBytes)))
+        XCTAssertGreaterThan(oversized.count, SongPasteboard.maxPayloadBytes)
+        XCTAssertNil(SongPasteboard.decode(oversized))
+    }
 }

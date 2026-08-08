@@ -51,12 +51,22 @@ enum SongPasteboard {
         ]]
         #endif
     }
+    /// Any process can author the UTI, so refuse to even DECODE a payload beyond what a
+    /// legitimate one can be: `SongDrop.maxIds` ids × a real id's size + the capped text
+    /// fallback is single-digit MB — a hostile multi-GB blob must fail before JSONDecoder
+    /// materializes it.
+    static let maxPayloadBytes = 8 * 1024 * 1024
     static func read() -> SongTransfer? {
         #if os(macOS)
         guard let data = NSPasteboard.general.data(forType: NSPasteboard.PasteboardType(utiString)) else { return nil }
         #else
         guard let data = UIPasteboard.general.data(forPasteboardType: utiString) else { return nil }
         #endif
+        return decode(data)
+    }
+    /// The byte-capped decode boundary, separated from the live pasteboard for unit tests.
+    static func decode(_ data: Data) -> SongTransfer? {
+        guard data.count <= maxPayloadBytes else { return nil }
         return try? JSONDecoder().decode(SongTransfer.self, from: data)
     }
     /// Cheap availability probe (does NOT read contents — no iPadOS paste banner).
@@ -70,10 +80,23 @@ enum SongPasteboard {
 }
 
 /// Drop/paste validation, pure for unit tests: keep ids the current catalog can resolve
-/// (or studio ids, which ride membership verbatim), order-preserving, deduped.
+/// (or studio ids the caller's lookup backs), order-preserving, deduped — and BOUNDED. The
+/// payload crosses a process boundary (any app can author the pasteboard type), so per-id
+/// length and total count are capped before anything touches the persisted document.
 enum SongDrop {
+    /// Above any real select-all (the full catalog is ~96k), below OOM/document-bloat scale.
+    static let maxIds = 100_000
+    /// Above any real namespaced id (sng_/amrec_/smp_… + uuid), below junk-string scale.
+    static let maxIdLength = 128
+
     static func acceptableIds(_ items: [SongTransfer], resolves: (String) -> Bool) -> [String] {
         var seen = Set<String>()
-        return items.flatMap(\.songIds).filter { seen.insert($0).inserted && resolves($0) }
+        var out: [String] = []
+        for id in items.lazy.flatMap(\.songIds) {
+            guard out.count < maxIds else { break }
+            guard id.count <= maxIdLength, seen.insert(id).inserted, resolves(id) else { continue }
+            out.append(id)
+        }
+        return out
     }
 }
