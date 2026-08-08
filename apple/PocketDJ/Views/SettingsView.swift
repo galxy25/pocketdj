@@ -701,7 +701,7 @@ struct SettingsView: View {
         } header: {
             Text("Recommendations")
         } footer: {
-            Text("When on, your listening history, favorites, collection updates, and Collector's Puzzle results are sent to PocketDJ to compute suggestions. When off, nothing leaves your device.")
+            Text("When on, your listening history, favorites, collection updates, and Gem Collector results are sent to PocketDJ to compute suggestions. When off, nothing leaves your device.")
         }
         .onChange(of: settings.recEngineEnabled) {
             settings.persist()

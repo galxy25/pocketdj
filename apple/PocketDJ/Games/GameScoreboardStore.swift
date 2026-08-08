@@ -2,13 +2,21 @@ import Foundation
 import Observation
 
 /// The games this scoreboard knows about. Raw values are persisted tokens — never rename.
+///
+/// DISPLAY NAMES MAY CHANGE FREELY — `label` is the only user-facing string. The game now
+/// SHOWN as "Gem Collector" keeps the persisted token `collectorsPuzzle`, because that
+/// rawValue is written into `pocketdj-game-scores.json` (CloudKit-synced, union-merged
+/// across devices), is stamped into already-uploaded `RecPuzzleEventWire.gameId`, and is
+/// what the a11y ids `games-best-<rawValue>` / `games-run-<rawValue>-<i>` are derived from.
+/// Renaming the case orphans every existing high score with no repair path — see
+/// `GameScoreboardStoreTests.testGameKindTokensAreFrozenWhileLabelsAreFree`.
 enum GameKind: String, Codable, CaseIterable {
     case collectorsPuzzle, musicWithFriends
 
     /// Human label for scoreboard headers.
     var label: String {
         switch self {
-        case .collectorsPuzzle: return "Collectors Puzzle"
+        case .collectorsPuzzle: return "Gem Collector"
         case .musicWithFriends: return "Music with Friends"
         }
     }
