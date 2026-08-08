@@ -33,10 +33,16 @@ final class PlaybackModeToggleUITests: XCTestCase {
         let app = makeApp(section: "Playlists")
         app.launch()
 
-        // Open the seeded playlist (PDJ_SEED_COLLECTIONS seeds one). Its row id is dynamic,
-        // so tap the first playlist row; fall back to skipping if the seed shape changed.
+        // Open the seeded playlist (PDJ_SEED_COLLECTIONS seeds one). Its row id is dynamic, so
+        // match on the PLAYLIST-ID prefix `playlist-pls_`, not the bare `playlist-`: the
+        // Yours|Shared mode picker is `playlist-mode-picker`, which also begins with "playlist-"
+        // and sits EARLIER in the tree, so `firstMatch` on the loose prefix resolved to the
+        // picker. The guard then passed, the tap went to the picker instead of the row, no
+        // detail was ever pushed, and the toolbar assertion below failed — which read as
+        // "playback-mode is missing on macOS" for months. (iOS never caught it: this test is
+        // macOS-only.)
         let firstPlaylist = app.descendants(matching: .any)
-            .matching(NSPredicate(format: "identifier BEGINSWITH 'playlist-'")).firstMatch
+            .matching(NSPredicate(format: "identifier BEGINSWITH 'playlist-pls_'")).firstMatch
         guard firstPlaylist.waitForExistence(timeout: 20) else {
             throw XCTSkip("seeded playlist row not found — seed shape changed.\n\(app.debugDescription)")
         }

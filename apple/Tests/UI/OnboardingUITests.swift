@@ -44,10 +44,12 @@ final class OnboardingUITests: XCTestCase {
 
         // Stage 3 — all three shared catalogs preselected; unticking ALL is now allowed (the
         // own-library-only public configuration) and the note explains what a zero-pick means.
-        let vinyl = app.switches["onboarding-source-vinyl"].firstMatch
+        // `toggleEl` not `switches[...]`: a SwiftUI `Toggle` is a Switch on iOS but a CheckBox on
+        // macOS, so a `.switches` query matches nothing there. Same control either way.
+        let vinyl = app.toggleEl("onboarding-source-vinyl")
         XCTAssertTrue(vinyl.waitForExistence(timeout: 5), "stage 3 should show source cards")
-        let digital = app.switches["onboarding-source-digital"].firstMatch
-        let streaming = app.switches["onboarding-source-streaming"].firstMatch
+        let digital = app.toggleEl("onboarding-source-digital")
+        let streaming = app.toggleEl("onboarding-source-streaming")
         vinyl.tap(); digital.tap(); streaming.tap()
         let note = app.any("onboarding-own-library-note")
         XCTAssertTrue(note.waitForExistence(timeout: 5))

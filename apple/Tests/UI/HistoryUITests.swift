@@ -81,15 +81,16 @@ final class HistoryUITests: XCTestCase {
         app.el("history-tab-collection").tap()
 
         // (2) The R3 row: its id resolves to NOTHING in this catalog, but the snapshots name it.
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "Running It Up"))
-                        .firstMatch.waitForExistence(timeout: 10),
+        // `textContaining` matches label OR value: macOS exposes these long headline `Text`s
+        // through the AX **value**, where iOS uses the label, so a bare `label CONTAINS`
+        // predicate finds nothing on the Mac even though the row is on screen.
+        XCTAssertTrue(app.textContaining("Running It Up").waitForExistence(timeout: 10),
                       "an add of a song this device never indexed must still name the song")
         XCTAssertTrue(app.staticTexts["Aria"].firstMatch.exists,
                       "the denormalized artist should render beneath the headline")
 
         // (3) The bare legacy row: no title anywhere → an honest placeholder AND the raw id.
-        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS %@", "an unknown item"))
-                        .firstMatch.exists,
+        XCTAssertTrue(app.textContaining("an unknown item").exists,
                       "a row with no resolvable item should say so rather than show a bare id as its title")
         XCTAssertTrue(app.staticTexts["sng_ghost_legacy"].firstMatch.exists,
                       "the raw id should still be shown (dimmed) so the row stays traceable")

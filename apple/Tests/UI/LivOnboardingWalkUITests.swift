@@ -38,25 +38,39 @@ final class LivOnboardingWalkUITests: XCTestCase {
     private func reveal(_ app: XCUIApplication, _ element: XCUIElement, tries: Int = 10) -> Bool {
         var n = 0
         while !element.exists && n < tries {
-            app.swipeUp()
+            scrollDown(app)
             n += 1
         }
         return element.exists
     }
 
+    /// `swipeUp()` on the Application element throws on macOS ("Unable to find hit point for
+    /// Application") — there is no touch surface to swipe. Scroll the ScrollView instead, the
+    /// same platform split SettingsUITests/StorageUITests already use.
+    private func scrollDown(_ app: XCUIApplication) {
+        #if os(macOS)
+        app.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: -160)
+        #else
+        app.swipeUp()
+        #endif
+    }
+
     private func scrollToTop(_ app: XCUIApplication, times: Int = 6) {
-        for _ in 0..<times { app.swipeDown() }
+        for _ in 0..<times {
+            #if os(macOS)
+            app.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: 160)
+            #else
+            app.swipeDown()
+            #endif
+        }
     }
 
     /// Drive a SwiftUI Form Toggle to `on`. A center `.tap()` sometimes lands on the
     /// label and misses the switch, so if the value doesn't flip, tap the trailing thumb.
+    /// State is read through `isToggledOn`, which normalizes iOS's "0"/"1" String against
+    /// the NSNumber a macOS CheckBox reports.
     private func setToggle(_ toggle: XCUIElement, on: Bool) {
-        let want = on ? "1" : "0"
-        guard (toggle.value as? String) != want else { return }
-        toggle.tap()
-        if (toggle.value as? String) != want {
-            toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
-        }
+        toggle.setToggled(on)
     }
 
     /// Pop the iPhone detail stack back to the home menu (row `key` hittable).
@@ -101,7 +115,9 @@ final class LivOnboardingWalkUITests: XCTestCase {
         app.el("onboarding-continue").tap()          // "Not now" in the sim
 
         // Stage 3 — shared catalogs. Keep vinyl + digital, drop the shared AM catalog.
-        let streaming = app.switches["onboarding-source-streaming"].firstMatch
+        // A SwiftUI `Toggle` is a Switch on iOS but a CheckBox on macOS — `toggleEl` resolves
+        // either (see XCUIHelpers' macOS idiom bridges).
+        let streaming = app.toggleEl("onboarding-source-streaming")
         XCTAssertTrue(streaming.waitForExistence(timeout: 5))
         snap("04-onboarding-sources-all-on")
         streaming.tap()
@@ -133,15 +149,15 @@ final class LivOnboardingWalkUITests: XCTestCase {
         snap("08-apple-music-syncing-collections")
 
         // Favorites — the one toggle to flip: two-way favorites sync ON.
-        let fav = app.switches["favorites-sync-gate"].firstMatch
+        let fav = app.toggleEl("favorites-sync-gate")
         XCTAssertTrue(reveal(app, fav))
         setToggle(fav, on: true)
         snap("09-favorites-two-way-on")
 
         // Private syncing — must be OFF for a fresh (public) install.
-        let priv = app.switches["am-private-sync"].firstMatch
+        let priv = app.toggleEl("am-private-sync")
         XCTAssertTrue(reveal(app, priv))
-        XCTAssertEqual(priv.value as? String, "0", "fresh install should be Public")
+        XCTAssertEqual(priv.isToggledOn, false, "fresh install should be Public")
         snap("10-private-syncing-off")
 
         // Credentials tab — the Apple Music "Log in" row. Leave and re-enter the pane
@@ -298,7 +314,9 @@ final class LivOnboardingWalkUITests: XCTestCase {
         app.launchEnvironment["PDJ_START_SECTION"] = "Playlists"
         app.launch()
 
-        let shared = app.buttons["Shared"].firstMatch
+        // Yours | Shared is a `.segmented` Picker → a RadioGroup of RadioButtons on macOS,
+        // Buttons on iOS. `segment(_:)` picks the right element type per platform.
+        let shared = app.segment("Shared")
         XCTAssertTrue(shared.waitForExistence(timeout: 60))
         shared.tap()
         _ = app.descendants(matching: .any).matching(
