@@ -2181,6 +2181,14 @@ const server = http.createServer(async (req, res) => {
           // iTunes trackExplicitness → tri-state: explicit / clean ('cleaned'/'notExplicit')
           // / null (unclassified). Drives the app's Discover edition badge + re-rank.
           explicit: t.trackExplicitness === 'explicit' ? true : (t.trackExplicitness ? false : null),
+          // ADDITIVE (old clients ignore unknown keys): the album's IDENTITY, not just its
+          // name. Without collectionId a ＋Add lands a catalog song with no album — no cover
+          // art, no "Album" row, and no album to tap. The name alone can't be looked up.
+          albumAppleMusicId: t.collectionId ? String(t.collectionId) : null,
+          albumArtworkUrl: t.artworkUrl100 || null,
+          trackNumber: t.trackNumber || null,
+          discNumber: t.discNumber || null,
+          year: t.releaseDate ? (Number(String(t.releaseDate).slice(0, 4)) || null) : null,
         };
       });
       return send(res, 200, { results });
@@ -2217,7 +2225,22 @@ const server = http.createServer(async (req, res) => {
         // interleaves disc 1 and disc 2 (both start at track 1). discNumber leads.
         .sort((a, b) => (a.discNumber || 0) - (b.discNumber || 0)
                      || (a.trackNumber || 0) - (b.trackNumber || 0));
-      return send(res, 200, { id, tracks });
+      // ADDITIVE: also hand back the COLLECTION row (the lookup's first result, previously
+      // dropped) in the same shape /search?entity=album emits. That lets the app build an
+      // album PREVIEW — cover, title, artist, year, deep link — from a collectionId alone,
+      // with no Apple Music subscription. Old clients ignore the extra key.
+      const c = (data.results || []).find((t) => t.wrapperType === 'collection' && t.collectionId);
+      const album = c ? {
+        appleMusicId: String(c.collectionId),
+        albumId: `amrec_album_${c.collectionId}`,
+        title: c.collectionName || '',
+        artist: c.artistName || '',
+        artworkUrl: c.artworkUrl100 || null,
+        trackCount: c.trackCount || tracks.length || null,
+        year: c.releaseDate ? (Number(String(c.releaseDate).slice(0, 4)) || null) : null,
+        url: c.collectionViewUrl || null,
+      } : null;
+      return send(res, 200, { id, album, tracks });
     } catch (e) {
       return send(res, 502, { error: `album-tracks failed: ${String(e?.message || e)}` });
     }

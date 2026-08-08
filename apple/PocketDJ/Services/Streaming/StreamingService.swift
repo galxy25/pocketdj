@@ -11,6 +11,17 @@ struct StreamingTrack: Identifiable, Hashable {
     let artist: String?
     let artworkURL: URL?
     let durationSeconds: Int?
+    /// The album this track belongs to, when the provider hands it over. OPTIONAL with an
+    /// inline default so every existing constructor keeps compiling — and so a provider that
+    /// only knows song-level metadata simply leaves them nil.
+    ///
+    /// WHY THEY EXIST: without an album identity a Discover ＋Add lands a catalog song with
+    /// `albumId == nil`, and SongDetailView then renders NO album hotlink, NO cover art and
+    /// NO "Album" row — the user's "tapping the album does nothing" report. These two fields
+    /// are the MusicKit half of that fix (the rip-server `/search` proxy is the other half).
+    var albumTitle: String? = nil
+    /// Apple Music ALBUM store id (the iTunes `collectionId`).
+    var albumStoreID: String? = nil
 }
 
 /// Catalog search seam, decoupled from `StreamingProvider` (which is about

@@ -5,7 +5,7 @@ import SwiftUI
 ///     hit shows the recognized metadata.
 ///   • APPLE MUSIC (`AppleMusicRecognitionSection`) — resolves the track against the user's
 ///     Apple Music library and offers "open album" (in-app when indexed, else the
-///     synthesized `RecognizedAlbumView`) or ＋ add-to-library-and-burn.
+///     synthesized `AlbumPreviewView`) or ＋ add-to-library-and-burn.
 ///
 /// Navigation is self-contained: the sheet owns its `NavigationStack`'s path and registers
 /// the destinations the two blocks push (`IndexAlbum`, `IndexSong`, `AppleMusicAlbumRef`),
@@ -35,19 +35,10 @@ struct ShazamResultSheet: View {
             }
             .background(Theme.bg.ignoresSafeArea())
             .navigationTitle("Heard it")
-            .navigationDestination(for: IndexAlbum.self) { AlbumDetailView(album: $0, path: $path) }
-            .navigationDestination(for: IndexSong.self) { SongDetailView(song: $0) }
-            .navigationDestination(for: AppleMusicAlbumRef.self) { RecognizedAlbumView(album: $0) }
-            // AlbumDetailView's artist hotlink pushes an `Artist`; register its destination
-            // on THIS stack too (navigationDestination doesn't cross the sheet boundary).
-            .navigationDestination(for: Artist.self) { ArtistDetailView(artistName: $0.name, path: $path) }
-            // AlbumDetailView's Play/Shuffle push a SetlistLaunch; register the setlist
-            // destinations on THIS stack too (navigationDestination doesn't cross the sheet
-            // boundary) so playing a deep-linked album from the sheet actually works.
-            .navigationDestination(for: SetlistLaunch.self) {
-                SetlistDetailView(setlistId: $0.setlistId, autoplay: $0.autoplay, path: $path)
-            }
-            .navigationDestination(for: Setlist.self) { SetlistDetailView(setlistId: $0.id, path: $path) }
+            // `navigationDestination` does NOT cross a sheet boundary, so this stack must
+            // register everything its content can push. It used to hand-maintain that list
+            // and drifted from RootView's; both now share the ONE registry.
+            .pocketDJDestinations(path: $path)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Done") { dismiss(); onDone() }

@@ -1261,4 +1261,22 @@ final class AppModel {
         }
         return appleMusicIdIndex[appleMusicId]
     }
+
+    /// The ALBUM twin of `songId(forAppleMusicId:)` — same revision-keyed memo, same
+    /// first-seen-wins rule. The album PREVIEW asks this before it renders: an album the user
+    /// already owns must offer "Open album" (pushing the real `IndexAlbum`), not a ＋ that
+    /// would add it twice. It is O(1) after the first call per catalog revision, which is why
+    /// the preview can ask from a `body` — unlike `AppleMusicRecognition.indexAlbum(matching:)`,
+    /// an O(catalog) normalized scan that must stay inside a `.task`.
+    @ObservationIgnored private var appleMusicAlbumIdIndex: [String: String] = [:]
+    @ObservationIgnored private var appleMusicAlbumIdIndexRevision = -1
+
+    func albumId(forAppleMusicId appleMusicId: String) -> String? {
+        if appleMusicAlbumIdIndexRevision != catalogRevision {
+            appleMusicAlbumIdIndex = Dictionary(albums.compactMap { a in a.appleMusicId.map { ($0, a.id) } },
+                                                uniquingKeysWith: { first, _ in first })
+            appleMusicAlbumIdIndexRevision = catalogRevision
+        }
+        return appleMusicAlbumIdIndex[appleMusicId]
+    }
 }

@@ -402,8 +402,21 @@ extension AppleMusicProvider: MusicLibraryContributor {
             req.limit = 1
             guard let album = try await req.response().items.first else { return [] }
             let detailed = try await album.with([.tracks])
-            return (detailed.tracks ?? []).map(Self.row(fromTrack:))
+            return (detailed.tracks ?? []).map { Self.row(fromTrack: $0, albumStoreID: albumStoreID) }
         } catch { return [] }
+    }
+
+    /// Album store id → catalog reference. Reuses `albumRef(from:)`, the same mapping the
+    /// recognizer flow builds its album deep-link from, so the PREVIEW screen and the
+    /// recognizer can never disagree about what an album is.
+    func album(storeID: String) async -> AppleMusicAlbumRef? {
+        guard canContribute, !storeID.isEmpty else { return nil }
+        do {
+            var req = MusicCatalogResourceRequest<MusicKit.Album>(matching: \.id, equalTo: MusicItemID(storeID))
+            req.limit = 1
+            guard let album = try await req.response().items.first else { return nil }
+            return Self.albumRef(from: album)
+        } catch { return nil }
     }
 
     // MARK: helpers
@@ -455,12 +468,13 @@ extension AppleMusicProvider: MusicLibraryContributor {
             url: a.url)
     }
 
-    private static func row(fromTrack t: Track) -> AppleMusicSongRow {
+    private static func row(fromTrack t: Track, albumStoreID: String? = nil) -> AppleMusicSongRow {
         AppleMusicSongRow(
             storeID: t.id.rawValue,
             title: t.title,
             artist: t.artistName,
             albumTitle: nil,
+            albumStoreID: albumStoreID,
             trackNumber: t.trackNumber,
             year: nil,
             durationSeconds: t.duration,

@@ -14,6 +14,12 @@ struct AppleMusicSongRow: Hashable {
     let title: String
     let artist: String
     let albumTitle: String?
+    /// Apple Music ALBUM store id (`Album.id.rawValue` / iTunes `collectionId`) when the
+    /// provider resolved the song's album relationship. `var` + inline default on purpose:
+    /// it keeps every existing constructor source-compatible while making the field REAL.
+    /// It replaced a hard-coded `nil` stub extension, which is why a Discover-added song
+    /// used to reach the catalog with no album at all.
+    var albumStoreID: String? = nil
     let trackNumber: Int?
     /// Release year when known (parsed from the release date).
     let year: Int?
@@ -67,7 +73,9 @@ enum AppleMusicCatalog {
             title: row.title,
             artist: row.artist,
             artworkURL: row.artworkURL,
-            durationSeconds: row.durationSeconds.map { Int($0.rounded()) })
+            durationSeconds: row.durationSeconds.map { Int($0.rounded()) },
+            albumTitle: row.albumTitle,
+            albumStoreID: row.albumStoreID)
     }
 
     // MARK: → IndexSong (built in memory by decoding a JSON object)
@@ -98,11 +106,4 @@ enum AppleMusicCatalog {
         else { return nil }
         return song
     }
-}
-
-// Album linkage is optional in the v1 contribution (we append songs, not full
-// albums). Kept as a computed nil so `indexSong` stays a pure function over the
-// row; when the provider later fetches album ids it can populate this.
-private extension AppleMusicSongRow {
-    var albumStoreID: String? { nil }
 }

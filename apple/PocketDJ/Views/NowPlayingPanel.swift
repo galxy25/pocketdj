@@ -42,6 +42,8 @@ struct NowPlayingPanel: View {
     /// the preference survives relaunches like the iOS collapse chevron's.
     @AppStorage("nowPlayingShowPlayed") private var showPlayed = false
     @State private var detailSong: IndexSong?
+    /// The song-detail sheet's own navigation stack (see the `.sheet` below).
+    @State private var detailPath = NavigationPath()
     /// Debounced, off-main search results (see the `.task(id:)` below) — the body
     /// must NEVER scan the ~100k-song catalog itself.
     @State private var results: SearchResults = .empty
@@ -137,8 +139,13 @@ struct NowPlayingPanel: View {
         // macOS get an always-visible ✕ overlaid top-left — the sheet's toolbar
         // isn't a reliable surface there, and Esc alone is power-user-only.
         .sheet(item: $detailSong) { song in
-            NavigationStack {
-                SongDetailView(song: song)
+            // The sheet owns its OWN stack + destinations, so the detail's artist/album
+            // hotlinks push IN PLACE. This used to be a bare `NavigationStack` with nothing
+            // registered — the hotlinks had to dismiss the sheet and route across stacks,
+            // which lost the push and landed the user on a blank screen.
+            NavigationStack(path: $detailPath) {
+                SongDetailView(song: song, path: $detailPath)
+                    .pocketDJDestinations(path: $detailPath)
                     .toolbar {
                         if !Self.detailUsesCloseOverlay {
                             ToolbarItem(placement: .navigation) {

@@ -32,6 +32,27 @@ final class DiscoverAddsStore {
         var artworkUrl: String?
         var durationMs: Int?
         var addedAtMs: Double
+
+        // ── Album identity + richer metadata ────────────────────────────────────────
+        // HARD RULE (the schema-wipe lesson below): every key here is OPTIONAL and APPENDED,
+        // and `Document.schemaVersion` stays 1. Swift's synthesized Decodable ignores default
+        // values and THROWS on a missing non-optional key — one required key would silently
+        // wipe every Discover add already on disk, and this document is CloudKit-synced, so
+        // an OLD peer's copy (which has none of these keys) must round-trip unharmed.
+        /// The PROVISIONAL catalog album id (`amrec_album_<collectionId>`) this song belongs
+        /// to — set ONLY by an album-scope add, which also records that album. A song-scope
+        /// add leaves it nil on purpose: minting a fake one-track album row would put a
+        /// dangling album reference in the catalog. Its album screen is the PREVIEW instead.
+        var albumId: String?
+        /// The album's Apple Music id (iTunes `collectionId`) — always carried when known.
+        /// This is what makes the album TAPPABLE for a song-scope add.
+        var albumAppleMusicId: String?
+        var albumArtworkUrl: String?
+        var trackNumber: Int?
+        var discNumber: Int?
+        var year: Int?
+        var genre: String?
+        var explicit: Bool?
         var id: String { songId }
     }
 
@@ -50,6 +71,11 @@ final class DiscoverAddsStore {
         var artworkUrl: String?
         var year: Int?
         var addedAtMs: Double
+        /// Same optional-and-appended rule as `Entry` — see the note there.
+        var trackCount: Int?
+        var genre: String?
+        /// `music.apple.com/...` deep link (iTunes `collectionViewUrl`).
+        var url: String?
         var id: String { albumId }
     }
 
@@ -63,7 +89,13 @@ final class DiscoverAddsStore {
         var albums: [AlbumEntry]? = nil
     }
 
-    private(set) var entries: [Entry] = []
+    private(set) var entries: [Entry] = [] {
+        // Every mutation bumps a revision the `entry(forSongId:)` index keys on. Counting
+        // entries would NOT be safe: a cloud pull can replace one entry with another and
+        // leave the count identical, which would serve a stale row forever.
+        didSet { entriesRevision &+= 1 }
+    }
+    @ObservationIgnored private var entriesRevision = 0
     private(set) var albums: [AlbumEntry] = []
     @ObservationIgnored private let fileURL: URL
     /// The on-disk document CloudSyncService syncs (same-URL doctrine as the other stores).
@@ -124,11 +156,17 @@ final class DiscoverAddsStore {
 
     /// Record an add (idempotent per songId) and hand the injected catalog row to the app.
     func add(songId: String, appleMusicId: String, title: String, artist: String,
-             album: String? = nil, artworkUrl: String? = nil, durationMs: Int? = nil) {
+             album: String? = nil, artworkUrl: String? = nil, durationMs: Int? = nil,
+             albumId: String? = nil, albumAppleMusicId: String? = nil,
+             albumArtworkUrl: String? = nil, trackNumber: Int? = nil, discNumber: Int? = nil,
+             year: Int? = nil, genre: String? = nil, explicit: Bool? = nil) {
         guard !entries.contains(where: { $0.songId == songId }) else { return }
         let entry = Entry(songId: songId, appleMusicId: appleMusicId, title: title, artist: artist,
                           album: album, artworkUrl: artworkUrl, durationMs: durationMs,
-                          addedAtMs: Date().timeIntervalSince1970 * 1000)
+                          addedAtMs: Date().timeIntervalSince1970 * 1000,
+                          albumId: albumId, albumAppleMusicId: albumAppleMusicId,
+                          albumArtworkUrl: albumArtworkUrl, trackNumber: trackNumber,
+                          discNumber: discNumber, year: year, genre: genre, explicit: explicit)
         entries.append(entry)
         save()
         onAdded?(Self.indexSong(entry))
@@ -139,11 +177,13 @@ final class DiscoverAddsStore {
     /// the app. The per-track songs are recorded separately via `add(songId:…)` so they are
     /// individually browsable/rippable; this row is what makes the ALBUM itself a citizen.
     func addAlbum(albumId: String, appleMusicId: String, title: String, artist: String,
-                  trackIds: [String]? = nil, artworkUrl: String? = nil, year: Int? = nil) {
+                  trackIds: [String]? = nil, artworkUrl: String? = nil, year: Int? = nil,
+                  trackCount: Int? = nil, genre: String? = nil, url: String? = nil) {
         guard !albums.contains(where: { $0.albumId == albumId }) else { return }
         let entry = AlbumEntry(albumId: albumId, appleMusicId: appleMusicId, title: title,
                                artist: artist, trackIds: trackIds, artworkUrl: artworkUrl,
-                               year: year, addedAtMs: Date().timeIntervalSince1970 * 1000)
+                               year: year, addedAtMs: Date().timeIntervalSince1970 * 1000,
+                               trackCount: trackCount, genre: genre, url: url)
         albums.append(entry)
         save()
         onAlbumAdded?(Self.indexAlbum(entry))
@@ -158,6 +198,7 @@ final class DiscoverAddsStore {
     /// (only tracks whose rip was accepted arrive here — no dead rows).
     func addAlbumBatch(albumId: String, appleMusicId: String, title: String, artist: String,
                        trackIds: [String]? = nil, artworkUrl: String? = nil, year: Int? = nil,
+                       trackCount: Int? = nil, genre: String? = nil, url: String? = nil,
                        songs newSongs: [Entry]) {
         let existing = Set(entries.map(\.songId))
         let freshSongs = newSongs.filter { !existing.contains($0.songId) }
@@ -168,7 +209,8 @@ final class DiscoverAddsStore {
         if albumIsNew {
             let e = AlbumEntry(albumId: albumId, appleMusicId: appleMusicId, title: title,
                                artist: artist, trackIds: trackIds, artworkUrl: artworkUrl,
-                               year: year, addedAtMs: Date().timeIntervalSince1970 * 1000)
+                               year: year, addedAtMs: Date().timeIntervalSince1970 * 1000,
+                               trackCount: trackCount, genre: genre, url: url)
             albums.append(e)
             albumEntry = e
         }
@@ -235,13 +277,46 @@ final class DiscoverAddsStore {
 
     /// Entry → catalog row. `IndexSong` is Decodable-only, so this builds via JSON
     /// (the `IndexSong.minimal` idiom) with the fields Discover knows.
+    /// Every field the entry actually knows is emitted here — dropping them is what left a
+    /// Discover-added song with no album, no year, no track number and no "added" date on its
+    /// detail screen (modelled on `ImportedSongsStore.indexSong`, the sibling store that has
+    /// always stamped `albumId`). `albumId` is emitted ONLY when it's set, i.e. only for an
+    /// album-scope add whose provisional album row exists — never a dangling reference.
     nonisolated static func indexSong(_ e: Entry) -> IndexSong {
         var obj: [String: Any] = ["id": e.songId, "name": e.title, "artist": e.artist,
-                                  "appleMusicId": e.appleMusicId]
+                                  "appleMusicId": e.appleMusicId,
+                                  "dateAdded": e.addedAtMs]
         if let ms = e.durationMs { obj["length"] = ms }
+        if let v = e.albumId { obj["albumId"] = v }
+        if let v = e.trackNumber { obj["trackNumber"] = v }
+        if let v = e.year { obj["year"] = v }
+        if let v = e.explicit { obj["explicit"] = v }
         let data = try! JSONSerialization.data(withJSONObject: obj)
         return try! JSONDecoder().decode(IndexSong.self, from: data)
     }
+
+    /// The provisional entry backing a catalog song id, if any — the seam SongDetailView uses
+    /// to recover a Discover song's ALBUM (name + Apple Music id + art) when the album itself
+    /// isn't a catalog citizen.
+    ///
+    /// O(1) through a lazily-rebuilt index. SongDetailView asks several times per render
+    /// (header line, artwork fallback, metadata rows), and a linear scan per ask over a
+    /// heavy adds list is exactly the shape of derivation-in-`body` that has cost this app
+    /// frames before. The index is `@ObservationIgnored` — it is a cache, not state, and
+    /// observing it would invalidate the asker for no change.
+    @ObservationIgnored private var entryIndex: [String: Entry] = [:]
+    @ObservationIgnored private var entryIndexRevision = -1
+
+    func entry(forSongId id: String) -> Entry? {
+        if entryIndexRevision != entriesRevision {
+            entryIndex = Dictionary(entries.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
+            entryIndexRevision = entriesRevision
+        }
+        return entryIndex[id]
+    }
+
+    /// The provisional ALBUM entry for an Apple Music album id, if this device added it.
+    func album(forAppleMusicId id: String) -> AlbumEntry? { albums.first { $0.appleMusicId == id } }
 
     /// Album entry → catalog album (`IndexAlbum` is Decodable-only — the same decode idiom;
     /// `coverArt` takes the absolute artwork URL, `appleMusicId` carries the supersede join key).
@@ -250,6 +325,7 @@ final class DiscoverAddsStore {
                                   "appleMusicId": e.appleMusicId, "trackList": e.trackIds ?? []]
         if let v = e.artworkUrl { obj["coverArt"] = v }
         if let v = e.year { obj["year"] = v }
+        if let v = e.genre { obj["genre"] = v }
         let data = try! JSONSerialization.data(withJSONObject: obj)
         return try! JSONDecoder().decode(IndexAlbum.self, from: data)
     }

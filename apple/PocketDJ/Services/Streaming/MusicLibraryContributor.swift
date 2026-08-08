@@ -83,6 +83,18 @@ protocol MusicLibraryContributor: AnyObject {
     /// The album's ordered tracklist, for the synthesized "album not in your index"
     /// screen. Best-effort: returns [] on any failure.
     func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow]
+
+    /// Resolve an ALBUM store id to its catalog reference (title/artist/year/art/URL) —
+    /// the "I only have an id" entry point for the album PREVIEW screen, where a Discover
+    /// song knows its `albumAppleMusicId` but nothing else about the album. Defaulted to
+    /// nil in the extension below so a contributor that can't do it needs no code.
+    func album(storeID: String) async -> AppleMusicAlbumRef?
+}
+
+extension MusicLibraryContributor {
+    /// Default: no id → album lookup. `AppleMusicProvider` overrides it with a real
+    /// `MusicCatalogResourceRequest<Album>`.
+    func album(storeID: String) async -> AppleMusicAlbumRef? { nil }
 }
 
 extension Sequence where Element == any StreamingProvider {
