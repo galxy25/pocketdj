@@ -252,6 +252,16 @@ extension XCUIElement {
         }
     }
 
+    /// The element's visible text, wherever the platform put it. A SwiftUI `Text` exposes its
+    /// string through `label` on iOS; on macOS a wrapped/multi-line one exposes it through
+    /// `value` instead and `label` comes back without it (measured on the onboarding
+    /// own-library note and the History activity headline). Concatenating both is correct
+    /// everywhere and avoids having to know which case a given row is.
+    var visibleText: String {
+        let v = (value as? String) ?? ""
+        return v.isEmpty ? label : label + "\n" + v
+    }
+
     /// Open this element's `contextMenu`. macOS opens it on a RIGHT-CLICK; a long press does
     /// not produce one there. iOS/iPadOS use the long press.
     func openContextMenu() {

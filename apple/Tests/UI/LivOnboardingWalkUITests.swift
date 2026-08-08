@@ -163,7 +163,10 @@ final class LivOnboardingWalkUITests: XCTestCase {
         // Credentials tab — the Apple Music "Log in" row. Leave and re-enter the pane
         // so the segmented tab picker is guaranteed on-screen (the Form is long and
         // lazy; scrolling back up is flaky).
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        // `goBack()` not `navigationBars.buttons[0]`: MEASURED on macOS — "Failed to tap Button
+        // (Element at index 0): No matches found for Descendants matching type NavigationBar".
+        // navigationBars is a UIKit concept and does not exist there.
+        XCTAssertTrue(app.goBack(), "the Apple Music pane must have a back control")
         XCTAssertTrue(app.el("settings-add-source").waitForExistence(timeout: 10))  // root settled
         XCTAssertTrue(amRow.waitForExistence(timeout: 5))
         amRow.tap()
@@ -186,8 +189,8 @@ final class LivOnboardingWalkUITests: XCTestCase {
         XCTAssertTrue(login.waitForExistence(timeout: 10))
         snap("11-apple-music-credentials")
 
-        // Back to Settings root → Online search keys.
-        app.navigationBars.buttons.element(boundBy: 0).tap()
+        // Back to Settings root → Online search keys. Same reason as above.
+        XCTAssertTrue(app.goBack(), "back out of the Apple Music pane")
         let akid = app.any("settings-search-akid")
         XCTAssertTrue(reveal(app, akid))
         type(akid, guideAKID)
