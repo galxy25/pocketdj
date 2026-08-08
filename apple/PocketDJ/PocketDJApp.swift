@@ -479,12 +479,25 @@ struct PocketDJApp: App {
             }
             playHistory.record(songId: songId, title: title, artist: artist, context: context)
         }
-        rips.onPlay = { [weak playStats] in playStats?.notePlayed($0); recordNonMixHistory($0) }
+        // NORMALIZE to the base song id: a variant play via the rip path fires this hook with
+        // the VARIANT id ("sng_…_clean") while the coordinator's hook fires the base — two
+        // DIFFERENT ids, so the 30s per-id re-count window can't dedupe them and history/stats
+        // gain ghost rows keyed to an id no catalog knows. Both hooks converging on the base id
+        // restores the window's dedup AND keys the play to the real song (a plain id is a no-op).
+        rips.onPlay = { [weak playStats] in
+            let id = SongVariant.baseId($0)
+            playStats?.notePlayed(id); recordNonMixHistory(id)
+        }
         // A download asked for before the song had a file: the rip has now landed, so finish the
         // burn. Fires without the user returning to the row — that is what makes ⤓ on an unripped
         // track a real request rather than an error message.
         rips.onRipReady = { [weak burns] _ in Task { await burns?.drainPendingAfterRip() } }
-        coordinator.onPlay = { [weak playStats] in playStats?.notePlayed($0); recordNonMixHistory($0) }
+        coordinator.onPlay = { [weak playStats] in
+            // Defense in depth: the coordinator already reports statsId (the base id) for its
+            // own variant plays — normalize anyway so no future call path can mint a ghost id.
+            let id = SongVariant.baseId($0)
+            playStats?.notePlayed(id); recordNonMixHistory(id)
+        }
         mix.onSongPlayed = { [weak playStats, weak playHistory, weak mix, weak mixSessions, weak app] songId in
             playStats?.notePlayed(songId)
             guard let playHistory else { return }

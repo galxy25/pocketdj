@@ -185,6 +185,12 @@ final class RipsStore {
     /// Fired when playback moves to a DIFFERENT song (every `nowPlaying` transition —
     /// single rows, set lists, burned local files, rip streaming). Wired at app init to
     /// `PlayStatsStore.notePlayed` (the storage manager's LRP prune signal); nil in tests.
+    /// STATS IDENTITY: always fires the BASE song id — a variant play ("sng_…_clean")
+    /// resolves audio under the variant id but the play belongs to the real song, and a
+    /// variant-keyed record would be a ghost row no catalog can title (plus a stats
+    /// double-count: the coordinator's own hook fires the base id, and the 30s per-id
+    /// re-count window can only dedupe SAME ids). `nowPlaying.songId` itself keeps the
+    /// variant id — the ownership guards depend on it.
     @ObservationIgnored var onPlay: ((String) -> Void)?
 
     /// A rip reached READY and its file is now in the manifest. Wired at app init to
@@ -571,7 +577,7 @@ final class RipsStore {
             waveform: live ? nil : Self.waveformURL(for: entry, ripsBase: ripsBase))
         let prev = nowPlaying?.songId
         nowPlaying = np
-        if np.songId != prev { onPlay?(np.songId) }
+        if np.songId != prev { onPlay?(SongVariant.baseId(np.songId)) }
         return np
     }
 
@@ -618,7 +624,7 @@ final class RipsStore {
     func setNowPlaying(_ n: NowPlaying?) {
         let prev = nowPlaying?.songId
         nowPlaying = n
-        if let id = n?.songId, id != prev { onPlay?(id) }
+        if let id = n?.songId, id != prev { onPlay?(SongVariant.baseId(id)) }
     }
 
     // MARK: Analog cut export (burn-only)
