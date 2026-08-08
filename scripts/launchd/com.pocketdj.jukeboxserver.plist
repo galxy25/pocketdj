@@ -34,6 +34,20 @@
     <string>/Users/deepspacenine</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/Users/deepspacenine/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <!-- APNs for Music with Friends. Token-based (.p8) auth: key 6XU68NMCHJ is Team Scoped
+         (All Topics) and registered for Sandbox & Production, so this one key serves both.
+         APNS_ENV must be `production` because TestFlight builds talk to production APNs;
+         an Xcode debug build uses sandbox, so test those against a hand-run broker on
+         another port rather than flipping this instance. With the key absent the server
+         degrades to polling — pushes simply don't fire. -->
+    <key>APNS_KEY_FILE</key>
+    <string>/Users/deepspacenine/.config/pocketdj/AuthKey_6XU68NMCHJ.p8</string>
+    <key>APNS_KEY_ID</key>
+    <string>6XU68NMCHJ</string>
+    <key>APNS_TEAM_ID</key>
+    <string>EC27UF79GL</string>
+    <key>APNS_ENV</key>
+    <string>production</string>
   </dict>
   <key>WorkingDirectory</key>
   <string>/Users/deepspacenine/forges/levi/pocketdj</string>
