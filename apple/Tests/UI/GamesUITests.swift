@@ -5,8 +5,16 @@ import XCTest
 /// catalog + isolated stores throughout; `PDJ_START_SECTION=Games` lands directly on
 /// the tab (the rawValue "Games"). iOS-sim only per house doctrine — macOS XCUITest
 /// can't see windows headlessly; its coverage is the unit suites.
+///
+/// That doctrine is enforced by the `#if !os(macOS)` fence below (the same form as
+/// MultiSelectUITests / CleanOnlyPlaylistUITests / ExplicitPreferenceUITests), not just
+/// stated in prose: the flows here `swipeUp()` the lazy puzzle setup Form and `typeText`
+/// into the MwF theme field, and on macOS neither resolves a hit point on the Application
+/// element, so the class compiled away to nothing but still FAILED the macOS run.
 final class GamesUITests: XCTestCase {
     override func setUp() { continueAfterFailure = false }
+
+    #if !os(macOS)
 
     private func launch(extra: [String: String] = [:]) -> XCUIApplication {
         let app = XCUIApplication()
@@ -96,4 +104,6 @@ final class GamesUITests: XCTestCase {
         let value = (name.value as? String) ?? ""
         XCTAssertFalse(value.isEmpty, "the display name prefills from the profile")
     }
+
+    #endif
 }

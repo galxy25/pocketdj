@@ -153,15 +153,32 @@ final class GameScoreboardStore {
     }
 
     /// UI-test seam: `PDJ_SEED_GAMES` seeds 3 puzzle runs (5/9/7) + 1 MwF run (4) so the
-    /// scoreboard renders populated deterministically. No-op when runs already exist.
+    /// scoreboard renders populated deterministically.
+    ///
+    /// Unlike the UserDefaults-backed fixture seams — which the isolated launch domain wipes
+    /// for free — this scoreboard persists to a FILE, so "already has runs" is a state that can
+    /// arrive from OUTSIDE this launch: a CloudSync pull landing on `syncFileURL` before the
+    /// seed runs, a demo or on-device build pointed at `defaultURL()` (no `PDJ_USE_FIXTURE`, so
+    /// no freshly-cleared container), or a run recorded earlier in the same session. A bare
+    /// `runs.isEmpty` gate lets any of those SILENTLY veto the seed, and the scoreboard then
+    /// renders a stale best — or, to a UI test looking for `games-best-collectorsPuzzle`, no
+    /// such element at all. Under `PDJ_USE_FIXTURE` the seed is therefore AUTHORITATIVE: it
+    /// replaces whatever it finds, persisted document included. Outside the fixture flag it
+    /// keeps the polite no-op so a demo seed never eats a real player's history.
     func seedFixtureIfRequested() {
         guard ProcessInfo.processInfo.environment["PDJ_SEED_GAMES"] != nil else { return }
-        seedFixture()
+        seedFixture(replaceExisting: ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil)
     }
 
-    /// The env-free seed body (unit-testable; the env gate lives above).
-    func seedFixture() {
-        guard runs.isEmpty else { return }
+    /// The env-free seed body (unit-testable; the env gate lives above). `replaceExisting`
+    /// clears the log — and the saved document behind it — first, so the seeded scoreboard is
+    /// byte-identical no matter what a previous launch left on disk.
+    func seedFixture(replaceExisting: Bool = false) {
+        if replaceExisting {
+            if !runs.isEmpty { clear() }
+        } else {
+            guard runs.isEmpty else { return }
+        }
         let now = Date().timeIntervalSince1970 * 1000
         let hour = 3600.0 * 1000
         record(game: .collectorsPuzzle, score: 5, settingsSummary: "2:00 · 1 target", at: now - 30 * hour)

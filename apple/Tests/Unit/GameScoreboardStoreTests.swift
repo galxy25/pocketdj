@@ -95,6 +95,44 @@ final class GameScoreboardStoreTests: XCTestCase {
         XCTAssertEqual(store.runs.count, 4, "seed is a no-op when runs already exist")
     }
 
+    /// REGRESSION — the scoreboard is the one fixture seam backed by a FILE rather than the
+    /// isolated launch UserDefaults, so a run saved by an EARLIER launch (or landed by a
+    /// CloudSync pull on `syncFileURL`) is still there when the seed runs, and the old bare
+    /// `runs.isEmpty` gate let it silently veto the seed: the scoreboard rendered the stale
+    /// best, and a UI test hunting `games-best-collectorsPuzzle` found no element at all.
+    /// Under the fixture flag the seed is authoritative — it replaces the log AND the document.
+    func testSeedReplacesPreExistingSavedRunUnderFixture() {
+        let url = tempURL()
+        let earlierLaunch = GameScoreboardStore(fileURL: url)
+        earlierLaunch.record(game: .collectorsPuzzle, score: 42, settingsSummary: "yesterday's run")
+
+        // A fresh store over the SAME file is exactly what the next launch constructs.
+        let store = GameScoreboardStore(fileURL: url)
+        XCTAssertEqual(store.runs.count, 1, "precondition: the saved run survives into this launch")
+        XCTAssertEqual(store.bestScore(.collectorsPuzzle), 42)
+
+        store.seedFixture(replaceExisting: true)
+        XCTAssertEqual(store.runs.count, 4, "the pre-existing run no longer suppresses the seed")
+        XCTAssertEqual(store.bestScore(.collectorsPuzzle), 9, "deterministic seeded best — not the stale 42")
+        XCTAssertEqual(store.bestScore(.musicWithFriends), 4)
+        XCTAssertEqual(store.recentRuns(.collectorsPuzzle, limit: 9).count, 3, "only the seeded rows remain")
+
+        // …and the stale run does not resurrect from disk on the launch after that.
+        let reloaded = GameScoreboardStore(fileURL: url)
+        XCTAssertEqual(reloaded.runs.count, 4, "the replace persisted — the doc holds the seed alone")
+        XCTAssertEqual(reloaded.bestScore(.collectorsPuzzle), 9)
+    }
+
+    /// The replace stays OPT-IN: outside the isolated fixture container (a demo build seeding
+    /// against `defaultURL()`) the seed must never eat a real player's history.
+    func testSeedWithoutReplaceStillYieldsToExistingRuns() {
+        let store = GameScoreboardStore(fileURL: tempURL())
+        store.record(game: .collectorsPuzzle, score: 42, settingsSummary: "a real run")
+        store.seedFixture()
+        XCTAssertEqual(store.runs.count, 1, "default seed still defers to existing runs")
+        XCTAssertEqual(store.bestScore(.collectorsPuzzle), 42)
+    }
+
     /// The lockstep invariant AccountDeletionService documents: every games doc registered
     /// with CloudSyncService in PocketDJApp.init must be in `cloudDocKeys`, or its cloud
     /// copy survives an account deletion (the 5.1.1(v) erasure guarantee).
