@@ -98,6 +98,7 @@
 		2CF7370923C08771844A95DB /* RecommendationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9D400DC3AE74183BA918C015 /* RecommendationService.swift */; };
 		2D342F565EE4E63E017673D0 /* PortableItems.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BC3E8D3673D9BC2687F3810 /* PortableItems.swift */; };
 		2DB016BDDE79F0A0B3B32D33 /* DemuxLyricsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D030F11713B3496A8BE41830 /* DemuxLyricsView.swift */; };
+		2E7FF636FCF02780A5CF13A6 /* ExplicitStreamEditionRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 063FAE1C470F096D086F0D1B /* ExplicitStreamEditionRegressionTests.swift */; };
 		301911C9F4A6B8DEDF248C1E /* AppleMusicLibraryStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9D43E6A8DEEAB84819A1EF3 /* AppleMusicLibraryStoreTests.swift */; };
 		302FB12AEF13F86774232A78 /* PlaybackCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2C8D035465188F057BDE8ADF /* PlaybackCoordinator.swift */; };
 		309D213A005FCFDCB87ABB83 /* PlatterDetailLibraryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE1DEE769A0521556C1C3AA9 /* PlatterDetailLibraryTests.swift */; };
@@ -514,6 +515,7 @@
 		03308285792BC711ACEE2733 /* Format.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Format.swift; sourceTree = "<group>"; };
 		04695760188BA9DCF11A76AB /* PocketDJWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PocketDJWidgets.entitlements; sourceTree = "<group>"; };
 		062A71FEE25295D13FE6D0C5 /* CollectionEntities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionEntities.swift; sourceTree = "<group>"; };
+		063FAE1C470F096D086F0D1B /* ExplicitStreamEditionRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExplicitStreamEditionRegressionTests.swift; sourceTree = "<group>"; };
 		06ADEE00236DCF749ECD0FA2 /* GameScoreboardStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameScoreboardStoreTests.swift; sourceTree = "<group>"; };
 		07DE40FE8E6272422D972DBC /* FavoritesSyncServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesSyncServiceTests.swift; sourceTree = "<group>"; };
 		0885F3744213F8187192B18C /* DemuxTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxTests.swift; sourceTree = "<group>"; };
@@ -1098,6 +1100,7 @@
 				E38C4DAAA5AE1961FDEF3AD6 /* DrumPatternDetectorTests.swift */,
 				34AC0175EB6BDE4AF72724A8 /* EditSchemaTests.swift */,
 				6598C8C55660B7CBF3D9642A /* EngineTests.swift */,
+				063FAE1C470F096D086F0D1B /* ExplicitStreamEditionRegressionTests.swift */,
 				7E86854EA65D6272FC1B0DAC /* ExplicitVariantModelTests.swift */,
 				C5A2863437C1EA0EC736D066 /* FavoritesStoreTests.swift */,
 				07DE40FE8E6272422D972DBC /* FavoritesSyncServiceTests.swift */,
@@ -2021,6 +2024,7 @@
 				C77938E0B4D448FDA805196C /* DrumPatternDetectorTests.swift in Sources */,
 				9FE2F1059B6BD092F239CD88 /* EditSchemaTests.swift in Sources */,
 				39173F1C99F093BEB0FA4396 /* EngineTests.swift in Sources */,
+				2E7FF636FCF02780A5CF13A6 /* ExplicitStreamEditionRegressionTests.swift in Sources */,
 				215170C159562B054C5C4BE9 /* ExplicitVariantModelTests.swift in Sources */,
 				847615AA30F3254B7EABD258 /* FavoritesStoreTests.swift in Sources */,
 				056F35F5D38FC1323E03234D /* FavoritesSyncServiceTests.swift in Sources */,

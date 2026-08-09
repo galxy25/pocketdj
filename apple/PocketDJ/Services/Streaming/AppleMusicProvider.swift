@@ -247,17 +247,37 @@ final class AppleMusicProvider: StreamingProvider, StreamingSearch, SongRecogniz
         //    and ultimately let PlaybackCoordinator degrade to ripping. This is the fast
         //    path that lets "Apple Music (Local)" songs (ids shaped `sng_…`, which 2
         //    can't decode) stream instead of always falling through to a rip.
+        var unmetClaim: Bool?   // an edition the index says exists but no held id delivered
         for candidate in Self.streamCandidates(for: song, preference: preferExplicitVersions()) {
             if let row = try? await Self.fetchRow(storeID: candidate.id) {
-                // An edition-CLAIMING candidate (the preference-derived variant id) must
-                // have its claim verified against the row MusicKit actually returned — an
-                // existence hit alone is no edition check, and these ids are minted by the
-                // out-of-app resolver (mis-resolution / stale or tampered index). On a
-                // mismatch fall through to the next candidate (the verified-behavior
-                // primary) instead of streaming a wrong edition under this song's identity.
-                if let want = candidate.wantExplicit, row.isExplicit != want { continue }
+                // An edition-CLAIMING candidate must have its claim verified against the row
+                // MusicKit actually returned — an existence hit alone is no edition check,
+                // and these ids are minted OUTSIDE the app (the variant crawl, or the
+                // Search-API primary that `explicit == true` merely assumes is explicit). On
+                // a mismatch fall through to the next candidate instead of streaming a wrong
+                // edition under this song's identity, and remember the claim went unmet.
+                if let want = candidate.wantExplicit, row.isExplicit != want {
+                    unmetClaim = want
+                    continue
+                }
                 return AppleMusicCatalog.track(from: row)
             }
+        }
+        // Every catalog id we hold is missing or the WRONG edition, yet the index asserts
+        // the user's edition exists — so RECOVER it by an edition-constrained search (the
+        // same tight filter branch 0 uses) rather than letting (3)'s unconstrained top-1
+        // search hand back the very cut the preference rejected. Nothing found ⇒ nil, which
+        // degrades to the rip provider: the user's OWN copy, which is already the right
+        // edition (that is why the download path sounds correct while streaming did not).
+        if let want = unmetClaim {
+            let rows = (try? await Self.searchRows(term: "\(song.name) \(song.artist)", limit: 15)) ?? []
+            if let hit = rows.first(where: {
+                Self.editionMatches($0, name: song.name, artist: song.artist,
+                                    lengthMs: song.length, wantExplicit: want)
+            }) {
+                return AppleMusicCatalog.track(from: hit)
+            }
+            return nil
         }
         // 2) Our own namespaced id (`am:<storeID>`) → direct catalog fetch by store id.
         if let store = AppleMusicCatalog.storeID(fromSongID: song.id) {
@@ -541,10 +561,12 @@ extension AppleMusicProvider: MusicLibraryContributor {
 extension AppleMusicProvider {
     /// One ordered stream candidate: the catalog id to try, plus the edition the fetched
     /// row MUST carry. `wantExplicit` non-nil ⇒ the candidate CLAIMS an edition (it came
-    /// from the preference-derived variant fields, which are minted by the network-facing
-    /// resolver and are only a claim) — `resolve` verifies `row.isExplicit` agrees before
-    /// playing, else falls through. nil ⇒ no edition claim: the primary id keeps its
-    /// historical existence-only check (the pre-variant trust model, unregressed).
+    /// from the preference-derived variant fields, or from the index ASSERTING this
+    /// recording exists in the wanted edition — both are only claims) — `resolve` verifies
+    /// `row.isExplicit` agrees before playing, else recovers by edition-constrained search.
+    /// nil ⇒ no edition claim: the id keeps its historical existence-only check (the
+    /// pre-variant trust model, unregressed) because nothing tells us the wanted edition
+    /// exists at all, and an unpassable check would strand the row.
     struct StreamCandidate: Equatable {
         let id: String
         let wantExplicit: Bool?
@@ -568,9 +590,33 @@ extension AppleMusicProvider {
             out.append(.init(id: v, wantExplicit: edition == .explicit))
         }
         if let p = song.appleMusicId, !p.isEmpty, !out.contains(where: { $0.id == p }) {
-            out.append(.init(id: p, wantExplicit: nil))
+            out.append(.init(id: p, wantExplicit: primaryEditionClaim(for: song, preference: preference)))
         }
         return out
+    }
+
+    /// The edition the PRIMARY id must PROVE, or nil to keep its existence-only check.
+    ///
+    /// WHY this exists: `explicit` and `appleMusicId` describe two DIFFERENT objects. The
+    /// flag comes from the user's own library file; the primary id was minted by the iTunes
+    /// *Search* API, which systematically returns the CLEAN row (the search-filters-explicit
+    /// finding). `appleMusicId(for:)` bridges that gap by ASSUMING an `explicit == true`
+    /// song's primary is the explicit cut, so whenever `appleMusicIdExplicit` is missing
+    /// `EditionPolicy.substitution` sees `id == primary` and collapses to `.unchanged`: the
+    /// row plays with `variant: nil`, this candidate carries no claim, and `resolve` streams
+    /// whatever MusicKit hands back — the CLEAN cut — with the preference ON and no check
+    /// anywhere. That is the reported bug (streamed clean, downloaded explicit, same song:
+    /// the rip path captures the user's own file, which really is the explicit cut), and it
+    /// goes live for the whole catalog any time a rebuild ships without the resolved
+    /// editions carried forward.
+    ///
+    /// So: when the index ASSERTS the wanted edition exists — the user's own copy IS that
+    /// cut (`song.explicit == preference`) — make the primary prove it. Otherwise stay nil:
+    /// a song with no evidence the wanted edition exists at all (most of the library under
+    /// prefer-explicit) must never be forced through a check it can only fail.
+    private static func primaryEditionClaim(for song: IndexSong, preference: Bool?) -> Bool? {
+        guard let preference, song.explicit == preference else { return nil }
+        return preference
     }
 
     /// Tight EDITION filter shared by the variant `resolve` branch and `VariantResolver`:

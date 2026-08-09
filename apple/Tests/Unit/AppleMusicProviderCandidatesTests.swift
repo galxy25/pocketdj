@@ -62,10 +62,13 @@ final class AppleMusicProviderCandidatesTests: XCTestCase {
                        [.init(id: "C", wantExplicit: false), .init(id: "P", wantExplicit: nil)])
         XCTAssertEqual(AppleMusicProvider.streamCandidates(for: cleanWithExplicit, preference: true),
                        [.init(id: "E", wantExplicit: true), .init(id: "P", wantExplicit: nil)])
-        // The primary reached via the preference accessor (primary IS the preferred
-        // edition) keeps its existence-only behavior — no claim attached.
+        // The primary reached via the preference accessor — the index says the primary IS
+        // the preferred edition — must PROVE it. That "the flag vouches for the id"
+        // assumption is unfounded: the flag describes the user's library file, the id was
+        // minted by the iTunes Search API, and trusting it silently streamed the clean cut
+        // to a prefer-explicit user for every song missing a resolved variant id.
         XCTAssertEqual(AppleMusicProvider.streamCandidates(for: cleanWithExplicit, preference: false),
-                       [.init(id: "P", wantExplicit: nil)])
+                       [.init(id: "P", wantExplicit: false)])
     }
 
     // MARK: editionMatches — the tight edition filter
