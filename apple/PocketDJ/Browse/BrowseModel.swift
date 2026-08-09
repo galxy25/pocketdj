@@ -113,6 +113,17 @@ enum Fields {
               appliesTo: [.album, .song], ops: [.eq, .neq, .inList], hasOptions: false),
         Field(id: "year", label: "Year", kind: .number, numeric: true, sortable: true,
               appliesTo: [.album, .song], ops: [.eq, .neq, .inList, .between], hasOptions: false),
+        // LIFETIME plays — Apple's counter + this app's non-Apple plays + the not-yet-captured
+        // Apple plays (see PlayCountService). NOT carried on `IndexSong`: it lives in a
+        // device-local store, so the value is threaded through the pipeline as a snapshot
+        // (`Fields.value(_:_:playCounts:)`) rather than read off the row.
+        //
+        // Placed HIGH in the list on purpose. This array IS the order of the sort/filter sheets,
+        // and the sheet's List is lazy — a field appended at the end sits below the fold, where
+        // it is neither discoverable nor even present in the accessibility tree. "Sort by plays"
+        // is the thing that was asked for; it belongs where it is seen without scrolling.
+        Field(id: "playCount", label: "Plays", kind: .number, numeric: true, sortable: true,
+              appliesTo: [.song], ops: [.between], hasOptions: false),
         // Genre filters on the TOP-LEVEL category for BOTH albums and songs (same as
         // the PWA / star map). Albums map their raw genre through Genre.category here;
         // songs carry the category resolved from their owning album at construction.
@@ -164,9 +175,20 @@ enum Fields {
     }
 
     /// Value extractor — album fields return `.none` for songs and vice-versa.
-    static func value(_ item: BrowseItem, _ fieldID: String) -> FieldValue {
+    ///
+    /// `playCounts` is the ONE field whose value doesn't live on the row: lifetime plays come from
+    /// a device-local store, so callers pass a SNAPSHOT of it (a plain value map, safe to read off
+    /// the main actor alongside the rest of the pure pipeline). Defaulted to empty so every
+    /// existing call site — and any surface with no play-count service — behaves exactly as
+    /// before: the field reads `.none` and sorts nulls-last.
+    static func value(_ item: BrowseItem, _ fieldID: String,
+                      playCounts: [String: Int] = [:]) -> FieldValue {
         // Origin source is carried on the BrowseItem itself (both kinds).
         if fieldID == "source" { return item.source.map { .string($0) } ?? .none }
+        if fieldID == "playCount" {
+            guard case .song(let s, _, _, _, _) = item, let n = playCounts[s.id], n > 0 else { return .none }
+            return .number(Double(n))
+        }
         switch item {
         case .album(let a, _):
             switch fieldID {
@@ -235,11 +257,11 @@ struct Clause: Identifiable, Hashable, Codable {
 private func norm(_ s: String) -> String { s.trimmingCharacters(in: .whitespaces).lowercased() }
 
 enum FilterEngine {
-    static func matches(_ item: BrowseItem, _ c: Clause) -> Bool {
+    static func matches(_ item: BrowseItem, _ c: Clause, playCounts: [String: Int] = [:]) -> Bool {
         guard let field = Fields.byID[c.field] else { return true }
         if c.isIncomplete { return true }
         if !field.appliesTo.contains(item.kind) { return true }
-        let raw = Fields.value(item, c.field)
+        let raw = Fields.value(item, c.field, playCounts: playCounts)
 
         switch field.kind {
         case .stringArray:
@@ -281,9 +303,10 @@ enum FilterEngine {
         }
     }
 
-    static func apply(_ items: [BrowseItem], _ clauses: [Clause]) -> [BrowseItem] {
+    static func apply(_ items: [BrowseItem], _ clauses: [Clause],
+                      playCounts: [String: Int] = [:]) -> [BrowseItem] {
         guard !clauses.isEmpty else { return items }
-        return items.filter { it in clauses.allSatisfy { matches(it, $0) } }
+        return items.filter { it in clauses.allSatisfy { matches(it, $0, playCounts: playCounts) } }
     }
 }
 
@@ -295,7 +318,8 @@ struct SortKey: Identifiable, Hashable, Codable { var id = UUID(); var field: St
 enum SortEngine {
     private struct Resolved { let field: Field; let dir: Int; let isCamelot: Bool; let numeric: Bool }
 
-    static func apply(_ items: [BrowseItem], _ keys: [SortKey]) -> [BrowseItem] {
+    static func apply(_ items: [BrowseItem], _ keys: [SortKey],
+                      playCounts: [String: Int] = [:]) -> [BrowseItem] {
         let valid: [Resolved] = keys.compactMap { k in
             guard let f = Fields.byID[k.field] else { return nil }
             let isCamelot = f.id == "camelot"
@@ -307,7 +331,7 @@ enum SortEngine {
         // Decorate once in input order; `i` is the stable tiebreak.
         let decorated = items.enumerated().map { (i, item) -> (item: BrowseItem, i: Int, vs: [FieldValue]) in
             let vs = valid.map { r -> FieldValue in
-                let raw = Fields.value(item, r.field.id)
+                let raw = Fields.value(item, r.field.id, playCounts: playCounts)
                 if r.isCamelot {
                     if case .string(let code) = raw, let rank = Camelot.rank(code) { return .number(Double(rank)) }
                     return .none

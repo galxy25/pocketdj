@@ -128,6 +128,8 @@ struct HistoryView: View {
             .toolbar { toolbar }
             .sheet(isPresented: $showFilter) { FilterSheet(browse: browse, app: app, collections: collections) }
             .sheet(isPresented: $showSort) { SortSheet(browse: browse) }
+            // History's sheets offer the same song field set, "Plays" included — feed it too.
+            .playCountsFeed(browse)
             .alert("Apple Music", isPresented: Binding(
                 get: { backfillMessage != nil }, set: { if !$0 { backfillMessage = nil } })) {
                 Button("OK", role: .cancel) {}

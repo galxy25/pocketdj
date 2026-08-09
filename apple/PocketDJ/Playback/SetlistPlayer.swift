@@ -26,10 +26,29 @@ final class SetlistPlayer {
         /// Total plays before advancing (a performance item's loop count). nil/≤1 ⇒ once.
         /// Excluded from equality — it's a playback parameter, not row identity.
         var repeatCount: Int? = nil
-        /// Edition override (a cleanOnly collection substituting the clean cut). Excluded
-        /// from equality like `repeatCount` — a playback parameter, not row identity
-        /// (`uid` covers instance identity).
+        /// Edition override — a cleanOnly collection substituting the clean cut, OR the
+        /// global "Prefer explicit versions" preference stamped at `play()` (see
+        /// `EditionPolicy`). Excluded from equality like `repeatCount` — a playback
+        /// parameter, not row identity (`uid` covers instance identity).
         var variant: SongVariant? = nil
+        /// True when `variant` is a content RESTRICTION (a clean-only collection / a frozen
+        /// setlist stamp) rather than the global preference. Locked rows never fall back to
+        /// another edition's file and are never re-stamped by the live preference — that is
+        /// what makes the collection's clean flag BEAT the global toggle. Excluded from
+        /// equality for the same reason as `variant`.
+        var editionLocked: Bool = false
+        /// The wanted edition's CATALOG ID, carried from the `EditionPolicy.Decision` that
+        /// stamped this row — the lazy rip's hard gate (no id ⇒ nothing is ever enqueued).
+        /// Excluded from equality; a playback parameter, not row identity.
+        var editionCatalogId: String? = nil
+
+        /// This row's edition decision, reassembled for the storage + rip layers.
+        var editionDecision: EditionPolicy.Decision {
+            EditionPolicy.Decision(
+                edition: variant,
+                reason: variant == nil ? .none : (editionLocked ? .collectionCleanOnly : .globalPreference),
+                catalogId: editionCatalogId)
+        }
         /// Per-INSTANCE identity for live-queue rows (a song can repeat in a set, so
         /// `id` can't identify a row). Lets the Now Playing panel remove exactly the
         /// row the user tapped even when the queue shifts underneath the tap (a track
@@ -231,7 +250,7 @@ final class SetlistPlayer {
         // now-playing source), so every play in this run is attributed to the right set.
         capturedHistoryContext = historyContextProvider?(sourceSetlistId)
         capturedOrigin = originProvider?(sourceSetlistId)
-        queue = items
+        queue = stampEditions(items, sourceSetlistId: sourceSetlistId)
         index = 0
         // Live shuffle is per-run (repeat mode is sticky). The one-shot `playNow(shuffle:)` already
         // randomized the incoming order when requested; the live toggle starts OFF for the new queue.
@@ -250,6 +269,84 @@ final class SetlistPlayer {
         persistSession(positionMs: 0)
         startPositionTicker()
         Task { await playCurrent() }
+    }
+
+    // MARK: Edition selection (the ONE place the preference is applied to a queue)
+
+    /// THE edition decision for a queued row, resolved fresh at `play()` — wired in
+    /// PocketDJApp to `EditionPolicy.decide` over the live catalog + settings. Arguments: the
+    /// base song id and whether the run's origin collection carries the clean-only flag.
+    /// Unwired (tests, previews) ⇒ every row is `.unchanged`, i.e. today's behaviour exactly.
+    @ObservationIgnored var editionDecider: ((String, Bool) -> EditionPolicy.Decision)?
+
+    /// Does the collection this run came from carry the clean-only flag? Wired to
+    /// `CollectionsStore`; defaults false. Read ONCE per run — it is what makes the collection
+    /// flag beat the global toggle.
+    @ObservationIgnored var cleanOnlyOrigin: ((String?) -> Bool)?
+
+    /// Stamp every row with the edition it should actually play. This is the ONLY place the
+    /// global preference reaches a queue, so the precedence can't be scattered:
+    ///   • a row that already carries a FROZEN edition keeps it, LOCKED (a cleanOnly
+    ///     realize/playNow already decided it; a later toggle flip must not undo it) — its
+    ///     catalog id is re-resolved so the lazy rip can still acquire it;
+    ///   • a run from a clean-only collection is locked WHOLESALE — including its rows that
+    ///     carry no stamp (the already-clean ones), which is what stops prefer-explicit from
+    ///     upgrading them to explicit inside a clean-only pocket;
+    ///   • everything else asks `editionDecider` (→ `EditionPolicy.decide`).
+    private func stampEditions(_ items: [Item], sourceSetlistId: String?) -> [Item] {
+        let cleanOnly = cleanOnlyOrigin?(sourceSetlistId) ?? false
+        // Nothing to stamp only when BOTH inputs are absent — a clean-only run still has to
+        // lock its rows even with no decider wired, or the restriction would be lost.
+        guard editionDecider != nil || cleanOnly else { return items }
+        return items.map { it in
+            var out = it
+            if let frozen = it.variant {
+                // Frozen wins, always, and is a restriction. Re-resolve only its catalog id.
+                out.editionLocked = true
+                out.editionCatalogId = editionDecider?(it.id, true).catalogId
+                return out
+            }
+            if cleanOnly {
+                out.editionLocked = true          // no preference substitution inside a clean-only run
+                return out
+            }
+            let d = editionDecider?(it.id, false) ?? .unchanged
+            out.variant = d.edition
+            out.editionLocked = d.reason == .collectionCleanOnly
+            out.editionCatalogId = d.catalogId
+            return out
+        }
+    }
+
+    /// LAZY RIP ON MISS — ask the server for the edition this row wanted but doesn't have,
+    /// through the SAME durable queue, dedup and enqueue path as every other rip
+    /// (`RipsStore.requestEditionRipIfNeeded` → `requestRipIfNeeded` under the variant id).
+    /// One song, on demand, at the moment of use. Fire-and-forget: it never blocks or delays
+    /// playback, and it is idempotent at three layers, so repeated misses while a rip is in
+    /// flight enqueue exactly ONCE. Nothing is enqueued when that edition's catalog id is
+    /// unknown.
+    ///
+    /// OWNER-GATED, exactly like the passive stream-through-rip fan-out in
+    /// `PlaybackCoordinator.play`: a hybrid user streaming from their own subscription must
+    /// never silently enqueue captures on the shared server keyed by a shared id.
+    private func lazyRipWantedEdition(_ it: Item) {
+        guard let want = it.variant, coordinator.isCatalogOwner() else { return }
+        var decision = it.editionDecision
+        // A RESTORED row carries its edition but not the catalog id (the durable snapshot
+        // stores the edition, not the id) — re-resolve it from the live catalog, else the
+        // hard gate would refuse to acquire anything after a relaunch.
+        if decision.catalogId == nil {
+            decision.catalogId = coordinator.variantAppleMusicIdOfSong(it.id, want)
+        }
+        Task { await rips.requestEditionRipIfNeeded(base: it.id, decision: decision) }
+    }
+
+    /// Is there a burned file this row could play on device, honouring its edition decision?
+    /// (The ladder — wanted edition, legacy, other edition — so a prefer-explicit row whose
+    /// explicit rip hasn't landed still counts its legacy burn as playable.)
+    private func hasDeviceFile(_ it: Item) -> Bool {
+        EditionPolicy.resolveStored(base: it.id, decision: it.editionDecision,
+                                    isStored: { self.burns.localURL(forSong: $0) != nil }) != nil
     }
 
     /// Own the engines' end hooks + lock-screen next/previous while running (released in
@@ -574,9 +671,10 @@ final class SetlistPlayer {
         guard coordinator.activeBackend != .appleMusic, !player.isLive else { return false }
         guard let np = rips.nowPlaying, queue[index].matches(np.songId), !np.live, np.url.isFileURL else { return false }
         // A local file is playing (burned OR studio). Studio ids have no BurnStore file but ARE local.
-        // The burn lookup keys `resolveId` (a substituted row's file lives under the variant id)
-        // even though `np.songId` is the base — the same split `playCurrent` resolves through.
-        return StudioFactory.isStudioId(np.songId) || burns.localURL(forSong: queue[index].resolveId) != nil
+        // The burn lookup walks the row's EDITION ladder (a substituted row's file lives under the
+        // variant id, a legacy burn under the base) even though `np.songId` is the base — the same
+        // split `playCurrent` resolves through.
+        return StudioFactory.isStudioId(np.songId) || hasDeviceFile(queue[index])
     }
 
     /// The full F4 eligibility gate: mixable current track AND no active Mix-tab session (mutually
@@ -764,8 +862,9 @@ final class SetlistPlayer {
             // handoff `playCurrent`'s AM branch does (macOS: abdicate; iOS: impersonate).
             handOffCardToAppleMusic(for: queue[pos])
         } else {
-            // `resolveId`: a substituted row's burned file lives under the variant id.
-            if burns.localURL(forSong: queue[pos].resolveId) != nil { loadedAnyDeviceTrack = true }
+            // The EDITION ladder: a substituted row's burned file lives under the variant id,
+            // a pre-edition burn under the base.
+            if hasDeviceFile(queue[pos]) { loadedAnyDeviceTrack = true }
             player.setEndBoundary(ms: sharedFileEndBoundaryMs(queue[pos], startMs: rips.nowPlaying?.startMs))
         }
     }
@@ -949,23 +1048,35 @@ final class SetlistPlayer {
         // (advance now — no end event would ever fire). If the whole queue has none, the
         // end-of-set advance raises the CRITIC-D banner. Mode-flip mid-set applies to the
         // NEXT track: the current track keeps playing under the mode it started with.
+        // The EDITION this row should play (`EditionPolicy`, stamped at `play()`). Burned-file
+        // lookups walk its storage ladder: the wanted edition, then — for a PREFERENCE only,
+        // never for a clean-only restriction — the LEGACY un-suffixed burn, then the other
+        // edition. `isWanted == false` ⇒ we degraded onto some other cut and must lazily
+        // acquire the right one (`lazyRipWantedEdition`).
+        let decision = it.editionDecision
+
         if mode == .device {
-            // `resolveId` (NOT `id`) at every burned-file lookup: a cleanOnly substitution
-            // must play the CLEAN variant's burned file — an explicit base burn present on
-            // the device is deliberately not a fallback (skip-not-fallback). `songId: it.id`
-            // (base) stays in playLocalFile so history/stats key the real song.
-            if let res = burns.localURLForPlayback(forSong: it.resolveId) {
+            // The DECISION (not the bare id) at every burned-file lookup: a cleanOnly
+            // substitution must play the CLEAN variant's burned file — an explicit base burn
+            // present on the device is deliberately not a fallback (skip-not-fallback).
+            // `songId: it.id` (base) stays in playLocalFile so history/stats key the real song.
+            if let res = burns.localURLForPlayback(forSong: it.id, decision: decision) {
                 loadedAnyDeviceTrack = true
                 coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
+                if !res.isWanted { lazyRipWantedEdition(it) }
                 // SHARED helper so nowPlaying + the inline player + the row toggle stay
                 // consistent with the single-row burned path. `res.release` keeps a user-folder
                 // file's security scope open through playback.
+                let start = burns.startMs(forSong: res.id)
                 playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
-                              startMs: burns.startMs(forSong: it.resolveId), rips: rips, player: player,
-                              endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.resolveId)),
+                              startMs: start, rips: rips, player: player,
+                              endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: start),
                               atMs: resumeAtMs, release: res.release)
                 // Finite local file → the end notification (or length boundary) advances us.
             } else {
+                // Nothing on device for this edition. Device mode can't stream, so the row is
+                // skipped — but ask for the wanted edition so the NEXT pass has it.
+                lazyRipWantedEdition(it)
                 advanceToNext()   // no on-device file for this track → skip it
             }
             return
@@ -973,14 +1084,16 @@ final class SetlistPlayer {
 
         // CLOUD mode (default): prefer a burned local file when present (zero-latency,
         // offline), else stream / rip-on-demand via the coordinator (Apple Music → rip).
-        // Same `resolveId` rule as device mode — a substituted row only ever plays its
-        // variant's audio (burned, streamed, or ripped), never the base explicit cut.
-        if let res = burns.localURLForPlayback(forSong: it.resolveId) {
+        // Same edition rule as device mode — a substituted row only ever plays its variant's
+        // audio (burned, streamed, or ripped), never the base explicit cut.
+        if let res = burns.localURLForPlayback(forSong: it.id, decision: decision) {
             loadedAnyDeviceTrack = true
             coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
+            if !res.isWanted { lazyRipWantedEdition(it) }
+            let start = burns.startMs(forSong: res.id)
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
-                          startMs: burns.startMs(forSong: it.resolveId), rips: rips, player: player,
-                          endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: burns.startMs(forSong: it.resolveId)),
+                          startMs: start, rips: rips, player: player,
+                          endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: start),
                           atMs: resumeAtMs, release: res.release)
         } else {
             await coordinator.play(id: it.id, title: it.title, artist: it.artist,
@@ -1041,7 +1154,8 @@ final class SetlistPlayer {
         queue = snap.queue.map {
             Item(id: $0.songId, title: $0.title, artist: $0.artist,
                  lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
-                 variant: $0.variant.flatMap(SongVariant.init(rawValue:)))
+                 variant: $0.variant.flatMap(SongVariant.init(rawValue:)),
+                 editionLocked: $0.editionLocked ?? false)
         }
         index = min(max(0, snap.index), queue.count - 1)
         // A Collectors Puzzle run tags the sequencer with `puzzle_<roundId>` — but the round
@@ -1143,7 +1257,8 @@ final class SetlistPlayer {
         let rows = queue.map {
             PlaybackSessionStore.Row(songId: $0.id, title: $0.title, artist: $0.artist,
                                      lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
-                                     variant: $0.variant?.rawValue)
+                                     variant: $0.variant?.rawValue,
+                                     editionLocked: $0.editionLocked ? true : nil)
         }
         let ctx = capturedHistoryContext
         let snap = PlaybackSessionStore.Snapshot(

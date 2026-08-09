@@ -690,6 +690,31 @@ final class RipsStore {
     ///      simultaneous calls collapse to one POST,
     ///   3. the server's manifest skip + single-flight inflight join is the exact-once
     ///      cross-process / restart backstop.
+    /// LAZY RIP ON MISS — the on-demand half of edition-keyed storage. When the edition the
+    /// user actually wants isn't stored yet, enqueue a rip for THAT edition, one song, at the
+    /// moment something asks for it. There is deliberately NO bulk re-rip: everything outside
+    /// a collection is served by this path alone.
+    ///
+    /// It is the SAME mechanism as every other rip, not a second one: it delegates to
+    /// `requestRipIfNeeded` under the VARIANT song id (`<base>_explicit` / `<base>_clean`),
+    /// which the rip server already understands (`resolveVariantRow` synthesizes the row from
+    /// the base + that edition's catalog id and captures with `--explicitness`), stores as a
+    /// distinct object (`rips/<base>_<edition>.mp3` — the clean rip is never overwritten), and
+    /// dedups through the same durable queue + single-flight. Idempotence therefore comes for
+    /// free at all three layers, so repeated misses while a rip is in flight enqueue ONCE.
+    ///
+    /// Returns the variant id it enqueued under, or nil when nothing was enqueued: no edition
+    /// substitution, the edition is already stored, or — importantly — that edition's CATALOG
+    /// ID IS UNKNOWN (`EditionPolicy.lazyRipId`'s hard gate).
+    @discardableResult
+    func requestEditionRipIfNeeded(base: String, decision: EditionPolicy.Decision) async -> String? {
+        guard let variantId = EditionPolicy.lazyRipId(base: base, decision: decision,
+                                                      isStored: { self.cachedURL($0) != nil })
+        else { return nil }
+        await requestRipIfNeeded(variantId)
+        return variantId
+    }
+
     func requestRipIfNeeded(_ songId: String) async {
         // (0) spec §8 — a studio id NEVER rips (fire-and-forget path: silent guard-return).
         if fencedStudioId(songId, path: "requestRipIfNeeded") { return }

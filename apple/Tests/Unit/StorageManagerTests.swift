@@ -97,6 +97,26 @@ final class StorageManagerTests: XCTestCase {
         XCTAssertNotNil(w.burns.items["s3"])
     }
 
+    /// A substituted (cleanOnly) burn is keyed by its RESOLVING id ("sng_…_clean") while its
+    /// plays are recorded against the BASE song, so the LRP sort must read recency through
+    /// `SongVariant.baseId`. Without that, every variant burn reports never-played and is
+    /// evicted ahead of genuinely cold files — here the freshly-played clean cut would be
+    /// dropped (its download is the oldest, so it also loses the never-played tie-break)
+    /// while an untouched song survives.
+    func testVariantBurnRecencyReadsThroughTheBaseSong() throws {
+        let variantId = "sng_1a7f6bc854af_clean"
+        let w = try makeWorld(items: [(variantId, 100), ("s_cold", 300), ("s_warm", 400)])
+        w.stats.notePlayed("sng_1a7f6bc854af", at: 99_000)   // the play keys the BASE song
+        w.stats.notePlayed("s_warm", at: 50_000)
+        w.settings.storageSoftCapGB = gb(25)                 // 30 → one eviction
+        let result = try XCTUnwrap(w.mgr.pruneNow(now: 100_000))
+        XCTAssertEqual(result.evicted, 1)
+        XCTAssertNil(w.burns.items["s_cold"], "the genuinely never-played burn goes first")
+        XCTAssertNotNil(w.burns.items[variantId],
+                        "a just-played variant burn is not 'never played' — its stats key the base id")
+        XCTAssertNotNil(w.burns.items["s_warm"])
+    }
+
     // MARK: Protected (currently playing / deck-loaded) songs
 
     func testPruneSkipsProtectedSongs() throws {

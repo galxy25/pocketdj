@@ -70,6 +70,12 @@ final class PlaybackCoordinator {
     /// default keeps tests inert (the variant song then resolves via edition-constrained
     /// search, else the variant rip).
     var variantAppleMusicIdOfSong: (String, SongVariant) -> String? = { _, _ in nil }
+    /// EDITION fields for an id-only `play(id:…)` — the three values `appleMusicId(for:)`
+    /// needs. Without them the minimal projection below carries only the PRIMARY id, so a
+    /// prefer-explicit substitution could never be computed downstream and every ordinary ▶
+    /// streamed the primary (usually clean) cut. Injected in PocketDJApp, mirroring
+    /// `appleMusicIdOfSong`; the nil-returning default keeps tests unchanged.
+    var editionsOfSong: (String) -> (explicit: Bool?, explicitId: String?, cleanId: String?) = { _ in (nil, nil, nil) }
 
     /// Which backend last won the cycle (nil = nothing playing). Drives the inline player's
     /// branch (rip waveform vs. Apple Music position scrubber) + the "via …" badge.
@@ -88,8 +94,13 @@ final class PlaybackCoordinator {
     /// Play-stats hook: fired when a provider claims a play. Covers the Apple Music
     /// streaming path, which never touches `RipsStore.nowPlaying`; the rip path fires
     /// `RipsStore.onPlay` too, and the stats store's re-count window absorbs the overlap.
-    /// Wired at app init to `PlayStatsStore.notePlayed`; nil in tests.
-    @ObservationIgnored var onPlay: ((String) -> Void)?
+    /// Wired at app init to `PlayCountService.notePlayed`; nil in tests.
+    ///
+    /// The BACKEND rides along because it decides how the play may be counted: an
+    /// `.appleMusic` play is one APPLE ALSO COUNTS, so it will arrive again in the next
+    /// `AMPlayBaselineStore` snapshot and must be recorded provisionally rather than added to a
+    /// lifetime total twice. Every other backend is ours alone and accumulates permanently.
+    @ObservationIgnored var onPlay: ((String, PlaybackBackend) -> Void)?
 
     init(ripProvider: RipServerPlaybackProvider, appleMusic: AppleMusicPlaybackProvider) {
         self.ripProvider = ripProvider
@@ -157,7 +168,7 @@ final class PlaybackCoordinator {
             }
             if await provider.tryPlay(song, atMs: atMs) {
                 activeBackend = provider.backend
-                onPlay?(statsId ?? song.id)
+                onPlay?(statsId ?? song.id, provider.backend)
                 // Ask the server to prepare this user's OWN copy, if they have one.
                 //
                 // SERVER CONTRACT (enforced server-side, not here): `/rip` processes ONLY
@@ -219,9 +230,15 @@ final class PlaybackCoordinator {
             return
         }
         // Carry the catalog id (looked up) so the AM streaming provider is eligible — the
-        // provider chain reads `appleMusicId` for a source-less streamable row.
+        // provider chain reads `appleMusicId` for a source-less streamable row — AND the
+        // EDITION fields, without which `AppleMusicProvider.streamCandidates` can only ever
+        // offer the primary id and the prefer-explicit preference silently does nothing.
+        let ed = editionsOfSong(id)
         await play(IndexSong.minimal(id: id, name: title, artist: artist,
-                                     appleMusicId: appleMusicIdOfSong(id)), atMs: atMs)
+                                     appleMusicId: appleMusicIdOfSong(id),
+                                     explicit: ed.explicit,
+                                     appleMusicIdExplicit: ed.explicitId,
+                                     appleMusicIdClean: ed.cleanId), atMs: atMs)
     }
 
     /// Whether a cue offset passed to `play(_:atMs:)` would actually be APPLIED for
