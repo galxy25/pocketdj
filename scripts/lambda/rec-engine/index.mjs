@@ -47,6 +47,8 @@
 //   MAX_BATCH_EVENTS— plays+favorites+activity+puzzle in one batch
 //   CAPS            — per-stream stored caps, favorites INCLUDED (a map that only ever grew)
 //   cleanSnapshot   — collections / songIds-per-collection / total-songIds truncation
+//   cleanPlayCounts — lifetime play-count SNAPSHOT truncated to MAX_PLAYCOUNT_SONGS, most-played
+//                     first (a snapshot, replaced wholesale — never summed; see the function)
 //   MAX_STR         — every stored string, bounded by SERIALIZED BYTES (not UTF-16 units)
 //   MAX_STATE_BYTES — budget enforced before the PUT by SHEDDING the oldest rows, so no object
 //                     can grow past what readState can safely parse
@@ -98,6 +100,24 @@ const MAX_COLLECTIONS = 500;
 const MAX_SONGIDS_PER_COLLECTION = 5000;
 const MAX_SNAPSHOT_SONGIDS = 100_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+/// How many songs of the LIFETIME play-count snapshot are stored. The client sends its
+/// most-played rows first, so the truncation drops the tail — the rows that carry the least
+/// ranking signal anyway. A real library tops out around 56k songs with plays; 20k is where the
+/// log-scaled weight has long since flattened.
+const MAX_PLAYCOUNT_SONGS = 20_000;
+/// How much a song's LIFETIME play count can add to its seed weight, at the top of the
+/// distribution. One recent play contributes ~1.0 (`exp(0)`), so this makes the single
+/// most-played song of all time worth about one play from today — enough to shape taste, not
+/// enough to drown out what the user is listening to THIS month.
+const PLAYCOUNT_SEED_WEIGHT = 1.0;
+/// How much a CANDIDATE's lifetime play count can add to its score. Deliberately below the genre
+/// term (2.0): "you love this song" is a real signal in a library of the user's own music, but it
+/// must not turn For You into a list of the same ten songs forever. The 72 h exclusion already
+/// keeps what is playing right now out.
+const PLAYCOUNT_CANDIDATE_WEIGHT = 0.75;
+/// The same term inside `/recs/similar` (Gem Collector). Lower still: that route is about
+/// resembling a CRATE, and familiarity is a tiebreak there rather than a reason.
+const PLAYCOUNT_SIMILAR_WEIGHT = 0.5;
 
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -181,11 +201,23 @@ export function shedToFit(state, max = MAX_STATE_BYTES) {
     arr.sort((a, b) => a.atMs - b.atMs || (a.id < b.id ? -1 : 1));
     return arr.splice(0, n).length;
   };
+  /// Play counts shed LEAST-PLAYED first (not oldest — they have no per-row timestamp). That is
+  /// the right direction: a 1-play row contributes almost nothing to a log-scaled weight, while
+  /// the head of the distribution is the entire point of the signal.
+  const dropLeastPlayed = (counts) => {
+    const keys = Object.keys(counts);
+    const n = Math.max(1, Math.ceil(keys.length / 4));
+    keys.sort((a, b) => (counts[a] || 0) - (counts[b] || 0) || (a < b ? -1 : 1));
+    for (const k of keys.slice(0, n)) delete counts[k];
+    return n;
+  };
   for (let guard = 0; guard < 400 && bytes > max; guard++) {
     if (state.plays?.length) shed += dropOldest(state.plays);
     else if (state.activity?.length) shed += dropOldest(state.activity);
     else if (state.puzzle?.length) shed += dropOldest(state.puzzle);
-    else if (Object.keys(state.favorites || {}).length) {
+    else if (Object.keys(state.playCounts?.counts || {}).length) {
+      shed += dropLeastPlayed(state.playCounts.counts);
+    } else if (Object.keys(state.favorites || {}).length) {
       const before = Object.keys(state.favorites).length;
       capFavorites(state.favorites, Math.max(0, before - Math.max(1, Math.ceil(before / 4))));
       shed += before - Object.keys(state.favorites).length;
@@ -315,6 +347,7 @@ function freshState(profileId) {
     v: 1, profileId, keyHash: null, createdAtMs: now, updatedAtMs: now,
     plays: [], favorites: {}, activity: [], puzzle: [],
     collections: { atMs: 0, list: [] },
+    playCounts: { atMs: 0, counts: {} },
   };
 }
 
@@ -405,6 +438,33 @@ function cleanSnapshot(s) {
   return { atMs: num(s.atMs) ?? Date.now(), list };
 }
 
+/// LIFETIME play counts — a SNAPSHOT, not an event stream.
+///
+/// Stored (and merged) WHOLESALE, exactly like `collectionsSnapshot`, because that is what it is
+/// on the client too: Apple's counters are read as a whole and REPLACE the previous reading. The
+/// alternative — treating each row as an increment — would inflate on every re-upload, which is
+/// the same bug the SET-never-ADD rule exists to prevent on the device. A stale batch (older
+/// `atMs` than what is stored) is DROPPED rather than applied, so two devices uploading out of
+/// order can't walk the numbers backwards.
+///
+/// Bounded by TRUNCATION, like the collections snapshot, and not counted toward
+/// MAX_BATCH_EVENTS: an honest flush carries a full event batch AND this.
+function cleanPlayCounts(p) {
+  if (!p || typeof p !== 'object' || !p.counts || typeof p.counts !== 'object') return null;
+  // Highest counts first, so the MAX_PLAYCOUNT_SONGS truncation keeps the rows that matter.
+  const rows = [];
+  for (const [rawId, rawN] of Object.entries(p.counts)) {
+    const songId = str(rawId);
+    const n = num(rawN);
+    if (!songId || n == null || !(n > 0)) continue;
+    rows.push([songId, Math.trunc(n)]);
+  }
+  rows.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  const counts = {};
+  for (const [songId, n] of rows.slice(0, MAX_PLAYCOUNT_SONGS)) counts[songId] = n;
+  return { atMs: num(p.atMs) ?? Date.now(), counts };
+}
+
 function capOldest(arr, cap) {
   if (arr.length <= cap) return arr;
   return [...arr].sort((a, b) => a.atMs - b.atMs || (a.id < b.id ? -1 : 1)).slice(arr.length - cap);
@@ -437,7 +497,8 @@ function capFavorites(favorites, cap) {
  *  (the reserved `songFeatures` key is accepted and dropped in v1). Mutates + returns `state`
  *  with an `accepted` tally. */
 export function mergeBatch(state, batch) {
-  const accepted = { plays: 0, favorites: 0, activity: 0, puzzle: 0, collectionsSnapshot: false };
+  const accepted = { plays: 0, favorites: 0, activity: 0, puzzle: 0, collectionsSnapshot: false,
+                     playCounts: 0 };
 
   const playIds = new Set(state.plays.map((e) => e.id));
   for (const raw of batch.plays || []) {
@@ -476,14 +537,56 @@ export function mergeBatch(state, batch) {
   const snap = cleanSnapshot(batch.collectionsSnapshot);
   if (snap) { state.collections = { atMs: snap.atMs, list: snap.list }; accepted.collectionsSnapshot = true; }
 
+  const pc = cleanPlayCounts(batch.playCounts);
+  // Newer-snapshot-wins. Re-uploading the SAME snapshot is a no-op (equal atMs loses), which is
+  // what makes an idempotent client flush free.
+  if (pc && pc.atMs > (state.playCounts?.atMs || 0)) {
+    state.playCounts = { atMs: pc.atMs, counts: pc.counts };
+    accepted.playCounts = Object.keys(pc.counts).length;
+  }
+
   state.updatedAtMs = Date.now();
   return { state, accepted };
 }
 
 // ── For You (GET /recs/songs) ───────────────────────────────────────────────────────────────────
 
-/** Deterministic For You compute over the profile state + the features doc. Pure. */
-export function scoreForYou(state, featuresById, { nowMs = Date.now(), limit = 50 } = {}) {
+/**
+ * LIFETIME play counts as a 0…1 ranking signal.
+ *
+ * LOG-SCALED and normalised against the library's own maximum, for two reasons. Raw counts are
+ * hopelessly skewed — one real library's top song has 244 plays while the median played song has
+ * 2 — so a linear term would make the top ten songs the only ones that ever scored. And the
+ * normalisation is what keeps the term comparable across users: someone with a 10-play maximum
+ * and someone with a 5000-play maximum both get a full-strength 1.0 at the top of their own
+ * distribution.
+ *
+ * Returns 0 for absent/zero, so an unplayed song contributes nothing rather than a penalty.
+ */
+export function playCountSignal(n, maxN) {
+  if (!Number.isFinite(n) || n <= 0 || !Number.isFinite(maxN) || maxN <= 0) return 0;
+  return Math.log2(1 + Math.min(n, maxN)) / Math.log2(1 + maxN);
+}
+
+/** The stored lifetime counts as `{ counts, maxN }`, with `maxN` 0 when there is no signal. */
+function playCountsOf(state) {
+  const counts = state.playCounts?.counts || {};
+  let maxN = 0;
+  for (const n of Object.values(counts)) if (Number.isFinite(n) && n > maxN) maxN = n;
+  return { counts, maxN };
+}
+
+/**
+ * Deterministic For You compute over the profile state + the features doc. Pure.
+ *
+ * `playCountSeedLimit` — how many of the most-played songs of all time are allowed to SEED. The
+ * default (200) shapes taste from the head of the distribution while leaving the rest of a
+ * 56k-row baseline available as CANDIDATES (a seed is excluded from its own recommendations, so
+ * seeding everything would hide every song the user has ever played). Injectable so a test can
+ * drive both sides of that line against a small fixture.
+ */
+export function scoreForYou(state, featuresById,
+                            { nowMs = Date.now(), limit = 50, playCountSeedLimit = 200 } = {}) {
   limit = Math.min(Math.max(Math.trunc(limit) || 50, 1), 200);
 
   // 1) Seeds: plays in the last 30 days grouped by song, recency-weighted; favorites and puzzle
@@ -494,6 +597,27 @@ export function scoreForYou(state, featuresById, { nowMs = Date.now(), limit = 5
     if (ageDays < 0 || ageDays > 30) continue;
     weights.set(p.songId, (weights.get(p.songId) || 0) + Math.exp(-ageDays / 7));
   }
+
+  // 1b) LIFETIME plays seed too — the signal a 30-day window structurally cannot see.
+  //
+  // Without this, a user whose Apple library holds a decade of listening gets recommendations
+  // built from whatever happened to be on this month, and a user who just installed the app gets
+  // NOTHING (no plays in the window ⇒ no seeds ⇒ an empty For You). Their imported baseline is
+  // 144k plays of taste; refusing to read it because none of them are recent is the whole reason
+  // this signal was added. Weighted well below a fresh play (see PLAYCOUNT_SEED_WEIGHT) so
+  // recency still leads, and capped (see `playCountSeedLimit`) so a huge library can't swamp
+  // stage 2 — and so the long tail of played songs stays available as candidates.
+  const { counts: lifetime, maxN: maxLifetime } = playCountsOf(state);
+  if (maxLifetime > 0 && playCountSeedLimit > 0) {
+    const top = Object.entries(lifetime)
+      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+      .slice(0, playCountSeedLimit);
+    for (const [songId, n] of top) {
+      const bonus = PLAYCOUNT_SEED_WEIGHT * playCountSignal(n, maxLifetime);
+      if (bonus > 0) weights.set(songId, (weights.get(songId) || 0) + bonus);
+    }
+  }
+
   const puzzleSongs = new Set(state.puzzle.map((e) => e.songId).filter(Boolean));
   for (const [songId, w] of weights) {
     let bonus = 0;
@@ -574,6 +698,14 @@ export function scoreForYou(state, featuresById, { nowMs = Date.now(), limit = 5
     }
     if (row.a && (artistCount.get(row.a) || 0) > 0) {
       terms.push(['artist', 0.75, `Artist you've played: ${row.a}`]);
+    }
+    // LIFETIME affinity. Everything here is the user's OWN library, so "you have played this a
+    // lot" is a recommendation reason, not a leak of novelty — and the 72 h exclusion above
+    // already keeps whatever is on right now out of the list.
+    const lifetimeN = lifetime[row.i] || 0;
+    if (lifetimeN > 0) {
+      terms.push(['plays', PLAYCOUNT_CANDIDATE_WEIGHT * playCountSignal(lifetimeN, maxLifetime),
+                  `You've played this ${lifetimeN} time${lifetimeN === 1 ? '' : 's'}`]);
     }
     const score = terms.reduce((s, [, v]) => s + v, 0);
     if (score <= 0) continue;
@@ -768,6 +900,11 @@ export function scoreSimilarToCollections(state, featuresById, collectionIds,
     state.puzzle.filter((e) => e.collectionId && wanted.has(e.collectionId))
       .map((e) => e.songId).filter(Boolean));
 
+  // 4b) Lifetime plays — a familiarity TIEBREAK here, not a reason. A Gem Collector round is
+  //     about what resembles the crate; between two equally-fitting cards, the one the player
+  //     actually listens to is the better card.
+  const { counts: lifetime, maxN: maxLifetime } = playCountsOf(state);
+
   const scored = [];
   for (const row of featuresById.values()) {
     // 5) EXCLUDE EXISTING MEMBERS — they are already filed, and a card the player cannot
@@ -803,6 +940,11 @@ export function scoreSimilarToCollections(state, featuresById, collectionIds,
     const cp = coPlayCount.get(row.i) || 0;
     if (cp > 0) terms.push(['coplay', 1.25 * Math.min(1, cp / 3), 'Often played together']);
     if (puzzleSongs.has(row.i)) terms.push(['puzzle', 0.5, 'Matches your Gem Collector picks']);
+    const lifetimeN = lifetime[row.i] || 0;
+    if (lifetimeN > 0) {
+      terms.push(['plays', PLAYCOUNT_SIMILAR_WEIGHT * playCountSignal(lifetimeN, maxLifetime),
+                  `You've played this ${lifetimeN} time${lifetimeN === 1 ? '' : 's'}`]);
+    }
 
     const score = terms.reduce((s, [, v]) => s + v, 0);
     if (score <= 0) continue;
@@ -929,6 +1071,7 @@ export async function handler(event) {
             plays: state.plays.length, activity: state.activity.length,
             puzzle: state.puzzle.length, favorites: Object.keys(state.favorites).length,
             collections: state.collections?.list?.length || 0,
+            playCounts: Object.keys(state.playCounts?.counts || {}).length,
           },
         });
       }

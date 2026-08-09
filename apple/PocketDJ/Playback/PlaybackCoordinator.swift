@@ -94,8 +94,13 @@ final class PlaybackCoordinator {
     /// Play-stats hook: fired when a provider claims a play. Covers the Apple Music
     /// streaming path, which never touches `RipsStore.nowPlaying`; the rip path fires
     /// `RipsStore.onPlay` too, and the stats store's re-count window absorbs the overlap.
-    /// Wired at app init to `PlayStatsStore.notePlayed`; nil in tests.
-    @ObservationIgnored var onPlay: ((String) -> Void)?
+    /// Wired at app init to `PlayCountService.notePlayed`; nil in tests.
+    ///
+    /// The BACKEND rides along because it decides how the play may be counted: an
+    /// `.appleMusic` play is one APPLE ALSO COUNTS, so it will arrive again in the next
+    /// `AMPlayBaselineStore` snapshot and must be recorded provisionally rather than added to a
+    /// lifetime total twice. Every other backend is ours alone and accumulates permanently.
+    @ObservationIgnored var onPlay: ((String, PlaybackBackend) -> Void)?
 
     init(ripProvider: RipServerPlaybackProvider, appleMusic: AppleMusicPlaybackProvider) {
         self.ripProvider = ripProvider
@@ -163,7 +168,7 @@ final class PlaybackCoordinator {
             }
             if await provider.tryPlay(song, atMs: atMs) {
                 activeBackend = provider.backend
-                onPlay?(statsId ?? song.id)
+                onPlay?(statsId ?? song.id, provider.backend)
                 // Ask the server to prepare this user's OWN copy, if they have one.
                 //
                 // SERVER CONTRACT (enforced server-side, not here): `/rip` processes ONLY

@@ -73,6 +73,15 @@ final class CollectorsPuzzleEngine {
     /// Tests skip the 3-2-1.
     @ObservationIgnored var countdownEnabled = true
 
+    /// LIFETIME play counts for the sampler's play-count bias. Injected in PocketDJApp from
+    /// `PlayCountService.snapshot()` — Apple's ~144k-play baseline plus this app's own plays.
+    ///
+    /// Without it the bias reads `PlayStatsStore` alone, which knows only what PocketDJ itself
+    /// played (~700 songs of a 90k catalog), so "favour what I play" barely moved the weights and
+    /// "avoid what I play" treated a song hammered for a decade in Music.app as brand new. A nil
+    /// provider keeps exactly that old behaviour, which is what unit tests and previews want.
+    @ObservationIgnored var playCountsProvider: (() -> [String: Int])?
+
     @ObservationIgnored private var tickerTask: Task<Void, Never>?
     /// Single-flight guard on the mid-round top-up sample.
     @ObservationIgnored private var toppingUp = false
@@ -150,7 +159,7 @@ final class CollectorsPuzzleEngine {
             songs: app.songs,
             albumsById: app.albumsById,
             favoriteIds: favorites.favoriteIds,
-            playCounts: playStats.playCountsSnapshot(),
+            playCounts: playCountsProvider?() ?? playStats.playCountsSnapshot(),
             membershipCollections: settings.membershipCollectionIds.map { memberIds(of: $0) },
             targetCollections: settings.targetCollectionIds.map { memberIds(of: $0) },
             ripManifest: audio.ripManifest,

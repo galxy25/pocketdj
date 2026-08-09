@@ -1079,7 +1079,8 @@ final class AppModel {
                              collections: CollectionsStore?, favorites: FavoritesStore?) -> [IndexSong] {
         let (items, keys) = browseItems(forSongIds: ids)
         let filtered = BrowseState.filterSort(base: items, searchKeys: keys, query: browse.query,
-                                              clauses: browse.clauses, sortKeys: browse.sortKeys)
+                                              clauses: browse.clauses, sortKeys: browse.sortKeys,
+                                              playCounts: browse.playCounts)
         let visible = browse.applyReadTimeFilters(to: filtered, collections: collections, favorites: favorites)
         return visible.compactMap { if case .song(let s, _, _, _, _) = $0 { return s } else { return nil } }
     }

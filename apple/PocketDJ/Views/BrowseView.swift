@@ -19,6 +19,10 @@ struct BrowseView: View {
     /// OPTIONAL like `favorites` — the profile source's device-local visibility gate degrades to
     /// "no gate" on a host that hasn't injected it (previews) rather than trapping.
     @Environment(ProfileSourceStore.self) private var profileSource: ProfileSourceStore?
+    /// OPTIONAL like `favorites` — lifetime play counts. Absent (previews, a host built before it
+    /// was wired) leaves the "Plays" field reading `.none`, which the sort places nulls-last and
+    /// the row badge hides entirely.
+    @Environment(PlayCountService.self) private var playCounts: PlayCountService?
     @Environment(IntentServices.self) private var intents
     @Environment(SetlistPlayer.self) private var sequencer
     @Environment(MixEngine.self) private var mix
@@ -156,6 +160,9 @@ struct BrowseView: View {
             if browse.searchOnline { triggerOnline() }
             if effectiveDiscover { triggerDiscover() }
         }
+        // Lifetime plays are an INPUT to the filter/sort but live in a store, not on the rows —
+        // push a snapshot into the pipeline (see PlayCountsFeed).
+        .playCountsFeed(browse)
         // Recompute the on-device results OFF the main actor whenever an input changes (kind, query,
         // filters, sort, catalog reload). Keying the task on the signature auto-cancels the previous
         // run, giving free debounce while typing — the heavy filter+sort never blocks the main thread.
