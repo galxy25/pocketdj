@@ -32,9 +32,10 @@ struct AddToCollectionView: View {
     /// Fired AFTER a successful ADD — never on a REMOVE (a checkmarked row toggles OFF), never
     /// on a `.songs` batch that landed nothing, and never on a source-playlist add (that path
     /// runs a two-way Apple Music write behind its own result alert; dismissing out from under
-    /// it would be wrong). The PRESENTER decides what to do with it: Gem Collector scores the
-    /// round's point and dismisses; every other caller passes nil (the default) and this sheet
-    /// behaves EXACTLY as before — multi-select, never self-dismissing.
+    /// it would be wrong). The PRESENTER decides what to do with it: Gem Collector NOTES the
+    /// add and stays open (multi-collection filing), scoring the card once when the sheet
+    /// CLOSES; every other caller passes nil (the default). Either way this sheet behaves
+    /// EXACTLY as it always has — multi-select, never self-dismissing.
     var onAdded: ((AddTarget) -> Void)? = nil
 
     @State private var newPocket = ""

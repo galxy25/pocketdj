@@ -13,6 +13,43 @@ struct GamesView: View {
 
     @State private var showCreateSheet = false
     @State private var showJoinSheet = false
+    /// Non-nil ⇒ the one scoreboard-deletion confirmation alert is up for this target.
+    @State private var pendingDelete: ScoreboardDeletion?
+
+    /// What a scoreboard delete is about to wipe. CONFIRMED IN BOTH CASES: the brief only asked
+    /// for it on delete-all, but a per-game delete is equally irreversible and now propagates to
+    /// every synced device (the same bar `PlaylistsView` holds a folder delete to). Reverting to
+    /// "all only" is deleting one enum branch.
+    private enum ScoreboardDeletion: Identifiable {
+        case game(GameKind), all
+
+        var id: String {
+            switch self {
+            case .game(let g): return "game-\(g.rawValue)"
+            case .all: return "all"
+            }
+        }
+        var title: String {
+            switch self {
+            case .game(let g): return "Delete \(g.label) scores?"
+            case .all: return "Delete every scoreboard?"
+            }
+        }
+        var message: String {
+            switch self {
+            case .game(let g):
+                return "Removes every recorded \(g.label) run — best score and history — on this device and every device you sync with. This can't be undone."
+            case .all:
+                return "Removes every recorded run of every game on this device and every device you sync with. This can't be undone."
+            }
+        }
+        var confirmLabel: String {
+            switch self {
+            case .game(let g): return "Delete \(g.label) Scores"
+            case .all: return "Delete All"
+            }
+        }
+    }
 
     var body: some View {
         List {
@@ -49,6 +86,26 @@ struct GamesView: View {
                                     set: { if !$0 { friends.pendingJoin = nil } })) {
             MwFJoinSheet(link: friends.pendingJoin)
         }
+        // ONE alert for both deletions, attached to the LIST — a Section can't host a modifier
+        // that has to outlive the row the menu was opened from.
+        .alert(pendingDelete?.title ?? "",
+               isPresented: Binding(get: { pendingDelete != nil },
+                                    set: { if !$0 { pendingDelete = nil } }),
+               presenting: pendingDelete) { target in
+            Button(target.confirmLabel, role: .destructive) { performDelete(target) }
+                .accessibilityIdentifier("games-scoreboard-delete-confirm")
+            Button("Cancel", role: .cancel) { pendingDelete = nil }
+        } message: { target in
+            Text(target.message)
+        }
+    }
+
+    private func performDelete(_ deletion: ScoreboardDeletion) {
+        switch deletion {
+        case .game(let game): gameScores.delete(game: game)
+        case .all: gameScores.deleteAll()
+        }
+        pendingDelete = nil
     }
 
     // MARK: - Cards
@@ -147,8 +204,29 @@ struct GamesView: View {
 
     // MARK: - Scoreboard
 
+    /// The scoreboard — TITLE INCLUDED, as an ordinary row.
+    ///
+    /// `Section { … } header: { Text("Scoreboard") }` is the obvious shape and is what this was.
+    /// It is wrong here, measurably: a `List` SECTION HEADER does not deliver a `.contextMenu`
+    /// on iOS at all (measured in the real a11y tree, iPhone 17 Pro, 2026-08-08 — a 1.2 s press
+    /// produced no menu, with the modifier on the HStack and with it on the Text). The gesture
+    /// the user actually asked for — "long press on the scoreboard category header" — was
+    /// therefore dead code on iOS, iPadOS AND visionOS, i.e. every platform but macOS, and the
+    /// only real affordance was the small ⋯.
+    ///
+    /// An ordinary List ROW *does* deliver a context menu on every platform — which the per-game
+    /// blocks below already prove on iOS — so the title is now a row styled as a header. Same
+    /// pixels, same ⋯, but the long press works.
+    ///
+    /// DO NOT "TIDY" THIS BACK INTO A `header:`. It is pinned by
+    /// `GamesUITests.testScoreboardHeaderRowLongPressDeletesEverything`, and that guard is
+    /// A/B-MEASURED, not assumed: reverting only this shape (identical view body, moved into
+    /// `header:`) and re-running the test fails it at the menu's `waitForExistence` — "a long
+    /// press on the Scoreboard header must open its menu" — while every other Games UI test,
+    /// the ⋯ test included, stays green. The row shape is the whole fix.
     private var scoreboardSection: some View {
-        Section("Scoreboard") {
+        Section {
+            scoreboardTitleRow
             if gameScores.runs.isEmpty {
                 Text("No runs yet — play a game!")
                     .font(.subheadline).foregroundStyle(Theme.fgDim)
@@ -166,6 +244,13 @@ struct GamesView: View {
                                 }
                             }
                         }
+                        // The long-press / right-click target for THIS game's scores. The
+                        // whole block is a target — the best row and every run row below carry
+                        // the same menu — so the gesture works wherever the finger lands.
+                        .contentShape(Rectangle())
+                        .accessibilityElement(children: .combine)
+                        .accessibilityIdentifier("games-scoreboard-game-\(game.rawValue)")
+                        .contextMenu { gameRowMenu(game) }
                         ForEach(Array(gameScores.recentRuns(game, limit: 5).enumerated()), id: \.element.id) { i, run in
                             HStack {
                                 Text("★ \(run.score)").font(.caption.monospacedDigit()).foregroundStyle(Theme.fg)
@@ -175,13 +260,81 @@ struct GamesView: View {
                                     Text(s).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
                                 }
                             }
+                            .contentShape(Rectangle())
                             .accessibilityElement(children: .combine)
                             .accessibilityIdentifier("games-run-\(game.rawValue)-\(i)")
+                            .contextMenu { gameRowMenu(game) }
                         }
                     }
                 }
             }
         }
+    }
+
+    /// "Scoreboard" + a ⋯ menu, and the SAME menu body on a right-click / long press. BOTH
+    /// affordances are real and neither is decorative: the ⋯ is discoverable and is the path a
+    /// headless UI test can drive on any platform, the long press is the gesture the request
+    /// named. It is a ROW, not a `Section` header — see `scoreboardSection` for the measurement
+    /// that forced that.
+    ///
+    /// The whole row is the press target (`.contentShape` + the menu on the HStack), so the
+    /// gesture lands wherever the finger does, not only on the 10 characters of the word. On an
+    /// EMPTY board both the ⋯ and the context menu go away — there is nothing to delete, and an
+    /// empty menu that flashes open on a long press is worse than no menu.
+    private var scoreboardTitleRow: some View {
+        let row = HStack {
+            Text("Scoreboard")
+                .font(.headline)
+                .foregroundStyle(Theme.fg)
+                // The identifier goes on the TEXT, not the HStack: an accessibility modifier
+                // on a container that is not itself an a11y element PROPAGATES to every child,
+                // and on the HStack it overwrote the ⋯ button's own identifier — measured in
+                // the real tree, which showed two elements both called
+                // `games-scoreboard-header` and no `games-scoreboard-menu` at all.
+                .accessibilityIdentifier("games-scoreboard-header")
+            Spacer()
+            if !gameScores.runs.isEmpty {
+                Menu { scoreboardHeaderMenu } label: {
+                    // A section header's font is tiny, and this button inherits it: measured at
+                    // ~15pt it was less than half the 44pt HIG minimum. That matters more here
+                    // than it looks, because .contextMenu is NOT delivered on a List section
+                    // header on iOS/iPadOS/visionOS (proven with a tree dump + a negative
+                    // control), so on every platform but macOS this ⋯ is the ONLY header-level
+                    // way to delete. The glyph stays visually small; the HIT AREA does not.
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(Theme.fgDim)
+                        .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityIdentifier("games-scoreboard-menu")
+                .accessibilityLabel("Scoreboard options")
+            }
+        }
+        .contentShape(Rectangle())
+        return Group {
+            if gameScores.runs.isEmpty { row } else { row.contextMenu { scoreboardHeaderMenu } }
+        }
+    }
+
+    @ViewBuilder private var scoreboardHeaderMenu: some View {
+        Button(role: .destructive) { pendingDelete = .all } label: {
+            Label("Delete All Scoreboards", systemImage: "trash")
+        }
+        .accessibilityIdentifier("games-scoreboard-delete-all")
+    }
+
+    /// One game's menu: wipe THIS game, or wipe everything. The delete-all item carries a
+    /// DISTINCT identifier from the header's — two live elements must never share one a11y id.
+    @ViewBuilder private func gameRowMenu(_ game: GameKind) -> some View {
+        Button(role: .destructive) { pendingDelete = .game(game) } label: {
+            Label("Delete \(game.label) Scores", systemImage: "trash")
+        }
+        .accessibilityIdentifier("games-scoreboard-delete-\(game.rawValue)")
+        Divider()
+        Button(role: .destructive) { pendingDelete = .all } label: {
+            Label("Delete All Scoreboards", systemImage: "trash.slash")
+        }
+        .accessibilityIdentifier("games-scoreboard-delete-all-from-\(game.rawValue)")
     }
 
     static func dateLabel(_ atMs: Double) -> String {

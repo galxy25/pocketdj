@@ -210,4 +210,246 @@ final class GameScoreboardStoreTests: XCTestCase {
         let reloaded = GameScoreboardStore(fileURL: url)
         XCTAssertTrue(reloaded.runs.isEmpty, "the persisted doc is empty too")
     }
+
+    // MARK: - User deletion (tombstones)
+    //
+    // WHY TOMBSTONES AT ALL: `reloadFromDisk` UNIONS the on-disk document into the live log by
+    // run id and is deliberately idempotent for ADDS. A plain row drop therefore does not
+    // survive sync — a peer document that still holds the run adds it straight back and the
+    // deletion silently undoes itself. Tests 3/4/6 below are that failure, pinned.
+
+    private func decodeDoc(_ url: URL) throws -> GameScoreboardStore.Document {
+        try JSONDecoder().decode(GameScoreboardStore.Document.self, from: Data(contentsOf: url))
+    }
+
+    func testDeleteGameRemovesOnlyThatGamesRunsAndTombstonesThem() {
+        let store = GameScoreboardStore(fileURL: tempURL())
+        store.record(game: .collectorsPuzzle, score: 3, settingsSummary: nil, at: 1000)
+        store.record(game: .collectorsPuzzle, score: 8, settingsSummary: nil, at: 2000)
+        store.record(game: .collectorsPuzzle, score: 5, settingsSummary: nil, at: 3000)
+        store.record(game: .musicWithFriends, score: 4, settingsSummary: nil, at: 4000)
+
+        XCTAssertEqual(store.delete(game: .collectorsPuzzle), 3, "three puzzle rows went")
+        XCTAssertNil(store.bestScore(.collectorsPuzzle), "…and the game's board is empty")
+        XCTAssertEqual(store.bestScore(.musicWithFriends), 4, "the other game is untouched")
+        XCTAssertEqual(store.runs.count, 1)
+        XCTAssertEqual(store.tombstones.count, 3, "every deleted row left a tombstone")
+        XCTAssertEqual(store.delete(game: .collectorsPuzzle), 0, "deleting nothing is a no-op")
+    }
+
+    func testDeleteAllRemovesEveryRunAndTombstonesEachOne() {
+        let store = GameScoreboardStore(fileURL: tempURL())
+        for i in 1...3 { store.record(game: .collectorsPuzzle, score: i, settingsSummary: nil, at: Double(i)) }
+        store.record(game: .musicWithFriends, score: 4, settingsSummary: nil, at: 9)
+        XCTAssertEqual(store.deleteAll(), 4)
+        XCTAssertTrue(store.runs.isEmpty)
+        XCTAssertEqual(store.tombstones.count, 4)
+        XCTAssertNil(store.bestScore(.collectorsPuzzle))
+        XCTAssertNil(store.bestScore(.musicWithFriends))
+    }
+
+    /// THE LOAD-BEARING ONE: the union merge must not resurrect a deleted run. A peer's
+    /// document (or our own pre-delete bytes, replayed by a CloudSync pull) still carries every
+    /// row we just deleted; without tombstones `reloadFromDisk` adds them straight back.
+    func testDeletedRunIsNotResurrectedByAPeerDocumentThatStillHasIt() throws {
+        let url = tempURL()
+        let store = GameScoreboardStore(fileURL: url)
+        for i in 1...3 { store.record(game: .collectorsPuzzle, score: i, settingsSummary: nil, at: Double(i)) }
+        let peerBytes = try Data(contentsOf: url)          // the doc as it stood BEFORE the delete
+
+        store.deleteAll()
+        try peerBytes.write(to: url)                       // …and a pull lands it back on disk
+
+        XCTAssertTrue(store.reloadFromDisk(),
+                      "the doc still carries runs we tombstoned ⇒ it MUST be rewritten")
+        XCTAssertTrue(store.runs.isEmpty, "the union did not resurrect the deleted runs")
+        let doc = try decodeDoc(url)
+        XCTAssertTrue(doc.runs.isEmpty, "…and the rewritten document holds none of them")
+        XCTAssertEqual(doc.deleted?.count, 3, "the tombstones are what got published")
+    }
+
+    /// THE SHARPEST CASE — exactly the state where the OLD `byId.count > doc.runs.count` save
+    /// proxy reads `false` (we hold zero runs the doc lacks) yet a save is mandatory. Without
+    /// an id-based `mustSave` the tombstones never publish AND the on-disk document keeps the
+    /// runs, so the very next launch's `init` resurrects them: deletion DURABILITY, not just
+    /// propagation, rides on this.
+    func testDeletionPublishesEvenWhenWeHoldNoRunsTheDocLacks() throws {
+        let url = tempURL()
+        let store = GameScoreboardStore(fileURL: url)
+        for i in 1...3 { store.record(game: .collectorsPuzzle, score: i, settingsSummary: nil, at: Double(i)) }
+        let peerBytes = try Data(contentsOf: url)
+        store.deleteAll()
+        try peerBytes.write(to: url)
+
+        // Precondition, spelled out: the union yields exactly the doc's rows and no more.
+        XCTAssertTrue(store.runs.isEmpty, "we hold NO runs — the count proxy sees no difference")
+        XCTAssertEqual(try decodeDoc(url).runs.count, 3)
+
+        XCTAssertTrue(store.reloadFromDisk(), "the conditional save must still fire")
+        let relaunched = GameScoreboardStore(fileURL: url)
+        XCTAssertTrue(relaunched.runs.isEmpty, "the next launch does not resurrect them")
+        XCTAssertEqual(relaunched.tombstones.count, 3, "…because the tombstones persisted")
+    }
+
+    func testReloadAfterDeletionIsIdempotent() throws {
+        let url = tempURL()
+        let store = GameScoreboardStore(fileURL: url)
+        for i in 1...3 { store.record(game: .collectorsPuzzle, score: i, settingsSummary: nil, at: Double(i)) }
+        let peerBytes = try Data(contentsOf: url)
+        store.deleteAll()
+        try peerBytes.write(to: url)
+        XCTAssertTrue(store.reloadFromDisk())
+
+        XCTAssertFalse(store.reloadFromDisk(), "our own rewritten doc needs no further save")
+        XCTAssertFalse(store.reloadFromDisk())
+        XCTAssertTrue(store.runs.isEmpty)
+        XCTAssertEqual(store.tombstones.count, 3, "re-applying a document changes nothing")
+    }
+
+    /// The REVERSE direction: the tombstones arrive from a peer and delete OUR local rows.
+    func testPeerTombstonesDeleteOurLocalRuns() throws {
+        let url = tempURL()
+        let store = GameScoreboardStore(fileURL: url)
+        let r1 = store.record(game: .collectorsPuzzle, score: 1, settingsSummary: nil, at: 1000)
+        let r2 = store.record(game: .collectorsPuzzle, score: 2, settingsSummary: nil, at: 2000)
+        let r3 = store.record(game: .collectorsPuzzle, score: 3, settingsSummary: nil, at: 3000)
+
+        let peerDoc = GameScoreboardStore.Document(
+            installId: "peer-install", runs: [],
+            deleted: [GameScoreboardStore.Tombstone(id: r1.id, at: 5000, byInstallId: "peer-install"),
+                      GameScoreboardStore.Tombstone(id: r2.id, at: 5000, byInstallId: "peer-install")])
+        try JSONEncoder().encode(peerDoc).write(to: url)
+
+        XCTAssertTrue(store.reloadFromDisk(), "we still hold r3, which the peer doc lacks")
+        XCTAssertEqual(store.runs.map(\.id), [r3.id], "the peer's deletions applied to our log")
+        XCTAssertEqual(store.tombstones.count, 2)
+        let relaunched = GameScoreboardStore(fileURL: url)
+        XCTAssertEqual(relaunched.runs.map(\.id), [r3.id], "and they stayed deleted across a relaunch")
+    }
+
+    func testDeletionSurvivesRelaunch() {
+        let url = tempURL()
+        let store = GameScoreboardStore(fileURL: url)
+        store.record(game: .collectorsPuzzle, score: 7, settingsSummary: nil, at: 1000)
+        store.record(game: .musicWithFriends, score: 4, settingsSummary: nil, at: 2000)
+        store.delete(game: .collectorsPuzzle)
+
+        let relaunched = GameScoreboardStore(fileURL: url)
+        XCTAssertNil(relaunched.bestScore(.collectorsPuzzle))
+        XCTAssertEqual(relaunched.bestScore(.musicWithFriends), 4)
+        XCTAssertEqual(relaunched.tombstones.count, 1, "the tombstone is part of the document")
+    }
+
+    /// THE MIGRATION PROOF for the tombstone key: a document written by the PREVIOUS build has
+    /// no `deleted` key at all, and must decode with every run intact.
+    func testPreTombstoneDocumentWithoutDeletedKeyStillDecodes() throws {
+        let url = tempURL()
+        let doc = """
+        { "schemaVersion": 1, "installId": "old-install", "runs": [
+          { "id": "\(UUID().uuidString)", "game": "collectorsPuzzle", "score": 12,
+            "at": 1000, "settingsSummary": "2:00 · 2 targets", "originInstallId": "old-install" },
+          { "id": "\(UUID().uuidString)", "game": "musicWithFriends", "score": 6, "at": 2000 }
+        ] }
+        """
+        try Data(doc.utf8).write(to: url)
+        let store = GameScoreboardStore(fileURL: url)
+        XCTAssertEqual(store.runs.count, 2, "the pre-tombstone byte shape decodes unchanged")
+        XCTAssertEqual(store.bestScore(.collectorsPuzzle), 12)
+        XCTAssertEqual(store.bestScore(.musicWithFriends), 6)
+        XCTAssertTrue(store.tombstones.isEmpty, "a missing key is 'nothing deleted', not a failure")
+    }
+
+    /// A racing peer document can legitimately carry BOTH a run and its tombstone (it deleted
+    /// the row after writing it, or merged two devices' halves). The tombstone wins — on the
+    /// launch decode and on a live reload.
+    func testDocumentCarryingBothARunAndItsTombstoneSuppressesTheRun() throws {
+        let doomed = GameScoreboardStore.RunRecord(
+            id: UUID(), game: "collectorsPuzzle", score: 99, at: 1000,
+            settingsSummary: nil, detail: nil, originInstallId: "peer")
+        let keeper = GameScoreboardStore.RunRecord(
+            id: UUID(), game: "collectorsPuzzle", score: 5, at: 2000,
+            settingsSummary: nil, detail: nil, originInstallId: "peer")
+        let doc = GameScoreboardStore.Document(
+            installId: "peer", runs: [doomed, keeper],
+            deleted: [GameScoreboardStore.Tombstone(id: doomed.id, at: 3000, byInstallId: "peer")])
+
+        let initURL = tempURL()
+        try JSONEncoder().encode(doc).write(to: initURL)
+        let atLaunch = GameScoreboardStore(fileURL: initURL)
+        XCTAssertEqual(atLaunch.runs.map(\.id), [keeper.id], "init filters the runs through the tombstones")
+        XCTAssertEqual(atLaunch.bestScore(.collectorsPuzzle), 5, "the 99 never shows")
+
+        let reloadURL = tempURL()
+        let live = GameScoreboardStore(fileURL: reloadURL)      // empty to start
+        try JSONEncoder().encode(doc).write(to: reloadURL)
+        XCTAssertTrue(live.reloadFromDisk(), "the doc still carries a tombstoned run ⇒ rewrite it")
+        XCTAssertEqual(live.runs.map(\.id), [keeper.id])
+    }
+
+    /// `clear()` is the ERASURE path (AccountDeletionService's 5.1.1(v) guarantee, and the
+    /// authoritative fixture seed) — NOT the user's delete. It must leave no tombstones behind:
+    /// 500 of them after "erase my account" is residual personal data about the user's
+    /// activity, and it would make the seeded document non-byte-clean. This test is what fails
+    /// if someone "unifies" `clear()` with `deleteAll()`.
+    func testHardClearLeavesNoTombstones() throws {
+        let url = tempURL()
+        let store = GameScoreboardStore(fileURL: url)
+        store.record(game: .collectorsPuzzle, score: 7, settingsSummary: nil, at: 1000)
+        store.record(game: .musicWithFriends, score: 4, settingsSummary: nil, at: 2000)
+        store.delete(game: .collectorsPuzzle)
+        XCTAssertEqual(store.tombstones.count, 1, "precondition: a user delete DID tombstone")
+
+        store.clear()
+        XCTAssertTrue(store.runs.isEmpty)
+        XCTAssertTrue(store.tombstones.isEmpty, "erasure leaves no trace of what was played")
+        XCTAssertTrue(try decodeDoc(url).runs.isEmpty)
+        XCTAssertTrue(try decodeDoc(url).deleted?.isEmpty ?? true)
+        // …and the BYTES are the pre-tombstone shape: `encodeIfPresent` omits the key outright,
+        // so an erased store is indistinguishable from one written by the shipped build.
+        let raw = String(data: try Data(contentsOf: url), encoding: .utf8) ?? ""
+        XCTAssertFalse(raw.contains("\"deleted\""), "the key is omitted entirely, not written as []")
+    }
+
+    /// The `maxRuns` trim is a LOCAL DISPLAY BOUND, not a user deletion. Tombstoning there
+    /// would turn "my log got long on this device" into a cross-device erase of rows the peers
+    /// are still happily showing.
+    func testCapTrimDoesNotTombstone() {
+        let store = GameScoreboardStore(fileURL: tempURL())
+        for i in 0..<(GameScoreboardStore.maxRuns + 2) {
+            store.record(game: .collectorsPuzzle, score: i, settingsSummary: nil, at: Double(i))
+        }
+        XCTAssertEqual(store.runs.count, GameScoreboardStore.maxRuns)
+        XCTAssertTrue(store.tombstones.isEmpty, "trimming for length is not deleting")
+    }
+
+    /// The tombstone list is capped, evicting OLDEST-FIRST — and this pins the accepted cost of
+    /// that: an evicted id stops being suppressed, so a peer that was offline across
+    /// `maxTombstones` deletions and still holds the run gets ONE stale row back (which the
+    /// user deletes again). Bounded and benign; unbounded growth of a SYNCED document is not.
+    func testTombstoneListIsCappedOldestFirst() throws {
+        let url = tempURL()
+        let overflow = GameScoreboardStore.maxTombstones + 100
+        let stones = (0..<overflow).map {
+            GameScoreboardStore.Tombstone(id: UUID(), at: Double($0), byInstallId: "peer")
+        }
+        try JSONEncoder().encode(GameScoreboardStore.Document(installId: "peer", runs: [], deleted: stones))
+            .write(to: url)
+
+        let store = GameScoreboardStore(fileURL: url)
+        XCTAssertEqual(store.tombstones.count, GameScoreboardStore.maxTombstones)
+        XCTAssertEqual(store.tombstones.last?.id, stones.last?.id, "the NEWEST survive")
+        XCTAssertEqual(store.tombstones.first?.at, Double(overflow - GameScoreboardStore.maxTombstones),
+                       "…and the oldest 100 were evicted")
+
+        // The evicted id no longer suppresses: a peer doc still holding that run re-adds it.
+        let evicted = stones[0].id
+        let ghost = GameScoreboardStore.RunRecord(
+            id: evicted, game: "collectorsPuzzle", score: 3, at: 10,
+            settingsSummary: nil, detail: nil, originInstallId: "peer")
+        try JSONEncoder().encode(GameScoreboardStore.Document(installId: "peer", runs: [ghost]))
+            .write(to: url)
+        store.reloadFromDisk()
+        XCTAssertEqual(store.runs.map(\.id), [evicted],
+                       "documented resurrection window — one stale row, not data loss")
+    }
 }

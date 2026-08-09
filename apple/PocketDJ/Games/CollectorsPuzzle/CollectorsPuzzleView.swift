@@ -24,6 +24,8 @@ struct CollectorsPuzzleView: View {
     /// Non-nil ⇒ the Add-to picker is up for THIS song (change 3: tap the card / "File into…"
     /// to file it into ANY collection, not just a preselected target). Carrying the SONG (not
     /// a Bool) means a mid-sheet drift or top-up can never make the sheet file the wrong card.
+    /// Nil-ing it — Done, swipe-down, Esc — is also the moment the filing SETTLES: the engine
+    /// scores the whole opening once and advances (see the `.sheet`/`onChange` pair below).
     /// Declared here in the body-level `@State` block on purpose — the only platform fence in
     /// this file is inside `yearRow`, and a shared property that lands inside an `#if os(iOS)`
     /// ships on iOS while the macOS/visionOS ARCHIVES fail at ship time.
@@ -52,13 +54,19 @@ struct CollectorsPuzzleView: View {
         // player can search and file the card anywhere, targets or no targets.
         .sheet(item: $filingSong) { song in
             AddToCollectionView(item: .song(song.id)) { target in
-                puzzle.endFiling(assignedTo: target)
-                filingSong = nil          // scored → dismiss → the round advances
+                // MULTI-COLLECTION FILING (Levi 2026-08-08): note the add and STAY OPEN. This
+                // is the app's one multi-select picker and it never self-dismisses for any
+                // other caller; Gem Collector was the sole exception (`filingSong = nil` right
+                // here), which is exactly what stopped a player filing one card into several
+                // crates. No score here either — see the settle point below.
+                puzzle.noteFiled(to: target)
             }
         }
-        // Cancel / swipe-down / Esc / Done: no point, no advance, the card stays, and the
-        // clock resumes with the credited pause. `endFiling` is idempotent, so the callback
-        // above (which sets `filingSong = nil` and therefore fires this too) is harmless.
+        // Dismiss (Done / swipe-down / Esc) is the ONE place a filing settles: `endFiling`
+        // credits the held clock, scores the card ONCE for the whole opening however many
+        // collections it landed in, advances, and re-arms audio. An opening that added
+        // nothing — or whose adds were all toggled back off — is a cancel: no point, no
+        // advance, the card stays. `endFiling` stays idempotent for the legacy callers.
         .onChange(of: filingSong) { _, new in
             if new == nil { puzzle.endFiling(assignedTo: nil) }
         }
