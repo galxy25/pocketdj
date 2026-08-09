@@ -73,6 +73,22 @@ struct PocketDJApp: App {
         Task { await autoSyncIfDue() }
     }
 
+    /// Start or RESUME the lifetime play-count capture, once the two things it depends on exist:
+    /// the decoded baseline (so "never captured" is a real answer rather than "not loaded yet")
+    /// and the loaded catalog (so the walk has something to resolve Apple's rows against — with an
+    /// empty catalog every row is unresolved, and committing that stamps a high-water mark with
+    /// zero counts stored, wedging the install into incremental-only).
+    ///
+    /// Both calls self-guard and are one-shot per launch, so every trigger that reaches here —
+    /// scene phase, the catalog landing, the baseline decode finishing — is free to call it.
+    @MainActor private func startPlayCountCaptureIfReady() {
+        guard app.state == .loaded, amPlayBaseline.hasLoaded else { return }
+        // An interrupted run has counts and a cursor banked on disk: continue it before
+        // considering a fresh first-run walk.
+        if playCounts.resumeCaptureIfInterrupted(songs: app.songs) { return }
+        playCounts.autoCaptureIfNeverCaptured(songs: app.songs)
+    }
+
     /// Wire the sync's settings-backed seams. Done HERE rather than in `init` because
     /// `playlistSync` is `@State` — touching it during init is "used before being initialized".
     /// Idempotent, so every entry point can call it.
@@ -396,7 +412,9 @@ struct PocketDJApp: App {
         // bumps `revision`, which is what the Browse feed and the row badge key on.
         let amPlayBaseline = AMPlayBaselineStore(fileURL: AMPlayBaselineStore.launchURL(), loadNow: false)
         _amPlayBaseline = State(initialValue: amPlayBaseline)
-        let playCounts = PlayCountService(baseline: amPlayBaseline, stats: playStats)
+        let playCounts = PlayCountService(baseline: amPlayBaseline, stats: playStats,
+                                          runURL: PlayCountService.launchRunURL(),
+                                          auditURL: PlayCountService.launchAuditURL())
         _playCounts = State(initialValue: playCounts)
         // Append-only play TIMELINE (History mode) — distinct from the aggregate playStats above.
         let playHistory = PlayHistoryStore(fileURL: PlayHistoryStore.launchURL())
@@ -1319,13 +1337,24 @@ struct PocketDJApp: App {
                 // rather than a `.task`, because the inbound pull resolves Apple Music
                 // catalog ids against the catalog — running it earlier would ask about an
                 // empty id space and pull nothing.
-                .onChange(of: app.state) { _, _ in syncFavoritesIfReady() }
+                .onChange(of: app.state) { _, _ in
+                    syncFavoritesIfReady()
+                    // The catalog just landed — this is the first moment a walk can resolve
+                    // anything, and at cold launch it is strictly later than scene-phase `.active`.
+                    if onboarding.isComplete { startPlayCountCaptureIfReady() }
+                }
                 // Recommendation-engine auto-flush: idempotent, and internally a no-op while
                 // the Settings toggle is off (re-armed by enabledDidChange when it flips on).
                 .task { recEngine.startAutoFlush() }
                 // Apple's play-count baseline, decoded OFF the main actor (see the store's init).
                 // Idempotent: it refuses to run against a store that has already been touched.
-                .task { await amPlayBaseline.loadFromDiskAsync() }
+                .task {
+                    await amPlayBaseline.loadFromDiskAsync()
+                    // `isEmpty` reads true for the whole ~70 ms this decode takes, so the capture
+                    // triggers gate on `hasLoaded` and are re-armed HERE — otherwise a launch
+                    // whose scene-phase tick beat the decode would never try again.
+                    if onboarding.isComplete { startPlayCountCaptureIfReady() }
+                }
                 // Periodic while-active tick for the DAILY auto-sync: an app left open across
                 // its fire time (default 4:20 PM) still runs the pass — launch/foreground alone
                 // would miss it. 15-min cadence; every check is cheap and single-flighted.
@@ -1351,17 +1380,23 @@ struct PocketDJApp: App {
                     switch phase {
                     case .active:
                         streaming.onScenePhaseActive()
-                        // FIRST-RUN play-count capture. The Apple baseline ships empty, so until
-                        // this runs Browse's "Plays" sort ranks by this app's own playback only —
-                        // which looks authoritative and is wrong (nothing above single digits for
-                        // a library holding 50-play songs). Self-guards on emptiness, availability
-                        // and one-shot-per-launch, so this is a no-op on every subsequent
-                        // foreground; the full walk never becomes a recurring launch cost.
-                        if onboarding.isComplete {
-                            Task { [weak playCounts] in
-                                await playCounts?.autoCaptureIfNeverCaptured(songs: app.songs)
-                            }
-                        }
+                        // PLAY-COUNT CAPTURE — first run, and auto-resume.
+                        //
+                        // The Apple baseline ships empty, so until a capture lands Browse's
+                        // "Plays" sort ranks by this app's own playback only — which looks
+                        // authoritative and is wrong (nothing above single digits for a library
+                        // holding 50-play songs). The walk is CHECKPOINTED, so a run the app died
+                        // in the middle of has its cursor and its counts banked on disk: the
+                        // second call picks it up where it stopped rather than starting a
+                        // multi-minute walk over. Both self-guard (baseline loaded, catalog
+                        // loaded, MusicKit available, one shot per launch, not already running),
+                        // so this is a no-op on every subsequent foreground.
+                        //
+                        // Hung off `app.state` as well as scene phase further down: at cold launch
+                        // `.active` fires while `app.songs` is still empty, and a walk with no
+                        // catalog resolves NOTHING — which would stamp a high-water mark with zero
+                        // counts stored and wedge the install into incremental-only.
+                        if onboarding.isComplete { startPlayCountCaptureIfReady() }
                         // Cross-device freshness beyond launch (throttled inside).
                         // HELD during onboarding: .active fires at cold launch too, and a
                         // full pass would pull/push before stage 1 decides the profile mode.
@@ -1405,6 +1440,10 @@ struct PocketDJApp: App {
                         // Mix-deck session: same doctrine — the decks' latest playheads (and any
                         // debounced slider value still in memory) land before a suspension→kill.
                         mixDeckSession.flush()
+                        // A play-count walk in flight holds a background assertion, but its
+                        // checkpoint writes are queued off-main — land them before suspension so
+                        // an interrupted read resumes from its real cursor, not an older one.
+                        Task { [weak playCounts] in await playCounts?.flushCaptureWrites() }
                         // Recommendation engine: land the pending deltas before a possible
                         // suspension→kill (5 s debounce; inert while the toggle is off).
                         recEngine.flushSoon()

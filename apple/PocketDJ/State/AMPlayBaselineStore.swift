@@ -37,7 +37,7 @@ final class AMPlayBaselineStore {
     /// read-only reference data and is deliberately NOT fed into `PlayStatsStore.lastPlayedAt`
     /// (the storage manager sorts LRP eviction by that, and importing Apple's dates would
     /// reshuffle the entire downloaded set).
-    struct Entry: Codable, Equatable {
+    struct Entry: Codable, Equatable, Sendable {
         var n: Int
         var lastMs: Double?
     }
@@ -48,7 +48,7 @@ final class AMPlayBaselineStore {
     /// `lastPlayedHighWaterMs` was ADDED after v1 shipped and is Optional: synthesized
     /// `decodeIfPresent` already makes that backward-compatible, so the schema version must NOT
     /// be bumped for it (a bump has previously discarded user data in this repo).
-    struct Document: Codable {
+    struct Document: Codable, Sendable {
         var schemaVersion: Int = amPlayBaselineSchemaVersion
         /// Where the capture came from: "library-xml" (the exporter) or "musickit" (on-device).
         var source: String = "musickit"
@@ -100,6 +100,12 @@ final class AMPlayBaselineStore {
 
     /// What the last `replaceAll` decided — read by the Settings copy after a `false`.
     private(set) var lastOutcome: ApplyOutcome = .applied
+
+    /// Has the on-disk document been read yet? `isEmpty` alone cannot answer "is there a baseline"
+    /// during the ~70 ms the async launch decode takes — it reads `true` for a store that simply
+    /// has not loaded, which is how a spurious full walk gets started against a baseline that
+    /// already exists on disk. Every automatic trigger gates on THIS.
+    private(set) var hasLoaded = false
 
     @ObservationIgnored private let fileURL: URL
     /// Sibling of `fileURL` holding ONLY the provisional stamps. See `Document.provisional`.
@@ -240,6 +246,52 @@ final class AMPlayBaselineStore {
         return true
     }
 
+    /// Merge ONE checkpoint of a RUNNING capture into the live baseline — the thing that makes an
+    /// interrupted walk worth something instead of worth nothing.
+    ///
+    /// ── A MONOTONE PREVIEW, AND ONLY THAT ─────────────────────────────────────────────────────
+    /// It RAISES the counts it is handed and touches nothing else. Deliberately absent:
+    ///   • the all-zero and coverage guards — a partial IS a fraction of the library by
+    ///     definition, and those guards judge a WHOLE snapshot. They still run, once, at commit
+    ///     (`replaceAll`), which is the only place a broken read can be recognised as broken;
+    ///   • `capturedAtMs`, the high-water mark, and provisional retirement — every one of those is
+    ///     a whole-walk decision. A partial that stamped a mark would make a broken read permanent
+    ///     (every later walk incremental, the library never re-read); a partial that retired
+    ///     provisional stamps would delete plays no counter had absorbed yet, and the badge would
+    ///     silently go backwards with no way back;
+    ///   • lowering. `max`, not replace, so a checkpoint can never make Browse WORSE than it was
+    ///     before the walk started. A genuine Music.app reset lowering a count is a same-source
+    ///     SNAPSHOT decision, and is made once, at commit.
+    ///
+    /// ── SET, NEVER ADD ────────────────────────────────────────────────────────────────────────
+    /// `partial` is the run's RUN-TO-DATE total per song, never a delta, so this SETs (via `max`)
+    /// rather than accumulating. Re-applying the same checkpoint — a resume that re-reads it, a
+    /// retry, a duplicate call — is idempotent: `max(x, x) == x`. Nothing here ever adds to what is
+    /// already stored, which is the one invariant the whole design rests on.
+    ///
+    /// Callers hand over the WHOLE accumulator each time, not the rows since the last checkpoint.
+    /// That is what makes the store self-heal: a checkpoint whose background write was coalesced
+    /// away (or lost to a kill) is fully carried by the next one.
+    ///
+    /// Returns how many songs actually moved — 0 means nothing changed and nothing was written.
+    @discardableResult
+    func mergePartial(_ partial: [String: Entry]) -> Int {
+        var changed = 0
+        for (songId, entry) in partial where entry.n > 0 {
+            let prior = counts[songId]
+            let merged = Entry(n: max(prior?.n ?? 0, entry.n),
+                               lastMs: AppleMusicPlayCountCapture.maxDate(prior?.lastMs, entry.lastMs))
+            if prior != merged {
+                counts[songId] = merged
+                changed += 1
+            }
+        }
+        guard changed > 0 else { return 0 }
+        revision &+= 1
+        saveSoon()
+        return changed
+    }
+
     /// Record an Apple-Music play THIS app started, as a timestamp the next capture can retire.
     /// Non-Apple playback must never come through here (it accumulates in `PlayStatsStore`).
     func noteApplePlay(_ songId: String, at nowMs: Double = Date().timeIntervalSince1970 * 1000) {
@@ -343,6 +395,8 @@ final class AMPlayBaselineStore {
         sourceName = nil
         lastOutcome = .applied
         revision &+= 1
+        // A checkpoint's background write must not resurrect the document we are deleting.
+        writeGeneration &+= 1
         try? FileManager.default.removeItem(at: fileURL)
         try? FileManager.default.removeItem(at: provisionalURL)
     }
@@ -359,6 +413,7 @@ final class AMPlayBaselineStore {
         let side = (try? Data(contentsOf: provisionalURL))
             .flatMap { try? JSONDecoder().decode(ProvisionalDocument.self, from: $0) }
         adoptProvisional(side, legacy: doc?.provisional)
+        hasLoaded = true
     }
 
     /// Decode OFF the main actor, then adopt. The app path: 2.8 MB of JSON costs ~70 ms to decode
@@ -367,16 +422,17 @@ final class AMPlayBaselineStore {
     /// Refuses to run against a store that has already been touched — adopting a disk document on
     /// top of live state would resurrect retired provisional stamps.
     func loadFromDiskAsync() async {
-        guard revision == 0, counts.isEmpty, provisional.isEmpty else { return }
+        guard revision == 0, counts.isEmpty, provisional.isEmpty else { hasLoaded = true; return }
         let (main, side) = (fileURL, provisionalURL)
         let loaded = await Task.detached(priority: .userInitiated) { () -> (Document?, ProvisionalDocument?) in
             let doc = (try? Data(contentsOf: main)).flatMap { try? JSONDecoder().decode(Document.self, from: $0) }
             let pro = (try? Data(contentsOf: side)).flatMap { try? JSONDecoder().decode(ProvisionalDocument.self, from: $0) }
             return (doc, pro)
         }.value
-        guard revision == 0, counts.isEmpty, provisional.isEmpty else { return }
+        guard revision == 0, counts.isEmpty, provisional.isEmpty else { hasLoaded = true; return }
         if let doc = loaded.0 { adopt(doc) }
         adoptProvisional(loaded.1, legacy: loaded.0?.provisional)
+        hasLoaded = true
         revision &+= 1   // the UI's feed keys on this — without it a late load never reaches Browse
     }
 
@@ -418,6 +474,9 @@ final class AMPlayBaselineStore {
     /// explicit capture/import (never per play), and the tests' byte-identity assertions read the
     /// file the instant the call returns.
     private func save() {
+        // Any background write still queued now holds a STALE document — invalidate it, or a
+        // checkpoint's write could land on top of this one and undo a commit.
+        writeGeneration &+= 1
         let enc = JSONEncoder()
         // Deterministic key order: re-importing the same snapshot must produce a BYTE-IDENTICAL
         // file, and JSONEncoder does not otherwise emit dictionary keys in a stable order.
@@ -425,6 +484,52 @@ final class AMPlayBaselineStore {
         if let data = try? enc.encode(document()) { try? data.write(to: fileURL, options: .atomic) }
         saveProvisional()
     }
+
+    /// Serialized, OFF-MAIN document write — the checkpoint path.
+    ///
+    /// A checkpointed capture writes the whole document ~20 times on a 96k library. At 108.7 ms of
+    /// main-actor JSON encoding each (measured, 56,224 rows) doing that synchronously would be two
+    /// solid seconds of dropped frames spread across the walk, which is exactly the kind of cost
+    /// the rest of this store is written to avoid.
+    ///
+    /// Chained so two writes can never interleave, generation-stamped so a superseded write skips
+    /// itself (a synchronous `save()` or a later checkpoint always wins), and each individual write
+    /// is still the same ATOMIC tmp+rename `save()` uses — so an interruption at any instant leaves
+    /// a whole, valid document on disk, never a half-written one.
+    ///
+    /// ONLY the encode runs off-main; the staleness check and the write itself are back ON the
+    /// main actor, together. Splitting them was a real, measured race (it flaked 1 run in 4): a
+    /// checkpoint's task read "still current", the main actor then finished the walk and committed
+    /// synchronously, and the checkpoint's older bytes landed on top of the commit — the file held
+    /// one chunk while memory held the whole library. The encode is the expensive half (~109 ms at
+    /// 56k rows); the write of the encoded bytes is single-digit ms, which is what the main actor
+    /// pays here, ~20 times across a multi-minute walk.
+    private func saveSoon() {
+        writeGeneration &+= 1
+        let gen = writeGeneration
+        let doc = document()          // value snapshot taken HERE, on the main actor
+        let url = fileURL
+        let prior = writeChain
+        writeChain = Task.detached(priority: .utility) { [weak self] in
+            await prior?.value
+            let enc = JSONEncoder()
+            enc.outputFormatting = .sortedKeys
+            guard let data = try? enc.encode(doc) else { return }
+            await MainActor.run {
+                guard let self, self.writeGeneration == gen else { return }   // superseded
+                try? data.write(to: url, options: .atomic)
+            }
+        }
+    }
+
+    /// Await whatever background write is outstanding. The seam the tests read the file through,
+    /// and the flush the app takes on the way to the background.
+    func flushPendingWrites() async { await writeChain?.value }
+
+    @ObservationIgnored private var writeChain: Task<Void, Never>?
+    /// Bumped by every write attempt; a queued background write whose stamp is no longer current
+    /// carries a superseded document and skips.
+    @ObservationIgnored private(set) var writeGeneration: Int = 0
 
     /// The SMALL write — the per-play hot path (0.185 ms measured, versus 108.7 ms for `save()`).
     private func saveProvisional() {

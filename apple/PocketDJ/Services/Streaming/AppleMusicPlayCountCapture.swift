@@ -175,6 +175,319 @@ enum AppleMusicPlayCountCapture {
     }
 }
 
+// MARK: - The CHECKPOINTED walk
+//
+// The original `capture(since:resolve:)` above collects the whole library in a function-local
+// `var` and hands it back once, at 100%. On a 96,000-song library that walk is 2-5 minutes, so
+// ANY interruption — the user navigating away, the app backgrounding, a jetsam kill, a thrown
+// MusicKit error, task cancellation — discarded every row of it and left the baseline empty.
+// Browse then ranked by this app's own playback (nothing above single digits) while the real
+// library held 50-play songs. That is the bug this section exists to kill.
+//
+// The shape below is `PlaylistAppleMusicSync`'s `RunSnapshot`, applied to a row walk: persist on
+// every step, hydrate a `.running` snapshot as INTERRUPTED at launch, resume from the cursor.
+
+/// The schema of the durable capture-run document. Bumped only on an INCOMPATIBLE change: a run
+/// recorded under a different version is discarded (a fresh full walk), never mis-resumed.
+let playCountRunSchemaVersion = 1
+
+extension AppleMusicPlayCountCapture {
+
+    /// One Apple library row, reduced to the only fields the walk reads. This is the seam the
+    /// tests drive: a fake pager can emit these by the thousand, be interrupted at any page, and
+    /// prove resume/idempotence without MusicKit, a network, or a signed-in library.
+    struct LibraryRow: Sendable, Equatable {
+        /// Apple's LIBRARY row id (`i.…`) — unique per row, and NOT the catalog id. Used only as
+        /// the sort-drift guard's identity (see `walk`); it never reaches the store.
+        var rowId: String
+        var catalogId: String?
+        var title: String
+        var artist: String
+        /// nil ⇒ never played, on a library-scoped fetch. Never stored as a literal 0.
+        var playCount: Int?
+        var lastPlayedMs: Double?
+    }
+
+    /// A pager over the library, sorted `lastPlayedDate` DESCENDING.
+    ///
+    /// `offset` rather than an opaque cursor because that is what MusicKit actually exposes:
+    /// `MusicLibraryRequest` carries plain `limit`/`offset` stored properties, while
+    /// `MusicItemCollection.nextBatch()` is an in-memory handle that cannot be serialized and so
+    /// buys nothing across a relaunch. The real pager uses `nextBatch()` while the walk stays in
+    /// ONE process (the proven path — `AppleMusicLibraryIndexer` rides it) and falls back to an
+    /// `offset` request whenever the caller asks for a position it isn't already sitting on,
+    /// which is exactly the resume case.
+    protocol LibraryPager: Sendable {
+        func page(offset: Int, limit: Int) async throws -> [LibraryRow]
+    }
+
+    /// Rows per library request.
+    ///
+    /// `MusicLibraryRequest.limit` is a plain stored property that `capture(since:)` never set, so
+    /// the framework default (undocumented; 100 for library requests in practice) governed — about
+    /// 960 IPC round trips for a 96k library. 500 cuts that to ~192 while keeping one page's
+    /// materialized `MusicItemCollection` small (500 `Song` objects, comfortably under a MB), and
+    /// it is the unit the cursor is aligned to, so it also bounds how much a mid-page failure can
+    /// cost: nothing, because a page is folded whole or not at all.
+    static let defaultPageLimit = 500
+
+    /// Rows between durable checkpoints (10 pages).
+    ///
+    /// The trade is loss-on-interruption against write cost. A checkpoint writes the run document
+    /// AND the baseline; at 96k rows the baseline is 2.8 MB and ~109 ms to encode (measured), so
+    /// checkpointing every 500-row page would be ~192 writes — minutes of pure I/O. 5,000 rows is
+    /// ~20 writes on that library (~2 s of BACKGROUND encode+write across a 2-5 minute walk) while
+    /// bounding worst-case loss to ~5,000 rows, a few seconds of walking.
+    static let defaultCheckpointRows = 5_000
+
+    /// How many recently-folded library row ids the run carries as its sort-drift guard. See the
+    /// guard's comment in `walk` — realistic drift is the handful of songs played DURING the walk,
+    /// so 1,000 is several orders of headroom for ~20 KB in the run document.
+    static let boundaryGuardCap = 1_000
+
+    /// The durable record of ONE capture run: the cursor, the running totals, and the run's own
+    /// per-song accumulator. Written atomically at every checkpoint; hydrated at launch so a run
+    /// the app died in the middle of resumes instead of restarting.
+    ///
+    /// ── WHY THE ACCUMULATOR LIVES HERE AND NOT ONLY IN THE STORE ─────────────────────────────
+    /// `counts` is the RUN-TO-DATE total per song, summed across Apple's duplicate library rows
+    /// for one catalog song. The store cannot stand in for it: the store also holds counts from a
+    /// previous baseline (an imported `playcounts.json`, an earlier walk), so "what has THIS run
+    /// attributed to this song so far" is not recoverable from it. Keeping the accumulator in the
+    /// run document makes a resume self-sufficient — it does not have to trust the store at all —
+    /// and it is what lets the final commit run the whole-walk decisions (`readNothing`, the
+    /// high-water mark, `countsToStore`, provisional retirement) over a COMPLETE walk, exactly as
+    /// the un-checkpointed version did.
+    struct Run: Codable, Equatable, Sendable {
+        var schemaVersion: Int = playCountRunSchemaVersion
+        /// "manual" · "auto" · "full" — audit only; every trigger drives this same code path.
+        var trigger: String = "manual"
+        /// Epoch ms the run STARTED. This is the snapshot's `capturedAtMs`, and it deliberately
+        /// stays pinned across resumes: provisional stamps are retired at/below it, so the earlier
+        /// (more conservative) value can only ever keep a play, never delete one Apple's counters
+        /// had not yet absorbed.
+        var startedMs: Double = 0
+        var updatedMs: Double = 0
+        /// The high-water mark the run started from. nil ⇒ FULL walk. Pinned for the run's life:
+        /// changing it mid-walk would change where the walk stops.
+        var since: Double?
+        var isFullWalk: Bool = true
+        /// The library sort the cursor is valid against. A stored run recorded under a different
+        /// sort is discarded rather than resumed — an offset means nothing under a different order.
+        var sortKey: String = Run.sortKeyLastPlayedDesc
+        /// Rows consumed. THE resume offset. Always page-aligned (a page is folded whole or not
+        /// at all), which is what makes "interrupted mid-batch" a state that cannot exist.
+        var cursor: Int = 0
+        /// songId → the run's SUMMED counter so far. See the type doc.
+        var counts: [String: AMPlayBaselineStore.Entry] = [:]
+        /// The most recently folded library row ids — the sort-drift guard. See `walk`.
+        var boundaryRowIds: [String] = []
+        var scanned: Int = 0
+        var withPlayCount: Int = 0
+        var unresolved: Int = 0
+        var maxLastPlayedMs: Double?
+        var checkpoints: Int = 0
+        /// False while a run is live AND when the process died mid-run — the "interrupted" state
+        /// the UI flags as resumable. True once the walk reached the end of the library (or the
+        /// incremental mark).
+        var completed: Bool = false
+        /// WHY it stopped, in words the owner can act on.
+        var stopReason: String = ""
+
+        static let sortKeyLastPlayedDesc = "lastPlayedDate-desc"
+
+        /// A fresh run against the store's current mark.
+        static func starting(since: Double?, trigger: String, nowMs: Double) -> Run {
+            Run(trigger: trigger, startedMs: nowMs, updatedMs: nowMs, since: since,
+                isFullWalk: since == nil)
+        }
+
+        /// Can this stored run be picked back up? A completed run is history, not work; a run from
+        /// another schema or another sort has a cursor that means nothing here.
+        var isResumable: Bool {
+            !completed && schemaVersion == playCountRunSchemaVersion
+                && sortKey == Run.sortKeyLastPlayedDesc && startedMs > 0
+        }
+
+        /// The run as the whole-walk `Result` every existing decision is written against. Only
+        /// meaningful for a COMPLETED run — see `readNothing`/`highWaterToAdopt`, both of which
+        /// are whole-walk predicates that a partial must never be judged by.
+        var result: Result {
+            Result(counts: counts, capturedAtMs: startedMs, maxLastPlayedMs: maxLastPlayedMs,
+                   scanned: scanned, unresolved: unresolved, withPlayCount: withPlayCount,
+                   isFullWalk: isFullWalk)
+        }
+
+        var songsHeld: Int { counts.count }
+        var playsHeld: Int { counts.values.reduce(0) { $0 + $1.n } }
+
+        /// The O(1) projection Settings renders and the app hydrates at launch — everything the
+        /// owner needs to answer "did this work?", and nothing that is O(library).
+        var audit: Audit {
+            Audit(schemaVersion: schemaVersion, trigger: trigger, startedMs: startedMs,
+                  updatedMs: updatedMs, isFullWalk: isFullWalk, cursor: cursor, scanned: scanned,
+                  withPlayCount: withPlayCount, unresolved: unresolved, songsHeld: songsHeld,
+                  playsHeld: playsHeld, checkpoints: checkpoints, completed: completed,
+                  stopReason: stopReason)
+        }
+    }
+
+    /// The tiny sidecar the app reads at LAUNCH. Deliberately separate from `Run`: hydrating the
+    /// audit must not cost a 2.5 MB decode on the way to the first frame, and the audit has to
+    /// outlive the run document (which is deleted once its counts are committed).
+    struct Audit: Codable, Equatable, Sendable {
+        var schemaVersion: Int = playCountRunSchemaVersion
+        var trigger: String = "manual"
+        var startedMs: Double = 0
+        var updatedMs: Double = 0
+        var isFullWalk: Bool = true
+        var cursor: Int = 0
+        var scanned: Int = 0
+        var withPlayCount: Int = 0
+        var unresolved: Int = 0
+        var songsHeld: Int = 0
+        var playsHeld: Int = 0
+        var checkpoints: Int = 0
+        var completed: Bool = false
+        var stopReason: String = ""
+
+        /// The run died with the process (or was cancelled) and has work banked on disk.
+        var isInterrupted: Bool { !completed && startedMs > 0 }
+    }
+
+    /// Walk the library in pages, folding each page into `run` and handing the caller a durable
+    /// checkpoint every `checkpointRows` rows.
+    ///
+    /// ── SET, NEVER ADD, ACROSS A RESUME ───────────────────────────────────────────────────────
+    /// Within one walk a song's counter is the SUM of Apple's duplicate library rows for it, so
+    /// the fold below genuinely adds. That is only safe because every row is folded EXACTLY ONCE:
+    ///   • the cursor is page-aligned, so a page is folded whole or not at all — there is no
+    ///     "half a page" state to resume into;
+    ///   • `run.counts[songId]` is the run's RUN-TO-DATE total, and every checkpoint hands the
+    ///     store that total to SET (not a delta to add), so re-applying any checkpoint — a retry,
+    ///     a resume that re-reads it, a duplicate call — is idempotent;
+    ///   • the sort-drift guard below stops the one case where a row could be visited twice.
+    /// Run the whole thing twice and the store lands on byte-identical bytes.
+    ///
+    /// ── THE SORT-DRIFT GUARD ──────────────────────────────────────────────────────────────────
+    /// `lastPlayedDate` descending is not stable under mutation: play one song mid-walk and it
+    /// jumps to row 0, shifting every later row by one, so an `offset` resume re-reads the row
+    /// that sat just BEFORE the cursor. Folding that row a second time would add its plays twice —
+    /// the single way a checkpointed walk can inflate a counter. So the run carries the ids of the
+    /// rows it folded most recently and skips any it has already seen. Drift is bounded by the
+    /// number of songs played during the walk (a handful), and the guard holds 1,000.
+    /// The mirror case — a row DELETED from the library mid-walk shifts rows earlier, so a resume
+    /// skips one — costs a single row that the next full re-read picks up. Accepted, deliberately:
+    /// the alternative (re-reading the whole library on every resume) is the bug being fixed.
+    ///
+    /// ── WHAT IS *NOT* DECIDED HERE ────────────────────────────────────────────────────────────
+    /// `readNothing`, the high-water mark, the cross-source fold and provisional retirement are
+    /// WHOLE-WALK judgements and are made once, by the caller, on a COMPLETED run. In particular
+    /// `readNothing` (`scanned > 0 && withPlayCount == 0`) is true of the tail of every healthy
+    /// descending walk, so evaluating it per checkpoint would call a good walk broken — and
+    /// stamping a mark from a partial would make a genuinely broken read permanent.
+    nonisolated static func walk(pager: any LibraryPager,
+                                 run initial: Run,
+                                 resolve: @escaping Resolver,
+                                 pageLimit: Int = defaultPageLimit,
+                                 checkpointRows: Int = defaultCheckpointRows,
+                                 nowMs: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 * 1000 },
+                                 checkpoint: @escaping @Sendable (Run) async -> Void) async throws -> Run {
+        var run = initial
+        var recentOrder = run.boundaryRowIds
+        var recent = Set(recentOrder)
+        var sinceCheckpoint = 0
+
+        func remember(_ rowId: String) {
+            recentOrder.append(rowId)
+            recent.insert(rowId)
+            guard recentOrder.count > boundaryGuardCap else { return }
+            let drop = recentOrder.count - boundaryGuardCap
+            for old in recentOrder.prefix(drop) { recent.remove(old) }
+            recentOrder.removeFirst(drop)
+        }
+
+        do {
+            while true {
+                // Cancellation is checked ONLY at a page boundary, on purpose: that is what keeps
+                // the cursor page-aligned and makes "cancelled mid-batch" unrepresentable.
+                try Task.checkCancellation()
+                let page = try await pager.page(offset: run.cursor, limit: pageLimit)
+                if page.isEmpty {
+                    run.completed = true
+                    run.stopReason = "Reached the end of your library"
+                    run.updatedMs = nowMs()
+                    break
+                }
+                var reachedMark = false
+                for row in page {
+                    // Sorted descending ⇒ the first row at/below the mark ends an INCREMENTAL
+                    // walk. Rows with no last-played date sort last and are unplayed, so they end
+                    // it too.
+                    if let since = run.since {
+                        guard let lastMs = row.lastPlayedMs, lastMs > since else {
+                            reachedMark = true
+                            break
+                        }
+                    }
+                    if recent.contains(row.rowId) { continue }   // sort-drift guard (see the doc)
+                    remember(row.rowId)
+                    run.scanned += 1
+                    if let lastMs = row.lastPlayedMs, lastMs > (run.maxLastPlayedMs ?? 0) {
+                        run.maxLastPlayedMs = lastMs
+                    }
+                    // nil ⇒ never played on a library fetch. Never stored, never written as a 0.
+                    guard let plays = row.playCount, plays > 0 else { continue }
+                    run.withPlayCount += 1
+                    guard let songId = resolve(row.catalogId, row.title, row.artist) else {
+                        run.unresolved += 1
+                        continue
+                    }
+                    // Apple can hold several library rows for one catalog song (a duplicate add,
+                    // the same track off two albums). They are the SAME song here, so their
+                    // counters SUM — see the idempotence argument in the doc above.
+                    let prior = run.counts[songId]
+                    run.counts[songId] = .init(n: (prior?.n ?? 0) + plays,
+                                               lastMs: maxDate(prior?.lastMs, row.lastPlayedMs))
+                }
+                run.cursor += page.count
+                sinceCheckpoint += page.count
+                run.updatedMs = nowMs()
+                run.boundaryRowIds = recentOrder
+                // ONLY an EMPTY page ends the walk (handled at the top of the loop). A SHORT page
+                // deliberately does not: MusicKit gives no guarantee that every batch is full, and
+                // treating a short one as the end would silently truncate the library and then
+                // report success. The cost of being strict is one extra request per walk, which
+                // returns nothing.
+                if reachedMark {
+                    run.completed = true
+                    run.stopReason = "Everything played since the last read"
+                }
+                if run.completed || sinceCheckpoint >= checkpointRows {
+                    run.checkpoints += 1
+                    await checkpoint(run)
+                    sinceCheckpoint = 0
+                }
+                if run.completed { break }
+            }
+        } catch {
+            // Land what the walk HAS before giving up — the whole point of the rebuild. The cursor
+            // is page-aligned and the checkpoint write is atomic, so this can never leave a
+            // half-written document, and the next run picks up from here.
+            run.completed = false
+            run.updatedMs = nowMs()
+            run.boundaryRowIds = recentOrder
+            run.stopReason = error is CancellationError
+                ? "Stopped — it will pick up where it left off"
+                : "Apple Music stopped answering: \(error.localizedDescription)"
+            run.checkpoints += 1
+            await checkpoint(run)
+            throw error
+        }
+        return run
+    }
+}
+
 #if canImport(MusicKit)
 import MusicKit
 
@@ -186,60 +499,21 @@ extension AppleMusicPlayCountCapture {
         AppleMusicCredentials.isEnabled && MusicAuthorization.currentStatus == .authorized
     }
 
-    /// Walk the library newest-play-first and collect play counts.
-    ///
-    /// `since` = the store's high-water mark (epoch ms). Rows whose `lastPlayedDate` is at/below
-    /// it end the walk — everything older already has its counter in the snapshot. nil = full
-    /// walk (and only a full walk yields a replaceable snapshot).
-    ///
-    /// `nonisolated` + `async`: the caller must NOT be holding the main actor. Explicit trigger
-    /// only; never wire this to app launch.
-    nonisolated static func capture(since: Double?, resolve: @escaping Resolver,
-                                    nowMs: Double = Date().timeIntervalSince1970 * 1000) async throws -> Result {
-        var request = MusicLibraryRequest<MusicKit.Song>()
-        // `playCount` and `lastPlayedDate` are both first-class LibrarySongSortProperties keys, so
-        // this ordering is done BY THE LIBRARY — no client-side sort over 90k rows.
-        request.sort(by: \.lastPlayedDate, ascending: false)
-        let response = try await request.response()
-
-        var result = Result(capturedAtMs: nowMs, isFullWalk: since == nil)
-        var batch: MusicItemCollection<MusicKit.Song>? = response.items
-        outer: while let current = batch, !current.isEmpty {
-            for song in current {
-                let lastMs = song.lastPlayedDate.map { $0.timeIntervalSince1970 * 1000 }
-                // Sorted descending ⇒ the first row at/below the mark ends the incremental walk.
-                // Rows with NO last-played date sort last and can never be newer than the mark,
-                // so they end it too — and they are unplayed, which is nothing to record.
-                if let since {
-                    guard let lastMs, lastMs > since else { break outer }
-                }
-                result.scanned += 1
-                if let lastMs, lastMs > (result.maxLastPlayedMs ?? 0) { result.maxLastPlayedMs = lastMs }
-                // nil ⇒ never played (see the type doc). Never stored, never written as a 0.
-                guard let plays = song.playCount, plays > 0 else { continue }
-                result.withPlayCount += 1
-                guard let songId = resolve(catalogId(of: song), song.title, song.artistName) else {
-                    result.unresolved += 1
-                    continue
-                }
-                // Apple can hold several library rows for one catalog song (a duplicate add, the
-                // same track off two albums). They are the SAME song to PocketDJ, so their
-                // counters SUM — taking the max would silently lose plays.
-                let prior = result.counts[songId]
-                result.counts[songId] = .init(n: (prior?.n ?? 0) + plays,
-                                              lastMs: maxDate(prior?.lastMs, lastMs))
-            }
-            batch = current.hasNextBatch ? try await current.nextBatch() : nil
-        }
-        return result
-    }
+    // NOTE there is no all-in-one `capture(since:resolve:)` here any more. It collected the whole
+    // library in a function-local `var` and returned it once, at 100% — so on a 96,000-song
+    // library ANY interruption in those 2-5 minutes discarded every row. `walk` (above) replaced
+    // it rather than joining it: two walks, one of them unresumable, is exactly how the wrong one
+    // stays wired up. `MusicKitLibraryPager` below is what feeds the survivor.
 
     /// The catalog store id for a LIBRARY song. `id.rawValue` is the LIBRARY id (`i.…`), not a
     /// catalog id — the catalog id only rides the opaque `playParameters` blob. Same technique as
     /// `AppleMusicLibraryIndexer.catalogId(of:)` / `PlaylistWriteBack.catalogIds(of:)`.
-    private static func catalogId(of song: MusicKit.Song) -> String? {
+    ///
+    /// `encoder` is threaded in rather than allocated per song: this runs once per library row
+    /// (96k times on the owner's library) and a fresh `JSONEncoder` each time was measurable.
+    static func catalogId(of song: MusicKit.Song, encoder: JSONEncoder = JSONEncoder()) -> String? {
         guard let params = song.playParameters,
-              let data = try? JSONEncoder().encode(params),
+              let data = try? encoder.encode(params),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         for key in ["catalogId", "catalogID"] {
             if let value = obj[key] { return "\(value)" }
@@ -249,17 +523,76 @@ extension AppleMusicPlayCountCapture {
     }
 }
 
+/// The real `LibraryPager` — `MusicLibraryRequest<Song>` sorted `lastPlayedDate` descending.
+///
+/// Two paging mechanisms, used for what each is actually good for:
+///   • `MusicItemCollection.nextBatch()` while the walk stays in ONE process. This is the proven
+///     path (`AppleMusicLibraryIndexer` and the previous `capture(since:)` both ride it) and it
+///     avoids re-issuing a request per page.
+///   • `MusicLibraryRequest.offset` whenever the caller asks for a position this pager is not
+///     already sitting on — which is precisely the RESUME case, after a relaunch, where the
+///     `nextBatch()` handle no longer exists and could never have been serialized anyway.
+///
+/// An `actor` because it carries that cursor: the walk is `nonisolated` and must not be holding
+/// the main actor, and two concurrent walks are prevented at the service, not here.
+actor MusicKitLibraryPager: AppleMusicPlayCountCapture.LibraryPager {
+    /// The collection most recently served, and the offset of the row AFTER it.
+    private var last: MusicItemCollection<MusicKit.Song>?
+    private var nextOffset: Int = -1
+    /// One encoder for the whole walk — `catalogId(of:)` runs per row.
+    private let encoder = JSONEncoder()
+
+    init() {}
+
+    func page(offset: Int, limit: Int) async throws -> [AppleMusicPlayCountCapture.LibraryRow] {
+        var current: MusicItemCollection<MusicKit.Song>?
+        if offset == nextOffset, let last, last.hasNextBatch {
+            current = try await last.nextBatch(limit: limit)
+        }
+        if current == nil {
+            var request = MusicLibraryRequest<MusicKit.Song>()
+            // `lastPlayedDate` is a first-class LibrarySongSortProperties key, so the ordering is
+            // done BY THE LIBRARY — no client-side sort over 96k rows.
+            request.sort(by: \.lastPlayedDate, ascending: false)
+            request.limit = limit
+            request.offset = offset
+            current = try await request.response().items
+        }
+        guard let current, !current.isEmpty else {
+            last = nil
+            nextOffset = -1
+            return []
+        }
+        let enc = encoder
+        let rows = current.map { song in
+            AppleMusicPlayCountCapture.LibraryRow(
+                rowId: song.id.rawValue,
+                catalogId: AppleMusicPlayCountCapture.catalogId(of: song, encoder: enc),
+                title: song.title,
+                artist: song.artistName,
+                playCount: song.playCount,
+                lastPlayedMs: song.lastPlayedDate.map { $0.timeIntervalSince1970 * 1000 })
+        }
+        last = current
+        nextOffset = offset + rows.count
+        return rows
+    }
+}
+
 #else
 
 extension AppleMusicPlayCountCapture {
     /// No MusicKit in this build — the capture degrades to "read nothing", and the all-zero guard
     /// in `AMPlayBaselineStore.replaceAll` makes storing that a no-op rather than a wipe.
     static var isAvailable: Bool { false }
+}
 
-    nonisolated static func capture(since: Double?, resolve: @escaping Resolver,
-                                    nowMs: Double = Date().timeIntervalSince1970 * 1000) async throws -> Result {
-        Result(capturedAtMs: nowMs, isFullWalk: since == nil)
-    }
+/// No MusicKit ⇒ no library to page. An empty first page ends the walk immediately, which the
+/// caller reports as "read nothing" and the store's all-zero guard makes a no-op rather than a
+/// wipe — the same degradation `capture` above already has.
+actor MusicKitLibraryPager: AppleMusicPlayCountCapture.LibraryPager {
+    init() {}
+    func page(offset: Int, limit: Int) async throws -> [AppleMusicPlayCountCapture.LibraryRow] { [] }
 }
 
 #endif

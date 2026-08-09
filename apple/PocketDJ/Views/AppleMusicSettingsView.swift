@@ -61,8 +61,12 @@ struct AppleMusicSettingsView: View {
     @State private var copiedHash = false
     @State private var showSeedExporter = false
     @State private var seedDoc = EditsFile(data: Data())
-    // Play counts (lifetime plays: Apple's baseline + this app's own)
-    @State private var capturing = false
+    // Play counts (lifetime plays: Apple's baseline + this app's own).
+    // NOTE there is no `capturing` flag here any more. The run state lives on `PlayCountService`
+    // (app-scoped) because a view-local flag died with the pane, taking the status display with
+    // it AND resetting the in-flight guard — so re-entering Settings started a second 96k-row
+    // walk over the top of the first. Only the IMPORT status, which is genuinely a view action,
+    // is still local.
     @State private var playCountStatus: Status?
     @State private var showPlayCountImporter = false
     @State private var showPlayCountForgetConfirm = false
@@ -581,16 +585,25 @@ struct AppleMusicSettingsView: View {
                         .accessibilityIdentifier("playcounts-captured-at")
                 }
 
+                // WHAT THE LAST/CURRENT READ DID. Persisted on the service, so this survives
+                // navigating away, backgrounding and a relaunch — the owner can answer "did this
+                // work?" without a debugger, which is the whole point of the rebuild.
+                playCountRunRows(playCounts)
+
                 Button {
-                    runPlayCountCapture()
+                    playCounts.startCapture(songs: app.songs, trigger: "manual")
                 } label: {
-                    Label(capturing ? "Reading your library…" : "Refresh from Apple Music",
+                    Label(playCounts.isCapturing
+                            ? "Reading your library…"
+                            : (playCounts.lastCapture?.isInterrupted == true
+                               ? "Resume reading your library"
+                               : "Refresh from Apple Music"),
                           systemImage: "arrow.clockwise")
                 }
                 // Gated on the SAME check streaming playback uses. Without it the button is live
                 // on a build/device where MusicKit can never answer, and the only possible outcome
                 // is a walk that reads nothing.
-                .disabled(capturing || !AppleMusicPlayCountCapture.isAvailable)
+                .disabled(playCounts.isCapturing || !AppleMusicPlayCountCapture.isAvailable)
                 .accessibilityIdentifier("playcounts-capture")
 
                 // The way BACK to a full walk. `lastPlayedHighWaterMs` is otherwise write-only:
@@ -600,13 +613,21 @@ struct AppleMusicSettingsView: View {
                 // from another source — it folds onto it.
                 if playCounts.baseline.lastPlayedHighWaterMs != nil {
                     Button {
-                        playCounts.resetHighWater()
-                        runPlayCountCapture()
+                        playCounts.recaptureEverything(songs: app.songs)
                     } label: {
                         Label("Re-read everything from Apple Music", systemImage: "arrow.triangle.2.circlepath")
                     }
-                    .disabled(capturing || !AppleMusicPlayCountCapture.isAvailable)
+                    .disabled(playCounts.isCapturing || !AppleMusicPlayCountCapture.isAvailable)
                     .accessibilityIdentifier("playcounts-full-recapture")
+                }
+
+                if playCounts.isCapturing {
+                    Button(role: .cancel) {
+                        playCounts.cancelCapture()
+                    } label: {
+                        Label("Stop reading", systemImage: "stop.circle")
+                    }
+                    .accessibilityIdentifier("playcounts-cancel")
                 }
 
                 Button {
@@ -687,77 +708,67 @@ struct AppleMusicSettingsView: View {
         return f.string(from: Date(timeIntervalSince1970: ms / 1000))
     }
 
-    /// Run the MusicKit capture OFF the main actor, then apply it on the main actor.
-    private func runPlayCountCapture() {
-        guard let playCounts, !capturing else { return }
-        capturing = true
-        playCountStatus = nil
-        // Take ONE reference to the catalog on the main actor (the array is a value type, and the
-        // walk must never touch `AppModel`), then build both resolver indexes in the detached
-        // task — 96k rows of index-building is not main-thread work.
-        let songs = app.songs
-        let since = playCounts.baseline.lastPlayedHighWaterMs
-        let existing = playCounts.baseline.counts
-        let existingSource = playCounts.baseline.isEmpty ? nil : playCounts.baseline.source
-        Task {
-            do {
-                let resolve = await Task.detached(priority: .userInitiated) { () -> AppleMusicPlayCountCapture.Resolver in
-                    // FIRST-seen wins, matching `AppModel.songId(forAppleMusicId:)` so a song
-                    // present in two sources resolves to the id the rest of the app uses.
-                    let byCatalogId = Dictionary(songs.compactMap { s in s.appleMusicId.map { ($0, s.id) } },
-                                                 uniquingKeysWith: { first, _ in first })
-                    let rows = songs.map { (songId: $0.id, title: $0.name, artist: $0.artist) }
-                    return AppleMusicPlayCountCapture.resolver(
-                        byCatalogId: byCatalogId,
-                        byTitleArtist: AppleMusicPlayCountCapture.titleArtistIndex(rows))
-                }.value
-                let result = try await AppleMusicPlayCountCapture.capture(since: since, resolve: resolve)
-                // A walk that read rows but got nil for every play count is BROKEN, not empty —
-                // stop before it can stamp a high-water mark that makes the failure permanent.
-                if result.readNothing {
-                    capturing = false
-                    playCountStatus = .bad("Apple returned no play counts for \(result.scanned) "
-                                           + "songs it did list, so nothing was changed. Import a "
-                                           + "snapshot file instead.")
-                    return
-                }
-                let counts = AppleMusicPlayCountCapture.countsToStore(
-                    result, existing: existing, existingSource: existingSource, newSource: "musickit")
-                let applied = playCounts.applyCapture(
-                    counts: counts, capturedAtMs: result.capturedAtMs, source: "musickit",
-                    sourceName: Config.appleMusicSourceName,
-                    lastPlayedHighWaterMs: result.highWaterToAdopt,
-                    // Only the songs this walk actually resolved may have their provisional plays
-                    // retired — see `AMPlayBaselineStore.replaceAll`.
-                    observedSongIds: result.observedSongIds)
-                capturing = false
-                if applied {
-                    playCountStatus = .ok("Read \(result.scanned) song\(result.scanned == 1 ? "" : "s") · "
-                                          + "\(counts.count) with plays"
-                                          + (result.unresolved > 0 ? " · \(result.unresolved) not in your catalog" : ""))
-                } else {
-                    playCountStatus = .bad(Self.rejection(playCounts.baseline.lastOutcome))
-                }
-            } catch {
-                capturing = false
-                playCountStatus = .bad("Couldn't read your library: \(error.localizedDescription)")
+    /// THE AUDIT. Persisted on `PlayCountService`, so every one of these lines survives navigating
+    /// away, backgrounding and a relaunch — the previous design kept all of it in `@State` that
+    /// died with the pane, which is why a multi-minute read could report nothing at all.
+    ///
+    /// Says, in order: whether a read is live / finished / interrupted, when it started, how far it
+    /// got, how much it is holding, how many checkpoints have been banked, and WHY it stopped.
+    @ViewBuilder private func playCountRunRows(_ playCounts: PlayCountService) -> some View {
+        if let run = playCounts.lastCapture, run.startedMs > 0 {
+            HStack {
+                if playCounts.isCapturing { ProgressView().controlSize(.small) }
+                Text(playCounts.isCapturing ? "Reading now"
+                     : run.isInterrupted ? "Interrupted read" : "Last read")
+                    .font(.caption.bold())
+                Spacer()
+                Text(Date(timeIntervalSince1970: run.startedMs / 1000)
+                    .formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+            }
+            .accessibilityIdentifier("playcounts-run-header")
+
+            LabeledContent("Songs read",
+                           value: "\(run.scanned)"
+                           + (run.isFullWalk ? "" : " (since the last read)"))
+                .font(.caption)
+                .accessibilityIdentifier("playcounts-run-scanned")
+
+            LabeledContent("Held by this read",
+                           value: "\(run.songsHeld) song\(run.songsHeld == 1 ? "" : "s") · "
+                           + "\(run.playsHeld) play\(run.playsHeld == 1 ? "" : "s")")
+                .font(.caption)
+                .accessibilityIdentifier("playcounts-run-held")
+
+            if run.checkpoints > 0 {
+                LabeledContent("Saved so far",
+                               value: "\(run.checkpoints) checkpoint\(run.checkpoints == 1 ? "" : "s")"
+                               + (run.unresolved > 0 ? " · \(run.unresolved) not in your catalog" : ""))
+                    .font(.caption)
+                    .accessibilityIdentifier("playcounts-run-checkpoints")
+            }
+
+            if !run.stopReason.isEmpty {
+                Text(run.stopReason)
+                    .font(.caption)
+                    .foregroundStyle(run.isInterrupted ? Theme.accent2 : Theme.fgDim)
+                    .accessibilityIdentifier("playcounts-run-reason")
+            }
+
+            if run.isInterrupted, !playCounts.isCapturing {
+                Text("Everything read so far is already saved — tap Resume and it picks up at "
+                     + "row \(run.cursor) instead of starting over.")
+                    .font(.caption).foregroundStyle(Theme.accent2)
+                    .accessibilityIdentifier("playcounts-run-resume-hint")
             }
         }
     }
 
     /// Say WHICH guard fired — the remedies are different, so "it didn't work" is not enough.
+    /// ONE copy of this wording, on the service: the capture path reports the same refusals from
+    /// its persisted audit, and two hand-maintained versions would eventually disagree.
     private static func rejection(_ outcome: AMPlayBaselineStore.ApplyOutcome) -> String {
-        switch outcome {
-        case .applied:
-            return "Nothing was changed."
-        case .rejectedNoPlays:
-            return "Apple returned no play counts, so your existing numbers were kept. "
-                 + "Import a snapshot file instead."
-        case .rejectedCoverageLoss(let kept, let existing):
-            return "That read found only \(kept) songs against the \(existing) already stored, "
-                 + "which looks like a failed read rather than a smaller library — your existing "
-                 + "numbers were kept."
-        }
+        PlayCountService.rejectionReason(outcome)
     }
 
     // MARK: ALWAYS — Apple Music playlist write-back queue
