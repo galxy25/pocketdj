@@ -133,6 +133,42 @@ final class SetlistPlayerTests: XCTestCase {
         XCTAssertNil(seq.capturedHistoryContext)
     }
 
+    /// A GAME's run tag names no collection, so the collections lookup alone answers
+    /// (.setlist, nil) and History labelled every Gem Collector play "Set list". With the real
+    /// composition-root provider installed, the run captures (.game, "Gem Collector") instead.
+    func testPuzzleRunCapturesTheGameHistoryContext() async {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        let app = AppModel(loader: TestData.StubLoader())
+        await app.loadIfNeeded()
+        let colURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-seqgame-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: colURL) }
+        let collections = CollectionsStore(fileURL: colURL)
+        collections.app = app
+        // The EXACT provider PocketDJApp installs — not a stand-in, so this can't drift from it.
+        seq.historyContextProvider = { [weak collections] in
+            PocketDJApp.historyContext(forSourceSetlistId: $0, collections: collections)
+        }
+
+        seq.play([.init(id: "t1", title: "T1", artist: "A")],
+                 sourceSetlistId: "\(CollectorsPuzzleEngine.runTagPrefix)\(UUID().uuidString)")
+        XCTAssertEqual(seq.capturedHistoryContext?.source, .game)
+        XCTAssertEqual(seq.capturedHistoryContext?.name, GameKind.collectorsPuzzle.label)
+        seq.stop()
+
+        // An ordinary run through the SAME provider is untouched by the game branch.
+        guard let sl = collections.realize(songIds: ["sng_1"], name: "Friday Night") else {
+            return XCTFail("realize failed")
+        }
+        seq.play([.init(id: "sng_1", title: "One", artist: "A")], sourceSetlistId: sl.id)
+        XCTAssertEqual(seq.capturedHistoryContext?.source, .setlist)
+        XCTAssertEqual(seq.capturedHistoryContext?.name, "Friday Night")
+        seq.stop()
+    }
+
     /// Stop clears the source id, so no detail screen mistakes itself for the one playing.
     func testStopClearsSourceSetlistId() {
         let rips = makeRips(); let burns = makeBurns(rips)
