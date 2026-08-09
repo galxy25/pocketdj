@@ -70,6 +70,12 @@ final class PlaybackCoordinator {
     /// default keeps tests inert (the variant song then resolves via edition-constrained
     /// search, else the variant rip).
     var variantAppleMusicIdOfSong: (String, SongVariant) -> String? = { _, _ in nil }
+    /// EDITION fields for an id-only `play(id:…)` — the three values `appleMusicId(for:)`
+    /// needs. Without them the minimal projection below carries only the PRIMARY id, so a
+    /// prefer-explicit substitution could never be computed downstream and every ordinary ▶
+    /// streamed the primary (usually clean) cut. Injected in PocketDJApp, mirroring
+    /// `appleMusicIdOfSong`; the nil-returning default keeps tests unchanged.
+    var editionsOfSong: (String) -> (explicit: Bool?, explicitId: String?, cleanId: String?) = { _ in (nil, nil, nil) }
 
     /// Which backend last won the cycle (nil = nothing playing). Drives the inline player's
     /// branch (rip waveform vs. Apple Music position scrubber) + the "via …" badge.
@@ -219,9 +225,15 @@ final class PlaybackCoordinator {
             return
         }
         // Carry the catalog id (looked up) so the AM streaming provider is eligible — the
-        // provider chain reads `appleMusicId` for a source-less streamable row.
+        // provider chain reads `appleMusicId` for a source-less streamable row — AND the
+        // EDITION fields, without which `AppleMusicProvider.streamCandidates` can only ever
+        // offer the primary id and the prefer-explicit preference silently does nothing.
+        let ed = editionsOfSong(id)
         await play(IndexSong.minimal(id: id, name: title, artist: artist,
-                                     appleMusicId: appleMusicIdOfSong(id)), atMs: atMs)
+                                     appleMusicId: appleMusicIdOfSong(id),
+                                     explicit: ed.explicit,
+                                     appleMusicIdExplicit: ed.explicitId,
+                                     appleMusicIdClean: ed.cleanId), atMs: atMs)
     }
 
     /// Whether a cue offset passed to `play(_:atMs:)` would actually be APPLIED for

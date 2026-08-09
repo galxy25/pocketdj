@@ -2074,6 +2074,21 @@ final class CollectionsStore {
         return nil
     }
 
+    /// Does the collection a RUN came from carry the clean-versions-only flag? Resolved
+    /// through `originCollection` so it works for the reusable Now Playing setlist (whose
+    /// origin is the pocket/playlist that filled it) as well as a frozen setlist played
+    /// directly. This is rule 1 of `EditionPolicy` — the input that makes a clean-only
+    /// collection beat the global "Prefer explicit versions" toggle. A setlist origin is
+    /// false: a frozen set already carries its editions per track.
+    func isCleanOnly(sourceSetlistId id: String?) -> Bool {
+        guard let origin = originCollection(forSourceSetlistId: id) else { return false }
+        switch origin.kind {
+        case .playlist: return playlist(origin.id)?.cleanOnly == true
+        case .pocket:   return pocket(origin.id)?.cleanOnly == true
+        default:        return false
+        }
+    }
+
     /// SUPERSEDE remap (Discover eventual consistency): every collection reference to a
     /// provisional `amrec_` song follows the INDEXED catalog entry that replaced it —
     /// playlists (recursive node trees), pockets (songIds + per-song repeats), and

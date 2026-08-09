@@ -461,6 +461,18 @@ struct PocketDJApp: App {
         setlistPlayer.originProvider = { [weak collections] in
             collections?.originCollection(forSourceSetlistId: $0)
         }
+        // EDITION selection: the ONE precedence function (EditionPolicy) applied to every
+        // queue at `play()` — the collection's clean-only flag first, then the global
+        // "Prefer explicit versions" tri-state, else unchanged. `cleanOnlyOrigin` supplies
+        // rule 1's input for the run as a whole.
+        setlistPlayer.cleanOnlyOrigin = { [weak collections] in
+            collections?.isCleanOnly(sourceSetlistId: $0) ?? false
+        }
+        setlistPlayer.editionDecider = { [weak app, weak settings] songId, cleanOnly in
+            EditionPolicy.decide(song: app?.songsById[songId],
+                                 collectionCleanOnly: cleanOnly,
+                                 preferExplicitRaw: settings?.preferExplicitVersionsRaw)
+        }
         rips.settings = settings       // rip server URL + token come from settings
         musicSync.settings = settings  // AM-sync uses the SAME rip server URL + token
         // Give the BURN sidecar builder the catalog to resolve IndexSong/IndexAlbum.
@@ -476,6 +488,13 @@ struct PocketDJApp: App {
         // songs stream their primary cut untouched — the substitution-default safety gate).
         coordinator.variantAppleMusicIdOfSong = { [weak app] id, v in
             app?.songsById[id]?.appleMusicId(for: v)
+        }
+        // …and the EDITION fields for an id-only play(), without which the coordinator's
+        // minimal projection carries the primary id alone and the prefer-explicit
+        // substitution can never be computed downstream (it silently streamed clean).
+        coordinator.editionsOfSong = { [weak app] id in
+            let s = app?.songsById[id]
+            return (s?.explicit, s?.appleMusicIdExplicit, s?.appleMusicIdClean)
         }
         amProvider.preferExplicitVersions = { [weak settings] in settings?.preferExplicitVersionsRaw }
         // Play-tracking hooks — every surface that starts a song notes it to BOTH the aggregate
@@ -544,7 +563,11 @@ struct PocketDJApp: App {
             }
             if let np = rips?.nowPlaying?.songId { ids.insert(np) }
             if let sp = setlistPlayer, sp.isRunning, sp.index < sp.queue.count {
+                // BOTH ids: a substituted row's burned file lives under the VARIANT id
+                // (`resolveId`) while the deck reports the base one, so protecting only the
+                // base would leave the file the player has open eligible for eviction.
                 ids.insert(sp.queue[sp.index].id)
+                ids.insert(sp.queue[sp.index].resolveId)
             }
             return ids
         }

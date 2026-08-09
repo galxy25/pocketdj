@@ -626,6 +626,37 @@ final class BurnStore {
         return item.startMs
     }
 
+    // MARK: EDITION-KEYED resolution (clean + explicit side by side)
+
+    /// Is a READY burned file actually on disk for this id? (The probe `EditionStorage`
+    /// walks its ladder with.)
+    func hasLocalFile(forSong songId: String) -> Bool { localURL(forSong: songId) != nil }
+
+    /// The burned file to play for `base` under an edition `decision`, walking
+    /// `EditionPolicy.storageIds`:
+    ///   • no substitution  → the base id (byte-for-byte today's behaviour),
+    ///   • clean-only       → ONLY `<base>_clean` (skip-not-fallback: an explicit burn on the
+    ///                        device is deliberately not a stand-in),
+    ///   • a preference     → the wanted edition, else the LEGACY un-suffixed burn (every burn
+    ///                        that predates edition keying — never orphaned), else the other
+    ///                        edition. `isWanted == false` tells the caller it played something
+    ///                        else and should lazily acquire the wanted one.
+    func localURLForPlayback(forSong base: String, decision: EditionPolicy.Decision)
+        -> (url: URL, release: (() -> Void)?, id: String, isWanted: Bool)? {
+        guard let hit = EditionPolicy.resolveStored(base: base, decision: decision,
+                                                    isStored: { self.hasLocalFile(forSong: $0) }),
+              let file = localURLForPlayback(forSong: hit.id) else { return nil }
+        return (file.url, file.release, hit.id, hit.isWanted)
+    }
+
+    /// `startMs` for whichever edition `localURLForPlayback(forSong:decision:)` resolved.
+    func startMs(forSong base: String, decision: EditionPolicy.Decision) -> Int? {
+        guard let hit = EditionPolicy.resolveStored(base: base, decision: decision,
+                                                    isStored: { self.hasLocalFile(forSong: $0) })
+        else { return nil }
+        return startMs(forSong: hit.id)
+    }
+
     /// The measured beat grid for a song (from the rips manifest), if the indexer has analyzed it.
     /// `bpm` (preferred over the catalog BPM for beat-matching) + the `firstDownbeatMs` phase
     /// reference + the `steady` gate. nil when there's no grid yet (engine falls back to catalog

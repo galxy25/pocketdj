@@ -161,7 +161,8 @@ struct SongRowView: View {
                     FavoriteToggle(songId: data.songId, appleMusicId: data.appleMusicId)
 
                     RowTransport(song: (id: data.songId, title: data.title, artist: data.artist),
-                                 startMs: data.startMs)
+                                 startMs: data.startMs,
+                                 cleanOnlyCollection: data.cleanOnlyCollection)
                 }
             }
         }
@@ -265,6 +266,11 @@ struct SongRowData {
     /// can't be added to the linked Apple Music playlist (no confident catalog match). Drives the
     /// `xmark.icloud` "not backed up" badge. Always false on non-linked surfaces (Browse, setlists).
     var unsyncable: Bool = false
+    /// Rule 1 of `EditionPolicy`: is the collection this row is shown in clean-versions-only?
+    /// Set by the pocket / playlist detail views so a single-row ▶ obeys the same restriction
+    /// the ▶ Play sequencer does — without it, prefer-explicit could play an explicit cut from
+    /// inside a clean-only collection. False everywhere else (Browse, search, setlists).
+    var cleanOnlyCollection: Bool = false
 
     /// Project a catalog song. Pass the song's resolved album for art + genre/year.
     /// Year prefers the song's own value, falling back to the album's.
@@ -322,6 +328,9 @@ struct CollectionSongRow: View {
     /// Apple Music). When true, the row surfaces the `xmark.icloud` badge for a song the write-back
     /// queue has flagged `.unresolvable`. Off everywhere else (Browse, unlinked collections).
     var syncsToSource: Bool = false
+    /// Set by a CLEAN-VERSIONS-ONLY collection, so this row's ▶ resolves the same edition the
+    /// collection's ▶ Play would (`EditionPolicy` rule 1 beats the global preference).
+    var cleanOnlyCollection: Bool = false
 
     private var album: IndexAlbum? { song.albumId.flatMap { app.albumsById[$0] } }
     private var unsyncable: Bool { syncsToSource && (writeBack?.isUnsyncable(song.id) ?? false) }
@@ -329,6 +338,7 @@ struct CollectionSongRow: View {
     var body: some View {
         var data = SongRowData(song: song, album: album)
         data.unsyncable = unsyncable
+        data.cleanOnlyCollection = cleanOnlyCollection
         return SongRowView(data: data, trailing: trailing)
     }
 }
@@ -451,6 +461,10 @@ struct RowTransport: View {
     @Environment(AppModel.self) private var app
     let song: (id: String, title: String, artist: String)
     var startMs: Int?
+    /// Rule 1 of `EditionPolicy`: is the collection this row is being shown in
+    /// clean-versions-only? Set by the pocket/playlist detail views; false everywhere else
+    /// (Browser, search, Discover), where the global preference decides alone.
+    var cleanOnlyCollection: Bool = false
     /// SongDetail-only: when set AND this song is already stemmed, tapping the stem glyph runs
     /// THIS (slides out the audition panel) instead of kicking off Stemify. nil everywhere else
     /// (the glyph always stemifies there), so no other surface gains the panel.
@@ -650,6 +664,16 @@ struct RowTransport: View {
         return "play.fill"
     }
 
+    /// LAZY RIP ON MISS for the single-row ▶ — the same one-song, on-demand enqueue the
+    /// sequencer uses (`RipsStore.requestEditionRipIfNeeded` → the existing durable queue +
+    /// dedup under the variant id), fired when this tap had to degrade onto a legacy or
+    /// other-edition file. Owner-gated like every other passive fan-out; idempotent, so
+    /// repeated taps while the rip is in flight enqueue once.
+    private func lazyRipWantedEdition(_ decision: EditionPolicy.Decision) {
+        guard decision.edition != nil, coordinator.isCatalogOwner() else { return }
+        Task { await rips.requestEditionRipIfNeeded(base: song.id, decision: decision) }
+    }
+
     private func doPlay() {
         // Now-playing row: toggle the ACTIVE backend (pause / resume) — don't replay. Apple
         // Music pauses/resumes via the coordinator; everything else (a rip stream AND a BURNED
@@ -657,14 +681,23 @@ struct RowTransport: View {
         // coordinator backend (`activeBackend == nil`), so `coordinator.togglePlayPause()` would
         // no-op — the row's pause button was dead for burned songs until this split.
         if isNowPlaying { isAppleMusic ? coordinator.togglePlayPause() : player.toggle(); return }
+        // The EDITION this tap should play — the SAME `EditionPolicy` decision the Play-All
+        // sequencer stamps, so a single tap and Play-All can never play different cuts of the
+        // same song. `cleanOnlyCollection` is rule 1's input (set by the collection detail
+        // views); Browser rows pass false and ride the global preference alone.
+        let decision = EditionPolicy.decide(song: app.songsById[song.id],
+                                            collectionCleanOnly: cleanOnlyCollection,
+                                            preferExplicitRaw: settings.preferExplicitVersionsRaw)
         // OFFLINE-FIRST: prefer a BURNED local file whenever one exists — zero-latency AND works
         // with NO network — in BOTH device and cloud mode (mirroring the Play-All sequencer's
-        // burned-first rule, so single taps and Play-All agree). The lookup is O(1): a songId →
-        // dict hit → one `fileExists` stat. Only when there's NO local file does cloud stream /
-        // device fall back to cloud for this single tap.
-        if let res = burns.localURLForPlayback(forSong: song.id) {
+        // burned-first rule, so single taps and Play-All agree). The lookup walks the edition
+        // ladder: the wanted edition, then (preference only) the legacy burn, then the other
+        // edition. Only when there's NO local file does cloud stream / device fall back to
+        // cloud for this single tap.
+        if let res = burns.localURLForPlayback(forSong: song.id, decision: decision) {
+            if !res.isWanted { lazyRipWantedEdition(decision) }
             playLocalFile(res.url, songId: song.id, title: song.title, artist: song.artist,
-                          startMs: burns.startMs(forSong: song.id), rips: rips, player: player,
+                          startMs: burns.startMs(forSong: res.id), rips: rips, player: player,
                           release: res.release)
             return
         }
@@ -673,9 +706,12 @@ struct RowTransport: View {
             // Hand the song to the matching engine: it tries Apple Music streaming FIRST for
             // an Apple Music (Local) song (when ready), else falls back to the rip server —
             // which rips/streams on demand and loads the SAME `PlayerEngine` the inline
-            // waveform/scrubber binds to, EXACTLY as before. A surfaced failure (no rip
-            // server / rip error) comes back on `coordinator.lastErrorMessage`.
-            await coordinator.play(id: song.id, title: song.title, artist: song.artist)
+            // waveform/scrubber binds to, EXACTLY as before. `variant` carries the edition
+            // decision, so the stream resolves that edition's catalog id and any rip is keyed
+            // under the variant id. A surfaced failure (no rip server / rip error) comes back
+            // on `coordinator.lastErrorMessage`.
+            await coordinator.play(id: song.id, title: song.title, artist: song.artist,
+                                   variant: decision.edition)
             if let msg = coordinator.lastErrorMessage { alertMessage = msg }
             busy = nil
         }

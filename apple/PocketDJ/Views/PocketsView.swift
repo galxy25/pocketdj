@@ -55,7 +55,8 @@ struct PocketDetailView: View {
     /// drag source. Select/Copy fold into the SAME force-sync context menu (one-menu rule).
     @ViewBuilder private func pocketSongRow(_ song: IndexSong) -> some View {
         VStack(spacing: 0) {
-            CollectionSongRow(song: song, syncsToSource: collections.pocket(pocketId)?.syncsWithSource ?? false)
+            CollectionSongRow(song: song, syncsToSource: collections.pocket(pocketId)?.syncsWithSource ?? false,
+                              cleanOnlyCollection: pocket?.cleanOnly == true)
                 // reorderHost: this ForEach owns .onMove — the drag source attaches only to
                 // selected rows so plain row-drags still reorder (macOS's only reorder path).
                 .selectableSongRow(id: song.id, scope: selectionScope, reorderHost: true,

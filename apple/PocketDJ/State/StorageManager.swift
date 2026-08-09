@@ -76,11 +76,15 @@ final class StorageManager {
         if usage > capBytes {
             let protected = protectedSongIds()
             // LRP first — never-played (0) ahead of everything, oldest download breaking ties.
+            // A burn's `songId` is the RESOLVING id, so a substituted (clean/explicit) burn is
+            // keyed "sng_…_clean" while its plays are recorded against the BASE song — read
+            // recency through `baseId` or every variant burn looks never-played and is evicted
+            // first, ahead of genuinely cold files.
             let candidates = burns.items.values
                 .filter { $0.state == .ready && !protected.contains($0.songId) }
                 .sorted { a, b in
-                    let lastA = playStats.lastPlayedAt(a.songId) ?? 0
-                    let lastB = playStats.lastPlayedAt(b.songId) ?? 0
+                    let lastA = playStats.lastPlayedAt(SongVariant.baseId(a.songId)) ?? 0
+                    let lastB = playStats.lastPlayedAt(SongVariant.baseId(b.songId)) ?? 0
                     if lastA != lastB { return lastA < lastB }
                     return a.downloadedAt < b.downloadedAt
                 }
