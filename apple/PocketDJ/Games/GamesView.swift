@@ -204,8 +204,29 @@ struct GamesView: View {
 
     // MARK: - Scoreboard
 
+    /// The scoreboard — TITLE INCLUDED, as an ordinary row.
+    ///
+    /// `Section { … } header: { Text("Scoreboard") }` is the obvious shape and is what this was.
+    /// It is wrong here, measurably: a `List` SECTION HEADER does not deliver a `.contextMenu`
+    /// on iOS at all (measured in the real a11y tree, iPhone 17 Pro, 2026-08-08 — a 1.2 s press
+    /// produced no menu, with the modifier on the HStack and with it on the Text). The gesture
+    /// the user actually asked for — "long press on the scoreboard category header" — was
+    /// therefore dead code on iOS, iPadOS AND visionOS, i.e. every platform but macOS, and the
+    /// only real affordance was the small ⋯.
+    ///
+    /// An ordinary List ROW *does* deliver a context menu on every platform — which the per-game
+    /// blocks below already prove on iOS — so the title is now a row styled as a header. Same
+    /// pixels, same ⋯, but the long press works.
+    ///
+    /// DO NOT "TIDY" THIS BACK INTO A `header:`. It is pinned by
+    /// `GamesUITests.testScoreboardHeaderRowLongPressDeletesEverything`, and that guard is
+    /// A/B-MEASURED, not assumed: reverting only this shape (identical view body, moved into
+    /// `header:`) and re-running the test fails it at the menu's `waitForExistence` — "a long
+    /// press on the Scoreboard header must open its menu" — while every other Games UI test,
+    /// the ⋯ test included, stays green. The row shape is the whole fix.
     private var scoreboardSection: some View {
         Section {
+            scoreboardTitleRow
             if gameScores.runs.isEmpty {
                 Text("No runs yet — play a game!")
                     .font(.subheadline).foregroundStyle(Theme.fgDim)
@@ -247,26 +268,24 @@ struct GamesView: View {
                     }
                 }
             }
-        } header: {
-            scoreboardHeader
         }
     }
 
-    /// "Scoreboard" + a ⋯ menu, and the SAME menu body on a right-click / long press.
+    /// "Scoreboard" + a ⋯ menu, and the SAME menu body on a right-click / long press. BOTH
+    /// affordances are real and neither is decorative: the ⋯ is discoverable and is the path a
+    /// headless UI test can drive on any platform, the long press is the gesture the request
+    /// named. It is a ROW, not a `Section` header — see `scoreboardSection` for the measurement
+    /// that forced that.
     ///
-    /// THE ⋯ IS THE LOAD-BEARING AFFORDANCE, not a convenience. Measured in the real a11y tree
-    /// (iPhone 17 Pro, 2026-08-08): a `List` SECTION HEADER does not deliver a `.contextMenu`
-    /// on iOS at all — a long press on it produces no menu, with the modifier on the HStack and
-    /// with it on the Text. The modifier stays for macOS, where a header is an ordinary view
-    /// and right-click is the platform gesture; it is unverified there because macOS XCUITest
-    /// can't run headlessly, so nothing depends on it. On iOS the long-press path to a delete
-    /// is the per-game ROWS below, whose menus offer both scopes. The ⋯ hides on an empty
-    /// board, where there is nothing to delete.
-    private var scoreboardHeader: some View {
-        HStack {
+    /// The whole row is the press target (`.contentShape` + the menu on the HStack), so the
+    /// gesture lands wherever the finger does, not only on the 10 characters of the word. On an
+    /// EMPTY board both the ⋯ and the context menu go away — there is nothing to delete, and an
+    /// empty menu that flashes open on a long press is worse than no menu.
+    private var scoreboardTitleRow: some View {
+        let row = HStack {
             Text("Scoreboard")
-                .contentShape(Rectangle())
-                .contextMenu { scoreboardHeaderMenu }
+                .font(.headline)
+                .foregroundStyle(Theme.fg)
                 // The identifier goes on the TEXT, not the HStack: an accessibility modifier
                 // on a container that is not itself an a11y element PROPAGATES to every child,
                 // and on the HStack it overwrote the ⋯ button's own identifier — measured in
@@ -280,6 +299,10 @@ struct GamesView: View {
                 }
                 .accessibilityIdentifier("games-scoreboard-menu")
             }
+        }
+        .contentShape(Rectangle())
+        return Group {
+            if gameScores.runs.isEmpty { row } else { row.contextMenu { scoreboardHeaderMenu } }
         }
     }
 

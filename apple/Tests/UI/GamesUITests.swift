@@ -358,14 +358,13 @@ final class GamesUITests: XCTestCase {
     // MARK: - Scoreboard deletion (right-click / long-press)
     //
     // WHAT THE TREE SHOWED (measured 2026-08-08, iPhone 17 Pro): a `List` SECTION HEADER does
-    // not deliver a `.contextMenu` on iOS — a 1.2 s press on the "Scoreboard" header produced
-    // no menu at all, with the modifier on the HStack AND with it on the Text. That is exactly
-    // why the header also carries a visible ⋯ `Menu`, which is what `testScoreboardHeaderMenu…`
-    // drives; the header's `.contextMenu` stays for macOS (an ordinary view there, right-click
-    // being the platform gesture) and is NOT asserted here, because macOS XCUITest cannot run
-    // headlessly in this environment. The per-game ROWS are ordinary List rows and their
-    // long-press menu works — that is the "individual scoreboard" half of the request, pinned
-    // by the two tests below.
+    // not deliver a `.contextMenu` on iOS — a 1.2 s press on a "Scoreboard" SECTION HEADER
+    // produced no menu at all, with the modifier on the HStack AND with it on the Text. The
+    // fix was not to give up on the gesture but to stop using a section header: the title is
+    // an ordinary List ROW now, and rows deliver context menus on every platform (the per-game
+    // blocks already proved that here). So all THREE press targets the request implies are
+    // asserted below on a real device tree — the category header, a game's block, and a run
+    // row — plus the ⋯, which stays as the discoverable affordance.
 
     /// The row's own context menu wipes THAT game and leaves the other alone.
     func testScoreboardGameRowContextMenuDeletesThatGamesRuns() {
@@ -390,6 +389,38 @@ final class GamesUITests: XCTestCase {
         XCTAssertTrue(best.label.contains("0"), "the game's board is empty (label: \(best.label))")
         XCTAssertTrue(app.any("games-best-musicWithFriends").label.contains("4"),
                       "the other game's scores are untouched")
+    }
+
+    /// THE LITERALLY-REQUESTED GESTURE: "long press … on the scoreboard category header".
+    ///
+    /// This test is the reason the title stopped being a `Section` header. Against that build it
+    /// FAILS at `waitForExistence` on the menu — iOS delivers no `.contextMenu` from a section
+    /// header, so the modifier there was dead code and the header half of the request was
+    /// satisfied only by the small ⋯. The title is an ordinary row now and the press works.
+    func testScoreboardHeaderRowLongPressDeletesEverything() {
+        let app = launch(extra: ["PDJ_SEED_GAMES": "1"])
+        XCTAssertTrue(app.any("games-card-puzzle").waitForExistence(timeout: 15))
+        let header = app.any("games-scoreboard-header")
+        XCTAssertTrue(app.swipeTo(header), "the Scoreboard title row never came into view")
+        assertUsable(header, app, "the Scoreboard title row")
+        header.openContextMenu()
+
+        let deleteAll = app.el("games-scoreboard-delete-all")
+        XCTAssertTrue(deleteAll.waitForExistence(timeout: 10),
+                      "a long press on the Scoreboard header must open its menu (it does not from a Section header)")
+        deleteAll.tap()
+        let confirm = deleteConfirmButton(app)
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10), "a delete this irreversible must confirm")
+        confirm.tap()
+
+        XCTAssertTrue(app.any("games-scoreboard-empty").waitForExistence(timeout: 10),
+                      "every run gone ⇒ the empty state returns")
+        // …and the title row survives the wipe: it is the section's own heading, not a row that
+        // belongs to a run, so it must still be there to press when new runs arrive.
+        XCTAssertTrue(app.any("games-scoreboard-header").exists,
+                      "the Scoreboard heading stays on an empty board")
+        XCTAssertFalse(app.el("games-scoreboard-menu").exists,
+                       "…but the ⋯ hides, since there is nothing left to delete")
     }
 
     /// The header's ⋯ wipes everything and the empty state comes back.
@@ -455,11 +486,22 @@ final class GamesUITests: XCTestCase {
         assertUsable(card, app, "the current-song card")
         // With a target selected the escape hatch is still there, labelled "Other…".
         assertUsable(app.el("puzzle-file"), app, "Other… (the any-collection escape hatch)")
-        let before = card.label
         card.tap()
 
         XCTAssertTrue(app.textFields["add-search-field"].waitForExistence(timeout: 10),
                       "tapping the song card must open the add-to picker")
+        // READ THE CARD *AFTER* THE SHEET IS UP, not before the tap. `PDJ_SEED_BURNS` writes a
+        // 2 SECOND tone per song (BurnStore), so an unfiled card expires on its own every two
+        // seconds and the round advances — legitimately, via the ticker's drift re-sync. Reading
+        // `before` ahead of the tap therefore raced that expiry across the ~1 s XCUITest spends
+        // querying and synthesising the tap, and this test flaked with "Drift…" ≠ "Pulse…" while
+        // the score assertion below passed, i.e. it failed on the confound and not on the
+        // contract. Once `beginFiling` has run the round is FROZEN (`filingSongId != nil` is the
+        // ticker's first early exit), so the label read here is the card the sheet is actually
+        // filing — which is the thing "cancel is not a skip" is about.
+        let filing = app.any("puzzle-current")
+        XCTAssertTrue(filing.exists, "the card stays in the tree behind the sheet")
+        let before = filing.label
         app.buttons["Done"].firstMatch.tap()
 
         XCTAssertTrue(app.any("puzzle-current").waitForExistence(timeout: 10))
