@@ -118,8 +118,18 @@ enum ScoreLayout {
     /// smoke test pins (items can never render out of reading order).
     nonisolated static func xPosition(onset16ths: Int, measureX: CGFloat,
                                       measureWidth: CGFloat) -> CGFloat {
+        xPosition(fractional16ths: Double(onset16ths), measureX: measureX, measureWidth: measureWidth)
+    }
+
+    /// The SAME x math for a FRACTIONAL position — what a playback cursor sitting between two
+    /// 16ths needs. Deliberately the one implementation both callers go through: a cursor computed
+    /// with its own formula drifts off the heads it is supposed to point at (the StaffChordView
+    /// wrong-place-cursor bug). `ScoreLayoutTests.testPlayheadXMatchesNoteHeadXOnALaidPage` pins
+    /// the agreement on a really laid page, not just on this arithmetic.
+    nonisolated static func xPosition(fractional16ths: Double, measureX: CGFloat,
+                                      measureWidth: CGFloat) -> CGFloat {
         let pad: CGFloat = 10                       // keep heads off the barlines
-        return measureX + pad + (measureWidth - 2 * pad) * CGFloat(onset16ths) / 16
+        return measureX + pad + (measureWidth - 2 * pad) * CGFloat(fractional16ths) / 16
     }
 
     /// Vertical staff position of a MIDI note on a clef: DIATONIC half-line steps above the
@@ -230,6 +240,100 @@ enum ScoreLayout {
             }
         }
         return nil
+    }
+
+    // MARK: Playback geometry (score cursor + played/current note marks)
+
+    /// A playback cursor resolved onto laid pages: which page it falls on, its x, and the vertical
+    /// rule's extent (the system's staves plus their ledger headroom — the same band `locate`
+    /// hit-tests against).
+    struct Playhead: Sendable, Equatable {
+        var page: Int
+        var x: CGFloat
+        var top: CGFloat
+        var bottom: CGFloat
+    }
+
+    /// Locate the playback cursor for a FRACTIONAL absolute 16th position (`ScorePlaybackState.
+    /// cursor16ths`). x comes from `xPosition(fractional16ths:)` — the note heads' own formula —
+    /// so the cursor and the notes it points at are the same geometry by construction, never a
+    /// parallel approximation (and never an `.offset()` anchor, whose frame collapses to x = 0).
+    ///
+    /// Past the end of the score it parks at the LAST laid measure's end rather than vanishing
+    /// (playback runs on past the final note). nil only when nothing is laid out at all — an empty
+    /// score — or on a non-finite input.
+    nonisolated static func playhead(at fractional16ths: Double, pages: [ScorePage]) -> Playhead? {
+        guard fractional16ths.isFinite else { return nil }
+        // Clamp BEFORE the Int conversion: a wild clock read must degrade, never trap.
+        let pos = min(max(fractional16ths, 0), ScorePlayhead.maxCursor16ths)
+        let measure = Int(pos / 16)
+        var park: Playhead?
+        for (pi, page) in pages.enumerated() {
+            for sys in page.systems {
+                guard let firstStrip = sys.strips.first, let lastStrip = sys.strips.last,
+                      !sys.measures.isEmpty else { continue }
+                let pad = 3 * sys.spacing                       // ledgerPad headroom
+                let top = firstStrip.top - pad
+                let bottom = lastStrip.top + 4 * sys.spacing + pad
+                if let lm = sys.measures.first(where: { $0.measureIndex == measure }) {
+                    let within = pos - Double(measure * 16)
+                    return Playhead(page: pi,
+                                    x: xPosition(fractional16ths: within, measureX: lm.x,
+                                                 measureWidth: lm.width),
+                                    top: top, bottom: bottom)
+                }
+                if let lm = sys.measures.last, lm.measureIndex < measure {
+                    park = Playhead(page: pi,
+                                    x: xPosition(fractional16ths: 16, measureX: lm.x,
+                                                 measureWidth: lm.width),
+                                    top: top, bottom: bottom)
+                }
+            }
+        }
+        return park
+    }
+
+    /// One note's rendered head, tagged with the absolute 16th it sounds at — the geometry the
+    /// played / current highlighting paints on.
+    struct PlayedMark: Sendable, Equatable {
+        var onset16ths: Int
+        var page: Int
+        var point: CGPoint
+    }
+
+    /// Page-space head centers for a whole event stream, onset-ordered. Built ONCE per (events,
+    /// pages) — never per playhead tick and never inside a SwiftUI body's hot path — so following
+    /// playback costs an integer compare per mark instead of re-laying the score.
+    ///
+    /// O(measures + events): the laid geometry is indexed by measure in one pass, so each event is
+    /// a dictionary hit (calling `notePoint` per event would re-scan every page's systems). The
+    /// per-note math is `notePoint`'s, line for line — `ScoreLayoutTests` pins that they agree.
+    nonisolated static func playedMarks(events: [StudioNoteEvent], bpm: Double, plan: ClefPlan,
+                                        pages: [ScorePage]) -> [PlayedMark] {
+        guard !events.isEmpty, !pages.isEmpty else { return [] }
+        var index: [Int: (page: Int, measure: LaidMeasure, system: LaidSystem)] = [:]
+        for (pi, page) in pages.enumerated() {
+            for sys in page.systems {
+                for lm in sys.measures where index[lm.measureIndex] == nil {
+                    index[lm.measureIndex] = (pi, lm, sys)
+                }
+            }
+        }
+        var out: [PlayedMark] = []
+        out.reserveCapacity(events.count)
+        for e in events {
+            guard (0...127).contains(e.note) else { continue }   // the quantizer drops these too
+            let abs16 = Int(ScorePlayhead.cursor16ths(ms: max(0, e.onMs), bpm: bpm).rounded())
+            guard let cell = index[abs16 / 16] else { continue }  // beyond the laid score
+            let staff = plan.staff(forNote: e.note)
+            guard let strip = cell.system.strips.first(where: { $0.role == staff }) else { continue }
+            let sp = spelledPosition(midi: e.note, clef: staff, accidental: e.accidental)
+            let x = xPosition(onset16ths: abs16 % 16, measureX: cell.measure.x,
+                              measureWidth: cell.measure.width)
+            let y = strip.top + 4 * cell.system.spacing - CGFloat(sp.position) * cell.system.spacing / 2
+            out.append(PlayedMark(onset16ths: abs16, page: cell.page, point: CGPoint(x: x, y: y)))
+        }
+        return out.sorted { $0.onset16ths < $1.onset16ths }
     }
 
     // MARK: Pagination

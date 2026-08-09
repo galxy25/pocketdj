@@ -87,6 +87,27 @@ struct PocketDJApp: App {
         // considering a fresh first-run walk.
         if playCounts.resumeCaptureIfInterrupted(songs: app.songs) { return }
         playCounts.autoCaptureIfNeverCaptured(songs: app.songs)
+    /// Resolve a sequencer run's Play-History origin (source-kind + display name) — the function
+    /// installed as `SetlistPlayer.historyContextProvider`. GAMES first, collections after.
+    ///
+    /// A game hands its queue to the SHARED sequencer under a synthetic `sourceSetlistId`
+    /// (`puzzle_<roundId>`) that names no collection, so `CollectionsStore.historyContext` can
+    /// only fall through to its (.setlist, nil) default — which is why every Gem Collector play
+    /// used to read "Set list" in History.
+    ///
+    /// The game branch lives in the COMPOSITION ROOT on purpose: run-tag formats are the games'
+    /// business, and CollectionsStore must not learn them in order to answer a question about
+    /// collections. The name comes from `GameKind.label` rather than a literal so the display
+    /// rename ("Collector's Puzzle" → "Gem Collector") can never drift out of History again.
+    /// Rows read "Game · Gem Collector"; Music with Friends slots in here later with no new
+    /// `PlaySource` case (see that enum's doc).
+    @MainActor
+    static func historyContext(forSourceSetlistId id: String?, collections: CollectionsStore?)
+        -> (source: PlayHistoryStore.PlaySource, name: String?) {
+        if let id, id.hasPrefix(CollectorsPuzzleEngine.runTagPrefix) {
+            return (.game, GameKind.collectorsPuzzle.label)
+        }
+        return collections?.historyContext(forSourceSetlistId: id) ?? (.setlist, nil)
     }
 
     /// Wire the sync's settings-backed seams. Done HERE rather than in `init` because
@@ -486,9 +507,10 @@ struct PocketDJApp: App {
         // Feed the app-scoped sequencer the live device/cloud mode (read fresh per track).
         setlistPlayer.playbackMode = { [weak settings] in settings?.playbackMode ?? .cloud }
         // Let the sequencer snapshot each run's Play-History origin (source-kind + set name) at
-        // play() time, resolved from the collections' now-playing source.
-        setlistPlayer.historyContextProvider = { [weak collections] in
-            collections?.historyContext(forSourceSetlistId: $0) ?? (.setlist, nil)
+        // play() time. GAME runs are resolved FIRST (their run tag names no collection), then
+        // the collections' now-playing source.
+        setlistPlayer.historyContextProvider = { [weak collections] id in
+            Self.historyContext(forSourceSetlistId: id, collections: collections)
         }
         // …and the NAVIGABLE origin (kind + collection id) — the Up Next header's
         // collection button target, captured per run + persisted in the durable session.
