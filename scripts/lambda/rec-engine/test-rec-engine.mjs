@@ -44,7 +44,7 @@ process.env.REC_ENROLL_SECRET = 'enroll-secret-for-tests';
 process.env.MAX_PROFILES = '1000';
 
 const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections, shedToFit,
-        scoreSimilarToCollections } =
+        scoreSimilarToCollections, playCountSignal } =
   await import('./index.mjs');
 
 const PROFILE = 'profile-test-1234';
@@ -686,4 +686,175 @@ test('the Gem Collector reason string is the one the app renders', () => {
   assert.ok(reasons.includes('Matches your Gem Collector picks'),
             `renamed reason string missing: ${JSON.stringify(reasons)}`);
   assert.ok(!reasons.some((r) => r.includes('Puzzle')), 'the old name is gone');
+});
+
+// ── LIFETIME play counts (the imported Apple baseline as a ranking signal) ───────────────────────
+//
+// The signal exists because a 30-day play window is structurally blind to the thing that actually
+// describes this user's taste: ~144k plays Apple accumulated long before PocketDJ existed, against
+// ~900 the app has seen itself. These tests pin the two properties that make importing it safe —
+// it is a SNAPSHOT (replaced, never summed) and it is bounded — and the two that make it useful.
+
+test('playCounts are a SNAPSHOT: replaced wholesale, never summed', () => {
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+                  collections: { atMs: 0, list: [] }, playCounts: { atMs: 0, counts: {} } };
+  mergeBatch(state, { playCounts: { atMs: 100, counts: { sng_e1: 5, sng_e2: 2 } } });
+  assert.deepEqual(state.playCounts.counts, { sng_e1: 5, sng_e2: 2 });
+
+  // THE invariant. Re-uploading the same snapshot must not double it — the server-side twin of
+  // the device's SET-never-ADD rule.
+  mergeBatch(state, { playCounts: { atMs: 100, counts: { sng_e1: 5, sng_e2: 2 } } });
+  assert.deepEqual(state.playCounts.counts, { sng_e1: 5, sng_e2: 2 }, 're-upload is a no-op');
+
+  // A newer snapshot replaces WHOLESALE, downward moves included and dropped songs gone.
+  mergeBatch(state, { playCounts: { atMs: 200, counts: { sng_e1: 6 } } });
+  assert.deepEqual(state.playCounts.counts, { sng_e1: 6 });
+
+  // A STALE snapshot (an out-of-order device) must not walk the numbers backwards.
+  mergeBatch(state, { playCounts: { atMs: 150, counts: { sng_e1: 1, sng_e9: 99 } } });
+  assert.deepEqual(state.playCounts.counts, { sng_e1: 6 }, 'older snapshot dropped');
+});
+
+test('playCounts reject junk rows and cap at the most-played', () => {
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+                  collections: { atMs: 0, list: [] }, playCounts: { atMs: 0, counts: {} } };
+  const r = mergeBatch(state, { playCounts: { atMs: 10, counts: {
+    sng_ok: 3, sng_zero: 0, sng_neg: -5, sng_nan: 'lots', sng_null: null,
+  } } });
+  assert.deepEqual(state.playCounts.counts, { sng_ok: 3 }, 'only positive finite counts survive');
+  assert.equal(r.accepted.playCounts, 1);
+
+  // The cap keeps the HEAD of the distribution — the rows that carry the signal.
+  const many = {};
+  for (let i = 0; i < 25_000; i++) many[`sng_${i}`] = i + 1;
+  const big = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+                collections: { atMs: 0, list: [] }, playCounts: { atMs: 0, counts: {} } };
+  mergeBatch(big, { playCounts: { atMs: 1, counts: many } });
+  const kept = Object.keys(big.playCounts.counts);
+  assert.equal(kept.length, 20_000, 'truncated to MAX_PLAYCOUNT_SONGS');
+  assert.ok(big.playCounts.counts.sng_24999 === 25_000, 'the most-played row survived');
+  assert.ok(big.playCounts.counts.sng_0 === undefined, 'the 1-play tail was dropped');
+});
+
+test('playCountSignal is log-scaled, normalised, and 0 for absent', () => {
+  assert.equal(playCountSignal(0, 100), 0);
+  assert.equal(playCountSignal(5, 0), 0);
+  assert.equal(playCountSignal(undefined, 100), 0);
+  assert.equal(playCountSignal(100, 100), 1, 'the top of the distribution is full strength');
+  // Log-scaled: 10× the plays is far from 10× the signal.
+  const ten = playCountSignal(10, 1000);
+  const hundred = playCountSignal(100, 1000);
+  assert.ok(hundred > ten);
+  assert.ok(hundred < 10 * ten, 'a linear term would have made the top songs the only ones scoring');
+  // Comparable across users: full strength at each library's own maximum.
+  assert.equal(playCountSignal(10, 10), playCountSignal(5000, 5000));
+});
+
+test('lifetime plays alone can seed For You (the cold-start an imported baseline fixes)', () => {
+  // NO recent plays at all — exactly a fresh install that just imported its Apple baseline.
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+                  collections: { atMs: 0, list: [] },
+                  playCounts: { atMs: NOW, counts: { sng_e1: 244, sng_e2: 60 } } };
+  const out = scoreForYou(state, featureIndex(), { nowMs: NOW, limit: 20 });
+  assert.ok(out.seeds.includes('sng_e1'), 'the most-played song of all time is a seed');
+  assert.ok(out.songs.length > 0, 'and recommendations come back instead of an empty list');
+  // Taste followed the seeds: the electronic cluster, not the jazz one.
+  assert.equal(out.songs[0].songId.slice(0, 5), 'sng_e');
+
+  // Without the signal the SAME state produces nothing at all — that is the whole gap it closes.
+  const blind = { ...state, playCounts: { atMs: 0, counts: {} } };
+  assert.equal(scoreForYou(blind, featureIndex(), { nowMs: NOW, limit: 20 }).songs.length, 0);
+});
+
+test('a song in the most-played HEAD becomes a seed, so it is not recommended back', () => {
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+                  collections: { atMs: 0, list: [] },
+                  playCounts: { atMs: NOW, counts: { sng_e1: 244 } } };
+  const out = scoreForYou(state, featureIndex(), { nowMs: NOW, limit: 20 });
+  assert.ok(out.seeds.includes('sng_e1'));
+  assert.ok(!out.songs.some((s) => s.songId === 'sng_e1'),
+            'a seed is what the list is built FROM; suggesting it back is not a recommendation');
+});
+
+test('a played candidate outside the seed head is lifted, with the reason shown', () => {
+  // `playCountSeedLimit: 1` puts sng_e1 (the most-played) in the head and leaves sng_e4 in the
+  // TAIL — where a real 56k-row baseline leaves ~55,800 songs. Both states share the same seeds
+  // and the same maximum, so the ONLY difference is sng_e4's own candidate term.
+  const opts = { nowMs: NOW, limit: 20, playCountSeedLimit: 1 };
+  const base = { v: 1, plays: [play('sng_e1', NOW - 5 * DAY)], favorites: {}, activity: [],
+                 puzzle: [], collections: { atMs: 0, list: [] },
+                 playCounts: { atMs: NOW, counts: { sng_e1: 500 } } };
+  const before = scoreForYou(base, featureIndex(), opts);
+  const scoreOf = (out, id) => out.songs.find((s) => s.songId === id)?.score ?? 0;
+
+  const loved = { ...base,
+                  playCounts: { atMs: NOW, counts: { sng_e1: 500, sng_e4: 200, sng_x1: 200 } } };
+  const after = scoreForYou(loved, featureIndex(), opts);
+  assert.deepEqual(after.seeds, before.seeds, 'the seed set — and so the taste profile — is identical');
+  assert.ok(scoreOf(after, 'sng_e4') > scoreOf(before, 'sng_e4'), 'lifetime plays lift the score');
+
+  // The reason surfaces on `sng_x1` — a sparse row (year only) where plays IS the leading term.
+  // On a fully-tagged song the genre/key/BPM terms outrank it, which is the intent: familiarity
+  // supports a recommendation, it doesn't explain one on its own.
+  const row = after.songs.find((s) => s.songId === 'sng_x1');
+  assert.ok(row.reasons.some((r) => r === "You've played this 200 times"),
+            `the play-count reason is user-visible: ${JSON.stringify(row.reasons)}`);
+
+  // A song with no lifetime plays is untouched — the term must contribute exactly 0, not a penalty.
+  assert.equal(scoreOf(after, 'sng_e6'), scoreOf(before, 'sng_e6'));
+});
+
+test('an EMPTY playCounts snapshot leaves every existing score byte-identical', () => {
+  // The signal must be strictly additive: a profile that never uploads counts ranks exactly as it
+  // did before this feature existed.
+  const legacy = { v: 1, plays: [play('sng_e1', NOW - 5 * DAY), play('sng_e2', NOW - 6 * DAY)],
+                   favorites: {}, activity: [], puzzle: [], collections: { atMs: 0, list: [] } };
+  const withEmpty = { ...legacy, playCounts: { atMs: NOW, counts: {} } };
+  assert.deepEqual(scoreForYou(withEmpty, featureIndex(), { nowMs: NOW, limit: 20 }).songs,
+                   scoreForYou(legacy, featureIndex(), { nowMs: NOW, limit: 20 }).songs);
+});
+
+test('lifetime plays are a tiebreak inside /recs/similar too', () => {
+  const plain = scoreSimilarToCollections(similarState(), featureIndex(), ['pkt_target'], { nowMs: NOW });
+  const loved = scoreSimilarToCollections(
+    similarState({ overrides: { playCounts: { atMs: NOW, counts: { sng_e6: 150 } } } }),
+    featureIndex(), ['pkt_target'], { nowMs: NOW });
+  const scoreOf = (out, id) => out.songs.find((s) => s.songId === id)?.score ?? 0;
+  assert.ok(scoreOf(loved, 'sng_e6') > scoreOf(plain, 'sng_e6'));
+  assert.ok(loved.songs.find((s) => s.songId === 'sng_e6').reasons
+              .some((r) => r === "You've played this 150 times"));
+});
+
+test('playCounts ride a real /events flush and are reported in totals', async () => {
+  const profile = 'profile-plays-001';
+  const r = await call('POST', '/events', {
+    profile,
+    body: { v: 1, plays: [play('sng_e1', NOW - DAY)],
+            playCounts: { atMs: NOW, counts: { sng_e1: 244, sng_e2: 60, sng_e3: 12 } } },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.accepted.playCounts, 3);
+  assert.equal(r.json.totals.playCounts, 3);
+
+  const recs = await call('GET', '/recs/songs', { profile, qs: { limit: '20' } });
+  assert.equal(recs.status, 200);
+  assert.ok(recs.json.seeds.includes('sng_e2'), 'a lifetime-played song seeded through the route');
+});
+
+test('shedToFit drops the LEAST-played counts, keeping the head of the distribution', () => {
+  const counts = {};
+  for (let i = 0; i < 400; i++) counts[`sng_${String(i).padStart(4, '0')}${CTRL.repeat(30)}`] = i + 1;
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+                  collections: { atMs: 0, list: [] }, playCounts: { atMs: 1, counts } };
+  const before = Object.keys(state.playCounts.counts).length;
+  const { bytes, shed } = shedToFit(state, 4000);
+  assert.ok(bytes <= 4000, 'the state came back under budget');
+  assert.ok(shed > 0);
+  const remaining = Object.values(state.playCounts.counts);
+  const dropped = before - remaining.length;
+  assert.ok(dropped > 0);
+  if (remaining.length) {
+    // Everything kept must be at least as played as the largest dropped row would have been.
+    assert.ok(Math.min(...remaining) > 1, 'the 1-play tail went first, not the most-played rows');
+  }
 });

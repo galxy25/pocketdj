@@ -100,6 +100,10 @@ final class RecommendationService {
         var lastActivityAtMs: Double = 0
         var lastPuzzleAtMs: Double = 0
         var lastCollectionsHash: String?
+        /// Hash of the last UPLOADED lifetime play-count snapshot. Gates re-sending a 20k-row map
+        /// on every flush when nothing about it changed. ADDITIVE-OPTIONAL: an older doc decodes
+        /// to nil, which costs exactly one re-upload.
+        var lastPlayCountsHash: String?
         var lastSyncedAtMs: Double?
         /// Acknowledged uploads inside the trailing overlap window, one `"<atMs>|<id>"` entry
         /// each (see the type doc). ADDITIVE-OPTIONAL: an older doc decodes to empty, which
@@ -115,7 +119,7 @@ final class RecommendationService {
 
         private enum CodingKeys: String, CodingKey {
             case schemaVersion, lastPlayAtMs, lastFavoriteAtMs, lastActivityAtMs,
-                 lastPuzzleAtMs, lastCollectionsHash, lastSyncedAtMs,
+                 lastPuzzleAtMs, lastCollectionsHash, lastPlayCountsHash, lastSyncedAtMs,
                  uploadedPlays, uploadedFavorites, uploadedActivity, uploadedPuzzle,
                  didMigrateScopedProfile
         }
@@ -128,6 +132,7 @@ final class RecommendationService {
             lastActivityAtMs = (try? c.decode(Double.self, forKey: .lastActivityAtMs)) ?? 0
             lastPuzzleAtMs = (try? c.decode(Double.self, forKey: .lastPuzzleAtMs)) ?? 0
             lastCollectionsHash = try? c.decode(String.self, forKey: .lastCollectionsHash)
+            lastPlayCountsHash = try? c.decode(String.self, forKey: .lastPlayCountsHash)
             lastSyncedAtMs = try? c.decode(Double.self, forKey: .lastSyncedAtMs)
             uploadedPlays = (try? c.decode([String].self, forKey: .uploadedPlays)) ?? []
             uploadedFavorites = (try? c.decode([String].self, forKey: .uploadedFavorites)) ?? []
@@ -171,6 +176,12 @@ final class RecommendationService {
     /// workstream wires it in PocketDJApp when its store lands — this file must never reference
     /// a WS-D type beyond the wire struct.
     @ObservationIgnored var puzzleEventsProvider: ((_ sinceMs: Double) -> [RecPuzzleEventWire])?
+
+    /// LIFETIME play counts (`PlayCountService.snapshot()`) — Apple's imported baseline plus this
+    /// app's own plays. A closure seam like `puzzleEventsProvider`, so this service keeps its
+    /// narrow store list and a test can declare the map outright. Nil ⇒ nothing is uploaded and
+    /// the server's ranking is byte-identical to what it was before the signal existed.
+    @ObservationIgnored var playCountsProvider: (() -> [String: Int])?
 
     @ObservationIgnored private let keyFileURL: URL
     @ObservationIgnored private let stateFileURL: URL
@@ -232,6 +243,8 @@ final class RecommendationService {
     private static let snapshotSongIdCap = 5_000
     private static let snapshotTotalSongIdCap = 100_000
     private static let snapshotByteCap = 3_500_000
+    /// Mirrors the server's MAX_PLAYCOUNT_SONGS (`cleanPlayCounts` in index.mjs).
+    private static let playCountsCap = 20_000
     /// Bounded lifetime of the account-deletion retry tombstone: give up (and clean up) after
     /// 20 transient failures or 30 days, whichever comes first. A 403 is terminal immediately —
     /// the carried credential can never succeed, so retrying it is pure noise.
@@ -497,16 +510,25 @@ final class RecommendationService {
             pendingSnapshot = nil
         }
 
+        // LIFETIME play counts: a SNAPSHOT, hash-gated exactly like the membership one so a
+        // 20k-row map isn't re-uploaded on every flush. Trimmed to the server's own cap
+        // (most-played first) so the hash describes what the server actually stores.
+        let playCountsSnapshot = playCountsWire()
+        let playCountsHash = playCountsSnapshot.map(Self.playCountsHash)
+        var pendingPlayCounts: RecPlayCountsWire? =
+            (playCountsHash != nil && playCountsHash != sync.lastPlayCountsHash) ? playCountsSnapshot : nil
+
         guard !plays.isEmpty || !favs.isEmpty || !acts.isEmpty || !puzzle.isEmpty
-                || pendingSnapshot != nil else { return }
+                || pendingSnapshot != nil || pendingPlayCounts != nil else { return }
 
         while !plays.isEmpty || !favs.isEmpty || !acts.isEmpty || !puzzle.isEmpty
-                || pendingSnapshot != nil {
+                || pendingSnapshot != nil || pendingPlayCounts != nil {
             let batchPlays = Array(plays.prefix(Self.batchCap))
             let batchFavs = Array(favs.prefix(Self.batchCap))
             let batchActs = Array(acts.prefix(Self.batchCap))
             let batchPuzzle = Array(puzzle.prefix(Self.batchCap))
-            func makeBatch(_ snap: RecCollectionsSnapshotWire?) -> RecUploadBatch {
+            func makeBatch(_ snap: RecCollectionsSnapshotWire?,
+                           _ counts: RecPlayCountsWire?) -> RecUploadBatch {
                 RecUploadBatch(
                     deviceId: DeviceIdentity.current,
                     sentAtMs: Date().timeIntervalSince1970 * 1000,
@@ -514,25 +536,30 @@ final class RecommendationService {
                     favorites: batchFavs.isEmpty ? nil : batchFavs,
                     activity: batchActs.isEmpty ? nil : batchActs,
                     puzzle: batchPuzzle.isEmpty ? nil : batchPuzzle,
-                    collectionsSnapshot: snap)
+                    collectionsSnapshot: snap,
+                    playCounts: counts)
             }
             var snapshotDelivered = pendingSnapshot != nil
+            var playCountsDelivered = pendingPlayCounts != nil
             do {
                 do {
-                    _ = try await client.postEvents(makeBatch(pendingSnapshot), key: key,
-                                                    profileId: profileId)
-                } catch RecEngineClient.ClientError.http(413) where pendingSnapshot != nil {
-                    // The snapshot is what blew the body ceiling — drop IT, not the events.
-                    // Its hash stays un-advanced so a smaller membership re-attempts later;
-                    // the events must never wedge behind it.
+                    _ = try await client.postEvents(makeBatch(pendingSnapshot, pendingPlayCounts),
+                                                    key: key, profileId: profileId)
+                } catch RecEngineClient.ClientError.http(413)
+                            where pendingSnapshot != nil || pendingPlayCounts != nil {
+                    // A SNAPSHOT is what blew the body ceiling — drop the bulk payloads, not the
+                    // events. Their hashes stay un-advanced so a smaller one re-attempts later;
+                    // the events must never wedge behind them.
                     guard epoch == flushEpoch else { return }
                     snapshotDelivered = false
+                    playCountsDelivered = false
                     if batchPlays.isEmpty && batchFavs.isEmpty && batchActs.isEmpty
                         && batchPuzzle.isEmpty {
                         pendingSnapshot = nil
+                        pendingPlayCounts = nil
                         continue   // snapshot-only batch: nothing left to deliver this round
                     }
-                    _ = try await client.postEvents(makeBatch(nil), key: key,
+                    _ = try await client.postEvents(makeBatch(nil, nil), key: key,
                                                     profileId: profileId)
                 }
             } catch is CancellationError {
@@ -568,7 +595,9 @@ final class RecommendationService {
             sync.uploadedPuzzle = Self.remember(sync.uploadedPuzzle,
                                                 batchPuzzle.map { Self.ack($0.atMs, $0.id) }, floor: puzzleFloor)
             if snapshotDelivered { sync.lastCollectionsHash = snapshotHash }
+            if playCountsDelivered { sync.lastPlayCountsHash = playCountsHash }
             pendingSnapshot = nil
+            pendingPlayCounts = nil
             plays.removeFirst(batchPlays.count)
             favs.removeFirst(batchFavs.count)
             acts.removeFirst(batchActs.count)
@@ -696,6 +725,31 @@ final class RecommendationService {
         }
         return RecCollectionsSnapshotWire(atMs: Date().timeIntervalSince1970 * 1000,
                                           collections: entries)
+    }
+
+    /// The lifetime play counts as the snapshot wire, trimmed to the server's own cap — highest
+    /// counts first, because that is exactly the order the server truncates in (`cleanPlayCounts`)
+    /// and the hash must describe what it actually stores. nil when there is nothing to say.
+    private func playCountsWire() -> RecPlayCountsWire? {
+        guard let counts = playCountsProvider?() else { return nil }
+        let positive = counts.filter { $0.value > 0 }
+        guard !positive.isEmpty else { return nil }
+        let trimmed: [String: Int]
+        if positive.count <= Self.playCountsCap {
+            trimmed = positive
+        } else {
+            let head = positive.sorted { $0.value > $1.value || ($0.value == $1.value && $0.key < $1.key) }
+                .prefix(Self.playCountsCap)
+            trimmed = Dictionary(uniqueKeysWithValues: head.map { ($0.key, $0.value) })
+        }
+        return RecPlayCountsWire(atMs: Date().timeIntervalSince1970 * 1000, counts: trimmed)
+    }
+
+    /// Stable content hash of a play-count snapshot — over the COUNTS only, never `atMs` (which
+    /// changes every call and would defeat the gate entirely, re-uploading 20k rows per flush).
+    private static func playCountsHash(_ wire: RecPlayCountsWire) -> String {
+        let lines = wire.counts.map { "\($0.key)|\($0.value)" }.sorted().joined(separator: "\n")
+        return SHA256.hash(data: Data(lines.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Stable membership hash: one `id|kind|name|joined-songIds` line per entry, sorted, SHA-256.

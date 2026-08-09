@@ -21,6 +21,12 @@ final class PlayStatsStore {
         var playCount: Int
         /// Epoch ms of the most recent play (refreshed even inside the re-count window).
         var lastPlayedAt: Double
+        /// How many of `playCount` were streamed through Apple Music — i.e. how many APPLE ALSO
+        /// COUNTED on its own side. Subtracting these is what stops a combined lifetime total
+        /// from counting one play twice once the next Apple snapshot lands (see
+        /// `AMPlayBaselineStore`). OPTIONAL so older documents keep decoding untouched — new
+        /// optional field, no schema bump (a bump has previously discarded user data here).
+        var appleCount: Int?
     }
 
     /// The persisted, versioned document.
@@ -66,14 +72,26 @@ final class PlayStatsStore {
     }
 
     /// Record a play. `at` is injectable for tests; callers use the default (now).
-    func notePlayed(_ songId: String, at nowMs: Double = Date().timeIntervalSince1970 * 1000) {
+    ///
+    /// `appleCounted` TAGS THE SOURCE and is the whole double-count defence. Apple increments its
+    /// OWN counter whenever PocketDJ streams through `ApplicationMusicPlayer`, so such a play will
+    /// arrive again in the next `AMPlayBaselineStore` snapshot; recording it here as well is
+    /// correct for THIS store (it is a play, and the LRP prune must see it) but must be
+    /// subtractable when the two are combined. Everything else — rip, stem, vinyl, digital, local
+    /// file, Mix decks — leaves it false and accumulates permanently.
+    func notePlayed(_ songId: String, at nowMs: Double = Date().timeIntervalSince1970 * 1000,
+                    appleCounted: Bool = false) {
         guard !songId.isEmpty else { return }
         if var s = stats[songId] {
-            if nowMs - s.lastPlayedAt >= Self.recountWindowMs { s.playCount += 1 }
+            if nowMs - s.lastPlayedAt >= Self.recountWindowMs {
+                s.playCount += 1
+                if appleCounted { s.appleCount = (s.appleCount ?? 0) + 1 }
+            }
             s.lastPlayedAt = max(s.lastPlayedAt, nowMs)
             stats[songId] = s
         } else {
-            stats[songId] = Stat(playCount: 1, lastPlayedAt: nowMs)
+            stats[songId] = Stat(playCount: 1, lastPlayedAt: nowMs,
+                                 appleCount: appleCounted ? 1 : nil)
         }
         save()
     }
@@ -101,6 +119,24 @@ final class PlayStatsStore {
     /// behaviour specifically rather than "was this listened to anywhere".
     func lastPlayedAtLocally(_ songId: String) -> Double? { stats[songId]?.lastPlayedAt }
     func playCount(_ songId: String) -> Int { stats[songId]?.playCount ?? 0 }
+
+    /// Plays Apple did NOT also count — the only part of this store that may be ADDED to an
+    /// Apple snapshot without double-counting. See `notePlayed(appleCounted:)`.
+    func nonApplePlayCount(_ songId: String) -> Int {
+        guard let s = stats[songId] else { return 0 }
+        return max(0, s.playCount - (s.appleCount ?? 0))
+    }
+
+    /// A pure copy of the NON-APPLE counts, for the combined lifetime total's off-main readers.
+    func nonApplePlayCountsSnapshot() -> [String: Int] {
+        var out: [String: Int] = [:]
+        out.reserveCapacity(stats.count)
+        for (id, s) in stats {
+            let n = s.playCount - (s.appleCount ?? 0)
+            if n > 0 { out[id] = n }
+        }
+        return out
+    }
 
     /// A pure copy of the play counts for OFF-MAIN weighting (the Collectors Puzzle
     /// sampler snapshots this on the main actor, then samples detached).

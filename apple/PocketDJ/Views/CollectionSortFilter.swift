@@ -23,6 +23,9 @@ struct CollectionSortFilterSheets: ViewModifier {
             .sheet(isPresented: $showFilter) { FilterSheet(browse: browse, app: app, collections: collections) }
             // Collections are song lists — pin the field set to songs.
             .onAppear { browse.kind = .song }
+            // The "Plays" sort is offered here too (same field set), so this state needs the same
+            // play-count snapshot the Browser gets — without it the option would be inert.
+            .playCountsFeed(browse)
             // Persist the collection's sort/filter when either sheet closes (device-local per id).
             .onChange(of: showSort) { if !showSort { browse.persist() } }
             .onChange(of: showFilter) { if !showFilter { browse.persist() } }

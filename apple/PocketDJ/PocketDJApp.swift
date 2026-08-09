@@ -170,6 +170,12 @@ struct PocketDJApp: App {
     /// funnels in; the storage manager's soft-cap prune orders by least-recently-played.
     @State private var playStats: PlayStatsStore
     @State private var playHistory: PlayHistoryStore
+    /// Apple Music's LIFETIME play counters (the ~144k-play baseline this app could never have
+    /// accumulated on its own) plus the combined read every surface uses. DEVICE-LOCAL and
+    /// deliberately NOT cloud-synced: every device re-derives it from the same Apple ID, and a
+    /// 56k-row doc in whole-document LWW would be pure churn.
+    @State private var amPlayBaseline: AMPlayBaselineStore
+    @State private var playCounts: PlayCountService
     /// Device-local, append-only COLLECTION ACTIVITY log (F11) — add/heart/unheart/remove events
     /// behind the History view's Activity segment. Its own synced JSON, distinct from the play log.
     @State private var collectionActivity: CollectionActivityStore
@@ -382,6 +388,12 @@ struct PocketDJApp: App {
         _mixRecorder = State(initialValue: mixRecorder)
         let playStats = PlayStatsStore(fileURL: PlayStatsStore.launchURL())
         _playStats = State(initialValue: playStats)
+        // Decode-only (no library walk): the MusicKit capture that refreshes this is minutes long
+        // on a 90k-song library and is an EXPLICIT action, never a launch-time one.
+        let amPlayBaseline = AMPlayBaselineStore(fileURL: AMPlayBaselineStore.launchURL())
+        _amPlayBaseline = State(initialValue: amPlayBaseline)
+        let playCounts = PlayCountService(baseline: amPlayBaseline, stats: playStats)
+        _playCounts = State(initialValue: playCounts)
         // Append-only play TIMELINE (History mode) — distinct from the aggregate playStats above.
         let playHistory = PlayHistoryStore(fileURL: PlayHistoryStore.launchURL())
         _playHistory = State(initialValue: playHistory)
@@ -512,22 +524,28 @@ struct PocketDJApp: App {
         // DIFFERENT ids, so the 30s per-id re-count window can't dedupe them and history/stats
         // gain ghost rows keyed to an id no catalog knows. Both hooks converging on the base id
         // restores the window's dedup AND keys the play to the real song (a plain id is a no-op).
-        rips.onPlay = { [weak playStats] in
+        // A rip/burn/local-file play is OURS ALONE — Apple never sees it, so no snapshot can ever
+        // retire it and it accumulates permanently (backend `.ripServer`).
+        rips.onPlay = { [weak playCounts] in
             let id = SongVariant.baseId($0)
-            playStats?.notePlayed(id); recordNonMixHistory(id)
+            playCounts?.notePlayed(id, backend: .ripServer); recordNonMixHistory(id)
         }
         // A download asked for before the song had a file: the rip has now landed, so finish the
         // burn. Fires without the user returning to the row — that is what makes ⤓ on an unripped
         // track a real request rather than an error message.
         rips.onRipReady = { [weak burns] _ in Task { await burns?.drainPendingAfterRip() } }
-        coordinator.onPlay = { [weak playStats] in
+        coordinator.onPlay = { [weak playCounts] songId, backend in
             // Defense in depth: the coordinator already reports statsId (the base id) for its
             // own variant plays — normalize anyway so no future call path can mint a ghost id.
-            let id = SongVariant.baseId($0)
-            playStats?.notePlayed(id); recordNonMixHistory(id)
+            let id = SongVariant.baseId(songId)
+            // The BACKEND is what keeps the lifetime total honest: an Apple Music stream is a play
+            // Apple counts too, so it goes to the provisional bucket and is retired by the capture
+            // that absorbs it, instead of being added a second time.
+            playCounts?.notePlayed(id, backend: backend); recordNonMixHistory(id)
         }
-        mix.onSongPlayed = { [weak playStats, weak playHistory, weak mix, weak mixSessions, weak app] songId in
-            playStats?.notePlayed(songId)
+        mix.onSongPlayed = { [weak playCounts, weak playHistory, weak mix, weak mixSessions, weak app] songId in
+            // The Mix decks play LOCAL files only — never Apple Music.
+            playCounts?.notePlayed(songId, backend: .ripServer)
             guard let playHistory else { return }
             let name = (mix?.autoMixing == true ? mix?.autoSourceLabel : nil) ?? mixSessions?.currentName
             let context = PlayHistoryStore.PlayContext(source: .mix, contextId: mixSessions?.currentId, contextName: name)
@@ -946,6 +964,10 @@ struct PocketDJApp: App {
         // shows a card with nothing to play. Weak captures: the app owns these stores in
         // @State, so the closure reads them without adding a second retain cycle through the
         // engine (the `recEngine.puzzleEventsProvider` pattern).
+        // LIFETIME plays for the sampler's play-count bias — Apple's baseline included, so
+        // "favour/avoid what I play" reasons about a decade of listening instead of this app's
+        // ~700 songs. Weak like the availability closure below.
+        puzzle.playCountsProvider = { [weak playCounts] in playCounts?.snapshot() ?? [:] }
         puzzle.audioAvailability = { [weak rips, weak burns, weak coordinator] in
             CollectorsPuzzleEngine.AudioAvailability(
                 ripManifest: rips?.manifest ?? [:],
@@ -1015,6 +1037,12 @@ struct PocketDJApp: App {
         recEngine.puzzleEventsProvider = { [weak puzzleDecisions] sinceMs in
             puzzleDecisions?.recPuzzleEvents(sinceMs: sinceMs) ?? []
         }
+        // LIFETIME plays as a cloud ranking signal. A 30-day play window is structurally blind to
+        // the decade of listening Apple recorded before this app existed — feeding it in is what
+        // lets For You say anything at all on an install whose recent history is empty. Uploaded
+        // as a hash-gated SNAPSHOT into the user's OWN private profile state, never the shared
+        // catalog. Weak, like every other seam here.
+        recEngine.playCountsProvider = { [weak playCounts] in playCounts?.snapshot() ?? [:] }
         // The CLOUD half of Gem Collector's similarity. It is a BOOSTER only: with the engine
         // off (the default) — or the route not deployed yet — this returns [] and the round
         // ranks entirely on device. Weak, like every other seam here.
@@ -1196,6 +1224,8 @@ struct PocketDJApp: App {
                 .environment(mixSessions)
                 .environment(mixRecorder)
                 .environment(playStats)
+                .environment(amPlayBaseline)
+                .environment(playCounts)
                 .environment(playHistory)
                 .environment(collectionActivity)
                 .environment(storage)

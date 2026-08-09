@@ -33,6 +33,8 @@ struct AppleMusicSettingsView: View {
     @Environment(FavoritesSyncService.self) private var favoritesSync: FavoritesSyncService?
     @Environment(PlaylistWriteBack.self) private var writeBack: PlaylistWriteBack?
     @Environment(PlaylistAppleMusicSync.self) private var playlistSync: PlaylistAppleMusicSync?
+    /// Optional on purpose, like the services above — lifetime play counts.
+    @Environment(PlayCountService.self) private var playCounts: PlayCountService?
 
     enum Tab: String, CaseIterable, Identifiable {
         case syncing = "Syncing"
@@ -59,6 +61,10 @@ struct AppleMusicSettingsView: View {
     @State private var copiedHash = false
     @State private var showSeedExporter = false
     @State private var seedDoc = EditsFile(data: Data())
+    // Play counts (lifetime plays: Apple's baseline + this app's own)
+    @State private var capturing = false
+    @State private var playCountStatus: Status?
+    @State private var showPlayCountImporter = false
 
     enum Status { case ok(String), bad(String) }
 
@@ -70,6 +76,7 @@ struct AppleMusicSettingsView: View {
                 // bottom reroutes them through the user's own server instead of Apple's API.
                 collectionsSection
                 favoritesSyncSection
+                playCountsSection
                 convertedAutoSection
                 explicitSection
                 privateSyncSection
@@ -87,6 +94,28 @@ struct AppleMusicSettingsView: View {
         // into iCloud Drive, then upload it to `Config.favoritesSeedURL` on the catalog CDN.
         .fileExporter(isPresented: $showSeedExporter, document: seedDoc, contentType: .json,
                       defaultFilename: "favorites-seed") { _ in }
+        // Import a `playcounts.json` snapshot (the Library.xml exporter's output). Security-scoped
+        // access is required for a user-picked file outside the sandbox — the same dance the Edits
+        // import does.
+        .fileImporter(isPresented: $showPlayCountImporter, allowedContentTypes: [.json]) { result in
+            guard let playCounts else { return }
+            switch result {
+            case .success(let url):
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    let applied = try playCounts.importBaseline(from: url)
+                    playCountStatus = applied
+                        ? .ok("Imported \(playCounts.baseline.songCount) songs · "
+                              + "\(playCounts.baseline.totalPlays) plays")
+                        : .bad("That snapshot had no plays in it, so your existing numbers were kept.")
+                } catch {
+                    playCountStatus = .bad("Couldn't read that file: \(error.localizedDescription)")
+                }
+            case .failure(let error):
+                playCountStatus = .bad(error.localizedDescription)
+            }
+        }
         .task {
             ownerHash = await OwnerIdentity.currentHash()
             loadedHash = true
@@ -518,6 +547,121 @@ struct AppleMusicSettingsView: View {
     private var linkedCount: Int {
         collections.pockets.filter(\.hasSource).count +
         collections.playlists.filter(\.hasSource).count
+    }
+
+    // MARK: ALWAYS — lifetime play counts
+
+    /// The reachable, documented trigger for BOTH capture paths (build task B + C).
+    ///
+    ///   • **Refresh from Apple Music** — the MusicKit walk. Explicit ONLY: a full walk of a
+    ///     90k-song library takes minutes, which is exactly why `AppleMusicLibraryIndexer` is
+    ///     never run on launch either. Incremental after the first run (sorted by
+    ///     `lastPlayedDate` descending, stopping at the stored high-water mark), so a routine
+    ///     refresh touches only what has been played since.
+    ///   • **Import a snapshot file** — reads a `playcounts.json` produced by the Library.xml
+    ///     exporter. This is what gives the feature REAL data today on a machine where the
+    ///     MusicKit read isn't available (the iOS `Song.playCount` question is still open — see
+    ///     `PlayCountProbeTests`), and it is the recovery path if a capture ever comes back
+    ///     empty.
+    ///
+    /// Both go through `AMPlayBaselineStore.replaceAll`, so re-running either is idempotent and
+    /// an all-zero read is REFUSED rather than allowed to wipe a good baseline.
+    @ViewBuilder private var playCountsSection: some View {
+        if let playCounts {
+            Section {
+                LabeledContent("Songs with plays", value: "\(playCounts.baseline.songCount)")
+                    .accessibilityIdentifier("playcounts-song-count")
+                LabeledContent("Total plays", value: "\(playCounts.baseline.totalPlays)")
+                    .accessibilityIdentifier("playcounts-total-plays")
+                if playCounts.baseline.capturedAtMs > 0 {
+                    LabeledContent("Last updated",
+                                   value: Self.captured(playCounts.baseline.capturedAtMs))
+                        .accessibilityIdentifier("playcounts-captured-at")
+                }
+
+                Button {
+                    runPlayCountCapture()
+                } label: {
+                    Label(capturing ? "Reading your library…" : "Refresh from Apple Music",
+                          systemImage: "arrow.clockwise")
+                }
+                .disabled(capturing)
+                .accessibilityIdentifier("playcounts-capture")
+
+                Button {
+                    showPlayCountImporter = true
+                } label: {
+                    Label("Import a snapshot file…", systemImage: "square.and.arrow.down")
+                }
+                .accessibilityIdentifier("playcounts-import")
+
+                if let status = playCountStatus {
+                    switch status {
+                    case .ok(let msg):
+                        Text(msg).font(.caption).foregroundStyle(Theme.fgDim)
+                            .accessibilityIdentifier("playcounts-status")
+                    case .bad(let msg):
+                        Text(msg).font(.caption).foregroundStyle(Theme.danger)
+                            .accessibilityIdentifier("playcounts-status")
+                    }
+                }
+            } header: {
+                Text("Play counts")
+            } footer: {
+                Text("""
+                     Apple has been counting your plays far longer than PocketDJ has. Pulling that \
+                     in is what makes “#12” on a row and the Plays sort mean anything. It stays on \
+                     this device — it is never written into the shared catalog, and never synced.
+                     """)
+            }
+        }
+    }
+
+    /// Human date for a capture timestamp (epoch ms).
+    private static func captured(_ ms: Double) -> String {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f.string(from: Date(timeIntervalSince1970: ms / 1000))
+    }
+
+    /// Run the MusicKit capture OFF the main actor, then apply it on the main actor.
+    private func runPlayCountCapture() {
+        guard let playCounts, !capturing else { return }
+        capturing = true
+        playCountStatus = nil
+        // Resolve Apple's library rows onto PocketDJ song ids on the MAIN actor first: the catalog
+        // lives on `AppModel`, and the walk itself must not touch it. `@Sendable` value maps only.
+        let byCatalogId = Dictionary(app.appleMusicCatalogPairs().map { ($0.appleMusicId, $0.songId) },
+                                     uniquingKeysWith: { first, _ in first })
+        let since = playCounts.baseline.lastPlayedHighWaterMs
+        let existing = playCounts.baseline.counts
+        Task {
+            do {
+                let result = try await AppleMusicPlayCountCapture.capture(
+                    since: since,
+                    resolve: { catalogId, _, _ in catalogId.flatMap { byCatalogId[$0] } })
+                let counts = AppleMusicPlayCountCapture.countsToStore(result, existing: existing)
+                let applied = playCounts.applyCapture(
+                    counts: counts, capturedAtMs: result.capturedAtMs, source: "musickit",
+                    sourceName: Config.appleMusicSourceName,
+                    lastPlayedHighWaterMs: result.maxLastPlayedMs)
+                capturing = false
+                if applied {
+                    playCountStatus = .ok("Read \(result.scanned) song\(result.scanned == 1 ? "" : "s") · "
+                                          + "\(counts.count) with plays"
+                                          + (result.unresolved > 0 ? " · \(result.unresolved) not in your catalog" : ""))
+                } else {
+                    // The all-zero guard fired. That is the iOS `Song.playCount == nil` shape —
+                    // SAY so rather than reporting a successful capture of nothing.
+                    playCountStatus = .bad("Apple returned no play counts, so your existing "
+                                           + "numbers were kept. Import a snapshot file instead.")
+                }
+            } catch {
+                capturing = false
+                playCountStatus = .bad("Couldn't read your library: \(error.localizedDescription)")
+            }
+        }
     }
 
     // MARK: ALWAYS — Apple Music playlist write-back queue
