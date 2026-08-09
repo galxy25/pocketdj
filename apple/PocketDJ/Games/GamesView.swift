@@ -295,9 +295,19 @@ struct GamesView: View {
             Spacer()
             if !gameScores.runs.isEmpty {
                 Menu { scoreboardHeaderMenu } label: {
-                    Image(systemName: "ellipsis.circle").foregroundStyle(Theme.fgDim)
+                    // A section header's font is tiny, and this button inherits it: measured at
+                    // ~15pt it was less than half the 44pt HIG minimum. That matters more here
+                    // than it looks, because .contextMenu is NOT delivered on a List section
+                    // header on iOS/iPadOS/visionOS (proven with a tree dump + a negative
+                    // control), so on every platform but macOS this ⋯ is the ONLY header-level
+                    // way to delete. The glyph stays visually small; the HIT AREA does not.
+                    Image(systemName: "ellipsis.circle")
+                        .foregroundStyle(Theme.fgDim)
+                        .frame(minWidth: 44, minHeight: 44, alignment: .trailing)
+                        .contentShape(Rectangle())
                 }
                 .accessibilityIdentifier("games-scoreboard-menu")
+                .accessibilityLabel("Scoreboard options")
             }
         }
         .contentShape(Rectangle())

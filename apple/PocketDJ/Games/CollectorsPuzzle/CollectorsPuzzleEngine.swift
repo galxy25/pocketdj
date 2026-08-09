@@ -67,6 +67,13 @@ final class CollectorsPuzzleEngine {
     /// sheet path — the only scoring path when no targets are selected — is unplayable
     /// against a one-tap target button. 20 s comfortably covers "search, read, tap".
     static let maxFilingCreditSeconds: Double = 20
+    /// Extra allowance per collection filed BEYOND the first — see the credit site in
+    /// `endFiling`. Multi-collection filing is the point of the feature; this is what keeps
+    /// using it from costing round time.
+    static let filingCreditPerExtraTarget: Double = 10
+    /// Hard ceiling on a single opening's credit however many crates were filed, so the
+    /// allowance can never become "the clock stops while the picker is open".
+    static let maxFilingCreditCeilingSeconds: Double = 60
 
     private let app: AppModel
     private let sequencer: SetlistPlayer
@@ -528,13 +535,21 @@ final class CollectorsPuzzleEngine {
         filingSongId = nil
         let noted = filedTargetsThisOpening
         filedTargetsThisOpening = []
-        // Credit the held time, capped — see `maxFilingCreditSeconds`.
-        deadlineEpoch += min(max(0, now().timeIntervalSince1970 - filingStartedAt),
-                             Self.maxFilingCreditSeconds)
         // What this opening actually FILED. The multi-select path re-checks LIVE membership: a
         // player who added and then UNCHECKED a collection (the picker's rows toggle) filed
         // nothing there, and unchecking them all is a Cancel — no point, and the card stays.
         let filed: [AddTarget] = target.map { [$0] } ?? noted.filter { stillContains(songId, $0) }
+        // Credit the held time. The allowance SCALES with how many collections were actually
+        // filed, which the flat cap did not: filing into five crates legitimately takes longer
+        // than filing into one, and a flat 20 s made USING multi-collection filing score-
+        // negative — the same single point, but every second past 20 was round clock the player
+        // never got back. Scoring stays one-point-per-card, so the extra allowance buys no
+        // score; it only stops the feature taxing the player for using it. Still bounded (see
+        // `maxFilingCreditCeilingSeconds`), because uncapped credit is an untimed game.
+        let allowance = min(Self.maxFilingCreditSeconds
+                              + Self.filingCreditPerExtraTarget * Double(max(0, filed.count - 1)),
+                            Self.maxFilingCreditCeilingSeconds)
+        deadlineEpoch += min(max(0, now().timeIntervalSince1970 - filingStartedAt), allowance)
         // The card is verified BY ID: a stale sheet (the round ended, or the queue moved under
         // it) files nothing rather than scoring against the wrong song.
         if !filed.isEmpty, phase == .running, let song = current, song.id == songId {

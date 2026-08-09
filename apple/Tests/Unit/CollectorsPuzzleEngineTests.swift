@@ -522,6 +522,60 @@ final class CollectorsPuzzleEngineTests: XCTestCase {
     /// collections". The picker no longer self-dismisses on the first add, so the opening stays
     /// live and the FILING SETTLES ON DISMISS — which is what keeps "one point per card"
     /// structural rather than clamped: nothing scores or advances while the sheet is up.
+    /// Filing into N crates buys back more clock than filing into one — otherwise USING the
+    /// multi-collection feature is score-negative: the same single point, but every second past
+    /// the flat 20 s cap was round time the player never got back. The allowance scales with
+    /// what was actually filed and is still hard-bounded, so it can never become a pause button.
+    func testFilingCreditScalesWithHowManyCollectionsWereFiled() async {
+        let s = await makeStack()
+        var t: TimeInterval = 1_000_000
+        s.engine.now = { Date(timeIntervalSince1970: t) }
+        await s.engine.startRound()
+        let card = s.engine.current!
+        let a = s.collections.pockets[0]
+        let b = s.collections.createPocket("Crate B", songIds: [], description: nil)
+        let c = s.collections.createPocket("Crate C", songIds: [], description: nil)
+
+        let deadlineBefore = s.engine.deadlineEpoch
+        XCTAssertTrue(s.engine.beginFiling())
+        for p in [a, b, c] {
+            let target = AddTarget(kind: .pocket, id: p.id)
+            s.collections.addSong(card.id, to: target)
+            s.engine.noteFiled(to: target)
+        }
+        t += 300                                    // far past any cap
+        s.engine.endFiling(assignedTo: nil)
+        // 20 s base + 10 s for each crate BEYOND the first = 40 s for three.
+        XCTAssertEqual(s.engine.deadlineEpoch - deadlineBefore,
+                       CollectorsPuzzleEngine.maxFilingCreditSeconds
+                         + CollectorsPuzzleEngine.filingCreditPerExtraTarget * 2,
+                       accuracy: 0.001,
+                       "three crates buy back the base plus two increments, not the flat base")
+        XCTAssertEqual(s.engine.score, 1, "the extra allowance buys TIME, never extra points")
+    }
+
+    /// The scaled allowance is bounded: filing into a great many crates cannot stop the clock.
+    func testFilingCreditIsCeilinged() async {
+        let s = await makeStack()
+        var t: TimeInterval = 1_000_000
+        s.engine.now = { Date(timeIntervalSince1970: t) }
+        await s.engine.startRound()
+        let card = s.engine.current!
+        let deadlineBefore = s.engine.deadlineEpoch
+        XCTAssertTrue(s.engine.beginFiling())
+        for i in 0..<20 {
+            let p = s.collections.createPocket("Crate \(i)", songIds: [], description: nil)
+            let target = AddTarget(kind: .pocket, id: p.id)
+            s.collections.addSong(card.id, to: target)
+            s.engine.noteFiled(to: target)
+        }
+        t += 600
+        s.engine.endFiling(assignedTo: nil)
+        XCTAssertEqual(s.engine.deadlineEpoch - deadlineBefore,
+                       CollectorsPuzzleEngine.maxFilingCreditCeilingSeconds, accuracy: 0.001,
+                       "20 crates hit the ceiling, not 20 x the per-target increment")
+    }
+
     func testMultiCollectionFilingScoresExactlyOnePointAndAdvancesOnce() async {
         let s = await makeStack()
         await s.engine.startRound()
