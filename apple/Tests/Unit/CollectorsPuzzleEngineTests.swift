@@ -516,6 +516,207 @@ final class CollectorsPuzzleEngineTests: XCTestCase {
         XCTAssertEqual(s.sequencer.sourceSetlistId, "set_other")
     }
 
+    // MARK: - Multi-collection filing (one card → several crates, still ONE point)
+
+    /// THE REQUEST (Levi 2026-08-08): "gem collector should let me add the song to multiple
+    /// collections". The picker no longer self-dismisses on the first add, so the opening stays
+    /// live and the FILING SETTLES ON DISMISS — which is what keeps "one point per card"
+    /// structural rather than clamped: nothing scores or advances while the sheet is up.
+    func testMultiCollectionFilingScoresExactlyOnePointAndAdvancesOnce() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        let card = s.engine.current!
+        let a = s.collections.pockets[0]                                    // "Crate A"
+        let b = s.collections.createPocket("Crate B", songIds: [], description: nil)
+        let c = s.collections.createPocket("Crate C", songIds: [], description: nil)
+
+        XCTAssertTrue(s.engine.beginFiling())
+        for p in [a, b, c] {
+            let target = AddTarget(kind: .pocket, id: p.id)
+            s.collections.addSong(card.id, to: target)   // the picker's own write
+            s.engine.noteFiled(to: target)               // …and what it tells the engine
+        }
+        // WHILE THE SHEET IS OPEN: nothing has scored and the card has not moved.
+        XCTAssertEqual(s.engine.score, 0, "a filing scores on DISMISS, not on each add")
+        XCTAssertEqual(s.engine.queueIndex, 0)
+        XCTAssertEqual(s.engine.current?.id, card.id, "the card the player is still filing")
+        XCTAssertEqual(s.engine.filedTargetsThisOpening.count, 3)
+
+        s.engine.endFiling(assignedTo: nil)
+        XCTAssertEqual(s.engine.score, 1, "three collections, ONE point")
+        XCTAssertEqual(s.engine.queueIndex, 1, "…and exactly one advance")
+        for p in [a, b, c] {
+            XCTAssertTrue(s.collections.pocket(p.id)!.songIds.contains(card.id),
+                          "the song really is in \(p.name)")
+        }
+        // The POINT is capped; the TRAINING SIGNAL is not — the rec engine wants all three.
+        XCTAssertEqual(s.decisions.decisions.filter { $0.action == "assigned" && $0.songId == card.id }.count, 3)
+        XCTAssertEqual(s.engine.assignedThisRound.count, 1, "one summary row for the card")
+        XCTAssertEqual(s.engine.assignedThisRound.last?.collectionName, "Crate A +2 more")
+        XCTAssertEqual(s.engine.assignedThisRound.last?.collectionId, a.id, "…named by the first target")
+    }
+
+    /// The same flow against PLAYLIST targets — the shape the real picker actually produces
+    /// (its rows carry a `sequenceId` for the default chapter), and the one `stillContains`
+    /// answers through the node-tree walk rather than a flat `songIds` array.
+    func testMultiCollectionFilingWorksForPlaylistTargets() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        let card = s.engine.current!
+        let one = s.collections.createPlaylist("Crate 2")
+        let two = s.collections.createPlaylist("Crate 3")
+
+        XCTAssertTrue(s.engine.beginFiling())
+        for pl in [one, two] {
+            let target = AddTarget(kind: .playlist, id: pl.id, sequenceId: pl.sequences.first?.nodeId)
+            s.collections.addSong(card.id, to: target)
+            s.engine.noteFiled(to: target)
+        }
+        s.engine.endFiling(assignedTo: nil)
+
+        XCTAssertEqual(s.engine.score, 1, "two playlists, one point")
+        XCTAssertEqual(s.engine.queueIndex, 1)
+        XCTAssertTrue(s.collections.playlist(one.id, contains: card.id))
+        XCTAssertTrue(s.collections.playlist(two.id, contains: card.id))
+        XCTAssertEqual(s.decisions.decisions.filter { $0.action == "assigned" }.count, 2)
+    }
+
+    /// The clock stays HELD across every add in one opening and is credited exactly once on
+    /// dismiss — multi-add must not turn one hold into three.
+    func testFilingClockStaysHeldAcrossSeveralAddsAndIsCreditedOnce() async {
+        let s = await makeStack(roundSeconds: 120)
+        var t: TimeInterval = 3_000_000
+        s.engine.now = { Date(timeIntervalSince1970: t) }
+        await s.engine.startRound()
+        let card = s.engine.current!
+        let before = s.engine.remainingSeconds
+        let deadlineBefore = s.engine.deadlineEpoch
+
+        s.engine.beginFiling()
+        for name in ["Crate B", "Crate C", "Crate D"] {
+            t += 3                                    // 3 s per collection, 9 s total
+            let p = s.collections.createPocket(name, songIds: [], description: nil)
+            let target = AddTarget(kind: .pocket, id: p.id)
+            s.collections.addSong(card.id, to: target)
+            s.engine.noteFiled(to: target)
+            XCTAssertEqual(s.engine.remainingSeconds, before,
+                           "the clock stays frozen behind the sheet, add after add")
+        }
+        s.engine.endFiling(assignedTo: nil)
+        XCTAssertEqual(s.engine.deadlineEpoch - deadlineBefore, 9, accuracy: 0.001,
+                       "one opening, one credit — under the 20 s cap")
+        XCTAssertEqual(s.engine.score, 1)
+    }
+
+    /// A callback that arrives with no sheet open — before the first `beginFiling`, or after
+    /// the opening already settled — records nothing and cannot score.
+    func testNoteFiledOutsideAnOpeningIsIgnored() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        let card = s.engine.current!
+        let target = AddTarget(kind: .pocket, id: s.collections.pockets[0].id)
+        s.collections.addSong(card.id, to: target)
+
+        s.engine.noteFiled(to: target)                 // BEFORE any opening
+        XCTAssertTrue(s.engine.filedTargetsThisOpening.isEmpty)
+        XCTAssertEqual(s.engine.score, 0)
+
+        s.engine.beginFiling()
+        s.engine.endFiling(assignedTo: nil)            // an opening that noted nothing = cancel
+        XCTAssertEqual(s.engine.score, 0)
+        XCTAssertEqual(s.engine.queueIndex, 0, "cancel is not a skip — the card stays")
+
+        s.engine.noteFiled(to: target)                 // AFTER it settled
+        XCTAssertTrue(s.engine.filedTargetsThisOpening.isEmpty)
+        XCTAssertEqual(s.engine.score, 0)
+        XCTAssertTrue(s.decisions.decisions.filter { $0.action == "assigned" }.isEmpty)
+    }
+
+    /// The picker's rows are TOGGLES. Adding a collection and then unchecking it filed nothing
+    /// there; unchecking them all is a Cancel — no point, and the card must stay, because a
+    /// player who changed their mind has not spent their card.
+    func testAddingThenRemovingEveryCollectionIsACancel() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        let card = s.engine.current!
+        let a = s.collections.pockets[0].id
+        let target = AddTarget(kind: .pocket, id: a)
+
+        s.engine.beginFiling()
+        s.collections.addSong(card.id, to: target)
+        s.engine.noteFiled(to: target)
+        s.collections.removeSong(card.id, fromPocket: a)     // the row toggled back off
+        s.engine.endFiling(assignedTo: nil)
+
+        XCTAssertEqual(s.engine.score, 0)
+        XCTAssertEqual(s.engine.queueIndex, 0)
+        XCTAssertEqual(s.engine.current?.id, card.id, "the card is still on screen")
+        XCTAssertTrue(s.decisions.decisions.filter { $0.action == "assigned" }.isEmpty)
+    }
+
+    /// Deduped by (kind,id): a double-tap that re-checks the same collection is one filing.
+    func testDuplicateNoteFiledForTheSameCollectionIsDeduped() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        let card = s.engine.current!
+        let target = AddTarget(kind: .pocket, id: s.collections.pockets[0].id)
+
+        s.engine.beginFiling()
+        s.collections.addSong(card.id, to: target)
+        s.engine.noteFiled(to: target)
+        s.engine.noteFiled(to: target)
+        // Dedup is by (kind,id) IGNORING sequenceId — a playlist filed into two chapters is
+        // still one collection, and still one point.
+        s.engine.noteFiled(to: AddTarget(kind: .pocket, id: target.id, sequenceId: "seq_2"))
+        XCTAssertEqual(s.engine.filedTargetsThisOpening.count, 1)
+        s.engine.endFiling(assignedTo: nil)
+
+        XCTAssertEqual(s.engine.score, 1)
+        XCTAssertEqual(s.decisions.decisions.filter { $0.action == "assigned" }.count, 1)
+        XCTAssertEqual(s.engine.assignedThisRound.last?.collectionName, "Crate A",
+                       "one collection ⇒ no '+N more' suffix")
+    }
+
+    /// The LEGACY single-shot path still scores exactly once, and an explicit target wins over
+    /// whatever the opening noted (that is the contract `assign`/tests rely on).
+    func testExplicitTargetEndFilingStillScoresOnce() async {
+        let s = await makeStack()
+        await s.engine.startRound()
+        let card = s.engine.current!
+        let a = s.collections.pockets[0].id
+        let b = s.collections.createPocket("Crate B", songIds: [], description: nil).id
+
+        s.engine.beginFiling()
+        s.collections.addSong(card.id, to: AddTarget(kind: .pocket, id: b))
+        s.engine.noteFiled(to: AddTarget(kind: .pocket, id: b))
+        s.engine.endFiling(assignedTo: AddTarget(kind: .pocket, id: a))
+
+        XCTAssertEqual(s.engine.score, 1)
+        XCTAssertEqual(s.engine.queueIndex, 1)
+        let assigned = s.decisions.decisions.filter { $0.action == "assigned" }
+        XCTAssertEqual(assigned.count, 1, "the explicit target is the whole filing")
+        XCTAssertEqual(assigned.last?.collectionId, a)
+    }
+
+    /// Both scoring constants are PINNED so a future change is a deliberate act, not a side
+    /// effect. `pointsPerFiledCard` is the one-line flip if per-collection scoring is ever
+    /// wanted; `maxFilingCreditSeconds` is the anti-abuse bound that makes a long sheet
+    /// self-punishing, which is why multi-add needs no separate stall guard.
+    func testScoringAndFilingCreditConstantsArePinned() {
+        XCTAssertEqual(CollectorsPuzzleEngine.pointsPerFiledCard, 1,
+                       "ONE point per card, however many collections it lands in")
+        XCTAssertEqual(CollectorsPuzzleEngine.maxFilingCreditSeconds, 20, accuracy: 0.001,
+                       "multi-add did NOT relax the filing credit cap")
+    }
+
+    func testFiledLabelSummarizesTheCollections() {
+        XCTAssertEqual(CollectorsPuzzleEngine.filedLabel([]), "Collection")
+        XCTAssertEqual(CollectorsPuzzleEngine.filedLabel(["Crate A"]), "Crate A")
+        XCTAssertEqual(CollectorsPuzzleEngine.filedLabel(["Crate A", "Crate B"]), "Crate A +1 more")
+        XCTAssertEqual(CollectorsPuzzleEngine.filedLabel(["Crate A", "Crate B", "Crate C"]),
+                       "Crate A +2 more")
+    }
+
     func testDecisionsCarryRoundSettings() async {
         let s = await makeStack()
         await s.engine.startRound()

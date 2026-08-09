@@ -53,6 +53,15 @@ final class CollectorsPuzzleEngine {
     /// mid-sheet drift or top-up can never make the sheet file the WRONG card.
     private(set) var filingSongId: String?
     @ObservationIgnored private var filingStartedAt: TimeInterval = 0
+    /// Every target the OPEN picker reported a successful ADD into, in tap order, deduped by
+    /// (kind,id) — a playlist filed into two chapters is still one collection. Observed (not
+    /// `@ObservationIgnored`) so a future in-round badge reads it correctly.
+    private(set) var filedTargetsThisOpening: [AddTarget] = []
+    /// ONE POINT PER CARD, not per collection (Levi + lead, 2026-08-08). The rush rewards
+    /// filing MANY songs; per-collection scoring would reward spamming one song into twenty
+    /// crates and make every historical best incomparable. Flip this constant to change that
+    /// decision — and only that constant, since it is the single place a filing scores.
+    static let pointsPerFiledCard = 1
     /// Max seconds of round clock a SINGLE sheet opening can buy back. Uncapped this is an
     /// untimed game (leave the picker open, curate at leisure, one point, repeat); at 0 the
     /// sheet path — the only scoring path when no targets are selected — is unplayable
@@ -248,8 +257,9 @@ final class CollectorsPuzzleEngine {
         lastError = nil
         poolExhausted = false
         // A sheet the PREVIOUS round left open (dismissed without its onChange landing) must
-        // never hold the new round's ticker hostage.
+        // never hold the new round's ticker hostage — nor leave its noted targets showing.
         filingSongId = nil
+        filedTargetsThisOpening = []
         // A stale top-up from the PREVIOUS round may still be in flight; its continuation
         // is round-guarded (see tickOnce) and so can never clear this flag for us.
         toppingUp = false
@@ -440,27 +450,40 @@ final class CollectorsPuzzleEngine {
         if sequencerTakenOver { endRound(stopAudio: false); return }
         guard let song = current, settings.targetCollectionIds.indices.contains(i) else { return }
         let cid = settings.targetCollectionIds[i]
-        collections.addSong(song.id,
-                            to: AddTarget(kind: cid.hasPrefix("pkt_") ? .pocket : .playlist, id: cid))
-        creditFiling(song: song, collectionId: cid, collectionName: collectionName(cid))
+        let target = AddTarget(kind: cid.hasPrefix("pkt_") ? .pocket : .playlist, id: cid)
+        collections.addSong(song.id, to: target)
+        creditFiling(song: song, filedInto: [target])
     }
 
     /// THE ONE PLACE A FILING SCORES. Both the one-tap target buttons and the Add-to sheet
     /// land here, so the point, the summary row, the decision row (the rec-engine's training
     /// signal) and the advance can never drift apart between the two paths.
     ///
-    /// ONE POINT PER CARD, not per collection: the card advances on the first successful add,
-    /// so the multi-select picker cannot be farmed (open the sheet, tap five collections, five
-    /// points). That is enforced STRUCTURALLY — `current` becomes the next song here — and it
-    /// is what keeps a new score comparable to every historical one ("One point per song").
-    private func creditFiling(song: IndexSong, collectionId: String, collectionName: String) {
-        score += 1
+    /// ONE POINT PER CARD, not per collection — even when `targets` holds five of them. The
+    /// picker is multi-select by design, so a per-ADD point would make one card worth five and
+    /// every historical score meaningless. `pointsPerFiledCard` is the whole rule, and the card
+    /// advances exactly once here whatever the length of `targets`.
+    private func creditFiling(song: IndexSong, filedInto targets: [AddTarget]) {
+        guard let primary = targets.first else { return }
+        score += Self.pointsPerFiledCard
         assignedThisRound.append((songId: song.id, title: song.name, artist: song.artist,
-                                  collectionId: collectionId, collectionName: collectionName))
-        decisions.record(roundId: roundId, songId: song.id, action: "assigned",
-                         collectionId: collectionId, collectionName: collectionName,
-                         positionInRound: queueIndex, settings: settings)
+                                  collectionId: primary.id,
+                                  collectionName: Self.filedLabel(targets.map { collectionName($0.id) })))
+        // The POINT is capped at one; the TRAINING SIGNAL is not. "This song belongs in these
+        // five crates" is exactly what the rec engine wants, and `PuzzleDecisionStore.record`
+        // coalesces its saves (scheduleSave), so N rows is still ONE document write.
+        for t in targets {
+            decisions.record(roundId: roundId, songId: song.id, action: "assigned",
+                             collectionId: t.id, collectionName: collectionName(t.id),
+                             positionInRound: queueIndex, settings: settings)
+        }
         advance()
+    }
+
+    /// The summary row's one-line name for a filing: "Crate A" · "Crate A +2 more".
+    static func filedLabel(_ names: [String]) -> String {
+        guard let first = names.first else { return "Collection" }
+        return names.count > 1 ? "\(first) +\(names.count - 1) more" : first
     }
 
     /// The view calls this BEFORE presenting the Add-to sheet. Returns false when there is
@@ -471,14 +494,31 @@ final class CollectorsPuzzleEngine {
         guard phase == .running, let song = current, filingSongId == nil else { return false }
         if sequencerTakenOver { endRound(stopAudio: false); return false }
         filingSongId = song.id
+        filedTargetsThisOpening = []
         filingStartedAt = now().timeIntervalSince1970
         return true
     }
 
-    /// The view calls this on dismiss — with a target (the player filed the card: score it) or
-    /// nil (cancelled: no point, NO advance, the card stays). IDEMPOTENT: it is reachable from
-    /// both the sheet's completion callback and the binding's `onChange`, and a second call
-    /// must not credit the clock twice or score twice.
+    /// The picker added the card to `target` while the sheet is STILL OPEN — a player filing
+    /// one song into several collections, which is what the multi-select picker was always for.
+    /// RECORDS ONLY: no point, no advance, no release of the clock hold, because the player is
+    /// still filing. Ignored when no sheet is open (a late callback from a settled opening).
+    func noteFiled(to target: AddTarget) {
+        guard filingSongId != nil else { return }
+        guard !filedTargetsThisOpening.contains(where: { $0.kind == target.kind && $0.id == target.id })
+        else { return }
+        filedTargetsThisOpening.append(target)
+    }
+
+    /// The view calls this on dismiss — the ONE settle point of a filing. It credits the held
+    /// clock, scores the opening ONCE (whether the player tapped one collection or five), and
+    /// advances; a cancelled opening means no point, NO advance, the card stays. IDEMPOTENT:
+    /// it is reachable from both the sheet's completion callback and the binding's `onChange`,
+    /// and a second call must not credit the clock twice or score twice.
+    ///
+    /// `assignedTo` is the LEGACY single-shot path, kept for callers (and tests) that score a
+    /// target directly. The view always passes nil now and lets the opening's own
+    /// `filedTargetsThisOpening` decide what was filed.
     ///
     /// CANCEL IS NOT A SKIP, deliberately: a player may cancel to hit a target button instead,
     /// and silently burning their card would be the worst possible surprise in a timed game.
@@ -486,20 +526,34 @@ final class CollectorsPuzzleEngine {
     func endFiling(assignedTo target: AddTarget?) {
         guard let songId = filingSongId else { return }
         filingSongId = nil
+        let noted = filedTargetsThisOpening
+        filedTargetsThisOpening = []
         // Credit the held time, capped — see `maxFilingCreditSeconds`.
         deadlineEpoch += min(max(0, now().timeIntervalSince1970 - filingStartedAt),
                              Self.maxFilingCreditSeconds)
+        // What this opening actually FILED. The multi-select path re-checks LIVE membership: a
+        // player who added and then UNCHECKED a collection (the picker's rows toggle) filed
+        // nothing there, and unchecking them all is a Cancel — no point, and the card stays.
+        let filed: [AddTarget] = target.map { [$0] } ?? noted.filter { stillContains(songId, $0) }
         // The card is verified BY ID: a stale sheet (the round ended, or the queue moved under
         // it) files nothing rather than scoring against the wrong song.
-        if let target, phase == .running, let song = current, song.id == songId {
-            creditFiling(song: song, collectionId: target.id,
-                         collectionName: collectionName(target.id))
+        if !filed.isEmpty, phase == .running, let song = current, song.id == songId {
+            creditFiling(song: song, filedInto: filed)
         }
         // Re-marry audio to the card the round is now showing. The audio ran on behind the
         // sheet (no pause API), so this is the same one-line re-arm the watchdog uses.
         if phase == .running, current != nil, !sequencerTakenOver,
            !sequencer.isRunning || audioBaseIndex + sequencer.index != queueIndex {
             armAudio(fromQueueIndex: queueIndex)
+        }
+    }
+
+    /// Is the song STILL in this target right now? The picker's rows are toggles, so an add
+    /// the sheet reported can have been undone before it closed.
+    private func stillContains(_ songId: String, _ t: AddTarget) -> Bool {
+        switch t.kind {
+        case .pocket:   return collections.pocket(t.id)?.songIds.contains(songId) ?? false
+        case .playlist: return collections.playlist(t.id, contains: songId)
         }
     }
 

@@ -100,6 +100,22 @@ final class GamesUITests: XCTestCase {
         return (probe.value as? String) ?? probe.label
     }
 
+    /// Dismiss the Add-to picker via its NAVIGATION BAR's Done, never `app.buttons["Done"]`.
+    /// Once the search field has been typed into, the software keyboard is up and a bare
+    /// label lookup is AMBIGUOUS — it resolved to the keyboard, the sheet stayed put, and the
+    /// round scored 0 while the failure read like a product bug. Scope the query to the bar.
+    private func dismissAddPicker(_ app: XCUIApplication) {
+        let done = app.navigationBars.buttons["Done"].firstMatch
+        XCTAssertTrue(done.waitForExistence(timeout: 10), "the picker's Done button never appeared")
+        done.tap()
+    }
+
+    /// The deletion alert's destructive button. Scoped to `alerts` + `firstMatch`: the plain
+    /// `app.buttons[…]` lookup came back with MULTIPLE matches and the tap threw.
+    private func deleteConfirmButton(_ app: XCUIApplication) -> XCUIElement {
+        app.alerts.buttons["games-scoreboard-delete-confirm"].firstMatch
+    }
+
     // MARK: - Games home
 
     func testGamesTabOpensAndShowsCards() {
@@ -266,15 +282,156 @@ final class GamesUITests: XCTestCase {
         assertUsable(row, app, "a searched collection row")
         row.tap()
 
-        // Filing scores the round's point, dismisses the sheet, and advances the card.
+        // THE PICKER STAYS OPEN on an add (multi-collection filing, 2026-08-08) — it is the
+        // app's one multi-select sheet and Gem Collector no longer self-dismisses out of it.
+        XCTAssertTrue(app.textFields["add-search-field"].exists,
+                      "the picker must not self-dismiss on the first add")
+        dismissAddPicker(app)
+
+        // Dismiss is the settle point: the point lands, the sheet goes, the card advances.
         let score = app.any("puzzle-score")
         XCTAssertTrue(score.waitForExistence(timeout: 10))
         let scored = Date().addingTimeInterval(10)
         while !score.label.contains("1") && Date() < scored { usleep(200_000) }
         XCTAssertTrue(score.label.contains("1"),
                       "filing through the picker scores one point (label: \(score.label))")
-        XCTAssertFalse(app.textFields["add-search-field"].exists, "the sheet dismissed on the add")
+        XCTAssertFalse(app.textFields["add-search-field"].exists, "Done dismissed the picker")
         assertUsable(app.el("puzzle-file"), app, "File into… (still usable for the next card)")
+    }
+
+    /// THE SECOND REQUESTED PATH (Levi 2026-08-08): "gem collector should let me add the song to
+    /// multiple collections". One card, TWO collections, and still exactly one point — the
+    /// regression that made this necessary is asserted directly: after the first tap the
+    /// picker's search field must STILL EXIST, because the old build nil'd the sheet binding
+    /// inside the add callback and there was no way to reach a second collection.
+    func testFileOneCardIntoSeveralCollectionsScoresOnce() {
+        let app = launch(extra: ["PDJ_SEED_COLLECTIONS": "40",
+                                 "PDJ_SEED_BURNS": "1"])
+        XCTAssertTrue(app.any("games-card-puzzle").waitForExistence(timeout: 15))
+        app.any("games-card-puzzle").tap()
+        XCTAssertTrue(app.any("puzzle-round-length").waitForExistence(timeout: 10), "setup form opened")
+
+        let start = app.el("puzzle-start")
+        let deadline = Date().addingTimeInterval(15)
+        while !start.isEnabled && Date() < deadline { usleep(300_000) }
+        assertUsable(start, app, "Start Round (no targets)")
+        start.tap()
+
+        let file = app.el("puzzle-file")
+        XCTAssertTrue(file.waitForExistence(timeout: 15), "the File-into button never appeared")
+        let cardBefore = app.any("puzzle-current").label
+        file.tap()
+
+        let search = app.textFields["add-search-field"]
+        XCTAssertTrue(search.waitForExistence(timeout: 10), "the add-to picker never opened")
+        search.tap()
+        search.typeText("Crate")           // the seeded collections are named "Crate <n>"
+
+        let rows = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "add-playlist-"))
+        XCTAssertTrue(rows.element(boundBy: 0).waitForExistence(timeout: 10),
+                      "the search found no collection to file into")
+        XCTAssertGreaterThanOrEqual(rows.count, 2, "need two collections to file into")
+        // Identifiers, not indices: the second tap must land on a DIFFERENT collection even if
+        // the list re-lays-out after the first add.
+        let firstId = rows.element(boundBy: 0).identifier
+        let secondId = rows.element(boundBy: 1).identifier
+        XCTAssertNotEqual(firstId, secondId)
+
+        assertUsable(app.buttons[firstId], app, "the first collection row")
+        app.buttons[firstId].tap()
+        XCTAssertTrue(search.exists, "THE REGRESSION: the picker self-dismissed on the first add")
+        assertUsable(app.buttons[secondId], app, "the second collection row (only reachable if it stayed open)")
+        app.buttons[secondId].tap()
+
+        dismissAddPicker(app)
+        let score = app.any("puzzle-score")
+        XCTAssertTrue(score.waitForExistence(timeout: 10))
+        let scored = Date().addingTimeInterval(10)
+        while !score.label.contains("1") && Date() < scored { usleep(200_000) }
+        XCTAssertTrue(score.label.contains("1"),
+                      "two collections, ONE point (label: \(score.label))")
+        XCTAssertNotEqual(app.any("puzzle-current").label, cardBefore,
+                          "…and exactly one advance — the next card is up")
+    }
+
+    // MARK: - Scoreboard deletion (right-click / long-press)
+    //
+    // WHAT THE TREE SHOWED (measured 2026-08-08, iPhone 17 Pro): a `List` SECTION HEADER does
+    // not deliver a `.contextMenu` on iOS — a 1.2 s press on the "Scoreboard" header produced
+    // no menu at all, with the modifier on the HStack AND with it on the Text. That is exactly
+    // why the header also carries a visible ⋯ `Menu`, which is what `testScoreboardHeaderMenu…`
+    // drives; the header's `.contextMenu` stays for macOS (an ordinary view there, right-click
+    // being the platform gesture) and is NOT asserted here, because macOS XCUITest cannot run
+    // headlessly in this environment. The per-game ROWS are ordinary List rows and their
+    // long-press menu works — that is the "individual scoreboard" half of the request, pinned
+    // by the two tests below.
+
+    /// The row's own context menu wipes THAT game and leaves the other alone.
+    func testScoreboardGameRowContextMenuDeletesThatGamesRuns() {
+        let app = launch(extra: ["PDJ_SEED_GAMES": "1"])
+        XCTAssertTrue(app.any("games-card-puzzle").waitForExistence(timeout: 15))
+        let row = app.any("games-scoreboard-game-collectorsPuzzle")
+        XCTAssertTrue(app.swipeTo(row), "the scoreboard's Gem Collector block never came into view")
+        assertUsable(row, app, "the Gem Collector scoreboard row")
+        row.openContextMenu()
+
+        let delete = app.el("games-scoreboard-delete-collectorsPuzzle")
+        XCTAssertTrue(delete.waitForExistence(timeout: 10), "the row's context menu never opened")
+        delete.tap()
+        let confirm = deleteConfirmButton(app)
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10), "a delete this irreversible must confirm")
+        confirm.tap()
+
+        let best = app.any("games-best-collectorsPuzzle")
+        XCTAssertTrue(best.waitForExistence(timeout: 10))
+        let cleared = Date().addingTimeInterval(10)
+        while !best.label.contains("0") && Date() < cleared { usleep(200_000) }
+        XCTAssertTrue(best.label.contains("0"), "the game's board is empty (label: \(best.label))")
+        XCTAssertTrue(app.any("games-best-musicWithFriends").label.contains("4"),
+                      "the other game's scores are untouched")
+    }
+
+    /// The header's ⋯ wipes everything and the empty state comes back.
+    func testScoreboardHeaderMenuDeletesEverything() {
+        let app = launch(extra: ["PDJ_SEED_GAMES": "1"])
+        XCTAssertTrue(app.any("games-card-puzzle").waitForExistence(timeout: 15))
+        let menu = app.el("games-scoreboard-menu")
+        XCTAssertTrue(app.swipeTo(menu), "the scoreboard header's ⋯ never came into view")
+        assertUsable(menu, app, "the scoreboard header ⋯ menu")
+        menu.tap()
+
+        let deleteAll = app.el("games-scoreboard-delete-all")
+        XCTAssertTrue(deleteAll.waitForExistence(timeout: 10), "the header menu never opened")
+        deleteAll.tap()
+        let confirm = deleteConfirmButton(app)
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10))
+        confirm.tap()
+
+        XCTAssertTrue(app.any("games-scoreboard-empty").waitForExistence(timeout: 10),
+                      "every run gone ⇒ the empty state returns")
+        XCTAssertFalse(app.el("games-scoreboard-menu").exists,
+                       "…and the ⋯ hides, since there is nothing left to delete")
+    }
+
+    /// The long press works anywhere in a game's BLOCK, not just on its best-score row, and it
+    /// offers both scopes — "just this one" and "all of them" — which is the second half of the
+    /// request. Also pins that the two Delete-All items carry DISTINCT identifiers: the header
+    /// menu and a row menu must never put two live elements under one a11y id.
+    func testScoreboardRunRowContextMenuOffersBothDeletes() {
+        let app = launch(extra: ["PDJ_SEED_GAMES": "1"])
+        XCTAssertTrue(app.any("games-card-puzzle").waitForExistence(timeout: 15))
+        let run = app.any("games-run-collectorsPuzzle-0")
+        XCTAssertTrue(app.swipeTo(run), "the recent-run row never came into view")
+        assertUsable(run, app, "a recent-run row")
+        run.openContextMenu()
+
+        XCTAssertTrue(app.el("games-scoreboard-delete-collectorsPuzzle").waitForExistence(timeout: 10),
+                      "a long press on a run row must offer to delete that game's scores")
+        XCTAssertTrue(app.el("games-scoreboard-delete-all-from-collectorsPuzzle").exists,
+                      "…and to delete every scoreboard")
+        XCTAssertFalse(app.el("games-scoreboard-delete-all").exists,
+                       "the header menu's item is NOT live at the same time — distinct ids")
     }
 
     /// Tapping the SONG CARD itself opens the picker (the affordance the user asked for), and
