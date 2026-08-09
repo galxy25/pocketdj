@@ -105,6 +105,50 @@ final class PlayCountService {
                             observedSongIds: observedSongIds)
     }
 
+    /// FIRST-RUN AUTO-CAPTURE. The baseline ships EMPTY, so until something fills it Browse's
+    /// "Plays" column shows only this app's own playback — Levi saw nothing above 9 while his
+    /// library holds songs at 54. Requiring a Settings visit to make the feature work at all is a
+    /// trap: the number looks authoritative and is simply wrong.
+    ///
+    /// So the FIRST capture runs on its own, once, when the baseline is empty. Everything after
+    /// that stays manual/incremental, because a full library walk is minutes of work and must
+    /// never become a launch cost — which is why this is a one-shot on an empty store rather than
+    /// a refresh-on-foreground.
+    ///
+    /// Returns true only if a capture actually ran AND was adopted. Safe to call on every
+    /// foreground: it self-guards on emptiness, on MusicKit availability, and on being in flight.
+    @discardableResult
+    func autoCaptureIfNeverCaptured(songs: [IndexSong]) async -> Bool {
+        guard baseline.isEmpty, !autoCaptureAttempted, AppleMusicPlayCountCapture.isAvailable
+        else { return false }
+        autoCaptureAttempted = true   // one shot per launch, whatever the outcome
+        let resolve = await Task.detached(priority: .utility) { () -> AppleMusicPlayCountCapture.Resolver in
+            // Same construction as the Settings path: FIRST-seen wins, matching
+            // AppModel.songId(forAppleMusicId:) so a song in two sources resolves to the id the
+            // rest of the app uses. 96k rows of index-building is not main-thread work.
+            let byCatalogId = Dictionary(songs.compactMap { s in s.appleMusicId.map { ($0, s.id) } },
+                                         uniquingKeysWith: { first, _ in first })
+            let rows = songs.map { (songId: $0.id, title: $0.name, artist: $0.artist) }
+            return AppleMusicPlayCountCapture.resolver(
+                byCatalogId: byCatalogId,
+                byTitleArtist: AppleMusicPlayCountCapture.titleArtistIndex(rows))
+        }.value
+        guard let result = try? await AppleMusicPlayCountCapture.capture(since: nil, resolve: resolve),
+              // A walk that listed rows but read nil for every count is BROKEN, not empty. Adopting
+              // it would stamp a high-water mark and make the failure permanent.
+              !result.readNothing
+        else { return false }
+        return applyCapture(counts: result.counts, capturedAtMs: result.capturedAtMs,
+                            source: "musickit-auto", sourceName: nil,
+                            lastPlayedHighWaterMs: result.highWaterToAdopt,
+                            observedSongIds: result.observedSongIds)
+    }
+
+    /// Guards the one-shot above. Not persisted on purpose: if a capture failed (offline, not yet
+    /// authorized), the next launch should get another go — the cost of retrying an empty baseline
+    /// is one walk, the cost of never retrying is a permanently wrong column.
+    @ObservationIgnored private var autoCaptureAttempted = false
+
     /// Import the exporter's `playcounts.json` (or a previously saved snapshot).
     @discardableResult
     func importBaseline(from url: URL) throws -> Bool {

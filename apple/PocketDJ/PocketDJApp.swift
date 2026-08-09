@@ -1351,6 +1351,17 @@ struct PocketDJApp: App {
                     switch phase {
                     case .active:
                         streaming.onScenePhaseActive()
+                        // FIRST-RUN play-count capture. The Apple baseline ships empty, so until
+                        // this runs Browse's "Plays" sort ranks by this app's own playback only —
+                        // which looks authoritative and is wrong (nothing above single digits for
+                        // a library holding 50-play songs). Self-guards on emptiness, availability
+                        // and one-shot-per-launch, so this is a no-op on every subsequent
+                        // foreground; the full walk never becomes a recurring launch cost.
+                        if onboarding.isComplete {
+                            Task { [weak playCounts] in
+                                await playCounts?.autoCaptureIfNeverCaptured(songs: app.songs)
+                            }
+                        }
                         // Cross-device freshness beyond launch (throttled inside).
                         // HELD during onboarding: .active fires at cold launch too, and a
                         // full pass would pull/push before stage 1 decides the profile mode.
