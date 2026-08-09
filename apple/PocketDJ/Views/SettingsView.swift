@@ -685,6 +685,12 @@ struct SettingsView: View {
             Toggle("Use PocketDJ Recommendation Engine", isOn: $settings.recEngineEnabled)
                 .accessibilityIdentifier("rec-engine-toggle")
             if settings.recEngineEnabled {
+                // Sub-toggle, not a duplicate: the Apple Music play-count baseline is a decade of
+                // listening imported wholesale, much older and more complete than the 30-day event
+                // stream above it. Settings ▸ Apple Music ▸ Play counts names this switch.
+                Toggle("Include lifetime play counts", isOn: $settings.shareLifetimePlayCounts)
+                    .accessibilityIdentifier("rec-share-playcounts-toggle")
+                    .onChange(of: settings.shareLifetimePlayCounts) { settings.persist() }
                 LabeledContent("Last sent") {
                     Text(recLastSentLabel)
                         .foregroundStyle(.secondary)
@@ -701,7 +707,7 @@ struct SettingsView: View {
         } header: {
             Text("Recommendations")
         } footer: {
-            Text("When on, your listening history, favorites, collection updates, and Gem Collector results are sent to PocketDJ to compute suggestions. When off, nothing leaves your device.")
+            Text("When on, your listening history, favorites, collection updates, Gem Collector results, and — unless you turn it off above — your lifetime play counts (including the counts imported from Apple Music) are sent to PocketDJ to compute suggestions. When off, nothing leaves your device.")
         }
         .onChange(of: settings.recEngineEnabled) {
             settings.persist()

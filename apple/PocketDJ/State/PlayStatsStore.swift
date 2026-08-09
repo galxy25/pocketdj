@@ -27,15 +27,36 @@ final class PlayStatsStore {
         /// `AMPlayBaselineStore`). OPTIONAL so older documents keep decoding untouched — new
         /// optional field, no schema bump (a bump has previously discarded user data here).
         var appleCount: Int?
+        /// Plays recorded BEFORE this build began tagging plays by source — i.e. plays whose
+        /// origin is UNKNOWABLE. `appleCount` is a per-row aggregate with no history, so a row
+        /// written by an older build carries no way to tell an Apple Music stream from a rip.
+        ///
+        /// Stamped ONCE, at the upgrade migration (`migrateUntaggedRows`), and never touched
+        /// again: every later play increments `playCount` (and `appleCount` when Apple saw it)
+        /// while this stays put, so the untrusted share shrinks as the trusted one grows. Nil on
+        /// every row created after the migration — a fresh install has none at all.
+        ///
+        /// Why it matters: without it, `nonApplePlayCount` classifies the whole pre-upgrade
+        /// history as "Apple never saw this" and adds it on top of Apple's 144,517-play snapshot,
+        /// which already contains the Apple share of it. Every legacy row would read too high,
+        /// permanently.
+        var preTagPlayCount: Int?
     }
 
     /// The persisted, versioned document.
     struct Document: Codable {
         var schemaVersion: Int = playStatsSchemaVersion
         var stats: [String: Stat] = [:]
+        /// Epoch ms the source-tagging migration ran. Its PRESENCE is the flag — a nil means the
+        /// rows in this document predate `appleCount` and must be stamped (see `Stat.preTagPlayCount`).
+        /// ADDITIVE-OPTIONAL: an older document decodes to nil, which is exactly the state that
+        /// triggers the migration. No schema bump.
+        var appleTaggingMigratedAtMs: Double?
     }
 
     private(set) var stats: [String: Stat] = [:]
+    /// Epoch ms the source-tagging migration ran — see `Document.appleTaggingMigratedAtMs`.
+    private(set) var appleTaggingMigratedAtMs: Double?
     @ObservationIgnored private let fileURL: URL
     /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
     /// store was constructed with — never re-derives it, so fixture seams stay intact).
@@ -45,12 +66,33 @@ final class PlayStatsStore {
     /// re-count — a seek/restart (or the burned-play double-hook) isn't a second listen.
     nonisolated static let recountWindowMs: Double = 30_000
 
-    init(fileURL: URL = PlayStatsStore.defaultURL()) {
+    init(fileURL: URL = PlayStatsStore.defaultURL(),
+         now: Double = Date().timeIntervalSince1970 * 1000) {
         self.fileURL = fileURL
         if let data = try? Data(contentsOf: fileURL),
            let doc = try? JSONDecoder().decode(Document.self, from: data) {
             stats = doc.stats
+            appleTaggingMigratedAtMs = doc.appleTaggingMigratedAtMs
         }
+        migrateUntaggedRows(now: now)
+    }
+
+    /// Stamp every row that predates source tagging. A row written by THIS build always carries a
+    /// `preTagPlayCount` (0 for a brand-new song — see `notePlayed`), so a NIL is an unambiguous
+    /// "an older build wrote this" and can be migrated safely at ANY adoption point: launch, or a
+    /// CloudSync pull that brings rows from a device still running the old build.
+    ///
+    /// Runs on a fresh install too (against an empty map), which is the point: the flag lands
+    /// immediately, so nothing created from here on is ever mistaken for legacy.
+    private func migrateUntaggedRows(now: Double) {
+        var changed = false
+        for (id, var s) in stats where s.preTagPlayCount == nil {
+            s.preTagPlayCount = s.playCount
+            stats[id] = s
+            changed = true
+        }
+        if appleTaggingMigratedAtMs == nil { appleTaggingMigratedAtMs = now; changed = true }
+        if changed { save() }
     }
 
     nonisolated static func defaultURL() -> URL {
@@ -90,8 +132,11 @@ final class PlayStatsStore {
             s.lastPlayedAt = max(s.lastPlayedAt, nowMs)
             stats[songId] = s
         } else {
+            // `preTagPlayCount: 0` is LOAD-BEARING, not decoration: it is what makes a nil on some
+            // other row mean "written before tagging existed" rather than "no legacy plays". The
+            // migration relies on that distinction to stay safe when re-run after a cloud pull.
             stats[songId] = Stat(playCount: 1, lastPlayedAt: nowMs,
-                                 appleCount: appleCounted ? 1 : nil)
+                                 appleCount: appleCounted ? 1 : nil, preTagPlayCount: 0)
         }
         save()
     }
@@ -122,17 +167,36 @@ final class PlayStatsStore {
 
     /// Plays Apple did NOT also count — the only part of this store that may be ADDED to an
     /// Apple snapshot without double-counting. See `notePlayed(appleCounted:)`.
-    func nonApplePlayCount(_ songId: String) -> Int {
+    ///
+    /// `appleKnowsSong` is the legacy join. A row's `preTagPlayCount` plays predate source
+    /// tagging, so their origin is unknowable; when Apple's baseline HAS a counter for this song,
+    /// the honest reading is that those plays are already inside it, and adding them would
+    /// double-count the entire pre-upgrade history against the 144,517-play snapshot. When Apple
+    /// has never heard of the song (vinyl, a rip, My Digital), no snapshot can contain them and
+    /// they are kept in full.
+    ///
+    /// The residual error is a deliberate UNDER-count and it is bounded: a legacy row for a song
+    /// Apple also knows loses whatever share of its untagged plays were really rips. Under-showing
+    /// is the recoverable direction — over-showing is not, because there is no way back to the
+    /// true number once a count has been inflated.
+    func nonApplePlayCount(_ songId: String, appleKnowsSong: Bool = false) -> Int {
         guard let s = stats[songId] else { return 0 }
-        return max(0, s.playCount - (s.appleCount ?? 0))
+        return Self.nonAppleCount(s, appleKnowsSong: appleKnowsSong)
+    }
+
+    private static func nonAppleCount(_ s: Stat, appleKnowsSong: Bool) -> Int {
+        let untrusted = appleKnowsSong ? (s.preTagPlayCount ?? 0) : 0
+        return max(0, s.playCount - (s.appleCount ?? 0) - untrusted)
     }
 
     /// A pure copy of the NON-APPLE counts, for the combined lifetime total's off-main readers.
-    func nonApplePlayCountsSnapshot() -> [String: Int] {
+    /// `appleKnownSongIds` is the baseline's key set — the same legacy join `nonApplePlayCount`
+    /// makes, applied in bulk.
+    func nonApplePlayCountsSnapshot(appleKnownSongIds: Set<String> = []) -> [String: Int] {
         var out: [String: Int] = [:]
         out.reserveCapacity(stats.count)
         for (id, s) in stats {
-            let n = s.playCount - (s.appleCount ?? 0)
+            let n = Self.nonAppleCount(s, appleKnowsSong: appleKnownSongIds.contains(id))
             if n > 0 { out[id] = n }
         }
         return out
@@ -148,6 +212,11 @@ final class PlayStatsStore {
         guard let data = try? Data(contentsOf: fileURL),
               let doc = try? JSONDecoder().decode(Document.self, from: data) else { return }
         stats = doc.stats
+        // A cloud copy from a device that never ran the migration must not un-set the flag here —
+        // take the OLDER of the two marks so the legacy era stays covered on both sides.
+        appleTaggingMigratedAtMs = [appleTaggingMigratedAtMs, doc.appleTaggingMigratedAtMs]
+            .compactMap { $0 }.min()
+        migrateUntaggedRows(now: Date().timeIntervalSince1970 * 1000)
     }
 
     /// Wipe all play history: reset the in-memory map (so the UI updates immediately) and
@@ -158,7 +227,7 @@ final class PlayStatsStore {
     }
 
     private func save() {
-        let doc = Document(stats: stats)
+        let doc = Document(stats: stats, appleTaggingMigratedAtMs: appleTaggingMigratedAtMs)
         if let data = try? JSONEncoder().encode(doc) { try? data.write(to: fileURL, options: .atomic) }
     }
 }

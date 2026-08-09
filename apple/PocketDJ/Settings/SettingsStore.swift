@@ -299,6 +299,17 @@ final class SettingsStore {
     /// history / favorites / collection updates / Collector's Puzzle results to
     /// `Config.recEngineBase` to compute the For You + Suggested-collections surfaces.
     var recEngineEnabled: Bool
+    /// Include LIFETIME play counts — Apple's imported baseline included — in what the
+    /// recommendation engine receives. Sub-toggle of `recEngineEnabled`: with the engine off this
+    /// is inert, because nothing is uploaded at all.
+    ///
+    /// Defaults TRUE, and that is a considered choice rather than an oversight: the engine is
+    /// itself a deliberate opt-in whose entire purpose is ranking by what you listen to, and a
+    /// 30-day play window is structurally blind to the decade Apple recorded before this app
+    /// existed. The separate toggle exists because the Apple baseline is a much older and more
+    /// complete record than anything else here, and someone may reasonably want it to stay on the
+    /// device while cloud recommendations stay on.
+    var shareLifetimePlayCounts: Bool
     /// Minutes past local midnight for the daily auto-sync (default 4:20 PM = 980). Clamped.
     var amAutoSyncMinutes: Int {
         didSet {
@@ -404,6 +415,7 @@ final class SettingsStore {
         self.amAutoSyncEnabled = data.amAutoSyncEnabled ?? true
         self.amImportNewPlaylists = data.amImportNewPlaylists ?? false
         self.recEngineEnabled = data.recEngineEnabled ?? false
+        self.shareLifetimePlayCounts = data.shareLifetimePlayCounts ?? true
         self.amAutoSyncMinutes = min(max(data.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes, 0), 1439)
         self.lastAMAutoSyncAtMs = data.lastAMAutoSyncAtMs
         self.writeBackBackfillDays = min(max(data.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
@@ -567,7 +579,8 @@ final class SettingsStore {
             amImportNewPlaylists: amImportNewPlaylists,
             amAutoSyncMinutes: amAutoSyncMinutes,
             lastAMAutoSyncAtMs: lastAMAutoSyncAtMs,
-            recEngineEnabled: recEngineEnabled)
+            recEngineEnabled: recEngineEnabled,
+            shareLifetimePlayCounts: shareLifetimePlayCounts)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -631,6 +644,7 @@ final class SettingsStore {
         amAutoSyncEnabled = d.amAutoSyncEnabled ?? true
         amImportNewPlaylists = d.amImportNewPlaylists ?? false
         recEngineEnabled = d.recEngineEnabled ?? false
+        shareLifetimePlayCounts = d.shareLifetimePlayCounts ?? true
         amAutoSyncMinutes = d.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes
         lastAMAutoSyncAtMs = d.lastAMAutoSyncAtMs
         writeBackBackfillDays = min(max(d.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
@@ -758,6 +772,9 @@ struct SettingsData: Codable {
     /// Coalesced to FALSE at the read sites: the recommendation engine is a deliberate opt-in
     /// (nothing leaves the device while off).
     var recEngineEnabled: Bool?
+    /// Optional so older blobs still decode. Coalesced to TRUE at the read sites — see
+    /// `SettingsStore.shareLifetimePlayCounts`; it only ever matters while the engine is on.
+    var shareLifetimePlayCounts: Bool?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -811,5 +828,6 @@ struct SettingsData: Codable {
         amImportNewPlaylists: nil,
         amAutoSyncMinutes: nil,
         lastAMAutoSyncAtMs: nil,
-        recEngineEnabled: nil)
+        recEngineEnabled: nil,
+        shareLifetimePlayCounts: nil)
 }

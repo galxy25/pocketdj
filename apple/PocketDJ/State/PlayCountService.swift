@@ -27,19 +27,30 @@ final class PlayCountService {
 
     /// Bumped whenever any bucket changes. Memo keys (the Browse results cache, the row badges)
     /// fold this in — the maps themselves are far too big to diff per render.
-    private(set) var revision: Int = 0
+    ///
+    /// COMPUTED over the baseline's own revision, not mirrored: the baseline can change without
+    /// going through this service (an async disk load at launch, a direct import), and a mirrored
+    /// counter would leave the Browser sorted by numbers that no longer exist.
+    var revision: Int { baseline.revision &+ ownRevision }
+    private var ownRevision: Int = 0
 
     init(baseline: AMPlayBaselineStore, stats: PlayStatsStore) {
         self.baseline = baseline
         self.stats = stats
-        revision = baseline.revision
     }
 
     /// The lifetime total for one song. Never negative; 0 for a song nothing has ever played.
+    ///
+    /// `appleKnowsSong` is the LEGACY join (see `PlayStatsStore.nonApplePlayCount`): plays this
+    /// app recorded before it tagged plays by source are unattributable, and for a song Apple has
+    /// a counter for they are already inside that counter. Without this, the whole pre-upgrade
+    /// history — ~704 songs / 909 plays on the owner's install — is added a second time on top of
+    /// the imported 144,517-play snapshot, permanently.
     func combinedPlayCount(_ songId: String) -> Int {
         guard !songId.isEmpty else { return 0 }
-        return baseline.count(songId)
-            + stats.nonApplePlayCount(songId)
+        let apple = baseline.count(songId)
+        return apple
+            + stats.nonApplePlayCount(songId, appleKnowsSong: apple > 0)
             + baseline.provisionalCount(songId)
     }
 
@@ -53,7 +64,11 @@ final class PlayCountService {
     /// a detached task.
     func snapshot() -> [String: Int] {
         var out = baseline.countsSnapshot()
-        for (id, n) in stats.nonApplePlayCountsSnapshot() { out[id, default: 0] += n }
+        // The same legacy join `combinedPlayCount` makes, in bulk — the two must never disagree,
+        // or the badge and the "Plays" sort show different numbers for the same row.
+        for (id, n) in stats.nonApplePlayCountsSnapshot(appleKnownSongIds: Set(out.keys)) {
+            out[id, default: 0] += n
+        }
         for (id, stamps) in baseline.provisional where !stamps.isEmpty {
             out[id, default: 0] += stamps.count
         }
@@ -72,32 +87,41 @@ final class PlayCountService {
         let apple = backend == .appleMusic
         stats.notePlayed(songId, at: nowMs, appleCounted: apple)
         if apple { baseline.noteApplePlay(songId, at: nowMs) }
-        revision &+= 1
+        ownRevision &+= 1
     }
 
     /// Adopt a fresh Apple snapshot (SET semantics — see `AMPlayBaselineStore.replaceAll`).
-    /// Returns `false` when the capture was rejected for being all-zero.
+    /// Returns `false` when the capture was rejected; `baseline.lastOutcome` says why.
     @discardableResult
     func applyCapture(counts: [String: AMPlayBaselineStore.Entry], capturedAtMs: Double,
                       source: String? = nil, sourceName: String? = nil,
-                      lastPlayedHighWaterMs: Double? = nil) -> Bool {
-        let ok = baseline.replaceAll(counts: counts, capturedAtMs: capturedAtMs, source: source,
-                                     sourceName: sourceName,
-                                     lastPlayedHighWaterMs: lastPlayedHighWaterMs)
-        revision &+= 1
-        return ok
+                      lastPlayedHighWaterMs: Double? = nil,
+                      clearHighWater: Bool = false,
+                      observedSongIds: Set<String>? = nil) -> Bool {
+        baseline.replaceAll(counts: counts, capturedAtMs: capturedAtMs, source: source,
+                            sourceName: sourceName,
+                            lastPlayedHighWaterMs: lastPlayedHighWaterMs,
+                            clearHighWater: clearHighWater,
+                            observedSongIds: observedSongIds)
     }
 
     /// Import the exporter's `playcounts.json` (or a previously saved snapshot).
     @discardableResult
     func importBaseline(from url: URL) throws -> Bool {
-        defer { revision &+= 1 }
-        return try baseline.importFile(at: url)
+        try baseline.importFile(at: url)
     }
 
     @discardableResult
     func importBaseline(json data: Data) throws -> Bool {
-        defer { revision &+= 1 }
-        return try baseline.importJSON(data)
+        try baseline.importJSON(data)
     }
+
+    /// Forget the incremental mark so the next capture re-reads the whole library. Non-destructive
+    /// — the counts stay put. This is the way out of a bogus high-water mark (see
+    /// `AppleMusicPlayCountCapture.Result.readNothing`).
+    func resetHighWater() { baseline.resetHighWater() }
+
+    /// Throw the Apple baseline away entirely. Destructive and irreversible for anything that
+    /// can't be re-imported, so every caller must confirm first.
+    func forgetBaseline() { baseline.clear() }
 }

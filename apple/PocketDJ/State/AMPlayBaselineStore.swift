@@ -60,9 +60,30 @@ final class AMPlayBaselineStore {
         /// Newest `lastPlayedDate` the last MusicKit walk saw (epoch ms). nil ⇒ the next capture
         /// is a FULL walk. Present ⇒ the walk can stop at the first row at/below it.
         var lastPlayedHighWaterMs: Double?
-        /// Apple-Music plays THIS app started that a capture has not yet absorbed, as raw
-        /// timestamps per song (see the type doc). Sorted ascending; empty keys are dropped.
+        /// LEGACY, decode-only. Provisional stamps now live in their own tiny sidecar file — a
+        /// play must not rewrite a 2.8 MB document (measured: 108.7 ms encode+write for 56,224
+        /// rows, versus 0.185 ms for the sidecar). Still decoded so a document written by the
+        /// previous build is migrated rather than dropped; `document()` never emits it again.
         var provisional: [String: [Double]]?
+    }
+
+    /// The sidecar document — provisional stamps ONLY. Separate file, separate write.
+    struct ProvisionalDocument: Codable {
+        var schemaVersion: Int = amPlayBaselineSchemaVersion
+        var provisional: [String: [Double]] = [:]
+    }
+
+    /// What `replaceAll` did, in enough detail for the UI to say something TRUE about it. The Bool
+    /// return says only "stored or not"; the remedies for the two refusals are opposite (one wants
+    /// an import, the other wants the existing baseline left alone), so the reason is kept here.
+    enum ApplyOutcome: Equatable {
+        case applied
+        /// The read produced no plays at all against a non-empty baseline — the shape a broken
+        /// MusicKit read has (`Song.playCount == nil`, forum 739587).
+        case rejectedNoPlays
+        /// The read produced far fewer songs than the baseline already had. A snapshot that loses
+        /// half its rows is a broken read, not a library the user deleted.
+        case rejectedCoverageLoss(kept: Int, existing: Int)
     }
 
     private(set) var counts: [String: Entry] = [:]
@@ -77,7 +98,12 @@ final class AMPlayBaselineStore {
     /// diff, and `@Observable` can't see into a dictionary read behind a function call).
     private(set) var revision: Int = 0
 
+    /// What the last `replaceAll` decided — read by the Settings copy after a `false`.
+    private(set) var lastOutcome: ApplyOutcome = .applied
+
     @ObservationIgnored private let fileURL: URL
+    /// Sibling of `fileURL` holding ONLY the provisional stamps. See `Document.provisional`.
+    @ObservationIgnored private let provisionalURL: URL
 
     /// Repeated Apple-Music plays of the SAME song inside this window don't record a second
     /// provisional timestamp — a seek/restart isn't a second listen. Matches
@@ -90,12 +116,23 @@ final class AMPlayBaselineStore {
     /// would have absorbed anyway.
     nonisolated static let maxProvisionalPerSong = 64
 
-    init(fileURL: URL = AMPlayBaselineStore.defaultURL()) {
+    /// Below this many existing rows the coverage guard is inert — a two-row test baseline (or a
+    /// library someone genuinely just started) has no "collapse" worth detecting, and guarding it
+    /// would only block legitimate small snapshots.
+    nonisolated static let coverageGuardFloor = 100
+
+    /// `loadNow: false` skips the synchronous decode so a caller can do it OFF the main actor with
+    /// `loadFromDiskAsync()` — the app path, where decoding 2.8 MB costs ~70 ms of launch. Tests
+    /// and every other caller keep the straightforward synchronous default.
+    init(fileURL: URL = AMPlayBaselineStore.defaultURL(), loadNow: Bool = true) {
         self.fileURL = fileURL
-        if let data = try? Data(contentsOf: fileURL),
-           let doc = try? JSONDecoder().decode(Document.self, from: data) {
-            adopt(doc)
-        }
+        self.provisionalURL = Self.provisionalURL(for: fileURL)
+        if loadNow { loadFromDisk() }
+    }
+
+    /// Sidecar path for a given baseline path: `…-am-playcounts.provisional.json`.
+    nonisolated static func provisionalURL(for fileURL: URL) -> URL {
+        fileURL.deletingPathExtension().appendingPathExtension("provisional.json")
     }
 
     nonisolated static func defaultURL() -> URL {
@@ -111,6 +148,8 @@ final class AMPlayBaselineStore {
         if ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil {
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-uitest-am-playcounts.json")
             try? FileManager.default.removeItem(at: url)
+            // The sidecar too, or a UI test inherits the previous run's provisional stamps.
+            try? FileManager.default.removeItem(at: provisionalURL(for: url))
             return url
         }
         return defaultURL()
@@ -153,21 +192,49 @@ final class AMPlayBaselineStore {
     /// played" (measured: non-nil count == non-zero count exactly, 117/117 over 225 songs, and
     /// the Library.xml baseline contains zero `n == 0` rows), so dropping them keeps the document
     /// small and makes absent ≡ zero for every reader.
+    ///
+    /// `observedSongIds` names the songs the producing read ACTUALLY looked at. It exists because
+    /// retiring provisional stamps purely by timestamp assumes the snapshot covers everything —
+    /// true for an import (the Library.xml exporter joins the catalog at 99.98%) and false for a
+    /// MusicKit walk, whose catalog-id-only resolver reaches 83% of the baseline's songs. Retiring
+    /// an unobserved song's stamp deletes a play that never made it into any counter: the badge
+    /// silently goes backwards and nothing can restore it. nil = "this snapshot covers everything",
+    /// which is the import case and the pre-existing behaviour.
+    ///
+    /// `clearHighWater` exists because `lastPlayedHighWaterMs: nil` already means "leave it
+    /// alone" — without an explicit signal there is no way to get BACK to a full walk, so a bogus
+    /// mark (see `AppleMusicPlayCountCapture`) would wedge an install into incremental-only for
+    /// good.
     @discardableResult
     func replaceAll(counts newCounts: [String: Entry], capturedAtMs: Double,
                     source: String? = nil, sourceName: String? = nil,
-                    lastPlayedHighWaterMs: Double? = nil) -> Bool {
+                    lastPlayedHighWaterMs: Double? = nil,
+                    clearHighWater: Bool = false,
+                    observedSongIds: Set<String>? = nil) -> Bool {
         let kept = newCounts.filter { $0.value.n > 0 }
-        if kept.isEmpty && !counts.isEmpty { return false }   // never clobber a good baseline
+        if kept.isEmpty && !counts.isEmpty {   // never clobber a good baseline
+            lastOutcome = .rejectedNoPlays
+            return false
+        }
+        // COVERAGE COLLAPSE. The all-zero guard above only catches a read that returned literally
+        // nothing; a read that returned half of what is already stored is the same kind of failure
+        // and just as unrecoverable, because a replace has no undo. Floor-gated so a legitimately
+        // small baseline (and every test fixture) is never second-guessed.
+        if !counts.isEmpty, counts.count >= Self.coverageGuardFloor, kept.count * 2 < counts.count {
+            lastOutcome = .rejectedCoverageLoss(kept: kept.count, existing: counts.count)
+            return false
+        }
 
         counts = kept
         self.capturedAtMs = capturedAtMs
         if let source { self.source = source }
         if let sourceName { self.sourceName = sourceName }
+        if clearHighWater { self.lastPlayedHighWaterMs = nil }
         if let lastPlayedHighWaterMs { self.lastPlayedHighWaterMs = lastPlayedHighWaterMs }
         // Everything this snapshot already contains leaves the provisional bucket — that is the
         // double-count fix. A play that landed AFTER the capture stays, and keeps showing.
-        dropProvisional(throughMs: capturedAtMs)
+        dropProvisional(throughMs: capturedAtMs, observedSongIds: observedSongIds)
+        lastOutcome = .applied
         revision &+= 1
         save()
         return true
@@ -188,15 +255,20 @@ final class AMPlayBaselineStore {
         }
         provisional[songId] = stamps
         revision &+= 1
-        save()
+        // ONLY the sidecar. Rewriting the whole baseline here cost 108.7 ms on the main actor at
+        // every track change (measured, 56,224 rows) — several hundred on a phone.
+        saveProvisional()
     }
 
-    /// Drop provisional timestamps at/below `throughMs` (the plays a snapshot has absorbed).
+    /// Drop provisional timestamps at/below `throughMs` (the plays a snapshot has absorbed) for
+    /// the songs the snapshot actually OBSERVED. `observedSongIds == nil` means it observed
+    /// everything — see `replaceAll`.
     /// Pure bookkeeping — no save; callers that mutate persist through their own path.
-    private func dropProvisional(throughMs: Double) {
+    private func dropProvisional(throughMs: Double, observedSongIds: Set<String>?) {
         guard !provisional.isEmpty else { return }
         var out: [String: [Double]] = [:]
         for (songId, stamps) in provisional {
+            guard observedSongIds?.contains(songId) ?? true else { out[songId] = stamps; continue }
             let kept = stamps.filter { $0 > throughMs }
             if !kept.isEmpty { out[songId] = kept }
         }
@@ -205,11 +277,27 @@ final class AMPlayBaselineStore {
 
     /// Import a snapshot document verbatim (the Library.xml exporter's `playcounts.json`, or a
     /// re-import of our own file). Same SET semantics + all-zero guard as `replaceAll`.
+    /// A high-water mark for an imported snapshot that carries none. The exporter writes Apple's
+    /// own `lastMs` per row (56,072 of 56,224 rows in the real file), so the newest of them IS the
+    /// point past which the library has not been walked.
+    ///
+    /// Deriving it is what makes the FIRST refresh after an import INCREMENTAL. Without it the
+    /// mark stays nil, the next walk is FULL, and a MusicKit walk — which resolves only songs
+    /// carrying an `appleMusicId` — would have replaced the imported baseline with 83.0% of its
+    /// songs and 85.0% of its plays (measured on the owner's real data: 46,664 of 56,224 songs,
+    /// dropping 9,560 songs / 21,652 plays), reported as a success, with no undo.
+    static func derivedHighWater(_ counts: [String: Entry]) -> Double? {
+        counts.values.compactMap(\.lastMs).max()
+    }
+
     @discardableResult
     func importDocument(_ doc: Document) -> Bool {
+        // An import IS a complete snapshot of its source, so provisional stamps retire by
+        // timestamp (observedSongIds nil) — the case the parameter was written to preserve.
         replaceAll(counts: doc.counts, capturedAtMs: doc.capturedAtMs,
                    source: doc.source, sourceName: doc.sourceName,
-                   lastPlayedHighWaterMs: doc.lastPlayedHighWaterMs)
+                   lastPlayedHighWaterMs: doc.lastPlayedHighWaterMs
+                       ?? Self.derivedHighWater(doc.counts))
     }
 
     /// Import from raw JSON bytes. Throws on malformed input so the caller can SAY so rather than
@@ -234,18 +322,63 @@ final class AMPlayBaselineStore {
         save()
     }
 
+    /// Forget the incremental mark so the NEXT capture is a full walk. Non-destructive: the counts
+    /// stay. This is the escape hatch from a bogus mark, and it is safe to reach for because a
+    /// full walk can no longer replace a baseline from a different source (see `countsToStore`).
+    func resetHighWater() {
+        guard lastPlayedHighWaterMs != nil else { return }
+        lastPlayedHighWaterMs = nil
+        revision &+= 1
+        save()
+    }
+
     /// Wipe the baseline: reset in-memory state (so the UI updates immediately) and remove the
-    /// persisted document. `try?` swallows a missing file, mirroring `save()`.
+    /// persisted documents. `try?` swallows a missing file, mirroring `save()`.
     func clear() {
         counts = [:]
         provisional = [:]
         capturedAtMs = 0
         lastPlayedHighWaterMs = nil
+        source = "musickit"
+        sourceName = nil
+        lastOutcome = .applied
         revision &+= 1
         try? FileManager.default.removeItem(at: fileURL)
+        try? FileManager.default.removeItem(at: provisionalURL)
     }
 
     // MARK: - Persistence
+
+    /// Synchronous decode of both documents. Safe to call once, on a store that has not been
+    /// mutated yet — see `loadFromDiskAsync`. Decodes the big document ONCE (it also carries the
+    /// legacy provisional field, which the sidecar migration needs).
+    private func loadFromDisk() {
+        let doc = (try? Data(contentsOf: fileURL))
+            .flatMap { try? JSONDecoder().decode(Document.self, from: $0) }
+        if let doc { adopt(doc) }
+        let side = (try? Data(contentsOf: provisionalURL))
+            .flatMap { try? JSONDecoder().decode(ProvisionalDocument.self, from: $0) }
+        adoptProvisional(side, legacy: doc?.provisional)
+    }
+
+    /// Decode OFF the main actor, then adopt. The app path: 2.8 MB of JSON costs ~70 ms to decode
+    /// (measured), which is launch time spent before the first frame if it happens in `init`.
+    ///
+    /// Refuses to run against a store that has already been touched — adopting a disk document on
+    /// top of live state would resurrect retired provisional stamps.
+    func loadFromDiskAsync() async {
+        guard revision == 0, counts.isEmpty, provisional.isEmpty else { return }
+        let (main, side) = (fileURL, provisionalURL)
+        let loaded = await Task.detached(priority: .userInitiated) { () -> (Document?, ProvisionalDocument?) in
+            let doc = (try? Data(contentsOf: main)).flatMap { try? JSONDecoder().decode(Document.self, from: $0) }
+            let pro = (try? Data(contentsOf: side)).flatMap { try? JSONDecoder().decode(ProvisionalDocument.self, from: $0) }
+            return (doc, pro)
+        }.value
+        guard revision == 0, counts.isEmpty, provisional.isEmpty else { return }
+        if let doc = loaded.0 { adopt(doc) }
+        adoptProvisional(loaded.1, legacy: loaded.0?.provisional)
+        revision &+= 1   // the UI's feed keys on this — without it a late load never reaches Browse
+    }
 
     private func adopt(_ doc: Document) {
         counts = doc.counts.filter { $0.value.n > 0 }
@@ -253,23 +386,57 @@ final class AMPlayBaselineStore {
         source = doc.source
         sourceName = doc.sourceName
         lastPlayedHighWaterMs = doc.lastPlayedHighWaterMs
-        provisional = doc.provisional ?? [:]
+        // NOT doc.provisional — that field is legacy. `loadProvisional` decides.
+    }
+
+    /// The SIDECAR wins whenever it exists. A document written by the previous build carries its
+    /// stamps inline; migrate those exactly once, and never again — otherwise every launch would
+    /// resurrect stamps a capture has since retired, re-inflating the badge.
+    private func adoptProvisional(_ side: ProvisionalDocument?, legacy: [String: [Double]]?) {
+        if let side {
+            provisional = side.provisional
+        } else if let legacy, !legacy.isEmpty {
+            provisional = legacy
+            saveProvisional()
+        }
     }
 
     /// The document as it would be persisted — the byte-identity invariant's observation point.
+    /// `provisional` is deliberately nil: it lives in the sidecar now, and keeping it out of here
+    /// is what makes a re-import byte-identical regardless of what has been played since.
     func document() -> Document {
         Document(schemaVersion: amPlayBaselineSchemaVersion, source: source, sourceName: sourceName,
                  capturedAtMs: capturedAtMs, counts: counts,
-                 lastPlayedHighWaterMs: lastPlayedHighWaterMs,
-                 provisional: provisional.isEmpty ? nil : provisional)
+                 lastPlayedHighWaterMs: lastPlayedHighWaterMs, provisional: nil)
     }
 
+    func provisionalDocument() -> ProvisionalDocument {
+        ProvisionalDocument(schemaVersion: amPlayBaselineSchemaVersion, provisional: provisional)
+    }
+
+    /// The BIG write — the whole counts map. Stays synchronous on purpose: it only runs on an
+    /// explicit capture/import (never per play), and the tests' byte-identity assertions read the
+    /// file the instant the call returns.
     private func save() {
         let enc = JSONEncoder()
         // Deterministic key order: re-importing the same snapshot must produce a BYTE-IDENTICAL
         // file, and JSONEncoder does not otherwise emit dictionary keys in a stable order.
         enc.outputFormatting = .sortedKeys
         if let data = try? enc.encode(document()) { try? data.write(to: fileURL, options: .atomic) }
+        saveProvisional()
+    }
+
+    /// The SMALL write — the per-play hot path (0.185 ms measured, versus 108.7 ms for `save()`).
+    private func saveProvisional() {
+        let enc = JSONEncoder()
+        enc.outputFormatting = .sortedKeys
+        if provisional.isEmpty {
+            try? FileManager.default.removeItem(at: provisionalURL)
+            return
+        }
+        if let data = try? enc.encode(provisionalDocument()) {
+            try? data.write(to: provisionalURL, options: .atomic)
+        }
     }
 }
 

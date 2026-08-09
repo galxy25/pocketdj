@@ -390,7 +390,11 @@ struct PocketDJApp: App {
         _playStats = State(initialValue: playStats)
         // Decode-only (no library walk): the MusicKit capture that refreshes this is minutes long
         // on a 90k-song library and is an EXPLICIT action, never a launch-time one.
-        let amPlayBaseline = AMPlayBaselineStore(fileURL: AMPlayBaselineStore.launchURL())
+        //
+        // `loadNow: false` keeps even the DECODE off the launch path — 2.8 MB of JSON is ~70 ms
+        // (measured) of pre-first-frame main-thread work. `.task` below reads it off-actor and
+        // bumps `revision`, which is what the Browse feed and the row badge key on.
+        let amPlayBaseline = AMPlayBaselineStore(fileURL: AMPlayBaselineStore.launchURL(), loadNow: false)
         _amPlayBaseline = State(initialValue: amPlayBaseline)
         let playCounts = PlayCountService(baseline: amPlayBaseline, stats: playStats)
         _playCounts = State(initialValue: playCounts)
@@ -1296,6 +1300,9 @@ struct PocketDJApp: App {
                 // Recommendation-engine auto-flush: idempotent, and internally a no-op while
                 // the Settings toggle is off (re-armed by enabledDidChange when it flips on).
                 .task { recEngine.startAutoFlush() }
+                // Apple's play-count baseline, decoded OFF the main actor (see the store's init).
+                // Idempotent: it refuses to run against a store that has already been touched.
+                .task { await amPlayBaseline.loadFromDiskAsync() }
                 // Periodic while-active tick for the DAILY auto-sync: an app left open across
                 // its fire time (default 4:20 PM) still runs the pass — launch/foreground alone
                 // would miss it. 15-min cadence; every check is cheap and single-flighted.

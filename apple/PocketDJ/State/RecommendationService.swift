@@ -731,6 +731,10 @@ final class RecommendationService {
     /// counts first, because that is exactly the order the server truncates in (`cleanPlayCounts`)
     /// and the hash must describe what it actually stores. nil when there is nothing to say.
     private func playCountsWire() -> RecPlayCountsWire? {
+        // The per-feature opt-out. The Apple baseline is a far older and more complete record than
+        // anything else this service uploads, so it gets its own switch rather than riding the
+        // engine's — and the Play counts settings copy points at it by name.
+        guard settings.shareLifetimePlayCounts else { return nil }
         guard let counts = playCountsProvider?() else { return nil }
         let positive = counts.filter { $0.value > 0 }
         guard !positive.isEmpty else { return nil }
