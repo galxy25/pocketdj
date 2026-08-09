@@ -516,7 +516,11 @@ struct PocketDJApp: App {
             }
             if let np = rips?.nowPlaying?.songId { ids.insert(np) }
             if let sp = setlistPlayer, sp.isRunning, sp.index < sp.queue.count {
+                // BOTH ids: a substituted row's burned file lives under the VARIANT id
+                // (`resolveId`) while the deck reports the base one, so protecting only the
+                // base would leave the file the player has open eligible for eviction.
                 ids.insert(sp.queue[sp.index].id)
+                ids.insert(sp.queue[sp.index].resolveId)
             }
             return ids
         }
