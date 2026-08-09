@@ -87,6 +87,8 @@ struct PocketDJApp: App {
         // considering a fresh first-run walk.
         if playCounts.resumeCaptureIfInterrupted(songs: app.songs) { return }
         playCounts.autoCaptureIfNeverCaptured(songs: app.songs)
+    }
+
     /// Resolve a sequencer run's Play-History origin (source-kind + display name) — the function
     /// installed as `SetlistPlayer.historyContextProvider`. GAMES first, collections after.
     ///
