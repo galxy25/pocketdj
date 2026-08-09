@@ -458,6 +458,7 @@
 		FCDF38C8D2C4E79044CC637A /* BeatDetectTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 505B7D8DECAC73862B21D9E5 /* BeatDetectTests.swift */; };
 		FE0D3742CAF0E52FD9877AB0 /* PerformanceUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E7EAA0A7C8A152F9720756F /* PerformanceUITests.swift */; };
 		FE3B89DB9E70D3D155F873C3 /* BLEMIDI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BB5B0196F280FE8A6B7E30B /* BLEMIDI.swift */; };
+		FE787690EB427B19C4F70170 /* PlayCountProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B88FB9E38EEC8F1BB1F01AF /* PlayCountProbeTests.swift */; };
 		FF0E95603D55FFC1D5A46C75 /* SettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3E18B7F28E2B0EB4FF9B8F3B /* SettingsStore.swift */; };
 /* End PBXBuildFile section */
 
@@ -671,6 +672,7 @@
 		5A256690412E76A6A0DA2419 /* MwFClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MwFClient.swift; sourceTree = "<group>"; };
 		5AE7E4825FAE45DFD8F5E303 /* AppleMusicSettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicSettingsView.swift; sourceTree = "<group>"; };
 		5B734C4E507E391171211F1C /* StudioScoreView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioScoreView.swift; sourceTree = "<group>"; };
+		5B88FB9E38EEC8F1BB1F01AF /* PlayCountProbeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayCountProbeTests.swift; sourceTree = "<group>"; };
 		5C92D6DE42A88532A8A9C69B /* FavoritesUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FavoritesUITests.swift; sourceTree = "<group>"; };
 		5D01FB4D57286C040B3C55EB /* StudioInstrumentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioInstrumentsView.swift; sourceTree = "<group>"; };
 		5D879B9DFE28B91D03DDB23A /* CollectionSortTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionSortTests.swift; sourceTree = "<group>"; };
@@ -1129,6 +1131,7 @@
 				25807BB1133FC7FA2B220B5D /* PlaybackCoordinatorTests.swift */,
 				A44274EC530895D9DCA349DF /* PlaybackModeTests.swift */,
 				DD97F42760C5BD35799FF51D /* PlaybackSessionTests.swift */,
+				5B88FB9E38EEC8F1BB1F01AF /* PlayCountProbeTests.swift */,
 				8D589B67B24BB608496DCA73 /* PlayHistoryContextTests.swift */,
 				E060EF0D0217C044B0ACE1B8 /* PlayHistoryStoreTests.swift */,
 				8F55C0256CA6578A23BC5B2E /* PlaylistWriteBackTests.swift */,
@@ -2045,6 +2048,7 @@
 				32F043584B9B88D3DD9C0F04 /* PendingBurnTests.swift in Sources */,
 				0B40521A2CC25682A8D73C0C /* PerfBenchmarkTests.swift in Sources */,
 				309D213A005FCFDCB87ABB83 /* PlatterDetailLibraryTests.swift in Sources */,
+				FE787690EB427B19C4F70170 /* PlayCountProbeTests.swift in Sources */,
 				70D24458E304CCBFEC625245 /* PlayHistoryContextTests.swift in Sources */,
 				1001E3736B229C3407049396 /* PlayHistoryStoreTests.swift in Sources */,
 				5F6EA6897418DE94CC18B31B /* PlayStatsStoreTests.swift in Sources */,
