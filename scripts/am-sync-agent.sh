@@ -128,6 +128,20 @@ process_one() {
     FINAL="$INDEX_OUT"
   fi
 
+  # (1c) ENRICHMENT REGRESSION GUARD. (1b) is the ONLY thing keeping the rebuild-lossy
+  # fields alive, and it fails SILENTLY when its --old is itself missing them — the diff
+  # guard below can't tell a wiped field from a normal large rebuild diff. Assert coverage
+  # never collapses before anything is committed or shipped; a stale/unpushed clone then
+  # aborts the run instead of publishing an index that reverts every explicit stream to the
+  # clean cut catalog-wide.
+  if [ -e "$PUBLIC_INDEX" ]; then
+    "$NODE" --max-old-space-size=4096 "$REPO/scripts/am-check-enrichment.mjs" \
+      --old "$PUBLIC_INDEX" --new "$FINAL" || {
+        log "ABORT: enrichment coverage collapsed for $base — not committing, not deploying"
+        exit 1
+      }
+  fi
+
   # (1a) EMPTY-DIFF GUARD: compare the would-be-published FINAL against the committed index WITHOUT
   # writing it (so --dry-run stays non-mutating). No NEW change ⇒ usually archive — BUT a prior run
   # may have committed+pushed this changeset and then FAILED to deploy (crash / S3 hiccup), leaving

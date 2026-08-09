@@ -280,4 +280,37 @@ final class BrowseUITests: XCTestCase {
         app.el("sort-done").tap()
         #endif
     }
+
+    /// "Plays" is a SONG sort, offered through the same mechanism as every other field — it is
+    /// not a parallel control. Driving it in the real app is the only way to catch the failure
+    /// the unit tests structurally can't: the field existing in the model but never reaching the
+    /// sheet (wrong kind, or filtered out as history-only), which would look fine in every
+    /// engine test and be invisible to the user.
+    func testPlaysSortIsOfferedForSongsAndNotAlbums() {
+        let app = launch()
+        XCTAssertTrue(app.el("album-alb_1").waitForExistence(timeout: 15))
+        // ALBUM mode: lifetime plays are a per-song number, so the key must not be offered here.
+        app.openSort()
+        XCTAssertTrue(app.el("addsort-year").waitForExistence(timeout: 5))
+        XCTAssertFalse(app.el("addsort-playCount").exists, "Plays is song-only")
+        #if !os(macOS)
+        app.el("sort-done").tap()
+        #endif
+
+        app.selectKind(songs: true)
+        XCTAssertTrue(app.el("row-play-sng_1").waitForExistence(timeout: 10))
+        app.openSort()
+        XCTAssertTrue(app.el("addsort-playCount").waitForExistence(timeout: 5),
+                      "the Plays sort key must reach the sheet in song mode")
+        #if !os(macOS)
+        app.el("addsort-playCount").tap()
+        // Accepted as a real key with a direction toggle, like any other field.
+        XCTAssertTrue(app.el("sortdir-playCount").waitForExistence(timeout: 3))
+        app.el("sort-done").tap()
+        // Sorting by a field NOTHING in the fixture has played must still render the list —
+        // all-null sorts are the common case on a fresh install, and a crash/blank here would be
+        // the first thing every new user saw.
+        XCTAssertTrue(app.el("row-play-sng_1").waitForExistence(timeout: 10))
+        #endif
+    }
 }

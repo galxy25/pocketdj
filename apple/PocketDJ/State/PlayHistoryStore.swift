@@ -25,8 +25,15 @@ import Observation
 final class PlayHistoryStore {
 
     /// Which surface a play happened in. Raw values are the persisted tokens — never rename.
+    ///
+    /// ADDING a case is safe in both directions: an OLDER build meeting a newer token drops
+    /// that one event (the `LenientEvent` per-element decode below), never the whole log.
     enum PlaySource: String, Codable, CaseIterable, Hashable {
         case browser, playlist, pocket, album, setlist, mix, artist
+        /// Played by a GAME (Gem Collector, Music with Friends) rather than by a collection.
+        /// Deliberately ONE case for all games — the game's own name rides in `contextName`,
+        /// so a new game needs no new token and no migration of already-written history.
+        case game
 
         /// Human label for the timeline accessory ("in <label>").
         var label: String {
@@ -38,6 +45,7 @@ final class PlayHistoryStore {
             case .setlist:  return "Set list"
             case .mix:      return "Mix"
             case .artist:   return "Artist"
+            case .game:     return "Game"
             }
         }
 
@@ -51,6 +59,7 @@ final class PlayHistoryStore {
             case .setlist:  return "music.note.list"
             case .mix:      return "slider.horizontal.3"
             case .artist:   return "music.mic"
+            case .game:     return "gamecontroller"
             }
         }
     }

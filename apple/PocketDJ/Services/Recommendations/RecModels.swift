@@ -60,6 +60,20 @@ struct RecCollectionsSnapshotWire: Codable, Equatable {
     }
 }
 
+/// LIFETIME play counts — a SNAPSHOT, in the same spirit as `RecCollectionsSnapshotWire`, NOT an
+/// event stream. Apple's counters are read as a whole and REPLACE the previous reading, so the
+/// server stores this wholesale and a re-upload of the same `atMs` is a no-op. Sending increments
+/// instead would inflate on every retry — the SET-never-ADD rule, carried onto the wire.
+///
+/// PRIVACY: this goes to the user's OWN private per-profile state object in the rec engine, which
+/// is what already holds their play log and favorites. It is deliberately never written into the
+/// shared catalog index.
+struct RecPlayCountsWire: Codable, Equatable {
+    var atMs: Double
+    /// songId → lifetime plays. Sparse: only songs with a non-zero count.
+    var counts: [String: Int]
+}
+
 struct RecUploadBatch: Encodable {
     var v = 1
     var deviceId: String
@@ -69,6 +83,7 @@ struct RecUploadBatch: Encodable {
     var activity: [RecActivityWire]?
     var puzzle: [RecPuzzleEventWire]?
     var collectionsSnapshot: RecCollectionsSnapshotWire?
+    var playCounts: RecPlayCountsWire?
 }
 
 // MARK: - Response wire types (ALL fields lenient — the collections-schema doctrine)

@@ -142,6 +142,7 @@ struct SongRowView: View {
                     KeyChip(key: effKey, camelot: effCamelot)
                     Text(Fmt.duration(data.lengthMs))
                         .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    PlayCountBadge(songId: data.songId)
 
                     Spacer(minLength: 8)
 
@@ -175,6 +176,72 @@ struct SongRowView: View {
             // Only react to real changes — a rotation or a window resize, not every re-layout.
             if abs(w - rowWidth) > 1 { rowWidth = w }
         }
+    }
+}
+
+/// LIFETIME plays as `#NN`, exactly the shorthand Levi asked for ("see the play count as #NN per
+/// item"). Lives inside the SHARED `SongRowView`, so it appears wherever a song row does — the
+/// Browser, collections, setlists — and reads identically in all of them.
+///
+/// HIDDEN AT ZERO, deliberately: most of a 90k-row catalog has never been played, and rendering
+/// `#0` on forty thousand rows would be noise on every screen instead of information. Absent means
+/// zero here, matching how `PlayCountService` and the "Plays" sort field already read it.
+///
+/// The service is OPTIONAL in the environment: a preview or a host that hasn't injected it renders
+/// nothing rather than trapping (the `FavoritesStore` precedent one field up).
+struct PlayCountBadge: View {
+    @Environment(PlayCountService.self) private var playCounts: PlayCountService?
+    let songId: String
+
+    /// Reads `revision` FIRST so the badge re-renders the instant a play or a capture lands:
+    /// `combinedPlayCount` reaches into dictionaries behind a function call, which `@Observable`
+    /// cannot see into on its own.
+    private var count: Int {
+        guard let playCounts else { return 0 }
+        _ = playCounts.revision
+        return playCounts.combinedPlayCount(songId)
+    }
+
+    @ViewBuilder var body: some View {
+        if count > 0 {
+            Text("#\(count)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(Theme.fgDim)
+                .lineLimit(1)
+                .help("Played \(count) time\(count == 1 ? "" : "s")")
+                .accessibilityLabel("Played \(count) time\(count == 1 ? "" : "s")")
+                .accessibilityIdentifier("play-count-\(songId)")
+        }
+    }
+}
+
+/// Feeds a `BrowseState` the lifetime play counts its "Plays" sort/filter needs.
+///
+/// Lifetime plays are the one field whose value is NOT on the row — it lives in a store — so the
+/// pure, off-main filter/sort can only see it if a snapshot is pushed in. EVERY surface that
+/// offers the sort must apply this, or the option appears in the sheet and quietly does nothing
+/// (which is worse than not offering it): the Browser, and every collection detail view that
+/// mounts `CollectionSortFilterSheets`.
+///
+/// `initial: true` seeds on first appearance; each later capture or play bumps the service's
+/// revision and re-seeds. `applyPlayCounts` ignores an unchanged revision, so this can never churn
+/// the results memo per render.
+struct PlayCountsFeed: ViewModifier {
+    @Environment(PlayCountService.self) private var playCounts: PlayCountService?
+    let browse: BrowseState
+
+    func body(content: Content) -> some View {
+        content.onChange(of: playCounts?.revision ?? 0, initial: true) { _, _ in
+            guard let playCounts else { return }
+            browse.applyPlayCounts(playCounts.snapshot(), revision: playCounts.revision)
+        }
+    }
+}
+
+extension View {
+    /// See `PlayCountsFeed` — required on any surface whose sort/filter offers "Plays".
+    func playCountsFeed(_ browse: BrowseState) -> some View {
+        modifier(PlayCountsFeed(browse: browse))
     }
 }
 

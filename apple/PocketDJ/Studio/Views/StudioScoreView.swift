@@ -39,6 +39,13 @@ struct StudioScoreView: View {
 
     private var take: StudioTake? { studio.take(takeId) }
 
+    /// TEST SEAM (the `PDJ_USE_FIXTURE` launch-environment convention): pin the score's playhead
+    /// to a fixed score-clock ms so the cursor + played/current highlighting can be driven — and
+    /// screenshotted — deterministically, without downloading a 32 MB instrument bank to make
+    /// Replay audible. Unset in normal use, where the clock is the engine's real replay position.
+    private static let pinnedPlayheadMs: Int? =
+        ProcessInfo.processInfo.environment["PDJ_SCORE_PLAYHEAD_MS"].flatMap(Int.init)
+
     var body: some View {
         Group {
             if let take {
@@ -69,23 +76,37 @@ struct StudioScoreView: View {
                                              set: { if !$0 { errorText = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(errorText ?? "") }
+        // A PARKED playhead belongs to whatever was replayed last — possibly another take, from
+        // the takes-list Replay button. Clear it on the way in so this score opens at "nothing
+        // played"; a replay already RUNNING is left alone and its cursor keeps moving.
+        .onAppear { instruments.resetReplayPosition() }
         .onDisappear {
             // Leaving the score stops ITS replay (the sampler keeps sounding otherwise, with
             // no visible stop control anywhere — replay is a this-screen affordance).
             if instruments.isReplaying { instruments.stopReplay() }
+            instruments.resetReplayPosition()
         }
     }
 
     // MARK: Content
 
     private func content(_ take: StudioTake) -> some View {
-        ScrollView {
+        // Resolve the environment ONCE and capture the ENGINE (a class), not this view struct, so
+        // the playhead closure below stays a plain object call with no Observation dependency.
+        let engine = instruments
+        return ScrollView {
             VStack(spacing: 14) {
                 actionBar(take)
-                // The shared editable surface — a take commits edits as `editedEvents`.
+                // The shared editable surface — a take commits edits as `editedEvents`. `playback`
+                // adds the score cursor + played-behind + current/last-played highlighting that
+                // follow Replay; the closure reads the engine's NON-observable replay clock, so
+                // the ~10 Hz playhead tick never re-runs this body (quantize + paginate).
                 ScoreEditorView(events: take.scoreEvents, bpm: take.bpm, instrument: take.instrument,
                                 title: displayTitle(take), editing: editing,
-                                onEdit: { studio.setTakeEvents(takeId, events: $0) })
+                                onEdit: { studio.setTakeEvents(takeId, events: $0) },
+                                playback: ScorePlaybackClock {
+                                    Self.pinnedPlayheadMs ?? engine.replayPositionMs()
+                                })
                 Text("\(take.instrument.displayName) · \(Fmt.bpm(take.bpm)) BPM")
                     .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }

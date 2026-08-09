@@ -94,8 +94,13 @@ final class PlaybackCoordinator {
     /// Play-stats hook: fired when a provider claims a play. Covers the Apple Music
     /// streaming path, which never touches `RipsStore.nowPlaying`; the rip path fires
     /// `RipsStore.onPlay` too, and the stats store's re-count window absorbs the overlap.
-    /// Wired at app init to `PlayStatsStore.notePlayed`; nil in tests.
-    @ObservationIgnored var onPlay: ((String) -> Void)?
+    /// Wired at app init to `PlayCountService.notePlayed`; nil in tests.
+    ///
+    /// The BACKEND rides along because it decides how the play may be counted: an
+    /// `.appleMusic` play is one APPLE ALSO COUNTS, so it will arrive again in the next
+    /// `AMPlayBaselineStore` snapshot and must be recorded provisionally rather than added to a
+    /// lifetime total twice. Every other backend is ours alone and accumulates permanently.
+    @ObservationIgnored var onPlay: ((String, PlaybackBackend) -> Void)?
 
     init(ripProvider: RipServerPlaybackProvider, appleMusic: AppleMusicPlaybackProvider) {
         self.ripProvider = ripProvider
@@ -163,7 +168,7 @@ final class PlaybackCoordinator {
             }
             if await provider.tryPlay(song, atMs: atMs) {
                 activeBackend = provider.backend
-                onPlay?(statsId ?? song.id)
+                onPlay?(statsId ?? song.id, provider.backend)
                 // Ask the server to prepare this user's OWN copy, if they have one.
                 //
                 // SERVER CONTRACT (enforced server-side, not here): `/rip` processes ONLY
@@ -217,23 +222,35 @@ final class PlaybackCoordinator {
     /// while `statsId` keeps history/stats keyed on the base song.
     func play(id: String, title: String, artist: String, atMs: Int? = nil,
               variant: SongVariant? = nil) async {
+        let song = projectedSong(id: id, title: title, artist: artist, variant: variant)
+        // A variant play resolves under its variant identity but must still SCORE as the
+        // base song, so history/stats/favorites key the real catalog identity.
+        await play(song, atMs: atMs, statsId: variant == nil ? nil : id)
+    }
+
+    /// The EXACT `IndexSong` the row-▶ path hands to the provider chain for `id`. Split out
+    /// of `play(id:…)` so the projection is reachable from tests: everything the streaming
+    /// side decides about EDITION is derived from these fields, and a projection that drops
+    /// them makes `AppleMusicProvider.streamCandidates` offer a bare, unverified primary —
+    /// which streams the clean cut with the prefer-explicit toggle on. Testing the pure
+    /// resolver instead of this projection is exactly how that shipped once already.
+    func projectedSong(id: String, title: String, artist: String,
+                       variant: SongVariant?) -> IndexSong {
         if let variant {
-            await play(IndexSong.minimal(id: SongVariant.variantId(id, variant),
-                                         name: title, artist: artist,
-                                         appleMusicId: variantAppleMusicIdOfSong(id, variant)),
-                       atMs: atMs, statsId: id)
-            return
+            return IndexSong.minimal(id: SongVariant.variantId(id, variant),
+                                     name: title, artist: artist,
+                                     appleMusicId: variantAppleMusicIdOfSong(id, variant))
         }
         // Carry the catalog id (looked up) so the AM streaming provider is eligible — the
         // provider chain reads `appleMusicId` for a source-less streamable row — AND the
         // EDITION fields, without which `AppleMusicProvider.streamCandidates` can only ever
         // offer the primary id and the prefer-explicit preference silently does nothing.
         let ed = editionsOfSong(id)
-        await play(IndexSong.minimal(id: id, name: title, artist: artist,
-                                     appleMusicId: appleMusicIdOfSong(id),
-                                     explicit: ed.explicit,
-                                     appleMusicIdExplicit: ed.explicitId,
-                                     appleMusicIdClean: ed.cleanId), atMs: atMs)
+        return IndexSong.minimal(id: id, name: title, artist: artist,
+                                 appleMusicId: appleMusicIdOfSong(id),
+                                 explicit: ed.explicit,
+                                 appleMusicIdExplicit: ed.explicitId,
+                                 appleMusicIdClean: ed.cleanId)
     }
 
     /// Whether a cue offset passed to `play(_:atMs:)` would actually be APPLIED for

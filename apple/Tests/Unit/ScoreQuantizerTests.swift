@@ -199,4 +199,127 @@ final class ScoreQuantizerTests: XCTestCase {
         let doc = ScoreQuantizer.quantize(events: [ev(0, 250, 60)], bpm: 120, instrument: .piano)
         XCTAssertEqual(doc.measures.count, 1)
     }
+
+    // MARK: - Playhead → played / current mapping (the saved instrumental's score cursor)
+    //
+    // 120 BPM ⇒ one 16th = 125 ms. The fixture is a MELODY line (one note per onset) at
+    // 0 / 500 / 1500 ms = onsets 0 / 4 / 12, with a rest between the 2nd and 3rd:
+    //   note A [0, 250)      onsets 0…2
+    //   note B [500, 750)    onsets 4…6
+    //   (rest 750…1500)
+    //   note C [1500, 1750)  onsets 12…14
+
+    private var melodyLine: [StudioNoteEvent] {
+        [ev(0, 250, 60), ev(500, 750, 62), ev(1500, 1750, 64)]
+    }
+    private var melodySlots: [ScorePlayhead.Slot] {
+        ScorePlayhead.timeline(events: melodyLine, bpm: 120)
+    }
+
+    func testTimelineIsOnsetOrderedWithRawEnds() {
+        XCTAssertEqual(melodySlots, [ScorePlayhead.Slot(onset16ths: 0, end16ths: 2),
+                                     ScorePlayhead.Slot(onset16ths: 4, end16ths: 6),
+                                     ScorePlayhead.Slot(onset16ths: 12, end16ths: 14)])
+    }
+
+    /// A COMPING instrumental stacks a whole triad on one onset — the quantizer draws that as ONE
+    /// chord, so the timeline must collapse it to ONE slot (ending at the longest member) or the
+    /// "current note" would flicker between voices. Both instrumental kinds go through this.
+    func testTimelineCollapsesAChordToOneSlot() {
+        let triad = [ev(0, 250, 60), ev(0, 500, 64), ev(0, 250, 67)]
+        XCTAssertEqual(ScorePlayhead.timeline(events: triad, bpm: 120),
+                       [ScorePlayhead.Slot(onset16ths: 0, end16ths: 4)])
+    }
+
+    func testTimelineGivesEveryNoteAtLeastOneSixteenth() {
+        // A zero-length event (a tap) is still a note, never a zero-width slot.
+        XCTAssertEqual(ScorePlayhead.timeline(events: [ev(0, 0, 60)], bpm: 120),
+                       [ScorePlayhead.Slot(onset16ths: 0, end16ths: 1)])
+    }
+
+    /// Nothing has played yet: no highlight anywhere and the cursor parked at the start.
+    func testStateWithNoPositionIsIdle() {
+        let s = ScorePlayhead.state(atMs: nil, slots: melodySlots, bpm: 120)
+        XCTAssertEqual(s, .idle)
+        XCTAssertEqual(s.cursor16ths, 0)
+        XCTAssertNil(s.currentOnset16ths)
+        XCTAssertFalse(s.isPlayed(onset16ths: 0))
+        XCTAssertFalse(s.isCurrent(onset16ths: 0))
+    }
+
+    /// Before the first note (a leading rest): the cursor moves, but nothing is highlighted.
+    func testStateBeforeTheFirstNoteHasNoCurrentNote() {
+        let late = [ev(1000, 1250, 60)]                       // first onset = 8
+        let s = ScorePlayhead.state(atMs: 300, slots: ScorePlayhead.timeline(events: late, bpm: 120),
+                                    bpm: 120)
+        XCTAssertNil(s.currentOnset16ths)
+        XCTAssertFalse(s.isSounding)
+        XCTAssertEqual(s.cursor16ths, 2.4, accuracy: 0.0001)   // 300 ms / 125
+        XCTAssertFalse(s.isPlayed(onset16ths: 8))
+    }
+
+    func testStateWhileANoteIsSoundingMarksItCurrent() {
+        let s = ScorePlayhead.state(atMs: 600, slots: melodySlots, bpm: 120)   // inside note B
+        XCTAssertEqual(s.currentOnset16ths, 4)
+        XCTAssertTrue(s.isSounding)
+        XCTAssertTrue(s.isCurrent(onset16ths: 4))
+        XCTAssertTrue(s.isPlayed(onset16ths: 0), "note A is behind the cursor")
+        XCTAssertFalse(s.isPlayed(onset16ths: 4), "the sounding note is current, not played")
+        XCTAssertFalse(s.isPlayed(onset16ths: 12), "note C hasn't been reached")
+    }
+
+    /// In the REST after note B: nothing is sounding, but B stays the emphasised "last played"
+    /// note — the explicit "current playing OR last played" half of the request.
+    func testStateInARestHoldsTheLastPlayedNote() {
+        let s = ScorePlayhead.state(atMs: 1000, slots: melodySlots, bpm: 120)
+        XCTAssertEqual(s.currentOnset16ths, 4)
+        XCTAssertFalse(s.isSounding, "the note has ended — it is the LAST played, not playing")
+        XCTAssertTrue(s.isPlayed(onset16ths: 0))
+    }
+
+    /// Playback stopped / paused: the frozen position keeps the last note emphasised instead of
+    /// everything reverting to neutral.
+    func testStateAfterPlaybackStopsHoldsTheLastNote() {
+        // Frozen well past the end of the take (replay ran to completion).
+        let s = ScorePlayhead.state(atMs: 9_000, slots: melodySlots, bpm: 120)
+        XCTAssertEqual(s.currentOnset16ths, 12, "the LAST note stays emphasised")
+        XCTAssertFalse(s.isSounding)
+        XCTAssertTrue(s.isPlayed(onset16ths: 0))
+        XCTAssertTrue(s.isPlayed(onset16ths: 4))
+        XCTAssertFalse(s.isPlayed(onset16ths: 12))
+        // Paused mid-note instead: still sounding, still the current note.
+        let paused = ScorePlayhead.state(atMs: 550, slots: melodySlots, bpm: 120)
+        XCTAssertEqual(paused.currentOnset16ths, 4)
+        XCTAssertTrue(paused.isSounding)
+    }
+
+    func testStateOnATakeWithNoNotes() {
+        let s = ScorePlayhead.state(atMs: 4_000, slots: [], bpm: 120)
+        XCTAssertNil(s.currentOnset16ths)
+        XCTAssertFalse(s.isSounding)
+        XCTAssertEqual(s.cursor16ths, 32, accuracy: 0.0001)    // the cursor still tracks time
+    }
+
+    /// The cursor is a LAYOUT coordinate: it must be the same ms → 16ths mapping the quantizer
+    /// anchors items with, or the cursor and the notes drift apart.
+    func testCursorSharesTheQuantizersAnchorAndClamps() {
+        XCTAssertEqual(ScorePlayhead.cursor16ths(ms: 0, bpm: 120), 0)
+        XCTAssertEqual(ScorePlayhead.cursor16ths(ms: 125, bpm: 120), 1, accuracy: 0.0001)
+        XCTAssertEqual(ScorePlayhead.cursor16ths(ms: 2000, bpm: 120), 16, accuracy: 0.0001)  // bar 2
+        XCTAssertEqual(ScorePlayhead.cursor16ths(ms: -400, bpm: 120), 0, "never negative")
+        // 0 BPM degrades to the schema default (120), never a divide-by-zero.
+        XCTAssertEqual(ScorePlayhead.cursor16ths(ms: 125, bpm: 0), 1, accuracy: 0.0001)
+    }
+
+    /// A wild clock read must clamp, never trap on the way into `Int` (the StaffChordView
+    /// Int.min lesson) — and must not silently report a note as current.
+    func testAbsurdPositionsClampInsteadOfTrapping() {
+        XCTAssertEqual(ScorePlayhead.cursor16ths(ms: Int.max, bpm: 120), ScorePlayhead.maxCursor16ths)
+        XCTAssertEqual(ScorePlayhead.cursor16ths(ms: Int.min, bpm: 120), 0)
+        let s = ScorePlayhead.state(atMs: Int.max, slots: melodySlots, bpm: 120)
+        XCTAssertEqual(s.currentOnset16ths, 12)
+        XCTAssertEqual(s.cursor16ths, ScorePlayhead.maxCursor16ths)
+        let low = ScorePlayhead.state(atMs: Int.min, slots: melodySlots, bpm: 120)
+        XCTAssertEqual(low.currentOnset16ths, 0, "clamped to the start, which IS the first onset")
+    }
 }

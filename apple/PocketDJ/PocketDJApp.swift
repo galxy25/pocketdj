@@ -73,6 +73,45 @@ struct PocketDJApp: App {
         Task { await autoSyncIfDue() }
     }
 
+    /// Start or RESUME the lifetime play-count capture, once the two things it depends on exist:
+    /// the decoded baseline (so "never captured" is a real answer rather than "not loaded yet")
+    /// and the loaded catalog (so the walk has something to resolve Apple's rows against — with an
+    /// empty catalog every row is unresolved, and committing that stamps a high-water mark with
+    /// zero counts stored, wedging the install into incremental-only).
+    ///
+    /// Both calls self-guard and are one-shot per launch, so every trigger that reaches here —
+    /// scene phase, the catalog landing, the baseline decode finishing — is free to call it.
+    @MainActor private func startPlayCountCaptureIfReady() {
+        guard app.state == .loaded, amPlayBaseline.hasLoaded else { return }
+        // An interrupted run has counts and a cursor banked on disk: continue it before
+        // considering a fresh first-run walk.
+        if playCounts.resumeCaptureIfInterrupted(songs: app.songs) { return }
+        playCounts.autoCaptureIfNeverCaptured(songs: app.songs)
+    }
+
+    /// Resolve a sequencer run's Play-History origin (source-kind + display name) — the function
+    /// installed as `SetlistPlayer.historyContextProvider`. GAMES first, collections after.
+    ///
+    /// A game hands its queue to the SHARED sequencer under a synthetic `sourceSetlistId`
+    /// (`puzzle_<roundId>`) that names no collection, so `CollectionsStore.historyContext` can
+    /// only fall through to its (.setlist, nil) default — which is why every Gem Collector play
+    /// used to read "Set list" in History.
+    ///
+    /// The game branch lives in the COMPOSITION ROOT on purpose: run-tag formats are the games'
+    /// business, and CollectionsStore must not learn them in order to answer a question about
+    /// collections. The name comes from `GameKind.label` rather than a literal so the display
+    /// rename ("Collector's Puzzle" → "Gem Collector") can never drift out of History again.
+    /// Rows read "Game · Gem Collector"; Music with Friends slots in here later with no new
+    /// `PlaySource` case (see that enum's doc).
+    @MainActor
+    static func historyContext(forSourceSetlistId id: String?, collections: CollectionsStore?)
+        -> (source: PlayHistoryStore.PlaySource, name: String?) {
+        if let id, id.hasPrefix(CollectorsPuzzleEngine.runTagPrefix) {
+            return (.game, GameKind.collectorsPuzzle.label)
+        }
+        return collections?.historyContext(forSourceSetlistId: id) ?? (.setlist, nil)
+    }
+
     /// Wire the sync's settings-backed seams. Done HERE rather than in `init` because
     /// `playlistSync` is `@State` — touching it during init is "used before being initialized".
     /// Idempotent, so every entry point can call it.
@@ -170,6 +209,12 @@ struct PocketDJApp: App {
     /// funnels in; the storage manager's soft-cap prune orders by least-recently-played.
     @State private var playStats: PlayStatsStore
     @State private var playHistory: PlayHistoryStore
+    /// Apple Music's LIFETIME play counters (the ~144k-play baseline this app could never have
+    /// accumulated on its own) plus the combined read every surface uses. DEVICE-LOCAL and
+    /// deliberately NOT cloud-synced: every device re-derives it from the same Apple ID, and a
+    /// 56k-row doc in whole-document LWW would be pure churn.
+    @State private var amPlayBaseline: AMPlayBaselineStore
+    @State private var playCounts: PlayCountService
     /// Device-local, append-only COLLECTION ACTIVITY log (F11) — add/heart/unheart/remove events
     /// behind the History view's Activity segment. Its own synced JSON, distinct from the play log.
     @State private var collectionActivity: CollectionActivityStore
@@ -382,6 +427,18 @@ struct PocketDJApp: App {
         _mixRecorder = State(initialValue: mixRecorder)
         let playStats = PlayStatsStore(fileURL: PlayStatsStore.launchURL())
         _playStats = State(initialValue: playStats)
+        // Decode-only (no library walk): the MusicKit capture that refreshes this is minutes long
+        // on a 90k-song library and is an EXPLICIT action, never a launch-time one.
+        //
+        // `loadNow: false` keeps even the DECODE off the launch path — 2.8 MB of JSON is ~70 ms
+        // (measured) of pre-first-frame main-thread work. `.task` below reads it off-actor and
+        // bumps `revision`, which is what the Browse feed and the row badge key on.
+        let amPlayBaseline = AMPlayBaselineStore(fileURL: AMPlayBaselineStore.launchURL(), loadNow: false)
+        _amPlayBaseline = State(initialValue: amPlayBaseline)
+        let playCounts = PlayCountService(baseline: amPlayBaseline, stats: playStats,
+                                          runURL: PlayCountService.launchRunURL(),
+                                          auditURL: PlayCountService.launchAuditURL())
+        _playCounts = State(initialValue: playCounts)
         // Append-only play TIMELINE (History mode) — distinct from the aggregate playStats above.
         let playHistory = PlayHistoryStore(fileURL: PlayHistoryStore.launchURL())
         _playHistory = State(initialValue: playHistory)
@@ -452,9 +509,10 @@ struct PocketDJApp: App {
         // Feed the app-scoped sequencer the live device/cloud mode (read fresh per track).
         setlistPlayer.playbackMode = { [weak settings] in settings?.playbackMode ?? .cloud }
         // Let the sequencer snapshot each run's Play-History origin (source-kind + set name) at
-        // play() time, resolved from the collections' now-playing source.
-        setlistPlayer.historyContextProvider = { [weak collections] in
-            collections?.historyContext(forSourceSetlistId: $0) ?? (.setlist, nil)
+        // play() time. GAME runs are resolved FIRST (their run tag names no collection), then
+        // the collections' now-playing source.
+        setlistPlayer.historyContextProvider = { [weak collections] id in
+            Self.historyContext(forSourceSetlistId: id, collections: collections)
         }
         // …and the NAVIGABLE origin (kind + collection id) — the Up Next header's
         // collection button target, captured per run + persisted in the durable session.
@@ -531,22 +589,28 @@ struct PocketDJApp: App {
         // DIFFERENT ids, so the 30s per-id re-count window can't dedupe them and history/stats
         // gain ghost rows keyed to an id no catalog knows. Both hooks converging on the base id
         // restores the window's dedup AND keys the play to the real song (a plain id is a no-op).
-        rips.onPlay = { [weak playStats] in
+        // A rip/burn/local-file play is OURS ALONE — Apple never sees it, so no snapshot can ever
+        // retire it and it accumulates permanently (backend `.ripServer`).
+        rips.onPlay = { [weak playCounts] in
             let id = SongVariant.baseId($0)
-            playStats?.notePlayed(id); recordNonMixHistory(id)
+            playCounts?.notePlayed(id, backend: .ripServer); recordNonMixHistory(id)
         }
         // A download asked for before the song had a file: the rip has now landed, so finish the
         // burn. Fires without the user returning to the row — that is what makes ⤓ on an unripped
         // track a real request rather than an error message.
         rips.onRipReady = { [weak burns] _ in Task { await burns?.drainPendingAfterRip() } }
-        coordinator.onPlay = { [weak playStats] in
+        coordinator.onPlay = { [weak playCounts] songId, backend in
             // Defense in depth: the coordinator already reports statsId (the base id) for its
             // own variant plays — normalize anyway so no future call path can mint a ghost id.
-            let id = SongVariant.baseId($0)
-            playStats?.notePlayed(id); recordNonMixHistory(id)
+            let id = SongVariant.baseId(songId)
+            // The BACKEND is what keeps the lifetime total honest: an Apple Music stream is a play
+            // Apple counts too, so it goes to the provisional bucket and is retired by the capture
+            // that absorbs it, instead of being added a second time.
+            playCounts?.notePlayed(id, backend: backend); recordNonMixHistory(id)
         }
-        mix.onSongPlayed = { [weak playStats, weak playHistory, weak mix, weak mixSessions, weak app] songId in
-            playStats?.notePlayed(songId)
+        mix.onSongPlayed = { [weak playCounts, weak playHistory, weak mix, weak mixSessions, weak app] songId in
+            // The Mix decks play LOCAL files only — never Apple Music.
+            playCounts?.notePlayed(songId, backend: .ripServer)
             guard let playHistory else { return }
             let name = (mix?.autoMixing == true ? mix?.autoSourceLabel : nil) ?? mixSessions?.currentName
             let context = PlayHistoryStore.PlayContext(source: .mix, contextId: mixSessions?.currentId, contextName: name)
@@ -969,6 +1033,10 @@ struct PocketDJApp: App {
         // shows a card with nothing to play. Weak captures: the app owns these stores in
         // @State, so the closure reads them without adding a second retain cycle through the
         // engine (the `recEngine.puzzleEventsProvider` pattern).
+        // LIFETIME plays for the sampler's play-count bias — Apple's baseline included, so
+        // "favour/avoid what I play" reasons about a decade of listening instead of this app's
+        // ~700 songs. Weak like the availability closure below.
+        puzzle.playCountsProvider = { [weak playCounts] in playCounts?.snapshot() ?? [:] }
         puzzle.audioAvailability = { [weak rips, weak burns, weak coordinator] in
             CollectorsPuzzleEngine.AudioAvailability(
                 ripManifest: rips?.manifest ?? [:],
@@ -1038,6 +1106,12 @@ struct PocketDJApp: App {
         recEngine.puzzleEventsProvider = { [weak puzzleDecisions] sinceMs in
             puzzleDecisions?.recPuzzleEvents(sinceMs: sinceMs) ?? []
         }
+        // LIFETIME plays as a cloud ranking signal. A 30-day play window is structurally blind to
+        // the decade of listening Apple recorded before this app existed — feeding it in is what
+        // lets For You say anything at all on an install whose recent history is empty. Uploaded
+        // as a hash-gated SNAPSHOT into the user's OWN private profile state, never the shared
+        // catalog. Weak, like every other seam here.
+        recEngine.playCountsProvider = { [weak playCounts] in playCounts?.snapshot() ?? [:] }
         // The CLOUD half of Gem Collector's similarity. It is a BOOSTER only: with the engine
         // off (the default) — or the route not deployed yet — this returns [] and the round
         // ranks entirely on device. Weak, like every other seam here.
@@ -1219,6 +1293,8 @@ struct PocketDJApp: App {
                 .environment(mixSessions)
                 .environment(mixRecorder)
                 .environment(playStats)
+                .environment(amPlayBaseline)
+                .environment(playCounts)
                 .environment(playHistory)
                 .environment(collectionActivity)
                 .environment(storage)
@@ -1285,10 +1361,24 @@ struct PocketDJApp: App {
                 // rather than a `.task`, because the inbound pull resolves Apple Music
                 // catalog ids against the catalog — running it earlier would ask about an
                 // empty id space and pull nothing.
-                .onChange(of: app.state) { _, _ in syncFavoritesIfReady() }
+                .onChange(of: app.state) { _, _ in
+                    syncFavoritesIfReady()
+                    // The catalog just landed — this is the first moment a walk can resolve
+                    // anything, and at cold launch it is strictly later than scene-phase `.active`.
+                    if onboarding.isComplete { startPlayCountCaptureIfReady() }
+                }
                 // Recommendation-engine auto-flush: idempotent, and internally a no-op while
                 // the Settings toggle is off (re-armed by enabledDidChange when it flips on).
                 .task { recEngine.startAutoFlush() }
+                // Apple's play-count baseline, decoded OFF the main actor (see the store's init).
+                // Idempotent: it refuses to run against a store that has already been touched.
+                .task {
+                    await amPlayBaseline.loadFromDiskAsync()
+                    // `isEmpty` reads true for the whole ~70 ms this decode takes, so the capture
+                    // triggers gate on `hasLoaded` and are re-armed HERE — otherwise a launch
+                    // whose scene-phase tick beat the decode would never try again.
+                    if onboarding.isComplete { startPlayCountCaptureIfReady() }
+                }
                 // Periodic while-active tick for the DAILY auto-sync: an app left open across
                 // its fire time (default 4:20 PM) still runs the pass — launch/foreground alone
                 // would miss it. 15-min cadence; every check is cheap and single-flighted.
@@ -1314,6 +1404,23 @@ struct PocketDJApp: App {
                     switch phase {
                     case .active:
                         streaming.onScenePhaseActive()
+                        // PLAY-COUNT CAPTURE — first run, and auto-resume.
+                        //
+                        // The Apple baseline ships empty, so until a capture lands Browse's
+                        // "Plays" sort ranks by this app's own playback only — which looks
+                        // authoritative and is wrong (nothing above single digits for a library
+                        // holding 50-play songs). The walk is CHECKPOINTED, so a run the app died
+                        // in the middle of has its cursor and its counts banked on disk: the
+                        // second call picks it up where it stopped rather than starting a
+                        // multi-minute walk over. Both self-guard (baseline loaded, catalog
+                        // loaded, MusicKit available, one shot per launch, not already running),
+                        // so this is a no-op on every subsequent foreground.
+                        //
+                        // Hung off `app.state` as well as scene phase further down: at cold launch
+                        // `.active` fires while `app.songs` is still empty, and a walk with no
+                        // catalog resolves NOTHING — which would stamp a high-water mark with zero
+                        // counts stored and wedge the install into incremental-only.
+                        if onboarding.isComplete { startPlayCountCaptureIfReady() }
                         // Cross-device freshness beyond launch (throttled inside).
                         // HELD during onboarding: .active fires at cold launch too, and a
                         // full pass would pull/push before stage 1 decides the profile mode.
@@ -1357,6 +1464,10 @@ struct PocketDJApp: App {
                         // Mix-deck session: same doctrine — the decks' latest playheads (and any
                         // debounced slider value still in memory) land before a suspension→kill.
                         mixDeckSession.flush()
+                        // A play-count walk in flight holds a background assertion, but its
+                        // checkpoint writes are queued off-main — land them before suspension so
+                        // an interrupted read resumes from its real cursor, not an older one.
+                        Task { [weak playCounts] in await playCounts?.flushCaptureWrites() }
                         // Recommendation engine: land the pending deltas before a possible
                         // suspension→kill (5 s debounce; inert while the toggle is off).
                         recEngine.flushSoon()

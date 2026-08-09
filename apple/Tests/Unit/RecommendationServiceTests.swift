@@ -348,6 +348,41 @@ final class RecommendationServiceTests: XCTestCase {
         XCTAssertFalse(env.svc.isAutoFlushArmed)
     }
 
+    // MARK: - The play-count sub-gate
+
+    /// Lifetime play counts include the Apple Music baseline — a decade of listening imported
+    /// wholesale, far older and more complete than the 30-day event stream beside it. It gets its
+    /// own switch, and the Play counts settings copy promises that switch works.
+    func testLifetimePlayCountsRespectTheirOwnOptOut() async {
+        let env = makeEnv(enabled: true)
+        env.svc.playCountsProvider = { ["sng_a": 41, "sng_b": 4] }
+        env.settings.shareLifetimePlayCounts = false
+        env.history.record(songId: "sng_a", context: .browser, at: 1_000)
+        await env.svc.flushNow()
+
+        XCTAssertEqual(env.spy.requests.count, 1, "the listening history still goes")
+        XCTAssertNil(env.spy.json(0)["playCounts"],
+                     "…but the imported Apple baseline stays on the device")
+
+        // …and turning it back on sends them, so the switch is a switch and not a placebo.
+        env.settings.shareLifetimePlayCounts = true
+        env.history.record(songId: "sng_b", context: .browser, at: 2_000)
+        await env.svc.flushNow()
+        let wire = env.spy.json(1)["playCounts"] as? [String: Any]
+        XCTAssertEqual((wire?["counts"] as? [String: Any])?["sng_a"] as? Int, 41)
+    }
+
+    /// Default ON — a considered choice, and one the settings copy states outright. If this ever
+    /// flips silently the footer becomes a lie in the other direction.
+    func testLifetimePlayCountsDefaultToBeingShared() async {
+        let env = makeEnv(enabled: true)
+        XCTAssertTrue(env.settings.shareLifetimePlayCounts)
+        env.svc.playCountsProvider = { ["sng_a": 7] }
+        env.history.record(songId: "sng_a", context: .browser, at: 1_000)
+        await env.svc.flushNow()
+        XCTAssertNotNil(env.spy.json(0)["playCounts"])
+    }
+
     /// Account deletion must not silently orphan the server-side state: the DELETE that failed
     /// leaves a tombstone CARRYING the credential so a later launch can finish. The key file
     /// itself goes immediately — the tombstone is its only afterlife, so a re-enable in the

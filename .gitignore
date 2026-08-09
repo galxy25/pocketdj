@@ -79,3 +79,11 @@ dev-dist/
 .worktrees/
 scripts/lambda/am-playlist-sync/.endpoint-url.txt
 scripts/lambda/rec-engine/.endpoint-url.txt
+
+# Apple Music LIFETIME play-count snapshot (playcounts.json / *-playcounts.json).
+# PRIVATE listening history — 56k rows of what the owner actually plays. It is imported into a
+# DEVICE-LOCAL store (AMPlayBaselineStore) on purpose and must never reach the shared catalog or
+# git: public/apple-music-index.json is ONE document every install subscribes to, so anything
+# committed near it risks publishing this to every other user.
+/playcounts.json
+*-playcounts.json

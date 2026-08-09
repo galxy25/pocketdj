@@ -67,6 +67,29 @@ final class BrowseState {
     /// True when the favorite filter constrains anything (`.any` = no constraint).
     var favoriteActive: Bool { favoriteFilter != .any }
 
+    // MARK: Lifetime play counts (the "Plays" sort/filter field + the `#NN` row badge)
+    //
+    // Unlike every other field, this one isn't on the row: it lives in `PlayCountService` (an
+    // Apple snapshot + this app's non-Apple plays + the not-yet-captured Apple plays). The owning
+    // view pushes a SNAPSHOT of it in here, and the pure — off-main — filter/sort reads that
+    // plain value map. `@ObservationIgnored` because assigning a 56k-entry dictionary must not
+    // invalidate a body; `playCountsRevision` is the OBSERVED scalar that does, and it is also
+    // what makes the results memo key move when the counts change (a memo keyed only on the
+    // catalog revision would happily serve a stale sorted-by-plays list after a capture).
+    @ObservationIgnored var playCounts: [String: Int] = [:]
+    /// Starts at -1, NOT 0: a freshly-constructed `PlayCountService` is itself at revision 0, and
+    /// `applyPlayCounts` skips a matching revision — so a 0 default would make the very first
+    /// (and, on a device that never captures again, the only) snapshot a silent no-op.
+    var playCountsRevision: Int = -1
+
+    /// Adopt a fresh snapshot. No-op when the revision hasn't moved, so a body-driven caller can
+    /// invoke it freely without churning the memo key.
+    func applyPlayCounts(_ counts: [String: Int], revision: Int) {
+        guard revision != playCountsRevision else { return }
+        playCounts = counts
+        playCountsRevision = revision
+    }
+
     private let defaults: UserDefaults
     /// UserDefaults key for THIS instance's persisted snapshot. Parameterized so History mode
     /// keeps its own filters/sort ("pdj.history.v1") without clobbering the Browser's.
@@ -148,19 +171,23 @@ final class BrowseState {
     func resultsKey(_ app: AppModel) -> String {
         struct ClauseSig: Encodable { let f: String; let o: String; let v: String; let vs: [String]; let mn: Double?; let mx: Double? }
         struct SortSig: Encodable { let f: String; let d: String }
-        struct KeySig: Encodable { let rev: Int; let k: String; let q: String; let c: [ClauseSig]; let s: [SortSig] }
+        struct KeySig: Encodable { let rev: Int; let k: String; let q: String; let c: [ClauseSig]; let s: [SortSig]; let pc: Int }
         let sig = KeySig(
             rev: app.catalogRevision, k: kind.rawValue, q: query,
             c: clauses.filter { !$0.isIncomplete }.map {
                 ClauseSig(f: $0.field, o: $0.op.rawValue, v: $0.value, vs: $0.values.sorted(), mn: $0.min, mx: $0.max)
             },
-            s: sortKeys.map { SortSig(f: $0.field, d: $0.dir.rawValue) })
+            s: sortKeys.map { SortSig(f: $0.field, d: $0.dir.rawValue) },
+            // Play counts are an INPUT to the sort/filter but live outside the catalog, so the
+            // memo must move when they do — otherwise a capture leaves "Plays" sorted by the
+            // pre-capture numbers until something else invalidates the key.
+            pc: playCountsRevision)
         let enc = JSONEncoder()
         enc.outputFormatting = .sortedKeys
         // Encoding a plain Encodable of scalars/arrays cannot fail; fall back to a coarse
         // (never-cache-friendly but correct) key on the impossible error path.
         guard let data = try? enc.encode(sig) else {
-            return "rev\(app.catalogRevision)-\(kind.rawValue)-\(query)-\(clauses.count)-\(sortKeys.count)"
+            return "rev\(app.catalogRevision)-\(kind.rawValue)-\(query)-\(clauses.count)-\(sortKeys.count)-\(playCountsRevision)"
         }
         return String(decoding: data, as: UTF8.self)
     }
@@ -268,8 +295,10 @@ final class BrowseState {
         let base = app.browseItems(kind)
         let keys = app.searchKeys(kind)
         let (q, cl, sk) = (query, clauses, sortKeys)
+        let pc = playCounts
         let sorted = await Task.detached(priority: .userInitiated) {
-            BrowseState.filterSort(base: base, searchKeys: keys, query: q, clauses: cl, sortKeys: sk)
+            BrowseState.filterSort(base: base, searchKeys: keys, query: q, clauses: cl, sortKeys: sk,
+                                   playCounts: pc)
         }.value
         if Task.isCancelled { return }
         app.storeBrowseResults(key, sorted)
@@ -300,8 +329,10 @@ final class BrowseState {
             externalBaseCache = (baseKey, base, keys)
         }
         let (q, cl, sk) = (query, clauses, sortKeys)
+        let pc = playCounts
         let sorted = await Task.detached(priority: .userInitiated) {
-            BrowseState.filterSort(base: base, searchKeys: keys, query: q, clauses: cl, sortKeys: sk)
+            BrowseState.filterSort(base: base, searchKeys: keys, query: q, clauses: cl, sortKeys: sk,
+                                   playCounts: pc)
         }.value
         if Task.isCancelled { return }
         displayItems = sorted
@@ -314,23 +345,27 @@ final class BrowseState {
     func filterSortSignature() -> String {
         struct ClauseSig: Encodable { let f: String; let o: String; let v: String; let vs: [String]; let mn: Double?; let mx: Double? }
         struct SortSig: Encodable { let f: String; let d: String }
-        struct Sig: Encodable { let q: String; let c: [ClauseSig]; let s: [SortSig] }
+        struct Sig: Encodable { let q: String; let c: [ClauseSig]; let s: [SortSig]; let pc: Int }
         let sig = Sig(
             q: query,
             c: clauses.filter { !$0.isIncomplete }.map {
                 ClauseSig(f: $0.field, o: $0.op.rawValue, v: $0.value, vs: $0.values.sorted(), mn: $0.min, mx: $0.max)
             },
-            s: sortKeys.map { SortSig(f: $0.field, d: $0.dir.rawValue) })
+            s: sortKeys.map { SortSig(f: $0.field, d: $0.dir.rawValue) },
+            // Same reason as `resultsKey`: play counts are an input that lives outside this state.
+            pc: playCountsRevision)
         let enc = JSONEncoder()
         enc.outputFormatting = .sortedKeys
-        guard let data = try? enc.encode(sig) else { return "\(query)-\(clauses.count)-\(sortKeys.count)" }
+        guard let data = try? enc.encode(sig) else {
+            return "\(query)-\(clauses.count)-\(sortKeys.count)-\(playCountsRevision)"
+        }
         return String(decoding: data, as: UTF8.self)
     }
 
     /// The memoized portion: base rows → text query → clause filter → multi-key sort.
     private func computeSorted(_ app: AppModel) -> [BrowseItem] {
         Self.filterSort(base: app.browseItems(kind), searchKeys: app.searchKeys(kind),
-                        query: query, clauses: clauses, sortKeys: sortKeys)
+                        query: query, clauses: clauses, sortKeys: sortKeys, playCounts: playCounts)
     }
 
     /// Resolve the union of song ids placed in the selected collection ids (mixed
@@ -409,7 +444,8 @@ final class BrowseState {
     /// pre-folded (case/diacritic-insensitive) `searchKeys` (parallel to `base`, same order/count)
     /// instead of ~90k × 3 per-field `localizedCaseInsensitiveContains` calls — the runloop-hang source.
     nonisolated static func filterSort(base: [BrowseItem], searchKeys: [String],
-                                       query: String, clauses: [Clause], sortKeys: [SortKey]) -> [BrowseItem] {
+                                       query: String, clauses: [Clause], sortKeys: [SortKey],
+                                       playCounts: [String: Int] = [:]) -> [BrowseItem] {
         var items = base
         // Fold the query the SAME way the searchKeys were folded (case- + diacritic-insensitive,
         // locale-independent), and strip newlines: the searchKeys join fields with "\n", so a query
@@ -421,7 +457,8 @@ final class BrowseState {
         if !q.isEmpty, base.count == searchKeys.count {
             items = zip(base, searchKeys).compactMap { $0.1.contains(q) ? $0.0 : nil }
         }
-        return SortEngine.apply(FilterEngine.apply(items, clauses), sortKeys)
+        return SortEngine.apply(FilterEngine.apply(items, clauses, playCounts: playCounts),
+                                sortKeys, playCounts: playCounts)
     }
 
     /// Distinct values present for an options-backed field (drives `any of` pickers).

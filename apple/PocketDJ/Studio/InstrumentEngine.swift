@@ -299,6 +299,12 @@ final class InstrumentEngine {
     // Replay session.
     @ObservationIgnored private var replayGeneration = 0
     @ObservationIgnored private var replayActiveNotes: Set<Int> = []
+    /// Host-clock anchor of the running replay's beat 1 (nil = not replaying), and where the LAST
+    /// replay was parked when it stopped. Deliberately `@ObservationIgnored`: the score's playhead
+    /// polls this from a `TimelineView` tick, and observable per-tick state would re-run the score
+    /// body — quantize + paginate — ten times a second.
+    @ObservationIgnored private var replayAnchor: ContinuousClock.Instant?
+    @ObservationIgnored private var replayFrozenMs: Int?
 
     // Watchdog + recovery (the MixEngine tickFire shape).
     @ObservationIgnored private var watchdogTask: Task<Void, Never>?
@@ -658,8 +664,12 @@ final class InstrumentEngine {
         replayGeneration &+= 1
         let gen = replayGeneration
         dlog("instr: replay START — \(events.count) events")
+        // ONE anchor for both the scheduling loop's sleeps and the score's playhead, so the cursor
+        // and the sampler can never disagree about where in the take we are.
+        let start = ContinuousClock.now
+        replayAnchor = start
+        replayFrozenMs = 0
         Task { @MainActor [weak self] in
-            let start = ContinuousClock.now
             for a in actions {
                 try? await Task.sleep(until: start + .milliseconds(a.ms), clock: .continuous)
                 guard let self, self.replayGeneration == gen else { return }   // cancelled
@@ -680,6 +690,7 @@ final class InstrumentEngine {
             guard let self, self.replayGeneration == gen else { return }
             self.isReplaying = false
             self.replayActiveNotes = []
+            self.freezeReplayPosition()
             NowPlayingArbiter.shared.resign(self)
             self.dlog("instr: replay END")
         }
@@ -691,6 +702,7 @@ final class InstrumentEngine {
         replayGeneration &+= 1
         guard isReplaying else { return }
         isReplaying = false
+        freezeReplayPosition()
         if rt.engineReady, let smp = sampler {
             for n in replayActiveNotes {
                 smp.stopNote(UInt8(clamping: max(0, min(127, n))), onChannel: 0)
@@ -700,6 +712,39 @@ final class InstrumentEngine {
         }
         replayActiveNotes = []
         NowPlayingArbiter.shared.resign(self)
+    }
+
+    // MARK: Replay position (the saved instrumental's score cursor)
+
+    /// Milliseconds since the replay's beat 1 — LIVE while replaying, else FROZEN where the last
+    /// replay stopped or ended. nil = nothing has been replayed yet, which the score reads as
+    /// "nothing played": cursor at the start, no highlight.
+    ///
+    /// A METHOD over `@ObservationIgnored` storage on purpose (see `replayAnchor`): the score's
+    /// playhead calls it from a `TimelineView` tick.
+    func replayPositionMs() -> Int? {
+        guard let anchor = replayAnchor else { return replayFrozenMs }
+        let c = (ContinuousClock.now - anchor).components
+        let secs = Double(c.seconds) + Double(c.attoseconds) / 1e18
+        // Clamp BEFORE the Int conversion — a wild clock delta must degrade, never trap (the
+        // StaffChordView Int.min lesson). 24 h is far past any instrumental.
+        guard secs.isFinite else { return replayFrozenMs }
+        return Int((min(max(secs, 0), 86_400) * 1000).rounded())
+    }
+
+    /// Park the replay cursor where it stands. The score then keeps showing the LAST note that
+    /// sounded (the "current playing OR last played" contract) instead of snapping back to neutral.
+    private func freezeReplayPosition() {
+        replayFrozenMs = replayPositionMs()
+        replayAnchor = nil
+    }
+
+    /// Forget a PARKED cursor so a score screen opens showing "nothing played" — a stale position
+    /// from another take's replay must not highlight this one. Never disturbs a LIVE replay (open
+    /// the score mid-replay and the cursor keeps running).
+    func resetReplayPosition() {
+        guard replayAnchor == nil else { return }
+        replayFrozenMs = nil
     }
 
     /// Flatten note events into a time-ordered on/off action list. Offs sort BEFORE ons at the
