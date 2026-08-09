@@ -298,3 +298,105 @@ enum ScoreQuantizer {
         return out
     }
 }
+
+// MARK: - Playhead → played / current mapping (the saved instrumental's score cursor)
+
+/// Where playback sits in a score, and what has already sounded. The pure state behind the saved
+/// instrumental's three playback affordances: the CURSOR, the notes already PLAYED behind it, and
+/// the note sounding NOW — which, once it ends (a rest, a pause, the end of the take), stays
+/// emphasised as the LAST-played note rather than reverting to neutral.
+struct ScorePlaybackState: Equatable, Sendable {
+    /// Cursor position in FRACTIONAL absolute 16ths from beat 1 — the score's own anchor
+    /// (0 ms = measure 0 / onset 0), so it is directly a layout coordinate. Never negative.
+    var cursor16ths: Double
+    /// Absolute-16th onset of the note(s) the cursor is on: the one SOUNDING, or the LAST one
+    /// that sounded. nil until the playhead reaches the first note (nothing played ⇒ no highlight).
+    var currentOnset16ths: Int?
+    /// The current onset is still sounding (cursor inside `[onset, end)`). False when it is the
+    /// last-played note being held emphasised after playback stopped or moved into a rest — the
+    /// "current playing OR last played" distinction, kept so the two can render differently.
+    var isSounding: Bool
+
+    /// Nothing has played yet: cursor parked at the start, no note highlighted.
+    static let idle = ScorePlaybackState(cursor16ths: 0, currentOnset16ths: nil, isSounding: false)
+
+    /// Already sounded AND finished — every onset strictly before the current one.
+    func isPlayed(onset16ths: Int) -> Bool {
+        guard let cur = currentOnset16ths else { return false }
+        return onset16ths < cur
+    }
+
+    /// The current (or last-played) onset.
+    func isCurrent(onset16ths: Int) -> Bool { onset16ths == currentOnset16ths }
+}
+
+/// Pure time → playback-state math for a score (the `ScoreQuantizer` / BeatMath discipline: all
+/// `nonisolated static`, no view, no clock, no I/O — unit-tested directly). Two steps so the
+/// per-tick cost is a binary search, never a re-scan of the event stream:
+///   • `timeline(events:bpm:)` once per event stream → onset-ordered slots;
+///   • `state(atMs:slots:bpm:)` per playhead read → cursor + current/last onset.
+enum ScorePlayhead {
+
+    /// One sounding slot: its onset and end in absolute 16ths from beat 1. Same-onset notes (a
+    /// chord — how comping instrumentals are built) collapse into ONE slot, exactly as
+    /// `ScoreQuantizer` merges them into one item, so score and highlight agree on what a "note"
+    /// is. Melody takes are single notes and produce one slot each — the same path serves both.
+    struct Slot: Equatable, Sendable {
+        var onset16ths: Int
+        var end16ths: Int
+    }
+
+    /// Upper clamp for every ms → 16ths conversion. A wild clock read or a corrupt event must
+    /// never reach a bare `Int(_:)` — the StaffChordView `Int.min` overflow crash. 10⁷ sixteenths
+    /// ≈ 87 hours at 120 BPM: past any real instrumental, nowhere near `Int` overflow.
+    static let maxCursor16ths = 10_000_000.0
+
+    /// Score-clock ms (0 = beat 1) → fractional absolute 16ths at `bpm`. Clamped to
+    /// `[0, maxCursor16ths]`; a non-finite input degrades to 0 rather than trapping downstream.
+    nonisolated static func cursor16ths(ms: Int, bpm: Double) -> Double {
+        let step = ScoreQuantizer.sixteenthMs(bpm: bpm)      // guards bpm ≤ 0 → 120
+        let raw = Double(ms) / step
+        guard raw.isFinite else { return 0 }
+        return min(max(raw, 0), maxCursor16ths)
+    }
+
+    /// Collapse an event stream into onset-ordered slots. Onsets round to the nearest 16th by the
+    /// SAME rule `ScoreQuantizer.quantize` uses (`(ms/step).rounded()`, clamped ≥ 0), so a slot's
+    /// onset is exactly the absolute onset its item was laid out at. A slot ends at its longest
+    /// member's RAW end (min one 16th): replay plays the raw events, so "still sounding" must be
+    /// answered from them, not from the notation's rounded-down spelling.
+    nonisolated static func timeline(events: [StudioNoteEvent], bpm: Double) -> [Slot] {
+        var ends: [Int: Int] = [:]
+        for e in events {
+            let on = Int(cursor16ths(ms: max(0, e.onMs), bpm: bpm).rounded())
+            let off = max(on + 1, Int(cursor16ths(ms: max(0, e.offMs), bpm: bpm).rounded()))
+            ends[on] = max(ends[on] ?? 0, off)
+        }
+        return ends.keys.sorted().map { Slot(onset16ths: $0, end16ths: ends[$0] ?? $0 + 1) }
+    }
+
+    /// The playback state at `atMs` (score clock). `nil` = nothing has played yet → `.idle`.
+    /// `slots` MUST be onset-ordered (`timeline`).
+    ///
+    /// ONE rule covers both halves of the request: the current note is the LAST slot whose onset
+    /// the cursor has reached. While the cursor is inside that slot it is playing; after it ends —
+    /// a rest, a pause, a stop, or the end of the take — the same slot is the "last played" note
+    /// and stays emphasised. `isSounding` reports which of the two it is.
+    nonisolated static func state(atMs: Int?, slots: [Slot], bpm: Double) -> ScorePlaybackState {
+        guard let atMs else { return .idle }
+        let cursor = cursor16ths(ms: atMs, bpm: bpm)
+        var lo = 0, hi = slots.count - 1, found = -1
+        while lo <= hi {
+            let mid = lo + (hi - lo) / 2
+            if Double(slots[mid].onset16ths) <= cursor { found = mid; lo = mid + 1 } else { hi = mid - 1 }
+        }
+        guard found >= 0 else {
+            // Before the first note: the cursor still moves (a count-in / leading rest), but
+            // nothing is highlighted.
+            return ScorePlaybackState(cursor16ths: cursor, currentOnset16ths: nil, isSounding: false)
+        }
+        let slot = slots[found]
+        return ScorePlaybackState(cursor16ths: cursor, currentOnset16ths: slot.onset16ths,
+                                  isSounding: cursor < Double(slot.end16ths))
+    }
+}

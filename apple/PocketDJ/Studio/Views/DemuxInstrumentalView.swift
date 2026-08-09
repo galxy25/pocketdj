@@ -53,6 +53,11 @@ struct DemuxInstrumentalView: View {
     @State private var events: [StudioNoteEvent] = []
     @State private var takeBpm: Double = 120
     @State private var pages: [ScorePage] = []
+    /// The score's playback geometry, built with the pages (off the main actor) and never on a
+    /// playhead tick: every note head's page-space position, grouped by page, plus the onset
+    /// timeline the cursor maps against.
+    @State private var marksByPage: [Int: [ScoreLayout.PlayedMark]] = [:]
+    @State private var slots: [ScorePlayhead.Slot] = []
     /// The shared bar lattice (DrumPatternDetector.bars over the chords-only grid) — the drum
     /// pattern's bar chips, scrolled by the same follow that scrolls the score.
     @State private var bars: [DrumPatternDetector.Bar] = []
@@ -71,7 +76,8 @@ struct DemuxInstrumentalView: View {
             extractBar
             if !bars.isEmpty { barChips }
             FollowScoreView(pages: pages, bpm: takeBpm, firstDownbeatMs: firstDownbeatMs,
-                            player: player, follow: follow, currentSystem: currentSystem)
+                            player: player, follow: follow, currentSystem: currentSystem,
+                            marksByPage: marksByPage, slots: slots)
         }
         .task(id: rebuildKey) { await rebuild() }
         // ONE shared follow poll: read the non-Observable player clock and advance BOTH the bar
@@ -103,7 +109,8 @@ struct DemuxInstrumentalView: View {
         let firstDownbeatMs = firstDownbeatMs, durationMs = durationMs
         let built = await Task.detached(priority: .userInitiated) {
             () -> (events: [StudioNoteEvent], bpm: Double,
-                   pages: [ScorePage], bars: [DrumPatternDetector.Bar]) in
+                   pages: [ScorePage], bars: [DrumPatternDetector.Bar],
+                   marks: [Int: [ScoreLayout.PlayedMark]], slots: [ScorePlayhead.Slot]) in
             let (ev, b): ([StudioNoteEvent], Double)
             switch content {
             case .comping(let chords): (ev, b) = DemuxInstrumental.events(chords: chords, grid: grid)
@@ -113,13 +120,20 @@ struct DemuxInstrumentalView: View {
             let pages = ScoreLayout.systems(score: doc, instrument: .piano)
             let bars = DrumPatternDetector.bars(downbeatsMs: [], bpm: b,
                                                 firstDownbeatMs: firstDownbeatMs, durationMs: durationMs)
-            return (ev, b, pages, bars)
+            // Playback geometry rides along with the layout — same inputs, same off-main pass, so
+            // the follow overlay never derives it in a body (or, worse, per 10 Hz tick).
+            let marks = Dictionary(grouping: ScoreLayout.playedMarks(events: ev, bpm: b,
+                                                                     plan: doc.clefPlan, pages: pages),
+                                   by: \.page)
+            return (ev, b, pages, bars, marks, ScorePlayhead.timeline(events: ev, bpm: b))
         }.value
         guard !Task.isCancelled else { return }
         events = built.events
         takeBpm = built.bpm
         pages = built.pages
         bars = built.bars
+        marksByPage = built.marks
+        slots = built.slots
     }
 
     // MARK: Header (shared follow toggle)
@@ -271,7 +285,9 @@ struct DemuxInstrumentalView: View {
 /// `ScrollViewReader` by its `.id` — NEVER an `.offset`-anchored target, whose layout frame
 /// collapses to the origin so scrollTo jumps to 0 (the documented demux scroll bug). The moving
 /// playhead line rides a `TimelineView(.periodic)` host-clock overlay so its ~10 Hz ticks never
-/// thrash the score layout (off Observation, the drum-pattern highlight doctrine).
+/// thrash the score layout (off Observation, the drum-pattern highlight doctrine) — the SAME
+/// `ScorePlaybackCanvas` the saved instrumental's score uses, so the cursor, the played-behind
+/// notes, and the current/last-played note look and behave identically in both places.
 struct FollowScoreView: View {
     let pages: [ScorePage]
     let bpm: Double
@@ -279,6 +295,10 @@ struct FollowScoreView: View {
     let player: StemPlayer
     let follow: Bool
     let currentSystem: Int
+    /// Precomputed playback geometry (built with `pages` in `rebuild`): note-head positions per
+    /// page + the onset timeline. Empty ⇒ the score renders with no playback paint.
+    var marksByPage: [Int: [ScoreLayout.PlayedMark]] = [:]
+    var slots: [ScorePlayhead.Slot] = []
 
     /// Map a playhead time (original-audio clock, ms) to a score system index. Re-anchors to
     /// `firstDownbeatMs` (0 ms = beat 1, the score's own anchor), then measure → system. Pure +
@@ -332,39 +352,27 @@ struct FollowScoreView: View {
 
     private func systemRow(_ i: Int) -> some View {
         let page = pages[i]
-        return ScorePageView(page: page)
+        // FIX 3: ONE clocked overlay for the whole score — only the CURRENT system carries the
+        // playback paint, so a long score runs a single 10 Hz host clock instead of one per
+        // system. `currentSystem` is the follow poll's output (playing OR paused scrub).
+        return ScorePageView(page: page, playback: i == currentSystem ? layer(for: i) : nil)
             .aspectRatio(page.size.width / page.size.height, contentMode: .fit)
-            // FIX 3: ONE playhead for the whole score — only the CURRENT system carries the moving
-            // line, so a long score runs a single 10 Hz host-clock overlay instead of one per
-            // system. `currentSystem` is the follow poll's output (playing OR paused scrub).
-            .overlay { if i == currentSystem { playhead(system: i, page: page) } }
             .accessibilityIdentifier("score-system-\(i)")
     }
 
-    /// A vertical playhead line inside the system the playhead is currently in. Host-clock driven
-    /// (TimelineView, off Observation); x interpolates across the system's content width by the
-    /// beat fraction, so it glides even between the coarse follow-scroll steps.
-    private func playhead(system i: Int, page: ScorePage) -> some View {
-        let m = ScoreLayout.Metrics.a4
-        let mps = m.measuresPerSystem
-        let step = ScoreQuantizer.sixteenthMs(bpm: bpm)
-        let sysStartMs = Double(i * mps * 16) * step
-        let sysDurMs = Double(mps * 16) * step
-        return GeometryReader { geo in
-            TimelineView(.periodic(from: .now, by: 0.1)) { _ in
-                let scoreMs = max(0.0, player.currentTime * 1_000 - Double(firstDownbeatMs))
-                let inSystem = scoreMs >= sysStartMs && scoreMs < sysStartMs + sysDurMs
-                let scale = geo.size.width / page.size.width
-                let contentLeft = (m.margin + m.clefZoneWidth) * scale
-                let contentRight = (page.size.width - m.margin) * scale
-                let frac = min(max((scoreMs - sysStartMs) / max(sysDurMs, 1), 0), 1)
-                let x = contentLeft + (contentRight - contentLeft) * frac
-                Rectangle().fill(Theme.accent2)
-                    .frame(width: 2, height: geo.size.height)
-                    .position(x: x, y: geo.size.height / 2)
-                    .opacity(inSystem ? 0.9 : 0)
-            }
-        }
-        .allowsHitTesting(false)
+    /// The current system's playback layer: cursor + played-behind + current/last-played note,
+    /// drawn by the SHARED `ScorePlaybackCanvas` the saved instrumental's score uses. The x now
+    /// comes from `ScoreLayout.playhead` — the note heads' own `xPosition` — instead of a
+    /// system-wide linear interpolation, which drifted off the heads by the per-measure padding.
+    private func layer(for i: Int) -> ScorePlaybackLayer {
+        ScorePlaybackLayer(pageIndex: i, pages: pages, marks: marksByPage[i] ?? [], slots: slots,
+                           bpm: bpm, clock: ScorePlaybackClock {
+                               // Song clock → score clock (0 ms = beat 1). `currentTime` returns
+                               // pausedAt while paused, so a paused scrub follows too. Clamped
+                               // before Int(): a NaN/absurd clock read must degrade, never trap.
+                               let ms = player.currentTime * 1_000
+                               guard ms.isFinite else { return 0 }
+                               return Int(min(max(ms, 0), 86_400_000)) - firstDownbeatMs
+                           })
     }
 }

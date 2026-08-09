@@ -141,6 +141,128 @@ final class ScoreLayoutTests: XCTestCase {
         XCTAssertEqual(item?.spellings[63], .flat)
     }
 
+    // MARK: Playback cursor geometry (must agree with the note heads it points at)
+
+    /// THE alignment test: the playback cursor at a fractional 16th must land on exactly the x a
+    /// note head at that 16th is drawn at — on a REALLY laid page, not just in the arithmetic.
+    /// A cursor computed with its own formula is how a cursor ends up pointing at the wrong note
+    /// (the StaffChordView bug); both go through `ScoreLayout.xPosition`.
+    func testPlayheadXMatchesNoteHeadXOnALaidPage() {
+        var measures = (0..<6).map { ScoreMeasure(index: $0, items: []) }
+        measures[0].items = [note(4, 64)]
+        measures[5].items = [note(8, 67)]
+        let pages = ScoreLayout.paginate(score: doc(measures), title: "T", instrument: .violin)
+        for (abs16, midi) in [(4, 64), (5 * 16 + 8, 67)] {
+            let np = try! XCTUnwrap(ScoreLayout.notePoint(midi: midi, accidental: nil,
+                                                          onset16ths: abs16, plan: .treble,
+                                                          pages: pages))
+            let ph = try! XCTUnwrap(ScoreLayout.playhead(at: Double(abs16), pages: pages))
+            XCTAssertEqual(ph.page, np.page, "cursor must resolve to the note's page")
+            XCTAssertEqual(ph.x, np.point.x, accuracy: 0.0001,
+                           "cursor x must be the head's own x at onset \(abs16)")
+            // …and the rule must bracket the head vertically (staves + ledger headroom).
+            XCTAssertLessThan(ph.top, np.point.y)
+            XCTAssertGreaterThan(ph.bottom, np.point.y)
+        }
+    }
+
+    func testPlayheadAdvancesMonotonicallyWithinAMeasure() {
+        let pages = ScoreLayout.paginate(score: doc([ScoreMeasure(index: 0, items: [note(0, 64)])]),
+                                         title: "T", instrument: .violin)
+        let xs = stride(from: 0.0, through: 15.0, by: 0.5).compactMap {
+            ScoreLayout.playhead(at: $0, pages: pages)?.x
+        }
+        XCTAssertEqual(xs.count, 31)
+        for i in 1..<xs.count { XCTAssertLessThan(xs[i - 1], xs[i]) }
+    }
+
+    /// Playback runs past the last note: the cursor parks at the end of the last laid measure
+    /// rather than vanishing.
+    func testPlayheadParksAtTheScoreEndWhenPastTheLastMeasure() {
+        let pages = ScoreLayout.paginate(score: doc([ScoreMeasure(index: 0, items: [note(0, 64)])]),
+                                         title: "T", instrument: .violin)
+        let end = try! XCTUnwrap(ScoreLayout.playhead(at: 999, pages: pages))
+        let last = try! XCTUnwrap(ScoreLayout.playhead(at: 15.9, pages: pages))
+        XCTAssertEqual(end.page, last.page)
+        XCTAssertGreaterThan(end.x, last.x)
+    }
+
+    /// Degenerate inputs degrade, never trap: an empty score has nowhere to put a cursor, and a
+    /// NaN clock read must not reach `Int(_:)`.
+    func testPlayheadIsNilForEmptyScoreAndNonFiniteInput() {
+        let empty = ScoreLayout.paginate(score: doc([]), title: "Empty", instrument: .violin)
+        XCTAssertNil(ScoreLayout.playhead(at: 0, pages: empty))
+        XCTAssertNil(ScoreLayout.playhead(at: .nan, pages: empty))
+        let pages = ScoreLayout.paginate(score: doc([ScoreMeasure(index: 0, items: [note(0, 64)])]),
+                                         title: "T", instrument: .violin)
+        XCTAssertNil(ScoreLayout.playhead(at: .infinity, pages: pages))
+        XCTAssertNotNil(ScoreLayout.playhead(at: -5, pages: pages))    // clamps to the start
+    }
+
+    // MARK: Played marks (the highlight geometry)
+
+    /// Every mark must sit exactly where `notePoint` puts that note — the highlight is a wash ON
+    /// the head, so a different derivation would smear it off the notation.
+    func testPlayedMarksMatchNotePointForEveryNote() {
+        // 120 BPM ⇒ one 16th = 125 ms: onsets 0 and 8 (= 1000 ms).
+        let events = [StudioNoteEvent(onMs: 0, offMs: 500, note: 48, velocity: 90),
+                      StudioNoteEvent(onMs: 0, offMs: 500, note: 64, velocity: 90),
+                      StudioNoteEvent(onMs: 1000, offMs: 1500, note: 72, velocity: 90)]
+        let score = ScoreQuantizer.quantize(events: events, bpm: 120, instrument: .piano)
+        let pages = ScoreLayout.paginate(score: score, title: "T", instrument: .piano)
+        let marks = ScoreLayout.playedMarks(events: events, bpm: 120, plan: .grandStaff, pages: pages)
+        XCTAssertEqual(marks.count, 3)                       // the grand-staff chord keeps BOTH heads
+        XCTAssertEqual(marks.map(\.onset16ths), [0, 0, 8])   // onset-ordered
+        // Same-onset marks come back in no defined order, so match by VALUE, not by position.
+        for (e, abs16) in zip(events, [0, 0, 8]) {
+            let np = try! XCTUnwrap(ScoreLayout.notePoint(midi: e.note, accidental: nil,
+                                                          onset16ths: abs16, plan: .grandStaff,
+                                                          pages: pages))
+            XCTAssertTrue(marks.contains {
+                $0.onset16ths == abs16 && $0.page == np.page
+                    && abs($0.point.x - np.point.x) < 0.0001 && abs($0.point.y - np.point.y) < 0.0001
+            }, "no mark on note \(e.note)'s laid head")
+        }
+    }
+
+    /// End to end on a REAL laid score: at a moment inside the second note, the cursor sits on
+    /// that note's head, the first note reads as played-behind, and nothing else is highlighted.
+    /// This is the whole feature's geometry contract in one assertion set.
+    func testCursorPlayedAndCurrentAgreeOnALaidScore() {
+        // 120 BPM ⇒ 16th = 125 ms. E4 at onset 0, G4 at onset 4 (500 ms), sampled at 600 ms.
+        let events = [StudioNoteEvent(onMs: 0, offMs: 250, note: 64, velocity: 90),
+                      StudioNoteEvent(onMs: 500, offMs: 750, note: 67, velocity: 90)]
+        let score = ScoreQuantizer.quantize(events: events, bpm: 120, instrument: .violin)
+        let pages = ScoreLayout.paginate(score: score, title: "T", instrument: .violin)
+        let marks = ScoreLayout.playedMarks(events: events, bpm: 120, plan: score.clefPlan,
+                                            pages: pages)
+        let state = ScorePlayhead.state(atMs: 600,
+                                        slots: ScorePlayhead.timeline(events: events, bpm: 120),
+                                        bpm: 120)
+        XCTAssertTrue(state.isSounding)
+        let current = marks.filter { state.isCurrent(onset16ths: $0.onset16ths) }
+        let played = marks.filter { state.isPlayed(onset16ths: $0.onset16ths) }
+        XCTAssertEqual(current.count, 1)
+        XCTAssertEqual(played.map(\.onset16ths), [0])
+        let head = try! XCTUnwrap(ScoreLayout.notePoint(midi: 67, accidental: nil, onset16ths: 4,
+                                                        plan: .treble, pages: pages))
+        XCTAssertEqual(current[0].point.x, head.point.x, accuracy: 0.0001)
+        // The cursor is 0.8 of a 16th past that head — right of it, still left of the next 16th.
+        let ph = try! XCTUnwrap(ScoreLayout.playhead(at: state.cursor16ths, pages: pages))
+        XCTAssertGreaterThan(ph.x, head.point.x)
+        XCTAssertLessThan(ph.x, ScoreLayout.notePoint(midi: 67, accidental: nil, onset16ths: 5,
+                                                      plan: .treble, pages: pages)!.point.x)
+    }
+
+    func testPlayedMarksAreEmptyWithoutNotesOrPages() {
+        let pages = ScoreLayout.paginate(score: doc([ScoreMeasure(index: 0, items: [note(0, 64)])]),
+                                         title: "T", instrument: .violin)
+        XCTAssertTrue(ScoreLayout.playedMarks(events: [], bpm: 120, plan: .treble, pages: pages).isEmpty)
+        XCTAssertTrue(ScoreLayout.playedMarks(events: [StudioNoteEvent(onMs: 0, offMs: 1, note: 64,
+                                                                       velocity: 90)],
+                                              bpm: 120, plan: .treble, pages: []).isEmpty)
+    }
+
     // MARK: Staves / clefs
 
     func testGrandStaffSystemDrawsBothClefs() {

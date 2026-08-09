@@ -23,7 +23,9 @@ final class DemuxInstrumentalUITests: XCTestCase {
         app.launch()
         let seg = app.segmentedControls.firstMatch
         XCTAssertTrue(seg.waitForExistence(timeout: 10), "studio sub-tab picker up")
-        seg.coordinate(withNormalizedOffset: CGVector(dx: 5.5 / 6.0, dy: 0.5)).tap()   // Demuxer
+        // Demuxer = segment 5 of the SEVEN StudioSubTab cases. (Was 5.5/6.0 — stale since `tracks`
+        // was appended, which landed this tap on Tracks and starved the fixture lookup below.)
+        seg.coordinate(withNormalizedOffset: CGVector(dx: 5.5 / 7.0, dy: 0.5)).tap()   // Demuxer
         // Source groups are collapsed by default — expand "Imported audio" if the fixture isn't
         // already visible (its expansion persists across runs, so tolerate either state).
         if !app.any("demux-file-row-dmx_fixture").waitForExistence(timeout: 3) {
@@ -79,7 +81,9 @@ final class DemuxInstrumentalUITests: XCTestCase {
         let target = app.any("score-system-2")          // 2 s bars ⇒ score measure 8 ⇒ system 2
         let existedBefore = target.exists
         let beforeY: CGFloat = existedBefore ? target.frame.minY : .greatestFiniteMagnitude
-        let bar = app.el("demux-instrumental-bar-8")
+        // The chip row sits BELOW the extract button `revealDown` stopped at, so reveal it too
+        // rather than assuming it shares that viewport.
+        let bar = revealDown("demux-instrumental-bar-8")
         XCTAssertTrue(bar.waitForExistence(timeout: 5), "an on-screen bar chip to scrub to")
         bar.tap()
         sleep(2)                                        // the ~200 ms follow poll + scroll settle

@@ -901,6 +901,43 @@ final class PerformanceUITests: XCTestCase {
         #endif
     }
 
+    /// A SAVED instrumental's score paints playback: cursor, played-behind wash, current/last-played
+    /// ring. The overlay is DRAWN IN THE PAGE'S CANVAS, so — like the ＋ / − bar controls above —
+    /// XCUITest can't address it (`score-playhead-<page>` is collapsed under `score-page-<page>`);
+    /// its geometry and its time→state mapping are pinned by the pure `ScoreLayout.playhead` /
+    /// `ScorePlayhead` unit tests. What this test proves is the WIRING: the score screen renders,
+    /// survives a pinned mid-playback playhead (`PDJ_SCORE_PLAYHEAD_MS`), and stays interactive —
+    /// plus it attaches the screenshot the paint was eyeballed on.
+    func testSavedInstrumentalScoreRendersWithAMidPlaybackPlayhead() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: score flow exercised on iOS")
+        #else
+        let app = XCUIApplication()
+        app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
+        app.launchEnvironment["PDJ_SEED_STUDIO"] = "1"
+        app.launchEnvironment["PDJ_START_SECTION"] = "Performance"
+        // Park the playhead inside the fixture take so the cursor, the played wash, and the
+        // current-note ring are all on screen at once, with no instrument bank needed.
+        app.launchEnvironment["PDJ_SCORE_PLAYHEAD_MS"] = "1200"
+        app.launch()
+        self.app = app
+        switchTab(3)                                   // Instruments
+        let takesOpen = app.el("takes-open")
+        XCTAssertTrue(takesOpen.waitForExistence(timeout: 15))
+        takesOpen.tap()
+        let takeRow = app.any("take-row-tk_fixture")
+        XCTAssertTrue(takeRow.waitForExistence(timeout: 8), "the seeded instrumental should be listed")
+        takeRow.tap()
+        XCTAssertTrue(app.el("score-replay").waitForExistence(timeout: 8), "the score screen")
+        XCTAssertTrue(app.any("score-page-0").waitForExistence(timeout: 5), "the first score page")
+        snap("score-playhead")
+        // The playback paint is decorative (hit-testing off): editing still works over it.
+        app.el("score-edit").tap()
+        XCTAssertTrue(app.el("score-mode-select").waitForExistence(timeout: 5),
+                      "the editor stays usable with the playback overlay on top")
+        #endif
+    }
+
     /// I3: the Instruments MIDI section shows a Connect-Bluetooth-MIDI button (iOS/iPadOS). The
     /// pairing sheet itself needs a real Bluetooth radio, so this only asserts the affordance.
     func testInstrumentsBluetoothMIDIButton() throws {

@@ -4,6 +4,30 @@ import SwiftUI
 /// length / accidental); SELECT snaps each tap to the CLOSEST note (or a whole bar) to build a
 /// selection; MOVE nudges or duplicates it; EDIT bulk-applies length / accidental / delete.
 enum ScoreEditMode: String, CaseIterable { case enter, select, move, edit }
+
+/// The score's playback clock, injected by a host that can follow one (the saved instrumental's
+/// Replay). Deliberately a plain closure, not an `@Observable` engine reference: it is read from a
+/// `TimelineView` tick, and an observable read on a tick would re-run the score's body — which
+/// quantizes AND paginates — ten times a second.
+struct ScorePlaybackClock {
+    /// Score-clock ms (0 ms = beat 1, the quantizer's anchor), or nil when nothing has played yet
+    /// (cursor parks at the start, nothing highlighted). While playback is stopped this returns
+    /// the FROZEN last position, which is what keeps the last-played note emphasised.
+    var positionMs: @MainActor () -> Int?
+}
+
+/// Everything ONE laid page needs to paint playback, all precomputed off the tick: the marks that
+/// land on this page, the onset timeline the cursor maps against, and the pages the cursor's
+/// geometry is resolved on (a cursor past this page's measures belongs to another page).
+struct ScorePlaybackLayer {
+    var pageIndex: Int
+    var pages: [ScorePage]
+    /// This page's note heads, onset-ordered (`ScoreLayout.playedMarks`, filtered by page).
+    var marks: [ScoreLayout.PlayedMark]
+    var slots: [ScorePlayhead.Slot]
+    var bpm: Double
+    var clock: ScorePlaybackClock
+}
 /// In SELECT mode, a tap picks a single note or every note in the tapped bar.
 enum ScoreSelectGranularity { case note, bar }
 
@@ -20,6 +44,9 @@ struct ScoreEditorView: View {
     var editing: Bool
     /// Commit an edited event stream (take → setTakeEvents; live → setLiveEvents).
     var onEdit: ([StudioNoteEvent]) -> Void
+    /// Follow a playback clock: cursor + played-behind + current/last-played highlighting. nil ⇒
+    /// no playback paint at all, so the Instruments LIVE staff renders exactly as it did.
+    var playback: ScorePlaybackClock? = nil
 
     /// The "pen" for newly placed notes (and the last-touched note's values); EDIT chips also set it.
     @State private var editLength: NoteDuration = .quarter
@@ -49,6 +76,11 @@ struct ScoreEditorView: View {
         // The ＋ / − bar controls live in SELECT mode only, so they never sit under a note-placing
         // tap in Enter or a selection tap in Move/Edit.
         let lastBar = (editing && mode == .select) ? lastBarOverlay(pages: pages) : nil
+        // Playback marks: derived HERE (once per body, alongside the quantize + paginate this body
+        // already does) and never on a playhead tick — the tick lives inside the page overlay and
+        // only compares integers against these. A body run costs O(measures + notes) on top of the
+        // layout it already pays for; following playback costs the body nothing.
+        let layers = playbackLayers(pages: pages, doc: doc)
         VStack(spacing: 12) {
             if editing { editToolbar() }
             if events.isEmpty {
@@ -59,6 +91,7 @@ struct ScoreEditorView: View {
                 ScorePageView(page: pages[i], editing: editing,
                               highlights: points.filter { $0.page == i }.map(\.point),
                               barControls: lastBar?.page == i ? lastBar?.controls : nil,
+                              playback: layers[i],
                               onTap: editing ? { p in handleTap(at: p, pageIndex: i, page: pages[i], pages: pages) } : nil)
                     .aspectRatio(pages[i].size.width / pages[i].size.height, contentMode: .fit)
                     .shadow(color: .black.opacity(0.5), radius: 6, y: 2)
@@ -520,6 +553,26 @@ struct ScoreEditorView: View {
         selection = []
     }
 
+    // MARK: Playback follow (cursor + played / current highlighting)
+
+    /// Split the score's playback geometry per page: `[pageIndex: layer]`, empty when no host
+    /// clock is wired. Both instrumental kinds flow through here unchanged — a comping take's
+    /// same-onset triad becomes several marks sharing one onset (they light together, exactly as
+    /// the quantizer draws them as one chord), a melody take one mark per note.
+    private func playbackLayers(pages: [ScorePage], doc: ScoreDocument) -> [Int: ScorePlaybackLayer] {
+        guard let playback, !pages.isEmpty else { return [:] }
+        let marks = ScoreLayout.playedMarks(events: events, bpm: bpm, plan: doc.clefPlan, pages: pages)
+        let slots = ScorePlayhead.timeline(events: events, bpm: bpm)
+        var byPage: [Int: [ScoreLayout.PlayedMark]] = [:]
+        for m in marks { byPage[m.page, default: []].append(m) }
+        var out: [Int: ScorePlaybackLayer] = [:]
+        for i in pages.indices {
+            out[i] = ScorePlaybackLayer(pageIndex: i, pages: pages, marks: byPage[i] ?? [],
+                                        slots: slots, bpm: bpm, clock: playback)
+        }
+        return out
+    }
+
     // MARK: Selection rings
 
     /// A page-space ring for every selected note (grouped per page by the caller).
@@ -558,6 +611,8 @@ struct ScorePageView: View {
     /// When set (the page holding the last measure, while editing), the ＋ / − bar buttons are
     /// overlaid at the last bar's top-right / bottom-right corners.
     var barControls: BarControls?
+    /// When set, this page paints playback: cursor + played-behind + current/last-played note.
+    var playback: ScorePlaybackLayer?
     /// Tap callback with the point converted to PAGE space (editing only).
     var onTap: ((CGPoint) -> Void)?
 
@@ -585,6 +640,23 @@ struct ScorePageView: View {
                 .gesture(SpatialTapGesture().onEnded { ev in
                     onTap?(CGPoint(x: ev.location.x / scale, y: ev.location.y / scale))
                 })
+                // The playback paint rides a SIBLING canvas in the SAME GeometryReader, sized to
+                // the same `geo.size` — so it derives the identical page→screen scale the score
+                // canvas above uses, and a cursor at a note's onset lands on that note's head.
+                // (Never an `.offset()` anchor: those frames collapse to x = 0 — the documented
+                // StaffChordView bug.) Above the score, below the bar buttons, hit-testing off.
+                if let playback {
+                    ScorePlaybackCanvas(page: page, layer: playback)
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .allowsHitTesting(false)
+                        // a11y OUTSIDE `allowsHitTesting` — inside it the element never reaches
+                        // the tree (XCUITest can't see it), and this overlay is the only handle a
+                        // UI test has on a canvas-drawn cursor. Static (never re-stamped by a
+                        // tick) so the tree stays stable while playing.
+                        .accessibilityElement()
+                        .accessibilityIdentifier("score-playhead-\(playback.pageIndex)")
+                        .accessibilityLabel("Playback position")
+                }
                 if let bc = barControls {
                     Button { bc.onAdd() } label: {
                         Image(systemName: "plus.circle.fill").font(.title3)
@@ -606,6 +678,81 @@ struct ScorePageView: View {
                     .accessibilityLabel("Remove bar")
                 }
             }
+        }
+    }
+}
+
+// MARK: - Playback paint (cursor · played behind · current / last-played)
+
+/// One page's playback layer: a vertical CURSOR at the playhead, a soft wash on every note head
+/// already BEHIND it, and a ring on the note sounding NOW — which stays on (dimmer, hollow) as the
+/// LAST-played note once playback pauses, stops, or runs into a rest.
+///
+/// Host-clock driven (`TimelineView(.periodic)`, off Observation) and scoped to THIS overlay, so a
+/// ~10 Hz tick repaints a handful of small shapes and NEVER re-runs the score body (which
+/// quantizes + paginates) — the drum-pattern highlight doctrine, same as `FollowScoreView`'s.
+/// Everything the tick needs is precomputed in `ScorePlaybackLayer`: the tick does a binary search
+/// over onsets plus an integer compare per mark.
+struct ScorePlaybackCanvas: View {
+    let page: ScorePage
+    let layer: ScorePlaybackLayer
+
+    // The sheet is paper-WHITE (ScoreRenderer fills it), so these are ink washes chosen to read on
+    // white — not the app's dark-chrome tokens.
+    private static let playedFill = CGColor(red: 0.36, green: 0.52, blue: 0.86, alpha: 0.20)
+    private static let soundingRing = CGColor(red: 0.94, green: 0.44, blue: 0.10, alpha: 0.95)
+    private static let lastPlayedRing = CGColor(red: 0.94, green: 0.44, blue: 0.10, alpha: 0.55)
+    private static let cursorLive = CGColor(red: 0.16, green: 0.40, blue: 0.94, alpha: 0.70)
+    private static let cursorIdle = CGColor(red: 0.16, green: 0.40, blue: 0.94, alpha: 0.26)
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+            // Read the clock + map it OUTSIDE the Canvas closure: a plain Sendable value crosses
+            // into the renderer, and the @MainActor clock read stays in the view builder.
+            let state = ScorePlayhead.state(atMs: layer.clock.positionMs(), slots: layer.slots,
+                                            bpm: layer.bpm)
+            Canvas { ctx, size in
+                ctx.withCGContext { cg in
+                    // The SAME page→canvas transform the score canvas applies (`ScorePageView`),
+                    // on the same size — everything below is therefore in PAGE space, the space
+                    // `ScoreLayout` laid the note heads in.
+                    let s = size.width / page.size.width
+                    cg.saveGState()
+                    cg.scaleBy(x: s, y: s)
+                    draw(state, in: cg)
+                    cg.restoreGState()
+                }
+            }
+        }
+    }
+
+    private func draw(_ state: ScorePlaybackState, in cg: CGContext) {
+        // 1. Behind the cursor: a soft wash under each head that has already sounded.
+        for m in layer.marks where state.isPlayed(onset16ths: m.onset16ths) {
+            cg.setFillColor(Self.playedFill)
+            cg.fillEllipse(in: CGRect(x: m.point.x - 6.5, y: m.point.y - 6.5, width: 13, height: 13))
+        }
+        // 2. The cursor — only on the page it actually falls on (`playhead` resolves that against
+        // ALL pages, and parks at the score's end once playback runs past the last bar).
+        if let ph = ScoreLayout.playhead(at: state.cursor16ths, pages: layer.pages),
+           ph.page == layer.pageIndex {
+            cg.setStrokeColor(state.currentOnset16ths == nil ? Self.cursorIdle : Self.cursorLive)
+            cg.setLineWidth(1.6)
+            cg.move(to: CGPoint(x: ph.x, y: ph.top))
+            cg.addLine(to: CGPoint(x: ph.x, y: ph.bottom))
+            cg.strokePath()
+        }
+        // 3. On top: the note sounding now — or, once it has ended, the LAST one that sounded,
+        // held emphasised (dimmer + hollow) instead of reverting to neutral.
+        guard let current = state.currentOnset16ths else { return }
+        for m in layer.marks where m.onset16ths == current {
+            if state.isSounding {
+                cg.setFillColor(Self.soundingRing.copy(alpha: 0.22) ?? Self.soundingRing)
+                cg.fillEllipse(in: CGRect(x: m.point.x - 8, y: m.point.y - 8, width: 16, height: 16))
+            }
+            cg.setStrokeColor(state.isSounding ? Self.soundingRing : Self.lastPlayedRing)
+            cg.setLineWidth(state.isSounding ? 2.0 : 1.4)
+            cg.strokeEllipse(in: CGRect(x: m.point.x - 8, y: m.point.y - 8, width: 16, height: 16))
         }
     }
 }
