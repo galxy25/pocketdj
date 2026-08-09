@@ -310,6 +310,96 @@ final class RipsStoreAsyncRipTests: XCTestCase {
         XCTAssertTrue(results.isEmpty)
         XCTAssertNotNil(rips.jobs["sng_1"], "a 404 cancel leaves the job entry intact")
     }
+
+    // MARK: LAZY RIP ON MISS — the wanted EDITION, acquired one song at a time
+
+    private let base = "sng_72012147649f"
+
+    /// The owner's Big Sean shape: primary id = the CLEAN cut, explicit edition resolved.
+    private var bigSean: IndexSong {
+        try! JSONDecoder().decode(IndexSong.self, from: Data(#"""
+        {"id":"sng_72012147649f","artist":"Big Sean","name":"IDFWU","explicit":true,
+         "appleMusicId":"1446744375","appleMusicIdExplicit":"1440831608","appleMusicIdClean":"1446744375"}
+        """#.utf8))
+    }
+    private var preferExplicit: EditionPolicy.Decision {
+        EditionPolicy.decide(song: bigSean, collectionCleanOnly: false, preferExplicitRaw: true)
+    }
+
+    /// The missing edition is enqueued under its VARIANT id — the same durable queue,
+    /// the same `/rip` endpoint, the same dedup as every other rip.
+    func testLazyEditionRipEnqueuesTheVariantId() async {
+        let rips = makeStore()
+        RecordingURLProtocol.body = Data(#"{"jobId":"job_e","songId":"sng_72012147649f_explicit","phase":"queued"}"#.utf8)
+        let id = await rips.requestEditionRipIfNeeded(base: base, decision: preferExplicit)
+        XCTAssertEqual(id, "\(base)_explicit")
+        XCTAssertEqual(RecordingURLProtocol.count(path: "/rip"), 1)
+        XCTAssertEqual(rips.jobs["\(base)_explicit"]?.phase, .queued)
+        XCTAssertNil(rips.jobs[base], "the BASE song's rip is untouched — the clean cut is never overwritten")
+    }
+
+    /// IDEMPOTENT: repeated misses while a rip is in flight enqueue exactly ONCE.
+    func testLazyEditionRipFiresExactlyOnceForRepeatedMisses() async {
+        let rips = makeStore()
+        RecordingURLProtocol.body = Data(#"{"jobId":"job_e","songId":"sng_72012147649f_explicit","phase":"queued"}"#.utf8)
+        for _ in 0..<5 {
+            await rips.requestEditionRipIfNeeded(base: base, decision: preferExplicit)
+        }
+        XCTAssertEqual(RecordingURLProtocol.count(path: "/rip"), 1,
+                       "the in-flight job guard collapses every later miss")
+    }
+
+    /// …and under CONCURRENT misses too (the synchronous `requesting` reservation).
+    func testLazyEditionRipIsSingleFlightUnderConcurrency() async {
+        let rips = makeStore()
+        RecordingURLProtocol.body = Data(#"{"jobId":"job_e","songId":"sng_72012147649f_explicit","phase":"queued"}"#.utf8)
+        RecordingURLProtocol.responseDelayMs = 50
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<8 {
+                group.addTask { _ = await rips.requestEditionRipIfNeeded(base: self.base, decision: self.preferExplicit) }
+            }
+        }
+        XCTAssertEqual(RecordingURLProtocol.count(path: "/rip"), 1)
+    }
+
+    /// NOTHING is enqueued when that edition's catalog id is unknown — the server would
+    /// otherwise have to guess the edition from artist+title.
+    func testLazyEditionRipNeverFiresWithoutACatalogId() async {
+        let rips = makeStore()
+        let noId = EditionPolicy.Decision(edition: .explicit, reason: .globalPreference, catalogId: nil)
+        let id = await rips.requestEditionRipIfNeeded(base: base, decision: noId)
+        XCTAssertNil(id)
+        XCTAssertEqual(RecordingURLProtocol.count(path: "/rip"), 0, "unknown edition id → no POST")
+    }
+
+    /// Nothing is enqueued when the wanted edition is ALREADY stored…
+    func testLazyEditionRipSkipsWhenTheEditionIsStored() async {
+        let rips = makeStore()
+        rips.setManifest(["\(base)_explicit": .init(key: "rips/\(base)_explicit.mp3")])
+        let id = await rips.requestEditionRipIfNeeded(base: base, decision: preferExplicit)
+        XCTAssertNil(id)
+        XCTAssertEqual(RecordingURLProtocol.count(path: "/rip"), 0)
+    }
+
+    /// …but a LEGACY un-suffixed rip does NOT satisfy the edition (that is the whole point
+    /// of edition keying) — it still plays, and the wanted edition is still acquired.
+    func testLegacyRipDoesNotSatisfyTheWantedEdition() async {
+        let rips = makeStore()
+        rips.setManifest([base: .init(key: "rips/\(base).mp3")])
+        RecordingURLProtocol.body = Data(#"{"jobId":"job_e","phase":"queued"}"#.utf8)
+        let id = await rips.requestEditionRipIfNeeded(base: base, decision: preferExplicit)
+        XCTAssertEqual(id, "\(base)_explicit")
+        XCTAssertEqual(RecordingURLProtocol.count(path: "/rip"), 1)
+        XCTAssertNotNil(rips.cachedURL(base), "and the legacy rip is still there, untouched")
+    }
+
+    /// No substitution wanted (the tri-state nil) ⇒ nothing is ever enqueued.
+    func testLazyEditionRipNoOpWhenNoSubstitution() async {
+        let rips = makeStore()
+        let id = await rips.requestEditionRipIfNeeded(base: base, decision: .unchanged)
+        XCTAssertNil(id)
+        XCTAssertEqual(RecordingURLProtocol.count(path: "/rip"), 0)
+    }
 }
 
 /// A scriptable, request-counting `URLProtocol` standing in for the rip server. Serves

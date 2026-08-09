@@ -555,13 +555,17 @@ extension AppleMusicProvider {
     /// an existing song's stream is never substituted until the user has explicitly
     /// chosen a direction (the substitution-default safety ruling); false/true ⇒ the
     /// preferred edition's catalog id first (when resolved and distinct), primary next.
+    /// The preferred-edition decision itself is `EditionPolicy.decide` — the ONE precedence
+    /// function the stored-file + rip paths also route through, so the streamed edition and
+    /// the stored edition can never disagree about which cut is playing. (No collection
+    /// context here: a clean-only collection substitutes upstream, at `CleanOnly.resolve`,
+    /// and reaches this provider as an already-VARIANT song handled by `resolve`'s branch 0.)
     static func streamCandidates(for song: IndexSong, preference: Bool?) -> [StreamCandidate] {
         var out: [StreamCandidate] = []
-        if let preferExplicit = preference {
-            let pref: SongVariant = preferExplicit ? .explicit : .clean
-            if let v = song.appleMusicId(for: pref), !v.isEmpty, v != song.appleMusicId {
-                out.append(.init(id: v, wantExplicit: preferExplicit))
-            }
+        let d = EditionPolicy.decide(song: song, collectionCleanOnly: false,
+                                     preferExplicitRaw: preference)
+        if let edition = d.edition, let v = d.catalogId, !v.isEmpty {
+            out.append(.init(id: v, wantExplicit: edition == .explicit))
         }
         if let p = song.appleMusicId, !p.isEmpty, !out.contains(where: { $0.id == p }) {
             out.append(.init(id: p, wantExplicit: nil))

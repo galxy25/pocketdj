@@ -178,9 +178,21 @@ struct IndexSong: Decodable, Identifiable, Hashable {
     /// `AppleMusicCatalog.indexSong` — we build it by decoding a JSON object. Used when a
     /// caller (the row ▶) has only `(id, title, artist)` and must hand a song to the
     /// coordinator; the coordinator's provider chain + source map key off the id alone.
-    static func minimal(id: String, name: String, artist: String, appleMusicId: String? = nil) -> IndexSong {
+    /// The EDITION fields ride along too (`explicit` / `appleMusicIdExplicit` /
+    /// `appleMusicIdClean`). They are what `appleMusicId(for:)` — and therefore the whole
+    /// prefer-explicit substitution — reads: a stub that dropped them made
+    /// `AppleMusicProvider.streamCandidates` produce ONLY the primary (clean) id no matter
+    /// what the user preferred, so every ordinary ▶ streamed the clean cut with correct
+    /// index data and the toggle ON. Optional + defaulted, so every existing call site keeps
+    /// compiling and keeps its exact behaviour.
+    static func minimal(id: String, name: String, artist: String, appleMusicId: String? = nil,
+                        explicit: Bool? = nil, appleMusicIdExplicit: String? = nil,
+                        appleMusicIdClean: String? = nil) -> IndexSong {
         var obj: [String: Any] = ["id": id, "name": name, "artist": artist]
         if let appleMusicId { obj["appleMusicId"] = appleMusicId }
+        if let explicit { obj["explicit"] = explicit }
+        if let appleMusicIdExplicit { obj["appleMusicIdExplicit"] = appleMusicIdExplicit }
+        if let appleMusicIdClean { obj["appleMusicIdClean"] = appleMusicIdClean }
         // Force-unwrap is safe: these three scalar fields always encode + decode (the rest
         // of IndexSong's fields are all optional). A failure would be a programmer error.
         let data = try! JSONSerialization.data(withJSONObject: obj)

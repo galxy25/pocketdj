@@ -117,4 +117,43 @@ final class ExplicitVariantModelTests: XCTestCase {
         XCTAssertFalse(clean.matches("sng_1a7f6bc854af_explicit"), "a different edition is a foreign play")
         XCTAssertFalse(clean.matches("sng_ffffffffffff"), "a different song is a foreign play")
     }
+
+    /// LATE STAMPING vs. the `matches` invariant. `SetlistPlayer.stampEditions` applies the
+    /// global "Prefer explicit versions" preference at `play()`, so a row that was PLAIN when
+    /// the caller built it can acquire a `variant` — and therefore a `resolveId` — before the
+    /// first end-of-track guard runs. That widening is only safe because a row answers to a
+    /// variant id ONLY for the edition it actually plays:
+    ///   • a prefer-explicit row answers to its own `_explicit` id (that is what makes
+    ///     auto-advance work at all once the preference is on) but NOT to `_clean`;
+    ///   • a clean-locked row answers to `_clean` but NOT to `_explicit`, so an explicit cut
+    ///     of the same song played from another surface stays a FOREIGN play and can never
+    ///     advance or reposition a clean-only run.
+    /// If either half of this ever flips, `matches` has to be widened deliberately rather than
+    /// by drift — see the note on `SetlistPlayer.Item.matches`.
+    @MainActor
+    func testLateEditionStampingKeepsForeignEditionsForeign() {
+        let base = "sng_1a7f6bc854af"
+        // Stamped by the PREFERENCE (what stampEditions does to a previously-plain row).
+        var preferred = SetlistPlayer.Item(id: base, title: "LN", artist: "CG")
+        preferred.variant = .explicit
+        preferred.editionCatalogId = "1440831608"
+        XCTAssertTrue(preferred.matches(base), "burned-file plays still stamp the base id")
+        XCTAssertTrue(preferred.matches("\(base)_explicit"), "its own stream/rip play is NOT foreign")
+        XCTAssertFalse(preferred.matches("\(base)_clean"),
+                       "the OTHER edition stays foreign even after late stamping")
+
+        // Stamped as a RESTRICTION (a clean-only run locks its rows wholesale).
+        var locked = SetlistPlayer.Item(id: base, title: "LN", artist: "CG")
+        locked.variant = .clean
+        locked.editionLocked = true
+        XCTAssertFalse(locked.matches("\(base)_explicit"),
+                       "an explicit cut played elsewhere can never advance a clean-only run")
+        XCTAssertEqual(locked.editionDecision.reason, .collectionCleanOnly,
+                       "a locked row rebuilds as a RESTRICTION, so it never falls back to another edition")
+        XCTAssertFalse(locked.editionDecision.allowsStoredFallback)
+
+        // An unlocked stamp rebuilds as a PREFERENCE, which may degrade onto a stored edition.
+        XCTAssertEqual(preferred.editionDecision.reason, .globalPreference)
+        XCTAssertTrue(preferred.editionDecision.allowsStoredFallback)
+    }
 }

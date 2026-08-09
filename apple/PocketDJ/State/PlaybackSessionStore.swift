@@ -66,6 +66,11 @@ final class PlaybackSessionStore {
         /// pre-existing session files (which lack the key) still restore. Without this
         /// a relaunch restore of a cleanOnly set would silently play explicit editions.
         var variant: String? = nil
+        /// Was `variant` a content RESTRICTION (clean-only) rather than the global
+        /// prefer-explicit preference? Same additive-optional discipline as `variant`; without
+        /// it a restored clean-only run would be allowed to fall back to an explicit-edition
+        /// file when its clean rip is missing (`EditionPolicy.Decision.allowsStoredFallback`).
+        var editionLocked: Bool? = nil
     }
 
     struct Snapshot: Codable, Equatable {

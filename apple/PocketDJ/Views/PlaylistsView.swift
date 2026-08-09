@@ -1497,7 +1497,8 @@ struct PlaylistDetailView: View {
                 // force-sync context menu is attached by `nodeRowWithMenu` (folded with the
                 // chapter reorder items) — NOT here, or a second menu would shadow it.
                 VStack(spacing: 0) {
-                    CollectionSongRow(song: song, syncsToSource: playlist?.syncsWithSource ?? false)
+                    CollectionSongRow(song: song, syncsToSource: playlist?.syncsWithSource ?? false,
+                                      cleanOnlyCollection: playlist?.cleanOnly == true)
                         // reorderHost: this ForEach owns .onMove — drag source only on
                         // selected rows so plain row-drags keep reordering (macOS path).
                         .selectableSongRow(id: node.nodeId, scope: selectionScope,
