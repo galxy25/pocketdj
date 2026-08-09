@@ -558,11 +558,13 @@ struct AppleMusicSettingsView: View {
 
     /// The reachable, documented trigger for BOTH capture paths (build task B + C).
     ///
-    ///   • **Refresh from Apple Music** — the MusicKit walk. Explicit ONLY: a full walk of a
-    ///     90k-song library takes minutes, which is exactly why `AppleMusicLibraryIndexer` is
-    ///     never run on launch either. Incremental after the first run (sorted by
-    ///     `lastPlayedDate` descending, stopping at the stored high-water mark), so a routine
-    ///     refresh touches only what has been played since.
+    ///   • **Refresh from Apple Music** — the MusicKit walk. Incremental after the first run
+    ///     (sorted by `lastPlayedDate` descending, stopping at the stored high-water mark), so a
+    ///     routine refresh touches only what has been played since. The ROUTINE refresh is
+    ///     explicit; the app starts a walk on its own in exactly two narrow cases — an empty
+    ///     baseline (otherwise the "Plays" column ranks by this app's own playback and looks
+    ///     authoritative while being wrong) and a run already banked on disk, which resumes from
+    ///     its cursor. Both are safe now only because the walk checkpoints.
     ///   • **Import a snapshot file** — reads a `playcounts.json` produced by the Library.xml
     ///     exporter. This is what gives the feature REAL data today on a machine where the
     ///     MusicKit read isn't available (the iOS `Song.playCount` question is still open — see
@@ -591,7 +593,17 @@ struct AppleMusicSettingsView: View {
                 playCountRunRows(playCounts)
 
                 Button {
-                    playCounts.startCapture(songs: app.songs, trigger: "manual")
+                    // The Bool is the ONLY thing that distinguishes "started" from "silently did
+                    // nothing" — the catalog can still be decoding, which the disabled state does
+                    // not cover, and a button that reports nothing at all is how this feature came
+                    // to look broken in the first place.
+                    if !playCounts.startCapture(songs: app.songs, trigger: "manual") {
+                        playCountStatus = .bad(app.songs.isEmpty
+                            ? "Your catalog is still loading — try again in a moment."
+                            : "Couldn't start reading your library right now.")
+                    } else {
+                        playCountStatus = nil
+                    }
                 } label: {
                     Label(playCounts.isCapturing
                             ? "Reading your library…"
@@ -613,11 +625,22 @@ struct AppleMusicSettingsView: View {
                 // from another source — it folds onto it.
                 if playCounts.baseline.lastPlayedHighWaterMs != nil {
                     Button {
-                        playCounts.recaptureEverything(songs: app.songs)
+                        if !playCounts.recaptureEverything(songs: app.songs) {
+                            playCountStatus = .bad(app.songs.isEmpty
+                                ? "Your catalog is still loading — try again in a moment."
+                                : "Couldn't start reading your library right now.")
+                        } else {
+                            playCountStatus = nil
+                        }
                     } label: {
                         Label("Re-read everything from Apple Music", systemImage: "arrow.triangle.2.circlepath")
                     }
-                    .disabled(playCounts.isCapturing || !AppleMusicPlayCountCapture.isAvailable)
+                    // ALSO gated on the catalog: this one is destructive before it is useful (it
+                    // drops the incremental mark and the banked run), and the mark is what makes
+                    // the button visible at all — so a tap with no catalog used to erase the mark,
+                    // start nothing, and then remove itself from the pane.
+                    .disabled(playCounts.isCapturing || app.songs.isEmpty
+                              || !AppleMusicPlayCountCapture.isAvailable)
                     .accessibilityIdentifier("playcounts-full-recapture")
                 }
 
@@ -728,9 +751,14 @@ struct AppleMusicSettingsView: View {
             }
             .accessibilityIdentifier("playcounts-run-header")
 
+            // "Songs read 12,000" with no total is not progress. A walk cannot know the library's
+            // size until it ends, so the denominator is what the last completed full walk
+            // measured — hence "of about".
             LabeledContent("Songs read",
                            value: "\(run.scanned)"
-                           + (run.isFullWalk ? "" : " (since the last read)"))
+                           + (run.isFullWalk
+                              ? (run.libraryRowsEstimate.map { " of about \($0)" } ?? "")
+                              : " (since the last read)"))
                 .font(.caption)
                 .accessibilityIdentifier("playcounts-run-scanned")
 

@@ -16,12 +16,23 @@ import Foundation
 /// baseline's 56,224/96,020 = 58.55% to two decimals. So a nil here is dropped, and the caller's
 /// store treats absent as zero. It is never written as a literal 0 row.
 ///
-/// ── OFF THE MAIN ACTOR, AND NEVER ON LAUNCH ──────────────────────────────────────────────────
+/// ── OFF THE MAIN ACTOR, AND CHECKPOINTED ─────────────────────────────────────────────────────
 /// A 90k-song walk takes minutes (the lesson `AppleMusicLibraryIndexer` already carries), so this
-/// is `nonisolated`, explicit-trigger only, and INCREMENTAL: the walk is sorted by
-/// `lastPlayedDate` descending and stops at the store's high-water mark, so a routine refresh
-/// touches only what was played since the last one. A nil mark (first ever capture) walks
-/// everything — and only then is the result a complete SNAPSHOT.
+/// is `nonisolated` and INCREMENTAL: the walk is sorted by `lastPlayedDate` descending and stops
+/// at the store's high-water mark, so a routine refresh touches only what was played since the
+/// last one. A nil mark (first ever capture) walks everything — and only then is the result a
+/// complete SNAPSHOT.
+///
+/// ── IT DOES RUN UNATTENDED (this comment used to say the opposite) ────────────────────────────
+/// "Explicit-trigger only, never on launch" was the right rule while the walk was all-or-nothing
+/// at 100%: an automatic start was then minutes of work that any interruption threw away. `walk`
+/// below CHECKPOINTS, so an automatic first run banks its progress and a resume continues from the
+/// cursor — and the alternative (Browse's "Plays" column silently ranking by this app's own
+/// playback until the owner happens to find a Settings button) is the bug that was reported.
+/// Automatic starts stay NARROW and are both one-shot per launch:
+/// `PlayCountService.autoCaptureIfNeverCaptured` fires only for an EMPTY baseline, and
+/// `resumeCaptureIfInterrupted` only for a run already banked on disk. The routine refresh is
+/// still explicit.
 enum AppleMusicPlayCountCapture {
 
     /// What one walk produced.
@@ -141,6 +152,14 @@ enum AppleMusicPlayCountCapture {
         return out
     }
 
+    /// The position a row occupies under the walk's `lastPlayedDate` DESCENDING sort, as one
+    /// comparable number. A row Apple has never played carries no date and sorts LAST, which is
+    /// what the sentinel stands for — it must NOT collapse to 0, or an unplayed row would outrank
+    /// every genuine 1970s-epoch timestamp and defeat the drift guard.
+    static func sortKey(_ lastPlayedMs: Double?) -> Double {
+        lastPlayedMs ?? -Double.greatestFiniteMagnitude
+    }
+
     /// Newest of two optional epoch-ms dates (nil is "no date", never a zero).
     static func maxDate(_ a: Double?, _ b: Double?) -> Double? {
         switch (a, b) {
@@ -231,7 +250,7 @@ extension AppleMusicPlayCountCapture {
     /// cost: nothing, because a page is folded whole or not at all.
     static let defaultPageLimit = 500
 
-    /// Rows between durable checkpoints (10 pages).
+    /// MINIMUM rows between durable checkpoints (10 pages).
     ///
     /// The trade is loss-on-interruption against write cost. A checkpoint writes the run document
     /// AND the baseline; at 96k rows the baseline is 2.8 MB and ~109 ms to encode (measured), so
@@ -240,9 +259,40 @@ extension AppleMusicPlayCountCapture {
     /// bounding worst-case loss to ~5,000 rows, a few seconds of walking.
     static let defaultCheckpointRows = 5_000
 
-    /// How many recently-folded library row ids the run carries as its sort-drift guard. See the
-    /// guard's comment in `walk` — realistic drift is the handful of songs played DURING the walk,
-    /// so 1,000 is several orders of headroom for ~20 KB in the run document.
+    /// CEILING on the adaptive interval — see `checkpointInterval`. Bounds worst-case loss on an
+    /// interruption to ~25,000 rows (tens of seconds of walking) however large the library is.
+    static let defaultMaxCheckpointRows = 25_000
+
+    /// Rows to walk before the next checkpoint, given how much the run is already holding.
+    ///
+    /// A FIXED interval scales badly, because both persisted documents grow WITH the library while
+    /// the interval does not: at 5,000 rows a 96k library takes ~20 whole-document writes (~115 MB
+    /// of 2.8 MB baseline + ~3 MB run document) and a 500k library ~100 (~3 GB). Total write
+    /// volume is O(N²/interval).
+    ///
+    /// Tying the interval to the accumulator makes the early checkpoints geometric instead — ~12
+    /// on a 96k library rather than 20, and ~27 on a 500k one rather than 100, which is a ~5× cut
+    /// in bytes written on the owner's library. `/ 2` rather than the raw count because in the
+    /// degenerate case where every row resolves to a new song the accumulator grows exactly as
+    /// fast as the cursor, so an interval equal to it would never come due at all.
+    ///
+    /// HONEST ABOUT WHAT THIS IS NOT: the `cap` re-flattens the tail, so total volume is still
+    /// O(N²/cap) for a library large enough to reach it — it is a 5× constant, not a change of
+    /// order. The cap is deliberate and is the other half of the trade: it is the bound on how
+    /// much walking ONE interruption can cost (25,000 rows, tens of seconds), and letting the
+    /// interval run free would make a 500k-song walk risk losing 125,000 rows at a time.
+    static func checkpointInterval(accumulatedSongs: Int, floor: Int, cap: Int) -> Int {
+        min(max(floor, cap), max(floor, accumulatedSongs / 2))
+    }
+
+    /// How many library row ids the run carries as the sort-drift guard's TIE-BREAKER.
+    ///
+    /// This used to be the whole guard, and as the whole guard it failed OPEN: it evicted the
+    /// oldest id one-for-one per newly folded row, so once drift exceeded the cap the first
+    /// duplicate through evicted a still-needed id, which then also slipped through — the window
+    /// collapsed from the front and the REST of the walk double-folded. The guard is now a sort-key
+    /// watermark (see `walk`), which needs no memory of individual rows and no cap; this set only
+    /// separates rows that tie the watermark exactly.
     static let boundaryGuardCap = 1_000
 
     /// The durable record of ONE capture run: the cursor, the running totals, and the run's own
@@ -280,8 +330,22 @@ extension AppleMusicPlayCountCapture {
         var cursor: Int = 0
         /// songId → the run's SUMMED counter so far. See the type doc.
         var counts: [String: AMPlayBaselineStore.Entry] = [:]
-        /// The most recently folded library row ids — the sort-drift guard. See `walk`.
+        /// The sort key of the last row folded — THE sort-drift guard. See `walk`.
+        ///
+        /// Optional so a run document written before this field existed still decodes (a thrown
+        /// decode discards the run and restarts a multi-minute walk from row 0). nil ⇒ nothing has
+        /// been folded yet; the nil-`lastPlayedDate` region is `-greatestFiniteMagnitude`, never nil.
+        var boundarySortMs: Double?
+        /// Row ids that TIE `boundarySortMs` — the guard's only remaining exact-identity case.
         var boundaryRowIds: [String] = []
+        /// Running total of `counts`, maintained as the walk folds. Keeps `audit` O(1) so progress
+        /// can be published every page instead of only every checkpoint; a reduce over 46k entries
+        /// per page would not be. Optional for the same decode-compatibility reason as above.
+        var playsAccum: Int?
+        /// Rows the LAST completed full walk found, carried forward as the progress denominator.
+        /// A walk cannot know the library's size until it ends, and "Songs read 12,000" with no
+        /// total is not progress.
+        var libraryRowsEstimate: Int?
         var scanned: Int = 0
         var withPlayCount: Int = 0
         var unresolved: Int = 0
@@ -319,7 +383,9 @@ extension AppleMusicPlayCountCapture {
         }
 
         var songsHeld: Int { counts.count }
-        var playsHeld: Int { counts.values.reduce(0) { $0 + $1.n } }
+        /// O(1) once the walk has started maintaining it; the reduce is only the fallback for a
+        /// run document written before `playsAccum` existed.
+        var playsHeld: Int { playsAccum ?? counts.values.reduce(0) { $0 + $1.n } }
 
         /// The O(1) projection Settings renders and the app hydrates at launch — everything the
         /// owner needs to answer "did this work?", and nothing that is O(library).
@@ -328,7 +394,7 @@ extension AppleMusicPlayCountCapture {
                   updatedMs: updatedMs, isFullWalk: isFullWalk, cursor: cursor, scanned: scanned,
                   withPlayCount: withPlayCount, unresolved: unresolved, songsHeld: songsHeld,
                   playsHeld: playsHeld, checkpoints: checkpoints, completed: completed,
-                  stopReason: stopReason)
+                  stopReason: stopReason, libraryRowsEstimate: libraryRowsEstimate)
         }
     }
 
@@ -350,6 +416,13 @@ extension AppleMusicPlayCountCapture {
         var checkpoints: Int = 0
         var completed: Bool = false
         var stopReason: String = ""
+        /// Rows the last completed FULL walk found — the progress denominator. Optional so an
+        /// audit sidecar written before this field existed still decodes.
+        var libraryRowsEstimate: Int?
+        /// When the owner DELIBERATELY cleared the baseline. Recorded so the first-run
+        /// auto-capture does not rebuild, on the very next foreground, exactly what "Forget these
+        /// play counts" (confirmation: "There is no undo") just removed.
+        var clearedByOwnerMs: Double?
 
         /// The run died with the process (or was cancelled) and has work banked on disk.
         var isInterrupted: Bool { !completed && startedMs > 0 }
@@ -373,9 +446,28 @@ extension AppleMusicPlayCountCapture {
     /// `lastPlayedDate` descending is not stable under mutation: play one song mid-walk and it
     /// jumps to row 0, shifting every later row by one, so an `offset` resume re-reads the row
     /// that sat just BEFORE the cursor. Folding that row a second time would add its plays twice —
-    /// the single way a checkpointed walk can inflate a counter. So the run carries the ids of the
-    /// rows it folded most recently and skips any it has already seen. Drift is bounded by the
-    /// number of songs played during the walk (a handful), and the guard holds 1,000.
+    /// the single way a checkpointed walk can inflate a counter.
+    ///
+    /// The guard is a WATERMARK ON THE SORT KEY, not a set of row ids. `boundarySortMs` is the key
+    /// of the last row folded; under a descending sort every row still to come has a key at or
+    /// below it, so a row whose key is STRICTLY ABOVE it occupies a position the walk has already
+    /// passed and is skipped. That covers unbounded drift for free — a row that drifts is a row
+    /// that was just PLAYED, so its key is `now`, above everything already walked.
+    ///
+    /// A bounded id set survives only as the tie-breaker for rows whose key EQUALS the watermark,
+    /// where the key cannot separate a re-served row from a genuinely new one. It is reset every
+    /// time the watermark moves, so it holds one tie group rather than a sliding window.
+    ///
+    /// WHY NOT THE ID SET ALONE (what this replaced): it evicted the oldest id per newly folded
+    /// row, so the first duplicate past the cap evicted a still-needed id, which then also slipped
+    /// through — the window collapsed from the front and the rest of the walk double-folded. On a
+    /// 3,000-row library interrupted at 1,500 with 1,100 rows played before the resume, ~73% of the
+    /// library came back roughly DOUBLED, committed as authoritative, with no undo.
+    ///
+    /// RESIDUAL, bounded and harmless: the tail of nil-`lastPlayedDate` rows is one enormous tie
+    /// group, so only the last 1,000 of them are covered exactly. A re-served row there can only
+    /// inflate a counter if it has plays AND no last-played date, a shape Apple's counters do not
+    /// produce (measured: non-nil count == non-zero count exactly, 117/117 over 225 songs).
     /// The mirror case — a row DELETED from the library mid-walk shifts rows earlier, so a resume
     /// skips one — costs a single row that the next full re-read picks up. Accepted, deliberately:
     /// the alternative (re-reading the whole library on every resume) is the bug being fixed.
@@ -391,13 +483,20 @@ extension AppleMusicPlayCountCapture {
                                  resolve: @escaping Resolver,
                                  pageLimit: Int = defaultPageLimit,
                                  checkpointRows: Int = defaultCheckpointRows,
+                                 maxCheckpointRows: Int = defaultMaxCheckpointRows,
                                  nowMs: @escaping @Sendable () -> Double = { Date().timeIntervalSince1970 * 1000 },
+                                 onProgress: @escaping @Sendable (Audit) async -> Void = { _ in },
                                  checkpoint: @escaping @Sendable (Run) async -> Void) async throws -> Run {
         var run = initial
         var recentOrder = run.boundaryRowIds
         var recent = Set(recentOrder)
         var sinceCheckpoint = 0
+        // A run banked by a build that predates `playsAccum` carries none; derive it ONCE here so
+        // the per-page audit stays O(1) for the rest of the walk.
+        if run.playsAccum == nil { run.playsAccum = run.counts.values.reduce(0) { $0 + $1.n } }
 
+        /// Remember one row id AT the current watermark. Bounded only as a backstop; the set is
+        /// cleared whenever the watermark moves, so in normal walking it holds a handful of rows.
         func remember(_ rowId: String) {
             recentOrder.append(rowId)
             recent.insert(rowId)
@@ -417,6 +516,17 @@ extension AppleMusicPlayCountCapture {
                     run.completed = true
                     run.stopReason = "Reached the end of your library"
                     run.updatedMs = nowMs()
+                    // A FULL walk that reached the end has just measured the library — carry the
+                    // number forward as the next run's progress denominator. `cursor` (rows the
+                    // pager served) rather than `scanned` (rows folded), because the denominator's
+                    // job is to predict how far the NEXT walk has to page.
+                    if run.isFullWalk { run.libraryRowsEstimate = run.cursor }
+                    // …and land a checkpoint on the way out. The `reachedMark` exit below always
+                    // did; this one did not, so on a rejected commit the last interval's rows were
+                    // never merged, and the audit's checkpoint count was under by one on EVERY
+                    // successful full walk.
+                    run.checkpoints += 1
+                    await checkpoint(run)
                     break
                 }
                 var reachedMark = false
@@ -430,7 +540,23 @@ extension AppleMusicPlayCountCapture {
                             break
                         }
                     }
-                    if recent.contains(row.rowId) { continue }   // sort-drift guard (see the doc)
+                    // SORT-DRIFT GUARD (see the doc above).
+                    let key = sortKey(row.lastPlayedMs)
+                    if let boundary = run.boundarySortMs {
+                        // Strictly ABOVE the last row folded ⇒ this position has already been
+                        // walked, so the row either drifted to the front or was re-served by an
+                        // offset resume. Either way, folding it again is the double-count.
+                        if key > boundary { continue }
+                        // Exactly AT the watermark the key cannot tell a re-served row from a
+                        // genuinely new one with the same timestamp — that is what the id set is.
+                        if key == boundary, recent.contains(row.rowId) { continue }
+                        // The watermark moved: the previous tie group can never be re-served
+                        // again, so drop it rather than carrying a sliding window.
+                        if key != boundary { recentOrder.removeAll(); recent.removeAll() }
+                    } else if recent.contains(row.rowId) {
+                        continue    // a run banked before the watermark existed
+                    }
+                    run.boundarySortMs = key
                     remember(row.rowId)
                     run.scanned += 1
                     if let lastMs = row.lastPlayedMs, lastMs > (run.maxLastPlayedMs ?? 0) {
@@ -449,6 +575,7 @@ extension AppleMusicPlayCountCapture {
                     let prior = run.counts[songId]
                     run.counts[songId] = .init(n: (prior?.n ?? 0) + plays,
                                                lastMs: maxDate(prior?.lastMs, row.lastPlayedMs))
+                    run.playsAccum = (run.playsAccum ?? 0) + plays
                 }
                 run.cursor += page.count
                 sinceCheckpoint += page.count
@@ -463,7 +590,13 @@ extension AppleMusicPlayCountCapture {
                     run.completed = true
                     run.stopReason = "Everything played since the last read"
                 }
-                if run.completed || sinceCheckpoint >= checkpointRows {
+                // Progress every PAGE, not every checkpoint: a 96k walk otherwise shows "Songs
+                // read 0" for the first half-minute and then steps in 5,000s. This is publish-only
+                // (an O(1) value struct, no disk), so it costs a `@Observable` invalidation.
+                await onProgress(run.audit)
+                let interval = checkpointInterval(accumulatedSongs: run.counts.count,
+                                                  floor: checkpointRows, cap: maxCheckpointRows)
+                if run.completed || sinceCheckpoint >= interval {
                     run.checkpoints += 1
                     await checkpoint(run)
                     sinceCheckpoint = 0

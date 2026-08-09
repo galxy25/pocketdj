@@ -156,7 +156,12 @@ final class PlayCountCaptureTests: XCTestCase {
         do {
             _ = try await AppleMusicPlayCountCapture.walk(
                 pager: pager, run: .starting(since: nil, trigger: "test", nowMs: 1_000),
-                resolve: resolver(100), pageLimit: 10, checkpointRows: 20,
+                // `maxCheckpointRows` pinned to `checkpointRows`: the interval is ADAPTIVE in
+                // production (it grows with the accumulator so write volume stays linear in
+                // library size — see `checkpointInterval`), and this test asserts exact
+                // checkpoint cursors, which is a statement about durability, not about the
+                // growth policy.
+                resolve: resolver(100), pageLimit: 10, checkpointRows: 20, maxCheckpointRows: 20,
                 checkpoint: { snap in
                     await MainActor.run {
                         checkpoints.append(snap)
@@ -595,6 +600,289 @@ final class PlayCountCaptureTests: XCTestCase {
     }
 
     // MARK: - 8. Incremental walks still stop at the mark
+
+    /// THE SERVICE's checkpoint path, asserted end to end. The interruption test above drives
+    /// `store.mergePartial` from the TEST's own closure; this one proves `PlayCountService` itself
+    /// puts a partial into the baseline, which is the exact thing the owner reported missing
+    /// ("it resets to zero songs with playcounts").
+    func testTheServiceItselfBanksPartialCountsIntoTheBaseline() async throws {
+        let rig = makeService()
+        let rows = library(60)
+        rig.service.pagerFactory = { FakePager(rows: rows, failAfterPages: 3) }
+
+        XCTAssertTrue(rig.service.startCapture(songs: catalog(60), trigger: "manual"))
+        await rig.service.awaitCapture()
+
+        // 3 pages of 10 were served, so rows 0..<30 are folded and banked — by the service, with
+        // no help from the test.
+        XCTAssertEqual(rig.baseline.songCount, 30, "an interrupted run leaves REAL counts behind")
+        XCTAssertEqual(rig.baseline.count("s0"), 1)
+        XCTAssertEqual(rig.baseline.count("s29"), 30)
+        XCTAssertEqual(rig.baseline.count("s30"), 0, "never read, so never stored")
+        XCTAssertEqual(rig.baseline.totalPlays, (1...30).reduce(0, +))
+        // …and it is on DISK, not just in memory: this is what survives the app being killed.
+        await rig.baseline.flushPendingWrites()
+        let doc = try JSONDecoder().decode(AMPlayBaselineStore.Document.self,
+                                           from: try Data(contentsOf: rig.baselineURL))
+        XCTAssertEqual(doc.counts.count, 30)
+        XCTAssertEqual(doc.counts["s29"]?.n, 30)
+    }
+
+    // MARK: - 9. The sort-drift guard survives UNBOUNDED drift
+
+    /// The guard used to be a 1,000-id sliding window, and as a sliding window it failed OPEN: it
+    /// evicted the oldest id per newly folded row, so the first duplicate past the cap evicted a
+    /// still-needed id, which then also slipped through — the window collapsed from the front and
+    /// the REST of the walk double-folded, committed as authoritative with no undo.
+    ///
+    /// Here 1,100 rows are played between an interruption at row 1,500 and the resume — more than
+    /// the old cap. Every count must still be exactly what one clean run produces.
+    func testResumeSurvivesDriftLargerThanTheBoundaryGuard() async throws {
+        let total = 3_000
+        let original = library(total)
+
+        // Interrupt at row 1,500.
+        var banked: Run?
+        do {
+            _ = try await AppleMusicPlayCountCapture.walk(
+                pager: FakePager(rows: original, failAfterPages: 3),
+                run: .starting(since: nil, trigger: "test", nowMs: 1),
+                resolve: resolver(total), pageLimit: 500, checkpointRows: 500, maxCheckpointRows: 500,
+                checkpoint: { snap in banked = snap })
+        } catch {}
+        let resumeFrom = try XCTUnwrap(banked)
+        XCTAssertEqual(resumeFrom.cursor, 1_500)
+
+        // 1,100 rows from the UNWALKED tail are played before the resume. Each jumps to the front
+        // of a `lastPlayedDate`-DESC sort, so the resume's offset now points 1,100 rows BEHIND
+        // where it left off — every one of those rows is served a second time.
+        var drifted = original
+        let playedNow = 2_100_000_000_000.0
+        var promoted: [Row] = []
+        for i in stride(from: total - 1, through: total - 1_100, by: -1) {
+            let row = drifted.remove(at: i)
+            promoted.append(Row(rowId: row.rowId, catalogId: row.catalogId, title: row.title,
+                                artist: row.artist, playCount: (row.playCount ?? 0) + 1,
+                                lastPlayedMs: playedNow + Double(promoted.count)))
+        }
+        drifted.insert(contentsOf: promoted, at: 0)
+        XCTAssertEqual(drifted.count, total)
+
+        let resumed = try await AppleMusicPlayCountCapture.walk(
+            pager: FakePager(rows: drifted), run: resumeFrom, resolve: resolver(total),
+            pageLimit: 500, checkpointRows: 500, maxCheckpointRows: 500, checkpoint: { _ in })
+
+        // Not one already-folded row may be folded twice. `s400`/`s499`/`s600` are the rows the
+        // old guard doubled (802 / 1000 / 1202 instead of 401 / 500 / 601).
+        for i in 0..<1_500 {
+            XCTAssertEqual(resumed.counts["s\(i)"]?.n, i + 1, "row \(i) was folded more than once")
+        }
+        XCTAssertEqual(resumed.counts["s400"]?.n, 401)
+        XCTAssertEqual(resumed.counts["s499"]?.n, 500)
+        XCTAssertEqual(resumed.counts["s600"]?.n, 601)
+        XCTAssertLessThanOrEqual(resumed.scanned, total,
+                                 "a row can be SKIPPED by drift, never counted twice")
+    }
+
+    /// Interrupt after EVERY page and resume, over and over, until the walk finishes. The result
+    /// must be identical to a single clean run — the strongest statement of SET-not-ADD there is.
+    func testInterruptingEveryPageStillLandsOnTheCleanResult() async throws {
+        let rows = library(100)
+        let clean = try await AppleMusicPlayCountCapture.walk(
+            pager: FakePager(rows: rows), run: .starting(since: nil, trigger: "test", nowMs: 1),
+            resolve: resolver(100), pageLimit: 10, checkpointRows: 10, checkpoint: { _ in })
+
+        var run = Run.starting(since: nil, trigger: "test", nowMs: 1)
+        var laps = 0
+        while !run.completed, laps < 50 {
+            laps += 1
+            do {
+                run = try await AppleMusicPlayCountCapture.walk(
+                    pager: FakePager(rows: rows, failAfterPages: 1), run: run,
+                    resolve: resolver(100), pageLimit: 10, checkpointRows: 10,
+                    maxCheckpointRows: 10, checkpoint: { snap in run = snap })
+            } catch {}
+        }
+        XCTAssertTrue(run.completed, "it finished, in \(laps) interrupted laps")
+        XCTAssertEqual(run.counts, clean.counts, "11 interruptions == 0 interruptions")
+        XCTAssertEqual(run.playsHeld, (1...100).reduce(0, +))
+    }
+
+    // MARK: - 10. A checkpoint can never leave a state the commit then refuses
+
+    /// `mergePartial` skips `replaceAll`'s guards on purpose. That left a hole: a full walk that
+    /// finds 50 of the 200 songs already stored is REFUSED at commit ("your existing numbers were
+    /// kept") — but its checkpoints had already raised those 50 rows from 7 plays to 999, so the
+    /// baseline was changed anyway and the message was false. The gate closes it.
+    func testARejectedFullWalkLeavesTheBaselineExactlyAsItWas() async throws {
+        let rig = makeService()
+        rig.baseline.replaceAll(
+            counts: (0..<200).reduce(into: [:]) { $0["s\($1)"] = .init(n: 7, lastMs: 1_000) },
+            capturedAtMs: 500, source: "musickit")
+        XCTAssertEqual(rig.baseline.totalPlays, 1_400)
+
+        // A full walk that lists only 50 rows — and reports an absurd count for each of them.
+        let broken = (0..<50).map { i in
+            Row(rowId: "i.\(i)", catalogId: "cat\(i)", title: "Song \(i)", artist: "Artist",
+                playCount: 999, lastPlayedMs: Double(9_000_000 - i))
+        }
+        rig.service.pagerFactory = { FakePager(rows: broken) }
+        XCTAssertTrue(rig.service.startCapture(songs: catalog(50), trigger: "manual"))
+        await rig.service.awaitCapture()
+
+        XCTAssertEqual(rig.baseline.lastOutcome, .rejectedCoverageLoss(kept: 50, existing: 200))
+        XCTAssertEqual(rig.baseline.songCount, 200)
+        XCTAssertEqual(rig.baseline.totalPlays, 1_400,
+                       "a read the app calls broken must not have touched the baseline at all")
+        XCTAssertEqual(rig.baseline.count("s0"), 7)
+        XCTAssertNil(rig.baseline.lastPlayedHighWaterMs)
+    }
+
+    // MARK: - 11. Forget really forgets, even mid-walk
+
+    /// `cancelCapture()` only marks the task cancelled and returns; the walk then lands a final
+    /// checkpoint UNCONDITIONALLY. That checkpoint used to re-merge the counts, rewrite the
+    /// baseline document `clear()` had just deleted and recreate the run document — so the button
+    /// whose confirmation says "There is no undo" silently didn't.
+    func testForgetDuringAWalkIsNotUndoneByTheWalksFinalCheckpoint() async throws {
+        let rig = makeService()
+        let rows = library(4_000)
+        rig.service.pagerFactory = { FakePager(rows: rows, delayNanos: 1_000_000) }
+        rig.service.pageLimit = 10
+        rig.service.checkpointRows = 10
+        rig.service.maxCheckpointRows = 10
+
+        XCTAssertTrue(rig.service.startCapture(songs: catalog(4_000), trigger: "manual"))
+        let banked = await wait { rig.baseline.songCount > 0 }
+        XCTAssertTrue(banked, "the walk banked something first")
+
+        rig.service.forgetBaseline()
+        await rig.service.awaitCapture()
+
+        XCTAssertEqual(rig.baseline.songCount, 0, "forgotten means forgotten")
+        XCTAssertEqual(rig.baseline.totalPlays, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rig.baselineURL.path),
+                       "…and the document stays deleted")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: rig.runURL.path),
+                       "…and no resumable run is left to re-bank it on the next foreground")
+        // The clear is RECORDED, so the first-run auto-capture does not rebuild it on the very
+        // next launch — which would make the button undo itself.
+        XCTAssertNotNil(rig.service.lastCapture?.clearedByOwnerMs)
+        XCTAssertFalse(rig.service.autoCaptureIfNeverCaptured(songs: catalog(4_000)))
+        let reborn = PlayCountService(baseline: rig.baseline, stats: PlayStatsStore(fileURL:
+                        FileManager.default.temporaryDirectory.appendingPathComponent("pdj-\(UUID().uuidString).json")),
+                                      runURL: rig.runURL, auditURL: rig.auditURL)
+        reborn.captureAvailable = { true }
+        XCTAssertFalse(reborn.autoCaptureIfNeverCaptured(songs: catalog(10)),
+                       "a relaunch must not rebuild what the owner deliberately cleared")
+    }
+
+    // MARK: - 12. "Re-read everything" refuses BEFORE it destroys anything
+
+    /// It drops the incremental mark and the banked run, then starts a walk — but the guards used
+    /// to live inside `startCapture`, below those two lines. A tap before the catalog finished
+    /// loading wiped the mark, deleted a resumable cursor, started nothing, and made the button
+    /// itself disappear (it renders only while a mark exists).
+    func testRecaptureEverythingKeepsTheMarkAndTheRunWhenItRefuses() async throws {
+        let rig = makeService()
+        let rows = library(60)
+        rig.service.pagerFactory = { FakePager(rows: rows, failAfterPages: 3) }
+        rig.baseline.replaceAll(counts: ["s0": .init(n: 1, lastMs: 2_000_000_000_000)],
+                                capturedAtMs: 1_000, source: "musickit",
+                                lastPlayedHighWaterMs: 1_999_999_000_000)
+
+        // Bank an interrupted run so there is a cursor to lose.
+        XCTAssertTrue(rig.service.startCapture(songs: catalog(60), trigger: "manual"))
+        await rig.service.awaitCapture()
+        XCTAssertEqual(rig.service.lastCapture?.isInterrupted, true)
+        let bankedCursor = try XCTUnwrap(rig.service.lastCapture?.cursor)
+        XCTAssertGreaterThan(bankedCursor, 0)
+        await rig.service.flushCaptureWrites()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rig.runURL.path))
+
+        // The catalog has not loaded yet.
+        XCTAssertFalse(rig.service.recaptureEverything(songs: []))
+        XCTAssertNotNil(rig.baseline.lastPlayedHighWaterMs, "the mark must survive a refusal")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rig.runURL.path),
+                      "…and so must the banked run")
+        XCTAssertEqual(PlayCountService.loadRun(from: rig.runURL)?.cursor, bankedCursor)
+
+        // MusicKit unavailable is the same story.
+        rig.service.captureAvailable = { false }
+        XCTAssertFalse(rig.service.recaptureEverything(songs: catalog(60)))
+        XCTAssertNotNil(rig.baseline.lastPlayedHighWaterMs)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: rig.runURL.path))
+    }
+
+    // MARK: - 13. A MusicKit walk never re-labels a folded, cross-source baseline
+
+    /// `countsToStore` FOLDS onto a baseline from another source rather than replacing it, because
+    /// a MusicKit walk reaches only the songs carrying an `appleMusicId` (46,664 of 56,224
+    /// measured). But `replaceAll` always re-labelled the source, so after ONE fold the stored
+    /// label read "musickit" — and the next full walk saw the same source, REPLACED, and deleted
+    /// the ~9,560 songs / 21,652 plays only the exporter could reach.
+    func testAFoldedWalkLeavesTheSourceLabelAloneSoTheNextOneAlsoFolds() async throws {
+        let rig = makeService()
+        // A library-xml baseline: 120 songs, 20 of which no MusicKit walk can resolve.
+        rig.baseline.replaceAll(
+            counts: (0..<120).reduce(into: [:]) { $0["s\($1)"] = .init(n: 5, lastMs: 1_000) },
+            capturedAtMs: 500, source: "library-xml", sourceName: "Apple Music (Local)")
+
+        // A full walk that sees only the first 100 songs.
+        rig.service.pagerFactory = { FakePager(rows: self.library(100, playsFrom: 10)) }
+        XCTAssertTrue(rig.service.startCapture(songs: catalog(100), trigger: "manual"))
+        await rig.service.awaitCapture()
+
+        XCTAssertEqual(rig.baseline.songCount, 120, "the fold keeps the 20 it cannot see")
+        XCTAssertEqual(rig.baseline.source, "library-xml",
+                       "a MIXTURE must not be labelled as a snapshot of the narrower source")
+
+        // …so a SECOND full walk still folds, and those 20 songs are still there.
+        rig.service.pagerFactory = { FakePager(rows: self.library(100, playsFrom: 30)) }
+        XCTAssertTrue(rig.service.recaptureEverything(songs: catalog(100)))
+        await rig.service.awaitCapture()
+        XCTAssertEqual(rig.baseline.songCount, 120,
+                       "the second walk would have deleted 20 songs with the old label")
+        XCTAssertEqual(rig.baseline.count("s119"), 5, "…including this one, which it cannot see")
+    }
+
+    /// The end-of-library exit used to `break` BEFORE the checkpoint block, unlike the incremental
+    /// exit right below it — so the last interval's rows were never merged (they survived only
+    /// because the commit writes everything, and a REJECTED commit writes nothing), and the
+    /// "Saved so far · N checkpoints" line the owner reads was under by one on every successful
+    /// full walk.
+    func testTheEndOfLibraryExitAlsoLandsACheckpoint() async throws {
+        var cursors: [Int] = []
+        let run = try await AppleMusicPlayCountCapture.walk(
+            pager: FakePager(rows: library(25)),
+            run: .starting(since: nil, trigger: "test", nowMs: 1),
+            resolve: resolver(25), pageLimit: 10, checkpointRows: 1_000, maxCheckpointRows: 1_000,
+            checkpoint: { snap in await MainActor.run { cursors.append(snap.cursor) } })
+
+        XCTAssertTrue(run.completed)
+        XCTAssertEqual(cursors, [25], "the interval never came due — and it checkpointed anyway")
+        XCTAssertEqual(run.checkpoints, 1)
+        XCTAssertEqual(run.libraryRowsEstimate, 25,
+                       "…and it measured the library on the way out, for the progress denominator")
+    }
+
+    // MARK: - 14. The adaptive checkpoint interval
+
+    /// A FIXED interval does not scale: both persisted documents grow with the library, so 5,000
+    /// rows means ~20 whole-document writes on a 96k library and ~100 on a 500k one — write volume
+    /// quadratic in library size. The interval grows with the accumulator instead, which makes the
+    /// checkpoints geometric and the total volume linear, and it is capped so worst-case loss on
+    /// an interruption stays bounded.
+    func testCheckpointIntervalGrowsWithTheRunAndIsCapped() {
+        let f = AppleMusicPlayCountCapture.checkpointInterval
+        XCTAssertEqual(f(0, 5_000, 25_000), 5_000, "the floor governs at the start")
+        XCTAssertEqual(f(4_000, 5_000, 25_000), 5_000)
+        XCTAssertEqual(f(20_000, 5_000, 25_000), 10_000, "…then it tracks the accumulator")
+        XCTAssertEqual(f(90_000, 5_000, 25_000), 25_000, "…up to the cap")
+        XCTAssertEqual(f(9_000_000, 5_000, 25_000), 25_000, "…and never past it")
+        // Pinning the cap to the floor is how the exact-cursor tests above stay deterministic.
+        XCTAssertEqual(f(90_000, 20, 20), 20)
+    }
 
     /// The routine refresh: sorted newest-played first, stop at the stored mark. It must remain a
     /// handful of rows, and it must FOLD (never replace) so untouched songs survive.

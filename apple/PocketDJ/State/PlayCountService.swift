@@ -138,6 +138,20 @@ final class PlayCountService {
     @ObservationIgnored private var runTask: Task<Void, Never>?
     @ObservationIgnored private var runWriteChain: Task<Void, Never>?
 
+    /// Bumped whenever the run in flight is DISOWNED — `forgetBaseline`, or a re-read that throws
+    /// the banked run away. `cancelCapture()` only marks the task cancelled and returns; the walk
+    /// observes that at its next page boundary and then UNCONDITIONALLY lands a final checkpoint,
+    /// which used to re-merge the counts, rewrite the baseline document `clear()` had just deleted
+    /// and recreate the run document — so the "Forget these play counts" button, whose own
+    /// confirmation says "There is no undo", silently didn't. A run whose generation is stale now
+    /// writes nothing, anywhere.
+    @ObservationIgnored private var captureGeneration: Int = 0
+
+    /// The same idea for the run DOCUMENT's background writes: deleting the file bumps this, so a
+    /// checkpoint's queued encode cannot land after the delete and resurrect a run the owner
+    /// (or "Re-read everything") just discarded. Mirrors `AMPlayBaselineStore.writeGeneration`.
+    @ObservationIgnored private var runWriteGeneration: Int = 0
+
     /// Test seams. The defaults are the real MusicKit pager and the real availability gate; the
     /// unit suite injects a FAKE walk it can interrupt, resume and re-run, which is the only way
     /// to prove any of this without a signed-in 96,000-song library.
@@ -145,6 +159,9 @@ final class PlayCountService {
     @ObservationIgnored var captureAvailable: () -> Bool = { AppleMusicPlayCountCapture.isAvailable }
     @ObservationIgnored var pageLimit = AppleMusicPlayCountCapture.defaultPageLimit
     @ObservationIgnored var checkpointRows = AppleMusicPlayCountCapture.defaultCheckpointRows
+    /// Ceiling on the ADAPTIVE checkpoint interval. Set equal to `checkpointRows` to pin the
+    /// interval, which is what the tests that assert exact checkpoint cursors do.
+    @ObservationIgnored var maxCheckpointRows = AppleMusicPlayCountCapture.defaultMaxCheckpointRows
 
     /// The source tag every MusicKit walk writes. ONE value for both triggers on purpose: the
     /// auto path used to write "musickit-auto", which made `countsToStore` treat a later manual
@@ -179,9 +196,11 @@ final class PlayCountService {
     /// already exists on disk.
     ///
     /// Safe to call on every foreground — it self-guards on emptiness, on the disk load, on
-    /// MusicKit availability and on being in flight.
+    /// MusicKit availability, on being in flight, and on the owner having deliberately cleared the
+    /// baseline (otherwise "Forget these play counts" is undone by the next foreground).
     @discardableResult
     func autoCaptureIfNeverCaptured(songs: [IndexSong]) -> Bool {
+        guard lastCapture?.clearedByOwnerMs == nil else { return false }
         guard baseline.hasLoaded, baseline.isEmpty, !autoCaptureAttempted else { return false }
         autoCaptureAttempted = true   // one shot per launch, whatever the outcome
         return startCapture(songs: songs, trigger: "auto")
@@ -199,17 +218,29 @@ final class PlayCountService {
 
     /// "Re-read everything from Apple Music": forget the incremental mark AND any banked partial
     /// run, then walk the whole library again. Non-destructive — the counts stay put.
+    ///
+    /// It destroys state, so it must REFUSE FIRST. The guards used to sit inside `startCapture`,
+    /// below the two destructive lines: a tap before the catalog finished loading (the Settings
+    /// button is only disabled on MusicKit availability, not on an empty catalog) wiped the
+    /// incremental mark, deleted a resumable run's banked cursor, started nothing, and made the
+    /// button itself disappear — because it is rendered only while a mark exists.
     @discardableResult
     func recaptureEverything(songs: [IndexSong]) -> Bool {
-        guard !isCapturing else { return false }
+        guard !isCapturing, !songs.isEmpty, captureAvailable() else { return false }
         baseline.resetHighWater()
-        try? FileManager.default.removeItem(at: runURL)
+        deleteRun()
         return startCapture(songs: songs, trigger: "full")
     }
 
     /// Stop the walk. The walk lands a final checkpoint on its way out, so this LOSES NOTHING —
     /// the next run continues from the cursor.
     func cancelCapture() { runTask?.cancel() }
+
+    /// Delete the run document, and make sure no write already in flight can bring it back.
+    private func deleteRun() {
+        runWriteGeneration &+= 1
+        try? FileManager.default.removeItem(at: runURL)
+    }
 
     /// Await the in-flight run (and every write it queued). Tests and the background flush.
     func awaitCapture() async {
@@ -233,7 +264,15 @@ final class PlayCountService {
     // MARK: The run body
 
     private func performCapture(songs: [IndexSong], trigger: String) async {
-        let hold = PlayCountBackgroundHold("pocketdj.playcount-capture")
+        // Everything this run writes is stamped with the generation it started under, so a
+        // `forgetBaseline()` part-way through orphans it instead of racing it.
+        let generation = captureGeneration
+        let hold = PlayCountBackgroundHold("pocketdj.playcount-capture") { [weak self] in
+            // The background window is expiring. CANCEL rather than just ending the assertion:
+            // the walk then lands a final checkpoint at its next page boundary, instead of being
+            // suspended mid-interval and losing up to a whole interval to a later kill.
+            self?.cancelCapture()
+        }
         defer {
             hold.end()
             isCapturing = false
@@ -250,6 +289,9 @@ final class PlayCountService {
             ? "Picking up where it left off (row \(run.cursor))"
             : "Reading your library…"
         run.updatedMs = nowMs
+        // How big the library turned out to be last time it was walked end to end — the
+        // denominator "Songs read 12,000" needs to mean anything before the walk finishes.
+        if run.libraryRowsEstimate == nil { run.libraryRowsEstimate = lastCapture?.libraryRowsEstimate }
         lastCapture = run.audit
         Self.saveAudit(run.audit, to: auditURL)
 
@@ -261,8 +303,10 @@ final class PlayCountService {
             let finished = try await AppleMusicPlayCountCapture.walk(
                 pager: pager, run: run, resolve: resolve,
                 pageLimit: pageLimit, checkpointRows: checkpointRows,
-                checkpoint: { [weak self] snapshot in await self?.checkpoint(snapshot) })
-            await commit(finished)
+                maxCheckpointRows: maxCheckpointRows,
+                onProgress: { [weak self] audit in await self?.publishProgress(audit, generation: generation) },
+                checkpoint: { [weak self] snapshot in await self?.checkpoint(snapshot, generation: generation) })
+            await commit(finished, generation: generation)
         } catch {
             // The walk landed a final checkpoint carrying the cursor AND the reason on its way
             // out, so there is nothing to salvage here and nothing to report that the persisted
@@ -270,18 +314,59 @@ final class PlayCountService {
         }
     }
 
+    /// Per-PAGE progress. In-memory only — no disk, and `Audit` is an O(1) value struct, which is
+    /// why this can run every page while `checkpoint` cannot.
+    private func publishProgress(_ audit: AppleMusicPlayCountCapture.Audit, generation: Int) {
+        guard generation == captureGeneration else { return }
+        lastCapture = audit
+    }
+
     /// ONE checkpoint: publish, persist, record. Everything here is idempotent.
-    private func checkpoint(_ run: AppleMusicPlayCountCapture.Run) {
+    private func checkpoint(_ run: AppleMusicPlayCountCapture.Run, generation: Int) {
+        // A run the owner has disowned (Forget, or a re-read that discarded it) writes NOTHING —
+        // not the baseline, not the run document, not the audit.
+        guard generation == captureGeneration else { return }
         // 1. THE BASELINE, first — a checkpoint Browse never sees is worth nothing. Monotone and
         //    idempotent (see `AMPlayBaselineStore.mergePartial`), and it hands over the WHOLE
         //    run-to-date accumulator rather than a delta, so a write that got coalesced away or
         //    lost to a kill is carried by the next checkpoint.
-        baseline.mergePartial(run.counts)
-        // 2. The run document — the cursor + accumulator the next run resumes from.
-        saveRunSoon(run)
-        // 3. The tiny audit sidecar the app hydrates at launch.
+        if mayMergePartial(run) { baseline.mergePartial(run.counts) }
+        // 2. Publish the audit NOW (the UI), and persist it BEHIND the run document (see
+        //    `persistRunAndAudit`) so the numbers on screen can never outrun what is on disk.
         lastCapture = run.audit
-        Self.saveAudit(run.audit, to: auditURL)
+        persistRunAndAudit(run)
+    }
+
+    /// May this checkpoint touch the BASELINE yet?
+    ///
+    /// `mergePartial` deliberately skips `replaceAll`'s all-zero and coverage guards — a partial
+    /// is a fraction of the library by definition and those guards judge a whole snapshot. But
+    /// that left a hole: a read the app itself classifies as broken (a full walk that finds 50 of
+    /// the 200 songs already stored) had ALREADY raised those 50 rows by the time the commit
+    /// refused it, so the baseline was changed while the owner was told "your existing numbers
+    /// were kept", with no undo.
+    ///
+    /// The gate closes it without an undo log: a checkpoint may only touch the baseline when the
+    /// run it belongs to CANNOT be refused at commit. Three cases, and two of them are free:
+    ///
+    ///   • INCREMENTAL walk — commits through `merged()`, which is a superset of what is stored,
+    ///     so it can never lose coverage and can never be refused;
+    ///   • FULL walk onto a baseline from ANOTHER source — `countsToStore` folds rather than
+    ///     replaces, so likewise a superset, likewise unrefusable (this is the owner's imported
+    ///     `library-xml` baseline, and the case the source-label fix in `commit` keeps true);
+    ///   • FULL walk, same source — the only replacing commit, so it may preview only once it
+    ///     already holds at least as many songs as the baseline does. That is exactly the
+    ///     condition under which the coverage guard cannot fire (`kept ≥ existing` and
+    ///     `kept ≥ added` give `2·kept ≥ existing + added`).
+    ///
+    /// The case that matters most is free: a FIRST capture runs against an empty baseline, so the
+    /// gate is open from the first page — which is the owner's actual bug. A same-source full
+    /// RE-read previews only near the end, and loses nothing by it: the counts are already on
+    /// screen, and the run document checkpoints regardless, so a resume still costs nothing.
+    private func mayMergePartial(_ run: AppleMusicPlayCountCapture.Run) -> Bool {
+        guard run.isFullWalk else { return true }
+        if !baseline.isEmpty, baseline.source != Self.musicKitSource { return true }
+        return run.counts.count >= baseline.songCount
     }
 
     /// THE FINAL COMMIT. Every WHOLE-WALK decision happens here, exactly once, on a completed run:
@@ -289,7 +374,8 @@ final class PlayCountService {
     /// provisional retirement over the union of everything the run observed. None of them may be
     /// made per checkpoint — see `AMPlayBaselineStore.mergePartial` for why each one would be
     /// actively harmful there.
-    private func commit(_ run: AppleMusicPlayCountCapture.Run) async {
+    private func commit(_ run: AppleMusicPlayCountCapture.Run, generation: Int) async {
+        guard generation == captureGeneration else { return }   // disowned mid-walk
         var final = run
         let result = run.result
         if result.readNothing {
@@ -299,7 +385,7 @@ final class PlayCountService {
             final.stopReason = "Apple returned no play counts for the \(result.scanned) "
                 + "song\(result.scanned == 1 ? "" : "s") it listed — nothing was changed. "
                 + "Import a snapshot file instead."
-            await finish(final)
+            await finish(final, generation: generation)
             return
         }
         // Read the baseline AT COMMIT TIME, never at walk start. The walk is minutes long; an
@@ -310,9 +396,18 @@ final class PlayCountService {
         let counts = AppleMusicPlayCountCapture.countsToStore(
             result, existing: existing, existingSource: existingSource,
             newSource: Self.musicKitSource)
+        // DID IT FOLD onto a baseline from another source? Then the stored map is a MIXTURE whose
+        // reach is that other source's, and re-labelling it "musickit" would be a one-way trap:
+        // the next full walk would see the same source, REPLACE instead of fold, and delete the
+        // rows only the other source could reach (measured on the owner's data: 9,560 songs /
+        // 21,652 plays that no MusicKit walk can resolve). `nil` here means "leave the label
+        // alone", so a mixed baseline keeps folding forever — the conservative direction, and the
+        // one `countsToStore` already chose for the counts themselves.
+        let folded = !existing.isEmpty && existingSource != nil && existingSource != Self.musicKitSource
         let applied = applyCapture(
             counts: counts, capturedAtMs: result.capturedAtMs,
-            source: Self.musicKitSource, sourceName: Config.appleMusicSourceName,
+            source: folded ? nil : Self.musicKitSource,
+            sourceName: folded ? nil : Config.appleMusicSourceName,
             lastPlayedHighWaterMs: result.highWaterToAdopt,
             // Only the songs this walk actually RESOLVED may have their provisional plays retired,
             // and only here — once, over the union of every checkpoint's observations.
@@ -324,17 +419,19 @@ final class PlayCountService {
         } else {
             final.stopReason = Self.rejectionReason(baseline.lastOutcome)
         }
-        await finish(final)
+        await finish(final, generation: generation)
     }
 
     /// Close the run out: mark it completed, publish + persist the audit, and drop the (large) run
     /// document. Awaits the write chain first so a queued checkpoint cannot resurrect it.
-    private func finish(_ run: AppleMusicPlayCountCapture.Run) async {
+    private func finish(_ run: AppleMusicPlayCountCapture.Run, generation: Int) async {
+        guard generation == captureGeneration else { return }
         var final = run
         final.completed = true
         final.updatedMs = Date().timeIntervalSince1970 * 1000
         await runWriteChain?.value
-        try? FileManager.default.removeItem(at: runURL)
+        guard generation == captureGeneration else { return }   // …and re-check after the await
+        deleteRun()   // bumps the write generation, so a queued checkpoint cannot resurrect it
         lastCapture = final.audit
         Self.saveAudit(final.audit, to: auditURL)
     }
@@ -411,12 +508,31 @@ final class PlayCountService {
     /// The run document carries the accumulator, so at 56k rows it is megabytes — encode + write
     /// it OFF the main actor, chained so two checkpoints can never interleave, and ATOMICALLY, so
     /// a kill at any instant leaves a whole valid document rather than a truncated one.
-    private func saveRunSoon(_ run: AppleMusicPlayCountCapture.Run) {
-        let url = runURL
+    ///
+    /// The AUDIT rides the same task, deliberately AFTER the run document. It used to be written
+    /// synchronously from `checkpoint`, which meant a kill in the window between the two left an
+    /// audit claiming "row 45,000 · 12 checkpoints" while the run document on disk was a whole
+    /// interval behind — the one number the owner reads was precisely the one not backed by disk.
+    /// Behind, it can only ever UNDERSTATE, and understating is free: the resume re-reads from the
+    /// run document's cursor and `mergePartial` is idempotent.
+    ///
+    /// Generation-stamped like `AMPlayBaselineStore.saveSoon`, so a delete (`deleteRun`) cannot be
+    /// undone by a write that was already queued.
+    private func persistRunAndAudit(_ run: AppleMusicPlayCountCapture.Run) {
+        runWriteGeneration &+= 1
+        let gen = runWriteGeneration
+        let runURL = self.runURL, auditURL = self.auditURL
+        let audit = run.audit
         let prior = runWriteChain
-        runWriteChain = Task.detached(priority: .utility) {
+        runWriteChain = Task.detached(priority: .utility) { [weak self] in
             await prior?.value
-            if let data = try? JSONEncoder().encode(run) { try? data.write(to: url, options: .atomic) }
+            guard let data = try? JSONEncoder().encode(run) else { return }
+            let auditData = try? JSONEncoder().encode(audit)
+            await MainActor.run {
+                guard let self, self.runWriteGeneration == gen else { return }   // superseded
+                try? data.write(to: runURL, options: .atomic)
+                if let auditData { try? auditData.write(to: auditURL, options: .atomic) }
+            }
         }
     }
 
@@ -441,12 +557,28 @@ final class PlayCountService {
     ///
     /// The banked capture run goes with it: leaving a resumable run behind would let the next
     /// foreground silently re-checkpoint the counts the owner just asked to be gone.
+    ///
+    /// DISOWNING the in-flight run is the load-bearing part, and it is not the same as cancelling
+    /// it. `cancelCapture()` returns immediately; the walk notices at its next page boundary and
+    /// then lands a final checkpoint unconditionally — which re-merged the counts, rewrote the
+    /// baseline document `clear()` had just deleted, and recreated both the run and audit files.
+    /// Bumping the generation orphans every write that run has left to make.
     func forgetBaseline() {
+        captureGeneration &+= 1
         cancelCapture()
         baseline.clear()
-        try? FileManager.default.removeItem(at: runURL)
-        try? FileManager.default.removeItem(at: auditURL)
-        lastCapture = nil
+        deleteRun()
+        autoCaptureAttempted = true   // …for the rest of this launch
+        // …and across relaunches, by RECORDING the clear rather than deleting the audit. Deleting
+        // it left an empty baseline and no history, which is precisely the state the first-run
+        // auto-capture exists to fix — so the next foreground rebuilt what the owner had just been
+        // promised was gone for good.
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        let cleared = AppleMusicPlayCountCapture.Audit(
+            trigger: "forget", startedMs: nowMs, updatedMs: nowMs, completed: true,
+            stopReason: "You cleared these play counts on this device.", clearedByOwnerMs: nowMs)
+        lastCapture = cleared
+        Self.saveAudit(cleared, to: auditURL)
     }
 }
 
@@ -457,13 +589,23 @@ final class PlayCountService {
 /// registered BGTask, and gets nothing from the `audio` background mode with no audio rendering,
 /// so backgrounding killed the whole walk. Ending twice is guarded; system expiration self-ends.
 /// No-op off iOS (macOS does not suspend, and there is no `.background` phase to hook).
+///
+/// `onExpire` fires FIRST when the system takes the window back. Without it, expiration only ended
+/// the assertion and left the walk suspended part-way through an interval, so whatever it had
+/// walked since its last checkpoint died with the process — "a home swipe lands a final
+/// checkpoint" was luck (a checkpoint happening to fall inside the window), not a guarantee.
+/// Cancelling makes it one: the walk stops at its next page boundary and checkpoints on the way
+/// out, and the scene's `.background` flush lands the write.
 @MainActor
 final class PlayCountBackgroundHold {
     #if canImport(UIKit) && !os(macOS)
     private var id: UIBackgroundTaskIdentifier = .invalid
-    init(_ name: String) {
+    init(_ name: String, onExpire: (@MainActor () -> Void)? = nil) {
         id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
-            MainActor.assumeIsolated { self?.end() }
+            MainActor.assumeIsolated {
+                onExpire?()
+                self?.end()
+            }
         }
     }
     func end() {
@@ -472,7 +614,7 @@ final class PlayCountBackgroundHold {
         id = .invalid
     }
     #else
-    init(_ name: String) {}
+    init(_ name: String, onExpire: (@MainActor () -> Void)? = nil) {}
     func end() {}
     #endif
 }
