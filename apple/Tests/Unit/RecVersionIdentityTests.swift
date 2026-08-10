@@ -487,6 +487,64 @@ final class ReleaseFeedVersionTests: XCTestCase {
         XCTAssertEqual(svc.feed(nowMs: now).count, 1)
     }
 
+    /// **THE COMPOSITION, DRIVEN END TO END.** The two tests above stub the probe; this one runs
+    /// the real one — `ReleaseFeedService.versionProbe` over a real `AppModel` — because the join
+    /// it depends on (release artist id ⇒ that artist's catalog rows, via the index's `artists`
+    /// table) is exactly the kind of wiring that fails silently: a broken join yields an empty
+    /// index, the probe answers "not owned" for everything, and the feature is simply off with no
+    /// test noticing.
+    @MainActor
+    func testTheRealProbeSuppressesADeluxeReissueThroughTheCatalogJoin() async {
+        let app = AppModel(loader: ReissueLoader())
+        await app.loadIfNeeded()
+
+        // The join itself: the artist table places the credit, and the index answers for it.
+        let index = app.ownedVersionIndex(forArtistId: 4242)
+        XCTAssertFalse(index.isEmpty, "the artist-id join must reach this artist's catalog rows")
+
+        // ONE ENTRY PER ARTIST — `entries` is keyed by artist id ("latest release"), so these are
+        // three separate feeds rather than three rows of one.
+        let now: Double = 1_700_000_000_000
+        func offered(_ releaseName: String) -> Bool {
+            let svc = service([
+                ArtistReleaseEntry(artistId: 4242, artistName: "Fleetwood Mac", checkedAtMs: now,
+                                   releaseId: "1000", releaseName: releaseName,
+                                   releaseAtMs: now - 86_400_000),
+            ])
+            svc.ownsReleaseVersion = ReleaseFeedService.versionProbe(app: app)
+            return !svc.feed(nowMs: now).isEmpty
+        }
+        // A reissue of the album he owns, and an extended cut of a song he owns — both go…
+        XCTAssertFalse(offered("Rumours (Deluxe Edition)"), "a reissue of an owned album")
+        XCTAssertFalse(offered("Dreams (Extended Mix) - Single"), "an extended cut of an owned song")
+        // …and the record he does not have stays, as does a genuinely different performance.
+        XCTAssertTrue(offered("Tango In the Night"))
+        XCTAssertTrue(offered("Rumours (Live)"))
+        withExtendedLifetime(app) {}
+    }
+
+    /// One album + one song by an artist the index can place by id.
+    private struct ReissueLoader: CatalogLoading {
+        func loadIndex() async throws -> IndexJSON {
+            try JSONDecoder().decode(IndexJSON.self, from: Data(Self.json.utf8))
+        }
+
+        static let json = """
+        {
+          "manifest": { "sourceName": "Reissue", "counts": { "albums": 1, "songs": 1 } },
+          "artists": [{ "key": "fleetwood mac", "name": "Fleetwood Mac", "id": 4242 }],
+          "albums": [
+            { "id": "alb_r", "artist": "Fleetwood Mac", "name": "Rumours", "genre": "Rock",
+              "year": 1977, "country": "US", "trackList": ["sng_dreams"], "fileType": "mp3" }
+          ],
+          "songs": [
+            { "id": "sng_dreams", "albumId": "alb_r", "artist": "Fleetwood Mac", "name": "Dreams",
+              "trackNumber": 1, "year": 1977, "length": 257000 }
+          ]
+        }
+        """
+    }
+
     /// An UNSET probe means "own nothing" — the same honest cold-launch default `ownsRelease`
     /// takes, so a catalog that has not finished loading cannot empty the tile.
     @MainActor
