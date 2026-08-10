@@ -509,6 +509,9 @@ struct PocketDJApp: App {
         // album added today drops out of the feed immediately, with no refetch — see
         // `ReleaseFeedService.feed`.
         releaseFeed.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        // …nor a DIFFERENT VERSION of one he has — the deluxe/bonus reissue and the remix single,
+        // which carry their own store ids and so sail straight past the probe above (feature 6).
+        releaseFeed.ownsReleaseVersion = ReleaseFeedService.versionProbe(app: app)
         // UI-test seam (double-gated — see `wantsUIFixture`): canned releases, so the New tile's
         // toolbar can be driven without a catalog request.
         if ReleaseFeedService.wantsUIFixture {

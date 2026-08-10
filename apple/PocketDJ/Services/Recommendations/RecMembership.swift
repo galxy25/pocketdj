@@ -35,6 +35,20 @@ struct RecMembership: Sendable, Equatable {
     /// Every identity key any member resolves to. A candidate is a member if it shares ONE of them.
     private let keys: Set<String>
 
+    /// ── THE FOURTH IDENTITY: THE SAME RECORD IN A DIFFERENT EDITION ──────────────────────────
+    /// Owner, verbatim: *"don't recommend albums and songs we already have but that are a
+    /// different version (e.g. deluxe or bonus album version, remixes or extended versions)."*
+    ///
+    /// The three id forms above are all EXACT — they recognise one recording wearing three
+    /// strings. They cannot recognise "Rumours (Deluxe Edition)" as the record he already has,
+    /// because that genuinely IS a different catalog object with a different store id: nothing but
+    /// the text relates them. `RecVersionIndex` is that comparison, and it lives here so the
+    /// question "is this already in the collection" still has ONE asker.
+    ///
+    /// Empty unless the caller supplied titles (`titleArtist`), so every existing construction —
+    /// the pure engine paths and the fixtures — behaves exactly as it did.
+    private let versions: RecVersionIndex
+
     /// - Parameters:
     ///   - memberIds: the collection's resolved playable ids (albums/pockets already expanded — a
     ///     song that is in the collection *through* an album member is just as much a member).
@@ -42,20 +56,41 @@ struct RecMembership: Sendable, Equatable {
     ///     REVERSE direction of the ad-hoc join (member `sng_…` ⇒ its store id, so a candidate
     ///     `amrec_<that id>` is recognised). Defaulted to "don't know", because the pure engine
     ///     paths and the tests genuinely do not.
-    init(memberIds: some Sequence<String>, appleMusicId: (String) -> String? = { _ in nil }) {
+    ///   - titleArtist: catalog lookup for a member id ⇒ its (title, artist), which is what the
+    ///     VERSION comparison is made of. Defaulted to "don't know" for the same reason.
+    init(memberIds: some Sequence<String>,
+         appleMusicId: (String) -> String? = { _ in nil },
+         titleArtist: (String) -> (title: String, artist: String)? = { _ in nil }) {
         var keys = Set<String>()
+        var versionKeys: [RecVersionIdentity.Key] = []
         for id in memberIds {
             for k in Self.identityKeys(songId: id, appleMusicId: appleMusicId(id)) { keys.insert(k) }
+            if let ta = titleArtist(id),
+               let vk = RecVersionIdentity.key(title: ta.title, artist: ta.artist) {
+                versionKeys.append(vk)
+            }
         }
         self.keys = keys
+        self.versions = RecVersionIndex(owned: versionKeys)
     }
 
     /// Direct construction from keys — the memoized store path, which has already resolved them.
-    private init(keys: Set<String>) { self.keys = keys }
+    private init(keys: Set<String>, versions: RecVersionIndex = .empty) {
+        self.keys = keys
+        self.versions = versions
+    }
 
     /// No members ⇒ nothing is filtered. Distinguished from "everything is filtered" on purpose:
     /// callers use it to skip the whole pass.
-    var isEmpty: Bool { keys.isEmpty }
+    var isEmpty: Bool { keys.isEmpty && versions.isEmpty }
+
+    /// Is this candidate a DIFFERENT VERSION of something already in the collection — a deluxe or
+    /// bonus edition, a remix, an extended cut? See `RecVersionIdentity` for the exact line
+    /// between "a different edition of what he has" (suppressed) and "a different performance"
+    /// (kept).
+    func containsOtherVersion(title: String, artist: String) -> Bool {
+        versions.supersedes(title: title, artist: artist)
+    }
 
     /// Is this song already in the collection, under ANY of its identities?
     ///
@@ -82,9 +117,21 @@ struct RecMembership: Sendable, Equatable {
     /// So membership is filtered at READ, over the frozen ids, every time they are read. Cheap —
     /// a set lookup per row over a list of ~25 — and it means the answer is never older than the
     /// glance.
-    func excluding(_ ids: [String], appleMusicId: (String) -> String? = { _ in nil }) -> [String] {
-        guard !keys.isEmpty else { return ids }
-        return ids.filter { !contains($0, appleMusicId: appleMusicId($0)) }
+    ///
+    /// `titleArtist` adds the VERSION pass (feature 6) over the same frozen rows, and it needs the
+    /// read-time treatment for exactly the reason the id pass does — arguably more so. Adding the
+    /// standard cut of a record from this very tile is what makes the deluxe edition two rows below
+    /// it redundant, and that happens between refreshes.
+    func excluding(_ ids: [String],
+                   appleMusicId: (String) -> String? = { _ in nil },
+                   titleArtist: (String) -> (title: String, artist: String)? = { _ in nil }) -> [String] {
+        guard !isEmpty else { return ids }
+        return ids.filter { id in
+            if contains(id, appleMusicId: appleMusicId(id)) { return false }
+            if !versions.isEmpty, let ta = titleArtist(id),
+               versions.supersedes(title: ta.title, artist: ta.artist) { return false }
+            return true
+        }
     }
 
     // ========================================================================

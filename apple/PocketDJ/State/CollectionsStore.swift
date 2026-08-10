@@ -2792,7 +2792,12 @@ final class CollectionsStore {
            let hit = cache.byId[id] { return hit }
         let ids = playableIdsForAnyCollection(id)
         let songs = app?.songsById
-        let m = RecMembership(memberIds: ids, appleMusicId: { songs?[$0]?.appleMusicId })
+        let m = RecMembership(memberIds: ids,
+                              appleMusicId: { songs?[$0]?.appleMusicId },
+                              // The VERSION half (feature 6). Parsed once per collection per
+                              // `membershipRevision` — the memo below is what keeps this off the
+                              // render path even for a 5,000-song crate.
+                              titleArtist: { songs?[$0].map { (title: $0.name, artist: $0.artist) } })
         var byId = recMembershipCache?.revision == membershipRevision
             ? (recMembershipCache?.byId ?? [:]) : [:]
         byId[id] = m
@@ -2814,7 +2819,9 @@ final class CollectionsStore {
         let m = recMembership(forCollection: id)
         guard !m.isEmpty else { return suggestionIds }
         let songs = app?.songsById
-        return m.excluding(suggestionIds, appleMusicId: { songs?[$0]?.appleMusicId })
+        return m.excluding(suggestionIds,
+                           appleMusicId: { songs?[$0]?.appleMusicId },
+                           titleArtist: { songs?[$0].map { (title: $0.name, artist: $0.artist) } })
     }
 
     private func save() {

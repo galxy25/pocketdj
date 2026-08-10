@@ -145,6 +145,19 @@ final class ReleaseFeedService {
     /// catalog has not finished loading and answering "owned" would silently empty the feed.
     @ObservationIgnored var ownsRelease: ((String) -> Bool)?
 
+    /// Does he already have this record IN ANOTHER VERSION? Takes the release's artist id, artist
+    /// name and title. Injected exactly like `ownsRelease` (see `versionProbe`).
+    ///
+    /// ── WHY THE STORE-ID PROBE ABOVE CANNOT ANSWER IT ────────────────────────────────────────
+    /// Owner, verbatim: *"don't recommend albums and songs we already have but that are a
+    /// different version (e.g. deluxe or bonus album version, remixes or extended versions)."* A
+    /// Deluxe reissue is a NEW album in Apple's catalog with a NEW store id, so `ownsRelease`
+    /// answers "no, that's new" — correctly, by its own definition, and uselessly. This is the
+    /// text comparison that catches it (`RecVersionIdentity`).
+    ///
+    /// Unset ⇒ nothing is version-suppressed, the same honest default `ownsRelease` takes.
+    @ObservationIgnored var ownsReleaseVersion: ((Int, String, String) -> Bool)?
+
     /// Scales EVERY wall-clock wait in this service — the burst-coalescing debounce and each
     /// backoff sleep. 1 in production; tests set it near zero so a full retry sequence (and the
     /// drain scheduling that rides on it) runs in milliseconds instead of the ~30 s the real
@@ -183,6 +196,12 @@ final class ReleaseFeedService {
                 // so it is not offered — there is nothing the owner could do with the row.
                 guard let releaseId = e.releaseId else { return nil }
                 guard !(ownsRelease?(releaseId) ?? false) else { return nil }
+                // …and not a DIFFERENT VERSION of something he has (feature 6): the Deluxe /
+                // Expanded / Bonus Track reissue, or a single that is a remix or extended cut of a
+                // song already in the library. Same read-time placement and for the same reason —
+                // an add made today drops the row on the next glance, with no refetch.
+                if let name = e.releaseName,
+                   ownsReleaseVersion?(e.artistId, e.artistName, name) == true { return nil }
                 return ReleaseFeedItem(entry: e, status: status)
             }
             .sorted { ($0.entry.releaseAtMs ?? 0) > ($1.entry.releaseAtMs ?? 0) }
@@ -664,6 +683,26 @@ extension ReleaseFeedService {
                                        // being in the catalog, which is what a rip produces.
                                        rippedSongIds: [],
                                        adHocPrefix: "amrec_album_")
+        }
+    }
+
+    /// The VERSION probe, composed against the live catalog (feature 6): given a release's artist
+    /// and title, does he already have that record in another edition or reworking?
+    ///
+    /// Bounded by construction — `AppModel.ownedVersionIndex(forArtistId:)` indexes ONE artist's
+    /// songs and albums, memoized on `catalogRevision` — so this stays cheap enough for the render
+    /// path the feed applies it on. An artist the catalog cannot place yields an empty index and
+    /// suppresses nothing.
+    ///
+    /// The artist NAME is passed through as well as the id because the index is keyed on the
+    /// normalized credit, and the id join is what scopes the work.
+    @MainActor
+    static func versionProbe(app: AppModel) -> (Int, String, String) -> Bool {
+        { [weak app] artistId, artistName, releaseName in
+            guard let app else { return false }
+            let index = app.ownedVersionIndex(forArtistId: artistId)
+            guard !index.isEmpty else { return false }
+            return index.supersedes(title: releaseName, artist: artistName)
         }
     }
 

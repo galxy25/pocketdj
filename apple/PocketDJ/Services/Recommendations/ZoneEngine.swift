@@ -55,9 +55,17 @@ enum ZoneEngine {
         /// fixture has to say anything about it.
         let appleMusicId: String?
 
+        /// The song's title — carried for VERSION identity (`RecVersionIdentity`), which is how a
+        /// suggestion is recognised as the Deluxe/Bonus/remix/extended cut of something already in
+        /// the crate. Like `appleMusicId` it is NOT a ranking signal.
+        ///
+        /// STORED RAW, deliberately un-parsed. See `ZoneEngine.versionKeys` for where the parse
+        /// happens and why it may not happen here.
+        let title: String?
+
         init(songId: String, artistKey: String, artistName: String, genre: String?,
              year: Int? = nil, bpm: Double? = nil, camelot: String? = nil,
-             appleMusicId: String? = nil) {
+             appleMusicId: String? = nil, title: String? = nil) {
             self.songId = songId
             self.artistKey = artistKey
             self.artistName = artistName
@@ -66,7 +74,45 @@ enum ZoneEngine {
             self.bpm = bpm
             self.camelot = camelot
             self.appleMusicId = appleMusicId
+            self.title = title
         }
+    }
+
+    /// **THE VERSION PARSE, DONE ONCE.** song id ⇒ its comparable version identity.
+    ///
+    /// ── WHY THIS IS A SEPARATE PASS AND NOT A FIELD ON `Track` ───────────────────────────────
+    /// Two constraints pull in opposite directions and only this shape satisfies both.
+    ///
+    ///  1. It cannot happen inside `suggestions`, which sweeps the catalog ONCE PER COLLECTION:
+    ///     ~96k rows × ~40 crates is ~4M parses per refresh.
+    ///  2. It cannot happen in `AppModel.zoneTracks` either, tempting as that is — that projection
+    ///     is built ON THE MAIN ACTOR. MEASURED on the owner's real 96k-row catalog: 0.16 s of
+    ///     artist keys + 0.23 s of titles = ~0.39 s of main-actor stall added to a projection that
+    ///     already does a full-catalog map. This app has already had to move Browse search and the
+    ///     catalog load off the main actor for exactly this; adding a new stall there would be
+    ///     undoing that lesson to save one function.
+    ///
+    /// So the parse rides with the RANKING, which already runs `Task.detached`
+    /// (`ForYouFeedBuilder.build`, and the on-demand fallback in `ForYouDetailViews`): derived once
+    /// per refresh, off the main actor, and handed to every crate.
+    ///
+    /// The artist keys are memoized because they REPEAT — 96,022 songs share 12,697 artists on the
+    /// real catalog, and memoizing that half alone takes it from 0.156 s to 0.037 s.
+    static func versionKeys(_ tracks: [Track]) -> [String: RecVersionIdentity.Key] {
+        var out: [String: RecVersionIdentity.Key] = [:]
+        out.reserveCapacity(tracks.count)
+        var artistKeys: [String: String] = [:]
+        for t in tracks {
+            guard let title = t.title else { continue }
+            let ak: String
+            if let k = artistKeys[t.artistName] { ak = k }
+            else {
+                ak = RecVersionIdentity.artistKey(t.artistName)
+                artistKeys[t.artistName] = ak
+            }
+            if let key = RecVersionIdentity.key(title: title, artistKey: ak) { out[t.songId] = key }
+        }
+        return out
     }
 
     /// One play from the append-only history log.
@@ -987,15 +1033,29 @@ enum ZoneEngine {
     /// different songs — so the tile offers back exactly what the listener already filed, and the
     /// 👍 that "adds" it does nothing. See `RecMembership` for the identity rule.
     ///
+    /// ── NOR A DIFFERENT VERSION OF WHAT IS ALREADY IN IT ─────────────────────────────────────
+    /// Owner, verbatim: *"for collection and new recommendations don't recommend albums and songs
+    /// we already have but that are a different version (e.g. deluxe or bonus album version,
+    /// remixes or extended versions)."* `RecMembership` cannot see that — a Deluxe edition is a
+    /// different catalog row with a different id, and comparing ids answers "no, that's new".
+    /// `RecVersionIndex` compares the RECORDING (normalized artist + base title) and suppresses a
+    /// candidate that differs from a member only by edition or reworking. A live/acoustic cut is
+    /// NOT suppressed — see `RecVersionIdentity` for why that line sits where it does.
+    ///
     /// This is the BUILD-time half. It cannot be the whole answer: the lists are frozen and
     /// membership moves on every add, so the same filter runs again at READ time over the frozen
     /// ids (`CollectionsStore.suggestionsExcludingMembers`).
+    ///
+    /// - Parameter versions: `ZoneEngine.versionKeys(tracks)`, derived ONCE by the caller and
+    ///   shared across every crate. `nil` ⇒ derive it here, which is right for the single-crate
+    ///   callers and ruinous for the multi-crate one — see `versionKeys`.
     static func suggestions(memberSongIds: [String],
                             tracks: [Track],
                             playCount: (String) -> Int,
                             feedback: Feedback = Feedback(),
                             limit: Int = 25,
-                            tuning: Tuning = Tuning()) -> [String] {
+                            tuning: Tuning = Tuning(),
+                            versions: [String: RecVersionIdentity.Key]? = nil) -> [String] {
         let members = Set(memberSongIds)
         guard !members.isEmpty, !tracks.isEmpty else { return [] }
         let trackById = Dictionary(tracks.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
@@ -1003,6 +1063,11 @@ enum ZoneEngine {
         // ordinary `sng_` member), which is what makes the ad-hoc join work in both directions.
         let membership = RecMembership(memberIds: memberSongIds,
                                        appleMusicId: { trackById[$0]?.appleMusicId })
+        // The VERSION half of "already in here" (feature 6). Built from the members that resolve
+        // in the catalog projection — a member the projection cannot place contributes no version
+        // identity, which is the same fail-open posture the id join takes.
+        let versionKeys = versions ?? Self.versionKeys(tracks)
+        let ownedVersions = RecVersionIndex(owned: memberSongIds.compactMap { versionKeys[$0] })
 
         // The profile: the collection's members, plus anything the listener has 👍'd for it (a
         // thumbs-up is a statement about what belongs here even before the add lands).
@@ -1097,6 +1162,11 @@ enum ZoneEngine {
         // song already in here is the same song, and offering it is the defect this filter exists
         // to prevent.
         for t in tracks where !membership.contains(t.songId, appleMusicId: t.appleMusicId) {
+            // A DIFFERENT VERSION of something already filed here — the deluxe/bonus/remix/
+            // extended case the ids cannot see. Cheap: one dictionary lookup against a pre-parsed
+            // key, and skipped entirely on a crate whose members carry no version identity.
+            if !ownedVersions.isEmpty, let v = versionKeys[t.songId],
+               ownedVersions.supersedes(v) { continue }
             // Tombstoned IN THIS TILE ⇒ out of the ranking (the view re-injects it at the bottom).
             // Scoped and expiring — a 👎 given on another tile does not remove the row here; its
             // shape reaches the score through `negArtists`/`negGenres` below. See `inDaZone`.
@@ -1169,9 +1239,11 @@ enum ZoneEngine {
                                      playCount: (String) -> Int,
                                      feedback: Feedback = Feedback(),
                                      limit: Int = 25,
-                                     tuning: Tuning = Tuning()) -> [(songId: String, why: String)] {
+                                     tuning: Tuning = Tuning(),
+                                     versions: [String: RecVersionIdentity.Key]? = nil)
+    -> [(songId: String, why: String)] {
         let ids = suggestions(memberSongIds: memberSongIds, tracks: tracks, playCount: playCount,
-                              feedback: feedback, limit: limit, tuning: tuning)
+                              feedback: feedback, limit: limit, tuning: tuning, versions: versions)
         guard !ids.isEmpty else { return [] }
         let trackById = Dictionary(tracks.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
         var maxPlays = 0

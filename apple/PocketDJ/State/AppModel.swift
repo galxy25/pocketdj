@@ -77,6 +77,48 @@ final class AppModel {
         return map[artistId] ?? []
     }
 
+    /// Memo for `ownedVersionIndex(forArtistId:)` — one entry per artist ASKED ABOUT, keyed on
+    /// `catalogRevision`.
+    @ObservationIgnored private var ownedVersionCache: (revision: Int, byArtist: [Int: RecVersionIndex])?
+
+    /// **WHAT HE ALREADY OWNS BY THIS ARTIST, IN VERSION SPACE** — the New feed's half of feature
+    /// 6 (*"don't recommend albums and songs we already have but that are a different version"*).
+    ///
+    /// ── WHY PER-ARTIST AND NOT ONE GLOBAL INDEX ──────────────────────────────────────────────
+    /// `ReleaseFeedService.feed()` is a pure read called from a view body, so anything it touches
+    /// runs on the render path. A global index would parse 96k song titles + 12.6k album titles on
+    /// whichever frame first drew the New tile — the main-thread hang this app has already had to
+    /// fix once. A release row always names ONE artist, and this library averages a handful of
+    /// rows per artist, so the honest unit of work is that artist's own catalog: microseconds,
+    /// memoized, and nothing is built for an artist the feed never mentions.
+    ///
+    /// SONGS **and** ALBUMS, because the feed offers both: a release of kind "album"/"ep" is
+    /// compared against the album titles (the Deluxe / Expanded case), and a "single" against the
+    /// song titles (the remix / extended-version case). Indexing both into one set costs nothing
+    /// and means the caller does not have to trust Apple's `releaseKind` field.
+    func ownedVersionIndex(forArtistId artistId: Int) -> RecVersionIndex {
+        if let c = ownedVersionCache, c.revision == catalogRevision, let hit = c.byArtist[artistId] {
+            return hit
+        }
+        var keys: [RecVersionIdentity.Key] = []
+        var seenAlbums = Set<String>()
+        for sid in songIds(forArtistId: artistId) {
+            guard let s = songsById[sid] else { continue }
+            if let k = RecVersionIdentity.key(title: s.name, artist: s.artist) { keys.append(k) }
+            guard let aid = s.albumId, seenAlbums.insert(aid).inserted,
+                  let album = albumsById[aid] else { continue }
+            // The ALBUM's own credit, not the song's — a compilation track by this artist must not
+            // file "Now That's What I Call Music 42" under his name.
+            if let k = RecVersionIdentity.key(title: album.name, artist: album.artist) { keys.append(k) }
+        }
+        let index = RecVersionIndex(owned: keys)
+        var byArtist = ownedVersionCache?.revision == catalogRevision
+            ? (ownedVersionCache?.byArtist ?? [:]) : [:]
+        byArtist[artistId] = index
+        ownedVersionCache = (catalogRevision, byArtist)
+        return index
+    }
+
     /// Memo for `zoneTracks`, keyed on `catalogRevision` — the `membershipSnapshotCache`
     /// precedent. A stale memo can never survive a catalog change because the revision is part
     /// of the key.
@@ -111,7 +153,11 @@ final class AppModel {
                                     // recognises that this catalog row and an `amrec_<storeId>`
                                     // row already in the collection are one recording
                                     // (`RecMembership`).
-                                    appleMusicId: s.appleMusicId)
+                                    appleMusicId: s.appleMusicId,
+                                    // VERSION identity, parsed HERE and cached with the projection
+                                    // — the collection pass would otherwise re-parse the whole
+                                    // catalog once per crate. See `ZoneEngine.Track.version`.
+                                    title: s.name)
         }
         zoneTracksCache = (catalogRevision, tracks)
         return tracks
