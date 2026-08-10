@@ -272,7 +272,26 @@ final class RecFeedbackStore {
         var rejectedByScope: [String: [String: Double]] = [:]
     }
 
-    @ObservationIgnored private var derived = DerivedState()
+    /// OBSERVED, deliberately — and it is the *whole* reason a 👎 redraws.
+    ///
+    /// This was `@ObservationIgnored`, and that one attribute quietly broke every reader below it.
+    /// `verdict`, `anyVerdict`, `activeTombstones`, `isSuppressed`, `partition` and `visibleCount`
+    /// ALL resolve through this index and touch no other stored property — so a SwiftUI body calling
+    /// any of them registered NO dependency on this store. The thumb did not fill, the row did not
+    /// sink, and (once the tile toolbars started gating ▶ on the live half) a transport control
+    /// could sit lit above a list with nothing live left in it. Popping the screen and coming back
+    /// "fixed" it, which is the signature of a missing dependency rather than a missing write.
+    ///
+    /// `revision` is NOT a substitute: it works only for the surfaces that happen to read it in
+    /// their body (the For You GRID does; nothing else did), which is a per-view opt-in to
+    /// correctness. Observing the index makes every reader correct by construction. Measured by
+    /// `testEveryDerivedReadRegistersAnObservationDependency`, which drives the real
+    /// `withObservationTracking` mechanism SwiftUI itself uses — six failures before, six passes
+    /// after.
+    ///
+    /// The memoization it exists for is untouched: this is still one dictionary build per change,
+    /// read as dictionary hits. `access()` on a non-tracked read is a thread-local check.
+    private var derived = DerivedState()
 
     private static func key(_ scope: String, _ songId: String) -> String { "\(scope)\u{1}\(songId)" }
 

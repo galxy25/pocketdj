@@ -169,14 +169,10 @@ struct SetlistDetailView: View {
         }
         // CRITIC-D — device-mode set with no on-device files anywhere: a one-shot transient
         // alert so the DJ knows nothing was playable on-device (no silent dead-Play). Only on
-        // the screen of the set that raised it.
-        .alert("No burned files", isPresented: Binding(
-            get: { sequencer.deviceQueueUnplayable && sequencer.sourceSetlistId == setlistId },
-            set: { if !$0 { sequencer.clearDeviceUnplayable() } })) {
-            Button("OK", role: .cancel) { sequencer.clearDeviceUnplayable() }
-        } message: {
-            Text("Device playback is on, but none of these tracks are burned to this device. Burn them, or switch to cloud streaming.")
-        }
+        // the screen of the set that raised it. The condition now lives in the SHARED
+        // `DeviceQueueUnplayableAlert`, because every other screen that starts a queue needs the
+        // same banner and this one's `sourceSetlistId` test could never match theirs.
+        .deviceQueueUnplayableAlert(sourceId: setlistId)
         .toolbar {
             if let setlist {
                 setlistToolbar(setlist)

@@ -237,68 +237,16 @@ struct PocketDetailView: View {
         .scrollContentBackground(.hidden).background(Theme.bg)
         .collectionRipBurn(ripBurn)
         .onAppear { nowPlayingPushed = false }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                PlaybackModeToggle()
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { play(shuffle: false) } label: { Image(systemName: "play.fill") }
-                    .help("Play this pocket now")
-                    .disabled(!hasSongs)
-                    .accessibilityIdentifier("pocket-play")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { play(shuffle: true) } label: { Image(systemName: "shuffle") }
-                    .help("Shuffle-play this pocket now")
-                    .disabled(!hasSongs)
-                    .accessibilityIdentifier("pocket-shuffle")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    // Per-pocket sort + filter (folded into the ⋯ menu so the compact toolbar stays
-                    // at 4 items). Reuses the Browser's sort/filter machinery.
-                    CollectionSortFilterMenuButtons(browse: browse, showSort: $showSort, showFilter: $showFilter)
-                    // Multi-select: arm Select mode for this list / paste the copied songs (deduped).
-                    Button { rowSelection.enterSelectMode(scope: selectionScope, initial: nil) } label: {
-                        Label("Select songs", systemImage: "checklist")
-                    }
-                    .accessibilityIdentifier("select-songs")
-                    Button { rowSelection.performPaste() } label: {
-                        Label("Paste songs", systemImage: "doc.on.clipboard")
-                    }
-                    .disabled(!SongPasteboard.hasSongs)
-                    .accessibilityIdentifier("paste-songs")
-                    Divider()
-                    Button { noteDraft = ""; addingNote = true } label: { Label("Add note", systemImage: "text.badge.plus") }
-                        .accessibilityIdentifier("add-pocket-note")
-                    #if os(iOS)
-                    // Inside the ⋯ menu (not a 5th toolbar item) so the compact-width
-                    // iPhone toolbar stays at 4 items and never nests a system "More".
-                    EditButton().accessibilityIdentifier("pocket-edit-order")
-                    #endif
-                    Button { nameDraft = pocket?.name ?? ""; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
-                        .accessibilityIdentifier("rename-pocket")
-                    Button { showFormatDialog = true } label: { Label("Export…", systemImage: "square.and.arrow.up") }
-                        .accessibilityIdentifier("export-pocket")
-                    if pocket?.hasSource == true {
-                        sourceSyncMenuItems
-                    } else if !linkableSources.isEmpty {
-                        Divider()
-                        Button { showLinkPicker = true } label: {
-                            Label("Link to Apple Music playlist…", systemImage: "link")
-                        }
-                        .accessibilityIdentifier("pocket-link-source")
-                    }
-                    cleanOnlyMenuItem
-                    Divider()
-                    CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.ripIds(forPocket: pocketId) }, noun: "pocket")
-                    Divider()
-                    Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete pocket", systemImage: "trash") }
-                        .accessibilityIdentifier("delete-pocket")
-                } label: { Image(systemName: "ellipsis.circle") }
-                    .accessibilityIdentifier("pocket-menu")
-            }
-        }
+        // The SHARED `CollectionToolbar` — identical furniture to the playlist screen. Adopting it
+        // also fixed a real drift: this screen's ▶/🔀 were bare `Image`s where the playlist's were
+        // `Label`s, so VoiceOver read them as unnamed buttons here and named ones there.
+        // ▶▶ Play All rides along for the same reason it does on the playlist screen: the owner
+        // asked for all three every time, and the two collection screens must not differ from each
+        // other OR from the tile screens. A pocket has no sunk tail, so ▶▶ is ▶ — accepted.
+        .collectionToolbar(idPrefix: "pocket", noun: "pocket", canPlay: hasSongs,
+                           play: { play(shuffle: $0) },
+                           playAll: { play(shuffle: false) },
+                           menuItems: { overflowMenu })
         .alert("Add note", isPresented: $addingNote) {
             TextField("Note (a line of poetry, a cue…)", text: $noteDraft)
             Button("Add") {
@@ -362,6 +310,48 @@ struct PocketDetailView: View {
         } message: {
             Text("PocketDJ keeps everything (re-importable). CSV is a universal tracklist (title, artist, album, year, genre).")
         }
+    }
+
+    /// The ⋯ menu — everything beyond the primary Play/Shuffle, so the compact-width iPhone
+    /// toolbar stays at 4 items and never nests a system "More".
+    @ViewBuilder private var overflowMenu: some View {
+        // Per-pocket sort + filter. Reuses the Browser's sort/filter machinery.
+        CollectionSortFilterMenuButtons(browse: browse, showSort: $showSort, showFilter: $showFilter)
+        // Multi-select: arm Select mode for this list / paste the copied songs (deduped).
+        Button { rowSelection.enterSelectMode(scope: selectionScope, initial: nil) } label: {
+            Label("Select songs", systemImage: "checklist")
+        }
+        .accessibilityIdentifier("select-songs")
+        Button { rowSelection.performPaste() } label: {
+            Label("Paste songs", systemImage: "doc.on.clipboard")
+        }
+        .disabled(!SongPasteboard.hasSongs)
+        .accessibilityIdentifier("paste-songs")
+        Divider()
+        Button { noteDraft = ""; addingNote = true } label: { Label("Add note", systemImage: "text.badge.plus") }
+            .accessibilityIdentifier("add-pocket-note")
+        #if os(iOS)
+        EditButton().accessibilityIdentifier("pocket-edit-order")
+        #endif
+        Button { nameDraft = pocket?.name ?? ""; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
+            .accessibilityIdentifier("rename-pocket")
+        Button { showFormatDialog = true } label: { Label("Export…", systemImage: "square.and.arrow.up") }
+            .accessibilityIdentifier("export-pocket")
+        if pocket?.hasSource == true {
+            sourceSyncMenuItems
+        } else if !linkableSources.isEmpty {
+            Divider()
+            Button { showLinkPicker = true } label: {
+                Label("Link to Apple Music playlist…", systemImage: "link")
+            }
+            .accessibilityIdentifier("pocket-link-source")
+        }
+        cleanOnlyMenuItem
+        Divider()
+        CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.ripIds(forPocket: pocketId) }, noun: "pocket")
+        Divider()
+        Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete pocket", systemImage: "trash") }
+            .accessibilityIdentifier("delete-pocket")
     }
 
     /// Presented-state for the sync-result alert (a computed Binding INSIDE body blew

@@ -509,6 +509,11 @@ struct PocketDJApp: App {
         // album added today drops out of the feed immediately, with no refetch — see
         // `ReleaseFeedService.feed`.
         releaseFeed.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        // UI-test seam (double-gated — see `wantsUIFixture`): canned releases, so the New tile's
+        // toolbar can be driven without a catalog request.
+        if ReleaseFeedService.wantsUIFixture {
+            releaseFeed.seedForTesting(ReleaseFeedService.uiFixtureEntries())
+        }
         playHistory.onRecord = { [weak app, weak releaseFeed] event in
             // The play event carries an artist NAME; the catalog endpoint needs an artist ID.
             // That join is exactly what the index's `artists` table exists for — and a name it

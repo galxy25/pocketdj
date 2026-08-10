@@ -301,6 +301,35 @@ final class ReleaseFeedService {
 
     // ── The ONLY steady-state trigger: a play happened ───────────────────────────────────────
 
+    /// Is a manual re-check available *right now*? False while one is running (or seeding), while
+    /// Apple Music is off, and on a cache with nothing to re-ask about. The New screen's ⋯ item
+    /// DISABLES on this rather than hiding — a control that comes and goes with the data is the
+    /// thing this round of work is removing everywhere else.
+    var canRecheck: Bool { canSync && !isFetching && !isSeeding && !entries.isEmpty }
+
+    /// **"Check for new releases", from the New screen's ⋯.**
+    ///
+    /// The feed's only steady-state trigger is a play, which is the right lazy design (see
+    /// `noteArtistPlayed`) and also means the listener has no way to say *"look again now"* — the
+    /// exact thing he wants after hearing a record dropped. This re-queues every artist ALREADY in
+    /// the cache and lets the ordinary batched drain run: same request shape, same batch size, same
+    /// concurrency cap, same backoff. It is a manual pull of the existing mechanism, not a second
+    /// fetch path.
+    ///
+    /// TTL is deliberately NOT consulted. A recheck that silently no-ops because every entry is
+    /// still fresh is a dead control, and dead controls are what this whole round is removing. The
+    /// volume is the seed's volume — a cache of ~493 artists is ~10 batches of 50, two in flight —
+    /// which the seed's own doc already establishes as a handful of requests and not a poll. It
+    /// cannot stack: `scheduleDrain` refuses while a drain is armed or running, which is also what
+    /// makes repeated taps free.
+    func recheckKnownArtists() {
+        guard canRecheck else { return }
+        for (id, e) in entries { pending[id] = e.artistName }
+        guard !pending.isEmpty else { return }
+        revision &+= 1
+        scheduleDrain()
+    }
+
     /// Call from the PLAY event (never from a view body). Enqueues the artist if its TTL has
     /// expired and schedules a batched drain; cheap and non-blocking when nothing is due.
     func noteArtistPlayed(artistId: Int, name: String,
@@ -564,6 +593,40 @@ final class ReleaseFeedService {
     }
     /// Test seam: how many artists are waiting on a batch.
     var pendingCountForTesting: Int { pending.count }
+
+    // ── UI-test seam ─────────────────────────────────────────────────────────────────────────
+
+    /// Whether to stand the New tile up from canned rows instead of the network.
+    ///
+    /// The tile's real content arrives from one Apple Music catalog call, which the UI suite must
+    /// never make — but "New is playable" is now a claim about a TOOLBAR, and a toolbar over an
+    /// empty list is greyed out and proves nothing. DOUBLE-GATED exactly like
+    /// `RecommendationService.wantsFixture`, so a stray `PDJ_REC_FIXTURE` in a real run can never
+    /// light it up on its own.
+    nonisolated static var wantsUIFixture: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["PDJ_REC_FIXTURE"] == "1" && env["PDJ_USE_FIXTURE"] != nil
+    }
+
+    /// Two out-now releases and one pre-order — enough to render both sections, and to prove that
+    /// only the out-now half is what ▶ queues.
+    nonisolated static func uiFixtureEntries(nowMs: Double = Date().timeIntervalSince1970 * 1000) -> [ArtistReleaseEntry] {
+        let day = 86_400_000.0
+        return [
+            ArtistReleaseEntry(artistId: 900_001, artistName: "The Test Pressing",
+                               checkedAtMs: nowMs, releaseId: "9000000001",
+                               releaseName: "Second Side", releaseAtMs: nowMs - 2 * day,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 9),
+            ArtistReleaseEntry(artistId: 900_002, artistName: "Dust & Groove",
+                               checkedAtMs: nowMs, releaseId: "9000000002",
+                               releaseName: "Late Cut", releaseAtMs: nowMs - 9 * day,
+                               releaseArtworkUrl: nil, releaseKind: "single", trackCount: 2),
+            ArtistReleaseEntry(artistId: 900_003, artistName: "Northbound",
+                               checkedAtMs: nowMs, releaseId: "9000000003",
+                               releaseName: "Preorder EP", releaseAtMs: nowMs + 6 * day,
+                               releaseArtworkUrl: nil, releaseKind: "ep", trackCount: 5),
+        ]
+    }
 }
 
 // ============================================================================

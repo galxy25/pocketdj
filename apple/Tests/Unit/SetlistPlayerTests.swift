@@ -640,6 +640,60 @@ final class SetlistPlayerTests: XCTestCase {
         XCTAssertFalse(seq.deviceQueueUnplayable)
     }
 
+    /// **THE BANNER MUST BE ABLE TO REACH A SCREEN**, which for four months it could not.
+    ///
+    /// Every consumer binds on `deviceQueueUnplayable && sourceSetlistId == <this screen's id>`.
+    /// But the flag is raised at the END of `advanceToNext`, and the line immediately before it is
+    /// `stop()` — which sets `sourceSetlistId = nil`. So the comparison was nil-vs-id for EVERY
+    /// run, on every screen: the alert that exists specifically to stop device mode dead-ending in
+    /// silence could never once have fired. (The review that found this thought it was New-only,
+    /// because New starts with no id at all. It is universal.)
+    ///
+    /// So the raising run's identity is captured BEFORE the teardown and published beside the flag.
+    /// That is the pair a surface binds on.
+    func testTheUnplayableBannerCarriesTheIdOfTheRunThatRaisedIt() async {
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        rips.setManifest(["sng_c": .init(key: "rips/sng_c.mp3", source: "digital")])
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.playbackMode = { .device }
+        seq.play([.init(id: "sng_c", title: "C", artist: "A")], sourceSetlistId: "set_probe")
+
+        await waitUntil("device set with no burned files stops") { !seq.isRunning }
+        XCTAssertTrue(seq.deviceQueueUnplayable, "precondition: the banner signal is up")
+        XCTAssertNil(seq.sourceSetlistId,
+                     "stop() has already torn the run down — this is WHY the id must be carried separately")
+        XCTAssertEqual(seq.deviceUnplayableSourceId, "set_probe",
+                       "the screen that started the run has to be able to recognise its own banner")
+
+        seq.clearDeviceUnplayable()
+        XCTAssertNil(seq.deviceUnplayableSourceId, "acknowledging clears both halves")
+    }
+
+    /// A New-tile run carries no collection, and that is exactly the case the banner has to survive:
+    /// these are records the owner does not own, so device mode is the likeliest mode to play
+    /// nothing at all.
+    func testANewTileRunIsRecognisableByItsOwnBanner() async {
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.playbackMode = { .device }
+        seq.play(ReleaseStreaming.items([ReleaseStreamTrack(storeID: "9000000001", title: "New",
+                                                            artist: "A", lengthMs: nil)]),
+                 sourceSetlistId: ReleaseStreaming.runTag)
+
+        await waitUntil("an unowned release has no burned file, so device mode stops") { !seq.isRunning }
+        XCTAssertTrue(seq.deviceQueueUnplayable)
+        XCTAssertEqual(seq.deviceUnplayableSourceId, ReleaseStreaming.runTag,
+                       "the New screen (and the For You grid) bind on exactly this")
+    }
+
     // MARK: PERSISTENT play state — adopt a manual mid-set jump and keep auto-advancing
 
     /// While a set runs, manually starting a DIFFERENT in-set track (a row ▶, which just sets
