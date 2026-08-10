@@ -65,5 +65,18 @@ extension View {
             .navigationDestination(for: JukeboxJoinRoute.self) { JukeboxJoinView(entry: $0.entry) }
             .navigationDestination(for: CollectorsPuzzleRoute.self) { _ in CollectorsPuzzleView(path: path) }
             .navigationDestination(for: MwFSessionRoute.self) { MusicWithFriendsSessionView(sessionId: $0.sessionId, path: path) }
+            // For You tiles. `.new` gets its own screen (releases are ALBUMS, not songs); the
+            // other two kinds are both ranked song lists and share one view.
+            .navigationDestination(for: ForYouTileRoute.self) { route in
+                switch route.kind {
+                // Releases are ALBUMS, not songs, so `.new` gets its own screen.
+                case .new:       NewReleasesView(path: path)
+                // The cloud engine's rows render from wire data, not the catalog — see the note
+                // on `RecSuggestionsListView` for why that stays a separate view.
+                case .suggested: RecSuggestionsListView(path: path)
+                // `.zone` and `.collection` are both ranked catalog-song lists.
+                default:         ForYouSongListView(route: route, path: path)
+                }
+            }
     }
 }

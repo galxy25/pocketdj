@@ -130,6 +130,14 @@ final class PlayHistoryStore {
     /// a new play refreshes the timeline even when `events.count` is pinned at the cap.
     private(set) var revision = 0
 
+    /// Fired for every play that is actually RECORDED — never for one the 30 s re-count window
+    /// collapsed. This is the single choke point every play surface (rips, coordinator, Mix)
+    /// already funnels through, which is why the release feed hangs off it instead of off the
+    /// three separate call sites in `PocketDJApp`.
+    ///
+    /// Keep handlers CHEAP and non-blocking: this runs inline with starting a song.
+    @ObservationIgnored var onRecord: ((PlayEvent) -> Void)?
+
     @ObservationIgnored private let fileURL: URL
     /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
     /// store was constructed with — never re-derives it, so fixture seams stay intact).
@@ -216,7 +224,22 @@ final class PlayHistoryStore {
         if events.count > Self.maxEvents { trimToCap() }
         revision &+= 1
         save()
+        onRecord?(event)
         return event
+    }
+
+    /// Recent plays projected for the For You ranking (`ZoneEngine`).
+    ///
+    /// Takes the TAIL of the log — the newest `limit` events — because the engine's recency decay
+    /// makes anything older contribute a rounding error, and scanning the full capped log on
+    /// every rebuild is wasted work. Events are appended in play order, so the tail IS the
+    /// recent window; no sort is needed.
+    ///
+    /// This is the reason the ranking reads THIS store and not the library XML: "Play Date UTC"
+    /// there keeps only the last play per track, which erases exactly the repeat listening that
+    /// makes a zone a zone.
+    func recentPlaysForZone(limit: Int = 2000) -> [ZoneEngine.Play] {
+        events.suffix(limit).map { ZoneEngine.Play(songId: $0.songId, playedAtMs: $0.playedAt) }
     }
 
     /// Epoch ms of the last play of this song, or nil if never played.

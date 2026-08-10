@@ -18,6 +18,18 @@ final class AppModel {
     var songsById: [String: IndexSong] = [:]
     var albumsById: [String: IndexAlbum] = [:]
 
+    /// Apple Music artist ids, keyed by `IndexArtist.normalize(artistName)`. Empty for sources
+    /// that carry no artist table (vinyl, fixtures, pre-backfill indexes) — every reader must
+    /// treat a miss as "no release feed for this artist", never as an error.
+    private(set) var artistsByKey: [String: IndexArtist] = [:]
+
+    /// The Apple Music catalog artist id for a raw artist name, or nil if the catalog can't
+    /// place it. This is the ONLY supported way to get one — it applies the normalization the
+    /// index was built with, which a caller doing its own `lowercased()` would get subtly wrong.
+    func artistId(forArtistName raw: String) -> Int? {
+        artistsByKey[IndexArtist.normalize(raw)]?.id
+    }
+
     /// Pre-built browse rows for each kind, with album name / origin source / top-tier
     /// genre already resolved per item — the exact shape BrowseState used to derive on
     /// EVERY render. Building these ~90k `BrowseItem`s is the bulk of on-device browse
@@ -40,6 +52,59 @@ final class AppModel {
     /// Bumped whenever the effective catalog changes (load / edit). Part of the browse
     /// results cache key, so a stale memo can never survive a catalog change.
     private(set) var catalogRevision = 0
+
+    /// Memo for `songIds(forArtistId:)`, keyed on `catalogRevision`. Built on FIRST use and only
+    /// if something asks — the release feed's TTL math is the only caller, so a launch that never
+    /// plays a song never builds it.
+    @ObservationIgnored private var songIdsByArtistIdCache: (revision: Int, map: [Int: [String]])?
+
+    /// Every catalog song credited to an Apple Music artist id. The inverse of the index's
+    /// `artists` table (name → id), which is stored the other way round because that is the
+    /// direction the join needs at play time.
+    func songIds(forArtistId artistId: Int) -> [String] {
+        if let c = songIdsByArtistIdCache, c.revision == catalogRevision {
+            return c.map[artistId] ?? []
+        }
+        // One artist NAME can map to one id, but several names can map to the SAME id (the
+        // `alt` splits in the artist table are compilation/feature credits), so this is built by
+        // walking songs → name → id rather than by inverting the table entry-by-entry.
+        var map: [Int: [String]] = [:]
+        for s in songs {
+            guard let id = artistsByKey[IndexArtist.normalize(s.artist)]?.id else { continue }
+            map[id, default: []].append(s.id)
+        }
+        songIdsByArtistIdCache = (catalogRevision, map)
+        return map[artistId] ?? []
+    }
+
+    /// Memo for `zoneTracks`, keyed on `catalogRevision` — the `membershipSnapshotCache`
+    /// precedent. A stale memo can never survive a catalog change because the revision is part
+    /// of the key.
+    @ObservationIgnored private var zoneTracksCache: (revision: Int, tracks: [ZoneEngine.Track])?
+
+    /// The whole catalog projected into the shape the For You ranking needs (artist join key +
+    /// top-tier genre), built ONCE per catalog revision.
+    ///
+    /// Built lazily rather than in `buildEffective` because For You is one tab: a launch that
+    /// never opens it should not pay ~96k rows of projection. Once built it is reused until the
+    /// catalog changes, so opening the tab repeatedly costs nothing.
+    var zoneTracks: [ZoneEngine.Track] {
+        if let c = zoneTracksCache, c.revision == catalogRevision { return c.tracks }
+        let tracks = songs.map { s -> ZoneEngine.Track in
+            // `Genre.category` folds everything it cannot classify into ONE catch-all bucket
+            // ("Other"). Passing that through as a genre would make every unclassified song
+            // "similar" to every other one — the single biggest bucket in the catalog acting as
+            // a similarity signal. It maps to nil instead, so those songs are ranked on artist
+            // affinity alone.
+            let cat = Genre.category(s.albumId.flatMap { albumsById[$0] }?.genre)
+            return ZoneEngine.Track(songId: s.id,
+                                    artistKey: IndexArtist.normalize(s.artist),
+                                    artistName: s.artist,
+                                    genre: cat == Genre.other ? nil : cat)
+        }
+        zoneTracksCache = (catalogRevision, tracks)
+        return tracks
+    }
 
     /// The catalog album for a song id (via the song's `albumId`), when both the song and its
     /// album are indexed. Backs the lock-screen / Control Center Now Playing card's cover art —
@@ -870,6 +935,7 @@ final class AppModel {
         let rawSongs: [IndexSong]
         let rawAlbumsById: [String: IndexAlbum]
         let rawSongsById: [String: IndexSong]
+        let artistsByKey: [String: IndexArtist]
         let effective: Effective
     }
 
@@ -912,6 +978,8 @@ final class AppModel {
             rawSongs: rawSongs,
             rawAlbumsById: Dictionary(rawAlbums.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
             rawSongsById: Dictionary(rawSongs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
+            artistsByKey: Dictionary((index.artists ?? []).map { ($0.key, $0) },
+                                     uniquingKeysWith: { first, _ in first }),
             effective: effective)
     }
 
@@ -993,6 +1061,7 @@ final class AppModel {
     private func assign(_ d: Derived) {
         manifest = d.manifest
         indexPlaylists = d.indexPlaylists
+        artistsByKey = d.artistsByKey
         // Remember them for the next cold launch. `record` ignores an empty set, so a build that
         // legitimately produced no source playlists never erases the last good snapshot.
         sourcePlaylistsCache.record(d.indexPlaylists)
@@ -1195,16 +1264,22 @@ final class AppModel {
         var albums: [IndexAlbum] = []
         var songs: [IndexSong] = []
         var playlists: [IndexPlaylist] = []
+        var artists: [IndexArtist] = []
         var seenAlbums = Set<String>(), seenSongs = Set<String>(), seenPlaylists = Set<String>()
+        var seenArtists = Set<String>()
         for index in indexes {
             for a in index.albums where seenAlbums.insert(a.id).inserted { albums.append(a) }
             for s in index.songs where seenSongs.insert(s.id).inserted { songs.append(s) }
             for p in index.playlists ?? [] where seenPlaylists.insert(p.id).inserted { playlists.append(p) }
+            // First source wins, matching album/song shadowing: the same artist can appear in
+            // several sources and they all mean the same Apple Music entity.
+            for a in index.artists ?? [] where seenArtists.insert(a.key).inserted { artists.append(a) }
         }
         let manifest = indexes.first?.manifest
             ?? Manifest(source: nil, generatedAt: nil, sourceName: "Collection", counts: nil)
         return IndexJSON(manifest: manifest, albums: albums, songs: songs,
-                         playlists: playlists.isEmpty ? nil : playlists)
+                         playlists: playlists.isEmpty ? nil : playlists,
+                         artists: artists.isEmpty ? nil : artists)
     }
 
     /// Flatten each source's playlists into source-tagged rows (for the badge),
