@@ -308,6 +308,37 @@ final class StubReleaseTransport: ReleaseFeedTransport, @unchecked Sendable {
     var requestCount: Int { lock.lock(); defer { lock.unlock() }; return requests.count }
 }
 
+/// A transport that OBSERVES how many requests are actually in flight at once, rather than taking
+/// the constant's word for it.
+///
+/// `ReleaseFeedPolicy.maxConcurrentRequests` being 2 says nothing about whether the SERVICE honours
+/// it — the cap used to be enforced per-drain, so two overlapping drains each ran their own pair
+/// and the real fan-out was 4. Only a probe that counts concurrent `fetch` calls can catch that,
+/// which is why this exists beside `StubReleaseTransport`.
+final class ConcurrencyProbeTransport: ReleaseFeedTransport, @unchecked Sendable {
+    var canSync = true
+    /// How long each request occupies a slot. Long enough that overlapping drains genuinely
+    /// overlap, short enough that the suite stays fast.
+    var holdNanos: UInt64 = 40_000_000
+    var error: Error?
+
+    private let lock = NSLock()
+    private var inFlight = 0
+    private var peak = 0
+    private var count = 0
+
+    func fetch(_ request: URLRequest) async throws -> Data {
+        lock.lock(); inFlight += 1; count += 1; peak = max(peak, inFlight); lock.unlock()
+        try? await Task.sleep(nanoseconds: holdNanos)
+        lock.lock(); inFlight -= 1; lock.unlock()
+        if let error { throw error }
+        return Data("{\"data\":[]}".utf8)
+    }
+
+    var peakInFlight: Int { lock.lock(); defer { lock.unlock() }; return peak }
+    var requestCount: Int { lock.lock(); defer { lock.unlock() }; return count }
+}
+
 @MainActor
 final class ReleaseFeedServiceTests: XCTestCase {
 
@@ -497,13 +528,41 @@ final class ReleaseFeedServiceTests: XCTestCase {
         XCTAssertEqual(svc.feed(nowMs: now).count, 1)
     }
 
+    /// The cold-launch window, and why it needs no cache invalidation to close.
+    ///
+    /// Before the catalog finishes loading the probe answers "not owned" for everything, so the
+    /// New tile can briefly offer an album the owner already has. That is the RIGHT default (the
+    /// opposite would empty the feed at exactly the moment he first opens it), and it is
+    /// self-correcting because ownership is applied on READ, not stored on the entry: the moment
+    /// the catalog is there the same cached entry filters out — with NO refetch and no network.
+    /// Storing the exclusion at fetch time is what would make this window permanent.
+    func testOwnershipIsAppliedOnReadSoTheCatalogLoadingFixesItWithNoRefetch() async {
+        let stub = StubReleaseTransport()
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL())
+        let now: Double = 1_700_000_000_000
+        svc.seedForTesting([
+            ArtistReleaseEntry(artistId: 1, artistName: "A", checkedAtMs: now,
+                               releaseId: "1000", releaseAtMs: now - 86_400_000),
+        ])
+        // Catalog not loaded yet: nothing reads as owned, so the row shows.
+        svc.ownsRelease = { _ in false }
+        XCTAssertEqual(svc.feed(nowMs: now).count, 1)
+        let requestsBefore = stub.requestCount
+
+        // Catalog arrives and now claims that album.
+        svc.ownsRelease = { $0 == "1000" }
+        XCTAssertEqual(svc.feed(nowMs: now).count, 0, "the cached entry filters out immediately")
+        XCTAssertEqual(stub.requestCount, requestsBefore,
+                       "and it costs no request — ownership is a read-time filter, not a stored field")
+    }
+
     // ── Rate limiting ────────────────────────────────────────────────────────────────────────
 
     /// A 429 is retried with backoff rather than abandoned...
     func testRateLimitedRequestRetriesWithBackoff() async {
         let stub = StubReleaseTransport()
         stub.persistentError = ReleaseFeedTransportError.http(status: 429)
-        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), timeScale: 0.0001)
         svc.playsForArtist = { _ in 0 }
         svc.noteArtistPlayed(artistId: 1, name: "A")
         await svc.drain()
@@ -519,7 +578,7 @@ final class ReleaseFeedServiceTests: XCTestCase {
         let stub = StubReleaseTransport(body: Data(body.utf8))
         stub.errorScript = [ReleaseFeedTransportError.http(status: 429),
                             ReleaseFeedTransportError.http(status: 429)]
-        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), timeScale: 0.0001)
         svc.playsForArtist = { _ in 0 }
         svc.noteArtistPlayed(artistId: 1, name: "A")
         await svc.drain()
@@ -533,7 +592,7 @@ final class ReleaseFeedServiceTests: XCTestCase {
     func testNonRetryableStatusFailsFastWithoutBurningRetries() async {
         let stub = StubReleaseTransport()
         stub.persistentError = ReleaseFeedTransportError.http(status: 401)
-        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), timeScale: 0.0001)
         svc.playsForArtist = { _ in 0 }
         svc.noteArtistPlayed(artistId: 1, name: "A")
         await svc.drain()
@@ -559,7 +618,7 @@ final class ReleaseFeedServiceTests: XCTestCase {
     func testFailedBatchDoesNotStampTheClockAndRequeuesTheArtists() async {
         let stub = StubReleaseTransport()
         stub.persistentError = ReleaseFeedTransportError.http(status: 429)
-        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), timeScale: 0.0001)
         svc.playsForArtist = { _ in 0 }
         svc.noteArtistPlayed(artistId: 1, name: "A")
         await svc.drain()
@@ -578,7 +637,7 @@ final class ReleaseFeedServiceTests: XCTestCase {
     func testRequeuedArtistsAreRetriedOnThePlayOfAnyArtist() async {
         let stub = StubReleaseTransport()
         stub.persistentError = ReleaseFeedTransportError.http(status: 503)
-        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), timeScale: 0.0001)
         svc.playsForArtist = { _ in 0 }
         svc.noteArtistPlayed(artistId: 1, name: "A")
         await svc.drain()
@@ -602,7 +661,7 @@ final class ReleaseFeedServiceTests: XCTestCase {
     /// Treating that as a good answer is the same poisoning path by a different route.
     func testResponseWithNoDataKeyIsTreatedAsFailureNotAsAnEmptyAnswer() async {
         let stub = StubReleaseTransport(body: Data("{\"errors\":[{\"status\":\"429\"}]}".utf8))
-        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), timeScale: 0.0001)
         svc.playsForArtist = { _ in 0 }
         svc.noteArtistPlayed(artistId: 7, name: "A")
         await svc.drain()
@@ -617,7 +676,7 @@ final class ReleaseFeedServiceTests: XCTestCase {
         let stub = StubReleaseTransport()
         // Every request fails, so all 120 artists across all 3 batches must survive unstamped.
         stub.persistentError = ReleaseFeedTransportError.http(status: 503)
-        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), timeScale: 0.0001)
         svc.playsForArtist = { _ in 0 }
         for id in 1...120 { svc.noteArtistPlayed(artistId: id, name: "A\(id)") }
         await svc.drain()
@@ -655,6 +714,113 @@ final class ReleaseFeedServiceTests: XCTestCase {
         await svc.drain()
         let reopened = ReleaseFeedService(transport: nil, fileURL: url)
         XCTAssertEqual(reopened.entries[1]?.releaseName, "Saved")
+    }
+
+    // ── Concurrency: the cap is GLOBAL, not per-drain ────────────────────────────────────────
+
+    /// Waits until the service is quiet — nothing in flight and nothing waiting on a re-armed
+    /// drain — so a concurrency assertion can never read a peak that is still climbing.
+    private func settle(_ svc: ReleaseFeedService, timeout: TimeInterval = 5) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !svc.isFetching && svc.pendingCountForTesting == 0 { return }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+    }
+
+    /// THE concurrency regression. `maxConcurrentRequests` is 2 because a 40-way fan-out at this
+    /// endpoint produced 24 separate HTTP 429s — but the cap lived INSIDE one `drain()`, and
+    /// `drain()` released its task handle on ENTRY. So any play landing while a drain was in
+    /// flight armed a SECOND drain beside it, with its own budget of two: a measured peak of 4.
+    ///
+    /// The path is not exotic, it is the 429 path itself. A failed batch re-queues, the re-queue
+    /// rides the next play, and a drain sleeping through five backoff attempts holds the window
+    /// open for tens of seconds — so the fan-out doubles precisely when the limiter is already
+    /// refusing, and nothing bounded how many drains could stack up.
+    func testASecondDrainCannotRunBesideOneAlreadyInFlight() async {
+        let probe = ConcurrencyProbeTransport()
+        let svc = ReleaseFeedService(transport: probe, fileURL: tempURL(), timeScale: 0.0001)
+        svc.playsForArtist = { _ in 0 }
+        // 150 cold artists → 3 batches, so the drain is still working when the next play lands.
+        for id in 1...150 { svc.noteArtistPlayed(artistId: id, name: "A\(id)") }
+        let running = Task { await svc.drain() }
+        try? await Task.sleep(nanoseconds: 20_000_000)          // let the first pair get in flight
+        // Plays DURING the drain — each one used to arm another drain.
+        for id in 500..<560 { svc.noteArtistPlayed(artistId: id, name: "B\(id)") }
+        await running.value
+        await settle(svc)
+
+        XCTAssertEqual(probe.peakInFlight, ReleaseFeedPolicy.maxConcurrentRequests,
+                       "the cap is global: never more than 2 requests in flight, across ALL drains")
+    }
+
+    /// The same guarantee against a DIRECT second call, not just the scheduled one — `drain()` is
+    /// internal API and a future caller must not be able to double the fan-out by calling it.
+    func testDirectlyCallingDrainTwiceDoesNotDoubleTheFanOut() async {
+        let probe = ConcurrencyProbeTransport()
+        let svc = ReleaseFeedService(transport: probe, fileURL: tempURL(), timeScale: 0.0001)
+        svc.playsForArtist = { _ in 0 }
+        for id in 1...150 { svc.noteArtistPlayed(artistId: id, name: "A\(id)") }
+        let a = Task { await svc.drain() }
+        try? await Task.sleep(nanoseconds: 20_000_000)
+        for id in 500..<560 { svc.noteArtistPlayed(artistId: id, name: "B\(id)") }
+        let b = Task { await svc.drain() }
+        _ = await (a.value, b.value)
+        await settle(svc)
+        XCTAssertEqual(probe.peakInFlight, ReleaseFeedPolicy.maxConcurrentRequests)
+    }
+
+    /// The 429 storm, end to end: every request fails, every batch re-queues, and plays keep
+    /// arriving through the backoff sleeps. This is the exact condition the cap exists for, so the
+    /// cap must hold here specifically — not merely in the happy path.
+    func testAFourTwoNineStormDoesNotEscalateTheFanOut() async {
+        let probe = ConcurrencyProbeTransport()
+        probe.error = ReleaseFeedTransportError.http(status: 429)
+        let svc = ReleaseFeedService(transport: probe, fileURL: tempURL(), timeScale: 0.0001)
+        svc.playsForArtist = { _ in 0 }
+        for id in 1...150 { svc.noteArtistPlayed(artistId: id, name: "A\(id)") }
+        let running = Task { await svc.drain() }
+        for _ in 0..<5 {
+            try? await Task.sleep(nanoseconds: 10_000_000)
+            for id in 500..<560 { svc.noteArtistPlayed(artistId: id, name: "B\(id)") }
+        }
+        await running.value
+        XCTAssertEqual(probe.peakInFlight, ReleaseFeedPolicy.maxConcurrentRequests,
+                       "a limiter that is already refusing must not be hit by twice as many requests")
+        XCTAssertTrue(svc.entries.isEmpty, "nothing succeeded, so nothing may be stamped")
+    }
+
+    /// The other half of a global cap: plays that arrive DURING a drain must not be stranded. The
+    /// drain re-arms itself when it finishes cleanly, so they ride the very next batch instead of
+    /// waiting for another play to happen along.
+    func testPlaysArrivingDuringADrainAreStillFetched() async {
+        let probe = ConcurrencyProbeTransport()
+        let svc = ReleaseFeedService(transport: probe, fileURL: tempURL(), timeScale: 0.0001)
+        svc.playsForArtist = { _ in 0 }
+        for id in 1...60 { svc.noteArtistPlayed(artistId: id, name: "A\(id)") }
+        let running = Task { await svc.drain() }
+        try? await Task.sleep(nanoseconds: 10_000_000)
+        svc.noteArtistPlayed(artistId: 999, name: "Late")
+        await running.value
+        await settle(svc)
+        XCTAssertEqual(svc.pendingCountForTesting, 0, "a play during a drain must not be stranded")
+        XCTAssertNotNil(svc.entries[999], "and it must actually get checked")
+    }
+
+    /// …but a FAILING drain must not re-arm itself, or an outage becomes a spin loop against a
+    /// limiter that is already unhappy. The queue rides the next play instead — the same lazy
+    /// trigger the whole feature runs on.
+    func testAFailedDrainDoesNotReArmItself() async {
+        let probe = ConcurrencyProbeTransport()
+        probe.error = ReleaseFeedTransportError.http(status: 503)
+        let svc = ReleaseFeedService(transport: probe, fileURL: tempURL(), timeScale: 0.0001)
+        svc.playsForArtist = { _ in 0 }
+        svc.noteArtistPlayed(artistId: 1, name: "A")
+        await svc.drain()
+        let after = probe.requestCount
+        XCTAssertEqual(svc.pendingCountForTesting, 1, "the failed id is queued, waiting on a play")
+        try? await Task.sleep(nanoseconds: 60_000_000)
+        XCTAssertEqual(probe.requestCount, after, "a failed drain must NOT re-arm and spin")
     }
 
     func testSimilarArtistIdsDedupeAndExcludeTheSeeds() {

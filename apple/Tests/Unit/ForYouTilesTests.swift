@@ -47,6 +47,35 @@ final class ForYouTilesTests: XCTestCase {
         XCTAssertFalse(full[0].subtitle.contains("No releases"))
     }
 
+    /// The New tile's badge counts BOTH states, but only one of them is bounded by 30 days —
+    /// `classify` puts no upper bound on the future side, so a pre-order shipping in three months
+    /// is in that number. "last 30 days" over a count containing it is false in a way the reader
+    /// cannot detect, because the number itself looks right.
+    func testNewSubtitleDoesNotClaimThirtyDaysOverFutureDatedReleases() {
+        let soonOnly = ForYouTiles.build(newReleaseCount: 2, comingSoonCount: 2, zone: [],
+                                         collections: [])
+        XCTAssertEqual(soonOnly[0].count, 2)
+        XCTAssertFalse(soonOnly[0].subtitle.contains("30 days"),
+                       "nothing is out yet — do not date the tile by a window it does not use")
+        XCTAssertTrue(soonOnly[0].subtitle.lowercased().contains("upcoming"))
+
+        let mixed = ForYouTiles.build(newReleaseCount: 5, comingSoonCount: 2, zone: [],
+                                      collections: [])
+        XCTAssertEqual(mixed[0].count, 5, "the badge is still the whole feed")
+        XCTAssertTrue(mixed[0].subtitle.contains("30 days"))
+        XCTAssertTrue(mixed[0].subtitle.lowercased().contains("upcoming"))
+
+        let pastOnly = ForYouTiles.build(newReleaseCount: 4, comingSoonCount: 0, zone: [],
+                                         collections: [])
+        XCTAssertEqual(pastOnly[0].subtitle, "From artists you play · last 30 days")
+        XCTAssertFalse(pastOnly[0].subtitle.lowercased().contains("upcoming"))
+    }
+
+    func testNewSubtitleStaysTheEmptyAnswerWhenNothingIsInTheFeedAtAll() {
+        XCTAssertEqual(ForYouTiles.newReleaseSubtitle(outNow: 0, comingSoon: 0),
+                       "No releases in the last 30 days")
+    }
+
     // MARK: - Counts + routes
 
     func testTileCountsReportTheUnderlyingSetSizes() {
@@ -77,6 +106,25 @@ final class ForYouTilesTests: XCTestCase {
                                       ("Fat", ForYouTiles.minCollectionSuggestions)]))
         XCTAssertEqual(tiles.map(\.title), ["New", "In Da Zone", "Fat"],
                        "only collections with something real to add get a tile")
+    }
+
+    /// The owner's wording is the spec: "one tile for **each** collection that we have suggestions
+    /// of items to add to". The threshold was 5 for a while, which quietly gave a collection with
+    /// three genuinely good additions no way in — a product opinion overriding an instruction.
+    func testACollectionWithASingleSuggestionStillEarnsItsTile() {
+        XCTAssertEqual(ForYouTiles.minCollectionSuggestions, 1,
+                       "having a suggestion IS having something to add")
+        let tiles = ForYouTiles.build(newReleaseCount: 0, zone: [],
+                                      collections: collections([("Sparse", 1), ("Three", 3)]))
+        XCTAssertEqual(tiles.map(\.title), ["New", "In Da Zone", "Three", "Sparse"])
+    }
+
+    /// …and a collection with genuinely nothing to add still gets nothing. That is the only
+    /// emptiness this function has to enforce; the rest is upstream.
+    func testACollectionWithNoSuggestionsGetsNoTile() {
+        let tiles = ForYouTiles.build(newReleaseCount: 0, zone: [],
+                                      collections: collections([("Nothing", 0)]))
+        XCTAssertEqual(tiles.map(\.id), ["new", "zone"])
     }
 
     func testCollectionTilesAreOrderedByHowMuchThereIsToAdd() {
