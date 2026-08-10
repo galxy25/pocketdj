@@ -48,14 +48,31 @@ if pgrep -f 'resolve-explicit-[l]ookup' >/dev/null; then
 fi
 say "stage 1 done"; counts
 
-# ── stage 2: fill the missing catalog ids (the dominant blocker) ─────────────────────
-say "stage 2 — resolve-apple-music-catalog (multi-hour; resumable)"
-node scripts/resolve-apple-music-catalog.mjs --delay-ms 2000 >> "$LOG_DIR/catalog-ids.log" 2>&1
+# ── stage 2: catalog ids for songs that have NONE (fast, certain) ────────────────────
+# --only-missing-id is load-bearing: without it the resolver ALSO re-crawls every song
+# whose cache has a storeId but no collectionId (69,915 here vs 3,264 that genuinely lack
+# an id) — 3.4x the network for a field the explicit route never reads, and it would have
+# delayed the ids Levi actually asked for by well over a day.
+say "stage 2 — catalog ids for the 3.2k songs with none (~2h)"
+node scripts/resolve-apple-music-catalog.mjs --only-missing-id --delay-ms 2000 >> "$LOG_DIR/catalog-ids.log" 2>&1
 say "stage 2 exit=$?"; counts
 
-# ── stage 3: explicit editions again, now that stage 2 widened the reachable set ──────
-say "stage 3 — resolve-explicit-lookup --all (second pass)"
+# ── stage 3: explicit editions over the newly-reachable songs ────────────────────────
+say "stage 3 — resolve-explicit-lookup --all"
 node scripts/resolve-explicit-lookup.mjs --all --delay-ms 2000 >> "$LOG_DIR/explicit-lookup-all.log" 2>&1
 say "stage 3 exit=$?"; counts
+
+# ── stage 4: the long tail — retry songs iTunes Search failed on before ──────────────
+# ~17k cached MISSES: songs a previous run looked for and could not match. Lower yield
+# than stage 2 by construction, which is exactly why it runs AFTER the certain wins and
+# after stage 3 has already banked them.
+say "stage 4 — retry the cached misses (long tail, lower yield)"
+node scripts/resolve-apple-music-catalog.mjs --retry-misses --only-missing-id --delay-ms 2000 >> "$LOG_DIR/catalog-ids.log" 2>&1
+say "stage 4 exit=$?"; counts
+
+# ── stage 5: final explicit pass over anything stage 4 unlocked ──────────────────────
+say "stage 5 — final resolve-explicit-lookup --all"
+node scripts/resolve-explicit-lookup.mjs --all --delay-ms 2000 >> "$LOG_DIR/explicit-lookup-all.log" 2>&1
+say "stage 5 exit=$?"; counts
 
 say "CHAIN COMPLETE — ids resolved; the bulk re-rip gate is now open (still dry-run by default)"

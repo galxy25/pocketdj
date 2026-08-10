@@ -56,6 +56,7 @@ function parseArgs(argv) {
     else if (k === '--save-every') a.saveEvery = parseInt(next(), 10);
     else if (k === '--limit') a.limit = parseInt(next(), 10);
     else if (k === '--retry-misses') a.retryMisses = true;
+    else if (k === '--only-missing-id') a.onlyMissingId = true;
     else if (k === '--prefer-explicitness') a.preferExplicitness = next();
   }
   return a;
@@ -228,6 +229,16 @@ async function main() {
     // Discover-album dedupe). A legacy hit with storeId but no collectionId is re-resolved
     // so the album id gets captured; its storeId is still applied meanwhile.
     if (c && c.storeId && c.collectionId) { s.appleMusicId = c.storeId; continue; }
+    // --only-missing-id: a song that ALREADY has a catalog id is done as far as anything
+    // that needs an id is concerned. Without this the run also re-crawls every song whose
+    // cache entry has a storeId but no collectionId — 69,915 of them here against ~20,700
+    // that genuinely lack an id, i.e. 3.4x the network for a field the explicit-edition
+    // route never reads. The collectionId backfill is a real but SEPARATE errand; run this
+    // script without the flag when that is what you actually want.
+    if (args.onlyMissingId && (s.appleMusicId || c?.storeId)) {
+      if (c?.storeId) s.appleMusicId = c.storeId;
+      continue;
+    }
     if (c && c.storeId) s.appleMusicId = c.storeId;                 // keep the song id while we re-resolve for collectionId
     if (c && !c.storeId && !args.retryMisses) continue; // known miss, skip
     todo.push(s);
