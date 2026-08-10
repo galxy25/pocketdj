@@ -518,4 +518,40 @@ final class RecFeedbackTests: XCTestCase {
         }
         XCTAssertLessThan(i, j, "same artist, same genre — era and groove decide, as they must")
     }
+
+    // ========================================================================
+    // MARK: - A verdict must REDRAW the surface that reads it
+    // ========================================================================
+
+    /// THE BUG THIS FILE MISSED, and the reason a 👎 looked like it did nothing: every read on this
+    /// store goes through the memoized `derived` index, and `derived` was `@ObservationIgnored`. A
+    /// SwiftUI body calling `verdict(songId:scope:)` therefore registered NO dependency, so the
+    /// thumb never filled, the row never sank, and — once the tile toolbars started gating ▶ on the
+    /// live half — a transport control could sit lit over a list with nothing live in it. Popping
+    /// the screen and re-entering "fixed" it, which is the signature of a missing dependency rather
+    /// than a missing write.
+    ///
+    /// `withObservationTracking` is the empirical form of "would SwiftUI redraw?": it is the same
+    /// mechanism `@Observable` view bodies use. One test per READER, because each one is a separate
+    /// door onto `derived` and a future refactor could take any single one back off the index.
+    func testEveryDerivedReadRegistersAnObservationDependency() {
+        func assertRedraws(_ label: String, _ read: @escaping (RecFeedbackStore) -> Void) {
+            let store = makeStore()
+            let fired = expectation(description: label)
+            withObservationTracking {
+                read(store)
+            } onChange: {
+                fired.fulfill()
+            }
+            store.toggle(songId: "s1", to: .rejected, scope: crateA, surface: .tile)
+            wait(for: [fired], timeout: 2)
+        }
+
+        assertRedraws("verdict") { _ = $0.verdict(songId: "s1", scope: self.crateA) }
+        assertRedraws("anyVerdict") { _ = $0.anyVerdict(songId: "s1") }
+        assertRedraws("activeTombstones") { _ = $0.activeTombstones(scope: self.crateA) }
+        assertRedraws("isSuppressed") { _ = $0.isSuppressed(songId: "s1", scope: self.crateA) }
+        assertRedraws("partition") { _ = $0.partition(["s1", "s2"], scope: self.crateA) }
+        assertRedraws("visibleCount") { _ = $0.visibleCount(["s1", "s2"], scope: self.crateA) }
+    }
 }

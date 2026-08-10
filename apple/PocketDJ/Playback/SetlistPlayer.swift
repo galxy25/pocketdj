@@ -142,6 +142,18 @@ final class SetlistPlayer {
     /// playback surface reads to show a transient "no burned files" banner — so device mode
     /// never silently dead-ends with nothing playing. Cleared on the next `play(_:)`.
     private(set) var deviceQueueUnplayable = false
+    /// The `sourceSetlistId` of the run that RAISED that flag.
+    ///
+    /// ── WHY THE FLAG ALONE WAS NOT ENOUGH (a four-month-dead alert) ──────────────────────────
+    /// Every surface binds the banner on "the flag is up AND this run is mine", and the only
+    /// identity available was `sourceSetlistId` — which `stop()` sets to nil, and `advanceToNext`
+    /// calls `stop()` on the line BEFORE it raises the flag. So the test was always nil-vs-id and
+    /// the alert could never fire, on any screen, for any set. Device mode dead-ending in silence
+    /// is the exact failure it was written to prevent.
+    ///
+    /// Captured before the teardown and published beside the flag, so the pair survives the run
+    /// that produced it. Cleared with it (`clearDeviceUnplayable`) and on the next `play`/`restore`.
+    private(set) var deviceUnplayableSourceId: String?
     /// Tracks (within the current run) whether ANY track has loaded a burned file — so a
     /// device-mode set that reaches the end with nothing loaded can raise the banner.
     private var loadedAnyDeviceTrack = false
@@ -258,6 +270,7 @@ final class SetlistPlayer {
         canonicalOrder = nil
         isRunning = true
         deviceQueueUnplayable = false   // fresh run — clear any prior banner signal
+        deviceUnplayableSourceId = nil
         loadedAnyDeviceTrack = false
         // A fresh play over a restored-but-held deck simply replaces it (the natural expiry).
         isHeldForResume = false
@@ -407,7 +420,10 @@ final class SetlistPlayer {
 
     /// Acknowledge + clear the one-shot device-unplayable banner (the surface calls this
     /// once it has shown the transient message).
-    func clearDeviceUnplayable() { deviceQueueUnplayable = false }
+    func clearDeviceUnplayable() {
+        deviceQueueUnplayable = false
+        deviceUnplayableSourceId = nil
+    }
 
     /// Manually advance (used by the live-track "Next" affordance + lock-screen NEXT).
     func skipNext() {
@@ -974,8 +990,14 @@ final class SetlistPlayer {
             // burned file: raise the one-shot banner so the surface tells the DJ nothing was
             // playable on-device (rather than silently ending with no audio).
             let unplayable = playbackMode() == .device && !loadedAnyDeviceTrack
+            // CAPTURE THE RUN'S IDENTITY FIRST — `stop()` nils `sourceSetlistId`, and every screen
+            // that shows this banner needs to know whether the dead run was ITS run.
+            let raisedBy = sourceSetlistId
             stop()                          // reached the end — tear down cleanly (clears the session)
-            if unplayable { deviceQueueUnplayable = true }
+            if unplayable {
+                deviceQueueUnplayable = true
+                deviceUnplayableSourceId = raisedBy
+            }
         } else {
             persistSession(positionMs: 0)
             Task { await playCurrent(fresh: true) }
@@ -1190,6 +1212,7 @@ final class SetlistPlayer {
         canonicalOrder = shuffleEnabled ? queue.map(\.uid) : nil
         currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount)
         deviceQueueUnplayable = false
+        deviceUnplayableSourceId = nil
         loadedAnyDeviceTrack = false
         waitingForLive = false
         isHeldForResume = true

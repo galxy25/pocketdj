@@ -40,6 +40,9 @@ struct NewReleasesView: View {
         // be played from it, so it sits underneath rather than at the top.
         let outNow = sunkLast(releaseFeed?.outNow() ?? [])
         let soon = sunkLast(releaseFeed?.comingSoon() ?? [])
+        // The LIVE half, computed ONCE and used by both the rows and the transport's enabled state
+        // — deriving it twice is how ▶ ended up lit over a queue ▶ itself would refuse to start.
+        let liveOutNow = live(outNow)
         List {
             if outNow.isEmpty && soon.isEmpty {
                 emptyState.listRowBackground(Color.clear)
@@ -67,19 +70,47 @@ struct NewReleasesView: View {
         // ONLY **out now** plays. A "coming soon" row is a pre-order — Apple has published the
         // record's existence, not its audio — so queueing one could only ever produce a skip.
         //
-        // NO ⋯. Every list-wide action this screen could offer either doesn't exist yet or belongs
-        // to a row (acting on a release means opening it), and an empty ⋯ is furniture pretending
-        // to be a control.
+        // ── ▶ AND ▶▶ GATE ON DIFFERENT LISTS, BECAUSE THEY PLAY DIFFERENT LISTS ────────────────
+        // ▶/🔀 take the live releases, so they are live only while SOMETHING is live; ▶▶ takes the
+        // thumbed-down tail as well, so it stays available for exactly the case that greys the
+        // other two out. Gating all three on `outNow` (the shipped bug) left ▶ lit over an empty
+        // queue when every release had been thumbed down, and the tap did nothing at all.
         .collectionToolbar(idPrefix: "foryou-new", noun: "list",
-                           canPlay: !starting && !outNow.isEmpty, showsMenu: false,
-                           play: { start(live(outNow), shuffle: $0) },
+                           canPlay: !starting && !liveOutNow.isEmpty,
+                           canPlayAll: !starting && !outNow.isEmpty,
+                           play: { start(liveOutNow, shuffle: $0) },
                            playAll: { start(outNow, shuffle: false) },
-                           menuItems: { EmptyView() })
+                           playAllHelp: "Play every new release, including the ones you thumbed down",
+                           menuItems: { overflowMenu })
         .alert("Couldn’t start these releases", isPresented: startErrorShowing) {
             Button("OK") { startError = nil }
         } message: {
             Text(startError ?? "")
         }
+        // DEVICE MODE MUST NOT GO QUIETLY SILENT HERE — and this is the screen where it is most
+        // likely to, because these are records he does not own. See `DeviceQueueUnplayableAlert`.
+        .deviceQueueUnplayableAlert(sourceId: ReleaseStreaming.runTag)
+    }
+
+    /// The ⋯ — the same place every other list screen keeps its context actions.
+    ///
+    /// It carries ONE thing, and it is a real one: re-ask Apple Music. The feed's only steady-state
+    /// trigger is a play (`noteArtistPlayed` enqueues an artist whose TTL is due), which is the
+    /// right lazy design and also means there is no way to say *"check now"* — the exact thing a
+    /// listener wants after hearing a record dropped. `recheckKnownArtists` re-queues every artist
+    /// already in the cache through that same batched drain, so this is a manual pull of an
+    /// existing mechanism rather than a second fetch path.
+    ///
+    /// It is disabled — never absent — while a pass is in flight or Apple Music is off, so the
+    /// control's presence does not depend on the data.
+    @ViewBuilder private var overflowMenu: some View {
+        Button {
+            releaseFeed?.recheckKnownArtists()
+        } label: {
+            Label("Check for new releases", systemImage: "arrow.clockwise")
+        }
+        .disabled(releaseFeed?.canRecheck != true)
+        .accessibilityIdentifier("foryou-new-recheck")
     }
 
     private var startErrorShowing: Binding<Bool> {
@@ -119,11 +150,13 @@ struct NewReleasesView: View {
             if shuffle { queue.shuffle() }
             starting = false
             guard !queue.isEmpty else {
-                startError = "Apple Music didn’t return a track list for these releases. "
-                    + "Check your connection (or your Apple Music sign-in in Settings) and try again."
+                startError = ReleaseStreaming.emptyExpansionMessage
                 return
             }
-            sequencer.play(queue)
+            // TAGGED, so device mode can explain itself. Nothing in CollectionsStore resolves this
+            // id (by design — a New queue is not a collection); it exists so the
+            // `deviceQueueUnplayable` banner has a screen to land on. See `ReleaseStreaming.runTag`.
+            sequencer.play(queue, sourceSetlistId: ReleaseStreaming.runTag)
         }
     }
 
@@ -394,11 +427,21 @@ struct ForYouSongListView: View {
         // thumbed-down tail as well (rejected rows are SUNK, not removed, so the lit 👎 that undoes
         // a mis-tap stays reachable). Both render unconditionally all the same — owner, verbatim:
         // *"always show play and play all and shuffle."*
+        //
+        // ▶▶ gates on `everything`, not on the live half: a list whose every row has been thumbed
+        // down is precisely the case Play All exists for, and gating it on `live` greyed it out
+        // exactly there.
         .collectionToolbar(idPrefix: "foryou-list", noun: "list",
                            canPlay: !partition.live.isEmpty,
+                           canPlayAll: !everything.isEmpty,
                            play: { start(partition.live, shuffle: $0) },
                            playAll: { start(everything, shuffle: false) },
+                           playAllHelp: "Play everything in this list, including anything you thumbed down",
                            menuItems: { overflowMenu })
+        // The tile screens do not push Now Playing, so this is the only screen that can raise the
+        // device-mode banner for a queue they started. `playSongIds` runs under the reserved
+        // Now Playing setlist id.
+        .deviceQueueUnplayableAlert(sourceId: nowPlayingSetlistId)
         // The 👍's add for In Da Zone (no implied target ⇒ the normal sheet). `onAdded` is what
         // turns the row's ✓ on, so a thumbs-up that opened a sheet and a thumbs-up that added
         // straight to a crate leave the row in the SAME state.

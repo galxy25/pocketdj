@@ -61,11 +61,19 @@ struct RecSuggestionsListView: View {
         // (sunk, never filtered), 🔀 shuffles the live picks. A suggestion whose id THIS device's
         // catalog can't resolve is dropped by `playNow` rather than parking the queue — the same
         // degrade-don't-stall rule the rest of the app follows.
+        //
+        // ▶▶ gates on `everything` rather than the live half — a list thumbed down to nothing is
+        // the one case Play All is FOR, and the shared gate greyed it out there.
         .collectionToolbar(idPrefix: "foryou-cloud", noun: "list",
                            canPlay: !livePicks.isEmpty,
+                           canPlayAll: !everything.isEmpty,
                            play: { start(livePicks, shuffle: $0) },
                            playAll: { start(everything, shuffle: false) },
+                           playAllHelp: "Play everything in this list, including anything you thumbed down",
                            menuItems: { overflowMenu })
+        // This screen doesn't push Now Playing either, so it wears the device-mode banner for the
+        // runs its own transport starts (`playSongIds` ⇒ the reserved Now Playing setlist id).
+        .deviceQueueUnplayableAlert(sourceId: nowPlayingSetlistId)
         .sheet(item: $addRef) { r in
             AddToCollectionView(item: .song(r.id), onAdded: { _ in added.insert(r.id) })
         }

@@ -95,4 +95,22 @@ final class ReleaseStreamingTests: XCTestCase {
         XCTAssertEqual(svc.outNow(nowMs: now).compactMap(\.entry.releaseId),
                        ["9000000001", "9000000002"], "newest first")
     }
+
+    // ========================================================================
+    // MARK: - The run tag (how device mode gets to explain itself)
+    // ========================================================================
+
+    /// A New queue is tagged so the `deviceQueueUnplayable` banner has a screen to land on. The tag
+    /// must resolve to NOTHING in `CollectionsStore` — it is an identity, not a collection — and it
+    /// must not collide with the Collectors Puzzle run tag, whose restore rule clears it as a ghost.
+    func testTheNewRunTagIsAnIdentityNotACollection() {
+        XCTAssertFalse(ReleaseStreaming.runTag.hasPrefix(CollectorsPuzzleEngine.runTagPrefix),
+                       "a New queue must not be mistaken for a live puzzle round")
+        XCTAssertNotEqual(ReleaseStreaming.runTag, nowPlayingSetlistId,
+                          "…nor for the reserved Now Playing setlist, or the two banners would cross")
+        XCTAssertFalse(ReleaseStreaming.runTag.hasPrefix("pls_"))
+        XCTAssertFalse(ReleaseStreaming.runTag.hasPrefix("pkt_"))
+        XCTAssertFalse(ReleaseStreaming.runTag.hasPrefix("set_"))
+    }
+
 }

@@ -94,15 +94,76 @@ final class CollectionToolbarUITests: XCTestCase {
     @MainActor
     func testNewTileFloatsALiveTransport() {
         let app = launchOnForYou()
+        openNew(app)
+        assertToolbar(app, "foryou-new")
+        XCTAssertTrue(app.any("foryou-new-play").isEnabled,
+                      "the seeded out-now releases make ▶ live, not greyed")
+        shoot(app, "tile-toolbar-new-playable")
+    }
+
+    /// New's ⋯ is a real menu with a real action in it — "check for new releases now", which the
+    /// feed's play-driven lazy trigger otherwise gives no way to ask for.
+    @MainActor
+    func testNewTileMenuCarriesARealAction() {
+        let app = launchOnForYou()
+        openNew(app)
+        let menu = app.any("foryou-new-menu")
+        XCTAssertTrue(menu.waitForExistence(timeout: 15))
+        menu.tap()
+        XCTAssertTrue(app.el("foryou-new-recheck").waitForExistence(timeout: 10),
+                      "the ⋯ carries a list-wide action, not an empty sheet of furniture")
+        shoot(app, "new-overflow-menu")
+    }
+
+    /// **THE DEFECT THIS ROUND FIXED, driven end to end.**
+    ///
+    /// New's whole transport was enabled on `!outNow.isEmpty` (every out-now release) while ▶
+    /// played only the LIVE half. Thumb down every release and ▶ stayed lit over a queue its own
+    /// `guard !ids.isEmpty` would refuse — a decoy control. ▶▶ Play All is the one that must stay
+    /// live there, because playing the thumbed-down tail is exactly what it is for.
+    ///
+    /// The PRECONDITION is asserted, not assumed: an earlier review of this screen "reproduced"
+    /// the bug against taps that had never landed. The reject's own accessibility label flipping to
+    /// "Undo not for me" is the proof that the verdict was recorded AND that the screen redrew —
+    /// which it only does because `RecFeedbackStore.derived` is observed (see
+    /// `testEveryDerivedReadRegistersAnObservationDependency`).
+    @MainActor
+    func testThumbingDownEveryReleaseGreysPlayButLeavesPlayAllLive() {
+        let app = launchOnForYou()
+        openNew(app)
+        XCTAssertTrue(app.any("foryou-new-play").waitForExistence(timeout: 15))
+        XCTAssertTrue(app.any("foryou-new-play").isEnabled, "starts live — two out-now releases")
+
+        // The fixture's two out-now releases (`ReleaseFeedService.uiFixtureEntries`), by the id a
+        // verdict on a RELEASE is filed under (`rel:<albumId>`).
+        for releaseId in ["rel:9000000001", "rel:9000000002"] {
+            let reject = app.el("rec-reject-\(releaseId)")
+            XCTAssertTrue(reject.waitForExistence(timeout: 10), "\(releaseId) is on screen")
+            reject.tap()
+            expectation(for: NSPredicate(format: "label == %@", "Undo not for me"),
+                        evaluatedWith: reject)
+            waitForExpectations(timeout: 8) { err in
+                XCTAssertNil(err, "the 👎 must LAND and the row must redraw — \(releaseId)")
+            }
+        }
+
+        expectation(for: NSPredicate(format: "enabled == false"),
+                    evaluatedWith: app.any("foryou-new-play"))
+        waitForExpectations(timeout: 8) { err in
+            XCTAssertNil(err, "▶ must grey out: every release is thumbed down, so its queue is empty")
+        }
+        XCTAssertFalse(app.any("foryou-new-shuffle").isEnabled, "🔀 plays the same live list as ▶")
+        XCTAssertTrue(app.any("foryou-new-play-all").isEnabled,
+                      "▶▶ stays live — the thumbed-down tail is precisely what Play All plays")
+        shoot(app, "new-toolbar-all-thumbed-down")
+    }
+
+    @MainActor
+    private func openNew(_ app: XCUIApplication) {
         let new = app.el("foryou-tile-new")
         XCTAssertTrue(new.waitForExistence(timeout: 20))
         new.tap()
         XCTAssertTrue(app.navigationBars["New"].waitForExistence(timeout: 15))
-        // No ⋯ here: every list-wide action New could offer belongs to a row.
-        assertToolbar(app, "foryou-new", menu: false)
-        XCTAssertTrue(app.any("foryou-new-play").isEnabled,
-                      "the seeded out-now releases make ▶ live, not greyed")
-        shoot(app, "tile-toolbar-new-playable")
     }
 
     // ========================================================================
@@ -147,18 +208,16 @@ final class CollectionToolbarUITests: XCTestCase {
     }
 
     /// The reference screen, after the extraction into `CollectionToolbar`: the same items, same
-    /// ids, same placement as before — and as the tile screens above. It carries no ▶▶ because its
-    /// ▶ already plays the whole playlist from the top; the correction that added Play All was
-    /// about the TILES, where ▶ and ▶▶ can genuinely differ.
+    /// ids, same placement — and now the same COUNT as the tile screens. Owner, verbatim: *"always
+    /// show play and play all and shuffle."* A playlist has no thumbed-down tail, so its ▶▶ is the
+    /// same act as its ▶; rendering it anyway is what keeps the transport from changing shape
+    /// between two screens that are meant to be one piece of furniture.
     @MainActor
     func testPlaylistDetailStillFloatsTheSameToolbar() {
         let (app, row) = launchWithAPlaylist("Toolbar")
         row.tap()
         XCTAssertTrue(app.navigationBars["Toolbar"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.any("playlist-play").waitForExistence(timeout: 10))
-        XCTAssertTrue(app.any("playlist-shuffle").exists)
-        XCTAssertTrue(app.any("playlist-menu").exists)
-        XCTAssertTrue(app.any("playback-mode").exists)
+        assertToolbar(app, "playlist")
         shoot(app, "playlist-toolbar-reference")
     }
     #endif

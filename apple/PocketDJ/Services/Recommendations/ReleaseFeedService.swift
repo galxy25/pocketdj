@@ -301,6 +301,35 @@ final class ReleaseFeedService {
 
     // ── The ONLY steady-state trigger: a play happened ───────────────────────────────────────
 
+    /// Is a manual re-check available *right now*? False while one is running (or seeding), while
+    /// Apple Music is off, and on a cache with nothing to re-ask about. The New screen's ⋯ item
+    /// DISABLES on this rather than hiding — a control that comes and goes with the data is the
+    /// thing this round of work is removing everywhere else.
+    var canRecheck: Bool { canSync && !isFetching && !isSeeding && !entries.isEmpty }
+
+    /// **"Check for new releases", from the New screen's ⋯.**
+    ///
+    /// The feed's only steady-state trigger is a play, which is the right lazy design (see
+    /// `noteArtistPlayed`) and also means the listener has no way to say *"look again now"* — the
+    /// exact thing he wants after hearing a record dropped. This re-queues every artist ALREADY in
+    /// the cache and lets the ordinary batched drain run: same request shape, same batch size, same
+    /// concurrency cap, same backoff. It is a manual pull of the existing mechanism, not a second
+    /// fetch path.
+    ///
+    /// TTL is deliberately NOT consulted. A recheck that silently no-ops because every entry is
+    /// still fresh is a dead control, and dead controls are what this whole round is removing. The
+    /// volume is the seed's volume — a cache of ~493 artists is ~10 batches of 50, two in flight —
+    /// which the seed's own doc already establishes as a handful of requests and not a poll. It
+    /// cannot stack: `scheduleDrain` refuses while a drain is armed or running, which is also what
+    /// makes repeated taps free.
+    func recheckKnownArtists() {
+        guard canRecheck else { return }
+        for (id, e) in entries { pending[id] = e.artistName }
+        guard !pending.isEmpty else { return }
+        revision &+= 1
+        scheduleDrain()
+    }
+
     /// Call from the PLAY event (never from a view body). Enqueues the artist if its TTL has
     /// expired and schedules a batched drain; cheap and non-blocking when nothing is due.
     func noteArtistPlayed(artistId: Int, name: String,

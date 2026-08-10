@@ -55,6 +55,24 @@ enum ReleaseStreaming {
     /// a burst of unbounded requests against the Apple Music endpoints earns a 429.
     static let concurrency = 4
 
+    /// The `sourceSetlistId` a New-tile run is tagged with.
+    ///
+    /// A New queue is not a setlist, a playlist or a pocket — nothing in `CollectionsStore`
+    /// resolves this id, and that is fine: `historyContext` and `originCollection` both fall
+    /// through to exactly the answers they give for `nil` ((.setlist, nil) and no origin). What the
+    /// tag buys is IDENTITY — it is how the New screen (and the For You grid, which can start the
+    /// same queue from a tile card) knows a `deviceQueueUnplayable` signal belongs to it, so device
+    /// mode says "none of these are burned" instead of going quietly silent. It deliberately does
+    /// not use the `puzzle_` prefix, whose ghost-clearing rule on restore is a different concern.
+    static let runTag = "foryou_new"
+
+    /// What the expansion coming back empty means, in the owner's terms. ONE string, because the
+    /// tile card and the New screen both start this queue and must not explain the same failure
+    /// two different ways (the card used to explain it not at all).
+    static let emptyExpansionMessage =
+        "Apple Music didn’t return a track list for these releases. "
+        + "Check your connection (or your Apple Music sign-in in Settings) and try again."
+
     // ── The pure part ────────────────────────────────────────────────────────────────────────
 
     /// Expanded tracks → queue items.

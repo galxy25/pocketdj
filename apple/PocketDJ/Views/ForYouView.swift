@@ -64,6 +64,9 @@ struct ForYouTilesView: View {
     @State private var tiles: [ForYouTile] = []
     /// A New-card expansion is in flight (one network round trip per release).
     @State private var startingReleases = false
+    /// The expansion came back with nothing playable — stated here exactly as the New screen
+    /// states it, rather than the card's earlier silent `return`.
+    @State private var startError: String?
     /// Stands in for `feed` when no store is injected (previews / standalone test hosts). Not
     /// durable, which is exactly the degradation intended.
     @State private var fallback = ForYouFeedSnapshot()
@@ -123,6 +126,18 @@ struct ForYouTilesView: View {
         // could never appear (its count is what decides whether it exists). Gated internally on
         // `isEnabled`, so a default-OFF install does no work and makes no request.
         .task { await recEngine?.refreshForYou() }
+        .alert("Couldn’t start these releases",
+               isPresented: Binding(get: { startError != nil },
+                                    set: { if !$0 { startError = nil } })) {
+            Button("OK") { startError = nil }
+        } message: {
+            Text(startError ?? "")
+        }
+        // A tile card can start a New queue without ever opening the New screen, so the grid wears
+        // the device-mode banner for it too — otherwise device mode dead-ends here in silence.
+        // Only while the grid is what's in front: `NewReleasesView`, pushed onto this same stack,
+        // wears the identical condition and must own it once it is.
+        .deviceQueueUnplayableAlert(sourceId: ReleaseStreaming.runTag, isActive: path.isEmpty)
     }
 
     // ========================================================================
@@ -304,8 +319,13 @@ struct ForYouTilesView: View {
             var queue = ReleaseStreaming.items(rows, catalogSongId: { app.songId(forAppleMusicId: $0) })
             if shuffle { queue.shuffle() }
             startingReleases = false
-            guard !queue.isEmpty else { return }
-            sequencer.play(queue)
+            // SAY SO. The New SCREEN already explained this failure and the card did not — same
+            // act, same network outcome, one surface silent. Same message, from one constant.
+            guard !queue.isEmpty else {
+                startError = ReleaseStreaming.emptyExpansionMessage
+                return
+            }
+            sequencer.play(queue, sourceSetlistId: ReleaseStreaming.runTag)
         }
     }
 

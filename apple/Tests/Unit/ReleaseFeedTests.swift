@@ -834,4 +834,59 @@ final class ReleaseFeedServiceTests: XCTestCase {
         let similar = svc.similarArtistIds(for: [1, 2])
         XCTAssertEqual(similar, [3, 4, 5], "seeds excluded, duplicates collapsed, order stable")
     }
+
+    // ========================================================================
+    // MARK: - "Check for new releases" — the manual pull behind New's ⋯
+    // ========================================================================
+
+    /// A fresh cache, so every entry is INSIDE its TTL. This is the case that decides whether the
+    /// menu item is a real control or a decoy.
+    private func freshCache(_ svc: ReleaseFeedService) {
+        let now = Date().timeIntervalSince1970 * 1000
+        svc.playsForArtist = { _ in 2860 }                    // hot ⇒ the shortest TTL there is
+        svc.seedForTesting((1...3).map {
+            ArtistReleaseEntry(artistId: $0, artistName: "A\($0)", checkedAtMs: now - 3_600_000)
+        })
+    }
+
+    /// IT MUST ACTUALLY DO SOMETHING. `noteArtistPlayed` is TTL-gated and correctly enqueues
+    /// nothing for a fresh entry — so a "check now" built on the same gate would silently no-op in
+    /// the commonest case, which is a dead control wearing a live one's clothes. The recheck
+    /// therefore ignores TTL and re-queues every known artist.
+    func testRecheckReQueuesEveryKnownArtistEvenWhenNothingIsDue() async {
+        let stub = StubReleaseTransport()
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL())
+        freshCache(svc)
+        // The lazy trigger's own answer for this cache, for contrast: nothing due, nothing queued.
+        svc.noteArtistPlayed(artistId: 1, name: "A1")
+        XCTAssertEqual(svc.pendingCountForTesting, 0, "TTL-fresh ⇒ a play queues nothing")
+
+        svc.recheckKnownArtists()
+        XCTAssertEqual(svc.pendingCountForTesting, 3, "…and the manual re-check queues all of them")
+        await svc.drain()
+        XCTAssertEqual(stub.requestCount, 1, "one batched request, exactly like every other drain")
+    }
+
+    /// The ⋯ item disables rather than disappears — a control that comes and goes with the data is
+    /// what this whole round is removing. So `canRecheck` has to be honest about all three of its
+    /// off-states.
+    func testCanRecheckIsOffOnlyWhenARecheckCouldNotDoAnything() {
+        let cold = ReleaseFeedService(transport: StubReleaseTransport(), fileURL: tempURL())
+        XCTAssertFalse(cold.canRecheck, "an empty cache has no known artists to re-ask about")
+
+        let live = ReleaseFeedService(transport: StubReleaseTransport(), fileURL: tempURL())
+        freshCache(live)
+        XCTAssertTrue(live.canRecheck, "a populated cache ⇒ a real re-ask, TTL notwithstanding")
+
+        let noMusic = ReleaseFeedService(transport: nil, fileURL: tempURL())
+        freshCache(noMusic)
+        XCTAssertFalse(noMusic.canRecheck, "Apple Music off ⇒ there is nothing to ask")
+    }
+
+    func testRecheckWithoutAppleMusicQueuesNothing() {
+        let svc = ReleaseFeedService(transport: nil, fileURL: tempURL())
+        freshCache(svc)
+        svc.recheckKnownArtists()
+        XCTAssertEqual(svc.pendingCountForTesting, 0, "nothing done, and nothing pretended")
+    }
 }

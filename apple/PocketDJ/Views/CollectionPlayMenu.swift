@@ -72,17 +72,33 @@ struct CollectionToolbar<MenuItems: View>: ViewModifier {
     let idPrefix: String
     /// Fills the help text: "Play this <noun> now".
     let noun: String
-    /// Greys the transport (an empty playlist still shows it, like every music app).
+    /// Greys ▶ and 🔀 — the two that play the LIVE list (an empty playlist still shows them, like
+    /// every music app).
     var canPlay: Bool = true
+    /// Greys ▶▶ **Play All**, which plays a DIFFERENT (larger) list. Defaults to `canPlay`, which
+    /// is right wherever the two lists are the same thing.
+    ///
+    /// ── WHY THIS IS A SEPARATE GATE (a shipped bug, not a hypothetical) ──────────────────────
+    /// The New screen enabled its whole transport on `!outNow.isEmpty` while ▶ played `live(outNow)`
+    /// — so thumbing down every out-now release left ▶ LIT over an empty queue, and the tap hit an
+    /// `isEmpty` guard and did nothing. One `canPlay` cannot describe two lists. Splitting it also
+    /// fixes the mirror-image error the other tile screens had: they gated everything on the LIVE
+    /// half, so a fully-thumbed-down list greyed out ▶▶ Play All — the one control whose entire
+    /// purpose is to play the tail that was thumbed down.
+    var canPlayAll: Bool? = nil
     /// Set false where the screen has no context actions to carry — an empty ⋯ is furniture
     /// pretending to be a control.
     var showsMenu: Bool = true
     /// `true` = shuffle.
     var play: (Bool) -> Void = { _ in }
-    /// ▶▶ **Play All**. Nil on the two collection screens, whose ▶ already plays the whole
-    /// playlist/pocket from the top and which have no second, larger list to offer; supplied by
-    /// every For You tile, where the owner asked for all three unconditionally.
+    /// ▶▶ **Play All**. Every screen that floats this toolbar supplies one — owner, verbatim:
+    /// *"always show play and play all and shuffle."* On a playlist or pocket it resolves to the
+    /// same act as ▶ (there is no thumbed-down tail to add), and that redundancy is the accepted
+    /// cost of the three controls never moving between screens.
     var playAll: (() -> Void)? = nil
+    /// The ▶▶ help text. Defaults to the plain reading; a recommendation list overrides it, because
+    /// there ▶▶ genuinely takes MORE than ▶ and the tooltip is where that is explained.
+    var playAllHelp: String? = nil
     /// The context actions. Everything beyond the transport belongs here. (Built by the
     /// `collectionToolbar` modifier below, which is where the `@ViewBuilder` lives — a stored
     /// builder property would re-apply the transform to an already-built closure.)
@@ -100,8 +116,8 @@ struct CollectionToolbar<MenuItems: View>: ViewModifier {
             if let playAll {
                 ToolbarItem(placement: .primaryAction) {
                     CollectionPlayAllButton(idPrefix: idPrefix, action: playAll)
-                        .help("Play everything in this \(noun), including anything you thumbed down")
-                        .disabled(!canPlay)
+                        .help(playAllHelp ?? "Play everything in this \(noun)")
+                        .disabled(!(canPlayAll ?? canPlay))
                 }
             }
             ToolbarItem(placement: .primaryAction) {
@@ -124,14 +140,70 @@ extension View {
     /// The standard collection/tile toolbar. See `CollectionToolbar`.
     func collectionToolbar<MenuItems: View>(
         idPrefix: String, noun: String,
-        canPlay: Bool = true, showsMenu: Bool = true,
+        canPlay: Bool = true, canPlayAll: Bool? = nil, showsMenu: Bool = true,
         play: @escaping (Bool) -> Void = { _ in },
         playAll: (() -> Void)? = nil,
+        playAllHelp: String? = nil,
         @ViewBuilder menuItems: @escaping () -> MenuItems
     ) -> some View {
         modifier(CollectionToolbar(idPrefix: idPrefix, noun: noun, canPlay: canPlay,
-                                   showsMenu: showsMenu,
-                                   play: play, playAll: playAll, menuItems: menuItems))
+                                   canPlayAll: canPlayAll, showsMenu: showsMenu,
+                                   play: play, playAll: playAll, playAllHelp: playAllHelp,
+                                   menuItems: menuItems))
+    }
+}
+
+// ============================================================================
+// MARK: - "Device mode played nothing" — the banner, reachable from every start surface
+// ============================================================================
+
+/// 📱 **Device mode, and not one track was on the device.** `SetlistPlayer` raises
+/// `deviceQueueUnplayable` when a whole run finishes without ever loading a burned file — it skips
+/// each unplayable row, so without a banner the outcome is silence and no explanation.
+///
+/// ── TWO SEPARATE REASONS IT COULD NOT FIRE, BOTH FIXED HERE ─────────────────────────────────
+/// 1. **It bound on a torn-down value.** It shipped inside `SetlistDetailView` as
+///    `deviceQueueUnplayable && sequencer.sourceSetlistId == setlistId` — but `advanceToNext`
+///    calls `stop()` (which nils `sourceSetlistId`) on the line before it raises the flag, so the
+///    comparison was nil-vs-id for every run on every screen. `SetlistPlayer` now publishes
+///    `deviceUnplayableSourceId`, captured before the teardown, and that is what this binds on.
+/// 2. **It lived on one screen.** The For You tile screens deliberately do NOT push Now Playing
+///    (the point is to stay on the rows with the 👍/👎 in reach), and the New screen's queue is not
+///    a collection at all — so even a working condition would have had nowhere to land. The
+///    condition therefore lives here, once, and every surface that can START a queue wears it for
+///    the id it starts under.
+///
+/// `clearDeviceUnplayable()` is one-shot, so whichever surface is on screen shows it and the signal
+/// is spent.
+struct DeviceQueueUnplayableAlert: ViewModifier {
+    @Environment(SetlistPlayer.self) private var sequencer
+    /// The `sourceSetlistId` this screen's ▶ starts runs under — so a screen only ever answers for
+    /// its own run, never for one some other surface started.
+    let sourceId: String?
+    /// Stand down. TWO screens can share one `sourceId` and be in the hierarchy at once — the For
+    /// You GRID (whose tile card can start a New queue) is still mounted underneath the New SCREEN
+    /// it pushed, and two live bindings on one condition is a presentation conflict in one window.
+    /// The ancestor passes `path.isEmpty` so the screen actually in front owns the alert.
+    var isActive: Bool = true
+
+    func body(content: Content) -> some View {
+        content.alert("No burned files", isPresented: Binding(
+            get: {
+                isActive && sequencer.deviceQueueUnplayable
+                    && sequencer.deviceUnplayableSourceId == sourceId
+            },
+            set: { if !$0 { sequencer.clearDeviceUnplayable() } })) {
+            Button("OK", role: .cancel) { sequencer.clearDeviceUnplayable() }
+        } message: {
+            Text("Device playback is on, but none of these tracks are burned to this device. Burn them, or switch to cloud streaming.")
+        }
+    }
+}
+
+extension View {
+    /// See `DeviceQueueUnplayableAlert`. Wear it on any screen whose transport can start a run.
+    func deviceQueueUnplayableAlert(sourceId: String?, isActive: Bool = true) -> some View {
+        modifier(DeviceQueueUnplayableAlert(sourceId: sourceId, isActive: isActive))
     }
 }
 
