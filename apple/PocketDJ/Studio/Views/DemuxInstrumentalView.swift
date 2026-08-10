@@ -77,7 +77,7 @@ struct DemuxInstrumentalView: View {
             if !bars.isEmpty { barChips }
             FollowScoreView(pages: pages, bpm: takeBpm, firstDownbeatMs: firstDownbeatMs,
                             player: player, follow: follow, currentSystem: currentSystem,
-                            marksByPage: marksByPage, slots: slots)
+                            marksByPage: marksByPage, slots: slots, onSeek: onSeek)
         }
         .task(id: rebuildKey) { await rebuild() }
         // ONE shared follow poll: read the non-Observable player clock and advance BOTH the bar
@@ -299,6 +299,9 @@ struct FollowScoreView: View {
     /// page + the onset timeline. Empty ⇒ the score renders with no playback paint.
     var marksByPage: [Int: [ScoreLayout.PlayedMark]] = [:]
     var slots: [ScorePlayhead.Slot] = []
+    /// SONG-relative seek — the same callback the bar chips use, so tapping the score and tapping
+    /// a bar mean the same thing. Default no-op keeps a read-only follower read-only.
+    var onSeek: (Int) -> Void = { _ in }
 
     /// Map a playhead time (original-audio clock, ms) to a score system index. Re-anchors to
     /// `firstDownbeatMs` (0 ms = beat 1, the score's own anchor), then measure → system. Pure +
@@ -365,14 +368,20 @@ struct FollowScoreView: View {
     /// comes from `ScoreLayout.playhead` — the note heads' own `xPosition` — instead of a
     /// system-wide linear interpolation, which drifted off the heads by the per-measure padding.
     private func layer(for i: Int) -> ScorePlaybackLayer {
-        ScorePlaybackLayer(pageIndex: i, pages: pages, marks: marksByPage[i] ?? [], slots: slots,
-                           bpm: bpm, clock: ScorePlaybackClock {
-                               // Song clock → score clock (0 ms = beat 1). `currentTime` returns
-                               // pausedAt while paused, so a paused scrub follows too. Clamped
-                               // before Int(): a NaN/absurd clock read must degrade, never trap.
-                               let ms = player.currentTime * 1_000
-                               guard ms.isFinite else { return 0 }
-                               return Int(min(max(ms, 0), 86_400_000)) - firstDownbeatMs
-                           })
+        let firstDownbeatMs = firstDownbeatMs, onSeek = onSeek
+        return ScorePlaybackLayer(
+            pageIndex: i, pages: pages, marks: marksByPage[i] ?? [], slots: slots, bpm: bpm,
+            clock: ScorePlaybackClock(
+                positionMs: {
+                    // Song clock → score clock (0 ms = beat 1). `currentTime` returns
+                    // pausedAt while paused, so a paused scrub follows too. Clamped
+                    // before Int(): a NaN/absurd clock read must degrade, never trap.
+                    let ms = player.currentTime * 1_000
+                    guard ms.isFinite else { return 0 }
+                    return Int(min(max(ms, 0), 86_400_000)) - firstDownbeatMs
+                },
+                // Tap the score → seek the SONG, the inverse of the same anchor (score clock →
+                // song clock). Identical to tapping a bar chip, just at note resolution.
+                seek: { scoreMs in onSeek(max(0, scoreMs + firstDownbeatMs)) }))
     }
 }

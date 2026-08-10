@@ -360,6 +360,23 @@ enum ScorePlayhead {
         return min(max(raw, 0), maxCursor16ths)
     }
 
+    /// Ceiling for every 16ths → ms conversion (24 h, the `InstrumentEngine.replayPositionMs`
+    /// clamp): a seek derived from a corrupt layout must degrade to an absurd-but-finite time,
+    /// never reach a bare `Int(_:)` (the StaffChordView `Int.min` lesson).
+    static let maxCursorMs = 86_400_000.0
+
+    /// Inverse of `cursor16ths(ms:bpm:)`: fractional absolute 16ths → score-clock ms (0 ms =
+    /// beat 1). What tap-to-seek converts a tapped position into before handing it to a transport,
+    /// so the clock the cursor is read FROM and the position it is seeked TO are the same mapping
+    /// in both directions. Clamped at both ends; a non-finite input degrades to 0.
+    nonisolated static func ms(fractional16ths: Double, bpm: Double) -> Int {
+        guard fractional16ths.isFinite else { return 0 }
+        let step = ScoreQuantizer.sixteenthMs(bpm: bpm)      // guards bpm ≤ 0 → 120
+        let raw = min(max(fractional16ths, 0), maxCursor16ths) * step
+        guard raw.isFinite else { return 0 }
+        return Int(min(max(raw, 0), maxCursorMs).rounded())
+    }
+
     /// Collapse an event stream into onset-ordered slots. Onsets round to the nearest 16th by the
     /// SAME rule `ScoreQuantizer.quantize` uses (`(ms/step).rounded()`, clamped ≥ 0), so a slot's
     /// onset is exactly the absolute onset its item was laid out at. A slot ends at its longest

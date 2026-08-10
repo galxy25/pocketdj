@@ -325,6 +325,7 @@
 		A92E960F40771FB2C0441288 /* MusicWithFriendsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7A6C1064089A6C3FC7C53BD7 /* MusicWithFriendsStore.swift */; };
 		AA0D3DC421F3606D9CB41913 /* CleanOnlyResolveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DCCD8CCBFC68293718A1BE7 /* CleanOnlyResolveTests.swift */; };
 		AA907F2A3DBE6B302BBCF11D /* MixResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0C8A3B9AC9D85D51A04BE77 /* MixResolver.swift */; };
+		AB2577E4A9859CB3DA4FEB54 /* ScoreCursorStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE74259BC9CCE8E486574BFB /* ScoreCursorStore.swift */; };
 		AB4F6324A1AD4A2AE8E1F268 /* CloudDocDatabase.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E25E7FB4C04F9A8F995C191 /* CloudDocDatabase.swift */; };
 		ABCC5E6FC592288749543E17 /* CloudSyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C3A971B345113403B50653A /* CloudSyncService.swift */; };
 		ABE011EB9EA8EABC9DC5E5EC /* RecEngineClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6E5A19100207C85EBAE83A88 /* RecEngineClientTests.swift */; };
@@ -356,6 +357,7 @@
 		BB3D42706EB62106059FD98F /* DemuxInstrumental.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9789FCCEFC58636A414CE158 /* DemuxInstrumental.swift */; };
 		BC61F67B6639F106E90B6E94 /* NPLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D40CC1845961FA5A883E7948 /* NPLog.swift */; };
 		BDBBDDB012144478D91D3ED4 /* NotificationRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDA7605F5CBB3B63332561D4 /* NotificationRouter.swift */; };
+		BDDA6E3FE321B25A0E7EE15F /* ScoreCursorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEA28BE99FA549D0091F7B56 /* ScoreCursorTests.swift */; };
 		BE0A68CB35D79D19E8F3BE19 /* CollectionEntities.swift in Sources */ = {isa = PBXBuildFile; fileRef = 062A71FEE25295D13FE6D0C5 /* CollectionEntities.swift */; };
 		C0869E451088257A4F5140D6 /* PuzzleDecisionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A94310FDEC42331710EE2749 /* PuzzleDecisionStore.swift */; };
 		C09542D7C94CA0F28546F0BC /* BeatDetect.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0DE2815FA8B5F6C9FF6963D7 /* BeatDetect.swift */; };
@@ -939,6 +941,7 @@
 		EA52B9933F53726523EEB561 /* BrowseLargeCatalogPerfTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BrowseLargeCatalogPerfTests.swift; sourceTree = "<group>"; };
 		EC42A99E0389034982894E21 /* BurnStoreBackgroundTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BurnStoreBackgroundTests.swift; sourceTree = "<group>"; };
 		ED5833D51006DC88F43C6FDA /* SettingsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsUITests.swift; sourceTree = "<group>"; };
+		EE74259BC9CCE8E486574BFB /* ScoreCursorStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScoreCursorStore.swift; sourceTree = "<group>"; };
 		EE97BCE395E79206B4AF1156 /* PlaylistsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaylistsView.swift; sourceTree = "<group>"; };
 		EF4F97865D8CB8E96122151D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		F0045DD18A205628C2EA174A /* DiscoverAlbumPreviewUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverAlbumPreviewUITests.swift; sourceTree = "<group>"; };
@@ -969,6 +972,7 @@
 		FDEC2FC4DEF4432766C7630F /* HistoryUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HistoryUITests.swift; sourceTree = "<group>"; };
 		FE1DEE769A0521556C1C3AA9 /* PlatterDetailLibraryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlatterDetailLibraryTests.swift; sourceTree = "<group>"; };
 		FE2A5070F14FEFEA61F438E8 /* QueueMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueMenu.swift; sourceTree = "<group>"; };
+		FEA28BE99FA549D0091F7B56 /* ScoreCursorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScoreCursorTests.swift; sourceTree = "<group>"; };
 		FF481BEFB010A4B04D48FEF4 /* IndexModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexModels.swift; sourceTree = "<group>"; };
 		FFA30071B2A9D9DFF643E98A /* CollectionsStudioTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionsStudioTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
@@ -1173,6 +1177,7 @@
 				96C3C22C1F8D5231520BD25E /* RipsStoreAsyncRipTests.swift */,
 				CF6F60AED8F4AEE438946346 /* RipsStoreTests.swift */,
 				0EE754AA0FCC750467CFC458 /* RowSelectionTests.swift */,
+				FEA28BE99FA549D0091F7B56 /* ScoreCursorTests.swift */,
 				C7E1363E8CB857CD978D9BAD /* ScoreLayoutTests.swift */,
 				79C5857685C327C3B6D91F0D /* ScoreQuantizerTests.swift */,
 				6EACEA867F1B6AD8B5461CCC /* SearchQueryTests.swift */,
@@ -1464,6 +1469,7 @@
 				9D400DC3AE74183BA918C015 /* RecommendationService.swift */,
 				75F66D86A4CF160FB9BD69B9 /* RipsStore.swift */,
 				7C96C4047D44BA770DDB0B4D /* RowSelection.swift */,
+				EE74259BC9CCE8E486574BFB /* ScoreCursorStore.swift */,
 				54612EED3E2E31CA19356FF5 /* SessionFolders.swift */,
 				AA33C94B067D1C39433B16DD /* SourcePlaylistsCache.swift */,
 				BF498FF002A9ECB696ABB804 /* StorageManager.swift */,
@@ -2099,6 +2105,7 @@
 				19D6A25917488A22D4103DE1 /* RipsStoreTests.swift in Sources */,
 				45C997C26EF0D80AB477CA50 /* RowSelectionTests.swift in Sources */,
 				DEC807B4D22B0DF18ABF7BBC /* SMFWriterTests.swift in Sources */,
+				BDDA6E3FE321B25A0E7EE15F /* ScoreCursorTests.swift in Sources */,
 				8437C9D5F9F9244EF77B853A /* ScoreLayoutTests.swift in Sources */,
 				6B4E87B81AF2C6B6D0AA1382 /* ScoreQuantizerTests.swift in Sources */,
 				C4B2E5685D8D8E489A8AA918 /* SearchQueryTests.swift in Sources */,
@@ -2333,6 +2340,7 @@
 				F0CF8712E55C51464EEBE844 /* RootView.swift in Sources */,
 				F11501D4CCD00232CA5D7541 /* RowSelection.swift in Sources */,
 				86023A0E7007263EFE1FB553 /* SMFWriter.swift in Sources */,
+				AB2577E4A9859CB3DA4FEB54 /* ScoreCursorStore.swift in Sources */,
 				5132858B9EE1202BB1FE30EA /* ScoreEditorView.swift in Sources */,
 				59B8F838EE5C6231018C1B93 /* ScoreModel.swift in Sources */,
 				F9FA9F5ED8F0261FFB826C38 /* ScorePDF.swift in Sources */,

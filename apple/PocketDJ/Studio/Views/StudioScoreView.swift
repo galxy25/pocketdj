@@ -76,16 +76,53 @@ struct StudioScoreView: View {
                                              set: { if !$0 { errorText = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(errorText ?? "") }
-        // A PARKED playhead belongs to whatever was replayed last — possibly another take, from
-        // the takes-list Replay button. Clear it on the way in so this score opens at "nothing
-        // played"; a replay already RUNNING is left alone and its cursor keeps moving.
-        .onAppear { instruments.resetReplayPosition() }
+        // The engine has ONE replay clock, so a PARKED position belongs to whatever was replayed
+        // last — possibly another take. Restore THIS take's own remembered cursor (nil ⇒ nothing
+        // played, which is what a different take's score shows), so a score resumes where it was
+        // left instead of starting over. A replay already RUNNING is left alone (`parkReplayPosition`
+        // is a no-op mid-replay) and its cursor keeps moving.
+        .onAppear { instruments.parkReplayPosition(atMs: studio.scoreCursorMs(takeId)) }
+        // A replay that ENDS (or is stopped) freezes the cursor where it stopped — remember that,
+        // so quitting from a finished replay still resumes there next launch.
+        .onChange(of: instruments.isReplaying) { _, replaying in
+            if !replaying { rememberCursor() }
+        }
         .onDisappear {
+            rememberCursor()
             // Leaving the score stops ITS replay (the sampler keeps sounding otherwise, with
             // no visible stop control anywhere — replay is a this-screen affordance).
             if instruments.isReplaying { instruments.stopReplay() }
             instruments.resetReplayPosition()
         }
+    }
+
+    // MARK: Cursor persistence + tap-to-seek
+
+    /// Persist where this take's cursor sits now (nil ⇒ nothing played, which clears the mark).
+    /// Keyed by take, so it can only ever restore onto the score it was taken from.
+    private func rememberCursor() {
+        // The pinned test seam drives a FAKE playhead; it must never write itself into the user's
+        // remembered positions. Nor should a take that was DELETED while its score was open leave
+        // a mark behind (`deleteTake` already dropped it).
+        guard Self.pinnedPlayheadMs == nil, take != nil else { return }
+        studio.setScoreCursorMs(instruments.replayPositionMs(), forTake: takeId)
+    }
+
+    /// A tap on the score moved the cursor to `ms` (score clock, 0 = beat 1).
+    ///
+    /// While REPLAYING the tap seeks the SOUND too — the Demuxer score's bar-chip precedent: a tap
+    /// on the music moves the music, and the cursor follows because it reads the replay's own
+    /// clock. While stopped it parks the cursor, which is also where the next Replay starts
+    /// (`StudioTakeReplay.resumeMs`), so tapping and then playing does what it looks like.
+    private func seek(_ take: StudioTake, toMs ms: Int) {
+        let target = max(0, ms)
+        if instruments.isReplaying {
+            instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
+                                   fromMs: target)
+        } else {
+            instruments.parkReplayPosition(atMs: target)
+        }
+        studio.setScoreCursorMs(target, forTake: takeId)
     }
 
     // MARK: Content
@@ -104,9 +141,9 @@ struct StudioScoreView: View {
                 ScoreEditorView(events: take.scoreEvents, bpm: take.bpm, instrument: take.instrument,
                                 title: displayTitle(take), editing: editing,
                                 onEdit: { studio.setTakeEvents(takeId, events: $0) },
-                                playback: ScorePlaybackClock {
-                                    Self.pinnedPlayheadMs ?? engine.replayPositionMs()
-                                })
+                                playback: ScorePlaybackClock(
+                                    positionMs: { Self.pinnedPlayheadMs ?? engine.replayPositionMs() },
+                                    seek: { seek(take, toMs: $0) }))
                 Text("\(take.instrument.displayName) · \(Fmt.bpm(take.bpm)) BPM")
                     .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }
@@ -151,7 +188,12 @@ struct StudioScoreView: View {
     private func actionBar(_ take: StudioTake) -> some View {
         HStack(spacing: 10) {
             Button {
-                if !StudioTakeReplay.toggle(take: take, instruments: instruments, packs: packs) {
+                // Resume from where the cursor sits (a tap-to-seek, or the position this score was
+                // left at) — from the top once the take has played through. See `resumeMs`.
+                let from = StudioTakeReplay.resumeMs(parkedMs: instruments.replayPositionMs(),
+                                                     events: take.scoreEvents)
+                if !StudioTakeReplay.toggle(take: take, instruments: instruments, packs: packs,
+                                            fromMs: from) {
                     errorText = "Download the \(take.instrument.displayName) pack to hear this take."
                 }
             } label: {

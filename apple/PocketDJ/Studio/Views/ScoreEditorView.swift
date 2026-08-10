@@ -14,6 +14,18 @@ struct ScorePlaybackClock {
     /// (cursor parks at the start, nothing highlighted). While playback is stopped this returns
     /// the FROZEN last position, which is what keeps the last-played note emphasised.
     var positionMs: @MainActor () -> Int?
+    /// Move playback to a score-clock ms — what a TAP ON THE SCORE calls. The host decides what
+    /// that means for the sound (the saved instrumental re-anchors its replay; the Demuxer's
+    /// follow-score seeks the song, exactly as its bar chips do), but in every host it is the same
+    /// clock `positionMs` reads, so the cursor lands where it was tapped and the played-behind /
+    /// current-note paint is whatever that time implies — identical to having played there.
+    /// nil ⇒ the score is a read-only follower and taps do nothing.
+    var seek: (@MainActor (Int) -> Void)?
+
+    init(positionMs: @escaping @MainActor () -> Int?, seek: (@MainActor (Int) -> Void)? = nil) {
+        self.positionMs = positionMs
+        self.seek = seek
+    }
 }
 
 /// Everything ONE laid page needs to paint playback, all precomputed off the tick: the marks that
@@ -635,10 +647,16 @@ struct ScorePageView: View {
                     }
                 }
                 .contentShape(Rectangle())
-                // Attached unconditionally; `onTap` is nil unless editing, so it no-ops otherwise. A
-                // tap coexists with the parent ScrollView's drag-to-scroll.
+                // ONE tap gesture, two readings of the same page-space point — the live score's
+                // own idiom (`SpatialTapGesture` → page space → an inverse of the layout), which is
+                // also what makes this work identically on macOS (click), iOS/iPadOS (touch) and
+                // visionOS (pinch): the platforms differ in how the point arrives, not in what it
+                // means. EDITING: place / select a note (`onTap`, unchanged). NOT editing: seek the
+                // playback cursor to the tapped time. A tap coexists with the parent ScrollView's
+                // drag-to-scroll.
                 .gesture(SpatialTapGesture().onEnded { ev in
-                    onTap?(CGPoint(x: ev.location.x / scale, y: ev.location.y / scale))
+                    let p = CGPoint(x: ev.location.x / scale, y: ev.location.y / scale)
+                    if let onTap { onTap(p) } else { seek(to: p) }
                 })
                 // The playback paint rides a SIBLING canvas in the SAME GeometryReader, sized to
                 // the same `geo.size` — so it derives the identical page→screen scale the score
@@ -679,6 +697,20 @@ struct ScorePageView: View {
                 }
             }
         }
+    }
+
+    /// TAP-TO-SEEK: move the playback cursor to the time the tapped point sits at. `time16ths` is
+    /// the exact inverse of the `xPosition` the cursor and the note heads are BOTH drawn with (via
+    /// `ScoreLayout.playhead`), so the cursor parks precisely under the tap — and, because the seek
+    /// is expressed in the same score-clock ms the cursor is read from, the played-behind wash and
+    /// the current-note ring come out exactly as if playback had reached that point.
+    ///
+    /// The point is derived in PAGE space from this view's own GeometryReader — never from an
+    /// `.offset()` anchor, whose frame collapses to x = 0 (the StaffChordView bug).
+    private func seek(to pagePoint: CGPoint) {
+        guard let layer = playback, let seek = layer.clock.seek,
+              let t = ScoreLayout.time16ths(at: pagePoint, page: page) else { return }
+        seek(ScorePlayhead.ms(fractional16ths: t, bpm: layer.bpm))
     }
 }
 

@@ -649,7 +649,13 @@ final class InstrumentEngine {
     /// cancellation latch (bumped by `stopReplay`, a new replay, or recovery). The take's
     /// instrument should already be loaded — replay proceeds on whatever IS loaded (logged) so
     /// a missing bank degrades to the wrong timbre, never a dead button.
-    func replayTake(events: [StudioNoteEvent], instrument: InstrumentKey) {
+    ///
+    /// `fromMs` starts the replay PART-WAY IN — the score's tap-to-seek, and Replay resuming from
+    /// where the cursor was left. Actions before it are dropped (a note already sounding at the
+    /// seek point is not re-struck — the simple, predictable reading of a seek) and the clock
+    /// anchor is back-dated by the same amount, so `replayPositionMs()` reports the seeked time
+    /// immediately and the cursor lands where the tap did rather than snapping to 0 first.
+    func replayTake(events: [StudioNoteEvent], instrument: InstrumentKey, fromMs: Int = 0) {
         ensureEngine()
         guard built, rt.engineReady, !isLoadingInstrument, sampler != nil else { return }
         if let cur = currentInstrument, cur != instrument {
@@ -657,18 +663,26 @@ final class InstrumentEngine {
         }
         stopReplay()
         guard startEngineIfNeeded() else { return }
-        let actions = Self.replayActions(events: events)
-        guard !actions.isEmpty else { return }
+        // Clamp before any clock math: a seek derived from a wild layout must degrade, never trap.
+        let from = max(0, min(fromMs, Self.maxReplayMs))
+        let actions = Self.replayActions(events: events).filter { $0.ms >= from }
+        guard !actions.isEmpty else {
+            // Seeked past the last note: nothing left to play, so just park the cursor there (the
+            // "last played" emphasis holds) instead of silently doing nothing.
+            if from > 0 { parkReplayPosition(atMs: from) }
+            return
+        }
         isReplaying = true
         NowPlayingArbiter.shared.claim(self)
         replayGeneration &+= 1
         let gen = replayGeneration
-        dlog("instr: replay START — \(events.count) events")
+        dlog("instr: replay START — \(events.count) events\(from > 0 ? " from \(from) ms" : "")")
         // ONE anchor for both the scheduling loop's sleeps and the score's playhead, so the cursor
-        // and the sampler can never disagree about where in the take we are.
-        let start = ContinuousClock.now
+        // and the sampler can never disagree about where in the take we are. Back-dated by `from`,
+        // which is what makes the loop's absolute `start + a.ms` sleeps stay correct after a seek.
+        let start = ContinuousClock.now - .milliseconds(from)
         replayAnchor = start
-        replayFrozenMs = 0
+        replayFrozenMs = from
         Task { @MainActor [weak self] in
             for a in actions {
                 try? await Task.sleep(until: start + .milliseconds(a.ms), clock: .continuous)
@@ -716,6 +730,10 @@ final class InstrumentEngine {
 
     // MARK: Replay position (the saved instrumental's score cursor)
 
+    /// Ceiling for any externally supplied replay time (24 h — far past any instrumental). Every
+    /// seek/park clamps to it BEFORE the clock math (the StaffChordView `Int.min` lesson).
+    nonisolated static let maxReplayMs = 86_400_000
+
     /// Milliseconds since the replay's beat 1 — LIVE while replaying, else FROZEN where the last
     /// replay stopped or ended. nil = nothing has been replayed yet, which the score reads as
     /// "nothing played": cursor at the start, no highlight.
@@ -739,13 +757,22 @@ final class InstrumentEngine {
         replayAnchor = nil
     }
 
+    /// Park the replay cursor at an explicit score-clock ms — a tap-to-seek while stopped, or the
+    /// per-take position restored when a score opens (`StudioStore.scoreCursorMs`). `nil` parks
+    /// NOTHING, i.e. "nothing played": cursor at the start, no highlight.
+    ///
+    /// Never disturbs a LIVE replay: while one is running the cursor belongs to the sampler's own
+    /// anchor, and a restore/seek must go through `replayTake(fromMs:)` so sound and cursor move
+    /// together.
+    func parkReplayPosition(atMs ms: Int?) {
+        guard replayAnchor == nil else { return }
+        replayFrozenMs = ms.map { max(0, min($0, Self.maxReplayMs)) }
+    }
+
     /// Forget a PARKED cursor so a score screen opens showing "nothing played" — a stale position
     /// from another take's replay must not highlight this one. Never disturbs a LIVE replay (open
     /// the score mid-replay and the cursor keeps running).
-    func resetReplayPosition() {
-        guard replayAnchor == nil else { return }
-        replayFrozenMs = nil
-    }
+    func resetReplayPosition() { parkReplayPosition(atMs: nil) }
 
     /// Flatten note events into a time-ordered on/off action list. Offs sort BEFORE ons at the
     /// same instant so a retriggered note (off/on at one timestamp) re-strikes instead of being
