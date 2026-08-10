@@ -128,10 +128,14 @@ final class RecEngineUITests: XCTestCase {
                       "the canned suggestion renders (no catalog resolution required)")
         XCTAssertTrue(app.staticTexts["Neon"].firstMatch.exists)
 
-        // The row's ＋ opens the Add-to-Collection sheet (its Pockets section is unique to it).
-        app.el("foryou-add-sng_fix_1").tap()
+        // THE ＋ IS GONE (owner, 2026-08-07). The 👍 now does both jobs — "send positive signal to
+        // recommendation engine AND add the song to the collection" — so it is the control that
+        // opens the Add sheet, and there is no second button offering the same act.
+        XCTAssertFalse(app.el("foryou-add-sng_fix_1").exists,
+                       "the separate ＋ was removed; 👍 is the add")
+        app.el("rec-accept-sng_fix_1").tap()
         XCTAssertTrue(app.staticTexts["Pockets"].firstMatch.waitForExistence(timeout: 10),
-                      "tapping ＋ presents the Add to… sheet")
+                      "tapping 👍 presents the Add to… sheet — the SAME route the ＋ used")
     }
     #endif
 }

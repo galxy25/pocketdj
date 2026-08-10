@@ -25,6 +25,9 @@ struct RecSuggestionsListView: View {
         let id: String
     }
     @State private var addRef: AddRef?
+    /// Ids added on THIS screen — the row states it is now in a collection, so a 👍 that opened a
+    /// sheet ends in the same visible state as one that added directly.
+    @State private var added: Set<String> = []
 
     var body: some View {
         Group {
@@ -44,7 +47,7 @@ struct RecSuggestionsListView: View {
         }
         .task { await recEngine?.refreshForYou() }
         .sheet(item: $addRef) { r in
-            AddToCollectionView(item: .song(r.id))
+            AddToCollectionView(item: .song(r.id), onAdded: { _ in added.insert(r.id) })
         }
     }
 
@@ -61,7 +64,11 @@ struct RecSuggestionsListView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.accent)
-                .accessibilityIdentifier("foryou-refresh")
+                // NOT `foryou-refresh` — that id now belongs to History's For You tab menu, which
+                // recomputes the LOCAL tiles. This one re-asks the cloud engine, a different act
+                // on a different screen, and two live registrations of one id make both
+                // unqueryable in XCUITest.
+                .accessibilityIdentifier("foryou-cloud-refresh")
             }
             .listRowBackground(Color.clear)
             ForEach(visible(recEngine)) { s in
@@ -111,18 +118,16 @@ struct RecSuggestionsListView: View {
             // absorb the add/transport buttons' identifiers (the propagation trap).
             .accessibilityIdentifier("foryou-row-\(s.songId)")
             Spacer()
-            // ASYNC MODE on the cloud tile: the same matched pair as everywhere else. 👍 records
-            // the verdict AND opens the Add sheet; 👎 records it and sinks the row. Neither
+            // TWO CONTROLS, NOT THREE (owner, 2026-08-07): 👍 records the verdict AND opens the
+            // Add sheet — it IS the add — and 👎 records the reject. The separate ＋ that used to
+            // sit beside it is gone; a row that offered both made one act look like two. Neither
             // touches the transport.
             RecFeedbackButtons(songId: s.songId, scope: Self.scope, surface: .tile,
                                onAccept: { addRef = AddRef(id: s.songId) })
-            Button {
-                addRef = AddRef(id: s.songId)
-            } label: {
-                Image(systemName: "plus.circle").font(.title3).foregroundStyle(Theme.accent2)
+            if added.contains(s.songId) {
+                Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(Theme.accent)
+                    .accessibilityIdentifier("foryou-added-\(s.songId)")
             }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("foryou-add-\(s.songId)")
             if let song = resolved {
                 RowTransport(song: (id: song.id, title: song.name, artist: song.artist),
                              startMs: nil)

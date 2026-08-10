@@ -379,21 +379,17 @@ final class RecFeedbackStore {
     /// and never sleeps.
     func rankedIds(_ ids: [String], scope: String,
                    nowMs: Double = Date().timeIntervalSince1970 * 1000) -> [String] {
-        let tombs = activeTombstones(scope: scope, nowMs: nowMs)
-        guard !tombs.isEmpty else { return ids }
-        var kept: [String] = []
-        var sunk: [String] = []
-        var seen = Set<String>()
-        kept.reserveCapacity(ids.count)
-        for id in ids where seen.insert(id).inserted {
-            if tombs[id] != nil { sunk.append(id) } else { kept.append(id) }
-        }
-        for (id, _) in tombs where !seen.contains(id) { sunk.append(id) }
-        sunk.sort {
-            let a = tombs[$0] ?? 0, b = tombs[$1] ?? 0
-            return a != b ? a < b : $0 < $1
-        }
-        return kept + sunk
+        let p = partition(ids, scope: scope, nowMs: nowMs)
+        return p.live + p.sunk
+    }
+
+    /// The same partition, kept APART — for a caller that has to treat the two halves differently
+    /// rather than just render them in order. `CollectionPlayMenuItems` is the one that does:
+    /// ▶ Play takes the live picks and ▶▶ Play All takes both.
+    func partition(_ ids: [String], scope: String,
+                   nowMs: Double = Date().timeIntervalSince1970 * 1000)
+        -> (live: [String], sunk: [String]) {
+        RecFeedbackOrder.sink(ids, tombstones: activeTombstones(scope: scope, nowMs: nowMs))
     }
 
     /// The number a TILE CARD must show. Exactly `rankedIds(...).count` minus the sunk tail, so the
@@ -589,6 +585,36 @@ final class RecFeedbackStore {
 }
 
 let recFeedbackSchemaVersion = 1
+
+/// THE SINK RULE, as a pure function over `(ids, tombstones)` — no store, no clock, no actor.
+///
+/// Extracted so the ordering has exactly ONE implementation. Two call sites needed it in two
+/// shapes (concatenated, for rendering; split, for ▶ Play vs ▶▶ Play All), and a second copy of a
+/// stable partition is precisely how a card, a list and a play button end up disagreeing about
+/// which rows the listener rejected.
+enum RecFeedbackOrder {
+
+    /// Survivors keep the engine's order exactly; the tombstoned rows move to the bottom in REJECT
+    /// ORDER (so a second reject lands below the first), and any tombstone the engine had already
+    /// dropped is RE-ADDED there — otherwise the lit 👎 that undoes a mis-tap would leave the
+    /// screen with the row it belongs to.
+    static func sink(_ ids: [String], tombstones: [String: Double]) -> (live: [String], sunk: [String]) {
+        guard !tombstones.isEmpty else { return (ids, []) }
+        var live: [String] = []
+        var sunk: [String] = []
+        var seen = Set<String>()
+        live.reserveCapacity(ids.count)
+        for id in ids where seen.insert(id).inserted {
+            if tombstones[id] != nil { sunk.append(id) } else { live.append(id) }
+        }
+        for (id, _) in tombstones where !seen.contains(id) { sunk.append(id) }
+        sunk.sort {
+            let a = tombstones[$0] ?? 0, b = tombstones[$1] ?? 0
+            return a != b ? a < b : $0 < $1
+        }
+        return (live, sunk)
+    }
+}
 
 extension RecFeedbackStore {
     /// This store's rows as recommendation-engine events since the engine's cursor. Installed on

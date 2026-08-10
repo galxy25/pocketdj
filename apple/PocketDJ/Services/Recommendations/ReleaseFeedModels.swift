@@ -115,6 +115,47 @@ enum ReleaseFeedPolicy {
     }
 }
 
+// ============================================================================
+// MARK: - The one-shot seed set (pure)
+// ============================================================================
+
+/// WHICH ARTISTS THE FEED IS FIRST POPULATED FROM.
+///
+/// Pure over a play-event snapshot so it runs off the main actor and is unit-testable with an
+/// injected clock — no store, no catalog, no network.
+enum ReleaseFeedSeed {
+
+    /// Distinct artist names played inside the window, MOST RECENTLY PLAYED FIRST.
+    ///
+    /// ── WHY `PlayHistoryStore` EVENTS AND NOT Library.xml ────────────────────────────────────
+    /// Library.xml keeps only the LAST play per track, which erases exactly the repeat listening a
+    /// 30-day window is made of: a record played every day for a month appears once, and an artist
+    /// whose only recent play was a re-listen of an old track disappears entirely. The append-only
+    /// event log has every play, which is what "the last 30 days of my listening" actually means.
+    ///
+    /// Ordering is deliberate: the batches go out 50 ids at a time, so if the set is ever large
+    /// enough to matter the FRESHEST artists are checked first.
+    static func recentArtistNames(_ events: [PlayHistoryStore.PlayEvent],
+                                  nowMs: Double,
+                                  days: Double = ReleaseFeedPolicy.windowDays,
+                                  limit: Int = 2000) -> [String] {
+        let cutoff = nowMs - days * 86_400_000
+        var latest: [String: Double] = [:]     // folded name key → most recent play
+        var display: [String: String] = [:]    // key → the name as recorded
+        for e in events where e.playedAt >= cutoff {
+            guard let raw = e.artist?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty
+            else { continue }
+            let key = raw.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+            if let at = latest[key], at >= e.playedAt { continue }
+            latest[key] = e.playedAt
+            display[key] = raw
+        }
+        return latest.sorted { $0.value > $1.value }
+            .prefix(limit)
+            .compactMap { display[$0.key] }
+    }
+}
+
 /// Out now, or still ahead. Kept as a first-class value rather than a `Bool isFuture` so the
 /// sectioning, the tile copy, and the tests all agree on the same two names.
 enum ReleaseStatus: String, Codable, Equatable, CaseIterable {

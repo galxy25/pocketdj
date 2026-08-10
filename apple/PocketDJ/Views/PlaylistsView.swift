@@ -558,6 +558,15 @@ struct PlaylistsView: View {
     }
 
     @ViewBuilder private func playlistRowMenu(_ pl: Playlist) -> some View {
+        // ▶ Play / 🔀 Shuffle straight off the row — the SHARED `CollectionPlayMenuItems`, the
+        // same component the For You tiles use ("a tile is just a setlist"). Playing a collection
+        // used to require opening it first; these are its detail toolbar's Play/Shuffle in menu
+        // form, defined once so the two surfaces cannot drift apart.
+        CollectionPlayMenuItems(title: pl.name,
+                                songIds: collections.playableIds(forPlaylist: pl.id),
+                                source: .playlist, originId: pl.id,
+                                idPrefix: "playlist-row-\(pl.id)")
+        Divider()
         Button { nameDraft = pl.name; renamingId = pl.id } label: { Label("Rename", systemImage: "pencil") }
             .accessibilityIdentifier("list-rename-\(pl.id)")
         Menu {
@@ -611,6 +620,12 @@ struct PlaylistsView: View {
     }
 
     @ViewBuilder private func pocketRowMenu(_ pocket: Pocket) -> some View {
+        // Same shared trio as the playlist row above (and as a For You tile).
+        CollectionPlayMenuItems(title: pocket.name,
+                                songIds: collections.playableIds(forPocket: pocket.id),
+                                source: .pocket, originId: pocket.id,
+                                idPrefix: "pocket-row-\(pocket.id)")
+        Divider()
         Button { pocketNameDraft = pocket.name; renamingPocketId = pocket.id } label: { Label("Rename", systemImage: "pencil") }
             .accessibilityIdentifier("list-rename-\(pocket.id)")
         // Move to folder

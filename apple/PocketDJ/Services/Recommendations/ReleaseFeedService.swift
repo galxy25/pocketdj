@@ -97,6 +97,23 @@ final class ReleaseFeedService {
     struct Document: Codable {
         var schemaVersion = 1
         var entries: [ArtistReleaseEntry] = []
+        /// When the ONE-SHOT listening seed ran. ADDITIVE-OPTIONAL: a document written before the
+        /// seed existed decodes to nil and is treated as "never seeded", which is exactly right —
+        /// that is the install the owner reported as "my new tile is still empty".
+        var seededAtMs: Double?
+
+        init(schemaVersion: Int = 1, entries: [ArtistReleaseEntry] = [], seededAtMs: Double? = nil) {
+            self.schemaVersion = schemaVersion; self.entries = entries; self.seededAtMs = seededAtMs
+        }
+
+        enum CodingKeys: String, CodingKey { case schemaVersion, entries, seededAtMs }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            schemaVersion = (try? c.decode(Int.self, forKey: .schemaVersion)) ?? 1
+            entries = (try? c.decode([ArtistReleaseEntry].self, forKey: .entries)) ?? []
+            seededAtMs = try? c.decode(Double.self, forKey: .seededAtMs)
+        }
     }
 
     /// artistId → cached answer.
@@ -105,6 +122,10 @@ final class ReleaseFeedService {
     private(set) var lastError: String?
     /// Bumped on every cache mutation so views can memo off it instead of the dictionary.
     private(set) var revision: Int = 0
+    /// The one-shot seed is queued or in flight — the tile says "Checking…" instead of "empty".
+    private(set) var isSeeding = false
+    /// When the seed ran (nil ⇒ never). Persisted, so it does NOT repeat on every launch.
+    private(set) var seededAtMs: Double?
 
     @ObservationIgnored private let transport: Transport?
     @ObservationIgnored private let fileURL: URL
@@ -200,7 +221,85 @@ final class ReleaseFeedService {
 
     var canSync: Bool { transport?.canSync ?? false }
 
-    // ── The ONLY trigger: a play happened ────────────────────────────────────────────────────
+    // ── FIRST POPULATION: the one-shot listening seed ────────────────────────────────────────
+
+    /// Has the seed still to run? True only on an install that has never seeded AND has nothing
+    /// cached — so it fires once, ever, on a cold feed.
+    var needsSeed: Bool { seededAtMs == nil && entries.isEmpty }
+
+    /// SEED THE FEED FROM THE LAST 30 DAYS OF LISTENING. Owner, verbatim: *"it should use the last
+    /// 30 days of my listening history to give me new suggestions by default."*
+    ///
+    /// ── WHY THIS IS NOT A CONTRADICTION OF THE LAZY RULE ─────────────────────────────────────
+    /// `noteArtistPlayed` stays the only STEADY-STATE trigger, and there is still no schedule and
+    /// no polling. The lazy rule exists so the app never sweeps 12,600 artists on a timer; it was
+    /// never meant to govern FIRST POPULATION, and using it for that is what left the New tile
+    /// blank for weeks — with only 15–22% of artists having a release in any 30-day window, an
+    /// empty cache stays empty until enough DIFFERENT artists happen to be played.
+    ///
+    /// ── WHY THE SEED SET IS "PLAYED IN THE LAST 30 DAYS" AND NOT "TOP BY PLAY COUNT" ─────────
+    /// The feed exists to surface new records by the artists he is listening to NOW. It is also
+    /// naturally bounded — a month of his log is ~493 distinct artists, i.e. ~10 batched requests
+    /// at 50 ids each, which is a handful of requests and not a poll.
+    ///
+    /// One shot, whatever the outcome: `seededAtMs` is stamped and PERSISTED before the fetch, so
+    /// a failed seed rides the ordinary re-queue/retry path rather than re-seeding every launch.
+    ///
+    /// - Returns: whether a fetch was actually queued.
+    @discardableResult
+    func seedFromRecentListening(artists: [(id: Int, name: String)],
+                                 nowMs: Double = Date().timeIntervalSince1970 * 1000) -> Bool {
+        guard needsSeed else { return false }
+        // NOT gated on `canSync` before the stamp: an unauthorized install must be free to seed
+        // the moment Apple Music is turned on, so leave `seededAtMs` nil and try again later.
+        guard canSync else { return false }
+        seededAtMs = nowMs
+        for a in artists where entries[a.id] == nil { pending[a.id] = a.name }
+        save()
+        guard !pending.isEmpty else { return false }
+        isSeeding = true
+        revision &+= 1
+        scheduleDrain()
+        return true
+    }
+
+    /// WHY THE TILE IS EMPTY — so it can say which it is instead of rendering blank. An empty tile
+    /// that cannot explain itself reads as a broken feature, which is exactly what happened here.
+    enum EmptyReason: Equatable {
+        /// The one-shot seed (or a batch) is in flight.
+        case checking
+        /// Apple Music is off, unauthorized, or MusicKit is absent on this platform.
+        case notAuthorized
+        /// The last attempt failed — offline, rate-limited, token revoked.
+        case unreachable(String)
+        /// Nothing has ever been checked (seed not yet run: no plays, or catalog not loaded).
+        case notCheckedYet
+        /// Checked, and the artists he plays genuinely released nothing inside the window.
+        case nothingNew
+
+        /// The TILE CARD's one-line version (the screen behind it gets the full explanation). nil
+        /// for `nothingNew` — that is the state the card's own wording already describes correctly,
+        /// and replacing it would be noise.
+        var tileNote: String? {
+            switch self {
+            case .checking:      return "Checking for new releases…"
+            case .notAuthorized: return "Apple Music isn’t connected"
+            case .unreachable:   return "Couldn’t reach Apple Music"
+            case .notCheckedYet: return "Play something to start checking"
+            case .nothingNew:    return nil
+            }
+        }
+    }
+
+    func emptyReason() -> EmptyReason {
+        if isSeeding || isFetching { return .checking }
+        if !canSync { return .notAuthorized }
+        if let e = lastError { return .unreachable(e) }
+        if entries.isEmpty { return .notCheckedYet }
+        return .nothingNew
+    }
+
+    // ── The ONLY steady-state trigger: a play happened ───────────────────────────────────────
 
     /// Call from the PLAY event (never from a view body). Enqueues the artist if its TTL has
     /// expired and schedules a batched drain; cheap and non-blocking when nothing is due.
@@ -255,6 +354,9 @@ final class ReleaseFeedService {
         guard !isFetching else { return }
         drainTask = nil
         let allSucceeded = await runDrainPass()
+        // The seed is over once its batches have been through, whatever they returned — the tile
+        // must stop saying "Checking…" and start saying which empty state it is really in.
+        if isSeeding, pending.isEmpty || !allSucceeded { isSeeding = false; revision &+= 1 }
         // Plays that landed WHILE the pass was in flight are still queued — re-arm for them, so a
         // play during a drain is not stranded until the next unrelated play happens along.
         //
@@ -440,10 +542,11 @@ final class ReleaseFeedService {
         guard let data = try? Data(contentsOf: fileURL),
               let doc = try? JSONDecoder().decode(Document.self, from: data) else { return }
         entries = Dictionary(doc.entries.map { ($0.artistId, $0) }, uniquingKeysWith: { a, _ in a })
+        seededAtMs = doc.seededAtMs
     }
 
     private func save() {
-        let doc = Document(entries: Array(entries.values))
+        let doc = Document(entries: Array(entries.values), seededAtMs: seededAtMs)
         guard let data = try? JSONEncoder().encode(doc) else { return }
         let tmp = fileURL.appendingPathExtension("tmp")
         do {

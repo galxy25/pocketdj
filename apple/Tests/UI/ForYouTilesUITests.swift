@@ -87,4 +87,37 @@ final class ForYouTilesUITests: XCTestCase {
                       || app.navigationBars["New"].waitForExistence(timeout: 5),
                       "the New tile pushes NewReleasesView")
     }
+
+    /// FOR YOU IS CACHED, so the tab needs a way to ask for a new ranking — and the owner asked
+    /// for it "in the menu". Its absence would leave a permanently frozen feed.
+    @MainActor
+    func testTheTabMenuCarriesRefresh() {
+        let app = launchOnForYou()
+        XCTAssertTrue(app.el("foryou-tile-zone").waitForExistence(timeout: 15))
+        // `any`, not `el` — the freshness readout is a Text, not a Button.
+        XCTAssertTrue(app.any("foryou-updated-at").waitForExistence(timeout: 10),
+                      "a frozen feed says when it was last refreshed")
+        let menu = app.el("foryou-menu")
+        XCTAssertTrue(menu.waitForExistence(timeout: 10), "the For You tab has its own ⋯ menu")
+        menu.tap()
+        XCTAssertTrue(app.el("foryou-refresh").waitForExistence(timeout: 10),
+                      "…and Refresh is in it")
+    }
+
+    /// A TILE IS A SETLIST — so its menu is the shared collection menu, with Shuffle beside Play.
+    @MainActor
+    func testTileContextMenuOffersPlayAndShuffle() {
+        let app = launchOnForYou()
+        let zone = app.el("foryou-tile-zone")
+        XCTAssertTrue(zone.waitForExistence(timeout: 15))
+        #if os(macOS)
+        zone.rightClick()
+        #else
+        zone.press(forDuration: 1.2)
+        #endif
+        XCTAssertTrue(app.el("foryou-tile-zone-play").waitForExistence(timeout: 10),
+                      "the tile's menu carries ▶ Play")
+        XCTAssertTrue(app.el("foryou-tile-zone-shuffle").exists,
+                      "…and 🔀 Shuffle beside it — the owner's ask")
+    }
 }

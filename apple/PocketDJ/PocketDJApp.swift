@@ -89,6 +89,38 @@ struct PocketDJApp: App {
         playCounts.autoCaptureIfNeverCaptured(songs: app.songs)
     }
 
+    /// FIRST POPULATION of the For You ▸ New feed — the same SHAPE as
+    /// `autoCaptureIfNeverCaptured` above, and for the same reason: a lazily-filled cache that
+    /// nothing ever primes stays empty long enough to look broken.
+    ///
+    /// The release feed only ever fetched from `noteArtistPlayed`, so a cold cache waited for
+    /// enough DIFFERENT artists to be played — and since only 15–22% of artists have a release in
+    /// any 30-day window, that is a long silence. The lazy rule exists to avoid POLLING 12,600
+    /// artists on a schedule; it was never meant to govern the first fill.
+    ///
+    /// So: seed once, from every artist in the last 30 days of PLAY EVENTS (owner's words), off
+    /// the main actor, never on the launch path, and never again — `seededAtMs` is persisted.
+    /// Steady state is unchanged: after this, refresh stays lazy and on-play.
+    @MainActor private func seedReleaseFeedIfReady() {
+        guard onboarding.isComplete, app.state == .loaded, releaseFeed.needsSeed else { return }
+        let events = playHistory.events
+        let now = Date().timeIntervalSince1970 * 1000
+        Task {
+            // The O(log) sweep over up to 20k events runs OFF the main actor; the name→id join is
+            // ~500 dictionary hits and rides back here because `artistsByKey` belongs to the model.
+            let names = await Task.detached(priority: .utility) {
+                ReleaseFeedSeed.recentArtistNames(events, nowMs: now)
+            }.value
+            var artists: [(id: Int, name: String)] = []
+            var seen = Set<Int>()
+            for n in names {
+                guard let id = app.artistId(forArtistName: n), seen.insert(id).inserted else { continue }
+                artists.append((id, n))
+            }
+            releaseFeed.seedFromRecentListening(artists: artists, nowMs: now)
+        }
+    }
+
     /// Resolve a sequencer run's Play-History origin (source-kind + display name) — the function
     /// installed as `SetlistPlayer.historyContextProvider`. GAMES first, collections after.
     ///
@@ -219,6 +251,10 @@ struct PocketDJApp: App {
     /// per-install and PERSONAL (derived from play history), so it never goes near the shared
     /// catalog index. Refreshes lazily off the play event only; see `ReleaseFeedService`.
     @State private var releaseFeed: ReleaseFeedService
+    /// History ▸ For You — the FROZEN tile feed. Owner's rule: cache the last result and only
+    /// recompute on the tab menu's Refresh, so a recommendation never moves or vanishes between
+    /// glances. Durable, so a cold launch shows the same grid the last one did.
+    @State private var forYouFeed: ForYouFeedStore
     /// Device-local, append-only COLLECTION ACTIVITY log (F11) — add/heart/unheart/remove events
     /// behind the History view's Activity segment. Its own synced JSON, distinct from the play log.
     @State private var collectionActivity: CollectionActivityStore
@@ -482,6 +518,7 @@ struct PocketDJApp: App {
             guard let name, let artistId = app.artistId(forArtistName: name) else { return }
             releaseFeed.noteArtistPlayed(artistId: artistId, name: name)
         }
+        _forYouFeed = State(initialValue: ForYouFeedStore())
         let collectionActivity = CollectionActivityStore(fileURL: CollectionActivityStore.launchURL())
         _collectionActivity = State(initialValue: collectionActivity)
         // ADD / REMOVE activity: the collections store fires `onActivity` from its user-facing
@@ -1377,6 +1414,7 @@ struct PocketDJApp: App {
                 .environment(amPlayBaseline)
                 .environment(playCounts)
                 .environment(releaseFeed)
+                .environment(forYouFeed)
                 .environment(playHistory)
                 .environment(collectionActivity)
                 .environment(storage)
@@ -1449,6 +1487,10 @@ struct PocketDJApp: App {
                     // The catalog just landed — this is the first moment a walk can resolve
                     // anything, and at cold launch it is strictly later than scene-phase `.active`.
                     if onboarding.isComplete { startPlayCountCaptureIfReady() }
+                    // Same gate, same reason: the seed joins artist NAMES from the play log onto
+                    // catalog artist IDs, so an empty catalog would resolve nothing and burn the
+                    // one shot. Self-guarded and one-shot-per-install.
+                    seedReleaseFeedIfReady()
                 }
                 // Recommendation-engine auto-flush: idempotent, and internally a no-op while
                 // the Settings toggle is off (re-armed by enabledDidChange when it flips on).
@@ -1504,6 +1546,10 @@ struct PocketDJApp: App {
                         // catalog resolves NOTHING — which would stamp a high-water mark with zero
                         // counts stored and wedge the install into incremental-only.
                         if onboarding.isComplete { startPlayCountCaptureIfReady() }
+                        // Re-armed on foreground for the launch where MusicKit authorization (or
+                        // the catalog) wasn't ready yet — the seed refuses and leaves itself
+                        // un-stamped in that case, so this is its second chance, not a repeat.
+                        seedReleaseFeedIfReady()
                         // Cross-device freshness beyond launch (throttled inside).
                         // HELD during onboarding: .active fires at cold launch too, and a
                         // full pass would pull/push before stage 1 decides the profile mode.
