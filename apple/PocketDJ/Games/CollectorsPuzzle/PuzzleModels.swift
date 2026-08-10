@@ -9,7 +9,16 @@ struct PuzzleSettings: Codable, Equatable {
 
     var roundSeconds: Int = 120                    // 60 / 120 / 180 / 300
     /// favor = most-played up-weighted; avoid = never/least-played up-weighted.
+    ///
+    /// LIFETIME plays only — deliberately says nothing about WHEN. `recencyBias` is the separate
+    /// axis, and the two are independent settings because "played a lot, years ago" and "played
+    /// once yesterday" are different rounds. The meaning of this field has NOT changed: existing
+    /// scoreboard rows keep exactly the semantics they were recorded under.
     var playCountBias: Bias = .off
+    /// favor = recently-played up-weighted; avoid = long-unplayed/never-played up-weighted.
+    /// Smooth exponential decay (`PlayRecency`), not a "last 30 days" cliff — on a library whose
+    /// median song was last played 5.8 years ago a cliff scores 99.5% of it identically zero.
+    var recencyBias: Bias = .off
     /// favor = ♥ up-weighted; avoid = non-♥ up-weighted.
     var favoriteBias: Bias = .off
     /// Empty = all genres; else HARD filter to these `Genre.category` names.
@@ -36,13 +45,16 @@ struct PuzzleSettings: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case roundSeconds, playCountBias, favoriteBias, genreCategories,
              yearMin, yearMax, membershipMode, membershipCollectionIds, targetCollectionIds,
-             similarity
+             similarity, recencyBias
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         roundSeconds = (try? c.decode(Int.self, forKey: .roundSeconds)) ?? 120
         playCountBias = (try? c.decode(Bias.self, forKey: .playCountBias)) ?? .off
+        // A blob written before the recency axis existed decodes to `.off` — so every stored
+        // round, and every scoreboard row's replay of one, keeps behaving exactly as recorded.
+        recencyBias = (try? c.decode(Bias.self, forKey: .recencyBias)) ?? .off
         favoriteBias = (try? c.decode(Bias.self, forKey: .favoriteBias)) ?? .off
         genreCategories = (try? c.decode(Set<String>.self, forKey: .genreCategories)) ?? []
         yearMin = try? c.decode(Int.self, forKey: .yearMin)
@@ -72,6 +84,13 @@ struct PuzzleSettings: Codable, Equatable {
         switch playCountBias {
         case .favor: parts.append("most played")
         case .avoid: parts.append("least played")
+        case .off: break
+        }
+        // A SEPARATE clause, never merged into the one above: "most played" and "recently played"
+        // are different claims and a round can be both at once.
+        switch recencyBias {
+        case .favor: parts.append("recently played")
+        case .avoid: parts.append("not played lately")
         case .off: break
         }
         if !genreCategories.isEmpty {

@@ -19,10 +19,21 @@ final class PuzzleSamplerTests: XCTestCase {
                         favorites: Set<String> = [],
                         playCounts: [String: Int] = [:],
                         membershipUnion: Set<String> = [],
-                        perTarget: [Set<String>] = []) -> PuzzleSampler.Inputs {
+                        perTarget: [Set<String>] = [],
+                        recencies: [String: Double] = [:]) -> PuzzleSampler.Inputs {
         PuzzleSampler.Inputs(songs: songs, genreBySongId: genres, favoriteIds: favorites,
                              playCounts: playCounts, membershipUnion: membershipUnion,
-                             perTargetMembership: perTarget)
+                             perTargetMembership: perTarget,
+                             recencies: recencies, hasRecency: !recencies.isEmpty)
+    }
+
+    /// Build the DERIVED recency map the way `Inputs(raw:)` does, from raw dates — so these tests
+    /// exercise the same decay the app runs rather than hand-picked scores.
+    private func recencies(_ lastPlayedMs: [String: Double], nowMs: Double) -> [String: Double] {
+        lastPlayedMs.compactMapValues { ms -> Double? in
+            let r = PlayRecency.score(lastPlayedMs: ms, nowMs: nowMs)
+            return r > 0 ? r : nil
+        }
     }
 
     func testYearRangeHardFilter() {
@@ -112,6 +123,119 @@ final class PuzzleSamplerTests: XCTestCase {
         let unplayedShare = Double(picked.filter { counts[$0.id] == nil }.count) / 60
         XCTAssertGreaterThan(unplayedShare, 0.8,
                              "never-played ×4 vs played ×1/(1+log2(51)) ⇒ unplayed dominates (got \(unplayedShare))")
+    }
+
+    // MARK: - Recency bias (the second play axis)
+
+    private static let now: Double = 1_700_000_000_000
+    private static let day: Double = 86_400_000
+
+    /// `.favor` must measurably shift the sampled distribution toward recently-played songs.
+    func testRecencyFavorRaisesRecentShare() {
+        var settings = PuzzleSettings()
+        settings.recencyBias = .favor
+        let songs = (0..<200).map { song("s\($0)") }
+        // First 100 played in the last month, last 100 not for six years.
+        var dates: [String: Double] = [:]
+        for i in 0..<100 { dates["s\(i)"] = Self.now - 10 * Self.day }
+        for i in 100..<200 { dates["s\(i)"] = Self.now - 2190 * Self.day }
+        let picked = PuzzleSampler.sample(
+            60, settings: settings,
+            inputs: inputs(songs: songs, recencies: recencies(dates, nowMs: Self.now)),
+            rng: PRNG.seededRng("recent"))
+        let recentShare = Double(picked.filter { Int($0.id.dropFirst()) ?? 0 < 100 }.count) / 60
+        XCTAssertGreaterThan(recentShare, 0.7,
+                             "fresh ×~9 vs six-year-old ×~1.6 ⇒ recent dominates (got \(recentShare))")
+    }
+
+    /// `.avoid` must shift it the other way — and a NEVER-played song (no date at all) is the
+    /// most "not played lately" a song can be, so it gets the flat boost.
+    func testRecencyAvoidPrefersLongUnplayedAndNeverPlayed() {
+        var settings = PuzzleSettings()
+        settings.recencyBias = .avoid
+        let songs = (0..<200).map { song("s\($0)") }
+        var dates: [String: Double] = [:]
+        for i in 0..<100 { dates["s\(i)"] = Self.now - 5 * Self.day }   // played this week
+        // s100…s199 have NO date at all — never played.
+        let picked = PuzzleSampler.sample(
+            60, settings: settings,
+            inputs: inputs(songs: songs, recencies: recencies(dates, nowMs: Self.now)),
+            rng: PRNG.seededRng("avoid-recent"))
+        let staleShare = Double(picked.filter { Int($0.id.dropFirst()) ?? 0 >= 100 }.count) / 60
+        XCTAssertGreaterThan(staleShare, 0.8,
+                             "never-played ×4 vs fresh ×1/9 ⇒ stale dominates (got \(staleShare))")
+    }
+
+    /// THE SEPARABILITY CONTRACT. Two songs differing on exactly ONE axis must be ordered by that
+    /// axis — and the order must FLIP when the other bias is selected. A design that collapsed
+    /// plays and recency into one score cannot satisfy both halves of this test.
+    func testPlaysAndRecencyAreSeparableAxes() {
+        let heavyOld = song("heavy-old")      // 200 plays, last touched 5 years ago
+        let lightNew = song("light-new")      // 1 play, yesterday
+        let counts = ["heavy-old": 200, "light-new": 1]
+        let dates = ["heavy-old": Self.now - 1825 * Self.day, "light-new": Self.now - 1 * Self.day]
+        let recs = recencies(dates, nowMs: Self.now)
+        let weightOf = { (settings: PuzzleSettings, id: String) -> Double in
+            PuzzleSampler.pool(settings: settings,
+                               inputs: self.inputs(songs: [heavyOld, lightNew],
+                                                   playCounts: counts, recencies: recs))
+                .first { $0.song.id == id }?.weight ?? 0
+        }
+        var byPlays = PuzzleSettings(); byPlays.playCountBias = .favor
+        XCTAssertGreaterThan(weightOf(byPlays, "heavy-old"), weightOf(byPlays, "light-new"),
+                             "on the PLAYS axis the heavily-played song wins")
+
+        var byRecency = PuzzleSettings(); byRecency.recencyBias = .favor
+        XCTAssertGreaterThan(weightOf(byRecency, "light-new"), weightOf(byRecency, "heavy-old"),
+                             "on the RECENCY axis the order flips — the axes are independent")
+
+        // And they COMPOSE: both on at once is neither one alone.
+        var both = PuzzleSettings()
+        both.playCountBias = .favor
+        both.recencyBias = .favor
+        XCTAssertNotEqual(weightOf(both, "heavy-old"), weightOf(byPlays, "heavy-old"), accuracy: 0.0001)
+    }
+
+    /// The compatibility contract: an EMPTY recency map leaves the sample byte-identical to what
+    /// the shipped build produces, whatever the bias is set to. This is what makes the feature
+    /// safe on a device with no Apple baseline.
+    func testEmptyRecencyMapLeavesTheSampleUnchanged() {
+        let songs = (0..<200).map { song("s\($0)") }
+        var counts: [String: Int] = [:]
+        for i in 0..<100 { counts["s\(i)"] = 20 }
+        var base = PuzzleSettings()
+        base.playCountBias = .favor
+        let shipped = PuzzleSampler.sample(60, settings: base,
+                                           inputs: inputs(songs: songs, playCounts: counts),
+                                           rng: PRNG.seededRng("compat")).map(\.id)
+        for bias in [PuzzleSettings.Bias.favor, .avoid] {
+            var withBias = base
+            withBias.recencyBias = bias
+            let out = PuzzleSampler.sample(60, settings: withBias,
+                                           inputs: inputs(songs: songs, playCounts: counts),
+                                           rng: PRNG.seededRng("compat")).map(\.id)
+            XCTAssertEqual(out, shipped,
+                           "recencyBias .\(bias) with no dates must be a uniform scale, not a reordering")
+        }
+    }
+
+    /// …and the pre-existing play-count bias is untouched by the new one being present but off.
+    func testPlayCountBiasIsUnaffectedByTheRecencyAxisBeingOff() {
+        var settings = PuzzleSettings()
+        settings.playCountBias = .favor
+        XCTAssertEqual(settings.recencyBias, .off, "the new axis defaults off")
+        let songs = (0..<50).map { song("s\($0)") }
+        var counts: [String: Int] = [:]
+        for i in 0..<25 { counts["s\(i)"] = 30 }
+        let dates = Dictionary(uniqueKeysWithValues: songs.map { ($0.id, Self.now - 400 * Self.day) })
+        // Supplying dates must change NOTHING while the recency bias is off.
+        let without = PuzzleSampler.pool(settings: settings,
+                                         inputs: inputs(songs: songs, playCounts: counts))
+        let with = PuzzleSampler.pool(settings: settings,
+                                      inputs: inputs(songs: songs, playCounts: counts,
+                                                     recencies: recencies(dates, nowMs: Self.now)))
+        XCTAssertEqual(without.map(\.song.id), with.map(\.song.id))
+        for (a, b) in zip(without, with) { XCTAssertEqual(a.weight, b.weight, accuracy: 1e-12) }
     }
 
     func testSampleWithoutReplacementNoDuplicates() {

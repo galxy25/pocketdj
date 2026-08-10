@@ -121,6 +121,12 @@ struct CollectorsPuzzleView: View {
                     Text("Least played").tag(PuzzleSettings.Bias.avoid)
                 }
                 .accessibilityIdentifier("puzzle-playcount-bias")
+                Picker("Last played", selection: $draft.recencyBias) {
+                    Text("Off").tag(PuzzleSettings.Bias.off)
+                    Text("Recently played").tag(PuzzleSettings.Bias.favor)
+                    Text("Not played lately").tag(PuzzleSettings.Bias.avoid)
+                }
+                .accessibilityIdentifier("puzzle-recency-bias")
                 Picker("Favorites", selection: $draft.favoriteBias) {
                     Text("Off").tag(PuzzleSettings.Bias.off)
                     Text("Favorites").tag(PuzzleSettings.Bias.favor)

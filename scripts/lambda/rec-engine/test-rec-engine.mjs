@@ -44,7 +44,7 @@ process.env.REC_ENROLL_SECRET = 'enroll-secret-for-tests';
 process.env.MAX_PROFILES = '1000';
 
 const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections, shedToFit,
-        scoreSimilarToCollections, playCountSignal } =
+        scoreSimilarToCollections, playCountSignal, recencySignal } =
   await import('./index.mjs');
 
 const PROFILE = 'profile-test-1234';
@@ -857,4 +857,211 @@ test('shedToFit drops the LEAST-played counts, keeping the head of the distribut
     // Everything kept must be at least as played as the largest dropped row would have been.
     assert.ok(Math.min(...remaining) > 1, 'the 1-play tail went first, not the most-played rows');
   }
+});
+
+// ── LAST-PLAYED recency: the second play axis ───────────────────────────────────────────────────
+//
+// Recency is deliberately NOT a refinement of the play count. These tests pin the property that
+// makes it worth storing at all: the two axes are SEPARABLE — either one can move a ranking while
+// the other is held fixed. A design that collapsed them into one score fails the last two tests.
+
+/// Whole days since the epoch, the unit the client sends (`RecPlayCountsWire.lastPlayedDays`).
+const dayOf = (ms) => Math.floor(ms / DAY);
+const HALF_LIFE_DAYS = 730;
+
+test('recencySignal: absent is 0, today is 1, and one half-life is exactly 0.5', () => {
+  // ABSENT ≡ NEVER PLAYED, not "unknown" — the same convention playCountSignal uses for a
+  // missing count. It must contribute nothing rather than a penalty.
+  assert.equal(recencySignal(undefined, NOW), 0);
+  assert.equal(recencySignal(0, NOW), 0);
+  assert.equal(recencySignal('yesterday', NOW), 0);
+  assert.equal(recencySignal(NaN, NOW), 0);
+
+  assert.ok(Math.abs(recencySignal(dayOf(NOW), NOW) - 1) < 1e-9, 'played today ⇒ full strength');
+  const oneHalfLife = recencySignal(dayOf(NOW) - HALF_LIFE_DAYS, NOW);
+  assert.ok(Math.abs(oneHalfLife - 0.5) < 1e-6, `two years ⇒ 0.5, got ${oneHalfLife}`);
+  const twoHalfLives = recencySignal(dayOf(NOW) - 2 * HALF_LIFE_DAYS, NOW);
+  assert.ok(Math.abs(twoHalfLives - 0.25) < 1e-6, `four years ⇒ 0.25, got ${twoHalfLives}`);
+});
+
+test('recencySignal decays MONOTONICALLY and clamps a future date to 1', () => {
+  // Monotone over the whole realistic range — a cliff (e.g. "played in the last 30 days") would
+  // score the owner's median song (last played 5.8 years ago) identically to one from 1998.
+  let prev = Infinity;
+  for (const ageDays of [0, 1, 7, 30, 90, 180, 365, 730, 1095, 1825, 2117, 3650, 10_000]) {
+    const v = recencySignal(dayOf(NOW) - ageDays, NOW);
+    assert.ok(v <= prev, `not monotone at ${ageDays}d: ${v} > ${prev}`);
+    assert.ok(v >= 0 && v <= 1, `out of range at ${ageDays}d: ${v}`);
+    prev = v;
+  }
+  // The MEDIAN of the owner's real library must still be a live number, not a rounding artifact:
+  // this is the whole reason the half-life is 2 years rather than 30 days.
+  assert.ok(recencySignal(dayOf(NOW) - 2117, NOW) > 0.1,
+            'the median real song still carries signal');
+
+  // Clock skew must not let one bad row outweigh the library.
+  assert.equal(recencySignal(dayOf(NOW) + 500, NOW), 1);
+});
+
+test('an ABSENT lastPlayedDays map leaves every existing score byte-identical', () => {
+  // The strict additivity guarantee, mirroring the empty-playCounts test above: a profile that
+  // has never uploaded dates (every client before this build) ranks exactly as it did.
+  const counts = { sng_e1: 40, sng_e2: 10, sng_x1: 200 };
+  const legacy = { v: 1, plays: [play('sng_e1', NOW - 5 * DAY)], favorites: {}, activity: [],
+                   puzzle: [], collections: { atMs: 0, list: [] },
+                   playCounts: { atMs: NOW, counts } };
+  const withEmpty = { ...legacy, playCounts: { atMs: NOW, counts, lastPlayedDays: {} } };
+  assert.deepEqual(scoreForYou(withEmpty, featureIndex(), { nowMs: NOW, limit: 20 }).songs,
+                   scoreForYou(legacy, featureIndex(), { nowMs: NOW, limit: 20 }).songs);
+});
+
+test('recency and plays are SEPARABLE axes in For You', () => {
+  const featuresById = featureIndex();
+  // `playCountSeedLimit: 0` keeps the counted songs OUT of the seed set (seeds are excluded from
+  // the candidate list), so this isolates exactly what we mean to measure: the CANDIDATE terms.
+  // Seeding is driven by the 30-day play log instead, and gets its own test below.
+  const base = (counts, lastPlayedDays) => ({
+    v: 1, plays: [play('sng_e1', NOW - 5 * DAY)], favorites: {}, activity: [], puzzle: [],
+    collections: { atMs: 0, list: [] },
+    playCounts: { atMs: NOW, counts, lastPlayedDays },
+  });
+  const run = (counts, days) =>
+    scoreForYou(base(counts, days), featuresById, { nowMs: NOW, limit: 20, playCountSeedLimit: 0 });
+  const scoreOf = (out, id) => out.songs.find((s) => s.songId === id)?.score ?? 0;
+
+  // AXIS 1 — hold plays EQUAL, vary only the date. sng_j1 and sng_j2 are the same artist, album,
+  // genre and year in the fixture, so the date is genuinely the only thing that differs.
+  const recency = run({ sng_j1: 20, sng_j2: 20 },
+                      { sng_j1: dayOf(NOW) - 1825, sng_j2: dayOf(NOW) - 1 });
+  assert.ok(scoreOf(recency, 'sng_j2') > scoreOf(recency, 'sng_j1'),
+            'equal plays, fresher date ⇒ ranks higher');
+
+  // AXIS 2 — hold the DATE equal, vary only the count. The order must flip back, which is what
+  // proves recency did not simply replace the play count.
+  const sameDay = { sng_j1: dayOf(NOW) - 400, sng_j2: dayOf(NOW) - 400 };
+  const plays = run({ sng_j1: 200, sng_j2: 2 }, sameDay);
+  assert.ok(scoreOf(plays, 'sng_j1') > scoreOf(plays, 'sng_j2'),
+            'equal dates, more plays ⇒ ranks higher');
+
+  // THE POINT: one collapsed score could not produce both orderings from the same engine.
+  // "Played a lot long ago" and "played once yesterday" stay distinguishable.
+  const mixed = run({ sng_j1: 200, sng_j2: 2 },
+                    { sng_j1: dayOf(NOW) - 2500, sng_j2: dayOf(NOW) - 1 });
+  assert.ok(scoreOf(mixed, 'sng_j1') > 0 && scoreOf(mixed, 'sng_j2') > 0,
+            'the heavy-but-old and light-but-recent songs both survive scoring');
+});
+
+test('the recency reason is user-visible on a candidate', () => {
+  // `sng_x1` is the fixture's sparse row (year only), so the genre/BPM/key terms that normally
+  // outrank a play signal are absent and recency reaches the top-3 reasons. On a fully-tagged
+  // song it stays a supporting term, which is the intent.
+  const out = scoreForYou(
+    { v: 1, plays: [play('sng_e1', NOW - 5 * DAY)], favorites: {}, activity: [], puzzle: [],
+      collections: { atMs: 0, list: [] },
+      playCounts: { atMs: NOW, counts: { sng_x1: 4 }, lastPlayedDays: { sng_x1: dayOf(NOW) } } },
+    featureIndex(), { nowMs: NOW, limit: 20, playCountSeedLimit: 0 });
+  const row = out.songs.find((s) => s.songId === 'sng_x1');
+  assert.ok(row, 'the sparse row scored');
+  assert.ok(row.reasons.includes('You played this recently'),
+            `the recency reason surfaces: ${JSON.stringify(row.reasons)}`);
+});
+
+test('a recently played song can SEED For You with FEWER lifetime plays than one that cannot', () => {
+  // Seeding used to sort by raw count alone, so songs untouched for a decade always won the
+  // shortlist and a song played three times last week could never seed. The shortlist now ranks
+  // by the COMBINED signal, so either axis can qualify a song.
+  //
+  // Note sng_e6 has FEWER plays than sng_j2 (3 vs 6) — it seeds purely on being played
+  // yesterday, and sng_j2, untouched for a decade, does not.
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+                  collections: { atMs: 0, list: [] },
+                  playCounts: { atMs: NOW, counts: { sng_j1: 500, sng_j2: 6, sng_e6: 3 },
+                                lastPlayedDays: {
+                                  sng_j1: dayOf(NOW) - 3650, sng_j2: dayOf(NOW) - 3650,
+                                  sng_e6: dayOf(NOW) - 1,
+                                } } };
+  const out = scoreForYou(state, featureIndex(), { nowMs: NOW, limit: 20, playCountSeedLimit: 2 });
+  assert.ok(out.seeds.includes('sng_e6'),
+            `the 3-play song played yesterday seeded: ${JSON.stringify(out.seeds)}`);
+  assert.ok(!out.seeds.includes('sng_j2'),
+            'the 6-play song untouched for a decade did not displace it');
+});
+
+test('recency raises the score inside /recs/similar too', () => {
+  const plain = scoreSimilarToCollections(similarState(), featureIndex(), ['pkt_target'], { nowMs: NOW });
+  const fresh = scoreSimilarToCollections(
+    similarState({ overrides: { playCounts: {
+      atMs: NOW, counts: { sng_e6: 5 }, lastPlayedDays: { sng_e6: dayOf(NOW) },
+    } } }),
+    featureIndex(), ['pkt_target'], { nowMs: NOW });
+  const scoreOf = (out, id) => out.songs.find((s) => s.songId === id)?.score ?? 0;
+  // The lift must be strictly larger than the play-count term alone would give: the two terms
+  // are additive, not alternatives.
+  const stale = scoreSimilarToCollections(
+    similarState({ overrides: { playCounts: { atMs: NOW, counts: { sng_e6: 5 } } } }),
+    featureIndex(), ['pkt_target'], { nowMs: NOW });
+  assert.ok(scoreOf(stale, 'sng_e6') > scoreOf(plain, 'sng_e6'), 'plays alone lift it');
+  assert.ok(scoreOf(fresh, 'sng_e6') > scoreOf(stale, 'sng_e6'), 'recency lifts it further');
+});
+
+test('lastPlayedDays are bounded by the SAME truncation as the counts', () => {
+  // The dates map would otherwise be unbounded: a real library carries 56k dates against a 20k
+  // count cap. A date whose songId did not survive describes a row nothing else stores.
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+                  collections: { atMs: 0, list: [] }, playCounts: { atMs: 0, counts: {} } };
+  const counts = {}; const lastPlayedDays = {};
+  for (let i = 0; i < 25_000; i++) {
+    counts[`sng_${i}`] = i + 1;                 // sng_0 is the LEAST played ⇒ truncated away
+    lastPlayedDays[`sng_${i}`] = dayOf(NOW) - 1;
+  }
+  lastPlayedDays.sng_ghost = dayOf(NOW);        // a date with no count at all
+  mergeBatch(state, { playCounts: { atMs: 10, counts, lastPlayedDays } });
+
+  const kept = state.playCounts.counts;
+  const dates = state.playCounts.lastPlayedDays;
+  assert.equal(Object.keys(dates).length, Object.keys(kept).length,
+               'exactly one date per surviving count');
+  assert.ok(!('sng_ghost' in dates), 'a date with no surviving count is dropped');
+  for (const id of Object.keys(dates)) assert.ok(id in kept, `${id} has a count`);
+});
+
+test('lastPlayedDays reject junk and are replaced WHOLESALE with the snapshot', () => {
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+                  collections: { atMs: 0, list: [] }, playCounts: { atMs: 0, counts: {} } };
+  mergeBatch(state, { playCounts: { atMs: 10, counts: { sng_a: 3, sng_b: 2, sng_c: 1 },
+                                    lastPlayedDays: { sng_a: 20_000, sng_b: -5, sng_c: 'friday' } } });
+  assert.deepEqual(state.playCounts.lastPlayedDays, { sng_a: 20_000 },
+                   'only positive finite days survive');
+
+  // A newer snapshot replaces both maps together — stale dates must not outlive their counts.
+  mergeBatch(state, { playCounts: { atMs: 20, counts: { sng_a: 4 },
+                                    lastPlayedDays: { sng_a: 20_100 } } });
+  assert.deepEqual(state.playCounts.counts, { sng_a: 4 });
+  assert.deepEqual(state.playCounts.lastPlayedDays, { sng_a: 20_100 });
+
+  // A snapshot with NO dates clears them rather than carrying the old ones under new counts.
+  mergeBatch(state, { playCounts: { atMs: 30, counts: { sng_a: 5 } } });
+  assert.equal(state.playCounts.lastPlayedDays, undefined, 'dates do not outlive their snapshot');
+});
+
+test('lastPlayedDays ride a real /events flush end to end', async () => {
+  const profile = 'profile-recency-001';
+  const r = await call('POST', '/events', {
+    profile,
+    body: { v: 1, plays: [play('sng_e1', NOW - DAY)],
+            playCounts: { atMs: NOW, counts: { sng_j1: 40, sng_j2: 40 },
+                          lastPlayedDays: { sng_j1: dayOf(NOW) - 2000, sng_j2: dayOf(NOW) - 1 } } },
+  });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.accepted.playCounts, 2);
+
+  const recs = await call('GET', '/recs/songs', { profile, qs: { limit: '20' } });
+  assert.equal(recs.status, 200);
+  // Both counted songs seed (a 12-song fixture is far under the 50-seed cap), and `seeds` is
+  // ordered by weight — so the fresher of two EQUALLY-played songs must come first. That is the
+  // date surviving the wire, the clean, the store and the scorer.
+  const rank = (id) => recs.json.seeds.indexOf(id);
+  assert.ok(rank('sng_j2') >= 0 && rank('sng_j1') >= 0, 'both seeded');
+  assert.ok(rank('sng_j2') < rank('sng_j1'),
+            `equal counts, fresher date seeds higher: ${JSON.stringify(recs.json.seeds)}`);
 });

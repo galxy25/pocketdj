@@ -206,6 +206,14 @@ final class PlayStatsStore {
     /// sampler snapshots this on the main actor, then samples detached).
     func playCountsSnapshot() -> [String: Int] { stats.mapValues(\.playCount) }
 
+    /// This app's own last-played stamps in bulk (epoch ms), for the same OFF-MAIN consumers.
+    ///
+    /// LOCAL ONLY — deliberately not folded through the `peerLastPlayedAt` seam. That seam is a
+    /// per-song closure into `PlayHistoryStore`, and calling it once per row here would turn a
+    /// dictionary map into tens of thousands of history lookups on the main actor. The merge that
+    /// matters (Apple's far larger baseline) happens in `PlayCountService.lastPlayedSnapshot`.
+    func lastPlayedSnapshot() -> [String: Double] { stats.mapValues(\.lastPlayedAt) }
+
     /// Re-decode the on-disk document after CloudSyncService pulled a newer cloud copy
     /// (whole-document LWW — see the sync design doc).
     func reloadFromDisk() {

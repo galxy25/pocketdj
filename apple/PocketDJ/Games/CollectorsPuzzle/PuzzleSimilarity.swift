@@ -24,7 +24,13 @@ import Foundation
 /// the denominator entirely when the target profile carries no keywords at all.
 enum PuzzleSimilarity {
 
-    // MARK: - Term weights (sum to 1.0 when every signal is available)
+    // MARK: - Term weights
+    //
+    // These are RATIOS, not a partition: `score` divides by `availableWeight` (the sum of the
+    // terms the profile can actually speak), so only their relative sizes matter. They summed to
+    // 1.0 when there were six; the seventh does not have to be carved out of the others, and
+    // rebalancing them to keep the total at 1.0 would perturb shipped ranking for no numerical
+    // gain whatsoever.
 
     /// 100% coverage and the signal a human names first ("more stuff like this").
     static let wArtist = 0.30
@@ -41,6 +47,18 @@ enum PuzzleSimilarity {
     /// The noisiest of the six (shuffle, a party, an album played straight through all create
     /// spurious adjacency), so it is the smallest.
     static let wCoPlay = 0.08
+    /// How recently the CANDIDATE itself was played. The smallest term of the seven — a sixth of
+    /// `wArtist`, below even `wCoPlay` — for three reasons: it says nothing about the TARGETS (it
+    /// is a property of the candidate alone, unlike every other term here), it has ~58% coverage,
+    /// and the median dated song only scores 0.134. It is a gradient tiebreak between songs the
+    /// other six already rank alike, and at 0.05 of a ~1.0 denominator it can never lift a
+    /// non-matching artist above a matching one.
+    ///
+    /// NOTE there is deliberately NO play-count term here. Lifetime plays already reach this
+    /// ranker multiplicatively, through `PuzzleSampler.pool`'s bias weight, which `shortlist`
+    /// preserves — adding one would double-count it, and worse, it would fire even when the user
+    /// set `playCountBias = .avoid`, so the two would actively fight each other.
+    static let wRecency = 0.05
 
     /// How far toward 1.0 a top-ranked CLOUD hit may lift a song. A pure bonus — see `score`.
     static let cloudWeight = 0.25
@@ -74,8 +92,15 @@ enum PuzzleSimilarity {
         var maxKeywordShare: Double = 0
         /// Songs sharing a NON-target collection with at least one target member.
         var coMemberIds: Set<String> = []
-        /// songId → number of plays inside `coPlayWindowMs` of a play of a target member.
-        var coPlayCount: [String: Int] = [:]
+        /// songId → DECAYED strength of the co-play edge: each play inside `coPlayWindowMs` of a
+        /// play of a target member contributes `PlayRecency.decay` of its own age, not a flat 1.
+        ///
+        /// It was a flat count, which made a co-play from 2018 worth exactly as much as one from
+        /// last week — on a library whose median play is 5.8 years old that is most of the edges,
+        /// so the term described listening habits the user has since abandoned. Decaying at the
+        /// same half-life as every other recency use keeps "often played together" meaning
+        /// "played together LATELY".
+        var coPlayWeight: [String: Double] = [:]
         /// The target members themselves (already filed — they score 0 on membership, and the
         /// sampler's own "already in EVERY target" filter drops the fully-filed ones).
         var memberIds: Set<String> = []
@@ -111,11 +136,19 @@ enum PuzzleSimilarity {
     ///   - genreBySongId: the sampler's existing song → `Genre.category` map.
     ///   - otherCollections: every OTHER collection's membership (the "shared crate" signal).
     ///   - plays: the play log, oldest-or-newest order irrelevant (sorted here).
+    ///   - hasRecency: does this DEVICE know any last-played dates at all? ROUND-level, never
+    ///     per-song: it decides whether `wRecency` is in the denominator, so on a device with no
+    ///     baseline the term vanishes entirely instead of scoring every song a flat zero (which
+    ///     would deflate every score by 5% uniformly — harmless to the order, but it would make
+    ///     `.strict`'s absolute 0.15 floor quietly stricter than it reads).
+    ///   - nowMs: "now" for the co-play edge decay; injected so tests are deterministic.
     static func profile(targetMemberIds: [[String]],
                         songsById: [String: IndexSong],
                         genreBySongId: [String: String],
                         otherCollections: [[String]],
-                        plays: [(songId: String, atMs: Double)]) -> TargetProfile {
+                        plays: [(songId: String, atMs: Double)],
+                        hasRecency: Bool = false,
+                        nowMs: Double = Date().timeIntervalSince1970 * 1000) -> TargetProfile {
         var p = TargetProfile()
         var members = Set<String>()
         for ids in targetMemberIds { members.formUnion(ids) }
@@ -181,7 +214,10 @@ enum PuzzleSimilarity {
         if !memberPlayTimes.isEmpty {
             for e in plays where !members.contains(e.songId) {
                 if nearestDistance(e.atMs, in: memberPlayTimes) <= coPlayWindowMs {
-                    p.coPlayCount[e.songId, default: 0] += 1
+                    // The EVENT's own age, so an old listening session fades while a recent one
+                    // stays full strength. Floored at 0 by `decay`; a future stamp clamps to 1.
+                    p.coPlayWeight[e.songId, default: 0] += PlayRecency.decay(
+                        ageDays: (nowMs - e.atMs) / 86_400_000)
                 }
             }
         }
@@ -192,7 +228,8 @@ enum PuzzleSimilarity {
         if p.yearMean != nil { w += wYear }
         if !p.keywordShare.isEmpty { w += wLyrics }
         if !p.coMemberIds.isEmpty { w += wCoMember }
-        if !p.coPlayCount.isEmpty { w += wCoPlay }
+        if !p.coPlayWeight.isEmpty { w += wCoPlay }
+        if hasRecency { w += wRecency }
         p.availableWeight = w
         return p
     }
@@ -214,8 +251,12 @@ enum PuzzleSimilarity {
 
     /// 0…1 similarity of one song to the profile. `cloudRank` is 0 for everything the cloud
     /// did not name (or when the cloud is off, which is the DEFAULT — see the type doc).
+    /// `recency` is this song's 0…1 `PlayRecency` score, already computed by the caller (0 when
+    /// the device has no dates, which pairs with `hasRecency: false` dropping the term from the
+    /// denominator — so the result is then EXACTLY the six-term score, unscaled).
     static func score(_ song: IndexSong, profile p: TargetProfile,
-                      genre: String?, cloudRank: Double = 0) -> Double {
+                      genre: String?, cloudRank: Double = 0,
+                      recency: Double = 0) -> Double {
         var local = 0.0
         if !p.artistShare.isEmpty {
             let share = p.artistShare[artistKey(song.artist)] ?? 0
@@ -236,10 +277,11 @@ enum PuzzleSimilarity {
             }
         }
         if !p.coMemberIds.isEmpty, p.coMemberIds.contains(song.id) { local += wCoMember }
-        if !p.coPlayCount.isEmpty {
-            let n = Double(p.coPlayCount[song.id] ?? 0)
+        if !p.coPlayWeight.isEmpty {
+            let n = p.coPlayWeight[song.id] ?? 0
             if n > 0 { local += wCoPlay * min(1, n / coPlaySaturation) }
         }
+        if recency > 0 { local += wRecency * min(1, recency) }
         let normalized = min(1, max(0, p.availableWeight > 0 ? local / p.availableWeight : 0))
         // The cloud is a pure BONUS: it lifts a song a fraction of the way to 1, so it can only
         // ever RAISE a score, never zero one out, never hard-filter — and with `cloudRank == 0`
@@ -263,10 +305,14 @@ enum PuzzleSimilarity {
     /// It can NEVER starve a round: playability is the outer gate (this only ever reorders and
     /// subsets a set that already passed it), and the top-up rule below refills a thin
     /// shortlist from the remaining candidates.
+    ///
+    /// `recencies` is songId → 0…1 recency, threaded in like `cloudRanks` rather than stored on
+    /// the profile: the profile describes the TARGETS, and recency is a fact about the candidate.
     static func shortlist(_ candidates: [(song: IndexSong, weight: Double)],
                           profile p: TargetProfile,
                           genreBySongId: [String: String],
                           cloudRanks: [String: Double] = [:],
+                          recencies: [String: Double] = [:],
                           mode: PuzzleSettings.Similarity,
                           wanted: Int) -> [(song: IndexSong, weight: Double)] {
         // OFF, or nothing to be similar TO ⇒ byte-identical to today's behaviour. This is also
@@ -279,7 +325,8 @@ enum PuzzleSimilarity {
         scored.reserveCapacity(min(candidates.count, 4096))
         for (i, c) in candidates.enumerated() {
             let s = score(c.song, profile: p, genre: genreBySongId[c.song.id],
-                          cloudRank: cloudRanks[c.song.id] ?? 0)
+                          cloudRank: cloudRanks[c.song.id] ?? 0,
+                          recency: recencies[c.song.id] ?? 0)
             if s > floor { scored.append((i, s)) }
         }
         let k = max(400, 8 * max(1, wanted))
@@ -288,6 +335,10 @@ enum PuzzleSimilarity {
             if $0.sim != $1.sim { return $0.sim > $1.sim }
             let a = candidates[$0.index], b = candidates[$1.index]
             if a.weight != b.weight { return a.weight > b.weight }
+            // Equal similarity AND equal weight ⇒ prefer the more recently played. Still fully
+            // deterministic (the id tiebreak remains last), so seeded-RNG tests stay reproducible.
+            let ra = recencies[a.song.id] ?? 0, rb = recencies[b.song.id] ?? 0
+            if ra != rb { return ra > rb }
             return a.song.id < b.song.id
         }
         if scored.count > k { scored.removeLast(scored.count - k) }
@@ -308,6 +359,8 @@ enum PuzzleSimilarity {
                 .filter { !taken.contains($0.offset) }
                 .sorted {
                     if $0.element.weight != $1.element.weight { return $0.element.weight > $1.element.weight }
+                    let ra = recencies[$0.element.song.id] ?? 0, rb = recencies[$1.element.song.id] ?? 0
+                    if ra != rb { return ra > rb }
                     return $0.element.song.id < $1.element.song.id
                 }
                 .prefix(minimum - out.count)

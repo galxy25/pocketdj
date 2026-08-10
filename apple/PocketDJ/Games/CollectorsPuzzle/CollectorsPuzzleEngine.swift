@@ -98,6 +98,13 @@ final class CollectorsPuzzleEngine {
     /// provider keeps exactly that old behaviour, which is what unit tests and previews want.
     @ObservationIgnored var playCountsProvider: (() -> [String: Int])?
 
+    /// LAST-PLAYED dates for the sampler's recency bias, from
+    /// `PlayCountService.lastPlayedSnapshot()` — Apple's 56k dated songs merged with this app's
+    /// own. A nil provider yields an empty map, which makes both recency biases a uniform scale
+    /// over the pool and therefore leaves the sample byte-identical to today's — the same
+    /// "absent provider ⇒ old behaviour" contract `playCountsProvider` has.
+    @ObservationIgnored var lastPlayedProvider: (() -> [String: Double])?
+
     @ObservationIgnored private var tickerTask: Task<Void, Never>?
     /// Single-flight guard on the mid-round top-up sample.
     @ObservationIgnored private var toppingUp = false
@@ -171,6 +178,12 @@ final class CollectorsPuzzleEngine {
         // snapshot when it can't be used keeps a target-less round's cost byte-identical to
         // today's (and keeps `allCollectionMemberships` — the expensive one — unread).
         let wantsSimilarity = settings.similarity != .off && !settings.targetCollectionIds.isEmpty
+        // The dates are wanted by TWO consumers — the recency bias and the similarity ranker's
+        // `wRecency` term — so a round needs them if either is live. Skipped otherwise: the map
+        // is ~56k rows and this runs on every debounced settings keystroke AND the 0.25 s
+        // mid-round top-up (the Browse off-main doctrine).
+        let wantsRecency = settings.recencyBias != .off || wantsSimilarity
+        let lastPlayed = wantsRecency ? (lastPlayedProvider?() ?? [:]) : [:]
         return PuzzleSampler.RawInputs(
             songs: app.songs,
             albumsById: app.albumsById,
@@ -184,7 +197,9 @@ final class CollectorsPuzzleEngine {
             allCollections: wantsSimilarity ? allCollectionMemberships() : [],
             plays: wantsSimilarity ? playHistorySnapshot() : [],
             cloudRanks: wantsSimilarity ? cloudRanks : [:],
-            buildSimilarityProfile: wantsSimilarity)
+            buildSimilarityProfile: wantsSimilarity,
+            lastPlayedMs: lastPlayed,
+            hasRecency: !lastPlayed.isEmpty)
     }
 
     /// What audio this device can start RIGHT NOW, snapshotted on the main actor as raw COW

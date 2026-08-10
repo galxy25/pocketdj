@@ -44,6 +44,19 @@ enum PuzzleSampler {
         /// Skip the (catalog-walking) profile build entirely when the round can't use it —
         /// no targets, or similarity off.
         var buildSimilarityProfile: Bool = true
+
+        // ── Recency inputs (default-empty: a caller that omits them gets today's behaviour) ──
+
+        /// songId → last-played epoch ms (`PlayCountService.lastPlayedSnapshot()`). Sparse —
+        /// absent means never played, which scores an honest 0 (see `PlayRecency.score`).
+        /// Raw dates, not decayed scores: `Inputs(raw:)` does the ~56k decays off the main actor.
+        var lastPlayedMs: [String: Double] = [:]
+        /// Does the DEVICE know any last-played dates at all (round-level applicability)?
+        /// Separate from `lastPlayedMs.isEmpty` because a caller may legitimately skip
+        /// snapshotting the map for a round that cannot use it.
+        var hasRecency: Bool = false
+        /// "Now" for the decay, injected so tests are deterministic rather than wall-clock.
+        var nowMs: Double = Date().timeIntervalSince1970 * 1000
     }
 
     struct Inputs {
@@ -53,8 +66,19 @@ enum PuzzleSampler {
         /// genre from the owning album).
         var genreBySongId: [String: String]
         var favoriteIds: Set<String>
-        /// `PlayStatsStore.playCountsSnapshot()`.
+        /// `PlayCountService.snapshot()` — Apple's ~144k-play baseline plus this app's own plays.
+        /// (It was `PlayStatsStore.playCountsSnapshot()` before the combined service existed; the
+        /// engine now injects the merged map and only falls back to the local store in tests.)
         var playCounts: [String: Int]
+        /// songId → 0…1 `PlayRecency` score, DERIVED once in `init(raw:)` off the main actor from
+        /// the raw dates + `nowMs`. Sparse; absent ≡ never played ≡ 0. Derived rather than
+        /// recomputed at each use so the ~56k `pow` calls happen once per sample, not once in
+        /// `pool` and again in every `shortlist` pass.
+        var recencies: [String: Double] = [:]
+        /// True when the DEVICE knows any last-played dates at all — the round-level
+        /// applicability flag that decides whether `PuzzleSimilarity.wRecency` is in the
+        /// denominator. Distinct from "this map is empty for this song", which is an honest zero.
+        var hasRecency: Bool = false
         /// Union of songIds in `settings.membershipCollectionIds`.
         var membershipUnion: Set<String>
         /// Existing membership of EACH target collection — a song already in ALL of
@@ -76,11 +100,15 @@ enum PuzzleSampler {
              perTargetMembership: [Set<String>],
              playableNowIds: Set<String> = [], canStreamAppleMusic: Bool = false,
              similarityProfile: PuzzleSimilarity.TargetProfile = .init(),
-             cloudRanks: [String: Double] = [:]) {
+             cloudRanks: [String: Double] = [:],
+             recencies: [String: Double] = [:],
+             hasRecency: Bool = false) {
             self.songs = songs
             self.genreBySongId = genreBySongId
             self.favoriteIds = favoriteIds
             self.playCounts = playCounts
+            self.recencies = recencies
+            self.hasRecency = hasRecency
             self.membershipUnion = membershipUnion
             self.perTargetMembership = perTargetMembership
             self.playableNowIds = playableNowIds
@@ -121,12 +149,19 @@ enum PuzzleSampler {
             // this runs on every debounced settings keystroke + the mid-round top-up.
             var playable = Set(raw.ripManifest.keys)
             playable.formUnion(raw.burnedIds)
+            // Decay every known date ONCE, here, off the main actor (~56k rows).
+            let recencies = raw.lastPlayedMs.compactMapValues { ms -> Double? in
+                let r = PlayRecency.score(lastPlayedMs: ms, nowMs: raw.nowMs)
+                return r > 0 ? r : nil
+            }
             let profile = wantsProfile
                 ? PuzzleSimilarity.profile(targetMemberIds: raw.targetCollections,
                                            songsById: songsById,
                                            genreBySongId: genreBySongId,
                                            otherCollections: raw.allCollections,
-                                           plays: raw.plays.map { (songId: $0.songId, atMs: $0.playedAt) })
+                                           plays: raw.plays.map { (songId: $0.songId, atMs: $0.playedAt) },
+                                           hasRecency: raw.hasRecency,
+                                           nowMs: raw.nowMs)
                 : PuzzleSimilarity.TargetProfile()
             self.init(songs: raw.songs, genreBySongId: genreBySongId,
                       favoriteIds: raw.favoriteIds, playCounts: raw.playCounts,
@@ -135,7 +170,9 @@ enum PuzzleSampler {
                       playableNowIds: playable,
                       canStreamAppleMusic: raw.canStreamAppleMusic,
                       similarityProfile: profile,
-                      cloudRanks: raw.cloudRanks)
+                      cloudRanks: raw.cloudRanks,
+                      recencies: recencies,
+                      hasRecency: raw.hasRecency)
         }
     }
 
@@ -174,6 +211,7 @@ enum PuzzleSampler {
         PuzzleSimilarity.shortlist(candidates, profile: inputs.similarityProfile,
                                    genreBySongId: inputs.genreBySongId,
                                    cloudRanks: inputs.cloudRanks,
+                                   recencies: inputs.recencies,
                                    mode: settings.similarity, wanted: wanted)
     }
 
@@ -244,6 +282,22 @@ enum PuzzleSampler {
             case .avoid:
                 let count = inputs.playCounts[song.id] ?? 0
                 weight *= count == 0 ? 4.0 : 1 / (1 + log2(1 + Double(count)))
+            case .off: break
+            }
+            // RECENCY — a SEPARATE axis, applied as its own multiplier so the two compose rather
+            // than collapse. "Most played" + "not played lately" is a coherent round (the songs
+            // you used to wear out), and only independent switches can express it. Mirrors the
+            // play-count formulas' shape and dynamic range on purpose — see `PlayRecency.gain`.
+            switch settings.recencyBias {
+            case .favor:
+                let r = inputs.recencies[song.id] ?? 0
+                weight *= 1 + PlayRecency.gain * r
+            case .avoid:
+                let r = inputs.recencies[song.id] ?? 0
+                // Never played gets the same flat boost the play-count `avoid` gives a zero
+                // count: an unplayed song is the most "not played lately" a song can be, and it
+                // has no date to decay.
+                weight *= r <= 0 ? 4.0 : 1 / (1 + PlayRecency.gain * r)
             case .off: break
             }
             out.append((song, weight))
