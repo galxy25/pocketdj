@@ -169,6 +169,14 @@ enum ForYouFeedBuilder {
         // resurrected by a later toggle-on without a refresh.
         //
         // The zone pass above still sees every crate (`inputs.crates`) — see `recsOffCrateIds`.
+        //
+        // ── THE VERSION PARSE, ONCE FOR THE WHOLE REFRESH ────────────────────────────────────
+        // Feature 6 needs each catalog row's comparable version identity, and the crate map below
+        // is a full-catalog sweep PER CRATE. Derived here, ahead of the map, it is 96k parses per
+        // refresh instead of 96k × the number of collections — and it happens on THIS side of the
+        // `Task.detached` hop, which is why `AppModel.zoneTracks` carries raw titles rather than
+        // parsed keys. See `ZoneEngine.versionKeys`.
+        let versions = ZoneEngine.versionKeys(inputs.tracks)
         let crates = inputs.crates
             .filter { !inputs.recsOffCrateIds.contains($0.id) }
             .map { c in
@@ -176,7 +184,8 @@ enum ForYouFeedBuilder {
                     id: c.id, kind: c.kind, name: c.name,
                     songIds: ZoneEngine.suggestions(memberSongIds: c.songIds, tracks: inputs.tracks,
                                                     playCount: { counts[$0] ?? 0 },
-                                                    feedback: inputs.crateFeedback[c.id] ?? ZoneEngine.Feedback()))
+                                                    feedback: inputs.crateFeedback[c.id] ?? ZoneEngine.Feedback(),
+                                                    versions: versions))
             }
         return ForYouFeedSnapshot(
             refreshedAtMs: inputs.nowMs,
