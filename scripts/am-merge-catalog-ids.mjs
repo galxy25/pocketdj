@@ -15,6 +15,18 @@
 //     rebuild already has Explicit, so this is a no-op there — only the dump path needs it. Genuinely-new
 //     tracks land explicit=false until backfilled out-of-band.)
 //
+//   • artists[] — the TOP-LEVEL artist table (normalized name → Apple Music artist id), baked in by
+//     scripts/backfill-artist-ids.mjs and required by the release feed (the artists catalog endpoint
+//     takes ARTIST ids, and songs only carry track ids). This one is NOT song-keyed, so it needs its
+//     own carry-forward: the loop below walks `next.songs`, and `index-apple-music.mjs` never emits
+//     an `artists` key at all — a rebuild would drop the whole table on the floor with no per-song
+//     evidence that anything was lost. Its derivation cache (index-out/apple-music/song-meta.ndjson)
+//     is gitignored and ABSENT in the agent's clone, exactly the appleMusicId precedent, so the
+//     committed index is again the only durable copy. The `songs` counts ARE recomputed against the
+//     new song set (they are cheap and local); only the network-derived name→id mapping is carried.
+//     Artists that are new since the last backfill are simply absent until it re-runs — the feed
+//     degrades to fewer artists, never to a broken document.
+//
 //   • appleMusicIdExplicit / appleMusicIdClean — the edition-variant catalog ids, baked in by the
 //     variant crawl (scripts/resolve-explicit-variants.mjs) straight into the COMMITTED index, exactly
 //     the appleMusicId precedent: the crawl's ndjson cache lives in gitignored index-out/, so the
@@ -59,15 +71,42 @@ for (const s of (next.songs || [])) {
   if (!s.appleMusicIdExplicit) { const v = explIds.get(s.id); if (v) { s.appleMusicIdExplicit = v; variantFilled++; } }
   if (!s.appleMusicIdClean) { const v = cleanIds.get(s.id); if (v) { s.appleMusicIdClean = v; variantFilled++; } }
 }
+const songs = next.songs || [];
+
+// Artist table: present-on-new wins (idempotent), else carry the old one forward. The name→id
+// mapping is the irreplaceable part; the per-artist song counts are re-derived below against the
+// NEW song set so a rebuild that adds or removes tracks doesn't leave stale totals behind.
+let artistsCarried = 0;
+if (!next.artists && Array.isArray(oldIdx.artists) && oldIdx.artists.length) {
+  next.artists = oldIdx.artists.map((a) => ({ ...a }));
+  artistsCarried = next.artists.length;
+}
+if (Array.isArray(next.artists) && next.artists.length) {
+  // Must match backfill-artist-ids.mjs's key normalization exactly, or the join silently misses.
+  const norm = (s) => String(s).trim().toLowerCase().replace(/\s+/g, ' ');
+  const counts = new Map();
+  for (const s of songs) {
+    if (!s.artist) continue;
+    const k = norm(s.artist);
+    counts.set(k, (counts.get(k) || 0) + 1);
+  }
+  for (const a of next.artists) a.songs = counts.get(a.key) || 0;
+}
+
 // refresh the self-reported coverage counts if the manifest carries them (mirrors
 // refreshManifestCounts() in resolve-explicit-variants.mjs for the variant fields)
-const songs = next.songs || [];
 const withId = songs.filter((s) => s.appleMusicId).length;
 if (next.manifest && next.manifest.counts) {
   next.manifest.counts.songsWithAppleMusicId = withId;
   next.manifest.counts.songsWithExplicitVariant = songs.filter((s) => s.appleMusicIdExplicit).length;
   next.manifest.counts.songsWithCleanVariant = songs.filter((s) => s.appleMusicIdClean).length;
+  if (Array.isArray(next.artists)) {
+    const norm = (s) => String(s).trim().toLowerCase().replace(/\s+/g, ' ');
+    const keys = new Set(next.artists.map((a) => a.key));
+    next.manifest.counts.artists = next.artists.length;
+    next.manifest.counts.songsWithArtistId = songs.filter((s) => s.artist && keys.has(norm(s.artist))).length;
+  }
 }
 
 writeFileSync(outPath, JSON.stringify(next));
-console.error(`✓ am-merge-catalog-ids: filled ${filled} appleMusicId(s) + ${explFilled} explicit flag(s) + ${variantFilled} variant id(s) from ${oldPath} (old had ${ids.size} ids / ${expl.size} explicit / ${explIds.size}+${cleanIds.size} variant; new total ${withId}/${songs.length})`);
+console.error(`✓ am-merge-catalog-ids: filled ${filled} appleMusicId(s) + ${explFilled} explicit flag(s) + ${variantFilled} variant id(s) + carried ${artistsCarried} artist(s) from ${oldPath} (old had ${ids.size} ids / ${expl.size} explicit / ${explIds.size}+${cleanIds.size} variant / ${(oldIdx.artists || []).length} artists; new total ${withId}/${songs.length})`);
