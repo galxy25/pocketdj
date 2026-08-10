@@ -46,6 +46,11 @@ struct IndexArtist: Decodable, Identifiable, Hashable {
     /// Apple Music catalog artist id.
     let id: Int
     /// How many catalog songs are credited to this name.
+    ///
+    /// ADVISORY ONLY — do not branch on it. The nightly INCREMENTAL sync carries the table
+    /// forward wholesale (`{ ...idx }` in `am-incremental-sync.mjs`), which preserves the
+    /// irreplaceable name→id mapping but leaves this count as of the last backfill; only a full
+    /// rebuild through `am-merge-catalog-ids.mjs` recomputes it against the new song set.
     let songs: Int?
     /// Other artist ids seen under this same name — compilation/feature credits that resolved to a
     /// different entity. `id` is the DOMINANT one (most songs); these are kept so nothing is lost.

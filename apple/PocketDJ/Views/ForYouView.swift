@@ -61,8 +61,11 @@ struct ForYouTilesView: View {
                 }
             }
             .padding(12)
-            if tiles.isEmpty && !isBuilding {
-                emptyState
+            // `tiles` is only ever empty BEFORE the first build — the builder always emits the
+            // pinned pair — so this is a first-paint spinner, not an empty state. (An "empty
+            // state" here would be unreachable code that could still flash on launch.)
+            if tiles.isEmpty {
+                ProgressView().padding(40)
             }
         }
         .background(Theme.bg)
@@ -123,19 +126,6 @@ struct ForYouTilesView: View {
         builtSignature = signature
     }
 
-    private var emptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 40)).foregroundStyle(Theme.fgDim)
-            Text("Nothing here yet").font(.headline).foregroundStyle(Theme.fg)
-            Text("Play some music — New releases and your zone build from what you listen to.")
-                .font(.caption).foregroundStyle(Theme.fgDim)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(40)
-        .accessibilityIdentifier("foryou-empty")
-    }
 }
 
 // ============================================================================
