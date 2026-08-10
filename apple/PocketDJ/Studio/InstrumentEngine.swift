@@ -305,6 +305,13 @@ final class InstrumentEngine {
     /// body — quantize + paginate — ten times a second.
     @ObservationIgnored private var replayAnchor: ContinuousClock.Instant?
     @ObservationIgnored private var replayFrozenMs: Int?
+    /// WHOSE take the replay clock currently describes — live or frozen. There is exactly ONE
+    /// replay clock in this engine, so without an owner a position parked by replaying take A is
+    /// indistinguishable from take B's, and B's score would both SHOW it and (fatally, now that
+    /// cursors persist) WRITE it into B's remembered position. Set together with `replayFrozenMs`
+    /// / `replayAnchor`; nil whenever the clock is nil. `@ObservationIgnored` for the same reason
+    /// the anchor is: it is read from a `TimelineView` tick.
+    @ObservationIgnored private var replayOwner: String?
 
     // Watchdog + recovery (the MixEngine tickFire shape).
     @ObservationIgnored private var watchdogTask: Task<Void, Never>?
@@ -649,7 +656,19 @@ final class InstrumentEngine {
     /// cancellation latch (bumped by `stopReplay`, a new replay, or recovery). The take's
     /// instrument should already be loaded — replay proceeds on whatever IS loaded (logged) so
     /// a missing bank degrades to the wrong timbre, never a dead button.
-    func replayTake(events: [StudioNoteEvent], instrument: InstrumentKey) {
+    ///
+    /// `fromMs` starts the replay PART-WAY IN — the score's tap-to-seek, and Replay resuming from
+    /// where the cursor was left. The action list is CHASED to that point (`replayActions(events:
+    /// from:)`): notes already sounding there are struck at the seek instant, so what you hear
+    /// matches the note the score paints as sounding. The clock anchor is back-dated by the same
+    /// amount, so `replayPositionMs()` reports the seeked time immediately and the cursor lands
+    /// where the tap did rather than snapping to 0 first.
+    ///
+    /// `forTake` names WHOSE clock this replay is, so another instrumental's open score neither
+    /// shows nor persists this one's position (see `replayOwner`). nil = an anonymous replay, which
+    /// no score screen will claim.
+    func replayTake(events: [StudioNoteEvent], instrument: InstrumentKey, fromMs: Int = 0,
+                    forTake takeId: String? = nil) {
         ensureEngine()
         guard built, rt.engineReady, !isLoadingInstrument, sampler != nil else { return }
         if let cur = currentInstrument, cur != instrument {
@@ -657,18 +676,27 @@ final class InstrumentEngine {
         }
         stopReplay()
         guard startEngineIfNeeded() else { return }
-        let actions = Self.replayActions(events: events)
-        guard !actions.isEmpty else { return }
+        // Clamp before any clock math: a seek derived from a wild layout must degrade, never trap.
+        let from = max(0, min(fromMs, Self.maxReplayMs))
+        let actions = Self.replayActions(events: events, from: from)
+        guard !actions.isEmpty else {
+            // Seeked past the last note: nothing left to play, so just park the cursor there (the
+            // "last played" emphasis holds) instead of silently doing nothing.
+            if from > 0 { parkReplayPosition(atMs: from, forTake: takeId) } else { replayOwner = takeId }
+            return
+        }
+        replayOwner = takeId
         isReplaying = true
         NowPlayingArbiter.shared.claim(self)
         replayGeneration &+= 1
         let gen = replayGeneration
-        dlog("instr: replay START — \(events.count) events")
+        dlog("instr: replay START — \(events.count) events\(from > 0 ? " from \(from) ms" : "")")
         // ONE anchor for both the scheduling loop's sleeps and the score's playhead, so the cursor
-        // and the sampler can never disagree about where in the take we are.
-        let start = ContinuousClock.now
+        // and the sampler can never disagree about where in the take we are. Back-dated by `from`,
+        // which is what makes the loop's absolute `start + a.ms` sleeps stay correct after a seek.
+        let start = ContinuousClock.now - .milliseconds(from)
         replayAnchor = start
-        replayFrozenMs = 0
+        replayFrozenMs = from
         Task { @MainActor [weak self] in
             for a in actions {
                 try? await Task.sleep(until: start + .milliseconds(a.ms), clock: .continuous)
@@ -716,6 +744,10 @@ final class InstrumentEngine {
 
     // MARK: Replay position (the saved instrumental's score cursor)
 
+    /// Ceiling for any externally supplied replay time (24 h — far past any instrumental). Every
+    /// seek/park clamps to it BEFORE the clock math (the StaffChordView `Int.min` lesson).
+    nonisolated static let maxReplayMs = 86_400_000
+
     /// Milliseconds since the replay's beat 1 — LIVE while replaying, else FROZEN where the last
     /// replay stopped or ended. nil = nothing has been replayed yet, which the score reads as
     /// "nothing played": cursor at the start, no highlight.
@@ -732,6 +764,18 @@ final class InstrumentEngine {
         return Int((min(max(secs, 0), 86_400) * 1000).rounded())
     }
 
+    /// The replay clock read THROUGH its owner: the position only when the clock describes THIS
+    /// take, nil otherwise. The score screen reads this rather than the bare `replayPositionMs()`,
+    /// so one instrumental's replay can neither animate nor persist itself onto another's score.
+    func replayPositionMs(forTake takeId: String) -> Int? {
+        guard replayOwner == takeId else { return nil }
+        return replayPositionMs()
+    }
+
+    /// Does the engine's one replay clock (live or frozen) belong to this take? The gate on every
+    /// WRITE the score screen makes: remembering a cursor, stopping "its" replay, clearing it.
+    func replayClockBelongs(to takeId: String) -> Bool { replayOwner == takeId }
+
     /// Park the replay cursor where it stands. The score then keeps showing the LAST note that
     /// sounded (the "current playing OR last played" contract) instead of snapping back to neutral.
     private func freezeReplayPosition() {
@@ -739,12 +783,28 @@ final class InstrumentEngine {
         replayAnchor = nil
     }
 
-    /// Forget a PARKED cursor so a score screen opens showing "nothing played" — a stale position
-    /// from another take's replay must not highlight this one. Never disturbs a LIVE replay (open
-    /// the score mid-replay and the cursor keeps running).
-    func resetReplayPosition() {
+    /// Park the replay cursor at an explicit score-clock ms — a tap-to-seek while stopped, or the
+    /// per-take position restored when a score opens (`StudioStore.scoreCursorMs`). `nil` parks
+    /// NOTHING, i.e. "nothing played": cursor at the start, no highlight.
+    ///
+    /// Never disturbs a LIVE replay: while one is running the cursor belongs to the sampler's own
+    /// anchor, and a restore/seek must go through `replayTake(fromMs:)` so sound and cursor move
+    /// together.
+    /// `forTake` claims the clock for that take (nil ms parks NOTHING, so the clock has no owner).
+    /// A park is refused mid-replay, so it can never steal the running take's clock.
+    func parkReplayPosition(atMs ms: Int?, forTake takeId: String? = nil) {
         guard replayAnchor == nil else { return }
-        replayFrozenMs = nil
+        replayFrozenMs = ms.map { max(0, min($0, Self.maxReplayMs)) }
+        replayOwner = replayFrozenMs == nil ? nil : takeId
+    }
+
+    /// Forget a PARKED cursor so the next score opens showing "nothing played". Scoped to the
+    /// OWNER: a screen may only clear the clock it put there, never one another instrumental's
+    /// replay is using. Never disturbs a LIVE replay (open the score mid-replay and the cursor
+    /// keeps running).
+    func resetReplayPosition(forTake takeId: String) {
+        guard replayOwner == takeId else { return }
+        parkReplayPosition(atMs: nil)
     }
 
     /// Flatten note events into a time-ordered on/off action list. Offs sort BEFORE ons at the
@@ -758,10 +818,34 @@ final class InstrumentEngine {
             actions.append((on, true, e.note, e.velocity))
             actions.append((max(on, e.offMs), false, e.note, e.velocity))
         }
-        return actions.sorted { a, b in
-            if a.ms != b.ms { return a.ms < b.ms }
-            return !a.on && b.on   // off before on at the same ms
+        return actions.sorted(by: actionOrder)
+    }
+
+    /// The action list for a replay that STARTS at `from` — a tap-to-seek, or Replay resuming from
+    /// the parked cursor.
+    ///
+    /// Everything before the seek point is dropped, EXCEPT that a note which started earlier and is
+    /// still sounding at `from` is struck AT `from` (MIDI "chase"). Without the chase the score
+    /// paints that note as the current, SOUNDING note — the state playing there naturally would be
+    /// in — over silence, and then sends it a note-off it was never given a note-on for. Pure +
+    /// testable; `InstrumentTests.testASeekChasesNotesAlreadySounding` pins both halves.
+    nonisolated static func replayActions(events: [StudioNoteEvent], from: Int)
+        -> [(ms: Int, on: Bool, note: Int, velocity: Int)] {
+        guard from > 0 else { return replayActions(events: events) }
+        var actions = replayActions(events: events).filter { $0.ms >= from }
+        for e in events where max(0, e.onMs) < from && max(max(0, e.onMs), e.offMs) > from {
+            actions.append((from, true, e.note, e.velocity))
         }
+        return actions.sorted(by: actionOrder)
+    }
+
+    /// Time order, with offs BEFORE ons at the same instant so a retriggered note (off/on at one
+    /// timestamp) re-strikes instead of being swallowed. One comparator, both builders.
+    private nonisolated static func actionOrder(_ a: (ms: Int, on: Bool, note: Int, velocity: Int),
+                                                _ b: (ms: Int, on: Bool, note: Int, velocity: Int))
+        -> Bool {
+        if a.ms != b.ms { return a.ms < b.ms }
+        return !a.on && b.on
     }
 
     // MARK: - Click synthesis + timing math (nonisolated pure — unit-testable)

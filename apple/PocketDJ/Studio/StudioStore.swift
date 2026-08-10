@@ -132,6 +132,13 @@ final class StudioStore {
     /// being touched on non-cue saves (which would stamp a fresh mtime and cause spurious pushes).
     @ObservationIgnored private var cueMirrorDirty = false
 
+    /// Per-take score-cursor marks (`…-studio.cursors.json`) — where each saved instrumental's
+    /// score playhead was last left, so re-opening a score resumes instead of starting over.
+    /// OWNED here, like `CollectionsStore`'s `CollectionStatsCache`: it is take-keyed state with no
+    /// UI of its own, so it rides the store views already have rather than a new environment
+    /// object. Device-local; never synced (only the cue mirror leaves this device).
+    @ObservationIgnored private let scoreCursors: ScoreCursorStore
+
     /// The cue mirror path for a given studio-doc URL (`pocketdj-studio.json` → `…-studio.cues.json`).
     nonisolated static func cuesURL(forStudio studioURL: URL) -> URL {
         studioURL.deletingPathExtension().appendingPathExtension("cues.json")
@@ -142,6 +149,7 @@ final class StudioStore {
     init(fileURL: URL = StudioStore.defaultURL()) {
         self.fileURL = fileURL
         self.cuesFileURL = StudioStore.cuesURL(forStudio: fileURL)
+        self.scoreCursors = ScoreCursorStore(fileURL: ScoreCursorStore.url(forStudio: fileURL))
         if let data = try? Data(contentsOf: fileURL),
            let doc = try? JSONDecoder().decode(StudioDocument.self, from: data) {
             samples = doc.samples
@@ -158,6 +166,12 @@ final class StudioStore {
             arrangements = doc.arrangements
             arrangementFolders = doc.arrangementFolders
             arrangementArtifacts = doc.arrangementArtifacts
+            // Drop score cursors whose instrumental is gone. `deleteTake` already removes them one
+            // by one; this catches every OTHER way a take can leave the document (an import that
+            // replaces it, a hand-edited doc), so the sibling file can't accumulate dead ids.
+            // Inside the decode branch on purpose: a doc that failed to load must NOT be read as
+            // "there are no takes" and take every remembered cursor with it.
+            scoreCursors.prune(keeping: Set(takes.map(\.id)))
         }
     }
 
@@ -175,6 +189,7 @@ final class StudioStore {
             let url = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-uitest-studio.json")
             try? FileManager.default.removeItem(at: url)
             try? FileManager.default.removeItem(at: cuesURL(forStudio: url))   // clear the cue mirror too
+            try? FileManager.default.removeItem(at: ScoreCursorStore.url(forStudio: url))  // …and the score cursors
             return url
         }
         return defaultURL()
@@ -715,6 +730,17 @@ final class StudioStore {
 
     func take(_ id: String) -> StudioTake? { takes.first { $0.id == id } }
 
+    /// Where THIS take's score cursor was last left (score-clock ms, 0 = beat 1), or nil if it has
+    /// never been replayed. Per-take by construction, so opening one instrumental's score can never
+    /// show a position another instrumental's replay parked (see `ScoreCursorStore`).
+    func scoreCursorMs(_ takeId: String) -> Int? { scoreCursors.position(takeId) }
+
+    /// Remember (nil ⇒ forget) where a take's score cursor sits. Written when the score is left,
+    /// when a replay ends, and on every tap-to-seek.
+    func setScoreCursorMs(_ ms: Int?, forTake takeId: String) {
+        scoreCursors.setPosition(ms, for: takeId)
+    }
+
     /// File a finished take (audio already under the take's stamped root). Upserts by id.
     @discardableResult
     func addTake(_ take: StudioTake) -> StudioTake {
@@ -852,6 +878,7 @@ final class StudioStore {
         }
         invalidateTakeRender(&takes[i])   // also drop the rendered-audio cache file
         takes.remove(at: i)
+        scoreCursors.remove(id)           // …and its parked score cursor
         saveNow()
         return true
     }
@@ -1472,6 +1499,9 @@ final class StudioStore {
         // Persist a pending debounced cue nudge to the SYNCED mirror before suspension (only when a
         // cue change is actually pending — never on a non-cue background flush, so no spurious push).
         if cueMirrorDirty { writeCueMirror() }
+        // Score cursors write on a background queue; wait for the queue to drain so a suspension
+        // (or a test re-reading the file) can't land between the seek and its write.
+        scoreCursors.flush()
         let w = writer
         Task { await w.markWritten(v) }
     }

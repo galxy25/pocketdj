@@ -76,24 +76,62 @@ struct StudioScoreView: View {
                                              set: { if !$0 { errorText = nil } })) {
             Button("OK", role: .cancel) {}
         } message: { Text(errorText ?? "") }
-        // A PARKED playhead belongs to whatever was replayed last — possibly another take, from
-        // the takes-list Replay button. Clear it on the way in so this score opens at "nothing
-        // played"; a replay already RUNNING is left alone and its cursor keeps moving.
-        .onAppear { instruments.resetReplayPosition() }
-        .onDisappear {
-            // Leaving the score stops ITS replay (the sampler keeps sounding otherwise, with
-            // no visible stop control anywhere — replay is a this-screen affordance).
-            if instruments.isReplaying { instruments.stopReplay() }
-            instruments.resetReplayPosition()
+        // The engine has ONE replay clock, so a PARKED position belongs to whatever was replayed
+        // last — possibly another take. Restore THIS take's own remembered cursor (nil ⇒ nothing
+        // played, which is what a different take's score shows), so a score resumes where it was
+        // left instead of starting over. A replay already RUNNING is left alone (`parkReplayPosition`
+        // is a no-op mid-replay) and keeps its own clock — this screen then falls back to its
+        // take's stored mark (see `content`) rather than borrowing the other take's cursor.
+        .onAppear { cursor.restore() }
+        // A replay that ENDS (or is stopped) freezes the cursor where it stopped — remember that,
+        // so quitting from a finished replay still resumes there next launch. If the replay that
+        // just ended was ANOTHER instrumental's (started from the takes list, then navigated here),
+        // there is nothing of ours to remember: take the freed clock and put OUR cursor back on it.
+        .onChange(of: instruments.isReplaying) { _, replaying in
+            if !replaying, persistsCursor { cursor.replayEnded() }
         }
+        .onDisappear { cursor.leave(remembering: persistsCursor) }
+    }
+
+    // MARK: Cursor persistence + tap-to-seek
+
+    /// This screen's cursor lifecycle (restore / remember / leave) — the take-owner gating lives
+    /// there, unit-tested, rather than in the view.
+    private var cursor: ScoreCursorSession {
+        ScoreCursorSession(takeId: takeId, instruments: instruments, studio: studio)
+    }
+
+    /// The pinned test seam drives a FAKE playhead; it must never write itself into the user's
+    /// remembered positions. Nor should a take that was DELETED while its score was open leave a
+    /// mark behind (`deleteTake` already dropped it).
+    private var persistsCursor: Bool { Self.pinnedPlayheadMs == nil && take != nil }
+
+    /// A tap on the score moved the cursor to `ms` (score clock, 0 = beat 1).
+    ///
+    /// While THIS take is REPLAYING the tap seeks the SOUND too — the Demuxer score's bar-chip
+    /// precedent: a tap on the music moves the music, and the cursor follows because it reads the
+    /// replay's own clock. Otherwise it parks the cursor, which is also where the next Replay
+    /// starts (`StudioTakeReplay.resumeMs`), so tapping and then playing does what it looks like.
+    /// (Another take's replay is never hijacked: the park is refused mid-replay, and the stored
+    /// mark this screen falls back to still moves under the tap.)
+    private func seek(_ take: StudioTake, toMs ms: Int) {
+        let target = max(0, ms)
+        if instruments.isReplaying, instruments.replayClockBelongs(to: takeId) {
+            instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
+                                   fromMs: target, forTake: takeId)
+        } else {
+            instruments.parkReplayPosition(atMs: target, forTake: takeId)
+        }
+        if persistsCursor { studio.setScoreCursorMs(target, forTake: takeId) }
     }
 
     // MARK: Content
 
     private func content(_ take: StudioTake) -> some View {
-        // Resolve the environment ONCE and capture the ENGINE (a class), not this view struct, so
-        // the playhead closure below stays a plain object call with no Observation dependency.
-        let engine = instruments
+        // Resolve the environment ONCE and capture the ENGINE + STORE (classes), not this view
+        // struct, so the playhead closure below stays a plain object call with no Observation
+        // dependency (both properties it touches are `@ObservationIgnored`).
+        let engine = instruments, store = studio, id = takeId
         return ScrollView {
             VStack(spacing: 14) {
                 actionBar(take)
@@ -104,9 +142,15 @@ struct StudioScoreView: View {
                 ScoreEditorView(events: take.scoreEvents, bpm: take.bpm, instrument: take.instrument,
                                 title: displayTitle(take), editing: editing,
                                 onEdit: { studio.setTakeEvents(takeId, events: $0) },
-                                playback: ScorePlaybackClock {
-                                    Self.pinnedPlayheadMs ?? engine.replayPositionMs()
-                                })
+                                playback: ScorePlaybackClock(
+                                    // THIS take's clock, or — when the engine's one clock is busy
+                                    // with another instrumental's replay — this take's own stored
+                                    // mark. Never the other take's moving position.
+                                    positionMs: {
+                                        Self.pinnedPlayheadMs ?? engine.replayPositionMs(forTake: id)
+                                            ?? store.scoreCursorMs(id)
+                                    },
+                                    seek: { seek(take, toMs: $0) }))
                 Text("\(take.instrument.displayName) · \(Fmt.bpm(take.bpm)) BPM")
                     .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }
@@ -149,17 +193,29 @@ struct StudioScoreView: View {
     }
 
     private func actionBar(_ take: StudioTake) -> some View {
-        HStack(spacing: 10) {
+        // THIS take's transport state — not "something is replaying". With another instrumental's
+        // replay running (started from the takes list) this button still reads ▶ Replay and starts
+        // ours, instead of reading Stop and silently killing a take that isn't on screen.
+        let ours = instruments.isReplaying && instruments.replayClockBelongs(to: takeId)
+        return HStack(spacing: 10) {
             Button {
-                if !StudioTakeReplay.toggle(take: take, instruments: instruments, packs: packs) {
+                // Resume from where the cursor sits (a tap-to-seek, or the position this score was
+                // left at) — from the top once the take has played through. See `resumeMs`. The
+                // stored mark is the fallback for the case above, where the live clock is not ours.
+                let parked = instruments.replayPositionMs(forTake: takeId) ?? studio.scoreCursorMs(takeId)
+                let from = StudioTakeReplay.resumeMs(parkedMs: parked, events: take.scoreEvents)
+                // Free the sampler from a foreign replay first, so `toggle` starts ours rather than
+                // just stopping theirs.
+                if instruments.isReplaying, !ours { instruments.stopReplay() }
+                if !StudioTakeReplay.toggle(take: take, instruments: instruments, packs: packs,
+                                            fromMs: from) {
                     errorText = "Download the \(take.instrument.displayName) pack to hear this take."
                 }
             } label: {
-                Label(instruments.isReplaying ? "Stop" : "Replay",
-                      systemImage: instruments.isReplaying ? "stop.fill" : "play.fill")
+                Label(ours ? "Stop" : "Replay", systemImage: ours ? "stop.fill" : "play.fill")
             }
             .buttonStyle(.borderedProminent)
-            .tint(instruments.isReplaying ? Theme.danger : Theme.accent)
+            .tint(ours ? Theme.danger : Theme.accent)
             .disabled(take.scoreEvents.isEmpty)
             .accessibilityIdentifier("score-replay")
             editButtons(take)
@@ -254,6 +310,66 @@ struct StudioScoreView: View {
             .replacingOccurrences(of: ":", with: "-")
             .trimmingCharacters(in: .whitespaces)
         return cleaned.isEmpty ? "Instrumental" : cleaned
+    }
+}
+
+
+// MARK: - Cursor lifecycle (extracted from the view so the rules are unit-tested)
+
+/// The score screen's half of the cursor contract, extracted from the view so the rules are
+/// UNIT-TESTED rather than eyeballed (`ScoreCursorTests`).
+///
+/// The whole problem it solves: `InstrumentEngine` has exactly ONE replay clock, and a take's
+/// score can be open while a DIFFERENT take is replaying (the takes list has a per-row ▶, and the
+/// row itself navigates to the score). Every read and every write below is therefore gated on the
+/// clock's OWNER. Without that gate the screen would persist another instrumental's position into
+/// this take's remembered cursor — which, now that cursors are durable, would follow the user
+/// across relaunches instead of evaporating.
+@MainActor
+struct ScoreCursorSession {
+    let takeId: String
+    let instruments: InstrumentEngine
+    let studio: StudioStore
+
+    /// What this score's cursor should read: this take's live/parked clock, or — while the engine's
+    /// clock belongs to another instrumental's replay — this take's own remembered mark. Never the
+    /// other take's moving position.
+    func positionMs() -> Int? {
+        instruments.replayPositionMs(forTake: takeId) ?? studio.scoreCursorMs(takeId)
+    }
+
+    /// Opening the score: put this take's remembered cursor back on the engine clock (nil ⇒ nothing
+    /// played). Refused mid-replay by the engine, so it can never interrupt a running take.
+    func restore() {
+        instruments.parkReplayPosition(atMs: studio.scoreCursorMs(takeId), forTake: takeId)
+    }
+
+    /// Persist where this take's cursor sits — ONLY if the engine's clock is describing this take.
+    /// A foreign position is not ours to store, and a nil never clobbers a good mark.
+    func remember() {
+        guard let ms = instruments.replayPositionMs(forTake: takeId) else { return }
+        studio.setScoreCursorMs(ms, forTake: takeId)
+    }
+
+    /// A replay ended (or was stopped). Ours ⇒ remember where it froze. Someone else's ⇒ there is
+    /// nothing of ours to remember, so take the freed clock and put OUR cursor back on it.
+    func replayEnded() {
+        if instruments.replayClockBelongs(to: takeId) { remember() } else { restore() }
+    }
+
+    /// Leaving the screen. Only when the clock is ours: another take's replay may be running (its
+    /// own row started it and owns its Stop), so its position is not ours to persist, its sound not
+    /// ours to cut, its clock not ours to clear.
+    ///
+    /// `remembering: false` still tears down our replay but writes nothing — the pinned-playhead
+    /// test seam and a take deleted out from under the screen.
+    func leave(remembering: Bool = true) {
+        guard instruments.replayClockBelongs(to: takeId) else { return }
+        if remembering { remember() }
+        // Leaving the score stops ITS replay (the sampler keeps sounding otherwise, with no visible
+        // stop control anywhere — replay is a this-screen affordance).
+        if instruments.isReplaying { instruments.stopReplay() }
+        instruments.resetReplayPosition(forTake: takeId)
     }
 }
 

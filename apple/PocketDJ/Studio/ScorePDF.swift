@@ -113,6 +113,11 @@ enum ScoreLayout {
 
     // MARK: Pure position helpers (unit-tested directly)
 
+    /// Horizontal breathing room between a measure's barlines and its first/last head. The ONE
+    /// constant the forward map (`xPosition`) and both inverses (`fractional16ths(atX:)`,
+    /// `onsetFromX`) share — a second copy is how a tap and a cursor end up disagreeing by 10 pt.
+    nonisolated static let measureHeadPad: CGFloat = 10
+
     /// An item's head-center x inside its measure: proportional to onset (16 slots across the
     /// measure's inner width). Strictly monotonic in `onset16ths` — the layout invariant the
     /// smoke test pins (items can never render out of reading order).
@@ -128,8 +133,26 @@ enum ScoreLayout {
     /// the agreement on a really laid page, not just on this arithmetic.
     nonisolated static func xPosition(fractional16ths: Double, measureX: CGFloat,
                                       measureWidth: CGFloat) -> CGFloat {
-        let pad: CGFloat = 10                       // keep heads off the barlines
-        return measureX + pad + (measureWidth - 2 * pad) * CGFloat(fractional16ths) / 16
+        measureX + measureHeadPad
+            + (measureWidth - 2 * measureHeadPad) * CGFloat(fractional16ths) / 16
+    }
+
+    /// The EXACT algebraic inverse of `xPosition(fractional16ths:)`: a page-space x inside a laid
+    /// measure → the fractional 16th the cursor sits at for that x. Solving the same equation
+    /// (rather than re-deriving a mapping) is what makes tap-to-seek land the cursor precisely
+    /// where it was tapped — `ScoreLayoutTests.testFractional16thsInvertsXPosition` pins the
+    /// round trip.
+    ///
+    /// Clamped to 0…16 — the measure's own span. An x outside the measure belongs to a DIFFERENT
+    /// measure, and picking which measure was tapped is `measure(at:page:)`'s job, not this
+    /// arithmetic's. A degenerate (zero-inner-width) measure or a non-finite x degrades to 0.
+    nonisolated static func fractional16ths(atX x: CGFloat, measureX: CGFloat,
+                                            measureWidth: CGFloat) -> Double {
+        let inner = measureWidth - 2 * measureHeadPad
+        guard inner > 0, x.isFinite else { return 0 }
+        let t = Double((x - measureX - measureHeadPad) * 16 / inner)
+        guard t.isFinite else { return 0 }
+        return min(max(t, 0), 16)
     }
 
     /// Vertical staff position of a MIDI note on a clef: DIATONIC half-line steps above the
@@ -181,35 +204,88 @@ enum ScoreLayout {
         var position: Int
     }
 
-    /// Invert a page-space tap into score coordinates. Picks the system by its y-band, the nearest
-    /// strip, the measure by x (nearest if between measures), then inverts `xPosition` + the head
-    /// y-math. `point` MUST be in PAGE space (the caller divides screen coords by the page scale).
-    nonisolated static func locate(point p: CGPoint, page: ScorePage) -> Located? {
-        for sys in page.systems {
-            let s = sys.spacing
-            guard let first = sys.strips.first, let last = sys.strips.last else { continue }
-            let top = first.top - 3 * s                 // ledgerPad = 3·spacing headroom
-            let bottom = last.top + 4 * s + 3 * s
-            guard p.y >= top, p.y <= bottom else { continue }
-            let strip = sys.strips.min { abs(($0.top + 2 * s) - p.y) < abs(($1.top + 2 * s) - p.y) }!
-            let lm = sys.measures.first { p.x >= $0.x && p.x < $0.x + $0.width }
-                ?? sys.measures.min { abs(($0.x + $0.width / 2) - p.x) < abs(($1.x + $1.width / 2) - p.x) }
-            guard let lm else { continue }
-            let onset = onsetFromX(p.x, measureX: lm.x, measureWidth: lm.width)
-            let bottomLine = strip.top + 4 * s
-            let position = Int(((bottomLine - p.y) / (s / 2)).rounded())
-            return Located(measureIndex: lm.measureIndex, onset16ths: onset,
-                           staff: strip.role, position: position)
+    /// Which laid measure a PAGE-space point falls in (with the system that holds it): the system
+    /// is picked by its y-band — staves plus ledger headroom — and the measure by x, snapping to
+    /// the nearest when the point is between measures (a short last system's right-hand slack).
+    /// nil when the point misses every system.
+    ///
+    /// THE one resolution both inverses share: note editing (`locate`) and playback tap-to-seek
+    /// (`time16ths`) must agree about which bar was touched, or a tap would edit one measure and
+    /// seek to another.
+    nonisolated static func measure(at p: CGPoint, page: ScorePage)
+        -> (system: LaidSystem, measure: LaidMeasure)? {
+        guard p.x.isFinite, p.y.isFinite else { return nil }
+        for sys in page.systems where verticalDistance(from: p.y, to: sys) == 0 {
+            guard let lm = measure(inSystem: sys, atX: p.x) else { continue }
+            return (sys, lm)
         }
         return nil
     }
 
-    /// Inverse of `xPosition`: the 16th slot nearest `x` inside its measure (clamped 0…15).
+    /// How far a y is OUTSIDE a system's hit band (staves + ledger headroom); 0 = inside it.
+    /// The one definition of that band — `measure(at:)` tests it for zero, the seek fallback below
+    /// minimises it.
+    private nonisolated static func verticalDistance(from y: CGFloat, to sys: LaidSystem) -> CGFloat {
+        guard let first = sys.strips.first, let last = sys.strips.last else { return .infinity }
+        let s = sys.spacing
+        let top = first.top - 3 * s                     // ledgerPad = 3·spacing headroom
+        let bottom = last.top + 4 * s + 3 * s
+        if y < top { return top - y }
+        if y > bottom { return y - bottom }
+        return 0
+    }
+
+    /// Which measure of a system an x falls in, snapping to the nearest when the x is between
+    /// measures (a short last system's right-hand slack). Shared so every hit-test picks the bar
+    /// the same way.
+    private nonisolated static func measure(inSystem sys: LaidSystem, atX x: CGFloat) -> LaidMeasure? {
+        sys.measures.first { x >= $0.x && x < $0.x + $0.width }
+            ?? sys.measures.min { abs(($0.x + $0.width / 2) - x) < abs(($1.x + $1.width / 2) - x) }
+    }
+
+    /// SEEK-ONLY: the nearest system on the page when a point misses every hit band — the gap
+    /// between two systems, the title header, the bottom margin. A cursor is a coarse target
+    /// (a single-staff band is ~42 pt on an iPhone, and the gaps between them are dead), and a tap
+    /// that does nothing with no feedback reads as broken; the nearest system is unambiguous
+    /// because systems are stacked, never side by side.
+    ///
+    /// Deliberately NOT used by `locate`: note ENTRY must refuse an off-staff tap rather than guess
+    /// which staff it meant — placing a note is destructive, moving a cursor is not.
+    private nonisolated static func nearestMeasure(at p: CGPoint, page: ScorePage)
+        -> (system: LaidSystem, measure: LaidMeasure)? {
+        guard p.x.isFinite, p.y.isFinite else { return nil }
+        let ranked = page.systems.map { ($0, verticalDistance(from: p.y, to: $0)) }
+            .filter { $0.1.isFinite }
+            .min { $0.1 < $1.1 }
+        guard let sys = ranked?.0, let lm = measure(inSystem: sys, atX: p.x) else { return nil }
+        return (sys, lm)
+    }
+
+    /// Invert a page-space tap into score coordinates. Picks the system + measure
+    /// (`measure(at:page:)`), then the nearest staff strip, then inverts `xPosition` + the head
+    /// y-math. `point` MUST be in PAGE space (the caller divides screen coords by the page scale).
+    nonisolated static func locate(point p: CGPoint, page: ScorePage) -> Located? {
+        guard let hit = measure(at: p, page: page) else { return nil }
+        let s = hit.system.spacing
+        let strip = hit.system.strips
+            .min { abs(($0.top + 2 * s) - p.y) < abs(($1.top + 2 * s) - p.y) }!
+        let onset = onsetFromX(p.x, measureX: hit.measure.x, measureWidth: hit.measure.width)
+        let bottomLine = strip.top + 4 * s
+        // Clamp BEFORE the Int conversion (the StaffChordView `Int.min` overflow lesson): a wild
+        // point must degrade to an absurd-but-finite staff position, never trap. ±400 half-steps
+        // is ~50 octaves off the staff — unreachable by a real tap, safe for a corrupt one.
+        let steps = ((bottomLine - p.y) / (s / 2)).rounded()
+        let position = Int(steps.isFinite ? min(max(steps, -400), 400) : 0)
+        return Located(measureIndex: hit.measure.measureIndex, onset16ths: onset,
+                       staff: strip.role, position: position)
+    }
+
+    /// Inverse of `xPosition`: the 16th slot nearest `x` inside its measure (clamped 0…15). Goes
+    /// through `fractional16ths(atX:)` so note entry and the playback cursor invert the SAME
+    /// formula — one rounds to a slot, the other keeps the fraction.
     nonisolated static func onsetFromX(_ x: CGFloat, measureX: CGFloat, measureWidth: CGFloat) -> Int {
-        let pad: CGFloat = 10
-        let inner = measureWidth - 2 * pad
-        guard inner > 0 else { return 0 }
-        return max(0, min(15, Int(((x - measureX - pad) * 16 / inner).rounded())))
+        let t = fractional16ths(atX: x, measureX: measureX, measureWidth: measureWidth)
+        return max(0, min(15, Int(t.rounded())))
     }
 
     /// Inverse of `staffPosition` for a WHITE key: the natural MIDI note at a diatonic staff
@@ -291,6 +367,37 @@ enum ScoreLayout {
             }
         }
         return park
+    }
+
+    /// THE INVERSE of `playhead(at:pages:)`: a PAGE-space point on a laid page → the absolute
+    /// FRACTIONAL 16th the cursor sits at for that x — i.e. what tapping the sheet means in time.
+    /// nil only when the page has no systems to seek into (an empty score's header-only page) or
+    /// the point is not a real coordinate; a point that misses every staff band falls back to the
+    /// nearest system, so the dead strips between systems still seek (`nearestMeasure`).
+    ///
+    /// Inverse by CONSTRUCTION, not by parallel derivation: the measure comes from the same
+    /// `measure(at:page:)` the note editor uses, and the within-measure fraction from
+    /// `fractional16ths(atX:)`, which solves `xPosition`'s own equation. So a tapped x resolves to
+    /// precisely the time whose cursor is drawn at that x — `ScoreLayoutTests
+    /// .testTime16thsInvertsThePlayheadOnALaidScore` pins the round trip on really laid pages.
+    ///
+    /// BOUNDARIES. `xPosition` maps a bar's 16 slots onto its inner width, leaving a `measureHeadPad`
+    /// of breathing room at each end, so the pads are outside the mapped range and a tap in them
+    /// CLAMPS: the left pad reads as the bar's downbeat, the right pad as its END, 16/16. The end of
+    /// bar M and the downbeat of bar M + 1 are the SAME INSTANT, and that instant's cursor is drawn
+    /// at bar M + 1's downbeat — so a tap in a bar's right pad seeks to the next bar's downbeat and
+    /// the cursor draws there (up to a pad or two, or a line-break, away from the finger). That is
+    /// the mapping being exact about time, not drifting: `testTapInAMeasuresRightPadIsTheNextBarsDownbeat`
+    /// pins it. Only for the LAST laid measure — where there is no next bar — does the cursor park
+    /// on the tap itself.
+    nonisolated static func time16ths(at p: CGPoint, page: ScorePage) -> Double? {
+        guard let hit = measure(at: p, page: page) ?? nearestMeasure(at: p, page: page) else {
+            return nil
+        }
+        let within = fractional16ths(atX: p.x, measureX: hit.measure.x,
+                                     measureWidth: hit.measure.width)
+        let absolute = Double(max(0, hit.measure.measureIndex)) * 16 + within
+        return min(absolute, ScorePlayhead.maxCursor16ths)
     }
 
     /// One note's rendered head, tagged with the absolute 16th it sounds at — the geometry the

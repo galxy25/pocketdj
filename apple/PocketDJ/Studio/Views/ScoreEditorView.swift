@@ -14,6 +14,19 @@ struct ScorePlaybackClock {
     /// (cursor parks at the start, nothing highlighted). While playback is stopped this returns
     /// the FROZEN last position, which is what keeps the last-played note emphasised.
     var positionMs: @MainActor () -> Int?
+    /// Move playback to a score-clock ms — what a TAP ON THE SCORE ends up calling (via
+    /// `ScorePageView.SeekTarget`, which is how a page can be tappable without being painted). The
+    /// host decides what that means for the sound (the saved instrumental re-anchors its replay;
+    /// the Demuxer's follow-score seeks the song, exactly as its bar chips do), but in every host it
+    /// is the same clock `positionMs` reads, so the cursor lands where it was tapped and the
+    /// played-behind / current-note paint is whatever that time implies — identical to having
+    /// played there. nil ⇒ the score is a read-only follower and taps do nothing.
+    var seek: (@MainActor (Int) -> Void)?
+
+    init(positionMs: @escaping @MainActor () -> Int?, seek: (@MainActor (Int) -> Void)? = nil) {
+        self.positionMs = positionMs
+        self.seek = seek
+    }
 }
 
 /// Everything ONE laid page needs to paint playback, all precomputed off the tick: the marks that
@@ -92,6 +105,9 @@ struct ScoreEditorView: View {
                               highlights: points.filter { $0.page == i }.map(\.point),
                               barControls: lastBar?.page == i ? lastBar?.controls : nil,
                               playback: layers[i],
+                              // EVERY page is tappable (this host paints every page too, but the
+                              // two are wired independently — see `ScorePageView.SeekTarget`).
+                              seekTarget: seekTarget,
                               onTap: editing ? { p in handleTap(at: p, pageIndex: i, page: pages[i], pages: pages) } : nil)
                     .aspectRatio(pages[i].size.width / pages[i].size.height, contentMode: .fit)
                     .shadow(color: .black.opacity(0.5), radius: 6, y: 2)
@@ -573,6 +589,14 @@ struct ScoreEditorView: View {
         return out
     }
 
+    /// Where a tap on any page sends playback (nil ⇒ a read-only score whose taps do nothing).
+    /// Derived from the host clock's own `seek`, so there is still exactly ONE definition of what
+    /// tapping the music means.
+    private var seekTarget: ScorePageView.SeekTarget? {
+        guard let seek = playback?.seek else { return nil }
+        return ScorePageView.SeekTarget(bpm: bpm, seek: seek)
+    }
+
     // MARK: Selection rings
 
     /// A page-space ring for every selected note (grouped per page by the caller).
@@ -604,6 +628,18 @@ struct ScorePageView: View {
         var onRemove: () -> Void
     }
 
+    /// Where a tap on this page sends playback. Deliberately SEPARATE from `playback` (the paint):
+    /// the Demuxer's follow-score gives only the system currently playing a clocked overlay — one
+    /// 10 Hz tick for a whole score — but every system must still answer a tap, and with Follow off
+    /// the system the user hand-scrolls to is exactly the one that isn't painted.
+    struct SeekTarget {
+        /// The score's tempo — the tapped 16th is converted to score-clock ms with it.
+        var bpm: Double
+        /// Move playback to a score-clock ms (0 = beat 1). The host decides what that does to the
+        /// sound; see `ScorePlaybackClock.seek`.
+        var seek: @MainActor (Int) -> Void
+    }
+
     let page: ScorePage
     var editing = false
     /// Page-space centers of the selection rings drawn on THIS page (empty = none).
@@ -613,6 +649,9 @@ struct ScorePageView: View {
     var barControls: BarControls?
     /// When set, this page paints playback: cursor + played-behind + current/last-played note.
     var playback: ScorePlaybackLayer?
+    /// When set (and not `editing`), a tap seeks playback to the tapped time. nil ⇒ a read-only
+    /// score, where taps do nothing.
+    var seekTarget: SeekTarget?
     /// Tap callback with the point converted to PAGE space (editing only).
     var onTap: ((CGPoint) -> Void)?
 
@@ -635,10 +674,16 @@ struct ScorePageView: View {
                     }
                 }
                 .contentShape(Rectangle())
-                // Attached unconditionally; `onTap` is nil unless editing, so it no-ops otherwise. A
-                // tap coexists with the parent ScrollView's drag-to-scroll.
+                // ONE tap gesture, two readings of the same page-space point — the live score's
+                // own idiom (`SpatialTapGesture` → page space → an inverse of the layout), which is
+                // also what makes this work identically on macOS (click), iOS/iPadOS (touch) and
+                // visionOS (pinch): the platforms differ in how the point arrives, not in what it
+                // means. EDITING: place / select a note (`onTap`, unchanged). NOT editing: seek the
+                // playback cursor to the tapped time. A tap coexists with the parent ScrollView's
+                // drag-to-scroll.
                 .gesture(SpatialTapGesture().onEnded { ev in
-                    onTap?(CGPoint(x: ev.location.x / scale, y: ev.location.y / scale))
+                    let p = CGPoint(x: ev.location.x / scale, y: ev.location.y / scale)
+                    if let onTap { onTap(p) } else { seek(to: p) }
                 })
                 // The playback paint rides a SIBLING canvas in the SAME GeometryReader, sized to
                 // the same `geo.size` — so it derives the identical page→screen scale the score
@@ -679,6 +724,23 @@ struct ScorePageView: View {
                 }
             }
         }
+    }
+
+    /// TAP-TO-SEEK: move the playback cursor to the time the tapped point sits at. `time16ths` is
+    /// the exact inverse of the `xPosition` the cursor and the note heads are BOTH drawn with (via
+    /// `ScoreLayout.playhead`), so the cursor parks precisely under the tap — and, because the seek
+    /// is expressed in the same score-clock ms the cursor is read from, the played-behind wash and
+    /// the current-note ring come out exactly as if playback had reached that point.
+    ///
+    /// The point is derived in PAGE space from this view's own GeometryReader — never from an
+    /// `.offset()` anchor, whose frame collapses to x = 0 (the StaffChordView bug).
+    ///
+    /// Reads `seekTarget`, NOT `playback`: a page that is tappable but not currently painted (every
+    /// non-playing system of the Demuxer's follow-score) must still seek.
+    private func seek(to pagePoint: CGPoint) {
+        guard let target = seekTarget,
+              let t = ScoreLayout.time16ths(at: pagePoint, page: page) else { return }
+        target.seek(ScorePlayhead.ms(fractional16ths: t, bpm: target.bpm))
     }
 }
 
