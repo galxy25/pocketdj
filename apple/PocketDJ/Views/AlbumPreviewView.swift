@@ -67,6 +67,62 @@ enum AlbumOwnership: Equatable {
     var isFullyOwned: Bool { if case .owned = self { return true }; return false }
 }
 
+/// How far the SEPARATE "Download to device" request has got. Since the ＋ stopped capturing
+/// audio (see `RipsStore.AlbumAddIntent`), this button is the only way to get an added album's
+/// audio onto the device — so it has to REPORT, not just fire and go quiet. A real-time capture
+/// takes minutes per track; a button that flipped straight back to "Download to device" would
+/// read as "nothing happened" and invite a second request for work already running.
+///
+/// PURE, like `AlbumOwnership` above: "the button said the wrong thing" is not a defect any
+/// existence assertion catches.
+enum AlbumDownloadState: Equatable {
+    case idle
+    case working(done: Int, total: Int)
+    case done(total: Int)
+    /// Settled with at least one track that will never land — `message` is the first failure.
+    case failed(done: Int, total: Int, message: String)
+
+    /// `onDevice` = tracks whose burned file is present; `errors` = per-track failure messages.
+    /// A track that is neither is still in flight. No ids ⇒ nothing was requested ⇒ `.idle`.
+    static func of(ids: [String], onDevice: Set<String>, errors: [String: String]) -> AlbumDownloadState {
+        guard !ids.isEmpty else { return .idle }
+        let done = ids.filter { onDevice.contains($0) }.count
+        if done >= ids.count { return .done(total: ids.count) }
+        let failures = ids.filter { !onDevice.contains($0) }.compactMap { errors[$0] }
+        if done + failures.count >= ids.count {
+            return .failed(done: done, total: ids.count, message: failures[0])
+        }
+        return .working(done: done, total: ids.count)
+    }
+
+    var label: String {
+        switch self {
+        case .idle: return "Download to device"
+        case let .working(done, total): return "Downloading… \(done)/\(total)"
+        case .done: return "On this device"
+        case let .failed(done, total, message):
+            return done == 0 ? message : "\(done)/\(total) downloaded — \(message)"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .idle, .working: return "arrow.down.circle"
+        case .done: return "internaldrive.fill"
+        case .failed: return "exclamationmark.triangle.fill"
+        }
+    }
+
+    /// Only a settled state may be tapped again: idle starts it, a failure retries the tracks
+    /// that never landed. Tapping mid-capture would be a no-op the user reads as a dead button.
+    var isTappable: Bool {
+        switch self {
+        case .idle, .failed: return true
+        case .working, .done: return false
+        }
+    }
+}
+
 /// Why a preview has nothing to show — each case names the ACTUAL reason so the screen is
 /// never just empty. Pure so the mapping from (offline, hasServer, canContribute) to a
 /// message is checkable without a network.
@@ -142,7 +198,9 @@ struct AlbumPreviewView: View {
     @State private var unavailable: AlbumPreviewUnavailable?
     @State private var adding = false
     @State private var errorText: String?
-    @State private var downloading = false
+    /// The burn ids the download request was made under — the handle `downloadState` reports
+    /// against. Empty until the user actually taps Download (idle).
+    @State private var downloadIds: [String] = []
 
     private var contributor: (any MusicLibraryContributor)? {
         streaming.providers.libraryContributors.first
@@ -279,17 +337,49 @@ struct AlbumPreviewView: View {
             }
             // Downloading the audio to the device is a SEPARATE, secondary intent from
             // "put this album in my library" — the ＋ above populates the catalog.
-            if canUseMusicKit && !tracks.isEmpty {
+            //
+            // Gated on the RIP SERVER, not on MusicKit: preparing a copy is the server's job,
+            // and the old `canUseMusicKit` gate both hid the button from server-only users and
+            // showed it to subscribers with no server, where it could only ever fail. It is the
+            // ONLY route to the audio now that the ＋ captures nothing, so the gate has to name
+            // the thing it actually needs.
+            if rips.hasServer && !tracks.isEmpty {
+                let state = downloadState
                 Button { downloadToDevice() } label: {
-                    Label(downloading ? "Downloading…" : "Download to device",
-                          systemImage: "arrow.down.circle")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(downloading ? Theme.fgDim : Theme.accent2)
+                    Label {
+                        Text(state.label)
+                    } icon: {
+                        if case .working = state { ProgressView().controlSize(.small) }
+                        else { Image(systemName: state.systemImage) }
+                    }
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(downloadTint(state))
                 }
                 .buttonStyle(.plain)
-                .disabled(downloading)
+                .disabled(!state.isTappable)
                 .accessibilityIdentifier("album-preview-download")
             }
+        }
+    }
+
+    /// Live download status from the burn store's per-track facts. `items[id]?.state == .ready`
+    /// rather than `localURL(forSong:)`: the latter stats the filesystem per call, and this is
+    /// read from `body` once per track.
+    private var downloadState: AlbumDownloadState {
+        guard !downloadIds.isEmpty else { return .idle }
+        let onDevice = Set(downloadIds.filter { burns.items[$0]?.state == .ready })
+        var errors: [String: String] = [:]
+        for id in downloadIds { errors[id] = burns.ripBurnErrorMessage(id) }
+        return AlbumDownloadState.of(ids: downloadIds, onDevice: onDevice,
+                                     errors: errors.compactMapValues { $0 })
+    }
+
+    private func downloadTint(_ s: AlbumDownloadState) -> Color {
+        switch s {
+        case .idle: return Theme.accent2
+        case .working: return Theme.fgDim
+        case .done: return .green
+        case .failed: return Theme.danger
         }
     }
 
@@ -336,12 +426,14 @@ struct AlbumPreviewView: View {
     }
 
     /// Live n/m from the EXISTING settlement reducer the Discover row uses — a track that
-    /// never lands settles the album as PARTIAL instead of spinning forever.
+    /// never lands settles the album as PARTIAL instead of spinning forever. A LIBRARY-ONLY add
+    /// (this screen's ＋) requested no copies at all, so the entry-aware overload reads it as
+    /// `.added` immediately rather than waiting on rips that were never queued.
     @ViewBuilder private func progressCapsule(_ entry: DiscoverAddsStore.AlbumEntry) -> some View {
         let ids = entry.trackIds ?? []
         let readyIds = Set(ids.filter { rips.manifest[$0] != nil })
         let erroredIds = Set(ids.filter { rips.jobs[$0]?.phase == .error })
-        let state = DiscoverAlbumAddState.of(trackIds: ids, readyIds: readyIds, erroredIds: erroredIds)
+        let state = DiscoverAlbumAddState.of(entry: entry, readyIds: readyIds, erroredIds: erroredIds)
         VStack(alignment: .leading, spacing: 8) {
             Group {
                 switch state {
@@ -491,10 +583,17 @@ struct AlbumPreviewView: View {
 
     // MARK: actions
 
-    /// The giant ＋: the EXISTING whole-album add — Apple Music library write (where the
-    /// platform allows), per-track `amrec_` rip fan-out, and ONE batched provisional
-    /// album+songs inject. Deliberately NOT `startRipAndBurnAlbum`: that downloads audio to
-    /// the device, which is the secondary action below, not "add this album to my library".
+    /// The giant ＋: the whole-album add — Apple Music library write (where the platform
+    /// allows), and ONE batched provisional album+songs inject. `.libraryOnly`: it captures
+    /// NOTHING. The tracks stream through the user's subscription the moment they land, and
+    /// the audio only comes down when the user asks for it, via "Download to device" below.
+    ///
+    /// This is the fix for Levi's device report — "I added the album … in the new tile and it
+    /// is ripping the whole album … it should add the items to the users apple music library
+    /// but not rip unless they hit download". The screen inherited its ripping from the Shazam
+    /// recognizer flow it was extracted from, where add-then-rip WAS the intent; reusing it for
+    /// the New tile brought a promise the ＋'s own wording ("Add album to your library") never
+    /// made. The Discover search album row still passes `.andPrepareCopies` — see its `add()`.
     private func addAlbum() {
         let hit = RipsStore.DiscoverAlbumHit(ref: ref, trackCount: tracks.isEmpty ? nil : tracks.count)
         let lib = contributor
@@ -503,7 +602,7 @@ struct AlbumPreviewView: View {
         #endif
         adding = true; errorText = nil
         Task {
-            await rips.discoverAddAlbum(hit, library: lib)
+            await rips.discoverAddAlbum(hit, library: lib, intent: .libraryOnly)
             if let e = rips.discoverError { errorText = e }
             adding = false
         }
@@ -511,20 +610,26 @@ struct AlbumPreviewView: View {
 
     /// Secondary: pull the audio onto the device (what the recognizer's album screen always
     /// did). Separate button, separate wording — adding to the library and downloading are
-    /// different promises and must not hide behind one tap.
+    /// different promises and must not hide behind one tap. Now that the ＋ captures nothing,
+    /// this is the ONLY way to get the audio from this screen, so its state is tracked (the
+    /// ids are held so `downloadProgress` can report against BurnStore) rather than the button
+    /// flipping back to idle the instant the request is handed off.
     private func downloadToDevice() {
         guard !tracks.isEmpty else { return }
-        downloading = true
         let payload = tracks.map { t -> BurnStore.RipBurnTrack in
-            let catalogID = AppleMusicRecognition.indexSong(
-                storeID: t.storeID, title: t.title, artist: t.artist, in: app.songs)?.id
+            // O(1) through the revision-keyed Apple Music id memo, with the recognizer's
+            // normalized scan only as a fallback for a track no catalog row claims. The scan
+            // alone was O(catalog) PER TRACK — ~93k rows × a full album, on the main actor.
+            let catalogID = app.songId(forAppleMusicId: t.storeID)
+                ?? AppleMusicRecognition.indexSong(storeID: t.storeID, title: t.title,
+                                                   artist: t.artist, in: app.songs)?.id
             let id = AppleMusicRecognition.burnSongID(catalogSongID: catalogID, storeID: t.storeID)
             return BurnStore.RipBurnTrack(id: id, title: t.title, artist: t.artist,
                                           appleMusicId: t.storeID,
                                           lengthMs: t.durationSeconds.map { Int(($0 * 1000).rounded()) })
         }
+        downloadIds = payload.map(\.id)
         burns.startRipAndBurnAlbum(payload)
-        downloading = false
     }
 
     /// m:ss for a track, h:mm:ss once an album's total runs past an hour.

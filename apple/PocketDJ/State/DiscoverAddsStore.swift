@@ -76,6 +76,15 @@ final class DiscoverAddsStore {
         var genre: String?
         /// `music.apple.com/...` deep link (iTunes `collectionViewUrl`).
         var url: String?
+        /// Whether this add ALSO asked the rip server to prepare per-track copies — i.e. whether
+        /// there is any capture to WAIT ON. `false` for a plain "＋ Add" (library write + catalog
+        /// citizenship, no audio captured); `true` for the download intent.
+        ///
+        /// nil = a document written before adding and downloading were split, when EVERY album add
+        /// fanned rips out; those keep their per-track progress readout. Without this the n/m
+        /// capsule would spin forever on a library-only add: no rip ever lands, so no track ever
+        /// becomes "ready" and the album never settles.
+        var preparedCopies: Bool?
         var id: String { albumId }
     }
 
@@ -178,12 +187,14 @@ final class DiscoverAddsStore {
     /// individually browsable/rippable; this row is what makes the ALBUM itself a citizen.
     func addAlbum(albumId: String, appleMusicId: String, title: String, artist: String,
                   trackIds: [String]? = nil, artworkUrl: String? = nil, year: Int? = nil,
-                  trackCount: Int? = nil, genre: String? = nil, url: String? = nil) {
+                  trackCount: Int? = nil, genre: String? = nil, url: String? = nil,
+                  preparedCopies: Bool? = nil) {
         guard !albums.contains(where: { $0.albumId == albumId }) else { return }
         let entry = AlbumEntry(albumId: albumId, appleMusicId: appleMusicId, title: title,
                                artist: artist, trackIds: trackIds, artworkUrl: artworkUrl,
                                year: year, addedAtMs: Date().timeIntervalSince1970 * 1000,
-                               trackCount: trackCount, genre: genre, url: url)
+                               trackCount: trackCount, genre: genre, url: url,
+                               preparedCopies: preparedCopies)
         albums.append(entry)
         save()
         onAlbumAdded?(Self.indexAlbum(entry))
@@ -199,7 +210,7 @@ final class DiscoverAddsStore {
     func addAlbumBatch(albumId: String, appleMusicId: String, title: String, artist: String,
                        trackIds: [String]? = nil, artworkUrl: String? = nil, year: Int? = nil,
                        trackCount: Int? = nil, genre: String? = nil, url: String? = nil,
-                       songs newSongs: [Entry]) {
+                       preparedCopies: Bool? = nil, songs newSongs: [Entry]) {
         let existing = Set(entries.map(\.songId))
         let freshSongs = newSongs.filter { !existing.contains($0.songId) }
         let albumIsNew = !albums.contains(where: { $0.albumId == albumId })
@@ -210,7 +221,8 @@ final class DiscoverAddsStore {
             let e = AlbumEntry(albumId: albumId, appleMusicId: appleMusicId, title: title,
                                artist: artist, trackIds: trackIds, artworkUrl: artworkUrl,
                                year: year, addedAtMs: Date().timeIntervalSince1970 * 1000,
-                               trackCount: trackCount, genre: genre, url: url)
+                               trackCount: trackCount, genre: genre, url: url,
+                               preparedCopies: preparedCopies)
             albums.append(e)
             albumEntry = e
         }

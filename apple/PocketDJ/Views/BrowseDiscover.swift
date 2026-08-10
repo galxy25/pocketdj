@@ -644,6 +644,22 @@ enum DiscoverAlbumAddState: Equatable {
         if settled { return .partial(ready: ready, total: total) }
         return .adding(ready: ready, total: total)
     }
+
+    /// The state of a RECORDED album add. An add that never asked for copies has nothing to
+    /// wait on, so it reads `.added` the moment it lands — the per-track readout above only
+    /// applies when rips were actually requested (`preparedCopies`). Without this a
+    /// library-only add spins at 0/n forever: no rip was queued, so no track ever becomes
+    /// ready and the album never settles.
+    ///
+    /// This overload exists so the two surfaces that render the capsule cannot disagree — a
+    /// `preparedCopies` check written inline at each call site would have to be fixed twice.
+    /// A nil `preparedCopies` (a document written before add and download were split) keeps
+    /// the progress readout, which is what those albums were actually doing.
+    static func of(entry: DiscoverAddsStore.AlbumEntry,
+                   readyIds: Set<String>, erroredIds: Set<String>) -> DiscoverAlbumAddState {
+        guard entry.preparedCopies ?? true else { return .added }
+        return of(trackIds: entry.trackIds ?? [], readyIds: readyIds, erroredIds: erroredIds)
+    }
 }
 
 /// One Discover album result row: artwork · title / artist · trailing action. The trailing
@@ -720,7 +736,7 @@ private struct DiscoverAlbumRow: View {
             // lands settles the album as PARTIAL rather than spinning forever.
             let readyIds = Set(ids.filter { rips.manifest[$0] != nil })
             let erroredIds = Set(ids.filter { rips.jobs[$0]?.phase == .error })
-            switch DiscoverAlbumAddState.of(trackIds: ids, readyIds: readyIds, erroredIds: erroredIds) {
+            switch DiscoverAlbumAddState.of(entry: entry, readyIds: readyIds, erroredIds: erroredIds) {
             case .added:
                 Label("Added", systemImage: "checkmark.circle.fill")
                     .labelStyle(.iconOnly).font(.title3).foregroundStyle(.green)
@@ -763,6 +779,12 @@ private struct DiscoverAlbumRow: View {
     /// Add = library write (non-macOS) + per-track rip fan-out + provisional album. On
     /// macOS the library write is unavailable, so open the album in Music.app (the Shazam
     /// macOS fallback) and let the rip fan-out proceed.
+    ///
+    /// `.andPrepareCopies` — DELIBERATELY UNCHANGED while the album PREVIEW moved to
+    /// `.libraryOnly`. This row IS the download gesture on this surface: its entire trailing
+    /// control is live per-track rip progress (n/m → ✓ Added), its help text promises prepared
+    /// copies, and unlike the preview it offers no separate "Download to device". Making it
+    /// library-only would gut that readout and leave no way to ask for the audio at all.
     private func add() {
         let h = hit
         let lib = streaming.providers.libraryContributors.first
@@ -773,7 +795,7 @@ private struct DiscoverAlbumRow: View {
         #endif
         adding = true
         Task {
-            await rips.discoverAddAlbum(h, library: lib)
+            await rips.discoverAddAlbum(h, library: lib, intent: .andPrepareCopies)
             adding = false
         }
     }
