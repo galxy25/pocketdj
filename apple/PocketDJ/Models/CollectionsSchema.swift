@@ -149,6 +149,9 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     /// documents): nil ⇒ off, the pre-feature behavior. Deliberately TRAVELS in
     /// `.pdjcollection` exports (not privacy-sensitive, unlike amPlaylistId).
     var cleanOnly: Bool?
+    /// RECOMMENDATIONS OFF FOR THIS POCKET. See `Playlist.recsEnabled` — same field, same
+    /// semantics, same reason it is stored `false`/nil rather than `Bool`.
+    var recsEnabled: Bool?
     /// The APPLE MUSIC library playlist this collection is bound to, captured from the sync's push
     /// result. ADDITIVE-OPTIONAL (nil = never pushed, or pushed before this field existed), so no
     /// schema bump — a version bump discards existing documents.
@@ -176,6 +179,8 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     var hasSource: Bool { sourcePlaylistId != nil }
     /// Participates in AUTO sync: has a source and the per-pocket toggle isn't off.
     var syncsWithSource: Bool { hasSource && (sourceSyncEnabled ?? true) }
+    /// Does For You rank suggestions for this pocket? See `Playlist.wantsRecommendations`.
+    var wantsRecommendations: Bool { recsEnabled ?? true }
     /// The effective Apple Music sync direction (nil/unknown raw ⇒ two-way).
     var amSyncDir: CollectionSyncDirection {
         amSyncDirection.flatMap(CollectionSyncDirection.init(rawValue:)) ?? .both
@@ -184,14 +189,14 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, kind, description, songIds, albumIds, childPocketIds, notes, folderId, songRepeats,
              sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt, lastPlayedAt,
-             amSyncDirection, cleanOnly, createdAt, updatedAt
+             amSyncDirection, cleanOnly, recsEnabled, createdAt, updatedAt
     }
     init(id: String, name: String, kind: PocketKind = .harmonic, description: String? = nil,
          songIds: [String] = [], albumIds: [String] = [], childPocketIds: [String] = [],
          notes: [PocketNote] = [], folderId: String? = nil, songRepeats: [String: Int] = [:],
          sourcePlaylistId: String? = nil, sourceName: String? = nil, sourceSongIds: [String]? = nil,
          sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil, lastPlayedAt: Double? = nil,
-         amSyncDirection: String? = nil, cleanOnly: Bool? = nil,
+         amSyncDirection: String? = nil, cleanOnly: Bool? = nil, recsEnabled: Bool? = nil,
          createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.kind = kind; self.description = description
         self.songIds = songIds; self.albumIds = albumIds; self.childPocketIds = childPocketIds
@@ -200,6 +205,7 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
         self.sourceSongIds = sourceSongIds; self.sourceSyncEnabled = sourceSyncEnabled
         self.sourceSyncedAt = sourceSyncedAt; self.lastPlayedAt = lastPlayedAt
         self.amSyncDirection = amSyncDirection; self.cleanOnly = cleanOnly
+        self.recsEnabled = recsEnabled
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
     init(from decoder: Decoder) throws {
@@ -222,6 +228,7 @@ struct Pocket: Codable, Identifiable, Hashable, Sendable {
         lastPlayedAt = try? c.decode(Double.self, forKey: .lastPlayedAt)
         amSyncDirection = try? c.decode(String.self, forKey: .amSyncDirection)
         cleanOnly = try? c.decode(Bool.self, forKey: .cleanOnly)
+        recsEnabled = try? c.decode(Bool.self, forKey: .recsEnabled)
         createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
         updatedAt = (try? c.decode(Double.self, forKey: .updatedAt)) ?? 0
     }
@@ -386,6 +393,26 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     /// Clean-versions-only playback/rip for this playlist (see `CleanOnly` + the Pocket twin's
     /// docs). ADDITIVE-OPTIONAL, NO schema bump: nil ⇒ off. Travels in exports.
     var cleanOnly: Bool?
+    /// **RECOMMENDATIONS OFF FOR THIS COLLECTION.** Owner, verbatim: *"support ability to turn off
+    /// recommendations for a collection (eg comfort zone, favorite songs, OTG) as an option in the
+    /// … menu of the tile."*
+    ///
+    /// Some crates are FINISHED. Comfort Zone, Favorite Songs and OTG are curated by hand and
+    /// deliberately closed — a tile forever offering things to add to them is noise in the grid,
+    /// and (worse) it is a full catalog sweep per refresh spent producing that noise. Off means
+    /// off at the RANKER (`ForYouFeedBuilder.build` skips the crate entirely), not a hidden tile
+    /// that still costs the work.
+    ///
+    /// ── WHY `false`/nil AND NOT A PLAIN `Bool` ───────────────────────────────────────────────
+    /// The `cleanOnly` idiom, mirrored: absent ⇒ the pre-feature behaviour (recommendations ON),
+    /// so an untouched collection's serialized bytes are UNCHANGED and CloudSync's byte-compare
+    /// stays quiet. ADDITIVE-OPTIONAL, **NO schema bump** — a version bump has discarded user
+    /// documents in this app before.
+    ///
+    /// It deliberately TRAVELS in `.pdjcollection` exports, like `cleanOnly`: "this crate is
+    /// closed" is a property of the crate, not of the sharer's library (unlike `amPlaylistId`,
+    /// which every import path strips).
+    var recsEnabled: Bool?
     /// The APPLE MUSIC library playlist this collection is bound to, captured from the sync's push
     /// result. ADDITIVE-OPTIONAL (nil = never pushed, or pushed before this field existed), so no
     /// schema bump — a version bump discards existing documents.
@@ -408,6 +435,9 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     var hasSource: Bool { sourcePlaylistId != nil }
     /// Participates in AUTO sync: has a source and the per-playlist toggle isn't off.
     var syncsWithSource: Bool { hasSource && (sourceSyncEnabled ?? true) }
+    /// Does For You rank suggestions for this playlist? The ONE reading of `recsEnabled` — nil
+    /// (never touched) and `true` both mean yes, so the flag can only ever be a deliberate opt-out.
+    var wantsRecommendations: Bool { recsEnabled ?? true }
     /// The effective Apple Music sync direction (nil/unknown raw ⇒ two-way).
     var amSyncDir: CollectionSyncDirection {
         amSyncDirection.flatMap(CollectionSyncDirection.init(rawValue:)) ?? .both
@@ -416,7 +446,7 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, description, sequences, targetMs, folderId,
              sourcePlaylistId, sourceName, sourceSongIds, sourceSyncEnabled, sourceSyncedAt,
-             amSyncDirection, cleanOnly, lastPlayedAt,
+             amSyncDirection, cleanOnly, recsEnabled, lastPlayedAt,
              createdAt, updatedAt
     }
 
@@ -426,14 +456,16 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
          targetMs: Int? = nil, folderId: String? = nil,
          sourcePlaylistId: String? = nil, sourceName: String? = nil, sourceSongIds: [String]? = nil,
          sourceSyncEnabled: Bool? = nil, sourceSyncedAt: Double? = nil,
-         amSyncDirection: String? = nil, cleanOnly: Bool? = nil, lastPlayedAt: Double? = nil,
+         amSyncDirection: String? = nil, cleanOnly: Bool? = nil, recsEnabled: Bool? = nil,
+         lastPlayedAt: Double? = nil,
          createdAt: Double = 0, updatedAt: Double = 0) {
         self.id = id; self.name = name; self.description = description
         self.sequences = sequences; self.targetMs = targetMs; self.folderId = folderId
         self.sourcePlaylistId = sourcePlaylistId; self.sourceName = sourceName
         self.sourceSongIds = sourceSongIds; self.sourceSyncEnabled = sourceSyncEnabled
         self.sourceSyncedAt = sourceSyncedAt; self.amSyncDirection = amSyncDirection
-        self.cleanOnly = cleanOnly; self.lastPlayedAt = lastPlayedAt
+        self.cleanOnly = cleanOnly; self.recsEnabled = recsEnabled
+        self.lastPlayedAt = lastPlayedAt
         self.createdAt = createdAt; self.updatedAt = updatedAt
     }
 
@@ -459,6 +491,10 @@ struct Playlist: Codable, Identifiable, Hashable, Sendable {
         // Lenient on purpose (unlike the required fields above): a malformed cleanOnly
         // value must never cost the whole playlist via the lossy [Playlist] decode.
         cleanOnly = try? c.decode(Bool.self, forKey: .cleanOnly)
+        // Same leniency, and the failure mode is the one that matters: a garbled value decodes
+        // to nil ⇒ recommendations ON. Losing the opt-out costs a tile reappearing; throwing
+        // would cost the whole playlist.
+        recsEnabled = try? c.decode(Bool.self, forKey: .recsEnabled)
         lastPlayedAt = try c.decodeIfPresent(Double.self, forKey: .lastPlayedAt)
         createdAt = try c.decode(Double.self, forKey: .createdAt)
         updatedAt = try c.decode(Double.self, forKey: .updatedAt)

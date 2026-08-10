@@ -199,6 +199,17 @@ final class CollectionsStore {
             addSong("sng_2", toPlaylist: pl.id)
             addSong("sng_6", toPlaylist: pl.id)
         }
+        // Recommendations-OFF seam: a collection that has ALREADY been switched off, so a test can
+        // drive the RECOVERY path (Settings ▸ For You ▸ turn it back on) without first having to
+        // produce a For You tile — which needs a refresh that happened to find something to suggest,
+        // i.e. exactly the condition a closed crate is least likely to satisfy. Deliberately EMPTY:
+        // an empty collection can never earn a tile, so it is the strictest version of "the only way
+        // back is the Settings list".
+        if ProcessInfo.processInfo.environment["PDJ_SEED_RECS_OFF"] != nil,
+           !pockets.contains(where: { $0.name == "Comfort Zone" }) {
+            let p = createPocket("Comfort Zone")
+            setRecommendationsEnabled(false, forPocket: p.id)
+        }
     }
 
     nonisolated static func defaultURL() -> URL {
@@ -909,6 +920,65 @@ final class CollectionsStore {
     }
     func setCleanOnly(_ on: Bool, forPocket id: String) {
         mutatePocket(id) { $0.cleanOnly = on ? true : nil }
+    }
+
+    // MARK: Per-collection recommendations opt-out (For You)
+
+    /// Turn For You's suggestions for this collection ON/OFF. Stored `false`/nil (never `true`)
+    /// — the inverse of `setCleanOnly`'s idiom and for the same reason: ON is the default, so an
+    /// untouched collection's serialized bytes must not change. See `Playlist.recsEnabled`.
+    ///
+    /// Rides `mutatePlaylist`/`mutatePocket`, so it persists and cloud-syncs like every other edit
+    /// and the change is visible to the grid through `revision` on the next render.
+    func setRecommendationsEnabled(_ on: Bool, forPlaylist id: String) {
+        mutatePlaylist(id) { $0.recsEnabled = on ? nil : false }
+    }
+    func setRecommendationsEnabled(_ on: Bool, forPocket id: String) {
+        mutatePocket(id) { $0.recsEnabled = on ? nil : false }
+    }
+
+    /// Does this collection want suggestions? Takes an id of UNKNOWN KIND, because that is all a
+    /// For You tile carries. An id that resolves to NOTHING answers `true`: a since-deleted
+    /// collection is dropped by the caller's own existence filter, and answering "off" here would
+    /// silently double as a delete detector.
+    func recommendationsEnabled(forCollection id: String) -> Bool {
+        if let pl = playlist(id) { return pl.wantsRecommendations }
+        if let p = pocket(id) { return p.wantsRecommendations }
+        return true
+    }
+
+    /// Flip it from a tile, which knows only an id. Returns false when the id resolves to nothing.
+    @discardableResult
+    func setRecommendationsEnabled(_ on: Bool, forCollection id: String) -> Bool {
+        if playlist(id) != nil { setRecommendationsEnabled(on, forPlaylist: id); return true }
+        if pocket(id) != nil { setRecommendationsEnabled(on, forPocket: id); return true }
+        return false
+    }
+
+    /// The ids `ForYouFeedBuilder` must NOT rank suggestions for. A `Set` because the builder
+    /// tests it once per crate.
+    func recommendationsOffIds() -> Set<String> {
+        var out = Set<String>()
+        for pl in playlists where !pl.wantsRecommendations { out.insert(pl.id) }
+        for p in pockets where !p.wantsRecommendations { out.insert(p.id) }
+        return out
+    }
+
+    /// EVERY collection with recommendations turned off, named — the "turn it back on" list.
+    ///
+    /// ── WHY THIS IS NOT `suggestibleCollections().filter { … }` ──────────────────────────────
+    /// That one drops EMPTY collections (no members ⇒ no profile to suggest against). The whole
+    /// point of this list is to reach a collection whose tile is not there, and "empty" is one of
+    /// the ways a tile is not there. Filtering the suggestible set would make an empty, switched-off
+    /// collection unreachable from the only screen that can switch it back on.
+    ///
+    /// Sorted by name so the list is stable between reads.
+    func recommendationsOffCollections() -> [(id: String, kind: String, name: String)] {
+        var out: [(id: String, kind: String, name: String)] = []
+        for pl in playlists where !pl.wantsRecommendations { out.append((pl.id, "playlist", pl.name)) }
+        for p in pockets where !p.wantsRecommendations { out.append((p.id, "pocket", p.name)) }
+        return out.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                            || ($0.name == $1.name && $0.id < $1.id) }
     }
 
     func setSourceSyncEnabled(_ enabled: Bool, forPocket id: String) {
@@ -1762,6 +1832,18 @@ final class CollectionsStore {
     /// EMPTY COLLECTIONS ARE EXCLUDED: with no members there is no profile to match against, so
     /// any "suggestion" would be arbitrary. Setlists are excluded too — a setlist is a FROZEN
     /// performance instance, so proposing additions to one is meaningless.
+    ///
+    /// ── THE RECOMMENDATIONS OPT-OUT IS DELIBERATELY *NOT* APPLIED HERE ───────────────────────
+    /// A switched-off collection (`recsEnabled == false`) still belongs in this list, because this
+    /// list has TWO consumers and only one of them is "what to suggest for". The other is In Da
+    /// Zone's `otherCollections` — the CO-MEMBERSHIP similarity signal, i.e. "you file these
+    /// together". Turning off suggestions FOR Comfort Zone is a statement about that tile; it is
+    /// not a statement that Comfort Zone's contents should stop informing what to play. Dropping it
+    /// here would quietly degrade In Da Zone for everyone who closes a crate.
+    ///
+    /// The opt-out is applied one layer up, at the only place it means anything: the crate
+    /// SUGGESTION pass (`ForYouFeedBuilder.build`, via `ForYouFeedInputs.recsOffCrateIds`), which
+    /// is also where the expensive per-collection catalog sweep is skipped.
     func suggestibleCollections() -> [(id: String, kind: String, name: String, songIds: [String])] {
         var out: [(id: String, kind: String, name: String, songIds: [String])] = []
         for p in playlists {

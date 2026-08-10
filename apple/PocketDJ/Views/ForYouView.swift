@@ -83,6 +83,11 @@ struct ForYouTilesView: View {
     @State private var fallbackRefreshing = false
     /// Re-renders the "Updated …" line without a timer thrash — recomputed whenever the tiles are.
     @State private var updatedLabel = ""
+    /// "…and here is where you turn it back on." Set when a tile's ⋯ switches recommendations OFF,
+    /// because the act REMOVES THE VERY CONTROL THAT DID IT — the tile is gone on the next frame,
+    /// and with it the only ⋯ the owner has seen this switch in. Saying nothing would make an
+    /// undoable action look permanent. See `recsToggleMenuItem`.
+    @State private var recsOffNotice: String?
 
     private var snapshot: ForYouFeedSnapshot { feed?.snapshot ?? fallback }
     private var isRefreshing: Bool { feed?.isRefreshing ?? fallbackRefreshing }
@@ -154,6 +159,15 @@ struct ForYouTilesView: View {
         } message: {
             Text(startError ?? "")
         }
+        // WHERE IT COMES BACK. Not a toast: the tile vanishing is the confirmation, so this alert
+        // exists solely to carry the two places the switch still lives once it has.
+        .alert("Recommendations off",
+               isPresented: Binding(get: { recsOffNotice != nil },
+                                    set: { if !$0 { recsOffNotice = nil } })) {
+            Button("OK") { recsOffNotice = nil }
+        } message: {
+            Text(recsOffNotice ?? "")
+        }
         // A tile card can start a New queue without ever opening the New screen, so the grid wears
         // the device-mode banner for it too — otherwise device mode dead-ends here in silence.
         // Only while the grid is what's in front: `NewReleasesView`, pushed onto this same stack,
@@ -201,11 +215,17 @@ struct ForYouTilesView: View {
     ///    change, and the distinction is the whole reason it is safe to key on here: the frozen ids
     ///    are untouched, the membership filter over them just has one more song to drop. Leaving it
     ///    out was the gap — a 👍 filed the song and the tile went on counting it.
+    ///  • the RECOMMENDATIONS OPT-OUT set — switching a collection off must take its tile away NOW,
+    ///    not at the next refresh, and the frozen snapshot still holds that crate until then. The
+    ///    ids themselves (sorted) rather than their count: off-A-then-on-A-then-off-B leaves the
+    ///    count at 1 while the answer changed completely, and a key that cannot see that would
+    ///    leave one dead tile up and one live tile missing.
     private var derivationKey: String {
         "\(feed?.revision ?? 0)|\(snapshot.refreshedAtMs)|\(feedback?.revision ?? 0)"
         + "|\(releaseFeed?.revision ?? 0)"
         + "|\(collections.playlists.count)|\(collections.pockets.count)"
         + "|\(collections.membershipRevision)"
+        + "|\(collections.recommendationsOffIds().sorted().joined(separator: ","))"
     }
 
     private func deriveTiles() {
@@ -225,9 +245,15 @@ struct ForYouTilesView: View {
         let newScope = ForYouTileRoute.Kind.new.rawValue
 
         // Drop a cached tile whose collection has since been deleted — the ONE way a frozen feed
-        // could offer a door to nothing.
+        // could offer a door to nothing — and one the owner has switched OFF.
+        //
+        // The opt-out is enforced in BOTH passes, and both are needed for different windows of
+        // time. `ForYouFeedBuilder.build` stops the WORK, but only from the next refresh onward;
+        // this stops the TILE from the next frame, over a snapshot frozen before the switch was
+        // flipped. Without this the tile would sit there until the schedule came round on Friday.
         let crates = snapshot.crates.filter {
-            collections.playlist($0.id) != nil || collections.pocket($0.id) != nil
+            (collections.playlist($0.id) != nil || collections.pocket($0.id) != nil)
+                && collections.recommendationsEnabled(forCollection: $0.id)
         }
 
         let newCount = live(releases.map(\.feedbackId), newScope).count
@@ -288,6 +314,10 @@ struct ForYouTilesView: View {
     /// reason). Every captured value is Sendable, so the pure engine moves across cleanly.
     private func refresh() async {
         let members = collections.suggestibleCollections()
+        // The switched-off crates. They stay in `members` — that list is also In Da Zone's
+        // co-membership signal — and are named separately so the builder skips their (expensive)
+        // suggestion sweep. See `ForYouFeedInputs.recsOffCrateIds`.
+        let recsOff = collections.recommendationsOffIds()
         let now = Date().timeIntervalSince1970 * 1000
         // ONE feedback projection PER TILE, because suppression is SCOPED: a song thumbed down in
         // one crate must not vanish from another tile's list.
@@ -303,9 +333,12 @@ struct ForYouTilesView: View {
             crates: members.map { .init(id: $0.id, kind: $0.kind, name: $0.name, songIds: $0.songIds) },
             zoneFeedback: feedback?.zoneFeedback(scope: ForYouTileRoute.Kind.zone.rawValue, nowMs: now)
                 ?? ZoneEngine.Feedback(),
-            crateFeedback: Dictionary(uniqueKeysWithValues: members.map {
-                ($0.id, feedback?.zoneFeedback(scope: $0.id, nowMs: now) ?? ZoneEngine.Feedback())
-            }),
+            crateFeedback: Dictionary(uniqueKeysWithValues: members
+                .filter { !recsOff.contains($0.id) }
+                .map {
+                    ($0.id, feedback?.zoneFeedback(scope: $0.id, nowMs: now) ?? ZoneEngine.Feedback())
+                }),
+            recsOffCrateIds: recsOff,
             nowMs: now)
 
         // THE CLOUD RANKER FOR In Da Zone, or nil. nil is not a degraded mode — it is the DEFAULT
@@ -384,6 +417,36 @@ struct ForYouTilesView: View {
                                         feedback?.beginPlayback(scope: tile.route.feedbackContext,
                                                                 songIds: queue)
                                     })
+            if let collectionId = tile.route.collectionId {
+                Divider()
+                recsToggleMenuItem(collectionId: collectionId, name: tile.title)
+            }
+        }
+    }
+
+    /// **Turn recommendations off for this collection.** Owner, verbatim: *"support ability to turn
+    /// off recommendations for a collection (eg comfort zone, favorite songs, OTG) as an option in
+    /// the … menu of the tile."*
+    ///
+    /// ── ONLY ON COLLECTION TILES, AND THAT IS NOT AN OVERSIGHT ───────────────────────────────
+    /// New and In Da Zone are the two PINNED tiles — they are not collections, they have no
+    /// `collectionId` to store a flag against, and the owner's examples are all crates. Their
+    /// equivalent switches already exist elsewhere (Settings ▸ For You for the cadence, Settings ▸
+    /// Recommendations for the engine itself).
+    ///
+    /// ── IT IS A ONE-WAY DOOR *FROM HERE*, WHICH IS WHY IT ANNOUNCES THE WAY BACK ─────────────
+    /// Switching off removes the tile, and this menu with it. Two other surfaces carry the same
+    /// switch and both survive that — the collection's OWN ⋯ menu (`PlaylistDetailView` /
+    /// `PocketDetailView`, which is also the only reachable one for a collection whose tile is
+    /// empty or was never earned), and Settings ▸ For You, which lists every switched-off
+    /// collection precisely so none of them can get lost. `recsOffNotice` names both, once, at the
+    /// moment the tile disappears.
+    @ViewBuilder private func recsToggleMenuItem(collectionId: String, name: String) -> some View {
+        CollectionRecsToggle(collectionId: collectionId,
+                             idPrefix: "foryou-tile-col-\(collectionId)") {
+            recsOffNotice = "PocketDJ won’t suggest songs for “\(name)” any more, and its tile is "
+                + "gone from For You.\n\nTurn it back on from that collection’s ⋯ menu, or in "
+                + "Settings ▸ For You."
         }
     }
 
