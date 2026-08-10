@@ -45,7 +45,8 @@ process.env.MAX_PROFILES = '1000';
 
 const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections, shedToFit,
         scoreSimilarToCollections, playCountSignal, recencySignal,
-        feedbackOf, feedbackMultiplier } =
+        feedbackOf, feedbackMultiplier,
+        primaryArtistKey, artistKey, artistFamiliarityOf, auxMix } =
   await import('./index.mjs');
 
 const PROFILE = 'profile-test-1234';
@@ -779,20 +780,38 @@ test('a song in the most-played HEAD becomes a seed, so it is not recommended ba
 
 test('a played candidate outside the seed head is lifted, with the reason shown', () => {
   // `playCountSeedLimit: 1` puts sng_e1 (the most-played) in the head and leaves sng_e4 in the
-  // TAIL — where a real 56k-row baseline leaves ~55,800 songs. Both states share the same seeds
-  // and the same maximum, so the ONLY difference is sng_e4's own candidate term.
+  // TAIL — where a real 56k-row baseline leaves ~55,800 songs.
+  //
+  // ── WHY THIS ISOLATES BY SWAPPING RATHER THAN BY ADDING ─────────────────────────────────────
+  // Since the novelty rebalance, giving a song plays does TWO things: it raises that song's own
+  // play component AND it makes its ARTIST more familiar, which lowers the artist-novelty term
+  // that now carries three quarters of the aux mix. Simply adding plays therefore measures the
+  // sum of both, and on a one-song-per-artist fixture the artist effect wins — which is the
+  // engine working as designed, not a regression.
+  //
+  // So the two states move the SAME 200 plays between Mira's two songs. Her artist total is 200
+  // either way, which pins the novelty term exactly, and the only thing left moving is sng_e4's
+  // own count. That is a strictly cleaner isolation than the version this replaces.
   const opts = { nowMs: NOW, limit: 20, playCountSeedLimit: 1 };
-  const base = { v: 1, plays: [play('sng_e1', NOW - 5 * DAY)], favorites: {}, activity: [],
-                 puzzle: [], collections: { atMs: 0, list: [] },
-                 playCounts: { atMs: NOW, counts: { sng_e1: 500 } } };
+  const state = (counts) => ({ v: 1, plays: [play('sng_e1', NOW - 5 * DAY)], favorites: {},
+                               activity: [], puzzle: [], collections: { atMs: 0, list: [] },
+                               playCounts: { atMs: NOW, counts } });
+  const base = state({ sng_e1: 500 });
   const before = scoreForYou(base, featureIndex(), opts);
   const scoreOf = (out, id) => out.songs.find((s) => s.songId === id)?.score ?? 0;
+
+  const e4Carries = scoreForYou(state({ sng_e1: 500, sng_e4: 200 }), featureIndex(), opts);
+  const e5Carries = scoreForYou(state({ sng_e1: 500, sng_e5: 200 }), featureIndex(), opts);
+  assert.deepEqual(e4Carries.seeds, e5Carries.seeds,
+                   'the seed set — and so the taste profile — is identical');
+  assert.ok(scoreOf(e4Carries, 'sng_e4') > scoreOf(e5Carries, 'sng_e4'),
+            'same artist familiarity, more of its own plays ⇒ lifetime plays lift the score');
+  assert.ok(scoreOf(e5Carries, 'sng_e5') > scoreOf(e4Carries, 'sng_e5'),
+            '…and symmetrically for the sibling, so this is the axis and not the fixture');
 
   const loved = { ...base,
                   playCounts: { atMs: NOW, counts: { sng_e1: 500, sng_e4: 200, sng_x1: 200 } } };
   const after = scoreForYou(loved, featureIndex(), opts);
-  assert.deepEqual(after.seeds, before.seeds, 'the seed set — and so the taste profile — is identical');
-  assert.ok(scoreOf(after, 'sng_e4') > scoreOf(before, 'sng_e4'), 'lifetime plays lift the score');
 
   // The reason surfaces on `sng_x1` — a sparse row (year only) where plays IS the leading term.
   // On a fully-tagged song the genre/key/BPM terms outrank it, which is the intent: familiarity
@@ -930,19 +949,41 @@ test('recency and plays are SEPARABLE axes in For You', () => {
     scoreForYou(base(counts, days), featuresById, { nowMs: NOW, limit: 20, playCountSeedLimit: 0 });
   const scoreOf = (out, id) => out.songs.find((s) => s.songId === id)?.score ?? 0;
 
-  // AXIS 1 — hold plays EQUAL, vary only the date. sng_j1 and sng_j2 are the same artist, album,
-  // genre and year in the fixture, so the date is genuinely the only thing that differs.
-  const recency = run({ sng_j1: 20, sng_j2: 20 },
-                      { sng_j1: dayOf(NOW) - 1825, sng_j2: dayOf(NOW) - 1 });
-  assert.ok(scoreOf(recency, 'sng_j2') > scoreOf(recency, 'sng_j1'),
+  // ── HOW THIS ISOLATES, AND WHY IT NO LONGER COMPARES TWO SONGS INSIDE ONE RUN ──────────────
+  // Both axes are read by SWAPPING the input between two runs and comparing ONE song to ITSELF.
+  // The previous version compared sng_j1 against sng_j2 in a single run on the grounds that they
+  // share an artist, album, genre and year — but they differ in bpm, key and mood keywords, so
+  // that was never quite "everything else equal". It passed only because the additive play term
+  // (0.75, larger than the whole artist term) was big enough to swamp the metadata difference.
+  // That domination is exactly what the owner reported, so a test resting on it would now be
+  // pinning the bug rather than the axis.
+  //
+  // The pair is Mira's two songs, which sit inside the seed's genre and so carry a similarity
+  // large enough for a 0…1 aux component to move the score by more than the output's 2-decimal
+  // rounding. On the jazz pair the same true difference is ~0.007 and rounds away — the axis is
+  // still there, it is simply below the resolution of the number the API returns.
+  //
+  // Mira's ARTIST total is identical across each pair of runs, which pins the novelty term and
+  // leaves exactly one thing moving.
+
+  // AXIS 1 — the same song, the same count, the only change being its own date.
+  const e4Old = run({ sng_e4: 20, sng_e5: 20 },
+                    { sng_e4: dayOf(NOW) - 1825, sng_e5: dayOf(NOW) - 1 });
+  const e4New = run({ sng_e4: 20, sng_e5: 20 },
+                    { sng_e4: dayOf(NOW) - 1, sng_e5: dayOf(NOW) - 1825 });
+  assert.ok(scoreOf(e4New, 'sng_e4') > scoreOf(e4Old, 'sng_e4'),
             'equal plays, fresher date ⇒ ranks higher');
 
-  // AXIS 2 — hold the DATE equal, vary only the count. The order must flip back, which is what
-  // proves recency did not simply replace the play count.
-  const sameDay = { sng_j1: dayOf(NOW) - 400, sng_j2: dayOf(NOW) - 400 };
-  const plays = run({ sng_j1: 200, sng_j2: 2 }, sameDay);
-  assert.ok(scoreOf(plays, 'sng_j1') > scoreOf(plays, 'sng_j2'),
+  // AXIS 2 — the same song, the same date, the only change being its own count. The order must
+  // flip back, which is what proves recency did not simply replace the play count.
+  const sameDay = { sng_e4: dayOf(NOW) - 400, sng_e5: dayOf(NOW) - 400 };
+  const heavyE4 = run({ sng_e4: 200, sng_e5: 2 }, sameDay);
+  const heavyE5 = run({ sng_e4: 2, sng_e5: 200 }, sameDay);
+  assert.ok(scoreOf(heavyE4, 'sng_e4') > scoreOf(heavyE5, 'sng_e4'),
             'equal dates, more plays ⇒ ranks higher');
+  assert.ok(scoreOf(heavyE5, 'sng_e5') > scoreOf(heavyE4, 'sng_e5'),
+            '…and symmetrically, so the ordering is the axis and not the pair');
+  const plays = heavyE4;
 
   // THE POINT: one collapsed score could not produce both orderings from the same engine.
   // "Played a lot long ago" and "played once yesterday" stay distinguishable.
@@ -1299,4 +1340,234 @@ test('shedToFit drops feedback only after plays, activity and puzzle', () => {
   // A budget that forces exactly three drops: plays, activity, puzzle — feedback survives.
   shedToFit(state, 1400);
   assert.equal(state.feedback.length, 1, 'the deliberate signal outlives the incidental ones');
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// THE NOVELTY REBALANCE — the owner's report: "it is biasing too much on play count so each tile
+// is recommending multiple Drake songs … value novelty over similarity … so that thumbs up and
+// thumbs down build a second reliable signal source apart from pure play count."
+//
+// The tests below are the claims that rebalance has to be able to make: the cap cannot be walked
+// around, novelty can actually beat familiarity, novelty CANNOT beat similarity, the 47.8% of a
+// real library with no play data is neither buried nor promoted wholesale, and Gem Collector's
+// shipped ranking is untouched.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+test('the per-artist cap keys on the PRIMARY artist, so a collaboration cannot claim a second budget', () => {
+  assert.equal(primaryArtistKey('Drake'), 'drake');
+  assert.equal(primaryArtistKey('Drake & Future'), 'drake');
+  assert.equal(primaryArtistKey('Drake feat. Future'), 'drake');
+  assert.equal(primaryArtistKey('Drake ft Lil Wayne'), 'drake');
+  assert.equal(primaryArtistKey('Drake, Future'), 'drake');
+  assert.equal(primaryArtistKey('Drake x Future'), 'drake');
+  assert.equal(primaryArtistKey('Drake / Future'), 'drake');
+  assert.equal(primaryArtistKey('DJ Khaled Featuring Drake'), 'dj khaled');
+  assert.equal(primaryArtistKey('Nick Cave with Kylie Minogue'), 'nick cave');
+  assert.equal(primaryArtistKey('Blur vs. Oasis'), 'blur');
+
+  // NOT separators: a comma inside a NAME, and a word that merely CONTAINS a separator.
+  assert.equal(primaryArtistKey('Tyler, The Creator'), 'tyler, the creator',
+               'a list item never begins with "the" — this is one artist');
+  assert.equal(primaryArtistKey('Xavier Rudd'), 'xavier rudd', '"x" needs its own word boundary');
+  assert.equal(primaryArtistKey('Fetty Wap'), 'fetty wap', '"with" must not match mid-word');
+  assert.equal(primaryArtistKey('Withered Hand'), 'withered hand');
+
+  // Agrees with the device's artist normalizer on the trivial cases (case, diacritics, "The ").
+  assert.equal(primaryArtistKey('The Beatles'), artistKey('The Beatles'));
+  assert.equal(primaryArtistKey('BEYONCÉ'), 'beyonce');
+});
+
+test('the cap holds under adversarial input: one artist owning the entire top of the ranking', () => {
+  // Every row in this catalog is the SAME artist wearing a different credit string — the shape
+  // that defeated the shipped cap, since "Drake & Future" was a different key from "Drake".
+  const credits = ['Drake', 'Drake & Future', 'Drake feat. 21 Savage', 'Drake, Rihanna',
+                   'Drake x Lil Baby', 'Drake ft. Travis Scott', 'Drake / Partynextdoor',
+                   'Drake with Sampha', 'DRAKE', 'Drake feat. Nobody'];
+  const rows = credits.map((a, i) => ({
+    i: `adv_${i}`, al: `alb_adv_${i}`, a, n: `Track ${i}`, g: 'electronic', y: 2020,
+    b: 120, c: '8A', s: ['dark', 'moody'],
+  }));
+  // Plus the seed, which is a different artist so the profile has something to be built from.
+  rows.push({ i: 'adv_seed', al: 'alb_seed', a: 'Aria', n: 'Seed', g: 'electronic', y: 2020,
+              b: 120, c: '8A', s: ['dark', 'moody'] });
+  const featuresById = new Map(rows.map((r) => [r.i, r]));
+
+  const out = scoreForYou({
+    v: 1, plays: [play('adv_seed', NOW - 2 * DAY)], favorites: {}, activity: [], puzzle: [],
+    collections: { atMs: 0, list: [] },
+    // He has played this artist into the ground — the exact input that produced the report.
+    playCounts: { atMs: NOW, counts: Object.fromEntries(credits.map((_, i) => [`adv_${i}`, 500])) },
+  }, featuresById, { nowMs: NOW, limit: 50, playCountSeedLimit: 0 });
+
+  assert.ok(out.songs.length > 0, 'the ranking is not empty');
+  assert.ok(out.songs.every((s) => primaryArtistKey(s.artist) === 'drake'),
+            'this fixture has only one real artist besides the seed');
+  assert.equal(out.songs.length, 2,
+               'one artist gets at most 2 rows however many credit strings they wear '
+               + `(got ${JSON.stringify(out.songs.map((s) => s.artist))})`);
+});
+
+test('a never-played song can outrank a heavily-played one when similarity is comparable', () => {
+  // Two songs identical on every SIMILARITY field — same genre, year, bpm, key, mood — differing
+  // only in artist and in play history. This is the head-to-head the owner's instruction is about.
+  const rows = [
+    { i: 'nv_seed', al: 'alb_s', a: 'Aria', n: 'Seed', g: 'electronic', y: 2020, b: 120, c: '8A', s: ['dark'] },
+    { i: 'nv_known', al: 'alb_k', a: 'Worn Out', n: 'Played To Death', g: 'electronic', y: 2020, b: 120, c: '8A', s: ['dark'] },
+    { i: 'nv_new', al: 'alb_n', a: 'Never Heard', n: 'Untouched', g: 'electronic', y: 2020, b: 120, c: '8A', s: ['dark'] },
+  ];
+  const featuresById = new Map(rows.map((r) => [r.i, r]));
+  const out = scoreForYou({
+    v: 1, plays: [play('nv_seed', NOW - 2 * DAY)], favorites: {}, activity: [], puzzle: [],
+    collections: { atMs: 0, list: [] },
+    playCounts: { atMs: NOW, counts: { nv_known: 400 } },
+  }, featuresById, { nowMs: NOW, limit: 20, playCountSeedLimit: 0 });
+
+  const ids = out.songs.map((s) => s.songId);
+  assert.ok(ids.indexOf('nv_new') < ids.indexOf('nv_known'),
+            `the unknown artist leads when similarity is equal (got ${JSON.stringify(ids)})`);
+  // …and the row SAYS so, which is what makes a 👍 on it a verdict the engine can read back.
+  const row = out.songs.find((s) => s.songId === 'nv_new');
+  assert.ok(row.reasons.some((r) => r.startsWith("An artist you've never played")),
+            `the novelty reason is user-visible: ${JSON.stringify(row.reasons)}`);
+});
+
+test('novelty CANNOT outrank a genuinely more similar song — the bound is 1.40x, not a hope', () => {
+  // `b_far` is brand new but in the WRONG genre, wrong era, wrong key, wrong tempo. Novelty is
+  // maxed for it and near zero for the well-matched, heavily-played row. If novelty were ADDED
+  // rather than applied as a bounded multiplier, an unrelated song could float to the top of the
+  // tile — which is worse than a familiar suggestion, and is the failure this shape rules out.
+  const rows = [
+    { i: 'b_seed', al: 'alb_s', a: 'Aria', n: 'Seed', g: 'electronic', y: 2020, b: 120, c: '8A', s: ['dark'] },
+    { i: 'b_near', al: 'alb_k', a: 'Worn Out', n: 'Great Fit', g: 'electronic', y: 2020, b: 120, c: '8A', s: ['dark'] },
+    { i: 'b_far', al: 'alb_n', a: 'Never Heard', n: 'Wrong Everything', g: 'polka', y: 1932, b: 200, c: '2B', s: ['jolly'] },
+  ];
+  const featuresById = new Map(rows.map((r) => [r.i, r]));
+  const out = scoreForYou({
+    v: 1, plays: [play('b_seed', NOW - 2 * DAY)], favorites: {}, activity: [], puzzle: [],
+    collections: { atMs: 0, list: [] },
+    playCounts: { atMs: NOW, counts: { b_near: 500 } },
+  }, featuresById, { nowMs: NOW, limit: 20, playCountSeedLimit: 0 });
+
+  const ids = out.songs.map((s) => s.songId);
+  assert.ok(ids.indexOf('b_near') === 0,
+            `similarity still decides the tier (got ${JSON.stringify(ids)})`);
+  // The bound stated as arithmetic, so it is checked rather than asserted by comment: the best a
+  // maximally-novel row can do is 1.40x its own similarity.
+  const near = out.songs.find((s) => s.songId === 'b_near');
+  const far = out.songs.find((s) => s.songId === 'b_far');
+  if (far) assert.ok(far.score <= near.score * 1.4001, 'no row escapes the aux band');
+});
+
+test('a profile with NO play data at all is scored on similarity alone, not shifted wholesale', () => {
+  // The renormalization rule. 47.8% of the owner's real catalog has no play data; a novelty term
+  // that scored those rows 1.0 by default would promote half the library for a missing field, and
+  // one that scored them 0 would bury it. With NO counts anywhere the axis is dead and drops out
+  // of the denominator entirely — the ranking is exactly what it was before novelty existed.
+  const featuresById = featureIndex();
+  const base = { v: 1, plays: [play('sng_e1', NOW - 5 * DAY)], favorites: {}, activity: [],
+                 puzzle: [], collections: { atMs: 0, list: [] } };
+  const noCounts = scoreForYou({ ...base, playCounts: { atMs: NOW, counts: {} } },
+                               featuresById, { nowMs: NOW, limit: 20 });
+  const noSnapshot = scoreForYou(base, featuresById, { nowMs: NOW, limit: 20 });
+  assert.deepEqual(noCounts.songs, noSnapshot.songs,
+                   'an absent snapshot and an empty one rank identically');
+  // Every score is the bare similarity sum — no multiplier was applied at all.
+  assert.ok(noCounts.songs.every((s) => s.reasons.every((r) => !r.startsWith('An artist you'))),
+            'a dead axis says nothing rather than saying everything');
+});
+
+test('artist novelty is an ARTIST aggregate, so a never-played song is not automatically novel', () => {
+  // The property that keeps the term from collapsing back into "1 - play count": a deep cut by an
+  // artist he wears out is FAMILIAR even though that particular song has never been played, and a
+  // heavily-played track by an artist he otherwise ignores is not novel. Measured on the real
+  // catalog the two distributions overlap heavily (never-played rows mean 0.679, played 0.523)
+  // rather than partitioning, which is what stops the 47.8% moving as a block.
+  const rows = [
+    { i: 'ag_a1', a: 'Huge', g: 'electronic' }, { i: 'ag_a2', a: 'Huge', g: 'electronic' },
+    { i: 'ag_b1', a: 'Ignored', g: 'electronic' },
+  ];
+  const featuresById = new Map(rows.map((r) => [r.i, r]));
+  // ag_a1 carries all of Huge's plays; ag_a2 has never been played at all.
+  const fam = artistFamiliarityOf(featuresById, { ag_a1: 500, ag_b1: 1 });
+  assert.ok(fam.live);
+  assert.ok(fam.novelty('huge') < 0.05, 'the artist is known, so the unplayed deep cut is not novel');
+  assert.ok(fam.novelty('ignored') > 0.85, 'one play does not make an artist familiar');
+  assert.equal(fam.novelty('huge'), fam.novelty(primaryArtistKey('Huge')),
+               "both of Huge's songs — played and unplayed — get the SAME novelty");
+  assert.ok(fam.isUnknown('nobody at all'), 'an artist with no plays is the strongest case');
+
+  // And with nothing to measure from, the axis reports dead rather than reporting 1.0 for all.
+  const dead = artistFamiliarityOf(featuresById, {});
+  assert.equal(dead.live, false);
+  assert.equal(dead.novelty('huge'), 0);
+  assert.equal(auxMix({ novelty: 1, plays: 0, recency: 0,
+                        hasNovelty: false, hasPlays: false, hasRecency: false }), 0,
+               'no live signal ⇒ aux 0 ⇒ the multiplier is exactly 1');
+});
+
+test('Gem Collector (/recs/similar) is NOT rebalanced — familiarity still leads there', () => {
+  // The constraint: the puzzle's shipped ranking must not move. `/recs/similar` keeps play count
+  // as an ADDITIVE term and has no novelty term at all, so between two equally-fitting cards the
+  // one the player actually listens to is still the better card.
+  const rows = [
+    { i: 'gc_m1', al: 'alb_g', a: 'Aria', n: 'Member', g: 'electronic', y: 2020, b: 120, c: '8A', s: ['dark'] },
+    { i: 'gc_known', al: 'alb_k', a: 'Worn Out', n: 'Played', g: 'electronic', y: 2020, b: 120, c: '8A', s: ['dark'] },
+    { i: 'gc_new', al: 'alb_n', a: 'Never Heard', n: 'Untouched', g: 'electronic', y: 2020, b: 120, c: '8A', s: ['dark'] },
+    // A sparse row (year only), where the genre/key/BPM terms that normally outrank a play signal
+    // are absent — so the shipped play-count REASON is reachable and can be pinned verbatim.
+    { i: 'gc_sparse', al: 'alb_sp', a: 'Sparse Guy', n: 'Bare', y: 2020 },
+  ];
+  const featuresById = new Map(rows.map((r) => [r.i, r]));
+  const out = scoreSimilarToCollections({
+    v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+    collections: { atMs: NOW, list: [{ id: 'col_g', kind: 'playlist', name: 'Crate', songIds: ['gc_m1'] }] },
+    playCounts: { atMs: NOW, counts: { gc_known: 400, gc_sparse: 400 } },
+  }, featuresById, ['col_g'], { nowMs: NOW, limit: 20 });
+
+  const ids = out.songs.map((s) => s.songId);
+  assert.ok(ids.indexOf('gc_known') < ids.indexOf('gc_new'),
+            `the played card still leads in the puzzle route (got ${JSON.stringify(ids)})`);
+  const sparse = out.songs.find((s) => s.songId === 'gc_sparse');
+  assert.ok(sparse.reasons.some((r) => r === "You've played this 400 times"),
+            `and it still says so, in the shipped words: ${JSON.stringify(sparse.reasons)}`);
+  assert.ok(out.songs.every((s) => s.reasons.every((r) => !r.startsWith('An artist you'))),
+            'no novelty reason reaches the puzzle route at all');
+});
+
+test('on real-SHAPED input the tile stops being one artist and starts proposing unknowns', () => {
+  // A synthetic library with the owner's shape: one artist owning a large slice of the catalog AND
+  // essentially all of the plays (his real top artist is #1 by both — 449 songs and 2,796 plays),
+  // against a long tail of artists he has never touched. Every row is equally similar, so the only
+  // things deciding the list are the aux mix and the cap.
+  const rows = [{ i: 'rs_seed', al: 'alb_s', a: 'Aria', n: 'Seed', g: 'electronic', y: 2020, b: 120, c: '8A', s: ['dark'] }];
+  const counts = {};
+  for (let i = 0; i < 40; i++) {
+    rows.push({ i: `rs_dom_${i}`, al: `alb_d${i}`, a: i % 4 === 0 ? 'Dominant & Guest' : 'Dominant',
+                n: `D${i}`, g: 'electronic', y: 2020, b: 120, c: '8A', s: ['dark'] });
+    counts[`rs_dom_${i}`] = 300 - i;   // …and he has played every one of them
+  }
+  for (let i = 0; i < 40; i++) {
+    rows.push({ i: `rs_tail_${i}`, al: `alb_t${i}`, a: `Tail ${i}`, n: `T${i}`,
+                g: 'electronic', y: 2020, b: 120, c: '8A', s: ['dark'] });
+  }
+  const featuresById = new Map(rows.map((r) => [r.i, r]));
+  const out = scoreForYou({
+    v: 1, plays: [play('rs_seed', NOW - 2 * DAY)], favorites: {}, activity: [], puzzle: [],
+    collections: { atMs: 0, list: [] }, playCounts: { atMs: NOW, counts },
+  }, featuresById, { nowMs: NOW, limit: 25, playCountSeedLimit: 0 });
+
+  const artists = out.songs.map((s) => primaryArtistKey(s.artist));
+  const distinct = new Set(artists).size;
+  const dominant = artists.filter((a) => a === 'dominant').length;
+  // `<= 2` rather than `=== 2`: with every candidate EXACTLY as similar as every other, novelty is
+  // the only thing left deciding and the unknown tail takes the whole tile. That is the extreme of
+  // the calibration, not its typical behaviour — on the real catalog the never-played share lands
+  // at 48.7% (against a 48.6% base rate) precisely because similarity does vary there.
+  assert.ok(dominant <= 2, 'the dominant artist is held to the cap across ALL their credits '
+                           + `(got ${dominant} of ${artists.length})`);
+  assert.ok(distinct >= 20, `the tile is many artists, not one discography (got ${distinct})`);
+  const neverPlayed = out.songs.filter((s) => s.songId.startsWith('rs_tail_')).length;
+  assert.ok(neverPlayed >= out.songs.length / 2,
+            'at equal similarity the never-played tail is what fills the tile — that is the '
+            + `headroom a thumbs-up now carries information about (got ${neverPlayed}/${out.songs.length})`);
 });

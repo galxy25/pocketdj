@@ -129,7 +129,18 @@ const PLAYCOUNT_SEED_WEIGHT = 1.0;
 /// term (2.0): "you love this song" is a real signal in a library of the user's own music, but it
 /// must not turn For You into a list of the same ten songs forever. The 72 h exclusion already
 /// keeps what is playing right now out.
-const PLAYCOUNT_CANDIDATE_WEIGHT = 0.75;
+///
+/// ── DEMOTED FROM A SCORE TERM TO AN AUX COMPONENT (the owner's novelty rebalance) ──────────────
+/// This is no longer summed into the score alongside genre and collection. Measured on the real
+/// profile, `/recs/songs` returned **50 of 50 rows with play history** — and it kept doing so with
+/// play counts removed entirely, with last-played dates removed, and at every seed limit from 20 to
+/// 2000. So the additive play terms were not the whole cause, but they were the part that put four
+/// Drake-credited rows in the top ten. They now reach the score through the same bounded aux
+/// multiplier the device's `ZoneEngine.suggestions` uses, alongside the novelty term that is the
+/// actual fix. See `NOVELTY_AUX_GAIN`. Kept as WEIGHTS INSIDE that mix, at their shipped ratio to
+/// each other, so the relative statement "lifetime affinity outranks a single recent touch" is
+/// preserved rather than silently rewritten.
+const PLAYCOUNT_CANDIDATE_WEIGHT = 0.15;
 /// The same term inside `/recs/similar` (Gem Collector). Lower still: that route is about
 /// resembling a CRATE, and familiarity is a tiebreak there rather than a reason.
 const PLAYCOUNT_SIMILAR_WEIGHT = 0.5;
@@ -145,9 +156,32 @@ const RECENCY_HALF_LIFE_DAYS = 730;
 /// affinity outranks a single recent touch — rather than an artifact of units. The 30-day play
 /// window above already speaks for genuinely fresh listening.
 const RECENCY_SEED_WEIGHT = 0.75;
-/// A CANDIDATE's recency. One notch below `PLAYCOUNT_CANDIDATE_WEIGHT`, and well below the genre
-/// term (2.0), so neither play signal can dominate a recommendation on its own.
-const RECENCY_CANDIDATE_WEIGHT = 0.5;
+/// A CANDIDATE's recency. One notch below `PLAYCOUNT_CANDIDATE_WEIGHT` — the same ratio it has
+/// always had — but, like it, now a component of the bounded aux mix rather than a term summed
+/// into the score. See `PLAYCOUNT_CANDIDATE_WEIGHT`.
+const RECENCY_CANDIDATE_WEIGHT = 0.10;
+/// ── NOVELTY: THE SECOND SIGNAL ─────────────────────────────────────────────────────────────────
+/// Pull of ARTIST-LEVEL novelty inside the aux mix — three quarters of it, against 0.15 + 0.10 for
+/// the two play-derived components. MIRRORS `ZoneEngine.Tuning.suggestionNoveltyWeight` on the
+/// device (0.75 against 0.25); the two rankers have to agree about what novelty means or the tile
+/// the user tunes locally and the cloud "Suggested" tile give opposite answers to the same library.
+///
+/// WHY THE ARTIST AND NOT THE SONG — the identity that kills the obvious version. With song-level
+/// novelty `nov = 1 − fam`, `sim + wf·fam + wn·(1 − fam)` is `sim + wn + (wf − wn)·fam`: the `wn`
+/// is a constant across candidates and cannot reorder anything, so adding song novelty at `wn` is
+/// exactly cutting the play weight to `wf − wn` under a different name (measured Spearman between
+/// the two axes: **−1.000**). Artist novelty measures −0.387 against the play term — partly
+/// independent — and, being an artist AGGREGATE, is defined for 100% of songs including the 47.8%
+/// that carry no play data at all. Full derivation in `apple/PocketDJ/Services/Recommendations/RecNovelty.swift`.
+const NOVELTY_CANDIDATE_WEIGHT = 0.75;
+/// How far the aux mix may lift a candidate: `sim × (1 + NOVELTY_AUX_GAIN × aux)`.
+///
+/// MULTIPLICATIVE AND BOUNDED, which is what keeps novelty from becoming randomness: a candidate
+/// can never outrank one whose SIMILARITY is more than 1.40× its own, so similarity still decides
+/// which tier a song is in and novelty only reorders inside it. Added on instead — the obvious
+/// shape — a novelty term has no such bound, and at the bottom of the admitted similarity range a
+/// flat bonus is a multi-fold swing. Mirrors `ZoneEngine.Tuning.suggestionAuxGain`.
+const NOVELTY_AUX_GAIN = 0.40;
 /// The same term inside `/recs/similar`, where — like familiarity — recency is a tiebreak about
 /// the crate rather than a reason for it.
 const RECENCY_SIMILAR_WEIGHT = 0.35;
@@ -662,6 +696,114 @@ export function playCountSignal(n, maxN) {
   return Math.log2(1 + Math.min(n, maxN)) / Math.log2(1 + maxN);
 }
 
+/**
+ * `PuzzleSimilarity.artistKey` — diacritic + case insensitive, trimmed, leading "the " stripped.
+ * The device's normalizer, mirrored so both sides bucket an artist the same way.
+ */
+export function artistKey(a) {
+  let s = String(a || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  if (s.startsWith('the ')) s = s.slice(4);
+  return s;
+}
+
+/**
+ * The PRIMARY artist of a credit string — what a per-artist cap has to key on.
+ *
+ * MIRRORS `RecNovelty.primaryArtistKey` on the device, separators and all. Measured on the real
+ * profile, the shipped cap of 2-per-artist let FOUR Drake-credited rows into a 50-row list, because
+ * "Drake & Future" is a different string from "Drake" and therefore had its own budget. A cap a
+ * credit string can walk around is not a cap.
+ *
+ * The comma guard is the one hand-written exception: a comma normally separates a list, but
+ * "Tyler, The Creator" is a NAME, and a list item never begins with "the ".
+ *
+ * Where the two risks trade off this SPLITS, because the failure directions are not symmetric:
+ * two different artists colliding into one bucket makes the cap stricter (a tile loses a row it
+ * could have had), while one artist escaping their bucket is the defect being fixed.
+ */
+export function primaryArtistKey(credit) {
+  const s = String(credit || '').toLowerCase();
+  const seps = ['& ', 'feat. ', 'feat ', 'featuring ', 'ft. ', 'ft ', 'with ', 'x ', 'vs. ', 'vs '];
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === ',') {
+      let j = i + 1;
+      while (j < s.length && s[j] === ' ') j++;
+      if (!s.startsWith('the ', j)) return artistKey(s.slice(0, i));
+      i = j - 1;
+      continue;
+    }
+    if (c === '/') return artistKey(s.slice(0, i));
+    // The word-ish separators only count STANDING ALONE between spaces, so "Fetty Wap" does not
+    // split on a "with"-shaped middle and "Xavier" is not an " x " collaboration.
+    if (c === ' ') {
+      for (const w of seps) if (s.startsWith(w, i + 1)) return artistKey(s.slice(0, i));
+    }
+  }
+  return artistKey(s);
+}
+
+/**
+ * ARTIST-level familiarity, 0…1, log-scaled against the listener's own top artist.
+ *
+ * Rolled up to the PRIMARY artist deliberately: keyed on the raw credit, a "Drake & Future" row is
+ * an artist with almost no plays and would therefore score as NOVEL — which lets the very
+ * concentration this term exists to break back in through the collaboration door.
+ *
+ * `live: false` when the profile carries no play counts at all. The caller then drops the whole aux
+ * mix rather than scoring every candidate an identical novelty of 1.0 — the renormalization rule,
+ * the same one `feedbackOf` and the device's `hasDormancy` follow.
+ */
+export function artistFamiliarityOf(featuresById, lifetimeCounts) {
+  // ONE PASS, and it MEMOIZES the split. The scoring loop, the reason strings and the per-artist
+  // cap all need a row's primary-artist key, and the features doc is ~108k rows against ~20k
+  // distinct credits — so resolving it per row per call site is three full splits of the catalog
+  // on every request. `keyOf` is handed back so every later call site is a Map lookup.
+  const keys = new Map();
+  const keyOf = (credit) => {
+    if (!credit) return '';
+    let k = keys.get(credit);
+    if (k === undefined) { k = primaryArtistKey(credit); keys.set(credit, k); }
+    return k;
+  };
+  const totals = new Map();
+  let live = false;
+  for (const row of featuresById.values()) {
+    const k = keyOf(row.a);
+    const n = lifetimeCounts[row.i] || 0;
+    if (!(n > 0) || !k) continue;
+    live = true;
+    totals.set(k, (totals.get(k) || 0) + n);
+  }
+  let maxN = 0;
+  for (const n of totals.values()) if (n > maxN) maxN = n;
+  const denom = maxN > 0 ? Math.log2(1 + maxN) : 0;
+  const fam = new Map();
+  if (denom > 0) for (const [k, n] of totals) fam.set(k, Math.min(1, Math.log2(1 + n) / denom));
+  return {
+    live: live && denom > 0,
+    keyOf,
+    familiarity: (k) => fam.get(k) || 0,
+    novelty: (k) => (live && denom > 0 ? 1 - (fam.get(k) || 0) : 0),
+    /// Never played this artist at all ⇒ the strongest form of the signal, and the one worth
+    /// spelling out on the row.
+    isUnknown: (k) => live && denom > 0 && !fam.has(k),
+  };
+}
+
+/**
+ * Blend novelty with the two play-derived axes into one 0…1 aux, RENORMALIZED over whichever the
+ * profile can actually speak. Mirrors `RecNovelty.aux` on the device (which has no recency axis —
+ * that one is the cloud's, and it renormalizes out when there are no last-played dates).
+ */
+export function auxMix({ novelty, plays, recency, hasNovelty, hasPlays, hasRecency }) {
+  let num = 0; let den = 0;
+  if (hasNovelty) { num += NOVELTY_CANDIDATE_WEIGHT * novelty; den += NOVELTY_CANDIDATE_WEIGHT; }
+  if (hasPlays) { num += PLAYCOUNT_CANDIDATE_WEIGHT * plays; den += PLAYCOUNT_CANDIDATE_WEIGHT; }
+  if (hasRecency) { num += RECENCY_CANDIDATE_WEIGHT * recency; den += RECENCY_CANDIDATE_WEIGHT; }
+  return den > 0 ? num / den : 0;
+}
+
 /** The stored lifetime counts as `{ counts, maxN }`, with `maxN` 0 when there is no signal. */
 function playCountsOf(state) {
   const counts = state.playCounts?.counts || {};
@@ -888,6 +1030,14 @@ export function scoreForYou(state, featuresById,
   for (const songId of fb.rejected) excluded.add(songId);
 
   // 4) Score every candidate. Each term contributes 0 when its field is absent.
+  //
+  // ── SIMILARITY GATES, NOVELTY REORDERS ──────────────────────────────────────────────────────
+  // `terms` are the SIMILARITY terms only — genre, tempo, key, era, mood, shared crate, artist.
+  // The play-derived signals and the novelty term reach the score through a bounded multiplier
+  // below, never as another addend, so a candidate can never outrank one whose similarity is more
+  // than 1.40× its own. That boundary is what stops "value novelty" from becoming "value noise".
+  const artistFam = artistFamiliarityOf(featuresById, lifetime);
+  const hasRecencyDates = Object.keys(lastPlayedDays).length > 0;
   const scored = [];
   for (const row of featuresById.values()) {
     if (excluded.has(row.i)) continue;
@@ -917,36 +1067,71 @@ export function scoreForYou(state, featuresById,
     if (row.a && (artistCount.get(row.a) || 0) > 0) {
       terms.push(['artist', 0.75, `Artist you've played: ${row.a}`]);
     }
-    // LIFETIME affinity. Everything here is the user's OWN library, so "you have played this a
-    // lot" is a recommendation reason, not a leak of novelty — and the 72 h exclusion above
-    // already keeps whatever is on right now out of the list.
+    // SIMILARITY is everything above, and it is what this row had to earn to be here at all.
+    const sim = terms.reduce((s, [, v]) => s + v, 0);
+    if (sim <= 0) continue;
+
+    // ── THE AUX MIX: novelty · lifetime affinity · recency ──────────────────────────────────
+    // Everything here is the user's OWN library, so "you have played this a lot" is still a real
+    // signal — it is just no longer allowed to be a third of the discrimination at the head of the
+    // ranking while being described as a tiebreak. Novelty outweighs the two play axes 3:1, which
+    // is the owner's instruction made arithmetic: the tile has to propose things the ranking is
+    // genuinely UNSURE about, or a thumbs-up only ever confirms a play count it already read.
+    const capKey = artistFam.keyOf(row.a);
     const lifetimeN = lifetime[row.i] || 0;
-    if (lifetimeN > 0) {
-      terms.push(['plays', PLAYCOUNT_CANDIDATE_WEIGHT * playCountSignal(lifetimeN, maxLifetime),
-                  `You've played this ${lifetimeN} time${lifetimeN === 1 ? '' : 's'}`]);
-    }
-    // RECENCY — its own term, so two songs with identical lifetime counts are still separable by
-    // when they were last played (and vice versa).
+    const playSig = playCountSignal(lifetimeN, maxLifetime);
     const rec = recencySignal(lastPlayedDays[row.i], nowMs);
-    if (rec > 0) {
-      terms.push(['recency', RECENCY_CANDIDATE_WEIGHT * rec, 'You played this recently']);
-    }
-    // The SOFT half of the loop, applied to the whole score rather than as another term: it must
-    // scale what the other signals concluded, never manufacture a rank of its own.
-    const score = terms.reduce((s, [, v]) => s + v, 0)
-      * feedbackMultiplier(fb, row.a, row.g);
+    const nov = capKey ? artistFam.novelty(capKey) : 0;
+    const hasNovelty = artistFam.live && !!capKey;
+    const aux = auxMix({
+      novelty: nov, plays: playSig, recency: rec,
+      hasNovelty, hasPlays: maxLifetime > 0, hasRecency: hasRecencyDates,
+    });
+
+    // The SOFT half of the feedback loop, applied to the whole score rather than as another term:
+    // it must scale what the other signals concluded, never manufacture a rank of its own.
+    const score = sim * (1 + NOVELTY_AUX_GAIN * aux) * feedbackMultiplier(fb, row.a, row.g);
     if (score <= 0) continue;
-    const reasons = [...terms].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([, , r]) => r);
+
+    // EXPLAINABILITY. The aux components are reported alongside the similarity terms at the
+    // magnitude they actually contributed, so the top-3 "why" tells the truth about which signal
+    // put the row here — including when the honest answer is "you have never played this artist".
+    const auxDen = (hasNovelty ? NOVELTY_CANDIDATE_WEIGHT : 0)
+      + (maxLifetime > 0 ? PLAYCOUNT_CANDIDATE_WEIGHT : 0)
+      + (hasRecencyDates ? RECENCY_CANDIDATE_WEIGHT : 0);
+    const share = (w, v) => (auxDen > 0 ? sim * NOVELTY_AUX_GAIN * w * v / auxDen : 0);
+    const why = [...terms];
+    if (hasNovelty) {
+      if (artistFam.isUnknown(capKey)) {
+        why.push(['novelty', share(NOVELTY_CANDIDATE_WEIGHT, nov),
+                  `An artist you've never played: ${row.a}`]);
+      } else if (nov > 0.75) {
+        why.push(['novelty', share(NOVELTY_CANDIDATE_WEIGHT, nov),
+                  `An artist you rarely play: ${row.a}`]);
+      }
+    }
+    if (lifetimeN > 0) {
+      why.push(['plays', share(PLAYCOUNT_CANDIDATE_WEIGHT, playSig),
+                `You've played this ${lifetimeN} time${lifetimeN === 1 ? '' : 's'}`]);
+    }
+    if (rec > 0) {
+      why.push(['recency', share(RECENCY_CANDIDATE_WEIGHT, rec), 'You played this recently']);
+    }
+    const reasons = why.sort((a, b) => b[1] - a[1]).slice(0, 3).map(([, , r]) => r);
     scored.push({ row, score, reasons });
   }
 
   // 5) Deterministic order + diversity caps (max 2 per artist, 3 per album), then top `limit`.
+  //
+  // The cap runs AFTER the sort — it is a property of the OUTPUT, so no change to the ranking can
+  // defeat it — and on the PRIMARY artist, so a collaboration credit cannot claim a second budget.
+  // Measured before that fix: four Drake-credited rows inside a 50-row list capped at 2.
   scored.sort((a, b) => b.score - a.score || (a.row.i < b.row.i ? -1 : 1));
   const perArtist = new Map(); const perAlbum = new Map();
   const out = [];
   for (const { row, score, reasons } of scored) {
     if (out.length >= limit) break;
-    const a = row.a || ''; const al = row.al || '';
+    const a = artistFam.keyOf(row.a); const al = row.al || '';
     if (a && (perArtist.get(a) || 0) >= 2) continue;
     if (al && (perAlbum.get(al) || 0) >= 3) continue;
     if (a) perArtist.set(a, (perArtist.get(a) || 0) + 1);
@@ -1133,6 +1318,15 @@ export function scoreSimilarToCollections(state, featuresById, collectionIds,
   // 4b) Lifetime plays — a familiarity TIEBREAK here, not a reason. A Gem Collector round is
   //     about what resembles the crate; between two equally-fitting cards, the one the player
   //     actually listens to is the better card.
+  //
+  // ── DELIBERATELY NOT REBALANCED. DO NOT "FIX" THIS TO MATCH `scoreForYou`. ──────────────────
+  // The owner's novelty rebalance covers the two SUGGESTION surfaces — the device's collection
+  // tiles and For You. This route feeds GEM COLLECTOR, whose scoreboard history was recorded under
+  // these weights and whose ranking is pinned by tests on both sides (`PuzzleSimilarityTests`,
+  // `PuzzleSampler.playCountBias` — a user-facing picker that already defaults to `.off`). A
+  // novelty term here would move every ranking that game has ever produced to buy it a signal it
+  // has no use for: "does this belong in the same crate" is not a question novelty answers.
+  // The same reason `PuzzleSimilarity` takes `balance:` as an opt-in and the puzzle passes nil.
   const { counts: lifetime, maxN: maxLifetime } = playCountsOf(state);
   const lastPlayedDays = lastPlayedOf(state);
 

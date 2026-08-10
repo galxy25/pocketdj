@@ -116,9 +116,11 @@ enum ZoneEngine {
         /// cannot supply rediscoveries at all pushes it below (see `degradesToFamiliar`).
         var rediscoveryFloor: Double = 0.5
 
-        /// Weight on "you have played this particular song a lot" — inside pool A it is the
-        /// tiebreak between two equally-hot songs; inside pool B it is what makes a buried
-        /// FAVOURITE beat a record he has never once played.
+        /// Weight on "you have played this particular song a lot" INSIDE POOL A — the tiebreak
+        /// between two equally-hot songs. (Pool B's buried-favourite preference is
+        /// `auxFamiliarityWeight` below; the collection tiles' is `suggestionFamiliarityWeight`.
+        /// They were one constant and are now three, because they turned out to be three different
+        /// decisions: a tiebreak, a feature, and the thing the owner reported.)
         var familiarityWeight: Double = 0.30
 
         /// How far the auxiliary signals (dormancy · familiarity) may lift a rediscovery
@@ -141,6 +143,19 @@ enum ZoneEngine {
         /// full weight through `balance` below. Leaving a copy here would double-count it.
         var dormancyWeight: Double = 0.40
         var auxFamiliarityWeight: Double = 0.30
+        /// ARTIST-level novelty inside pool B's aux — "an artist you don't play" (see `RecNovelty`).
+        ///
+        /// Deliberately EQUAL to `auxFamiliarityWeight` rather than above it. This is the
+        /// REDISCOVERY pool: its stated job is to hand back music he owns and forgot, so
+        /// "you used to love this" is a feature here, not the defect the owner reported. Parity
+        /// puts the two in honest tension — an unknown artist and a buried favourite compete —
+        /// without inverting the pool into a discovery feed.
+        ///
+        /// Being ARTIST-level is what makes it safe to add here at all: it is constant across a
+        /// discography, so it cannot reorder two songs by the same artist and the pinned
+        /// `testABuriedFavouriteOutranksANeverPlayedSong` still holds exactly. It only ever
+        /// re-decides which ARTIST the pool reaches for next.
+        var auxNoveltyWeight: Double = 0.30
 
         /// ── THE THREE-FAMILY BALANCE (the owner's rebalance) ─────────────────────────────────
         /// ON by default HERE and nowhere else. In Da Zone is a PLAY QUEUE built from a taste
@@ -200,6 +215,56 @@ enum ZoneEngine {
         /// used to carry (1.0 / 0.45 — artist-dominant by a factor of two, and blind to year and
         /// tempo entirely) are gone rather than left as dead defaults: two places to describe
         /// "similar" is exactly how the app ends up with two different answers to it.
+        ///
+        /// ── THE OWNER'S NOVELTY REBALANCE — THIS IS THE SURFACE HE REPORTED ───────────────────
+        /// "It is biasing too much on play count so each tile is recommending multiple Drake
+        /// songs." Measured over 40 real collections (`scripts/measure-rec-report.mjs`), the
+        /// shipped tiles were: 11.9 distinct artists in 25 rows, an artist taking the full 3 slots
+        /// in 40/40 tiles, and **99.1% of picked rows had play history against a 52.2% base rate**
+        /// — the tile essentially never proposed anything he had not already played, which is what
+        /// made a 👍 redundant.
+        ///
+        /// The play term used to arrive here as `+ fam × 0.30`, ADDED ON TOP of a family score
+        /// whose four terms are normalized to sum to 1.0. That made it 0.30/1.30 = 23% of the
+        /// maximum achievable score — a larger weight than the ENTIRE artist family's 0.25 — while
+        /// being described as a tiebreak. Measured share of all SEPARATION at the head of the
+        /// ranking: artist 42.4% · **play count 32.6%** · year 20.7% · genre 4.3%.
+        ///
+        /// It is now the same MULTIPLICATIVE, BOUNDED shape In Da Zone's pool B uses, which the
+        /// measurement identified as the least-broken surface for exactly this reason.
+        ///
+        /// How far the aux mix (novelty · lifetime familiarity) may lift a candidate:
+        /// `sim × (1 + suggestionAuxGain × aux)`.
+        ///
+        /// 0.40 is MEASURED, not chosen — and measured over ALL 131 of his real collections rather
+        /// than a sample, because the answer turned out to depend on collection size (a big
+        /// playlist has more member artists, so the artist term fires more often and known artists
+        /// score higher). It is the value at which the never-played share of the picks lands on the
+        /// library's own base rate, which is the honest calibration target: a suggestion tile
+        /// should reflect what he OWNS, not what he has already worn out.
+        ///
+        ///     gain    never-played picks   distinct artists/tile   mean similarity (rel.)
+        ///     BEFORE (+fam×0.30)  1.2%             11.8                   100%
+        ///     0.30               39.7%             13.4                   102%
+        ///     0.35               43.8%             14.0                   101%
+        ///   **0.40               49.0%             14.6                   100%**  ← base rate 47.8%
+        ///     0.45               52.2%             15.0                   100%
+        ///
+        /// Note the third column: relevance does not go DOWN. The play term was actively FIGHTING
+        /// the similarity score — pulling well-played songs over better-matching ones — so bounding
+        /// it costs the tile nothing in match quality while taking the never-played share from 1.2%
+        /// to the base rate. That is the strongest evidence this was a defect rather than a trade.
+        ///
+        /// The band is therefore 1.40×, and that is the number the "novelty is not randomness"
+        /// guarantee is stated in: nothing can outrank a candidate more than 1.40× more similar.
+        var suggestionAuxGain: Double = 0.40
+        /// Novelty's pull inside the collection tiles' aux. THREE TIMES familiarity's, which is the
+        /// owner's instruction ("value novelty over similarity … to build a second reliable signal
+        /// source apart from pure play count") expressed as a ratio. Familiarity is not zero: it is
+        /// what still breaks the tie between two equally unknown artists, and dropping it entirely
+        /// overshot the base rate to 65%+.
+        var suggestionNoveltyWeight: Double = 0.75
+        var suggestionFamiliarityWeight: Double = 0.25
 
         public init() {}
     }
@@ -432,8 +497,31 @@ enum ZoneEngine {
         // ── 3. Familiarity, log-scaled ───────────────────────────────────────────────────────
         // Play counts are heavy-tailed; a linear term would let one 2,000-play song outweigh
         // every other signal in the ranking.
+        //
+        // ONE PASS, THREE PRODUCTS. The loop that finds `maxPlays` also folds the per-artist play
+        // totals the novelty axis needs and memoizes the primary-artist CAP key, so neither
+        // addition costs the ranking a second walk over ~96k rows. The cap key is memoized on the
+        // similarity artist key rather than recomputed per song because a catalog that size holds
+        // only ~20k distinct artists — the splitter runs once per artist, not once per track.
         var maxPlays = 0
-        for s in songs { maxPlays = max(maxPlays, playCount(s.id)) }
+        var capKeyByArtist: [String: String] = [:]
+        var artistPlays: [String: Int] = [:]
+        for s in songs {
+            let n = playCount(s.id)
+            maxPlays = max(maxPlays, n)
+            let ak = PuzzleSimilarity.artistKey(s.artist)
+            let cap: String
+            if let k = capKeyByArtist[ak] { cap = k }
+            else {
+                cap = RecNovelty.primaryArtistKey(s.artist)
+                capKeyByArtist[ak] = cap
+            }
+            // Totals roll up to the PRIMARY artist deliberately: keyed on the raw credit, a
+            // "Drake & Future" row would be an artist with almost no plays and therefore score as
+            // NOVEL — which would reintroduce exactly the concentration this term exists to break,
+            // through the collaboration door.
+            if n > 0 { artistPlays[cap, default: 0] += n }
+        }
         let famDenom = log2(1 + Double(max(maxPlays, 1)))
         func familiarity(_ id: String) -> Double {
             let n = playCount(id)
@@ -445,19 +533,31 @@ enum ZoneEngine {
         // so a device with no last-played data does not silently deflate every score.
         let hasDormancy = !lastPlayedMs.isEmpty
         let hasFamiliarity = maxPlays > 0
+        // ARTIST-level novelty (see `RecNovelty`), from the totals the pass above folded. `isLive`
+        // is false on a device with no play counts at all, and then the term leaves the
+        // denominator entirely rather than scoring every song an identical 1.0.
+        let artistFam = RecNovelty.ArtistFamiliarity(artistPlays: artistPlays)
+        let hasNovelty = artistFam.isLive
 
         // ── 4. Partition + score ─────────────────────────────────────────────────────────────
-        var familiarPool: [(id: String, artist: String, score: Double)] = []
-        var rediscoveryPool: [(id: String, artist: String, score: Double)] = []
+        var familiarPool: [(id: String, capKey: String, score: Double)] = []
+        var rediscoveryPool: [(id: String, capKey: String, score: Double)] = []
         /// Dormant songs that are NOT neighbours of the taste profile. Never used while the real
         /// pools can still fill the queue — only to reach `minSongs`. See the gate below.
-        var fallbackPool: [(id: String, artist: String, score: Double)] = []
+        var fallbackPool: [(id: String, capKey: String, score: Double)] = []
         rediscoveryPool.reserveCapacity(min(songs.count, 8192))
 
-        /// Dormancy + buried-favourite familiarity, renormalized over whichever of the two this
-        /// run can speak. The similarity-free half of the rediscovery score, used on its own for
-        /// the cold-start path and for `fallbackPool`.
-        func auxOnly(_ id: String) -> Double {
+        /// Dormancy + buried-favourite familiarity + ARTIST novelty, renormalized over whichever of
+        /// the three this run can speak. The similarity-free half of the rediscovery score, used on
+        /// its own for the cold-start path and for `fallbackPool`.
+        ///
+        /// Novelty joins as a THIRD signal rather than replacing familiarity because this pool's
+        /// job really is rediscovery — "you used to love this" is the feature here. What it fixes
+        /// is the pool's reach: the shipped queue drew 93.3% of its picks from songs with play
+        /// history, so it kept circling the artists he already plays. Being artist-level, it can
+        /// only ever re-decide which ARTIST the pool reaches for; two songs by one artist stay
+        /// ordered by dormancy and lifetime plays exactly as before.
+        func auxOnly(_ id: String, _ capKey: String) -> Double {
             var num = 0.0, den = 0.0
             if hasDormancy {
                 num += tuning.dormancyWeight
@@ -468,6 +568,10 @@ enum ZoneEngine {
                 num += tuning.auxFamiliarityWeight * familiarity(id)
                 den += tuning.auxFamiliarityWeight
             }
+            if hasNovelty {
+                num += tuning.auxNoveltyWeight * artistFam.novelty(capKey)
+                den += tuning.auxNoveltyWeight
+            }
             return den > 0 ? num / den : 0
         }
 
@@ -477,7 +581,7 @@ enum ZoneEngine {
         // (0.30 vs 0.25) and because it is the far narrower signal; `aux` (< 1) only ever breaks
         // ties inside a tier, so the shortlist is ordered artist-hits, then genre-hits, then the
         // rest by dormancy/familiarity.
-        var prescored: [(idx: Int, artist: String, pre: Double)] = []
+        var prescored: [(idx: Int, capKey: String, pre: Double)] = []
         prescored.reserveCapacity(min(songs.count, 16_384))
 
         for (idx, song) in songs.enumerated() {
@@ -490,12 +594,17 @@ enum ZoneEngine {
             // re-injects those rows at the BOTTOM so the undo control stays reachable. (Nothing
             // here touches playback — the queue this builds is the NEXT one.)
             if feedback.suppressed.contains(id) { continue }
+            // TWO artist keys, and the split is load-bearing. `artist` is the SIMILARITY key — it
+            // has to match how the taste profile was built, so it stays the raw credit's key.
+            // `cap` is the PRIMARY artist, and it is what the per-artist budget and the novelty
+            // axis are keyed on, so neither can be walked around by a collaboration credit.
             let artist = PuzzleSimilarity.artistKey(song.artist)
+            let cap = capKeyByArtist[artist] ?? artist
 
             if let w = seedWeight[id] {
                 // FAMILIAR — how hard he has been leaning on this exact song lately, with
                 // lifetime plays as the tiebreak between two equally-hot ones.
-                familiarPool.append((id, artist, w + familiarity(id) * tuning.familiarityWeight))
+                familiarPool.append((id, cap, w + familiarity(id) * tuning.familiarityWeight))
                 continue
             }
             // A song played recently OUTSIDE this app (Apple's baseline knows, the event log does
@@ -526,12 +635,12 @@ enum ZoneEngine {
                 // and there is nothing else the gate will admit. Ranked on the auxiliary signals
                 // only — no similarity to speak of, and no `musicalFit` either, since tempo/key
                 // agreement with a profile this song does not otherwise resemble is noise.
-                fallbackPool.append((id, artist, auxOnly(id)))
+                fallbackPool.append((id, cap, auxOnly(id, cap)))
                 continue
             }
 
-            prescored.append((idx, artist,
-                              (artistHit ? 2 : 0) + (genreHit ? 1 : 0) + auxOnly(id)))
+            prescored.append((idx, cap,
+                              (artistHit ? 2 : 0) + (genreHit ? 1 : 0) + auxOnly(id, cap)))
         }
 
         // PASS 2 — EXPENSIVE, but only over the shortlist. Everything below this line runs at most
@@ -554,19 +663,20 @@ enum ZoneEngine {
         // and still fill its three slots, while no artist can crowd the list.
         let perArtistQuota = max(4, tuning.maxPerArtist * 3)
         var quota: [String: Int] = [:]
-        var shortlist: [(idx: Int, artist: String, pre: Double)] = []
+        var shortlist: [(idx: Int, capKey: String, pre: Double)] = []
         shortlist.reserveCapacity(min(prescored.count, tuning.shortlistCap))
         for c in prescored {
             if shortlist.count >= tuning.shortlistCap { break }
-            let n = quota[c.artist] ?? 0
+            let n = quota[c.capKey] ?? 0
             if n >= perArtistQuota { continue }
-            quota[c.artist] = n + 1
+            quota[c.capKey] = n + 1
             shortlist.append(c)
         }
         prescored = shortlist
 
         let auxBaseDen = tuning.dormancyWeight * (hasDormancy ? 1 : 0)
                        + tuning.auxFamiliarityWeight * (hasFamiliarity ? 1 : 0)
+                       + tuning.auxNoveltyWeight * (hasNovelty ? 1 : 0)
         for c in prescored {
             let song = songs[c.idx]
             let id = song.id
@@ -593,16 +703,17 @@ enum ZoneEngine {
             guard net > 0 else { continue }
 
             // Dormancy ("the longer buried, the better") + buried-favourite familiarity ("you used
-            // to love this" beats "you never played this" — rediscovery, not discovery). Tempo/key
+            // to love this" beats "you never played this" — rediscovery, not discovery) + artist
+            // novelty (which of the artists he owns has he never actually reached for). Tempo/key
             // is NOT here any more: it is family C of the similarity score itself, at full weight,
             // rather than a ≤1.6× nudge on top of it.
-            let aux = auxBaseDen > 0 ? auxOnly(id) : 0
-            rediscoveryPool.append((id, c.artist, net * (1 + tuning.auxGain * aux)))
+            let aux = auxBaseDen > 0 ? auxOnly(id, c.capKey) : 0
+            rediscoveryPool.append((id, c.capKey, net * (1 + tuning.auxGain * aux)))
         }
 
         // Ties break on song id so the tile is stable between renders and tests are not flaky.
-        let byScore: ((id: String, artist: String, score: Double),
-                      (id: String, artist: String, score: Double)) -> Bool = {
+        let byScore: ((id: String, capKey: String, score: Double),
+                      (id: String, capKey: String, score: Double)) -> Bool = {
             $0.score > $1.score || ($0.score == $1.score && $0.id < $1.id)
         }
         familiarPool.sort(by: byScore)
@@ -660,9 +771,9 @@ enum ZoneEngine {
     /// hitting their third song costs the queue nothing, it just moves to the next eligible song.
     /// A pool only stops contributing when it is genuinely exhausted, and then the other pool
     /// takes the remaining slots.
-    private static func interleave(familiar: [(id: String, artist: String, score: Double)],
-                                   rediscovery: [(id: String, artist: String, score: Double)],
-                                   fallback: [(id: String, artist: String, score: Double)],
+    private static func interleave(familiar: [(id: String, capKey: String, score: Double)],
+                                   rediscovery: [(id: String, capKey: String, score: Double)],
+                                   fallback: [(id: String, capKey: String, score: Double)],
                                    target: Int,
                                    tuning: Tuning) -> Queue {
         var perArtist: [String: Int] = [:]
@@ -673,13 +784,13 @@ enum ZoneEngine {
         /// Next candidate in `pool` that is still under the artist budget, advancing the cursor
         /// past everything it rejects. Consuming a rejected candidate is safe because the budget
         /// only ever grows: a song skipped for a capped artist could never become eligible later.
-        func take(_ pool: [(id: String, artist: String, score: Double)],
+        func take(_ pool: [(id: String, capKey: String, score: Double)],
                   _ cursor: inout Int) -> String? {
             while cursor < pool.count {
                 let c = pool[cursor]
                 cursor += 1
-                if (perArtist[c.artist] ?? 0) < tuning.maxPerArtist {
-                    perArtist[c.artist, default: 0] += 1
+                if (perArtist[c.capKey] ?? 0) < tuning.maxPerArtist {
+                    perArtist[c.capKey, default: 0] += 1
                     return c.id
                 }
             }
@@ -803,8 +914,32 @@ enum ZoneEngine {
         let musicalCal = SimilarityFamilies.calibrate(
             tracks.lazy.map { (bpm: $0.bpm, camelot: $0.camelot) }, profile: musical)
 
-        let maxPlays = tracks.reduce(0) { max($0, playCount($1.songId)) }
+        // ONE PASS over `tracks`: the play-count ceiling, the primary-artist CAP key (memoized per
+        // artist, not per track), and the per-artist play totals the novelty axis is built from.
+        // No new input reaches this function and no call site changes — the artist totals are
+        // derivable from the play-count lookup the caller already supplies.
+        //
+        // The totals roll up to the PRIMARY artist deliberately. Keyed on the raw credit, a
+        // "Drake & Future" row would look like an artist with almost no plays and therefore score
+        // as NOVEL, which would let the concentration back in through the collaboration door.
+        var maxPlays = 0
+        var capKeyByArtist: [String: String] = [:]
+        var artistPlays: [String: Int] = [:]
+        for t in tracks {
+            let n = playCount(t.songId)
+            maxPlays = max(maxPlays, n)
+            let cap: String
+            if let k = capKeyByArtist[t.artistKey] { cap = k }
+            else {
+                cap = RecNovelty.primaryArtistKey(t.artistName)
+                capKeyByArtist[t.artistKey] = cap
+            }
+            if n > 0 { artistPlays[cap, default: 0] += n }
+        }
         let famDenom = log2(1 + Double(max(maxPlays, 1)))
+        // ARTIST-level novelty — see `RecNovelty` for why the artist and not the song is the
+        // informative axis, and why song-level novelty is algebraically the play term over again.
+        let artistFam = RecNovelty.ArtistFamiliarity(artistPlays: artistPlays)
 
         // The rejected shape, subtracted — same construction as the zone's negative profile, so a
         // 👎 on a collection tile teaches that tile rather than only hiding one row.
@@ -823,7 +958,7 @@ enum ZoneEngine {
         for (k, v) in negArtists { negArtists[k] = min(1, v / Tuning.rejectionSaturation) }
         for (k, v) in negGenres { negGenres[k] = min(1, v / Tuning.rejectionSaturation) }
 
-        var scored: [(id: String, artist: String, score: Double)] = []
+        var scored: [(id: String, artist: String, capKey: String, score: Double)] = []
         for t in tracks where !members.contains(t.songId) {
             // Tombstoned IN THIS TILE ⇒ out of the ranking (the view re-injects it at the bottom).
             // Scoped and expiring — a 👎 given on another tile does not remove the row here; its
@@ -843,23 +978,93 @@ enum ZoneEngine {
             let penalty = tuning.rejectionWeight
                 * (terms.artist * (negArtists[t.artistKey] ?? 0)
                    + terms.genre * (t.genre.flatMap { negGenres[$0] } ?? 0))
+            // ── SIMILARITY GATES, NOVELTY REORDERS ───────────────────────────────────────────
+            // `sim` is everything above: the three families, minus the rejected shape, and it is
+            // what the admission rule (`a > 0 || g > 0`, unchanged) already qualified. The aux mix
+            // is applied as a BOUNDED MULTIPLIER on it rather than added to it, which makes the
+            // boundary a theorem instead of a hope: a candidate can never outrank one whose
+            // similarity is more than `1 + suggestionAuxGain` (1.40×) times its own. Added on, a
+            // 0.20-ish novelty term is a 4× swing at the bottom of the admitted similarity range —
+            // that is how "novelty" turns into "noise", and it is the failure this shape rules out.
+            let sim = max(0, score - penalty)
+            guard sim > 0 else { continue }
+            let capKey = capKeyByArtist[t.artistKey] ?? t.artistKey
             let n = playCount(t.songId)
             let fam = n > 0 && famDenom > 0 ? log2(1 + Double(n)) / famDenom : 0
-            let net = max(0, score - penalty) + fam * tuning.familiarityWeight
+            let aux = RecNovelty.aux(novelty: artistFam.novelty(capKey),
+                                     familiarity: fam,
+                                     noveltyWeight: tuning.suggestionNoveltyWeight,
+                                     familiarityWeight: tuning.suggestionFamiliarityWeight,
+                                     isLive: artistFam.isLive)
+            let net = sim * (1 + tuning.suggestionAuxGain * aux)
             guard net > 0 else { continue }
-            scored.append((t.songId, t.artistKey, net))
+            scored.append((t.songId, t.artistKey, capKey, net))
         }
         scored.sort { $0.score > $1.score || ($0.score == $1.score && $0.id < $1.id) }
 
+        // ── THE CAP RUNS AFTER THE SORT, AND ON THE PRIMARY ARTIST ───────────────────────────
+        // After, so no ranking change can defeat it — it is a property of the OUTPUT, not a
+        // pressure on the score. And on `RecNovelty.primaryArtistKey` rather than the raw credit,
+        // because a cap that "Drake & Future" walks around is not a cap: measured over 40 real
+        // tiles, Drake held 25 rows under his own name plus 7 more through collaborations — 32
+        // rows under a cap of 3 per tile.
         var perArtist: [String: Int] = [:]
         var out: [String] = []
         for c in scored {
             guard out.count < limit else { break }
-            let n = perArtist[c.artist] ?? 0
+            let n = perArtist[c.capKey] ?? 0
             guard n < tuning.maxPerArtist else { continue }
-            perArtist[c.artist] = n + 1
+            perArtist[c.capKey] = n + 1
             out.append(c.id)
         }
         return out
+    }
+
+    /// The same ranking, with the one-line WHY each row earned its place.
+    ///
+    /// A SIBLING rather than a new return type on `suggestions` so no call site has to change:
+    /// the tiles keep taking `[String]`, and a view that wants to render the reason can move to
+    /// this when it is ready. Explainability was a requirement of the rebalance — a novelty term
+    /// that cannot be read off the row is indistinguishable from the engine being random — and the
+    /// cloud tile has carried a `reasons` array all along, so this is the device's half of it.
+    static func suggestionsExplained(memberSongIds: [String],
+                                     tracks: [Track],
+                                     playCount: (String) -> Int,
+                                     feedback: Feedback = Feedback(),
+                                     limit: Int = 25,
+                                     tuning: Tuning = Tuning()) -> [(songId: String, why: String)] {
+        let ids = suggestions(memberSongIds: memberSongIds, tracks: tracks, playCount: playCount,
+                              feedback: feedback, limit: limit, tuning: tuning)
+        guard !ids.isEmpty else { return [] }
+        let trackById = Dictionary(tracks.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
+        var maxPlays = 0
+        var capKeyByArtist: [String: String] = [:]
+        var artistPlays: [String: Int] = [:]
+        for t in tracks {
+            let n = playCount(t.songId)
+            maxPlays = max(maxPlays, n)
+            let cap = capKeyByArtist[t.artistKey]
+                ?? { let k = RecNovelty.primaryArtistKey(t.artistName)
+                     capKeyByArtist[t.artistKey] = k; return k }()
+            if n > 0 { artistPlays[cap, default: 0] += n }
+        }
+        let artistFam = RecNovelty.ArtistFamiliarity(artistPlays: artistPlays)
+        let members = Set(memberSongIds)
+        let memberArtists = Set(memberSongIds.compactMap { trackById[$0]?.artistKey })
+        let memberGenres = Set(memberSongIds.compactMap { trackById[$0]?.genre })
+        _ = members
+        return ids.map { id in
+            guard let t = trackById[id] else { return (id, "Fits this collection") }
+            let cap = capKeyByArtist[t.artistKey] ?? t.artistKey
+            // NOVELTY FIRST when it is what set this row apart — that is the honest reading of a
+            // ranking where novelty is the reordering signal, and it is what makes a 👍 on the row
+            // legible as a verdict on an unknown rather than a nod at a favourite.
+            if let why = artistFam.reason(cap), !memberArtists.contains(t.artistKey) {
+                return (id, why)
+            }
+            if memberArtists.contains(t.artistKey) { return (id, "An artist already in here") }
+            if let g = t.genre, memberGenres.contains(g) { return (id, "Mostly \(g), like this collection") }
+            return (id, "Fits this collection")
+        }
     }
 }
