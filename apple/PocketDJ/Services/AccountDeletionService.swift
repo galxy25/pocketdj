@@ -43,6 +43,10 @@ final class AccountDeletionService {
         "collection-activity", "mix-sessions", "playback-session", "mix-decks",
         "discover-adds", "imported-songs", "profile-source", "apple-music-library", "studio-cues",
         "game-scores", "puzzle-decisions", "rec-key",
+        // The recommendation pair. "rec-feedback" was registered with CloudSyncService but never
+        // listed here — every 👍/👎 the user ever gave survived an account deletion in his private
+        // CloudKit database. "foryou-feed" is its companion (the cached ranking), added with F5.
+        "rec-feedback", "foryou-feed",
     ]
 
     /// Recommendation-engine wipe seams (WS-E), wired in PocketDJApp. Optional so tests that
@@ -108,6 +112,9 @@ final class AccountDeletionService {
     /// the listener typed by hand, so it is account data in the strictest sense. OPTIONAL only so
     /// the existing tests that build this service can keep their call sites.
     private let recFeedback: RecFeedbackStore?
+    /// The cached For You ranking (cloud key "foryou-feed") — what the engine offered him, which
+    /// is derived account data just as much as the verdicts are. Optional for the same reason.
+    private let forYouFeed: ForYouFeedStore?
     /// Games: Music with Friends session entries (bearer memberKeys/leaderKeys live in
     /// UserDefaults, not a synced doc — but they are account data all the same).
     private let friends: MusicWithFriendsStore
@@ -143,6 +150,7 @@ final class AccountDeletionService {
          gameScores: GameScoreboardStore,
          puzzleDecisions: PuzzleDecisionStore,
          recFeedback: RecFeedbackStore? = nil,
+         forYouFeed: ForYouFeedStore? = nil,
          friends: MusicWithFriendsStore,
          streaming: StreamingStore,
          settings: SettingsStore,
@@ -173,6 +181,7 @@ final class AccountDeletionService {
         self.gameScores = gameScores
         self.puzzleDecisions = puzzleDecisions
         self.recFeedback = recFeedback
+        self.forYouFeed = forYouFeed
         self.friends = friends
         self.streaming = streaming
         self.settings = settings
@@ -245,6 +254,7 @@ final class AccountDeletionService {
         gameScores.clear()       // the synced "game-scores" doc
         puzzleDecisions.clear()  // the synced "puzzle-decisions" doc — per-song behavioral data
         recFeedback?.clear()     // the synced "rec-feedback" doc — every 👍/👎 the user gave
+        forYouFeed?.clear()      // the synced "foryou-feed" doc — the cached ranking itself
         // Music with Friends: session entries carry bearer memberKeys/leaderKeys; the scored
         // set and cached states are per-account too. WITHDRAW the APNs device tokens FIRST —
         // they are personal data sitting on a broker the user may not own, and only the

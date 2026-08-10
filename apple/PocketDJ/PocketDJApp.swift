@@ -523,7 +523,8 @@ struct PocketDJApp: App {
             guard let name, let artistId = app.artistId(forArtistName: name) else { return }
             releaseFeed.noteArtistPlayed(artistId: artistId, name: name)
         }
-        _forYouFeed = State(initialValue: ForYouFeedStore())
+        let forYouFeed = ForYouFeedStore()
+        _forYouFeed = State(initialValue: forYouFeed)
         let collectionActivity = CollectionActivityStore(fileURL: CollectionActivityStore.launchURL())
         _collectionActivity = State(initialValue: collectionActivity)
         // ADD / REMOVE activity: the collections store fires `onActivity` from its user-facing
@@ -1300,6 +1301,20 @@ struct PocketDJApp: App {
             // serial writer so an in-flight coalesced snapshot cannot clobber the peer's rows.
             recFeedback?.applyPulledPayload(data)
         })
+        // THE RANKING ITSELF (F5). The verdict log above syncs the owner's 👍/👎; this syncs what
+        // he was given. Whole-document LWW — a ranking is one indivisible answer and must never be
+        // union-merged the way the verdict LOG is — but ordered by the REFRESH INSTANT rather than
+        // the file's write time: `ForYouFeedStore` stamps the file's mtime with
+        // `snapshot.refreshedAtMs`, so the device that actually re-ranked most recently wins and a
+        // device that merely PULLED a peer's ranking never looks fresher than it is. It also makes
+        // the 4:20 schedule fire ONCE PER ACCOUNT instead of once per device: a phone that pulls the
+        // Mac's feed inherits its `refreshedAtMs`, and `ForYouRefreshSchedule.isDue` then says no.
+        cloudSync.register("foryou-feed", fileURL: forYouFeed.syncFileURL,
+                           reload: { [weak forYouFeed] in
+            _ = forYouFeed?.reloadFromDisk()
+        }, applyPayload: { [weak forYouFeed] data in
+            forYouFeed?.applyPulledPayload(data)
+        })
         cloudSync.register("rec-key", fileURL: recEngine.keySyncFileURL) { [weak recEngine] in
             recEngine?.reloadKeyFromDisk()   // the rec bearer key follows the Apple ID (TOFU-per-profile)
         }
@@ -1335,7 +1350,7 @@ struct PocketDJApp: App {
             mixSessions: mixSessions, playbackSession: playbackSession,
             mixDeckSession: mixDeckSession, burns: burns, studio: studio,
             gameScores: gameScores, puzzleDecisions: puzzleDecisions,
-            recFeedback: recFeedback, friends: friends,
+            recFeedback: recFeedback, forYouFeed: forYouFeed, friends: friends,
             streaming: streaming, settings: settings, cloudSync: cloudSync, profile: profile)
         // Recommendation engine rides account deletion via seams (the service's fixed store
         // list stays test-buildable without the rec graph): best-effort server delete while
