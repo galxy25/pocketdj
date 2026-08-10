@@ -100,9 +100,6 @@ final class RecEngineUITests: XCTestCase {
     }
 
     #if !os(macOS)
-    /// Fenced with the toggle test: the integration gate reported this one failing on macOS
-    /// too. See the `#TOUPDATE` on the class — its macOS status is worth re-checking once
-    /// macOS XCUITest can be run again, since nothing in the body is obviously iOS-only.
     /// THE SUGGESTED TILE IS GONE, AND ITS CONTENT IS NOW IN In Da Zone.
     ///
     /// Owner, verbatim: *"remove Suggested tile (that is what New and In Da Zone [are])"* and
@@ -114,6 +111,10 @@ final class RecEngineUITests: XCTestCase {
     /// `sng_2`, `sng_6` — see `RecommendationService.fixtureForYou`), because the device drops
     /// cloud ids it cannot resolve. Ids from nowhere would shape away to nothing and this test
     /// would silently be driving the on-device fallback while claiming to drive the cloud.
+    ///
+    /// Fenced with the toggle test: the integration gate reported its predecessor failing on
+    /// macOS too. See the `#TOUPDATE` on the class — its macOS status is worth re-checking once
+    /// macOS XCUITest can be run again, since nothing in the body is obviously iOS-only.
     @MainActor
     func testTheEngineRanksInDaZoneAndHasNoTileOfItsOwn() {
         let app = XCUIApplication()
