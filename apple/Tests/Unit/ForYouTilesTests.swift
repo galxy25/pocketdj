@@ -152,30 +152,74 @@ final class ForYouTilesTests: XCTestCase {
         XCTAssertEqual(byTitle["Pocket"]?.subtitle, "Suggested for this pocket")
     }
 
-    // MARK: - The cloud engine's tile
-
-    func testNoSuggestedTileWhenTheCloudEngineHasNothing() {
-        // The engine is default-OFF, so this is the normal case: no empty tile for a feature the
-        // user has not turned on.
-        let tiles = ForYouTiles.build(newReleaseCount: 0, zone: [], collections: [],
-                                      cloudSuggestionCount: 0)
-        XCTAssertFalse(tiles.contains { $0.id == "suggested" })
-    }
-
-    func testSuggestedTileSitsAfterThePinnedPairAndBeforeCollections() {
-        let tiles = ForYouTiles.build(newReleaseCount: 0, zone: [],
-                                      collections: collections([("Gym", 9)]),
-                                      cloudSuggestionCount: 12)
-        XCTAssertEqual(tiles.map(\.id), ["new", "zone", "suggested", "col-c-Gym"])
-        XCTAssertEqual(tiles[2].count, 12)
-        XCTAssertEqual(tiles[2].route.kind, .suggested)
-        XCTAssertFalse(tiles[2].isPinned)
-    }
-
     func testTileIdsAreUniqueSoTheGridDoesNotCollapseRows() {
         let tiles = ForYouTiles.build(newReleaseCount: 1, zone: ["a"],
-                                      collections: collections([("A", 9), ("B", 9)]),
-                                      cloudSuggestionCount: 3)
+                                      collections: collections([("A", 9), ("B", 9)]))
         XCTAssertEqual(Set(tiles.map(\.id)).count, tiles.count)
+    }
+
+    // ========================================================================
+    // MARK: - The Suggested tile is GONE
+    // ========================================================================
+
+    /// Owner, verbatim: *"remove Suggested tile (that is what New and In Da Zone [are])"*. The
+    /// engine's content did not disappear with it — it moved INSIDE In Da Zone — so the thing to
+    /// protect is that no third whole-library tile can come back by accident.
+    func testThereIsNoSuggestedTileUnderAnyInput() {
+        for cloud in [ForYouTileSource.onDevice, .cloud] {
+            let tiles = ForYouTiles.build(newReleaseCount: 3, zone: ["a", "b"], zoneSource: cloud,
+                                          collections: collections([("Gym", 9)]))
+            XCTAssertEqual(tiles.map(\.id), ["new", "zone", "col-c-Gym"],
+                           "the grid is New, In Da Zone, then collections — nothing between them")
+            XCTAssertFalse(tiles.contains { $0.title == "Suggested" })
+        }
+    }
+
+    // ========================================================================
+    // MARK: - Source attribution
+    // ========================================================================
+
+    /// Without this the owner cannot tell a cloud regression from an on-device one — the tile
+    /// looks identical either way, and a week of silent fallback is indistinguishable from a
+    /// working engine.
+    func testTheZoneTileSaysWhichRankerProducedIt() {
+        let cloud = ForYouTiles.build(newReleaseCount: 0, zone: ["a", "b"], zoneSource: .cloud,
+                                      collections: [])
+        XCTAssertEqual(cloud[1].source, .cloud)
+        XCTAssertTrue(cloud[1].subtitle.lowercased().contains("recommendation engine"),
+                      "the attribution is legible on the card, not only in a log")
+
+        let local = ForYouTiles.build(newReleaseCount: 0, zone: ["a", "b"], zoneSource: .onDevice,
+                                      collections: [])
+        XCTAssertEqual(local[1].source, .onDevice)
+        XCTAssertFalse(local[1].subtitle.lowercased().contains("recommendation engine"))
+        XCTAssertNotEqual(cloud[1].subtitle, local[1].subtitle,
+                          "two rankers, two readable answers")
+    }
+
+    /// The default is the on-device path, because the engine is opt-in and ships OFF. A caller
+    /// that says nothing about the source must never claim the cloud produced its tile.
+    func testTilesDefaultToTheOnDeviceAttribution() {
+        let tiles = ForYouTiles.build(newReleaseCount: 2, zone: ["a"],
+                                      collections: collections([("Gym", 4)]))
+        XCTAssertTrue(tiles.allSatisfy { $0.source == .onDevice })
+    }
+
+    /// NEW IS ALWAYS ON-DEVICE, and that is a finding rather than an oversight: `/recs/songs`
+    /// ranks over the user's OWN catalog, and New is by definition the releases he does not own.
+    func testNewIsAlwaysAttributedToTheDeviceEvenWhileTheZoneIsCloudRanked() {
+        let tiles = ForYouTiles.build(newReleaseCount: 5, zone: ["a"], zoneSource: .cloud,
+                                      collections: [])
+        XCTAssertEqual(tiles[0].source, .onDevice)
+        XCTAssertEqual(tiles[1].source, .cloud)
+    }
+
+    /// An empty tile has one useful thing to say and it is not the name of the ranker that found
+    /// nothing.
+    func testAnEmptyZoneTellsTheOwnerWhatToDoRatherThanWhoRankedIt() {
+        for source in [ForYouTileSource.onDevice, .cloud] {
+            let subtitle = ForYouTiles.zoneSubtitle(count: 0, source: source)
+            XCTAssertEqual(subtitle, "Play a few songs to build your zone")
+        }
     }
 }

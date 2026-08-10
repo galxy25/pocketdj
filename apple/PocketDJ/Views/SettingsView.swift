@@ -761,9 +761,11 @@ struct SettingsView: View {
     // MARK: Recommendations (cloud PocketDJ recommendation engine — WS-E)
 
     /// The opt-in cloud recommendation engine: OFF (default) sends nothing anywhere; ON
-    /// batch-uploads listening/collection deltas and lights up History ▸ For You + the
-    /// Suggested-collections rows. "Delete cloud data" is a separate, explicit destructive
-    /// action — toggling OFF retains the server state so a flip stays cheap/reversible.
+    /// batch-uploads listening/collection deltas, lights up History ▸ For You, RANKS In Da Zone
+    /// (falling back to the on-device ranker whenever it cannot answer — see
+    /// `ForYouFeedStore.refresh`), and fills the Suggested-collections rows. "Delete cloud data"
+    /// is a separate, explicit destructive action — toggling OFF retains the server state so a
+    /// flip stays cheap/reversible.
     private var recommendationsSection: some View {
         Section {
             Toggle("Use PocketDJ Recommendation Engine", isOn: $settings.recEngineEnabled)

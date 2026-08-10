@@ -590,10 +590,9 @@ struct ForYouSongListView: View {
                 ZoneEngine.suggestions(memberSongIds: members, tracks: tracks,
                                        playCount: { counts[$0] ?? 0 }, feedback: fb)
             }.value
-        case .new, .suggested:
-            // Both have their own screens (`NewReleasesView` / `RecSuggestionsListView`) and are
-            // never routed here; the case exists so adding a tile kind is a compile error rather
-            // than a silently empty list.
+        case .new:
+            // New has its own screen (`NewReleasesView`) and is never routed here; the case exists
+            // so adding a tile kind is a compile error rather than a silently empty list.
             songIds = []
         }
     }

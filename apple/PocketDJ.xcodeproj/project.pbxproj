@@ -115,7 +115,6 @@
 		31485AF8B4B1C0AF021F5425 /* OwnerIdentityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6DFF21AD3893E62CBD4E481 /* OwnerIdentityTests.swift */; };
 		31FEAC32FE9923342D5613A2 /* SetlistDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF5B463C3ECC8EAA0675A0FC /* SetlistDetailView.swift */; };
 		3207B15DD6F8B7CF85EC997B /* CatalogLaunchCacheTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DAAFAA96145CBB68FAFE3CF /* CatalogLaunchCacheTests.swift */; };
-		32E4F19F6317D9BD1E1BE163 /* RecSuggestionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CBB930A7000CB56174A23B0A /* RecSuggestionsView.swift */; };
 		32F043584B9B88D3DD9C0F04 /* PendingBurnTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7DB3C34CABB16F7A2270A664 /* PendingBurnTests.swift */; };
 		33D1E3D451C696C3BCD7503B /* ProfileStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 42CBB5530D61B41C0DA9FA74 /* ProfileStore.swift */; };
 		3427D78C81D4586764ED8C28 /* ProfileAudioStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 977C2FDDAAD91A8564115D46 /* ProfileAudioStore.swift */; };
@@ -939,7 +938,6 @@
 		CB2DF7BBD881262C4E0AB1A0 /* CollectionPlayMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionPlayMenu.swift; sourceTree = "<group>"; };
 		CB39E73B2A9B00B34B58BBB6 /* ShazamCatalogMatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShazamCatalogMatchTests.swift; sourceTree = "<group>"; };
 		CB67ACEBFBA39A524C4A44F1 /* WidgetTransport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetTransport.swift; sourceTree = "<group>"; };
-		CBB930A7000CB56174A23B0A /* RecSuggestionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecSuggestionsView.swift; sourceTree = "<group>"; };
 		CC3B20D9DF4EBBA30146F064 /* PocketBuilderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketBuilderTests.swift; sourceTree = "<group>"; };
 		CDAA23A539747E2F1B38EE2A /* MixView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixView.swift; sourceTree = "<group>"; };
 		CEE53668B264B16244CBCEF1 /* AppleMusicPlaybackProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicPlaybackProvider.swift; sourceTree = "<group>"; };
@@ -1494,7 +1492,6 @@
 				2A792B8155AC7CCD05B0FDC8 /* ProgressiveRows.swift */,
 				FE2A5070F14FEFEA61F438E8 /* QueueMenu.swift */,
 				B7C8E1150F8529B99DFAE9EC /* RecFeedbackControls.swift */,
-				CBB930A7000CB56174A23B0A /* RecSuggestionsView.swift */,
 				98CF8223A514585B307DBC44 /* RootView.swift */,
 				AADE52CDA254BA2D9BBC8D00 /* SelectionUI.swift */,
 				DF5B463C3ECC8EAA0675A0FC /* SetlistDetailView.swift */,
@@ -2439,7 +2436,6 @@
 				8AE65B8CB7A2A5B2C2A249F7 /* RecFeedbackStore.swift in Sources */,
 				E930140C97D48E6FBB57E894 /* RecModels.swift in Sources */,
 				3432D38D9CD70D3E55662789 /* RecNovelty.swift in Sources */,
-				32E4F19F6317D9BD1E1BE163 /* RecSuggestionsView.swift in Sources */,
 				2CF7370923C08771844A95DB /* RecommendationService.swift in Sources */,
 				8EC1CAED0C95C1E8CE85D668 /* ReleaseFeedModels.swift in Sources */,
 				7456BF00143073570B979B84 /* ReleaseFeedService.swift in Sources */,

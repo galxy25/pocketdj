@@ -70,12 +70,11 @@ extension View {
             .navigationDestination(for: ForYouTileRoute.self) { route in
                 switch route.kind {
                 // Releases are ALBUMS, not songs, so `.new` gets its own screen.
-                case .new:       NewReleasesView(path: path)
-                // The cloud engine's rows render from wire data, not the catalog — see the note
-                // on `RecSuggestionsListView` for why that stays a separate view.
-                case .suggested: RecSuggestionsListView(path: path)
-                // `.zone` and `.collection` are both ranked catalog-song lists.
-                default:         ForYouSongListView(route: route, path: path)
+                case .new: NewReleasesView(path: path)
+                // `.zone` and `.collection` are both ranked catalog-song lists — and that now
+                // includes a cloud-ranked zone, because the cloud answer is shaped into the same
+                // frozen `zoneIds` this screen reads rather than into a screen of its own.
+                default:   ForYouSongListView(route: route, path: path)
                 }
             }
     }

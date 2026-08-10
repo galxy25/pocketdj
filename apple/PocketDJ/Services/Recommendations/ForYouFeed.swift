@@ -31,8 +31,6 @@ let forYouFeedSchemaVersion = 1
 ///    a play or the one-shot seed, never on a render. Freezing a second copy here would make the
 ///    tile disagree with the screen behind it, and would hide the seed (the exact bug the owner
 ///    reported as "my new tile is still empty").
-///  • **Suggested** — same argument: `RecommendationService` holds the server's answer and the
-///    list reads it directly.
 ///  • **feedback** — a 👍/👎 is the OWNER ACTING ON THIS LIST, not a recompute. It is applied over
 ///    the frozen ids at render (`RecFeedbackStore.rankedIds` / `visibleCount`), so an accepted row
 ///    updates and a rejected row sinks IMMEDIATELY without the ranking moving underneath.
@@ -56,7 +54,18 @@ struct ForYouFeedSnapshot: Codable, Equatable, Sendable {
     /// Which of `zoneIds` came from the rediscovery pool — the "Buried" badge, frozen with the
     /// list so the badge cannot disappear from a row while the row stays put.
     var zoneBuriedIds: [String] = []
+    /// WHICH RANKER produced `zoneIds` — `ForYouTileSource.rawValue`. Frozen ALONGSIDE the ids,
+    /// never derived at render from "is the engine on right now": the toggle can be flipped, or
+    /// the network can drop, long after a ranking was cached, and an attribution recomputed from
+    /// live state would then describe a list it did not produce. Stored as the raw string so an
+    /// unknown future value degrades to `.onDevice` instead of failing the whole decode.
+    var zoneSourceRaw: String = ForYouTileSource.onDevice.rawValue
     var crates: [Crate] = []
+
+    /// The frozen attribution, decoded leniently.
+    var zoneSource: ForYouTileSource {
+        ForYouTileSource(rawValue: zoneSourceRaw) ?? .onDevice
+    }
 
     /// Has a refresh ever landed? A cold install renders a spinner and seeds itself once; every
     /// launch after that renders this instantly.
@@ -74,14 +83,15 @@ struct ForYouFeedSnapshot: Codable, Equatable, Sendable {
     /// half-written one) must degrade to "no cache" rather than throwing away the decode and
     /// looking like a corrupt install.
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, refreshedAtMs, zoneIds, zoneBuriedIds, crates
+        case schemaVersion, refreshedAtMs, zoneIds, zoneBuriedIds, zoneSourceRaw, crates
     }
 
     init(refreshedAtMs: Double = 0, zoneIds: [String] = [], zoneBuriedIds: [String] = [],
-         crates: [Crate] = []) {
+         zoneSource: ForYouTileSource = .onDevice, crates: [Crate] = []) {
         self.refreshedAtMs = refreshedAtMs
         self.zoneIds = zoneIds
         self.zoneBuriedIds = zoneBuriedIds
+        self.zoneSourceRaw = zoneSource.rawValue
         self.crates = crates
     }
 
@@ -91,6 +101,10 @@ struct ForYouFeedSnapshot: Codable, Equatable, Sendable {
         refreshedAtMs = (try? c.decode(Double.self, forKey: .refreshedAtMs)) ?? 0
         zoneIds = (try? c.decode([String].self, forKey: .zoneIds)) ?? []
         zoneBuriedIds = (try? c.decode([String].self, forKey: .zoneBuriedIds)) ?? []
+        // ADDITIVE-OPTIONAL: a document written before the cloud path existed has no such key and
+        // decodes to the on-device answer, which is exactly what produced it.
+        zoneSourceRaw = (try? c.decode(String.self, forKey: .zoneSourceRaw))
+            ?? ForYouTileSource.onDevice.rawValue
         crates = (try? c.decode([Crate].self, forKey: .crates)) ?? []
     }
 }
@@ -150,7 +164,39 @@ enum ForYouFeedBuilder {
             refreshedAtMs: inputs.nowMs,
             zoneIds: queue.songIds,
             zoneBuriedIds: queue.picks.filter { $0.pool == .rediscovery }.map(\.songId),
+            zoneSource: .onDevice,
             crates: crates)
+    }
+
+    /// Replace a snapshot's In Da Zone half with the CLOUD engine's ranking — or leave it exactly
+    /// as it is when the cloud has nothing usable to say.
+    ///
+    /// ── WHY THIS TAKES A BUILT SNAPSHOT INSTEAD OF REPLACING THE BUILD ───────────────────────
+    /// The on-device pass runs FIRST and unconditionally, and this is a second, cheap pass over
+    /// its result. That ordering is the fallback: by the time a cloud answer is even asked for,
+    /// a complete, correct feed already exists and is already on screen. Every cloud failure —
+    /// disabled, offline, 5xx, an empty list, a list of ids this catalog cannot resolve, a list
+    /// entirely thumbed down — arrives here as an empty shaped queue and returns the input
+    /// untouched. There is no branch in which a cloud problem produces an empty tile.
+    ///
+    /// The collection tiles are deliberately NOT touched: `/recs/songs` ranks the whole library
+    /// against the listener's taste, which is In Da Zone's question, not "what belongs in this
+    /// crate" (that is `/recs/collections`, a different route with a different shape).
+    static func applyingCloudZone(_ snapshot: ForYouFeedSnapshot, cloudZoneIds: [String],
+                                  inputs: ForYouFeedInputs) -> ForYouFeedSnapshot {
+        guard !cloudZoneIds.isEmpty else { return snapshot }
+        let queue = ZoneEngine.shapeCloudRanking(songIds: cloudZoneIds,
+                                                 songs: inputs.songs,
+                                                 plays: inputs.plays,
+                                                 lastPlayedMs: inputs.lastPlayedMs,
+                                                 feedback: inputs.zoneFeedback,
+                                                 nowMs: inputs.nowMs)
+        guard !queue.isEmpty else { return snapshot }
+        var next = snapshot
+        next.zoneIds = queue.songIds
+        next.zoneBuriedIds = queue.picks.filter { $0.pool == .rediscovery }.map(\.songId)
+        next.zoneSourceRaw = ForYouTileSource.cloud.rawValue
+        return next
     }
 }
 
@@ -208,7 +254,22 @@ final class ForYouFeedStore {
     ///
     /// Single-flighted: a second tap while a pass is running folds into the first rather than
     /// starting a second pair of catalog sweeps.
-    func refresh(_ inputs: ForYouFeedInputs) async {
+    ///
+    /// ── TWO COMMITS, AND THE ORDER IS THE FALLBACK ───────────────────────────────────────────
+    /// `cloudZone` is the recommendation engine's ranking for In Da Zone, if this install has one
+    /// to ask (nil when the engine is off — the default — so a disabled install does exactly what
+    /// it did before, including making no request at all).
+    ///
+    /// The on-device ranking is computed and COMMITTED FIRST, then the network call is awaited.
+    /// That is deliberate and it is the whole "never block first render on a network call" rule:
+    ///  · the grid already paints from the previous cache while this runs;
+    ///  · the local answer lands as soon as it is ready, at local speed;
+    ///  · the cloud answer arrives later and updates the tile in place, or never arrives and
+    ///    changes nothing.
+    /// Doing it the other way — await the server, then decide — makes every refresh as slow as the
+    /// slowest Lambda cold start, and makes a timeout look like a hung refresh.
+    func refresh(_ inputs: ForYouFeedInputs,
+                 cloudZone: (() async -> [String])? = nil) async {
         guard !isRefreshing else { return }
         // NEVER overwrite a good cache with a ranking of nothing. An empty catalog is a transient
         // state (a reload, a source toggled off mid-refresh), and committing its empty result
@@ -221,6 +282,18 @@ final class ForYouFeedStore {
             ForYouFeedBuilder.build(inputs)
         }.value
         commit(built)
+
+        guard let cloudZone else { return }
+        let cloudIds = await cloudZone()
+        guard !cloudIds.isEmpty else { return }
+        let shaped = await Task.detached(priority: .userInitiated) {
+            ForYouFeedBuilder.applyingCloudZone(built, cloudZoneIds: cloudIds, inputs: inputs)
+        }.value
+        // Identical ⇒ the cloud answer shaped away to nothing and `applyingCloudZone` handed the
+        // input straight back. Committing it anyway would burn a revision and re-derive the grid
+        // for no change.
+        guard shaped != built else { return }
+        commit(shaped)
     }
 
     /// Land a snapshot (also the test seam).

@@ -3,10 +3,15 @@ import SwiftUI
 /// Where a For You tile goes when tapped. A plain `Hashable` value so it rides `NavigationPath`
 /// like every other route (registered once in `NavigationDestinations.swift`).
 struct ForYouTileRoute: Hashable, Sendable {
+    /// ── THERE IS NO `.suggested` ──────────────────────────────────────────────────────────────
+    /// There used to be: a third tile holding the cloud engine's own song list. Owner, verbatim:
+    /// *"remove Suggested tile (that is what New and In Da Zone [are])"* and *"new and in da zone
+    /// should use the recommendation engine if available, only doing on device when not enabled."*
+    /// So the engine did not lose a surface, it gained two — its ranking now arrives INSIDE
+    /// In Da Zone (see `ForYouTileSource`), and a separate tile for the same content was the
+    /// duplication the owner asked to remove.
     enum Kind: String, Hashable {
         case new, zone, collection
-        /// The cloud recommendation engine's own song suggestions (`RecSuggestionsListView`).
-        case suggested
     }
     let kind: Kind
     /// The collection's id — only meaningful for `.collection`.
@@ -34,6 +39,25 @@ struct ForYouTileRoute: Hashable, Sendable {
     var tileId: String { collectionId.map { "col-\($0)" } ?? kind.rawValue }
 }
 
+/// WHICH RANKER PRODUCED A TILE'S CONTENT.
+///
+/// ── WHY THIS IS ON THE TILE AND NOT IN A LOG ─────────────────────────────────────────────────
+/// Two rankers now feed the same grid — the cloud engine when it is enabled, reachable and has an
+/// answer, the on-device engine otherwise — and they fail in completely different ways. Without
+/// this the owner (and the next person debugging it) cannot tell a cloud regression from an
+/// on-device one, or notice that a tile has been silently falling back for a week because the
+/// Lambda 500s. The fallback is deliberately INVISIBLE in the sense that it never shows an error
+/// or an empty tile; it must not be invisible in the sense that nobody can tell it happened.
+enum ForYouTileSource: String, Hashable, Sendable {
+    /// Ranked here, from the local catalog + play history. The default and the common case — the
+    /// engine is opt-in and ships OFF.
+    case onDevice
+    /// Ranked by the cloud recommendation engine, then shaped locally
+    /// (`ZoneEngine.shapeCloudRanking`) so the per-artist cap, the rediscovery floor and the 👎
+    /// tombstones still hold.
+    case cloud
+}
+
 /// One tile in the For You grid.
 ///
 /// `Sendable` because the ranking that produces it runs off the main actor (see
@@ -49,6 +73,10 @@ struct ForYouTile: Identifiable, Equatable, Sendable {
     /// True for the two tiles that are pinned to the top (New, In Da Zone) — they get the
     /// accent border so the fixed pair reads as a pair.
     let isPinned: Bool
+    /// Which ranker produced `count` (and the ids behind it). Collection tiles are always
+    /// `.onDevice`; see `ForYouTileSource`. Defaulted so only the tiles that can actually have a
+    /// cloud answer have to say anything about it.
+    var source: ForYouTileSource = .onDevice
     /// Stored as a hex so `ForYouTile` remains a plain value type that a unit test can build and
     /// compare without importing SwiftUI's `Color` equality semantics.
     let tintHex: UInt
@@ -93,10 +121,10 @@ enum ForYouTiles {
     ///     all (deliberately — see `ReleaseFeedPolicy.classify`). So the wording has to know the
     ///     split even though the badge does not.
     ///   - zone: the In Da Zone song ids (already capped by `ZoneEngine`).
+    ///   - zoneSource: which ranker produced `zone` — the cloud engine, or this device. See
+    ///     `ForYouTileSource`; it is the tile's attribution and it changes the subtitle so the
+    ///     owner can read the answer off the card rather than off a log.
     ///   - collections: one entry per collection, with its suggestion ids.
-    ///   - cloudSuggestionCount: the cloud rec engine's suggestion count. 0 ⇒ no "Suggested"
-    ///     tile at all, which is the default-OFF case — an empty tile for a feature the user has
-    ///     not enabled would be worse than no tile.
     ///   - newEmptyNote: why the New tile is empty, when it is and when the reason is not simply
     ///     "nothing came out". A tile that renders a bare 0 with no explanation is how this
     ///     feature got reported as broken; the card says which of seeding / unauthorized /
@@ -104,8 +132,8 @@ enum ForYouTiles {
     static func build(newReleaseCount: Int,
                       comingSoonCount: Int = 0,
                       zone: [String],
+                      zoneSource: ForYouTileSource = .onDevice,
                       collections: [(id: String, kind: String, name: String, suggestions: [String])],
-                      cloudSuggestionCount: Int = 0,
                       newEmptyNote: String? = nil
     ) -> [ForYouTile] {
         var out: [ForYouTile] = []
@@ -113,6 +141,15 @@ enum ForYouTiles {
         // ── Tile 1: New (ALWAYS first) ────────────────────────────────────────────────────────
         // Shown even at zero: "no new releases this month" is a real, useful answer, and a tile
         // that vanishes when empty would make the pinned pair jump around. Its subtitle says so.
+        //
+        // NEW HAS NO CLOUD SOURCE, AND THAT IS A FINDING, NOT AN OMISSION. The rec engine's
+        // `/recs/songs` scores candidates out of `rec-features.json` — a slim projection of the
+        // user's OWN catalog indexes. Every id it can return is therefore a song he already owns,
+        // which is precisely the set New exists to exclude: unowned releases from the last 30 days,
+        // fetched from Apple Music by `ReleaseFeedService`. Wiring New to that route would hand it
+        // a list it can only answer with things New must never show. So New stays on-device until
+        // the engine grows a route over an UNOWNED-release corpus, and the tile says `.onDevice`
+        // rather than pretending a source it does not have.
         let outNowCount = max(0, newReleaseCount - comingSoonCount)
         out.append(ForYouTile(
             id: "new",
@@ -123,36 +160,23 @@ enum ForYouTiles {
             count: newReleaseCount,
             route: ForYouTileRoute(kind: .new, title: "New"),
             isPinned: true,
+            source: .onDevice,
             tintHex: newTint))
 
         // ── Tile 2: In Da Zone (ALWAYS second) ────────────────────────────────────────────────
+        // The one tile with two possible rankers. The subtitle is the attribution: it names the
+        // engine when the cloud answered, and describes the local ranking when it did not — so a
+        // silent week of fallback is legible on the card instead of only in a network trace.
         out.append(ForYouTile(
             id: "zone",
             title: "In Da Zone",
-            subtitle: zone.isEmpty
-                ? "Play a few songs to build your zone"
-                : "Top picks from your recent activity",
+            subtitle: zoneSubtitle(count: zone.count, source: zoneSource),
             symbol: "waveform.circle.fill",
             count: zone.count,
             route: ForYouTileRoute(kind: .zone, title: "In Da Zone"),
             isPinned: true,
+            source: zoneSource,
             tintHex: zoneTint))
-
-        // ── Then (when the cloud engine is on and has answers): its suggestions ───────────────
-        // Placed after the pinned pair and before the collections: it is a whole-library
-        // suggestion set like In Da Zone, so it belongs next to it rather than among the
-        // per-collection tiles.
-        if cloudSuggestionCount > 0 {
-            out.append(ForYouTile(
-                id: "suggested",
-                title: "Suggested",
-                subtitle: "From the recommendation engine",
-                symbol: "wand.and.stars",
-                count: cloudSuggestionCount,
-                route: ForYouTileRoute(kind: .suggested, title: "Suggested"),
-                isPinned: false,
-                tintHex: collectionTint))
-        }
 
         // ── Then: one tile per collection that has something worth adding ─────────────────────
         // Sorted by how much there is to add (then name, for determinism) so the most actionable
@@ -171,9 +195,24 @@ enum ForYouTiles {
                 count: c.suggestions.count,
                 route: ForYouTileRoute(kind: .collection, collectionId: c.id, title: c.name),
                 isPinned: false,
+                source: .onDevice,
                 tintHex: collectionTint))
         }
         return out
+    }
+
+    /// In Da Zone's subtitle — and its SOURCE ATTRIBUTION, in one line.
+    ///
+    /// The empty answer wins over the attribution: "play a few songs" is what the owner needs to
+    /// read off an empty tile, and naming whichever ranker produced nothing is trivia at that
+    /// point. Above zero the line says which engine spoke, because that is the only place the two
+    /// are distinguishable from the outside.
+    static func zoneSubtitle(count: Int, source: ForYouTileSource) -> String {
+        guard count > 0 else { return "Play a few songs to build your zone" }
+        switch source {
+        case .cloud:    return "Top picks · recommendation engine"
+        case .onDevice: return "Top picks from your recent activity"
+        }
     }
 
     /// Wording for the New tile that matches what the tile actually counts.

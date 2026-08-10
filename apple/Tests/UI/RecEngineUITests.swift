@@ -100,11 +100,23 @@ final class RecEngineUITests: XCTestCase {
     }
 
     #if !os(macOS)
-    /// Fenced with the toggle test: the integration gate reported this one failing on macOS
-    /// too. See the `#TOUPDATE` on the class — its macOS status is worth re-checking once
+    /// THE SUGGESTED TILE IS GONE, AND ITS CONTENT IS NOW IN In Da Zone.
+    ///
+    /// Owner, verbatim: *"remove Suggested tile (that is what New and In Da Zone [are])"* and
+    /// *"new and in da zone should use the recommendation engine if available, only doing on
+    /// device when not enabled."* So this test asserts both halves of one change: no third tile,
+    /// and the engine's own rows arriving inside the pinned one.
+    ///
+    /// The fixture ranking is deliberately made of the BUNDLED CATALOG's ids (`sng_5`, `sng_7`,
+    /// `sng_2`, `sng_6` — see `RecommendationService.fixtureForYou`), because the device drops
+    /// cloud ids it cannot resolve. Ids from nowhere would shape away to nothing and this test
+    /// would silently be driving the on-device fallback while claiming to drive the cloud.
+    ///
+    /// Fenced with the toggle test: the integration gate reported its predecessor failing on
+    /// macOS too. See the `#TOUPDATE` on the class — its macOS status is worth re-checking once
     /// macOS XCUITest can be run again, since nothing in the body is obviously iOS-only.
     @MainActor
-    func testForYouShowsFixtureSuggestions() {
+    func testTheEngineRanksInDaZoneAndHasNoTileOfItsOwn() {
         let app = XCUIApplication()
         app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
         app.launchEnvironment["PDJ_REC_FIXTURE"] = "1"
@@ -116,26 +128,17 @@ final class RecEngineUITests: XCTestCase {
                       "the fixture seam lights the For You tab")
         forYouTab.tap()
 
-        // For You is now a GRID OF TILES; the cloud engine's suggestions live behind the
-        // "Suggested" tile (New and In Da Zone are the pinned pair). One extra tap to reach the
-        // same list — the rows below are unchanged.
-        let suggestedTile = app.el("foryou-tile-suggested")
-        XCTAssertTrue(suggestedTile.waitForExistence(timeout: 10),
-                      "the engine has fixture suggestions ⇒ the Suggested tile exists")
-        suggestedTile.tap()
+        let zone = app.el("foryou-tile-zone")
+        XCTAssertTrue(zone.waitForExistence(timeout: 15), "In Da Zone is still pinned second")
+        XCTAssertFalse(app.el("foryou-tile-suggested").exists,
+                       "the Suggested tile was removed — its content lives in the pinned pair now")
 
-        XCTAssertTrue(app.any("foryou-row-sng_fix_1").waitForExistence(timeout: 10),
-                      "the canned suggestion renders (no catalog resolution required)")
-        XCTAssertTrue(app.staticTexts["Neon"].firstMatch.exists)
-
-        // THE ＋ IS GONE (owner, 2026-08-07). The 👍 now does both jobs — "send positive signal to
-        // recommendation engine AND add the song to the collection" — so it is the control that
-        // opens the Add sheet, and there is no second button offering the same act.
-        XCTAssertFalse(app.el("foryou-add-sng_fix_1").exists,
-                       "the separate ＋ was removed; 👍 is the add")
-        app.el("rec-accept-sng_fix_1").tap()
-        XCTAssertTrue(app.staticTexts["Pockets"].firstMatch.waitForExistence(timeout: 10),
-                      "tapping 👍 presents the Add to… sheet — the SAME route the ＋ used")
+        zone.tap()
+        // A row from the ENGINE's ranking, resolved against the catalog. `sng_5` is "Blue Note",
+        // which the on-device ranking has no particular reason to lead with — what is being proven
+        // is that the cloud list reached the tile at all.
+        XCTAssertTrue(app.any("foryou-song-sng_5").waitForExistence(timeout: 15),
+                      "the engine's rows are what In Da Zone opens on")
     }
     #endif
 }
