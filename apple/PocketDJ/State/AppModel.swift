@@ -106,6 +106,21 @@ final class AppModel {
         return tracks
     }
 
+    /// song id → top-tier genre category, the map `PuzzleSimilarity` (and therefore In Da Zone)
+    /// takes. Derived from the `zoneTracks` memo rather than re-walking the catalog, so the two
+    /// projections can never disagree about a song's genre — including about which songs have
+    /// none, since the catch-all bucket is already mapped to nil there and simply does not get a
+    /// key here. Memoized on the same revision for the same reason.
+    var zoneGenreBySongId: [String: String] {
+        if let c = zoneGenreCache, c.revision == catalogRevision { return c.map }
+        var map: [String: String] = [:]
+        map.reserveCapacity(songs.count)
+        for t in zoneTracks where t.genre != nil { map[t.songId] = t.genre }
+        zoneGenreCache = (catalogRevision, map)
+        return map
+    }
+    @ObservationIgnored private var zoneGenreCache: (revision: Int, map: [String: String])?
+
     /// The catalog album for a song id (via the song's `albumId`), when both the song and its
     /// album are indexed. Backs the lock-screen / Control Center Now Playing card's cover art —
     /// nil for a track that isn't in the catalog (e.g. an ad-hoc rip), so the card shows title +

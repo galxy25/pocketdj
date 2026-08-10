@@ -102,8 +102,13 @@ struct ForYouTilesView: View {
         // main actor for the same reason). Every captured value is Sendable, so the pure engine
         // moves across cleanly.
         let tracks = app.zoneTracks
+        let songs = app.songs
+        let genres = app.zoneGenreBySongId
         let plays = history.recentPlaysForZone()
         let counts = playCounts.snapshot()
+        // Combined Apple + local last-played. Without it a song he plays daily in Music.app but
+        // never through PocketDJ looks dormant, and the rediscovery pool offers it back.
+        let lastPlayed = playCounts.lastPlayedSnapshot()
         let members = collections.suggestibleCollections()
         let cloudCount = recEngine?.forYou.count ?? 0
         let now = Date().timeIntervalSince1970 * 1000
@@ -112,8 +117,10 @@ struct ForYouTilesView: View {
         let computed = await Task.detached(priority: .userInitiated) {
             ForYouTiles.build(
                 newReleaseCount: newCount,
-                zone: ZoneEngine.inDaZone(tracks: tracks, plays: plays,
-                                          playCount: { counts[$0] ?? 0 }, nowMs: now),
+                zone: ZoneEngine.inDaZone(songs: songs, genreBySongId: genres,
+                                          otherCollections: members.map(\.songIds),
+                                          plays: plays, playCount: { counts[$0] ?? 0 },
+                                          lastPlayedMs: lastPlayed, nowMs: now).songIds,
                 collections: members.map { c in
                     (id: c.id, kind: c.kind, name: c.name,
                      suggestions: ZoneEngine.suggestions(memberSongIds: c.songIds, tracks: tracks,
