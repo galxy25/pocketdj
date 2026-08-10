@@ -99,6 +99,9 @@ final class RecommendationService {
         var lastFavoriteAtMs: Double = 0
         var lastActivityAtMs: Double = 0
         var lastPuzzleAtMs: Double = 0
+        /// Cursor for the explicit accept/reject stream. ADDITIVE-OPTIONAL: an older doc decodes
+        /// to 0, which costs one idempotent re-send of whatever is inside the overlap window.
+        var lastFeedbackAtMs: Double = 0
         var lastCollectionsHash: String?
         /// Hash of the last UPLOADED lifetime play-count snapshot. Gates re-sending a 20k-row map
         /// on every flush when nothing about it changed. ADDITIVE-OPTIONAL: an older doc decodes
@@ -112,6 +115,7 @@ final class RecommendationService {
         var uploadedFavorites: [String] = []
         var uploadedActivity: [String] = []
         var uploadedPuzzle: [String] = []
+        var uploadedFeedback: [String] = []
         /// Has this device finished the one-time move off the broadcast profile id (see the
         /// type doc)? ADDITIVE-OPTIONAL: a pre-scoped-id doc decodes to false, which is
         /// exactly what schedules its migration.
@@ -119,9 +123,9 @@ final class RecommendationService {
 
         private enum CodingKeys: String, CodingKey {
             case schemaVersion, lastPlayAtMs, lastFavoriteAtMs, lastActivityAtMs,
-                 lastPuzzleAtMs, lastCollectionsHash, lastPlayCountsHash, lastSyncedAtMs,
-                 uploadedPlays, uploadedFavorites, uploadedActivity, uploadedPuzzle,
-                 didMigrateScopedProfile
+                 lastPuzzleAtMs, lastFeedbackAtMs, lastCollectionsHash, lastPlayCountsHash,
+                 lastSyncedAtMs, uploadedPlays, uploadedFavorites, uploadedActivity,
+                 uploadedPuzzle, uploadedFeedback, didMigrateScopedProfile
         }
         init() {}
         init(from decoder: Decoder) throws {
@@ -131,6 +135,7 @@ final class RecommendationService {
             lastFavoriteAtMs = (try? c.decode(Double.self, forKey: .lastFavoriteAtMs)) ?? 0
             lastActivityAtMs = (try? c.decode(Double.self, forKey: .lastActivityAtMs)) ?? 0
             lastPuzzleAtMs = (try? c.decode(Double.self, forKey: .lastPuzzleAtMs)) ?? 0
+            lastFeedbackAtMs = (try? c.decode(Double.self, forKey: .lastFeedbackAtMs)) ?? 0
             lastCollectionsHash = try? c.decode(String.self, forKey: .lastCollectionsHash)
             lastPlayCountsHash = try? c.decode(String.self, forKey: .lastPlayCountsHash)
             lastSyncedAtMs = try? c.decode(Double.self, forKey: .lastSyncedAtMs)
@@ -138,6 +143,7 @@ final class RecommendationService {
             uploadedFavorites = (try? c.decode([String].self, forKey: .uploadedFavorites)) ?? []
             uploadedActivity = (try? c.decode([String].self, forKey: .uploadedActivity)) ?? []
             uploadedPuzzle = (try? c.decode([String].self, forKey: .uploadedPuzzle)) ?? []
+            uploadedFeedback = (try? c.decode([String].self, forKey: .uploadedFeedback)) ?? []
             didMigrateScopedProfile = (try? c.decode(Bool.self, forKey: .didMigrateScopedProfile)) ?? false
         }
     }
@@ -176,6 +182,12 @@ final class RecommendationService {
     /// workstream wires it in PocketDJApp when its store lands — this file must never reference
     /// a WS-D type beyond the wire struct.
     @ObservationIgnored var puzzleEventsProvider: ((_ sinceMs: Double) -> [RecPuzzleEventWire])?
+
+    /// The accept/reject stream (`RecFeedbackStore.recFeedbackEvents`). A closure seam like
+    /// `puzzleEventsProvider`, installed in `PocketDJApp`, so this service keeps its narrow store
+    /// list. Nil ⇒ nothing is uploaded and the server ranks exactly as it did before the signal
+    /// existed.
+    @ObservationIgnored var feedbackEventsProvider: ((_ sinceMs: Double) -> [RecFeedbackWire])?
 
     /// LIFETIME play counts (`PlayCountService.snapshot()`) — Apple's imported baseline plus this
     /// app's own plays. A closure seam like `puzzleEventsProvider`, so this service keeps its
@@ -478,10 +490,12 @@ final class RecommendationService {
         let favFloor = Self.windowFloor(sync.lastFavoriteAtMs)
         let actFloor = Self.windowFloor(sync.lastActivityAtMs)
         let puzzleFloor = Self.windowFloor(sync.lastPuzzleAtMs)
+        let feedbackFloor = Self.windowFloor(sync.lastFeedbackAtMs)
         let sentPlays = Set(sync.uploadedPlays)
         let sentFavs = Set(sync.uploadedFavorites)
         let sentActs = Set(sync.uploadedActivity)
         let sentPuzzle = Set(sync.uploadedPuzzle)
+        let sentFeedback = Set(sync.uploadedFeedback)
 
         // Snapshot the deltas ON MAIN (cheap value-type filters over @MainActor stores).
         var plays = history.events
@@ -502,6 +516,9 @@ final class RecommendationService {
                                    collectionKind: $0.collectionKind, collectionName: $0.collectionName) }
         var puzzle = (puzzleEventsProvider?(puzzleFloor) ?? [])
             .filter { !sentPuzzle.contains(Self.ack($0.atMs, $0.id)) }
+            .sorted { $0.atMs < $1.atMs }
+        var feedback = (feedbackEventsProvider?(feedbackFloor) ?? [])
+            .filter { !sentFeedback.contains(Self.ack($0.atMs, $0.id)) }
             .sorted { $0.atMs < $1.atMs }
 
         let snapshot = collectionsSnapshotWire()
@@ -525,14 +542,16 @@ final class RecommendationService {
             (playCountsHash != nil && playCountsHash != sync.lastPlayCountsHash) ? playCountsSnapshot : nil
 
         guard !plays.isEmpty || !favs.isEmpty || !acts.isEmpty || !puzzle.isEmpty
-                || pendingSnapshot != nil || pendingPlayCounts != nil else { return }
+                || !feedback.isEmpty || pendingSnapshot != nil || pendingPlayCounts != nil
+        else { return }
 
         while !plays.isEmpty || !favs.isEmpty || !acts.isEmpty || !puzzle.isEmpty
-                || pendingSnapshot != nil || pendingPlayCounts != nil {
+                || !feedback.isEmpty || pendingSnapshot != nil || pendingPlayCounts != nil {
             let batchPlays = Array(plays.prefix(Self.batchCap))
             let batchFavs = Array(favs.prefix(Self.batchCap))
             let batchActs = Array(acts.prefix(Self.batchCap))
             let batchPuzzle = Array(puzzle.prefix(Self.batchCap))
+            let batchFeedback = Array(feedback.prefix(Self.batchCap))
             func makeBatch(_ snap: RecCollectionsSnapshotWire?,
                            _ counts: RecPlayCountsWire?) -> RecUploadBatch {
                 RecUploadBatch(
@@ -542,6 +561,7 @@ final class RecommendationService {
                     favorites: batchFavs.isEmpty ? nil : batchFavs,
                     activity: batchActs.isEmpty ? nil : batchActs,
                     puzzle: batchPuzzle.isEmpty ? nil : batchPuzzle,
+                    feedback: batchFeedback.isEmpty ? nil : batchFeedback,
                     collectionsSnapshot: snap,
                     playCounts: counts)
             }
@@ -560,7 +580,7 @@ final class RecommendationService {
                     snapshotDelivered = false
                     playCountsDelivered = false
                     if batchPlays.isEmpty && batchFavs.isEmpty && batchActs.isEmpty
-                        && batchPuzzle.isEmpty {
+                        && batchPuzzle.isEmpty && batchFeedback.isEmpty {
                         pendingSnapshot = nil
                         pendingPlayCounts = nil
                         continue   // snapshot-only batch: nothing left to deliver this round
@@ -592,6 +612,7 @@ final class RecommendationService {
             if let last = batchFavs.last { sync.lastFavoriteAtMs = max(sync.lastFavoriteAtMs, last.atMs) }
             if let last = batchActs.last { sync.lastActivityAtMs = max(sync.lastActivityAtMs, last.atMs) }
             if let last = batchPuzzle.last { sync.lastPuzzleAtMs = max(sync.lastPuzzleAtMs, last.atMs) }
+            if let last = batchFeedback.last { sync.lastFeedbackAtMs = max(sync.lastFeedbackAtMs, last.atMs) }
             sync.uploadedPlays = Self.remember(sync.uploadedPlays,
                                                batchPlays.map { Self.ack($0.atMs, $0.id) }, floor: playFloor)
             sync.uploadedFavorites = Self.remember(sync.uploadedFavorites,
@@ -600,6 +621,9 @@ final class RecommendationService {
                                                   batchActs.map { Self.ack($0.atMs, $0.id) }, floor: actFloor)
             sync.uploadedPuzzle = Self.remember(sync.uploadedPuzzle,
                                                 batchPuzzle.map { Self.ack($0.atMs, $0.id) }, floor: puzzleFloor)
+            sync.uploadedFeedback = Self.remember(sync.uploadedFeedback,
+                                                  batchFeedback.map { Self.ack($0.atMs, $0.id) },
+                                                  floor: feedbackFloor)
             if snapshotDelivered { sync.lastCollectionsHash = snapshotHash }
             if playCountsDelivered { sync.lastPlayCountsHash = playCountsHash }
             pendingSnapshot = nil
@@ -608,6 +632,7 @@ final class RecommendationService {
             favs.removeFirst(batchFavs.count)
             acts.removeFirst(batchActs.count)
             puzzle.removeFirst(batchPuzzle.count)
+            feedback.removeFirst(batchFeedback.count)
             let now = Date().timeIntervalSince1970 * 1000
             sync.lastSyncedAtMs = now
             lastSyncedAtMs = now

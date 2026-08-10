@@ -334,6 +334,28 @@ struct NowPlayingPanel: View {
         }
     }
 
+    /// 👍 / 👎 on what is PLAYING — the sync half of the tuning loop, on the deck the owner
+    /// already looks at. The same `RecFeedbackControls` the tile rows use, so a decision made here
+    /// is the same row in the same store; open a tile afterwards and it is already reflected.
+    ///
+    /// Deliberately its own line under the transport rather than crowded into the ⏮⏯⏭ row: that
+    /// row already carries the history toggle on one edge and the ♥ on the other, and a sixth and
+    /// seventh target there would be finger-sized on nothing. Shown whenever there is a current
+    /// track — including a single-song play, which is exactly when "less like this" is most
+    /// useful.
+    ///
+    /// NOTHING HERE TOUCHES PLAYBACK. No skip on reject: see `RecFeedbackControls` for why.
+    @ViewBuilder private var feedbackRow: some View {
+        if let item = currentItem {
+            HStack(spacing: 18) {
+                RecFeedbackControls(songId: item.id, surface: .nowPlaying, font: .subheadline)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 2)
+            .accessibilityIdentifier("np-feedback-row")
+        }
+    }
+
     /// ⟲ — reveals the durable session's already-played tracks between the deck and Up Next.
     private var historyToggle: some View {
         Button { withAnimation { showPlayed.toggle() } } label: {
@@ -440,6 +462,7 @@ struct NowPlayingPanel: View {
                         }
                 }
                 transport
+                feedbackRow
                 shuffleRepeatRow
                 // F4 — the collapsible Mix mini-panel. Self-gates on `SetlistPlayer.mixAvailable`
                 // (hidden entirely for a non-mixable current track or while a Mix session plays),
@@ -799,11 +822,16 @@ struct NowPlayingMiniBar: View {
                 .lineLimit(1)
                 .accessibilityIdentifier("np-mini-title")
             Spacer(minLength: 8)
-            // The current track's ♥ — the same reusable control, compact. Hidden while idle.
+            // The current track's ♥ and its 👍/👎 — the same reusable controls, compact. Hidden
+            // while idle. The thumbs are here and not only on the full deck because the strip IS
+            // the now-playing surface for most of an iPhone session: if a listener with the phone
+            // in their pocket cannot accept or reject what they are hearing, the feature has not
+            // been built.
             if let current {
                 FavoriteToggle(songId: current.id,
                                appleMusicId: app.songsById[current.id]?.appleMusicId,
                                font: .footnote)
+                RecFeedbackControls(songId: current.id, surface: .miniBar, font: .footnote)
             }
             Button { sequencer.skipPrevious() } label: {
                 Image(systemName: "backward.fill").font(.footnote)

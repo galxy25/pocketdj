@@ -36,6 +36,11 @@ struct NowPlayingSnapshot: Codable, Equatable {
     /// Whether the running set's upcoming tail is live-shuffled — drives the widget's shuffle glyph.
     /// Decode-tolerant (defaults false for pre-existing blobs).
     var shuffleEnabled: Bool
+    /// The current track's recommendation feedback state — `RecFeedbackStore.Action.rawValue`
+    /// ("accepted"/"rejected") or "none". Drives which of the widget's 👍/👎 glyphs renders
+    /// filled, so the pair says what the listener already told it rather than looking untouched
+    /// after a tap. Decode-tolerant (pre-existing blobs read "none").
+    var recFeedback: String
 
     struct Track: Codable, Equatable, Identifiable {
         /// Per-row identity (the setlist `Item.uid`), so repeats render as distinct rows.
@@ -47,7 +52,8 @@ struct NowPlayingSnapshot: Codable, Equatable {
 
     init(isPlaying: Bool, hasContent: Bool, title: String, artist: String, songId: String?,
          coverVersion: Int, upNext: [Track], isFavorite: Bool = false, appleMusicId: String? = nil,
-         repeatMode: String = "off", shuffleEnabled: Bool = false) {
+         repeatMode: String = "off", shuffleEnabled: Bool = false,
+         recFeedback: String = "none") {
         self.isPlaying = isPlaying
         self.hasContent = hasContent
         self.title = title
@@ -59,6 +65,7 @@ struct NowPlayingSnapshot: Codable, Equatable {
         self.appleMusicId = appleMusicId
         self.repeatMode = repeatMode
         self.shuffleEnabled = shuffleEnabled
+        self.recFeedback = recFeedback
     }
 
     /// Custom decode ONLY to tolerate blobs written before `isFavorite`/`appleMusicId` existed:
@@ -78,6 +85,7 @@ struct NowPlayingSnapshot: Codable, Equatable {
         appleMusicId = try c.decodeIfPresent(String.self, forKey: .appleMusicId)
         repeatMode = try c.decodeIfPresent(String.self, forKey: .repeatMode) ?? "off"
         shuffleEnabled = try c.decodeIfPresent(Bool.self, forKey: .shuffleEnabled) ?? false
+        recFeedback = try c.decodeIfPresent(String.self, forKey: .recFeedback) ?? "none"
     }
 
     static let empty = NowPlayingSnapshot(isPlaying: false, hasContent: false,

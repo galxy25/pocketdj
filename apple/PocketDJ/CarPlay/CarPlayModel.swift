@@ -240,6 +240,27 @@ final class CarPlayModel {
         services.favorites.toggle(id, appleMusicId: app.songsById[id]?.appleMusicId)
     }
 
+    // MARK: - Recommendation feedback (the 👍/👎 on the CarPlay Now Playing template)
+
+    /// The current track's accept/reject state, or nil when there is no decision (or nothing
+    /// playing). Drives which of the two CarPlay buttons renders filled.
+    func currentRecFeedback() -> RecFeedbackStore.Action? {
+        guard let id = currentSongId() else { return nil }
+        return services.recFeedback?.state(for: id)
+    }
+
+    /// 👍 / 👎 the current track, through the SAME `toggle` semantics every other surface uses
+    /// (press the live one to clear, press the other to flip) and into the SAME store. A decision
+    /// made at 70mph is already on the tile when the phone comes back out.
+    ///
+    /// NEITHER SKIPS. The driver's hands are the reason: a reject that jumped the queue would
+    /// make a mis-tap cost the song with no recoverable gesture, and the pair has to read as
+    /// symmetric — accept does not skip, so reject does not either. No-op when nothing is playing.
+    func setCurrentRecFeedback(_ action: RecFeedbackStore.Action) {
+        guard let id = currentSongId(), let store = services.recFeedback else { return }
+        store.toggle(songId: id, to: action, surface: .carPlay)
+    }
+
     // MARK: - CarPlay repeat / shuffle (mirror the Now Playing deck + widget)
 
     /// Whether a set is running — CarPlay shows the repeat + shuffle buttons only then (they're

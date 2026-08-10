@@ -255,6 +255,9 @@ struct PocketDJApp: App {
     @State private var gameScores: GameScoreboardStore
     /// Games tab — the Collectors Puzzle's recommendation-readable decision log.
     @State private var puzzleDecisions: PuzzleDecisionStore
+    /// The recommendation tuning loop's log — 👍/👎 from every surface (tiles, the deck, the iOS
+    /// mini-bar, the widget's App Intents, CarPlay). ONE store, so those surfaces cannot disagree.
+    @State private var recFeedback: RecFeedbackStore
     /// APP-SCOPED Collectors Puzzle round engine — a running round survives tab switches;
     /// audio rides the app-scoped SetlistPlayer (no new audio owner).
     @State private var puzzle: CollectorsPuzzleEngine
@@ -851,11 +854,18 @@ struct PocketDJApp: App {
         // wire the widget's ⏮/⏯/⏭/♥ buttons back to the sequencer + player + favorites. Uses the
         // SAME art resolver as the lock-screen card. Constructed AFTER `favorites` (which the ♥
         // needs) so it publishes with the favorite state from first launch.
+        // The accept/reject log is constructed HERE — before `WidgetSync` — because the widget's
+        // 👍/👎 intents write into it, and a nil store there would silently drop every decision
+        // made from the lock screen. Same durable-JSON + CloudSync shape as the puzzle log.
+        let recFeedback = RecFeedbackStore(fileURL: RecFeedbackStore.launchURL())
+        _recFeedback = State(initialValue: recFeedback)
+
         _widgetSync = State(initialValue: WidgetSync(
             setlist: setlistPlayer, player: player, rips: rips, coordinator: coordinator,
             artCandidates: { [weak app] in app?.album(forSongId: $0)?.artCandidates ?? [] },
             favorites: favorites,
-            appleMusicId: { [weak app] in app?.songsById[$0]?.appleMusicId }))
+            appleMusicId: { [weak app] in app?.songsById[$0]?.appleMusicId },
+            recFeedback: recFeedback))
 
         // ── Apple Music playlist write-back ────────────────────────────────────
         // Adding a song to a SOURCE (Apple Music) playlist writes locally and queues the
@@ -1142,6 +1152,13 @@ struct PocketDJApp: App {
         // lets For You say anything at all on an install whose recent history is empty. Uploaded
         // as a hash-gated SNAPSHOT into the user's OWN private profile state, never the shared
         // catalog. Weak, like every other seam here.
+        // The explicit accept/reject stream. Rides the ENGINE toggle like plays/favorites (it is a
+        // deliberate instruction to the recommender, not a record of listening), and every action
+        // rides — including the negatives, which is the entire point: a reject the cloud never
+        // hears is a reject the cloud keeps recommending against.
+        recEngine.feedbackEventsProvider = { [weak recFeedback] sinceMs in
+            recFeedback?.recFeedbackEvents(sinceMs: sinceMs) ?? []
+        }
         recEngine.playCountsProvider = { [weak playCounts] in playCounts?.snapshot() ?? [:] }
         recEngine.lastPlayedProvider = { [weak playCounts] in playCounts?.lastPlayedSnapshot() ?? [:] }
         // The CLOUD half of Gem Collector's similarity. It is a BOOSTER only: with the engine
@@ -1218,6 +1235,16 @@ struct PocketDJApp: App {
             // reloadFromDisk ever read it (peer rows dropped locally AND, via LWW, in cloud).
             puzzleDecisions?.applyPulledPayload(data)
         })
+        // The feedback log follows the Apple ID for the same reason the puzzle log does: a
+        // thumbs-down given on the phone must be honoured by the Mac's tiles too. Union-by-id
+        // merge, with the payload write routed through the store's serial writer (an unordered
+        // direct write could be clobbered by an in-flight coalesced snapshot).
+        cloudSync.register("rec-feedback", fileURL: recFeedback.syncFileURL,
+                           reload: { [weak recFeedback] in
+            _ = recFeedback?.reloadFromDisk()
+        }, applyPayload: { [weak recFeedback] data in
+            recFeedback?.applyPulledPayload(data)
+        })
         cloudSync.register("rec-key", fileURL: recEngine.keySyncFileURL) { [weak recEngine] in
             recEngine?.reloadKeyFromDisk()   // the rec bearer key follows the Apple ID (TOFU-per-profile)
         }
@@ -1267,6 +1294,7 @@ struct PocketDJApp: App {
         accountDeletion.recClearLocal = { [weak recEngine] cloudDeleted in
             recEngine?.clearLocal(cloudDeleted: cloudDeleted)
         }
+        accountDeletion.recFeedbackClear = { [weak recFeedback] in recFeedback?.clear() }
         _accountDeletion = State(initialValue: accountDeletion)
 
         // ── App Intents (Siri / Shortcuts / Spotlight) ─────────────────────────
@@ -1277,6 +1305,8 @@ struct PocketDJApp: App {
         // ONBOARDING VETO (R4): Siri/Shortcuts/CarPlay cold-launch without RootView (and
         // its gate) — mutating intents must not write synced documents mid-onboarding.
         intents.onboardingIncomplete = { [weak onboarding] in !(onboarding?.isComplete ?? true) }
+        // CarPlay's 👍/👎 reach the live log through this bridge — the same gateway its ♥ uses.
+        intents.recFeedback = recFeedback
         _intents = State(initialValue: intents)
         AppDependencyManager.shared.add(dependency: intents)
         // Donations: keep Spotlight's entity index + Siri's speakable playlist/pocket
@@ -1339,6 +1369,7 @@ struct PocketDJApp: App {
                 .environment(jukebox)
                 .environment(gameScores)
                 .environment(puzzleDecisions)
+                .environment(recFeedback)
                 .environment(puzzle)
                 .environment(friends)
                 .environment(intents)
@@ -1485,6 +1516,7 @@ struct PocketDJApp: App {
                         mixSessions.flush()    // persist the latest session state before suspension
                         studio.flush()         // studio document too — same suspension-race doctrine
                         puzzleDecisions.flush() // …and any coalesced gameplay decisions
+                        recFeedback.flush()     // …and a 👍/👎 given seconds before suspension
                         // Last-known collection subtitles, so the next cold launch shows real
                         // counts instead of "0 songs" while the ~50 MB catalog decodes.
                         collections.flushStatsCache()
