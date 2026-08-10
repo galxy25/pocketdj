@@ -57,6 +57,11 @@ struct ForYouTilesView: View {
     @Environment(RipsStore.self) private var rips
     @Environment(StreamingStore.self) private var streaming
     @Environment(SetlistPlayer.self) private var sequencer
+    /// The refresh CADENCE (Settings ▸ For You). Read here, not observed by a timer — see
+    /// `refreshIfScheduleDue`.
+    @Environment(SettingsStore.self) private var settings
+    /// The other half of "evaluate at read time": returning to the app is a read.
+    @Environment(\.scenePhase) private var scenePhase
     @Binding var path: NavigationPath
     /// Bumped by History's tab menu ▸ Refresh. The ONLY external trigger for a recompute.
     var refreshToken: Int = 0
@@ -116,10 +121,21 @@ struct ForYouTilesView: View {
         // install with a permanently blank For You that only a manual Refresh could fix. Keying
         // the task on `app.state` is what re-arms it the moment the catalog arrives.
         .task(id: app.state) {
-            guard !snapshot.hasResult, app.state == .loaded else { return }
-            await refresh()
+            guard app.state == .loaded else { return }
+            guard snapshot.hasResult else { await refresh(); return }
+            // Already have a cache — it is ALREADY on screen (this `.task` runs after the first
+            // frame). Only the schedule can replace it, and only if it has fallen due.
+            await refreshIfScheduleDue()
         }
-        // The owner's Refresh, from History's tab menu.
+        // The SCHEDULE'S SECOND READ POINT. Opening the tab is covered above; this covers the app
+        // being brought back after 16:20 on a Friday went by while it was in the background —
+        // without a timer, and without a sweep that could fail to fire.
+        .task(id: scenePhase) {
+            guard scenePhase == .active else { return }
+            await refreshIfScheduleDue()
+        }
+        // The owner's Refresh, from History's tab menu. Works under EVERY cadence, `.manual`
+        // included — a schedule adds a trigger, it never replaces his hands.
         .onChange(of: refreshToken) { _, _ in Task { await refresh() } }
         // The cloud engine's refresh used to hang off the For You LIST's `.task`; the list now
         // sits one tap away behind its tile, so the trigger moves up here — otherwise the tile
@@ -218,6 +234,26 @@ struct ForYouTilesView: View {
     // ========================================================================
     // MARK: - Refresh (the ONLY recompute)
     // ========================================================================
+
+    /// THE SCHEDULED REFRESH (Settings ▸ For You ▸ Refresh — default Weekly, Friday 16:20).
+    ///
+    /// Called when For You is READ: the tab opening, and the app coming back to the foreground.
+    /// Deliberately NOT a timer or a scheduled sweep — the app is usually not running at 16:20 on
+    /// a Friday, and a sweep that never fires would freeze the feed permanently. `isDue` asks
+    /// whether the most recent scheduled instant has passed and the cache predates it, so a slot
+    /// missed while the phone was off fires on the next open instead of being skipped.
+    ///
+    /// It cannot block the first paint: `.task` runs after the first frame, the cached grid is
+    /// already on screen, and the freshness bar flips to "Refreshing…" while the pass runs.
+    private func refreshIfScheduleDue() async {
+        guard app.state == .loaded, !isRefreshing else { return }
+        guard ForYouRefreshSchedule.isDue(nowMs: Date().timeIntervalSince1970 * 1000,
+                                          lastRefreshedAtMs: snapshot.refreshedAtMs,
+                                          cadence: settings.forYouRefreshCadence,
+                                          minutesOfDay: settings.forYouRefreshMinutes,
+                                          weekday: settings.forYouRefreshWeekday) else { return }
+        await refresh()
+    }
 
     /// Snapshot everything the ranking needs ON the main actor (these are @Observable stores),
     /// then hand it to the store, which does the work OFF it.

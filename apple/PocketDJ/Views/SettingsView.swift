@@ -59,6 +59,7 @@ struct SettingsView: View {
             searchSection
             ripSection
             jukeboxSection
+            forYouSection
             recommendationsSection
             mixSection
             storageSection
@@ -672,6 +673,89 @@ struct SettingsView: View {
             //       session. Needs `timeless` removed and per-session signed, expiring audio URLs.
             Text("The jukebox session broker your guests' phones talk to. Start a jukebox from the Jukebox Hero tab (⌘J); guests scan its QR code to see what's playing and request songs. A session is bounded to your event: the link carries a token, the listener count is capped, and the session expires when the night is over.")
         }
+    }
+
+    // MARK: For You (how often the tab re-ranks itself)
+
+    /// HOW OFTEN History ▸ For You REFRESHES. Owner, verbatim: *"have a setting in settings for how
+    /// frequently For You Tab refreshes (default to Friday @ 4:20 and support hourly, daily, or
+    /// monthly)."*
+    ///
+    /// It sits NEXT TO Recommendations rather than inside it, on purpose: For You is mostly LOCAL
+    /// (In Da Zone and the per-collection suggestions are ranked on device by `ZoneEngine`), so
+    /// this schedule applies whether or not the cloud engine is on — and the Recommendations
+    /// footer is a PRIVACY statement about what leaves the device, which this must not dilute.
+    private var forYouSection: some View {
+        Section {
+            Picker("Refresh", selection: $settings.forYouRefreshCadence) {
+                ForEach(ForYouRefreshCadence.allCases) { c in
+                    Text(c.label).tag(c)
+                }
+            }
+            .accessibilityIdentifier("foryou-cadence")
+            if settings.forYouRefreshCadence == .weekly {
+                Picker("On", selection: $settings.forYouRefreshWeekday) {
+                    ForEach(1...7, id: \.self) { day in
+                        Text(ForYouRefreshSchedule.weekdayName(day)).tag(day)
+                    }
+                }
+                .accessibilityIdentifier("foryou-weekday")
+            }
+            if settings.forYouRefreshCadence != .manual {
+                DatePicker(settings.forYouRefreshCadence == .hourly ? "At minute" : "At",
+                           selection: forYouTimeBinding, displayedComponents: .hourAndMinute)
+                    .accessibilityIdentifier("foryou-time")
+                LabeledContent("Next refresh") {
+                    Text(forYouNextRefreshLabel)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("foryou-next-refresh")
+                }
+            }
+        } header: {
+            Text("For You")
+        } footer: {
+            Text("History ▸ For You shows the last ranking it computed and holds it steady until it refreshes — so a suggestion you were half-deciding on doesn’t move while you look at it. \(forYouCadenceFooter)\n\nThe schedule is checked when you open the tab or come back to the app, so a refresh you were away for happens on your next visit rather than being skipped. “Refresh” in the tab’s ⋯ menu always recomputes immediately, whatever this is set to.")
+        }
+        .onChange(of: settings.forYouRefreshCadence) { settings.persist() }
+        .onChange(of: settings.forYouRefreshWeekday) { settings.persist() }
+        .onChange(of: settings.forYouRefreshMinutes) { settings.persist() }
+    }
+
+    /// Minutes-past-midnight ⇄ Date bridge for the hour-and-minute picker (the same idiom the
+    /// Apple Music auto-sync time picker uses).
+    private var forYouTimeBinding: Binding<Date> {
+        Binding<Date>(
+            get: {
+                let cal = Calendar.current
+                var comps = cal.dateComponents([.year, .month, .day], from: Date())
+                comps.hour = settings.forYouRefreshMinutes / 60
+                comps.minute = settings.forYouRefreshMinutes % 60
+                return cal.date(from: comps) ?? Date()
+            },
+            set: { date in
+                let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
+                settings.forYouRefreshMinutes =
+                    (comps.hour ?? 16) * 60 + (comps.minute ?? 20)
+            })
+    }
+
+    private var forYouCadenceFooter: String {
+        switch settings.forYouRefreshCadence {
+        case .manual:  return "Right now it only refreshes when you ask it to."
+        case .hourly:  return "Right now it refreshes every hour, at the minute you choose below."
+        case .daily:   return "Right now it refreshes once a day."
+        case .weekly:  return "Right now it refreshes once a week."
+        case .monthly: return "Right now it refreshes on the 1st of each month."
+        }
+    }
+
+    private var forYouNextRefreshLabel: String {
+        guard let next = ForYouRefreshSchedule.nextFire(after: Date(),
+                                                        cadence: settings.forYouRefreshCadence,
+                                                        minutesOfDay: settings.forYouRefreshMinutes,
+                                                        weekday: settings.forYouRefreshWeekday)
+        else { return "—" }
+        return next.formatted(date: .abbreviated, time: .shortened)
     }
 
     // MARK: Recommendations (cloud PocketDJ recommendation engine — WS-E)

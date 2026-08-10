@@ -310,6 +310,28 @@ final class SettingsStore {
     /// complete record than anything else here, and someone may reasonably want it to stay on the
     /// device while cloud recommendations stay on.
     var shareLifetimePlayCounts: Bool
+    /// HOW OFTEN History ▸ For You RE-RANKS ITSELF (Settings ▸ For You). Default WEEKLY — Friday
+    /// 16:20 local, per the owner's ask. `.manual` preserves the shipped refresh-on-demand
+    /// behaviour as an explicit choice; the ⋯ ▸ Refresh works under every cadence. Due-ness is
+    /// evaluated at READ time against `ForYouFeedSnapshot.refreshedAtMs` — there is no timer and
+    /// no second stamp. See `ForYouRefreshSchedule`.
+    var forYouRefreshCadence: ForYouRefreshCadence
+    /// Minutes past local midnight for the For You refresh (default 4:20 PM = 980). Under
+    /// `.hourly` only the MINUTE half is used (":20 past every hour"). Clamped.
+    var forYouRefreshMinutes: Int {
+        didSet {
+            let c = min(max(forYouRefreshMinutes, 0), 1439)
+            if c != forYouRefreshMinutes { forYouRefreshMinutes = c }
+        }
+    }
+    /// Weekday for the `.weekly` cadence in `Calendar`'s numbering (1 = Sunday … 7 = Saturday).
+    /// Default 6 = Friday. Clamped; ignored by every other cadence.
+    var forYouRefreshWeekday: Int {
+        didSet {
+            let c = min(max(forYouRefreshWeekday, 1), 7)
+            if c != forYouRefreshWeekday { forYouRefreshWeekday = c }
+        }
+    }
     /// Minutes past local midnight for the daily auto-sync (default 4:20 PM = 980). Clamped.
     var amAutoSyncMinutes: Int {
         didSet {
@@ -416,6 +438,10 @@ final class SettingsStore {
         self.amImportNewPlaylists = data.amImportNewPlaylists ?? false
         self.recEngineEnabled = data.recEngineEnabled ?? false
         self.shareLifetimePlayCounts = data.shareLifetimePlayCounts ?? true
+        self.forYouRefreshCadence = data.forYouRefreshCadence
+            .flatMap(ForYouRefreshCadence.init(rawValue:)) ?? ForYouRefreshSchedule.defaultCadence
+        self.forYouRefreshMinutes = min(max(data.forYouRefreshMinutes ?? ForYouRefreshSchedule.defaultMinutes, 0), 1439)
+        self.forYouRefreshWeekday = min(max(data.forYouRefreshWeekday ?? ForYouRefreshSchedule.defaultWeekday, 1), 7)
         self.amAutoSyncMinutes = min(max(data.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes, 0), 1439)
         self.lastAMAutoSyncAtMs = data.lastAMAutoSyncAtMs
         self.writeBackBackfillDays = min(max(data.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
@@ -580,7 +606,10 @@ final class SettingsStore {
             amAutoSyncMinutes: amAutoSyncMinutes,
             lastAMAutoSyncAtMs: lastAMAutoSyncAtMs,
             recEngineEnabled: recEngineEnabled,
-            shareLifetimePlayCounts: shareLifetimePlayCounts)
+            shareLifetimePlayCounts: shareLifetimePlayCounts,
+            forYouRefreshCadence: forYouRefreshCadence.rawValue,
+            forYouRefreshMinutes: forYouRefreshMinutes,
+            forYouRefreshWeekday: forYouRefreshWeekday)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -645,6 +674,10 @@ final class SettingsStore {
         amImportNewPlaylists = d.amImportNewPlaylists ?? false
         recEngineEnabled = d.recEngineEnabled ?? false
         shareLifetimePlayCounts = d.shareLifetimePlayCounts ?? true
+        forYouRefreshCadence = d.forYouRefreshCadence
+            .flatMap(ForYouRefreshCadence.init(rawValue:)) ?? ForYouRefreshSchedule.defaultCadence
+        forYouRefreshMinutes = min(max(d.forYouRefreshMinutes ?? ForYouRefreshSchedule.defaultMinutes, 0), 1439)
+        forYouRefreshWeekday = min(max(d.forYouRefreshWeekday ?? ForYouRefreshSchedule.defaultWeekday, 1), 7)
         amAutoSyncMinutes = d.amAutoSyncMinutes ?? AppleMusicAutoSync.defaultMinutes
         lastAMAutoSyncAtMs = d.lastAMAutoSyncAtMs
         writeBackBackfillDays = min(max(d.writeBackBackfillDays ?? CollectionsStore.writeBackBackfillDefaultDays,
@@ -775,6 +808,14 @@ struct SettingsData: Codable {
     /// Optional so older blobs still decode. Coalesced to TRUE at the read sites — see
     /// `SettingsStore.shareLifetimePlayCounts`; it only ever matters while the engine is on.
     var shareLifetimePlayCounts: Bool?
+    /// Optional so older blobs still decode — `ForYouRefreshCadence` raw value. An unrecognised
+    /// string (a cadence written by a NEWER build) falls back to the default rather than failing
+    /// the decode, which would silently reset every other setting.
+    var forYouRefreshCadence: String?
+    /// Optional so older blobs still decode (coalesced to 980 = 4:20 PM local).
+    var forYouRefreshMinutes: Int?
+    /// Optional so older blobs still decode (coalesced to 6 = Friday, `Calendar` numbering).
+    var forYouRefreshWeekday: Int?
 
     static let `default` = SettingsData(
         sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
@@ -829,5 +870,8 @@ struct SettingsData: Codable {
         amAutoSyncMinutes: nil,
         lastAMAutoSyncAtMs: nil,
         recEngineEnabled: nil,
-        shareLifetimePlayCounts: nil)
+        shareLifetimePlayCounts: nil,
+        forYouRefreshCadence: nil,
+        forYouRefreshMinutes: nil,
+        forYouRefreshWeekday: nil)
 }

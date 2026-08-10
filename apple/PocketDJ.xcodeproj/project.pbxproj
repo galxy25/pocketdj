@@ -382,6 +382,7 @@
 		C1AB5B010C362B8302A08491 /* MixSessionsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7F55233022B55C3CC5A424C /* MixSessionsUITests.swift */; };
 		C21B4EAB45E846A92152CF2F /* LyricsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29C7E9134096392DD9A2303C /* LyricsStoreTests.swift */; };
 		C250B7018ACA45CA25929D61 /* PlaybackModeToggleUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80F3F1DA722D070FFC4BEB25 /* PlaybackModeToggleUITests.swift */; };
+		C2A275354F47D633670F0919 /* ForYouRefreshScheduleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FB168EC10F28CE539275F5C /* ForYouRefreshScheduleTests.swift */; };
 		C2A8ECC6743A39A2DDCE9D5E /* AppleMusicPlayCountCapture.swift in Sources */ = {isa = PBXBuildFile; fileRef = E38A147E32A0E45B7C7B9647 /* AppleMusicPlayCountCapture.swift */; };
 		C2ED9BFABA86D3F6F44BBA35 /* DemuxCloudLyricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 965C2BB9FBBCAB3DF71E888F /* DemuxCloudLyricsTests.swift */; };
 		C4B2E5685D8D8E489A8AA918 /* SearchQueryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EACEA867F1B6AD8B5461CCC /* SearchQueryTests.swift */; };
@@ -393,6 +394,7 @@
 		C77938E0B4D448FDA805196C /* DrumPatternDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E38C4DAAA5AE1961FDEF3AD6 /* DrumPatternDetectorTests.swift */; };
 		C8E817F720036B4090DBB138 /* MixEngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F4AD30694DB4ECEC615800AA /* MixEngineTests.swift */; };
 		C9421D4FAF228DDFBE72F67F /* SessionFoldersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BA1B9BA1FAD98E98FFA18C9 /* SessionFoldersTests.swift */; };
+		C99EB6C598ADEA4337AEE523 /* ForYouRefreshSchedule.swift in Sources */ = {isa = PBXBuildFile; fileRef = F565A9615F9D6F6E967FBA2F /* ForYouRefreshSchedule.swift */; };
 		CAB6DA225A5A39B39BD024B5 /* MasterFXTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C6AD5780B96F5F8DD1561EF /* MasterFXTests.swift */; };
 		CAC8739DB5659609226E21DE /* DemuxModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 716673B40CDC4A04D4485070 /* DemuxModels.swift */; };
 		CAE6BD0DF9750320AF3F9FA0 /* CollectionSortTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5D879B9DFE28B91D03DDB23A /* CollectionSortTests.swift */; };
@@ -628,6 +630,7 @@
 		2E37ABBB944419E658310FAE /* PlayCountTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayCountTests.swift; sourceTree = "<group>"; };
 		2E4DA9B50BE58871B3BC7E75 /* RecFeedbackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecFeedbackTests.swift; sourceTree = "<group>"; };
 		2F889E5396B287E65AA5D0DE /* StorageView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageView.swift; sourceTree = "<group>"; };
+		2FB168EC10F28CE539275F5C /* ForYouRefreshScheduleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForYouRefreshScheduleTests.swift; sourceTree = "<group>"; };
 		307B7915C1ED1521808777F9 /* CollectionCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionCatalogTests.swift; sourceTree = "<group>"; };
 		319EBDF5E53865A2D7860A73 /* ReleaseFeedSeedTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleaseFeedSeedTests.swift; sourceTree = "<group>"; };
 		328FB8C31F9A334B906AF244 /* CollectionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionsTests.swift; sourceTree = "<group>"; };
@@ -1008,6 +1011,7 @@
 		F4AD30694DB4ECEC615800AA /* MixEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixEngineTests.swift; sourceTree = "<group>"; };
 		F4D8CDDDB9F4AC700D6F394C /* ForYouTiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForYouTiles.swift; sourceTree = "<group>"; };
 		F4F1D25EF06B349AF8BAF9A5 /* AppleMusicFavoritesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicFavoritesTests.swift; sourceTree = "<group>"; };
+		F565A9615F9D6F6E967FBA2F /* ForYouRefreshSchedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForYouRefreshSchedule.swift; sourceTree = "<group>"; };
 		F5C27B3C871F858E95AB735A /* MusicWithFriendsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicWithFriendsViews.swift; sourceTree = "<group>"; };
 		F657F3CC2CA8A462CFEE474C /* LyricsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LyricsStore.swift; sourceTree = "<group>"; };
 		F6AB12EC89EE0804EF592646 /* SettingsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsTests.swift; sourceTree = "<group>"; };
@@ -1164,6 +1168,7 @@
 				07DE40FE8E6272422D972DBC /* FavoritesSyncServiceTests.swift */,
 				027D9207F27E99DB6D901080 /* Fixtures.swift */,
 				6D9ED0EE948C441DE5B79DBA /* ForYouFeedCacheTests.swift */,
+				2FB168EC10F28CE539275F5C /* ForYouRefreshScheduleTests.swift */,
 				8F624323AE2A7F1A33A4BF2F /* ForYouTilesTests.swift */,
 				9C4003133C3FBA4504E36EBA /* FuzzyMatchTests.swift */,
 				06ADEE00236DCF749ECD0FA2 /* GameScoreboardStoreTests.swift */,
@@ -1580,6 +1585,7 @@
 			isa = PBXGroup;
 			children = (
 				C8F7A9D899C924415E7EA485 /* ForYouFeed.swift */,
+				F565A9615F9D6F6E967FBA2F /* ForYouRefreshSchedule.swift */,
 				F4D8CDDDB9F4AC700D6F394C /* ForYouTiles.swift */,
 				A3EB16DAD35B2A3E85D17C01 /* RecEngineClient.swift */,
 				C4B9DD21D4B0D24B70300379 /* RecModels.swift */,
@@ -2119,6 +2125,7 @@
 				056F35F5D38FC1323E03234D /* FavoritesSyncServiceTests.swift in Sources */,
 				AEE49F566ED2221338C32640 /* Fixtures.swift in Sources */,
 				A261F421C1F0CA52627674D4 /* ForYouFeedCacheTests.swift in Sources */,
+				C2A275354F47D633670F0919 /* ForYouRefreshScheduleTests.swift in Sources */,
 				16DCB302F2F3FF42260BD1A9 /* ForYouTilesTests.swift in Sources */,
 				B8B145DF198725E8344651B6 /* FuzzyMatchTests.swift in Sources */,
 				F35923CF4F5C28FFF44D8AF9 /* GameScoreboardStoreTests.swift in Sources */,
@@ -2328,6 +2335,7 @@
 				8FC5A86C80D291913B77709A /* FilterSheet.swift in Sources */,
 				7AEC46D0E6D3EE58387D90E4 /* ForYouDetailViews.swift in Sources */,
 				0FD028F49BD343F7AD8A297D /* ForYouFeed.swift in Sources */,
+				C99EB6C598ADEA4337AEE523 /* ForYouRefreshSchedule.swift in Sources */,
 				2A6645899E6BA2FBAC655AE5 /* ForYouTiles.swift in Sources */,
 				DC012CB103439A3AE081A73B /* ForYouView.swift in Sources */,
 				F4A3F001290A13236BD6EF1F /* ForceSyncMenu.swift in Sources */,
