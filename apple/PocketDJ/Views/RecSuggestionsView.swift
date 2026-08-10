@@ -16,6 +16,9 @@ import SwiftUI
 struct RecSuggestionsListView: View {
     @Environment(RecommendationService.self) private var recEngine: RecommendationService?
     @Environment(AppModel.self) private var app
+    @Environment(CollectionsStore.self) private var collections
+    /// The accept/reject log — the SAME store the tiles and the now-playing surfaces write to.
+    @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
     @Binding var path: NavigationPath
 
     /// The song an Add-to-collection sheet is up for (`.sheet(item:)` wants Identifiable).
@@ -47,27 +50,57 @@ struct RecSuggestionsListView: View {
     }
 
     private func list(_ recEngine: RecommendationService) -> some View {
-        List {
+        // Rejected rows SINK rather than vanish (see `RecFeedbackOrder`), and this ONE ordering
+        // is what both the ForEach and the play controls read — so "play in order" cannot play a
+        // rejected suggestion second while the list shows it last.
+        let ordered = orderedIds(recEngine)
+        let byId = Dictionary(recEngine.forYou.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
+        let playable = ordered.filter { app.songsById[$0] != nil }
+        return List {
             // Inline refresh row (not a toolbar item — History's toolbar belongs to the tabs).
-            HStack {
+            HStack(spacing: 12) {
                 Spacer()
+                Button {
+                    ForYouPlayback.play(playable, name: "Suggested", shuffle: false,
+                                        collections: collections, path: $path)
+                } label: { Label("Play", systemImage: "play.fill").font(.caption) }
+                .buttonStyle(.borderless)
+                .disabled(playable.isEmpty)
+                .foregroundStyle(playable.isEmpty ? Theme.fgDim : Theme.accent)
+                .accessibilityIdentifier("foryou-play-all")
+                Button {
+                    ForYouPlayback.play(playable, name: "Suggested", shuffle: true,
+                                        collections: collections, path: $path)
+                } label: { Label("Shuffle", systemImage: "shuffle").font(.caption) }
+                .buttonStyle(.borderless)
+                .disabled(playable.isEmpty)
+                .foregroundStyle(playable.isEmpty ? Theme.fgDim : Theme.accent)
+                .accessibilityIdentifier("foryou-shuffle-all")
                 Button {
                     Task { await recEngine.refreshForYou(force: true) }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                         .font(.caption)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
                 .foregroundStyle(Theme.accent)
                 .accessibilityIdentifier("foryou-refresh")
             }
             .listRowBackground(Color.clear)
-            ForEach(recEngine.forYou) { s in
-                row(s)
+            ForEach(ordered, id: \.self) { id in
+                if let s = byId[id] { row(s) }
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
+    }
+
+    /// Suggestion ids in DISPLAY order — rejected ones sunk. Folded over this screen's ~50 rows
+    /// rather than the whole feedback log, so it stays cheap on a render path.
+    private func orderedIds(_ recEngine: RecommendationService) -> [String] {
+        let ids = recEngine.forYou.map(\.songId)
+        guard let feedback else { return ids }
+        return RecFeedbackOrder.sink(ids, rejected: Set(ids.filter { feedback.isRejected($0) }))
     }
 
     @ViewBuilder private func row(_ s: RecommendationService.SongSuggestion) -> some View {
@@ -86,12 +119,14 @@ struct RecSuggestionsListView: View {
             // absorb the add/transport buttons' identifiers (the propagation trap).
             .accessibilityIdentifier("foryou-row-\(s.songId)")
             Spacer()
+            RecFeedbackControls(songId: s.songId, surface: .tile, context: "suggested",
+                                onAccepted: { addRef = AddRef(id: s.songId) })
             Button {
                 addRef = AddRef(id: s.songId)
             } label: {
                 Image(systemName: "plus.circle").font(.title3).foregroundStyle(Theme.accent2)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.borderless)
             .accessibilityIdentifier("foryou-add-\(s.songId)")
             if let song = resolved {
                 RowTransport(song: (id: song.id, title: song.name, artist: song.artist),
@@ -99,6 +134,7 @@ struct RecSuggestionsListView: View {
             }
         }
         .padding(.vertical, 2)
+        .opacity(feedback?.isRejected(s.songId) == true ? 0.45 : 1)
         .contentShape(Rectangle())
         .onTapGesture { if let song = resolved { path.append(song) } }
     }

@@ -78,7 +78,22 @@ const LOCAL_DIR = process.env.REC_LOCAL_DIR || null;
 const FEATURES_FILE = process.env.REC_FEATURES_FILE || null;
 
 const PROFILE_RE = /^[A-Za-z0-9._-]{8,64}$/;
-const CAPS = { plays: 5000, activity: 3000, puzzle: 2000, favorites: 5000 };
+const CAPS = { plays: 5000, activity: 3000, puzzle: 2000, favorites: 5000, feedback: 3000 };
+/// How far a thumbs-down on an artist/genre may pull a candidate's score down, as a fraction.
+/// MIRRORS `ZoneEngine.Tuning.rejectionPenalty` on the device — the two rankers have to agree
+/// about what a rejection means, or the tile the user tuned locally and the cloud's "Suggested"
+/// tile give opposite answers to the same feedback.
+const REJECT_PENALTY = 0.45;
+/// And the positive half, likewise mirroring `ZoneEngine.Tuning.acceptanceBoost`.
+const ACCEPT_BOOST = 0.20;
+/// How many rejections of one ARTIST / one GENRE amount to a full-strength penalty. MIRRORS
+/// `RecFeedbackStore.artistSaturation` / `.genreSaturation`. The gap between them is load-bearing:
+/// a genre is ~1/12th of the library (and on the owner's, two genres are ~68% of all plays), so a
+/// single thumbs-down must not write one off.
+const REJECT_ARTIST_SATURATION = 3;
+const REJECT_GENRE_SATURATION = 8;
+/// Seed weight of an explicitly ACCEPTED song. Below a favorite's 1.0: a ♥ is a standing
+/// statement about a song, a thumbs-up is a statement about one recommendation of it.
 const MAX_BATCH_EVENTS = 2000;
 /// Raw request body ceiling, checked before JSON.parse. Well under Lambda's 6 MB synchronous
 /// invocation payload limit, and far above any honest batch (2000 events ≈ 250 KB, a snapshot of
@@ -233,6 +248,10 @@ export function shedToFit(state, max = MAX_STATE_BYTES) {
     if (state.plays?.length) shed += dropOldest(state.plays);
     else if (state.activity?.length) shed += dropOldest(state.activity);
     else if (state.puzzle?.length) shed += dropOldest(state.puzzle);
+    // Feedback sheds AFTER puzzle and BEFORE play counts: it is the smallest stream and the most
+    // deliberate — every row is something the user pressed a button to say — so it is worth more
+    // per byte than a play event and should be among the last things to go.
+    else if (state.feedback?.length) shed += dropOldest(state.feedback);
     else if (Object.keys(state.playCounts?.counts || {}).length) {
       shed += dropLeastPlayed(state.playCounts.counts);
     } else if (Object.keys(state.favorites || {}).length) {
@@ -363,7 +382,7 @@ function freshState(profileId) {
   const now = Date.now();
   return {
     v: 1, profileId, keyHash: null, createdAtMs: now, updatedAtMs: now,
-    plays: [], favorites: {}, activity: [], puzzle: [],
+    plays: [], favorites: {}, activity: [], puzzle: [], feedback: [],
     collections: { atMs: 0, list: [] },
     playCounts: { atMs: 0, counts: {} },
   };
@@ -432,6 +451,29 @@ function cleanPuzzle(e) {
   if (num(e.points) != null) out.points = e.points;
   return out;
 }
+/// EXPLICIT accept/reject on a recommendation — the owner's tuning loop.
+///
+/// An EVENT STREAM, deliberately, not a per-song map: "rejected three times" is a stronger
+/// statement than "rejected", and the artist/genre penalty below is built from the COUNTS. The
+/// hard exclusion reads the same rows folded last-writer-wins (`feedbackOf`), which is exactly the
+/// pair of readings `RecFeedbackStore` makes on the device.
+///
+/// `cleared` is a first-class action, not a delete: the log is append-only on both sides so the
+/// union-by-id CloudKit merge stays safe, and an undo the server never hears is an undo that only
+/// works on one device.
+const FEEDBACK_ACTIONS = new Set(['accepted', 'rejected', 'cleared']);
+function cleanFeedback(e) {
+  const id = str(e?.id); const atMs = num(e?.atMs);
+  const songId = str(e?.songId); const action = str(e?.action);
+  if (!id || atMs == null || !songId || !action || !FEEDBACK_ACTIONS.has(action)) return null;
+  const out = { id, atMs, songId, action };
+  for (const k of ['surface', 'context']) {
+    const v = str(e[k]);
+    if (v) out[k] = v;
+  }
+  return out;
+}
+
 /// The membership snapshot is stored WHOLESALE, and (unlike the event streams) it is not counted
 /// toward MAX_BATCH_EVENTS — a legitimate flush carries a full batch AND the snapshot, so
 /// counting it would reject honest uploads. It is bounded by TRUNCATION instead: at most
@@ -534,8 +576,8 @@ function capFavorites(favorites, cap) {
  *  (the reserved `songFeatures` key is accepted and dropped in v1). Mutates + returns `state`
  *  with an `accepted` tally. */
 export function mergeBatch(state, batch) {
-  const accepted = { plays: 0, favorites: 0, activity: 0, puzzle: 0, collectionsSnapshot: false,
-                     playCounts: 0 };
+  const accepted = { plays: 0, favorites: 0, activity: 0, puzzle: 0, feedback: 0,
+                     collectionsSnapshot: false, playCounts: 0 };
 
   const playIds = new Set(state.plays.map((e) => e.id));
   for (const raw of batch.plays || []) {
@@ -570,6 +612,17 @@ export function mergeBatch(state, batch) {
     puzIds.add(e.id); state.puzzle.push(e); accepted.puzzle += 1;
   }
   state.puzzle = capOldest(state.puzzle, CAPS.puzzle);
+
+  // Feedback. `state.feedback` is defaulted rather than assumed: a state object written before
+  // this stream existed has no such key, and every read below would otherwise throw on it.
+  if (!Array.isArray(state.feedback)) state.feedback = [];
+  const fbIds = new Set(state.feedback.map((e) => e.id));
+  for (const raw of batch.feedback || []) {
+    const e = cleanFeedback(raw);
+    if (!e || fbIds.has(e.id)) continue;
+    fbIds.add(e.id); state.feedback.push(e); accepted.feedback += 1;
+  }
+  state.feedback = capOldest(state.feedback, CAPS.feedback);
 
   const snap = cleanSnapshot(batch.collectionsSnapshot);
   if (snap) { state.collections = { atMs: snap.atMs, list: snap.list }; accepted.collectionsSnapshot = true; }
@@ -646,6 +699,77 @@ function lastPlayedOf(state) {
 }
 
 /**
+ * The feedback log, folded the two ways the ranking needs it.
+ *
+ *  • `rejected` / `accepted` — LAST WRITER WINS per song. This is the HARD half: a rejected song
+ *    is excluded from the output outright. Anything softer makes a thumbs-down a suggestion the
+ *    engine may ignore, which is not what the button means.
+ *  • `rejectedArtists` / `rejectedGenres` / `acceptedArtists` — 0..1 SATURATED strengths
+ *    (count / saturation, capped at 1). This is the SOFT half: the neighbourhood drifts away from
+ *    what was rejected, in proportion to how much the user actually said. Saturating rather than
+ *    normalising against the most-rejected entry is deliberate — the latter makes the FIRST
+ *    rejection in any genre full-strength, because that genre is trivially its own maximum, and a
+ *    single thumbs-down would then cut a third of this library by 45%. Mirrors
+ *    `RecFeedbackStore.signal` on the device.
+ *
+ * A row whose songId has no feature row still counts for the song-level exclusion; it just cannot
+ * contribute an artist or genre, because nothing here knows what it is.
+ */
+export function feedbackOf(state, featuresById) {
+  const rows = Array.isArray(state.feedback) ? state.feedback : [];
+  const latest = new Map();
+  for (const e of rows) {
+    const prev = latest.get(e.songId);
+    // `>=` so two rows stamped the same millisecond resolve to the later-ingested one — the same
+    // tiebreak the device applies to its append-ordered log.
+    if (!prev || e.atMs >= prev.atMs) latest.set(e.songId, e);
+  }
+  const rejected = new Set(); const accepted = new Set();
+  const rejArtist = new Map(); const rejGenre = new Map(); const accArtist = new Map();
+  const bump = (m, k) => { if (k) m.set(k, (m.get(k) || 0) + 1); };
+  for (const [songId, e] of latest) {
+    const row = featuresById?.get(songId);
+    if (e.action === 'rejected') {
+      rejected.add(songId);
+      bump(rejArtist, row?.a); bump(rejGenre, row?.g);
+    } else if (e.action === 'accepted') {
+      accepted.add(songId);
+      bump(accArtist, row?.a);
+    }
+  }
+  const saturate = (m, saturation) => {
+    const out = new Map();
+    for (const [k, v] of m) out.set(k, Math.min(1, v / saturation));
+    return out;
+  };
+  return {
+    rejected, accepted,
+    rejectedArtists: saturate(rejArtist, REJECT_ARTIST_SATURATION),
+    rejectedGenres: saturate(rejGenre, REJECT_GENRE_SATURATION),
+    acceptedArtists: saturate(accArtist, REJECT_ARTIST_SATURATION),
+  };
+}
+
+/**
+ * The multiplier the feedback applies to a candidate's score. 1.0 = untouched.
+ *
+ * The two PENALTIES combine with `max`, not a sum: an artist rejected inside a genre that was also
+ * rejected is one grievance, not two. Multiplicative and bounded so a rejection can reorder within
+ * a tier of comparable candidates and never invert the ranking outright — three thumbs-down on one
+ * artist should thin them out, not erase an artist the user has 400 plays of. Mirrors
+ * `ZoneEngine.Feedback.multiplier` on the device.
+ */
+export function feedbackMultiplier(fb, artist, genre) {
+  if (!fb) return 1;
+  const worst = Math.max(artist ? (fb.rejectedArtists.get(artist) || 0) : 0,
+                         genre ? (fb.rejectedGenres.get(genre) || 0) : 0);
+  const liked = artist ? (fb.acceptedArtists.get(artist) || 0) : 0;
+  const down = worst > 0 ? Math.max(0, 1 - REJECT_PENALTY * Math.min(1, worst)) : 1;
+  const up = liked > 0 ? 1 + ACCEPT_BOOST * Math.min(1, liked) : 1;
+  return down * up;
+}
+
+/**
  * Deterministic For You compute over the profile state + the features doc. Pure.
  *
  * `playCountSeedLimit` — how many of the most-played songs of all time are allowed to SEED. The
@@ -697,12 +821,25 @@ export function scoreForYou(state, featuresById,
   }
 
   const puzzleSongs = new Set(state.puzzle.map((e) => e.songId).filter(Boolean));
+  const fb = feedbackOf(state, featuresById);
   for (const [songId, w] of weights) {
     let bonus = 0;
     if (state.favorites[songId]?.favorited) bonus += 1.0;
     if (puzzleSongs.has(songId)) bonus += 0.5;
+    // An explicit thumbs-up is a SEED: "more like this" only means anything if the thing itself
+    // shapes the taste profile. Below a favorite (see ACCEPT_SEED_WEIGHT's neighbours above).
+    if (fb.accepted.has(songId)) bonus += 0.75;
     if (bonus) weights.set(songId, w + bonus);
   }
+  // …and an accepted song the 30-day window never saw still seeds, which is the whole point of a
+  // tuning loop that has to work on a library whose median play is 5.8 years old.
+  for (const songId of fb.accepted) {
+    if (!weights.has(songId)) weights.set(songId, 0.75);
+  }
+  // A REJECTED song can never seed, whatever else says otherwise — it is the one instruction the
+  // user gave explicitly, and letting a favorite or a play count override it would make the
+  // button a no-op for exactly the songs it was pressed on.
+  for (const songId of fb.rejected) weights.delete(songId);
   const seeds = [...weights.entries()]
     .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
     .slice(0, 50);
@@ -746,6 +883,9 @@ export function scoreForYou(state, featuresById,
   // 3) Exclusions: any play in the last 72 h + the seed songs themselves.
   const excluded = new Set(seedIds);
   for (const p of state.plays) if (nowMs - p.atMs < 72 * 60 * 60 * 1000) excluded.add(p.songId);
+  // The HARD half of the loop. Unconditional: a rejected song is never recommended again until the
+  // user clears the decision.
+  for (const songId of fb.rejected) excluded.add(songId);
 
   // 4) Score every candidate. Each term contributes 0 when its field is absent.
   const scored = [];
@@ -791,7 +931,10 @@ export function scoreForYou(state, featuresById,
     if (rec > 0) {
       terms.push(['recency', RECENCY_CANDIDATE_WEIGHT * rec, 'You played this recently']);
     }
-    const score = terms.reduce((s, [, v]) => s + v, 0);
+    // The SOFT half of the loop, applied to the whole score rather than as another term: it must
+    // scale what the other signals concluded, never manufacture a rank of its own.
+    const score = terms.reduce((s, [, v]) => s + v, 0)
+      * feedbackMultiplier(fb, row.a, row.g);
     if (score <= 0) continue;
     const reasons = [...terms].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([, , r]) => r);
     scored.push({ row, score, reasons });
@@ -921,6 +1064,9 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
 export function scoreSimilarToCollections(state, featuresById, collectionIds,
                                           { nowMs = Date.now(), limit = 200 } = {}) {
   limit = Math.min(Math.max(Math.trunc(limit) || 200, 1), 500);
+  // The same hard exclusion the For You route applies: a thumbs-down is a statement about the
+  // SONG, so it holds on every surface that could offer it back.
+  const fbSimilar = feedbackOf(state, featuresById);
   const wanted = new Set((collectionIds || []).filter(Boolean));
   const targets = (state.collections?.list || []).filter((c) => wanted.has(c.id));
   const members = new Set();
@@ -995,6 +1141,7 @@ export function scoreSimilarToCollections(state, featuresById, collectionIds,
     // 5) EXCLUDE EXISTING MEMBERS — they are already filed, and a card the player cannot
     //    score is dead weight in a timed game.
     if (members.has(row.i)) continue;
+    if (fbSimilar.rejected.has(row.i)) continue;
     const terms = [];
     if (row.g && maxGenre > 0 && genreCount.has(row.g)) {
       const n = seedGenreN.get(row.g) || 1;
@@ -1035,7 +1182,10 @@ export function scoreSimilarToCollections(state, featuresById, collectionIds,
       terms.push(['recency', RECENCY_SIMILAR_WEIGHT * rec, 'You played this recently']);
     }
 
-    const score = terms.reduce((s, [, v]) => s + v, 0);
+    // The SOFT half of the loop here too — a crate's "more like this" should drift away from the
+    // artists and genres the user has thumbed down, exactly as For You does.
+    const score = terms.reduce((s, [, v]) => s + v, 0)
+      * feedbackMultiplier(fbSimilar, row.a, row.g);
     if (score <= 0) continue;
     const reasons = [...terms].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([, , r]) => r);
     scored.push({ row, score, reasons });
@@ -1121,7 +1271,8 @@ export async function handler(event) {
       let batch;
       try { batch = parseBody(event); } catch { return reply(400, { error: 'bad-request' }); }
       const total = (batch.plays?.length || 0) + (batch.favorites?.length || 0)
-        + (batch.activity?.length || 0) + (batch.puzzle?.length || 0);
+        + (batch.activity?.length || 0) + (batch.puzzle?.length || 0)
+        + (batch.feedback?.length || 0);
       if (total > MAX_BATCH_EVENTS) return reply(400, { error: 'batch-too-large', max: MAX_BATCH_EVENTS });
 
       // Read-merge-write with ETag-conditional puts: on a 412 re-read + re-merge (max 3), then 503
@@ -1158,7 +1309,8 @@ export async function handler(event) {
           ok: true, accepted,
           totals: {
             plays: state.plays.length, activity: state.activity.length,
-            puzzle: state.puzzle.length, favorites: Object.keys(state.favorites).length,
+            puzzle: state.puzzle.length, feedback: (state.feedback || []).length,
+            favorites: Object.keys(state.favorites).length,
             collections: state.collections?.list?.length || 0,
             playCounts: Object.keys(state.playCounts?.counts || {}).length,
           },

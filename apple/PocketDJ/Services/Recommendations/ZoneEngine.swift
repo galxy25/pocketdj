@@ -39,12 +39,96 @@ enum ZoneEngine {
         let artistName: String
         /// Top-tier genre category, or nil when the album carries none.
         let genre: String?
+        /// The three fields the owner's rebalance needs beyond artist+genre. Optional and
+        /// DEFAULTED so every existing construction site (and every existing test) keeps
+        /// compiling unchanged; `AppModel.zoneTracks` fills them from the catalog row.
+        let year: Int?
+        let bpm: Double?
+        let camelot: String?
 
-        init(songId: String, artistKey: String, artistName: String, genre: String?) {
+        init(songId: String, artistKey: String, artistName: String, genre: String?,
+             year: Int? = nil, bpm: Double? = nil, camelot: String? = nil) {
             self.songId = songId
             self.artistKey = artistKey
             self.artistName = artistName
             self.genre = genre
+            self.year = year
+            self.bpm = bpm
+            self.camelot = camelot
+        }
+
+        /// This row as a scorer candidate (the artist key is already normalized).
+        var candidate: PuzzleSimilarity.Candidate {
+            PuzzleSimilarity.Candidate(songId: songId, artistKey: artistKey, genre: genre,
+                                       year: year, bpm: bpm, camelot: camelot)
+        }
+    }
+
+    // ========================================================================
+    // MARK: - User feedback (the accept / reject loop)
+    // ========================================================================
+
+    /// What the listener has told the engine, projected into the shape the ranking can use.
+    ///
+    /// PURE and pre-aggregated by the caller (`RecFeedbackStore.signal(...)`) so the engine never
+    /// sees a store and the whole loop stays unit-testable from literals.
+    ///
+    /// ── WHY A REJECT IS BOTH A HARD AND A SOFT SIGNAL ────────────────────────────────────────
+    /// Hard: the rejected song itself is dropped from the candidate pool. Anything else makes
+    /// "reject" a suggestion the engine is free to ignore, which is not what a thumbs-down means.
+    /// Soft: its ARTIST and its GENRE are penalized in proportion to how often they have been
+    /// rejected, so the next pass drifts away from the neighbourhood rather than only from the
+    /// one row. Multiplicative and capped by `Tuning.rejectionPenalty`, so a rejection can never
+    /// invert the ranking outright — three thumbs-down on one artist should thin them out, not
+    /// erase an artist the user has 400 plays of.
+    struct Feedback: Equatable, Sendable {
+        /// Songs whose LATEST decision is a reject — excluded from every pool.
+        var rejectedSongIds: Set<String> = []
+        /// Songs whose latest decision is an accept. Kept for the ACCEPTED-anchor bonus below
+        /// and so a tile can render its ✓ without a second source of truth.
+        var acceptedSongIds: Set<String> = []
+        /// Normalized artist key → 0…1 SATURATED rejection strength (1 = fully rejected). Built
+        /// by `RecFeedbackStore.signal`, which saturates rather than max-normalizes — see there
+        /// for why one thumbs-down must not demote an entire genre.
+        var rejectedArtistShare: [String: Double] = [:]
+        /// `Genre.category` → 0…1 saturated rejection strength. Saturates far more slowly than
+        /// the artist map: a genre is a much bigger thing to write off.
+        var rejectedGenreShare: [String: Double] = [:]
+        /// Normalized artist key → 0…1 saturated ACCEPT strength. The positive half of the loop:
+        /// a thumbs-up on one track should make more of that artist likelier.
+        var acceptedArtistShare: [String: Double] = [:]
+
+        var isEmpty: Bool {
+            rejectedSongIds.isEmpty && acceptedSongIds.isEmpty
+                && rejectedArtistShare.isEmpty && rejectedGenreShare.isEmpty
+                && acceptedArtistShare.isEmpty
+        }
+
+        public init(rejectedSongIds: Set<String> = [], acceptedSongIds: Set<String> = [],
+                    rejectedArtistShare: [String: Double] = [:],
+                    rejectedGenreShare: [String: Double] = [:],
+                    acceptedArtistShare: [String: Double] = [:]) {
+            self.rejectedSongIds = rejectedSongIds
+            self.acceptedSongIds = acceptedSongIds
+            self.rejectedArtistShare = rejectedArtistShare
+            self.rejectedGenreShare = rejectedGenreShare
+            self.acceptedArtistShare = acceptedArtistShare
+        }
+
+        /// The multiplier this feedback applies to a candidate's score. 1.0 = untouched.
+        ///
+        /// The two PENALTIES are combined with `max`, not summed: an artist rejected inside a
+        /// genre that was also rejected is one grievance, not two. The boost is applied on top,
+        /// so an artist the listener has both accepted and rejected nets out sensibly instead of
+        /// being decided by whichever map was consulted first.
+        func multiplier(artistKey: String, genre: String?,
+                        penalty: Double, boost: Double = 0) -> Double {
+            let worst = max(rejectedArtistShare[artistKey] ?? 0,
+                            genre.flatMap { rejectedGenreShare[$0] } ?? 0)
+            let liked = acceptedArtistShare[artistKey] ?? 0
+            let down = worst > 0 ? max(0, 1 - min(1, penalty) * min(1, worst)) : 1
+            let up = liked > 0 ? 1 + max(0, boost) * min(1, liked) : 1
+            return down * up
         }
     }
 
@@ -145,16 +229,39 @@ enum ZoneEngine {
         /// above ~6k eligible candidates; below that every candidate is scored exactly as before.
         var shortlistCap = 6_000
 
+        /// ── THE OWNER'S REBALANCE ────────────────────────────────────────────────────────────
+        /// Both ranking surfaces score through `PuzzleSimilarity.familyScore` with these weights:
+        /// artist / genre+year / genre+bpm+key, evenly, plus a small context residual. Exposed on
+        /// `Tuning` so a test can pin a family to zero and watch exactly one family's
+        /// contribution disappear.
+        var families = PuzzleSimilarity.FamilyWeights.balanced
+
         /// ── COLLECTION SUGGESTIONS ONLY ──────────────────────────────────────────────────────
         /// `suggestions()` deliberately does NOT use the two-pool model above. A playlist is a
         /// SET, not a timeline: there is no "recently", so there is nothing for a rediscovery
-        /// pool to be complementary to, and dormancy is meaningless as a preference. It keeps the
-        /// linear artist/genre match these two weights parameterize.
+        /// pool to be complementary to, and dormancy is meaningless as a preference.
         ///
-        /// Genre is deliberately the lighter of the two — it is a much coarser signal, and at
-        /// parity with artist it floods a collection's tile with one big category.
-        var artistWeight: Double = 1.0
-        var genreWeight: Double = 0.45
+        /// It used to rank on a linear `artistWeight 1.0 / genreWeight 0.45` pair — i.e. artist
+        /// was 69% of everything a collection tile could say, and year, tempo and key said
+        /// nothing at all. That is precisely the imbalance the owner named, and it is why this
+        /// surface (not just In Da Zone) now goes through the three families. The old constants
+        /// are gone rather than deprecated: leaving a second, artist-heavy path in place is how
+        /// two rankers end up disagreeing about the same collection.
+        ///
+        /// Familiarity survives as a small MULTIPLIER on the family score rather than a summed
+        /// term, so "you have played this a lot" can reorder within a tier of comparable matches
+        /// and never lift an unrelated song above a related one.
+        var suggestionFamiliarityGain: Double = 0.35
+
+        /// How far a thumbs-down on an artist/genre may pull a candidate down, as a fraction of
+        /// its score (see `Feedback.multiplier`). 0.45 lets a fully-rejected neighbourhood fall
+        /// to 55% of what it scored — a demotion strong enough to clear the top of a tile, weak
+        /// enough that one mis-tap in the car does not erase an artist from the library.
+        var rejectionPenalty: Double = 0.45
+        /// Bonus applied to a candidate that shares its ARTIST with something the listener
+        /// accepted. Deliberately smaller than the rejection penalty: an accept is already
+        /// self-rewarding (the song gets added), while a reject has no other outlet.
+        var acceptanceBoost: Double = 0.20
 
         public init() {}
     }
@@ -296,6 +403,7 @@ enum ZoneEngine {
                          plays: [Play],
                          playCount: (String) -> Int,
                          lastPlayedMs: [String: Double] = [:],
+                         feedback: Feedback = Feedback(),
                          nowMs: Double,
                          tuning: Tuning = Tuning()) -> Queue {
         guard !songs.isEmpty else { return Queue() }
@@ -399,6 +507,10 @@ enum ZoneEngine {
         for (idx, song) in songs.enumerated() {
             let id = song.id
             if onCooldown.contains(id) { continue }
+            // A thumbs-down is a HARD exclusion, checked before the pools split so a rejected
+            // song cannot come back as a "familiar" pick either. It is the one place the loop is
+            // allowed to be absolute: everything else feedback does is a soft multiplier.
+            if feedback.rejectedSongIds.contains(id) { continue }
             let artist = PuzzleSimilarity.artistKey(song.artist)
 
             if let w = seedWeight[id] {
@@ -487,8 +599,13 @@ enum ZoneEngine {
                 // Those are still genuinely "not played recently", so the pool label stays honest.
                 // This path never calls the expensive scorer at all.
                 ? 1.0
-                : PuzzleSimilarity.score(song, profile: taste, genre: genreBySongId[id],
-                                         cloudRank: 0, recency: 0)
+                // THE REBALANCE: artist / genre+year / genre+bpm+key, evenly (see
+                // `PuzzleSimilarity.familyScore`). The flat scorer stays where it was — Gem
+                // Collector still calls it — so this changes the recommendation surfaces and
+                // nothing else.
+                : PuzzleSimilarity.familyScore(song, profile: taste, genre: genreBySongId[id],
+                                               cloudRank: 0, recency: 0,
+                                               weights: tuning.families)
             guard sim > 0 else { continue }
 
             // Dormancy ("the longer buried, the better") + buried-favourite familiarity ("you used
@@ -502,7 +619,14 @@ enum ZoneEngine {
                 auxDen += tuning.musicalWeight
             }
             let aux = auxDen > 0 ? auxNum / auxDen : 0
-            rediscoveryPool.append((id, c.artist, sim * (1 + tuning.auxGain * aux)))
+            // The soft half of the feedback loop rides here, multiplicatively, for the same
+            // reason `aux` does: it must be able to reorder within a tier of comparable matches
+            // and never conjure a rank out of nothing.
+            let fb = feedback.isEmpty ? 1
+                : feedback.multiplier(artistKey: c.artist, genre: genreBySongId[id],
+                                      penalty: tuning.rejectionPenalty,
+                                      boost: tuning.acceptanceBoost)
+            rediscoveryPool.append((id, c.artist, sim * (1 + tuning.auxGain * aux) * fb))
         }
 
         // Ties break on song id so the tile is stable between renders and tests are not flaky.
@@ -658,36 +782,49 @@ enum ZoneEngine {
     static func suggestions(memberSongIds: [String],
                             tracks: [Track],
                             playCount: (String) -> Int,
+                            feedback: Feedback = Feedback(),
                             limit: Int = 25,
                             tuning: Tuning = Tuning()) -> [String] {
         let members = Set(memberSongIds)
         guard !members.isEmpty, !tracks.isEmpty else { return [] }
         let trackById = Dictionary(tracks.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
+        let memberTracks = members.compactMap { trackById[$0] }
+        guard !memberTracks.isEmpty else { return [] }
 
-        var artists: [String: Double] = [:]
-        var genres: [String: Double] = [:]
-        for id in members {
-            guard let t = trackById[id] else { continue }
-            artists[t.artistKey, default: 0] += 1
-            if let g = t.genre, !g.isEmpty { genres[g, default: 0] += 1 }
-        }
-        guard !artists.isEmpty || !genres.isEmpty else { return [] }
-        if let maxA = artists.values.max(), maxA > 0 { for (k, v) in artists { artists[k] = v / maxA } }
-        if let maxG = genres.values.max(), maxG > 0 { for (k, v) in genres { genres[k] = v / maxG } }
+        let shape = profileShape(of: memberTracks)
+        // Neither an artist nor a genre resolves ⇒ no profile at all (the "collection full of
+        // another source's ids" case). Declining is the honest answer; the alternative is
+        // emitting the library's most-played songs under a tile that claims they fit.
+        guard !shape.artistShare.isEmpty || !shape.genreShare.isEmpty else { return [] }
 
         let maxPlays = tracks.reduce(0) { max($0, playCount($1.songId)) }
         let famDenom = log2(1 + Double(max(maxPlays, 1)))
 
         var scored: [(id: String, artist: String, score: Double)] = []
         for t in tracks where !members.contains(t.songId) {
-            let a = artists[t.artistKey] ?? 0
-            let g = t.genre.flatMap { genres[$0] } ?? 0
-            guard a > 0 || g > 0 else { continue }
+            // A thumbs-down is a hard exclusion here too, and so is an ACCEPT: an accepted
+            // suggestion has already been added, so re-offering it is the tile forgetting.
+            if feedback.rejectedSongIds.contains(t.songId) { continue }
+            if feedback.acceptedSongIds.contains(t.songId) { continue }
+            // The SAME admission rule this surface always had — a candidate must share an artist
+            // or a genre with the collection to be offered at all. Year/tempo/key are refinements
+            // that RANK the neighbourhood; on their own they would admit the whole catalog under
+            // a tile that promises a fit.
+            let artistHit = shape.artistShare[t.artistKey] != nil
+            let genreHit = t.genre.map { shape.genreShare[$0] != nil } ?? false
+            guard artistHit || genreHit else { continue }
+
+            let sim = PuzzleSimilarity.familyScore(t.candidate, profile: shape,
+                                                   weights: tuning.families)
+            guard sim > 0 else { continue }
             let n = playCount(t.songId)
             let fam = n > 0 && famDenom > 0 ? log2(1 + Double(n)) / famDenom : 0
+            let fb = feedback.isEmpty ? 1
+                : feedback.multiplier(artistKey: t.artistKey, genre: t.genre,
+                                      penalty: tuning.rejectionPenalty,
+                                      boost: tuning.acceptanceBoost)
             scored.append((t.songId, t.artistKey,
-                           a * tuning.artistWeight + g * tuning.genreWeight
-                             + fam * tuning.familiarityWeight))
+                           sim * (1 + tuning.suggestionFamiliarityGain * fam) * fb))
         }
         scored.sort { $0.score > $1.score || ($0.score == $1.score && $0.id < $1.id) }
 
@@ -701,5 +838,50 @@ enum ZoneEngine {
             out.append(c.id)
         }
         return out
+    }
+
+    /// A collection's membership as a scorer profile. UNIFORM weights — a playlist is a set, so
+    /// there is no "how hard you have been leaning on this one" to weight by (the doc on
+    /// `PuzzleSimilarity.profile`'s `memberWeights` says the same thing from the other side).
+    ///
+    /// Built here rather than through `PuzzleSimilarity.profile` because that entry point needs
+    /// `IndexSong` rows and a play log; this surface only ever holds `Track`s, and threading the
+    /// catalog through would put a 96k-row dictionary on a path that does not need one.
+    static func profileShape(of memberTracks: [Track]) -> PuzzleSimilarity.TargetProfile {
+        var p = PuzzleSimilarity.TargetProfile()
+        var artistCount: [String: Double] = [:]
+        var genreCount: [String: Double] = [:]
+        var years: [Double] = []
+        var bpms: [Double] = []
+        for t in memberTracks {
+            p.memberIds.insert(t.songId)
+            if !t.artistKey.isEmpty { artistCount[t.artistKey, default: 0] += 1 }
+            if let g = t.genre, !g.isEmpty { genreCount[g, default: 0] += 1 }
+            if let y = t.year { years.append(Double(y)) }
+            if let b = t.bpm, b > 0 { bpms.append(b) }
+            if let c = t.camelot?.uppercased(), !c.isEmpty { p.camelots.insert(c) }
+        }
+        let n = Double(memberTracks.count)
+        guard n > 0 else { return p }
+        p.artistShare = artistCount.mapValues { $0 / n }
+        p.maxArtistShare = p.artistShare.values.max() ?? 0
+        p.genreShare = genreCount.mapValues { $0 / n }
+        p.maxGenreShare = p.genreShare.values.max() ?? 0
+        if !years.isEmpty {
+            let mean = years.reduce(0, +) / Double(years.count)
+            p.yearMean = mean
+            let variance = years.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(years.count)
+            p.yearSigma = max(8, variance.squareRoot())
+        }
+        if !bpms.isEmpty {
+            let mean = bpms.reduce(0, +) / Double(bpms.count)
+            p.bpmMean = mean
+            let variance = bpms.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(bpms.count)
+            p.bpmSigma = max(8, variance.squareRoot())
+        }
+        // `availableWeight` is the FLAT scorer's denominator and is deliberately left at 0 here:
+        // nothing on this path calls `score`, and a non-zero value would make `isEmpty` lie about
+        // a profile that carries no co-membership, lyrics or play graph at all.
+        return p
     }
 }

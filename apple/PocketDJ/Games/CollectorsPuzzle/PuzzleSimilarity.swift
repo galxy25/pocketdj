@@ -47,6 +47,11 @@ enum PuzzleSimilarity {
     /// The noisiest of the six (shuffle, a party, an album played straight through all create
     /// spurious adjacency), so it is the smallest.
     static let wCoPlay = 0.08
+    /// Relative sizes of the four CONTEXT terms inside `familyScore`'s residual family. They are
+    /// the four weights above, reused verbatim rather than re-tuned, so the residual keeps the
+    /// same internal proportions the flat scorer gives them.
+    static let contextWeights = (coMember: wCoMember, lyrics: wLyrics,
+                                 coPlay: wCoPlay, recency: wRecency)
     /// How recently the CANDIDATE itself was played. The smallest term of the seven — a sixth of
     /// `wArtist`, below even `wCoPlay` — for three reasons: it says nothing about the TARGETS (it
     /// is a property of the candidate alone, unlike every other term here), it has ~58% coverage,
@@ -86,6 +91,21 @@ enum PuzzleSimilarity {
         /// Spread of the members' years. Floored at 8 when scoring: a tight era must not make
         /// everything outside it score exactly 0.
         var yearSigma: Double = 8
+        /// Weighted mean BPM of the members that carry one — the tempo half of the owner's
+        /// "genre and bpm & key" family. nil when NO member on this device has a bpm, which is
+        /// exactly the ROUND-level signal `familyScore` uses to drop the term (never a per-song
+        /// renormalization — see `availableWeight`).
+        var bpmMean: Double?
+        /// Floored at 8 when scoring for the same reason `yearSigma` is: a set of members all at
+        /// one tempo must not make every other tempo score exactly zero.
+        var bpmSigma: Double = 8
+        /// Camelot codes present among the members, uppercased (e.g. "8A"). Empty ⇒ the key term
+        /// is not in `familyScore`'s denominator at all.
+        var camelots: Set<String> = []
+        /// Does this DEVICE know any last-played dates? Stored (not just folded into
+        /// `availableWeight`) because `familyScore` needs the same round-level answer to decide
+        /// whether the recency term is in the CONTEXT family's denominator.
+        var hasRecency = false
         /// lowercased keyword → share of the KEYWORD-BEARING target members carrying it
         /// (top 20 only — the tail is noise).
         var keywordShare: [String: Double] = [:]
@@ -171,6 +191,7 @@ enum PuzzleSimilarity {
         // (year, weight) rather than a bare year, so the mean/sigma below can be weighted too —
         // with uniform weights the formulas reduce exactly to the unweighted ones.
         var years: [(y: Double, w: Double)] = []
+        var bpms: [(v: Double, w: Double)] = []
         var keywordCount: [String: Double] = [:]
         var keywordBearers = 0.0
         var resolved = 0.0
@@ -185,6 +206,12 @@ enum PuzzleSimilarity {
             artistCount[artistKey(song.artist), default: 0] += w
             if let cat = genreBySongId[id] { genreCount[cat, default: 0] += w }
             if let y = song.year { years.append((Double(y), w)) }
+            // Tempo/key ride the SAME weighted pass as everything else, so an In Da Zone profile's
+            // heavier seeds shape the tempo shape too. Collected unconditionally: they only ever
+            // reach a score through `familyScore`, and `score` (Gem Collector) never reads them —
+            // which is what keeps the shipped puzzle ranking bit-identical.
+            if let b = song.bpm, b > 0 { bpms.append((b, w)) }
+            if let c = song.camelot?.uppercased(), !c.isEmpty { p.camelots.insert(c) }
             let kws = (song.sentimentKeywords ?? []).map { $0.lowercased() }
             if !kws.isEmpty {
                 keywordBearers += w
@@ -192,8 +219,10 @@ enum PuzzleSimilarity {
             }
         }
         // Not one target member resolves against this device's catalog (a collection full of
-        // songs from a source that isn't loaded) ⇒ no profile, no re-ranking.
-        guard resolved > 0 else { return p }
+        // songs from a source that isn't loaded) ⇒ no profile, no re-ranking. (`camelots` is
+        // cleared on the way out: a weight-0 member could have seeded it, and a profile that is
+        // `isEmpty` must carry no shape at all.)
+        guard resolved > 0 else { p.camelots = []; return p }
 
         p.artistShare = artistCount.mapValues { $0 / resolved }
         p.maxArtistShare = p.artistShare.values.max() ?? 0
@@ -206,6 +235,14 @@ enum PuzzleSimilarity {
             let variance = years.reduce(0) { $0 + $1.w * ($1.y - mean) * ($1.y - mean) } / wSum
             p.yearSigma = max(8, variance.squareRoot())
         }
+        if !bpms.isEmpty {
+            let wSum = bpms.reduce(0) { $0 + $1.w }
+            let mean = bpms.reduce(0) { $0 + $1.v * $1.w } / wSum
+            p.bpmMean = mean
+            let variance = bpms.reduce(0) { $0 + $1.w * ($1.v - mean) * ($1.v - mean) } / wSum
+            p.bpmSigma = max(8, variance.squareRoot())
+        }
+        p.hasRecency = hasRecency
         if keywordBearers > 0 {
             let shares = keywordCount.mapValues { $0 / keywordBearers }
             // Top 20 only — a long keyword tail dilutes the term into noise.
@@ -265,6 +302,57 @@ enum PuzzleSimilarity {
         return best
     }
 
+    // MARK: - Term primitives
+    //
+    // Each returns its own 0…1 value with NO weight applied, so the flat scorer below and the
+    // family blend further down share one definition per signal instead of two that can drift.
+    // `score` multiplies each by exactly the constant it always did, under exactly the same
+    // guard, so extracting them is bit-identical — which is what keeps Gem Collector's shipped
+    // ranking (and the tests pinning it) untouched.
+
+    static func artistTerm(_ key: String, _ p: TargetProfile) -> Double {
+        let share = p.artistShare[key] ?? 0
+        return min(1, share / max(0.05, p.maxArtistShare))
+    }
+
+    static func genreTerm(_ genre: String?, _ p: TargetProfile) -> Double {
+        guard p.maxGenreShare > 0 else { return 0 }
+        let share = genre.flatMap { p.genreShare[$0] } ?? 0
+        return min(1, share / p.maxGenreShare)
+    }
+
+    static func yearTerm(_ year: Int?, _ p: TargetProfile) -> Double {
+        guard let mean = p.yearMean, let year else { return 0 }
+        return exp(-abs(Double(year) - mean) / max(8, p.yearSigma))
+    }
+
+    /// Tempo fit. Exponential in ABSOLUTE bpm distance (not squared), matching `yearTerm` — the
+    /// two are the same "how far from the middle of what you like" shape, and a shared shape is
+    /// what makes the era and sonic families numerically comparable.
+    static func bpmTerm(_ bpm: Double?, _ p: TargetProfile) -> Double {
+        guard let mean = p.bpmMean, let bpm, bpm > 0 else { return 0 }
+        return exp(-abs(bpm - mean) / max(6, p.bpmSigma))
+    }
+
+    /// Harmonic fit on the Camelot wheel — `ZoneEngine.camelotAffinity` is the one definition
+    /// (same code 1.0, relative major/minor 0.75, ±1 around the face 0.6, anything else 0).
+    static func camelotTerm(_ camelot: String?, _ p: TargetProfile) -> Double {
+        ZoneEngine.camelotAffinity(camelot, to: p.camelots)
+    }
+
+    static func keywordTerm(_ keywords: [String]?, _ p: TargetProfile) -> Double {
+        guard p.maxKeywordShare > 0 else { return 0 }
+        let hits = Set((keywords ?? []).map { $0.lowercased() }).compactMap { p.keywordShare[$0] }
+        guard !hits.isEmpty else { return 0 }
+        return min(1, hits.reduce(0, +) / p.maxKeywordShare)
+    }
+
+    static func coPlayTerm(_ songId: String, _ p: TargetProfile) -> Double {
+        let n = p.coPlayWeight[songId] ?? 0
+        guard n > 0 else { return 0 }
+        return min(1, n / coPlaySaturation)
+    }
+
     // MARK: - Scoring
 
     /// 0…1 similarity of one song to the profile. `cloudRank` is 0 for everything the cloud
@@ -272,32 +360,29 @@ enum PuzzleSimilarity {
     /// `recency` is this song's 0…1 `PlayRecency` score, already computed by the caller (0 when
     /// the device has no dates, which pairs with `hasRecency: false` dropping the term from the
     /// denominator — so the result is then EXACTLY the six-term score, unscaled).
+    ///
+    /// THE FLAT SCORER — Gem Collector's, and deliberately frozen. The rec surfaces use
+    /// `familyScore` instead; see its doc for why the two coexist rather than one replacing the
+    /// other.
     static func score(_ song: IndexSong, profile p: TargetProfile,
                       genre: String?, cloudRank: Double = 0,
                       recency: Double = 0) -> Double {
         var local = 0.0
         if !p.artistShare.isEmpty {
-            let share = p.artistShare[artistKey(song.artist)] ?? 0
-            local += wArtist * min(1, share / max(0.05, p.maxArtistShare))
+            local += wArtist * artistTerm(artistKey(song.artist), p)
         }
         if !p.genreShare.isEmpty, p.maxGenreShare > 0 {
-            let share = genre.flatMap { p.genreShare[$0] } ?? 0
-            local += wGenre * min(1, share / p.maxGenreShare)
+            local += wGenre * genreTerm(genre, p)
         }
-        if let mean = p.yearMean, let y = song.year {
-            local += wYear * exp(-abs(Double(y) - mean) / max(8, p.yearSigma))
+        if p.yearMean != nil, song.year != nil {
+            local += wYear * yearTerm(song.year, p)
         }
         if !p.keywordShare.isEmpty, p.maxKeywordShare > 0 {
-            let hits = Set((song.sentimentKeywords ?? []).map { $0.lowercased() })
-                .compactMap { p.keywordShare[$0] }
-            if !hits.isEmpty {
-                local += wLyrics * min(1, hits.reduce(0, +) / p.maxKeywordShare)
-            }
+            local += wLyrics * keywordTerm(song.sentimentKeywords, p)
         }
         if !p.coMemberIds.isEmpty, p.coMemberIds.contains(song.id) { local += wCoMember }
         if !p.coPlayWeight.isEmpty {
-            let n = p.coPlayWeight[song.id] ?? 0
-            if n > 0 { local += wCoPlay * min(1, n / coPlaySaturation) }
+            local += wCoPlay * coPlayTerm(song.id, p)
         }
         if recency > 0 { local += wRecency * min(1, recency) }
         let normalized = min(1, max(0, p.availableWeight > 0 ? local / p.availableWeight : 0))
@@ -308,6 +393,171 @@ enum PuzzleSimilarity {
         // deployed: turning the cloud off changes nothing at all, not even the scale.
         guard cloudRank > 0 else { return normalized }
         return min(1, normalized + cloudWeight * min(1, cloudRank) * (1 - normalized))
+    }
+
+    // ========================================================================
+    // MARK: - The THREE-FAMILY blend (the recommendation surfaces' scorer)
+    // ========================================================================
+
+    /// One candidate, flattened — so the blend can score an `IndexSong` (In Da Zone) and a
+    /// `ZoneEngine.Track` (collection suggestions) through ONE function instead of two rankers
+    /// that quietly disagree.
+    struct Candidate: Equatable, Sendable {
+        var songId: String
+        /// Already normalized through `artistKey` / `IndexArtist.normalize` by the caller.
+        var artistKey: String
+        /// `Genre.category`, and nil for the catch-all bucket. CANONICAL BY CONSTRUCTION: the
+        /// category matcher folds "Hip-Hop/Rap", "Hip Hop/Rap" and "Hip-Hop" onto one key, so
+        /// the punctuation variants in the raw index can't split a family.
+        var genre: String?
+        var year: Int?
+        var bpm: Double?
+        var camelot: String?
+        var keywords: [String]?
+
+        init(songId: String, artistKey: String, genre: String? = nil, year: Int? = nil,
+             bpm: Double? = nil, camelot: String? = nil, keywords: [String]? = nil) {
+            self.songId = songId; self.artistKey = artistKey; self.genre = genre
+            self.year = year; self.bpm = bpm; self.camelot = camelot; self.keywords = keywords
+        }
+
+        init(_ song: IndexSong, genre: String?) {
+            self.init(songId: song.id, artistKey: PuzzleSimilarity.artistKey(song.artist),
+                      genre: genre, year: song.year, bpm: song.bpm, camelot: song.camelot,
+                      keywords: song.sentimentKeywords)
+        }
+    }
+
+    /// The owner's rebalance, as numbers: three comparable similarity FAMILIES plus a small
+    /// residual.
+    ///
+    ///  • **artist** — what shipped, and what he said dominates.
+    ///  • **era** — genre + year, evenly.
+    ///  • **sonic** — genre + bpm + key, with genre carrying half (see `sonicGenreShare`).
+    ///  • **context** — co-membership, lyrical keywords, co-play and candidate recency. NOT one
+    ///    of the three; it is the residual that keeps the signals the flat scorer already had
+    ///    from vanishing, at roughly a third of a family's pull.
+    ///
+    /// The three are EXACTLY equal, which is what "evenly" was asked for. Genre deliberately
+    /// appears in TWO of them, because that is what the owner specified ("genre and year … and
+    /// genre and bpm & key") — and because on this library genre alone is a weak discriminator
+    /// (R&B/Soul and Hip-Hop/Rap are ~68% of all plays), so it is only useful PAIRED.
+    struct FamilyWeights: Equatable, Sendable {
+        var artist = 0.30
+        var era = 0.30
+        var sonic = 0.30
+        var context = 0.10
+        /// Genre's share INSIDE the sonic family; bpm and key split the remainder evenly.
+        ///
+        /// Half, not a third, on purpose. bpm/camelot coverage is NOT universal (they come from
+        /// the audio-indexer pass, which has never run over most of the Apple Music rows), and a
+        /// song missing both would otherwise be structurally capped at a third of the family
+        /// while an analysed one reaches 1.0. At a half the unanalysed song still reaches 0.5 on
+        /// genre alone — a real gradient rather than a penalty for metadata it never had.
+        var sonicGenreShare = 0.5
+        static let balanced = FamilyWeights()
+    }
+
+    /// 0…1 similarity under the three-family blend.
+    ///
+    /// ── WHY THIS EXISTS ALONGSIDE `score` RATHER THAN REPLACING IT ───────────────────────────
+    /// `score` ranks songs for a COLLECTION ("does this belong in the same crate"); tempo and key
+    /// are irrelevant there, and every shipped Gem Collector round — plus the tests pinning it —
+    /// depends on its exact term weights. Moving bpm/key into it would shift every one of those
+    /// rankings to buy the puzzle a signal it has no use for. So the rebalance lives here, the
+    /// recommendation surfaces call THIS, and the puzzle keeps calling `score`. Both read the
+    /// same `TargetProfile` and the same term primitives, so there is one definition per signal.
+    ///
+    /// ── ROUND-LEVEL RENORMALIZATION, NEVER PER-SONG ──────────────────────────────────────────
+    /// A family is in the denominator when the PROFILE can speak at least one of its terms, and
+    /// each family's internal denominator is likewise fixed for the whole round by what the
+    /// profile has. A candidate missing a field scores 0 on that term with the term still in the
+    /// denominator — the same rule `availableWeight` applies, and for the same reason: a per-song
+    /// denominator rewards songs with MISSING metadata (the sparse-feature bug, which there is a
+    /// test pinning). What "renormalize, never score zero" means here is the ROUND-level drop: on
+    /// a device where nothing has a bpm or a key, those two terms are not in any denominator at
+    /// all, so no song is deflated for lacking them.
+    ///
+    /// ── WHEN THE SONIC FAMILY HAS NO TEMPO OR KEY AT ALL ─────────────────────────────────────
+    /// It degenerates to genre rather than dropping out. Dropping it would hand its weight to the
+    /// two survivors equally and push artist from 30% of the blend to 43% — re-creating the exact
+    /// domination the rebalance exists to end. Degenerating instead lands artist 30% / genre 45% /
+    /// year 15% / context 10%: genre is double-counted, which is the honest cost of a library with
+    /// no audio analysis, and the owner's does have that analysis for its indexed sources.
+    static func familyScore(_ c: Candidate, profile p: TargetProfile,
+                            cloudRank: Double = 0, recency: Double = 0,
+                            weights w: FamilyWeights = .balanced) -> Double {
+        var num = 0.0, den = 0.0
+
+        // ── A: artist ────────────────────────────────────────────────────────────────────────
+        if !p.artistShare.isEmpty {
+            num += w.artist * artistTerm(c.artistKey, p)
+            den += w.artist
+        }
+
+        let hasGenre = !p.genreShare.isEmpty && p.maxGenreShare > 0
+        let hasYear = p.yearMean != nil
+        let hasBpm = p.bpmMean != nil
+        let hasKey = !p.camelots.isEmpty
+
+        // ── B: era (genre + year, evenly) ────────────────────────────────────────────────────
+        if hasGenre || hasYear {
+            var n = 0.0, d = 0.0
+            if hasGenre { n += genreTerm(c.genre, p); d += 1 }
+            if hasYear { n += yearTerm(c.year, p); d += 1 }
+            num += w.era * (n / d)
+            den += w.era
+        }
+
+        // ── C: sonic (genre + bpm + key) ─────────────────────────────────────────────────────
+        if hasGenre || hasBpm || hasKey {
+            let musical = max(0, (1 - w.sonicGenreShare) / 2)
+            var n = 0.0, d = 0.0
+            if hasGenre { n += w.sonicGenreShare * genreTerm(c.genre, p); d += w.sonicGenreShare }
+            if hasBpm { n += musical * bpmTerm(c.bpm, p); d += musical }
+            if hasKey { n += musical * camelotTerm(c.camelot, p); d += musical }
+            if d > 0 {
+                num += w.sonic * (n / d)
+                den += w.sonic
+            }
+        }
+
+        // ── D: context residual ──────────────────────────────────────────────────────────────
+        var cn = 0.0, cd = 0.0
+        if !p.coMemberIds.isEmpty {
+            cn += contextWeights.coMember * (p.coMemberIds.contains(c.songId) ? 1 : 0)
+            cd += contextWeights.coMember
+        }
+        if !p.keywordShare.isEmpty, p.maxKeywordShare > 0 {
+            cn += contextWeights.lyrics * keywordTerm(c.keywords, p)
+            cd += contextWeights.lyrics
+        }
+        if !p.coPlayWeight.isEmpty {
+            cn += contextWeights.coPlay * coPlayTerm(c.songId, p)
+            cd += contextWeights.coPlay
+        }
+        if p.hasRecency {
+            cn += contextWeights.recency * min(1, max(0, recency))
+            cd += contextWeights.recency
+        }
+        if cd > 0 {
+            num += w.context * (cn / cd)
+            den += w.context
+        }
+
+        let normalized = den > 0 ? min(1, max(0, num / den)) : 0
+        // Same pure-bonus composition as `score`: cloudRank 0 (the default, and what a
+        // default-OFF engine always yields) returns the local score EXACTLY.
+        guard cloudRank > 0 else { return normalized }
+        return min(1, normalized + cloudWeight * min(1, cloudRank) * (1 - normalized))
+    }
+
+    /// Convenience overload for callers holding an `IndexSong` (In Da Zone).
+    static func familyScore(_ song: IndexSong, profile p: TargetProfile, genre: String?,
+                            cloudRank: Double = 0, recency: Double = 0,
+                            weights: FamilyWeights = .balanced) -> Double {
+        familyScore(Candidate(song, genre: genre), profile: p, cloudRank: cloudRank,
+                    recency: recency, weights: weights)
     }
 
     // MARK: - The shortlist

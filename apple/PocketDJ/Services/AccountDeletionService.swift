@@ -104,6 +104,11 @@ final class AccountDeletionService {
     /// Games: the Collectors Puzzle decision log — per-song behavioral data
     /// (cloud key "puzzle-decisions").
     private let puzzleDecisions: PuzzleDecisionStore
+    /// The recommendation accept/reject log (cloud key "rec-feedback") — per-song behavioral data
+    /// exactly like the puzzle log, so it is erased on the same terms. A SEAM rather than a
+    /// constructor parameter for the reason `recClearLocal` already is: this service's fixed
+    /// store list has to stay test-buildable without the recommendation graph.
+    var recFeedbackClear: (() -> Void)?
     /// Games: Music with Friends session entries (bearer memberKeys/leaderKeys live in
     /// UserDefaults, not a synced doc — but they are account data all the same).
     private let friends: MusicWithFriendsStore
@@ -238,6 +243,7 @@ final class AccountDeletionService {
         studio.clearCues()   // the synced "studio-cues" doc — deleting the cloud copy must wipe local too
         gameScores.clear()       // the synced "game-scores" doc
         puzzleDecisions.clear()  // the synced "puzzle-decisions" doc — per-song behavioral data
+        recFeedbackClear?()      // the synced "rec-feedback" doc — the 👍/👎 tuning log
         // Music with Friends: session entries carry bearer memberKeys/leaderKeys; the scored
         // set and cached states are per-account too. WITHDRAW the APNs device tokens FIRST —
         // they are personal data sitting on a broker the user may not own, and only the

@@ -100,7 +100,14 @@ final class AppModel {
             return ZoneEngine.Track(songId: s.id,
                                     artistKey: IndexArtist.normalize(s.artist),
                                     artistName: s.artist,
-                                    genre: cat == Genre.other ? nil : cat)
+                                    genre: cat == Genre.other ? nil : cat,
+                                    // The three fields the owner's rebalance ranks on beyond
+                                    // artist+genre. bpm/camelot are the audio-indexer's burned
+                                    // artifacts and are absent for most Apple Music rows — that
+                                    // sparseness is handled at ROUND level by
+                                    // `PuzzleSimilarity.familyScore`, never by scoring a missing
+                                    // field zero per song.
+                                    year: s.year, bpm: s.bpm, camelot: s.camelot)
         }
         zoneTracksCache = (catalogRevision, tracks)
         return tracks

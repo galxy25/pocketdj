@@ -44,7 +44,8 @@ process.env.REC_ENROLL_SECRET = 'enroll-secret-for-tests';
 process.env.MAX_PROFILES = '1000';
 
 const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections, shedToFit,
-        scoreSimilarToCollections, playCountSignal, recencySignal } =
+        scoreSimilarToCollections, playCountSignal, recencySignal,
+        feedbackOf, feedbackMultiplier } =
   await import('./index.mjs');
 
 const PROFILE = 'profile-test-1234';
@@ -1064,4 +1065,238 @@ test('lastPlayedDays ride a real /events flush end to end', async () => {
   assert.ok(rank('sng_j2') >= 0 && rank('sng_j1') >= 0, 'both seeded');
   assert.ok(rank('sng_j2') < rank('sng_j1'),
             `equal counts, fresher date seeds higher: ${JSON.stringify(recs.json.seeds)}`);
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// Explicit accept / reject — the recommendation tuning loop
+//
+// The failure mode these guard against is not "the endpoint 500s". It is a thumbs-down that is
+// accepted, stored, echoed back in `totals` — and then quietly ignored by the ranking, so the
+// rejected song keeps coming back and the user concludes the button does nothing.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+const fb = (songId, action, atMs = NOW) => ({ id: uid(), atMs, songId, action, surface: 'tile' });
+
+test('feedback rows ingest, dedupe by id, and are reported in totals', async () => {
+  const profile = 'profile-feedback-001';
+  const row = fb('sng_e1', 'rejected');
+  const r = await call('POST', '/events', { profile, body: { v: 1, feedback: [row] } });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.accepted.feedback, 1);
+  assert.equal(r.json.totals.feedback, 1);
+  // The SAME row again is idempotent — the client re-sends its whole overlap window every flush.
+  const again = await call('POST', '/events', { profile, body: { v: 1, feedback: [row] } });
+  assert.equal(again.json.accepted.feedback, 0);
+  assert.equal(again.json.totals.feedback, 1);
+});
+
+test('malformed feedback rows are dropped, not stored', () => {
+  const state = { plays: [], favorites: {}, activity: [], puzzle: [], feedback: [],
+                  collections: { atMs: 0, list: [] }, playCounts: { atMs: 0, counts: {} } };
+  const { accepted } = mergeBatch(state, {
+    feedback: [
+      { id: 'a', atMs: 1, songId: 's1', action: 'rejected' },        // ok
+      { id: 'b', atMs: 1, songId: 's1' },                             // no action
+      { id: 'c', atMs: 1, songId: 's1', action: 'thumbs-sideways' },  // not a known action
+      { id: 'd', atMs: 1, action: 'rejected' },                       // no songId
+      { atMs: 1, songId: 's1', action: 'rejected' },                  // no id
+    ],
+  });
+  assert.equal(accepted.feedback, 1);
+  assert.deepEqual(state.feedback.map((e) => e.id), ['a']);
+});
+
+test('a state object written BEFORE feedback existed still merges', () => {
+  // The upgrade path: `state.feedback` is simply absent. Reading it must not throw, and the new
+  // stream must land — otherwise the first flush after an app update wedges the profile.
+  const state = { plays: [], favorites: {}, activity: [], puzzle: [],
+                  collections: { atMs: 0, list: [] }, playCounts: { atMs: 0, counts: {} } };
+  const { accepted } = mergeBatch(state, { feedback: [{ id: 'a', atMs: 1, songId: 's1', action: 'accepted' }] });
+  assert.equal(accepted.feedback, 1);
+  assert.equal(state.feedback.length, 1);
+});
+
+test('feedbackOf folds last-writer-wins per song, and cleared undoes', () => {
+  const features = new Map([['s1', { i: 's1', a: 'Aria', g: 'electronic' }]]);
+  const one = feedbackOf({ feedback: [
+    { id: '1', atMs: 10, songId: 's1', action: 'rejected' },
+  ] }, features);
+  assert.ok(one.rejected.has('s1'));
+
+  const flipped = feedbackOf({ feedback: [
+    { id: '1', atMs: 10, songId: 's1', action: 'rejected' },
+    { id: '2', atMs: 20, songId: 's1', action: 'accepted' },
+  ] }, features);
+  assert.ok(!flipped.rejected.has('s1'), 'the later accept wins');
+  assert.ok(flipped.accepted.has('s1'));
+
+  const cleared = feedbackOf({ feedback: [
+    { id: '1', atMs: 10, songId: 's1', action: 'rejected' },
+    { id: '2', atMs: 20, songId: 's1', action: 'cleared' },
+  ] }, features);
+  assert.ok(!cleared.rejected.has('s1'), 'an undo really undoes');
+  assert.ok(!cleared.accepted.has('s1'));
+
+  // Out-of-order arrival (a peer device's rows merged behind the cursor) must not win.
+  const outOfOrder = feedbackOf({ feedback: [
+    { id: '2', atMs: 20, songId: 's1', action: 'accepted' },
+    { id: '1', atMs: 10, songId: 's1', action: 'rejected' },
+  ] }, features);
+  assert.ok(outOfOrder.accepted.has('s1'), 'the NEWER row wins regardless of ingest order');
+});
+
+test('the artist/genre penalty SATURATES rather than max-normalising', () => {
+  const features = new Map([
+    ['s1', { i: 's1', a: 'Aria', g: 'electronic' }],
+    ['s2', { i: 's2', a: 'Aria', g: 'electronic' }],
+    ['s3', { i: 's3', a: 'Mira', g: 'electronic' }],
+  ]);
+  // THE REGRESSION THIS PINS: with max-normalisation a single rejection made its genre the
+  // maximum and therefore full-strength, so one thumbs-down cut every song in that genre by the
+  // full penalty. On this library that is a third of the catalog, from one tap.
+  const one = feedbackOf({ feedback: [fb('s1', 'rejected', 1)] }, features);
+  assert.equal(one.rejectedGenres.get('electronic'), 1 / 8, 'one reject barely moves a genre');
+  assert.ok(feedbackMultiplier(one, 'Mira', 'electronic') > 0.9,
+            'an unrelated artist in the same genre is nudged, not demoted');
+
+  const three = feedbackOf({ feedback: [
+    fb('s1', 'rejected', 1), fb('s2', 'rejected', 2), fb('s3', 'rejected', 3),
+  ] }, features);
+  assert.equal(three.rejectedArtists.get('Aria'), 2 / 3, 'two of three rejects were Aria');
+  assert.equal(three.rejectedArtists.get('Mira'), 1 / 3);
+  assert.equal(three.rejectedGenres.get('electronic'), 3 / 8, 'but not yet a genre');
+  // The artist penalty must be DISTINGUISHABLE from the genre one, or the finer signal is dead.
+  assert.ok(feedbackMultiplier(three, 'Aria', 'electronic')
+            < feedbackMultiplier(three, 'Mira', 'electronic'));
+  // Bounded and never negative, however hard the user leans on the button.
+  const worst = feedbackMultiplier(three, 'Aria', 'electronic');
+  assert.ok(worst > 0 && worst < 1, `bounded demotion, got ${worst}`);
+  assert.equal(feedbackMultiplier(three, 'Nobody', 'jazz'), 1,
+               'untouched neighbourhoods are untouched');
+});
+
+test('a rejected song is NEVER recommended again', async () => {
+  const profile = 'profile-feedback-reject';
+  await call('POST', '/events', { profile, body: { v: 1, plays: [play('sng_e1', NOW - HOUR * 80)] } });
+  const before = await call('GET', '/recs/songs', { profile, qs: { limit: '20' } });
+  const victim = before.json.songs[0]?.songId;
+  assert.ok(victim, 'the fixture recommends something to reject');
+
+  await call('POST', '/events', { profile, body: { v: 1, feedback: [fb(victim, 'rejected')] } });
+  const after = await call('GET', '/recs/songs', { profile, qs: { limit: '20' } });
+  assert.ok(!after.json.songs.some((s) => s.songId === victim),
+            `${victim} came back after a thumbs-down`);
+
+  // …and clearing the decision brings it back, so the undo is real end to end.
+  await call('POST', '/events', { profile, body: { v: 1, feedback: [fb(victim, 'cleared', NOW + 1000)] } });
+  const restored = await call('GET', '/recs/songs', { profile, qs: { limit: '20' } });
+  assert.ok(restored.json.songs.some((s) => s.songId === victim), 'cleared restores the song');
+});
+
+test('a rejection demotes the ARTIST, not just the one song', async () => {
+  const profile = 'profile-feedback-artist';
+  // Seed on jazz so both Aria tracks are candidates rather than seeds.
+  await call('POST', '/events', { profile, body: { v: 1, plays: [play('sng_j1', NOW - HOUR * 80)] } });
+  await call('POST', '/events', {
+    profile,
+    body: { v: 1, feedback: [fb('sng_e1', 'rejected'), fb('sng_e2', 'rejected')] },
+  });
+  const r = await call('GET', '/recs/songs', { profile, qs: { limit: '20' } });
+  const rank = (id) => {
+    const i = r.json.songs.findIndex((s) => s.songId === id);
+    return i < 0 ? Infinity : i;
+  };
+  // Both rejected Aria tracks are gone outright, and the surviving Aria track (same artist, never
+  // individually rejected) must rank below a comparable track by an artist with no rejections.
+  assert.equal(rank('sng_e1'), Infinity);
+  assert.equal(rank('sng_e2'), Infinity);
+  // sng_e3 is Aria's surviving track; sng_e6 is a comparable electronic track by an artist with
+  // no rejections. Both take the same (small) genre penalty, so the ONLY thing that can separate
+  // them is the artist term — which is exactly what this asserts. Before the rebalance sng_e3
+  // outranked sng_e6 on raw similarity.
+  assert.ok(rank('sng_e3') > rank('sng_e6'),
+            `the rejected artist's other track should sink: ${JSON.stringify(r.json.songs.map((s) => s.songId))}`);
+});
+
+test('an accepted song seeds the profile even with no plays at all', async () => {
+  const profile = 'profile-feedback-accept';
+  // NO plays, NO play counts — only a thumbs-up. A tuning loop that needs listening history first
+  // is useless on the surface it lives on.
+  const r = await call('POST', '/events', { profile, body: { v: 1, feedback: [fb('sng_j1', 'accepted')] } });
+  assert.equal(r.status, 200);
+  const recs = await call('GET', '/recs/songs', { profile, qs: { limit: '20' } });
+  assert.ok(recs.json.seeds.includes('sng_j1'), 'the accepted song shapes the taste profile');
+  assert.ok(recs.json.songs.some((s) => s.songId === 'sng_j2'),
+            'and its neighbours are recommended');
+});
+
+test('a reject beats a favorite and a play count — the explicit instruction wins', async () => {
+  const profile = 'profile-feedback-override';
+  await call('POST', '/events', {
+    profile,
+    body: {
+      v: 1,
+      plays: [play('sng_e1', NOW - DAY)],
+      favorites: [{ songId: 'sng_j1', favorited: true, atMs: NOW - DAY }],
+      playCounts: { atMs: NOW, counts: { sng_j1: 500 } },
+      feedback: [fb('sng_j1', 'rejected')],
+    },
+  });
+  const recs = await call('GET', '/recs/songs', { profile, qs: { limit: '20' } });
+  assert.ok(!recs.json.seeds.includes('sng_j1'),
+            'a rejected song must not seed, however favourited or played');
+  assert.ok(!recs.json.songs.some((s) => s.songId === 'sng_j1'));
+});
+
+test('rejected songs are excluded from /recs/similar too', async () => {
+  const profile = 'profile-feedback-similar';
+  await call('POST', '/events', {
+    profile,
+    body: { v: 1, collectionsSnapshot: { atMs: NOW, collections: [
+      { id: 'pkt_1', kind: 'pocket', name: 'Crate', songIds: ['sng_e1', 'sng_e2'] },
+    ] } },
+  });
+  const before = await call('GET', '/recs/similar', { profile, qs: { collectionIds: 'pkt_1' } });
+  const victim = before.json.songs[0]?.songId;
+  assert.ok(victim, 'the fixture returns similar songs');
+  await call('POST', '/events', { profile, body: { v: 1, feedback: [fb(victim, 'rejected')] } });
+  const after = await call('GET', '/recs/similar', { profile, qs: { collectionIds: 'pkt_1' } });
+  assert.ok(!after.json.songs.some((s) => s.songId === victim),
+            'a thumbs-down holds on every surface that could offer the song back');
+});
+
+test('feedback counts toward the batch cap and is capped in the store', async () => {
+  const profile = 'profile-feedback-caps';
+  const tooMany = Array.from({ length: 2001 }, (_, i) => fb(`sng_${i}`, 'rejected', NOW + i));
+  const r = await call('POST', '/events', { profile, body: { v: 1, feedback: tooMany } });
+  assert.equal(r.status, 400);
+  assert.equal(r.json.error, 'batch-too-large');
+
+  // The per-stream cap drops the OLDEST rows, like every other stream.
+  const state = { plays: [], favorites: {}, activity: [], puzzle: [], feedback: [],
+                  collections: { atMs: 0, list: [] }, playCounts: { atMs: 0, counts: {} } };
+  for (let batch = 0; batch < 3; batch++) {
+    mergeBatch(state, {
+      feedback: Array.from({ length: 1500 }, (_, i) => ({
+        id: `f_${batch}_${i}`, atMs: batch * 10000 + i, songId: `s${i}`, action: 'rejected',
+      })),
+    });
+  }
+  assert.equal(state.feedback.length, 3000, 'held at CAPS.feedback');
+  assert.ok(state.feedback.every((e) => !e.id.startsWith('f_0_')),
+            'the oldest batch is what was shed');
+});
+
+test('shedToFit drops feedback only after plays, activity and puzzle', () => {
+  const big = CTRL.repeat(200);
+  const state = {
+    plays: [{ id: 'p1', songId: `s${big}`, atMs: 1 }],
+    activity: [{ id: 'a1', atMs: 1, kind: 'add', itemId: `i${big}` }],
+    puzzle: [{ id: 'z1', atMs: 1, action: `x${big}` }],
+    feedback: [{ id: 'f1', atMs: 1, songId: `s${big}`, action: 'rejected' }],
+    favorites: {}, collections: { atMs: 0, list: [] }, playCounts: { atMs: 0, counts: {} },
+  };
+  // A budget that forces exactly three drops: plays, activity, puzzle — feedback survives.
+  shedToFit(state, 1400);
+  assert.equal(state.feedback.length, 1, 'the deliberate signal outlives the incidental ones');
 });

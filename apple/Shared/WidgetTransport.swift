@@ -22,13 +22,22 @@ final class WidgetPlaybackController {
     var cycleRepeat: (() -> Void)?
     /// Toggle live shuffle of the running set's upcoming tail (mirrors the deck's shuffle button).
     var toggleShuffle: (() -> Void)?
+    /// 👍 / 👎 on the CURRENT track — the SYNC half of the recommendation tuning loop. They land
+    /// in exactly the same `RecFeedbackStore` the tile's rows write to, so a decision made from
+    /// the lock screen is already there when the tile is next opened. Neither one touches
+    /// playback: accepting keeps playing, rejecting keeps playing.
+    var acceptCurrent: (() -> Void)?
+    var rejectCurrent: (() -> Void)?
 }
 
 /// Cross-process fallback: when a transport intent runs in the widget-extension process (the
 /// app was fully quit), it can't reach the live `WidgetPlaybackController`, so it drops the
 /// command into the shared App Group and the app drains it the moment it next becomes active.
 enum WidgetCommandChannel {
-    enum Command: String { case toggle, next, previous, favorite, cycleRepeat, toggleShuffle }
+    enum Command: String {
+        case toggle, next, previous, favorite, cycleRepeat, toggleShuffle
+        case recAccept, recReject
+    }
     private static let key = "pendingTransportCommand"
     private static let atKey = "pendingTransportCommandAt"
 
@@ -93,6 +102,8 @@ private func dispatchWidgetTransport(_ command: WidgetCommandChannel.Command) {
     case .favorite:      inProcess = c.toggleFavorite
     case .cycleRepeat:   inProcess = c.cycleRepeat
     case .toggleShuffle: inProcess = c.toggleShuffle
+    case .recAccept:     inProcess = c.acceptCurrent
+    case .recReject:     inProcess = c.rejectCurrent
     }
     // Which PROCESS an intent ran in is the crux of widget-button debugging: in the app
     // process the closure is wired (direct drive); in the widget process it's nil → the
@@ -151,6 +162,31 @@ struct NowPlayingShuffleIntent: AudioPlaybackIntent {
     static var title: LocalizedStringResource = "Shuffle"
     @MainActor func perform() async throws -> some IntentResult {
         dispatchWidgetTransport(.toggleShuffle)
+        return .result()
+    }
+}
+
+/// 👍 / 👎 on what is playing.
+///
+/// `AudioPlaybackIntent` like every other control here, and that choice is load-bearing rather
+/// than cosmetic: it is what lets the button run WITHOUT foregrounding the app, which is the
+/// whole point of putting the pair on the lock screen and in the car. They perform no transport
+/// action at all — they only record — but they belong to the same playback session, so they ride
+/// the same intent kind and the same in-process/command-channel dispatch as ⏯.
+@available(iOS 17.0, macOS 14.0, visionOS 1.0, *)
+struct NowPlayingRecAcceptIntent: AudioPlaybackIntent {
+    static var title: LocalizedStringResource = "More Like This"
+    @MainActor func perform() async throws -> some IntentResult {
+        dispatchWidgetTransport(.recAccept)
+        return .result()
+    }
+}
+
+@available(iOS 17.0, macOS 14.0, visionOS 1.0, *)
+struct NowPlayingRecRejectIntent: AudioPlaybackIntent {
+    static var title: LocalizedStringResource = "Less Like This"
+    @MainActor func perform() async throws -> some IntentResult {
+        dispatchWidgetTransport(.recReject)
         return .result()
     }
 }

@@ -173,11 +173,34 @@ final class CarPlayController {
         }
     }
 
-    /// Rebuild the Now Playing template's buttons — called on a track change, a favorite change, AND
-    /// a repeat/shuffle change (all fan out through the shared observer → `CarPlayController.current`),
-    /// because the glyphs depend on that state and the button objects are immutable. Shuffle + repeat
-    /// appear only while a set is running (meaningless for a single-track play); CarPlay allows up to
-    /// five Now Playing buttons, so the ♥ + the two mode buttons fit comfortably.
+    /// 👍 / 👎 for the shared Now Playing template — the recommendation tuning loop, in the car.
+    ///
+    /// Same immutable-button rule as the ♥: a state change REPLACES the array. Both write through
+    /// `CarPlayModel.setCurrentRecFeedback`, i.e. the same `RecFeedbackStore` and the same toggle
+    /// semantics the phone uses, so the two surfaces cannot drift. NEITHER touches playback.
+    private func recFeedbackButton(_ action: RecFeedbackStore.Action) -> CPNowPlayingImageButton {
+        let on = model?.currentRecFeedback() == action
+        let accept = action == .accepted
+        let name = on
+            ? (accept ? RecFeedbackAction.acceptSymbolFilled : RecFeedbackAction.rejectSymbolFilled)
+            : (accept ? RecFeedbackAction.acceptSymbol : RecFeedbackAction.rejectSymbol)
+        let image = UIImage(systemName: name) ?? UIImage()
+        return CPNowPlayingImageButton(image: image) { [weak self] _ in
+            self?.model?.setCurrentRecFeedback(action)
+            self?.refreshNowPlayingButtons()
+        }
+    }
+
+    /// Rebuild the Now Playing template's buttons — called on a track change, a favorite change, a
+    /// repeat/shuffle change AND an accept/reject (all fan out through the shared observer →
+    /// `CarPlayController.current`), because the glyphs depend on that state and the button objects
+    /// are immutable.
+    ///
+    /// CarPlay allows at most FIVE Now Playing buttons and this is now exactly at that ceiling
+    /// while a set runs (🔀 ↻ ♥ 👍 👎), which is why the mode pair stays gated on `isSetRunning`
+    /// rather than always-on: shuffle and repeat are meaningless for a single-track play, while
+    /// the thumbs are meaningful for ANY track — so if something has to go, it is not the loop the
+    /// owner asked for. Ordered with the thumbs last so they sit together as a pair.
     func refreshNowPlayingButtons() {
         var buttons: [CPNowPlayingButton] = []
         if model?.isSetRunning() == true {
@@ -185,6 +208,8 @@ final class CarPlayController {
             buttons.append(repeatButton())
         }
         buttons.append(heartButton())
+        buttons.append(recFeedbackButton(.accepted))
+        buttons.append(recFeedbackButton(.rejected))
         CPNowPlayingTemplate.shared.updateNowPlayingButtons(buttons)
         // Same fan-out point covers the resume row: a set resumed/skipped from the phone stops
         // being "held", so the Continue row must stop offering it.

@@ -153,6 +153,8 @@ struct ForYouSongListView: View {
     @Environment(PlayHistoryStore.self) private var history
     @Environment(PlayCountService.self) private var playCounts
     @Environment(SetlistPlayer.self) private var sequencer
+    /// The accept/reject log. Optional (a preview/test host renders this screen standalone).
+    @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
 
     let route: ForYouTileRoute
     @Binding var path: NavigationPath
@@ -173,7 +175,7 @@ struct ForYouSongListView: View {
     var body: some View {
         List {
             if !songIds.isEmpty { header }
-            ForEach(songIds, id: \.self) { id in
+            ForEach(orderedIds, id: \.self) { id in
                 row(id)
             }
             if songIds.isEmpty && didBuild {
@@ -188,21 +190,60 @@ struct ForYouSongListView: View {
         .sheet(item: $addRef) { r in AddToCollectionView(item: .song(r.id)) }
     }
 
+    /// PLAY IN ORDER and SHUFFLE — the two affordances every tile now carries, here where the
+    /// tile is OPENED (the same pair sits on the card's context menu). Both go through
+    /// `ForYouPlayback`, i.e. the existing `CollectionsStore.playNow` -> Now Playing setlist path,
+    /// so there is no second queue and no second shuffle.
+    ///
+    /// Disabled - with the reason in the label - when nothing here can be queued, rather than
+    /// present and inert.
     private var header: some View {
-        HStack {
+        HStack(spacing: 12) {
             // For the zone the blend IS the feature, so the count says what it is made of rather
             // than just how long it is.
             Text(blendSummary).font(.caption).foregroundStyle(Theme.fgDim)
                 .accessibilityIdentifier("foryou-list-summary")
             Spacer()
-            Button { play(from: 0) } label: {
-                Label("Play all", systemImage: "play.fill").font(.caption)
+            Button { play(shuffle: false) } label: {
+                Label("Play", systemImage: "play.fill").font(.caption)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(Theme.accent)
+            .buttonStyle(.borderless)
+            .disabled(playableIds.isEmpty)
+            .foregroundStyle(playableIds.isEmpty ? Theme.fgDim : Theme.accent)
             .accessibilityIdentifier("foryou-play-all")
+            Button { play(shuffle: true) } label: {
+                Label("Shuffle", systemImage: "shuffle").font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .disabled(playableIds.isEmpty)
+            .foregroundStyle(playableIds.isEmpty ? Theme.fgDim : Theme.accent)
+            .accessibilityIdentifier("foryou-shuffle-all")
         }
         .listRowBackground(Color.clear)
+    }
+
+    /// THE displayed order - rejected rows sunk to the bottom, everything else untouched.
+    ///
+    /// One computed property feeds BOTH the `ForEach` and `play`, which is the whole point: "play
+    /// in order" cannot play a rejected song second while the list shows it last, because the two
+    /// read the same array. `RecFeedbackOrder.sink` is a pure stable partition (see its doc for
+    /// why a rejected row SINKS rather than disappearing).
+    private var orderedIds: [String] {
+        RecFeedbackOrder.sink(songIds, rejected: rejectedHere)
+    }
+
+    /// Rejected ids that are still ON this screen. Scoped to the list rather than read globally so
+    /// the fold is over ~90 rows, not over the whole 20k-row log, on a render path.
+    private var rejectedHere: Set<String> {
+        guard let feedback, !songIds.isEmpty else { return [] }
+        return Set(songIds.filter { feedback.isRejected($0) })
+    }
+
+    /// What the play/shuffle controls will actually queue. `songIds` here are catalog ids by
+    /// construction (both rankers select from the catalog), so this only ever drops an id whose
+    /// source was toggled off between the build and the tap.
+    private var playableIds: [String] {
+        orderedIds.filter { app.songsById[$0] != nil }
     }
 
     private var blendSummary: String {
@@ -211,14 +252,24 @@ struct ForYouSongListView: View {
         return "\(songIds.count) songs · \(buried) buried"
     }
 
+    /// Play the whole tile, in the DISPLAYED order or shuffled.
+    private func play(shuffle: Bool) {
+        ForYouPlayback.play(playableIds, name: route.title, shuffle: shuffle,
+                            collections: collections, path: $path)
+    }
+
     /// Start the queue at `index` and let it run — the ordinary "play from here" a music list
-    /// does. Routes through `CollectionsStore.playNow`, the same funnel every other ▶ in the app
-    /// uses, so this is a genuine Now Playing setlist (lock screen, CarPlay, auto-advance,
-    /// durable session) rather than a one-off sound.
+    /// does. Routes through `ForYouPlayback` -> `CollectionsStore.playNow`, the same funnel every
+    /// other play entry point in the app uses, so this is a genuine Now Playing setlist (lock
+    /// screen, CarPlay, auto-advance, durable session) rather than a one-off sound.
+    ///
+    /// Indexes into the DISPLAYED order, never the raw build order — tapping the row you can see
+    /// has to start on the row you can see, even after a reject has sunk something above it.
     private func play(from index: Int) {
-        guard songIds.indices.contains(index) else { return }
-        collections.playNow(songIds: Array(songIds[index...]), name: route.title,
-                            shuffle: false, source: .browser, originId: nil)
+        let ids = playableIds
+        guard ids.indices.contains(index) else { return }
+        ForYouPlayback.play(Array(ids[index...]), name: route.title, shuffle: false,
+                            collections: collections, path: $path)
     }
 
     /// The ranking runs OFF the main actor for the same reason the tile grid's does: the zone pass
@@ -289,22 +340,45 @@ struct ForYouSongListView: View {
             // already been bitten by).
             .accessibilityIdentifier("foryou-song-\(id)")
             Spacer()
+            // The ASYNC half of the tuning loop: come back to the tile and work the list. The
+            // SAME store the now-playing surfaces write to, so a decision made in the car is
+            // already reflected here (and vice versa).
+            //
+            // A fresh accept ALSO takes the add action, so on a collection tile one thumbs-up
+            // both files the song and tells the engine why — two taps for one intention would be
+            // the wrong loop.
+            RecFeedbackControls(songId: id, surface: .tile, context: feedbackContext,
+                                onAccepted: { addSong(id) })
             addButton(id)
             if let song {
                 RowTransport(song: (id: song.id, title: song.name, artist: song.artist), startMs: nil)
             }
         }
         .padding(.vertical, 2)
+        // A rejected row stays visible and readable but recedes — it has been sunk, not deleted,
+        // and the listener has to be able to find it again to undo.
+        .opacity(feedback?.isRejected(id) == true ? 0.45 : 1)
         .contentShape(Rectangle())
         // In Da Zone is a QUEUE, so a tap plays it from here — the ordinary music-list gesture.
         // A collection tile's list is an ADD list, not a queue, so there a tap still opens the
         // song. Same view, two purposes, and the gesture follows the purpose.
         .onTapGesture {
             if route.kind == .zone {
-                play(from: songIds.firstIndex(of: id) ?? 0)
+                play(from: playableIds.firstIndex(of: id) ?? 0)
             } else if let song {
                 path.append(song)
             }
+        }
+    }
+
+    /// The tile identity recorded with a decision made here, so the engine (and a later review of
+    /// this feature) can tell "rejected from In Da Zone" from "rejected from a crate's tile".
+    private var feedbackContext: String {
+        switch route.kind {
+        case .zone: return "zone"
+        case .collection: return route.collectionId.map { "col-\($0)" } ?? "collection"
+        case .new: return "new"
+        case .suggested: return "suggested"
         }
     }
 
@@ -316,19 +390,24 @@ struct ForYouSongListView: View {
             Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(Theme.accent)
                 .accessibilityIdentifier("foryou-added-\(id)")
         } else {
-            Button {
-                if route.kind == .collection, let cid = route.collectionId,
-                   let target = collections.addTargetForAnyCollection(cid) {
-                    collections.addSong(id, to: target)
-                    added.insert(id)
-                } else {
-                    addRef = AddRef(id: id)
-                }
-            } label: {
+            Button { addSong(id) } label: {
                 Image(systemName: "plus.circle").font(.title3).foregroundStyle(Theme.accent2)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.borderless)
             .accessibilityIdentifier("foryou-add-\(id)")
+        }
+    }
+
+    /// The one add action, shared by the row's plus and by a fresh accept. Idempotent: a second
+    /// call for an id already added does nothing, so accept-then-plus cannot file it twice.
+    private func addSong(_ id: String) {
+        guard !added.contains(id) else { return }
+        if route.kind == .collection, let cid = route.collectionId,
+           let target = collections.addTargetForAnyCollection(cid) {
+            collections.addSong(id, to: target)
+            added.insert(id)
+        } else {
+            addRef = AddRef(id: id)
         }
     }
 
@@ -341,5 +420,38 @@ struct ForYouSongListView: View {
         }
         .frame(maxWidth: .infinity).padding(30)
         .accessibilityIdentifier("foryou-songlist-empty")
+    }
+}
+
+// ============================================================================
+// MARK: - Playing a tile
+// ============================================================================
+
+/// The ONE way a For You tile reaches audio.
+///
+/// ── WHY THIS IS A FUNNEL AND NOT TWO CALL SITES ──────────────────────────────────────────────
+/// The tile card's context menu and the opened tile's header both play the same thing, and the
+/// owner's requirement is that shuffle behave like the app's shuffle rather than an
+/// `Array.shuffled()` invented here. So both go through `CollectionsStore.playNow(songIds:…)`,
+/// which is the same entry point playlists, pockets, albums, artists, CarPlay and every App
+/// Intent already use — including its `shuffle` flag, which is the app's shuffle semantics by
+/// definition. No second queue, no second shuffle, no second Now Playing document.
+///
+/// The push is the pattern `PlaylistsView.play` established: `playNow` UPSERTS the reserved Now
+/// Playing setlist and bumps its restart token, and `SetlistLaunch(autoplay: true)` is what makes
+/// the sound start. Doing only the first half builds a setlist nobody plays — which is what this
+/// screen's old "Play all" did.
+enum ForYouPlayback {
+    @MainActor
+    static func play(_ songIds: [String], name: String, shuffle: Bool,
+                     collections: CollectionsStore, path: Binding<NavigationPath>) {
+        // Nothing playable ⇒ do nothing AND navigate nowhere. Every caller disables its control
+        // in this case; this is the belt to that braces, so a stale tile can never push an empty
+        // deck.
+        guard !songIds.isEmpty else { return }
+        guard let set = collections.playNow(songIds: songIds, name: name, shuffle: shuffle,
+                                            source: .browser, originId: nil),
+              !set.tracks.isEmpty else { return }
+        path.wrappedValue.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
     }
 }

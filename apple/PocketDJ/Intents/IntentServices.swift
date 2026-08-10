@@ -47,6 +47,13 @@ final class IntentServices {
     /// gateway CarPlay already uses for every other store. `CarPlayModel` toggles the current
     /// track's favorite here (its `onChanged` reaches Apple Music only for an owner install).
     let favorites: FavoritesStore
+    /// The recommendation accept/reject log. The CarPlay scene runs OUTSIDE the SwiftUI
+    /// environment, so — exactly like `favorites` — it reaches the live store through this
+    /// bridge rather than constructing one of its own (which would fork the log and lose every
+    /// decision made in the car). Optional so the many tests that build `IntentServices` without
+    /// the rec graph keep compiling; nil ⇒ CarPlay simply shows no 👍/👎.
+    @ObservationIgnored var recFeedback: RecFeedbackStore?
+
     /// Async "Create pocket" builder — kept observable so UI can surface progress later.
     let pocketBuilder: PocketBuilderService
 

@@ -134,8 +134,10 @@ private struct TransportRow: View {
     var shuffleOn: Bool = false
     var repeatMode: String = "off"
     var iconSize: CGFloat = 18
+    /// `RecFeedbackAction.rawValue` or "none" — which of the 👍/👎 renders filled.
+    var recFeedback: String = RecFeedbackAction.none
     var body: some View {
-        HStack(spacing: showShuffleRepeat ? 18 : 22) {
+        HStack(spacing: showShuffleRepeat ? 12 : 16) {
             if showShuffleRepeat {
                 Button(intent: NowPlayingShuffleIntent()) {
                     Image(systemName: "shuffle")
@@ -164,6 +166,24 @@ private struct TransportRow: View {
                     .foregroundStyle(isFavorite ? Color.accentColor : Color.primary)
             }
             .accessibilityIdentifier("widget-favorite-toggle")
+            // 👍/👎 — the recommendation tuning loop, reachable from the LOCK SCREEN without
+            // opening the app. Both run `AudioPlaybackIntent`s (so the tap doesn't foreground
+            // anything) that land in the same `RecFeedbackStore` the tiles write to. Neither
+            // touches playback.
+            Button(intent: NowPlayingRecAcceptIntent()) {
+                Image(systemName: recFeedback == RecFeedbackAction.accepted.rawValue
+                        ? RecFeedbackAction.acceptSymbolFilled : RecFeedbackAction.acceptSymbol)
+                    .foregroundStyle(recFeedback == RecFeedbackAction.accepted.rawValue
+                        ? Color.accentColor : Color.primary)
+            }
+            .accessibilityIdentifier("widget-rec-accept")
+            Button(intent: NowPlayingRecRejectIntent()) {
+                Image(systemName: recFeedback == RecFeedbackAction.rejected.rawValue
+                        ? RecFeedbackAction.rejectSymbolFilled : RecFeedbackAction.rejectSymbol)
+                    .foregroundStyle(recFeedback == RecFeedbackAction.rejected.rawValue
+                        ? Color.accentColor : Color.primary)
+            }
+            .accessibilityIdentifier("widget-rec-reject")
         }
         .font(.system(size: iconSize, weight: .semibold))
         .buttonStyle(.plain)
@@ -207,7 +227,9 @@ private struct MediumView: View {
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 0)
-                TransportRow(isPlaying: entry.snapshot.isPlaying, isFavorite: entry.snapshot.isFavorite)
+                TransportRow(isPlaying: entry.snapshot.isPlaying,
+                             isFavorite: entry.snapshot.isFavorite,
+                             recFeedback: entry.snapshot.recFeedback)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -225,7 +247,8 @@ private struct LargeView: View {
             }
             TransportRow(isPlaying: entry.snapshot.isPlaying, isFavorite: entry.snapshot.isFavorite,
                          showShuffleRepeat: true, shuffleOn: entry.snapshot.shuffleEnabled,
-                         repeatMode: entry.snapshot.repeatMode, iconSize: 20)
+                         repeatMode: entry.snapshot.repeatMode, iconSize: 20,
+                         recFeedback: entry.snapshot.recFeedback)
                 .frame(maxWidth: .infinity)
 
             if entry.snapshot.upNext.isEmpty {
@@ -276,5 +299,6 @@ extension NowPlayingSnapshot {
             .init(id: "3", songId: "c", title: "Wait", artist: "M83"),
         ],
         isFavorite: true, appleMusicId: nil,
-        repeatMode: "all", shuffleEnabled: true)
+        repeatMode: "all", shuffleEnabled: true,
+        recFeedback: RecFeedbackAction.accepted.rawValue)
 }

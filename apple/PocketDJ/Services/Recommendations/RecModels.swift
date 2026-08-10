@@ -49,6 +49,29 @@ struct RecPuzzleEventWire: Codable, Equatable {
     var points: Int?
 }
 
+/// EXPLICIT feedback on a recommendation — the thumbs-up / thumbs-down the owner asked for.
+///
+/// An EVENT STREAM, not a snapshot, and deliberately so: "you rejected this three times" is a
+/// stronger statement than "this is rejected", and only a log can say it. The server folds the
+/// stream to last-writer-wins per song for the hard exclusion and counts the rows for the soft
+/// artist/genre penalty — the same two readings the on-device `RecFeedbackStore` makes.
+///
+/// Rides the ENGINE toggle, not `shareLifetimePlayCounts`: this is not a record of listening
+/// that Apple already holds, it is a deliberate instruction to the recommender, and a user who
+/// turned the recommender on and then pressed thumbs-down means it to be heard.
+struct RecFeedbackWire: Codable, Equatable {
+    var id: String
+    var atMs: Double
+    var songId: String
+    /// "accepted" | "rejected" | "cleared" — NEVER renamed once shipped (the doctrine above).
+    var action: String
+    /// Which surface it came from ("tile"/"nowPlaying"/"widget"/"carPlay"/…). Optional so an
+    /// older server ignores it and an older client never sends it — no version bump.
+    var surface: String?
+    /// The tile it was made from ("zone"/"suggested"/"col-<id>"), when there was one.
+    var context: String?
+}
+
 struct RecCollectionsSnapshotWire: Codable, Equatable {
     var atMs: Double
     var collections: [Entry]
@@ -93,6 +116,9 @@ struct RecUploadBatch: Encodable {
     var favorites: [RecFavoriteWire]?
     var activity: [RecActivityWire]?
     var puzzle: [RecPuzzleEventWire]?
+    /// Explicit accept/reject decisions. Optional like every other stream, so a build that has
+    /// none sends the same bytes it always did.
+    var feedback: [RecFeedbackWire]?
     var collectionsSnapshot: RecCollectionsSnapshotWire?
     var playCounts: RecPlayCountsWire?
 }
