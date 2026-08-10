@@ -253,3 +253,134 @@ final class AppModelOfflineFirstTests: XCTestCase {
         XCTAssertTrue(app.songs.isEmpty)
     }
 }
+
+/// ONE recording must never hold TWO live catalog identities.
+///
+/// REGRESSION (Levi, device, 2026-08-07): "im not sure if its caught in a loop because its played
+/// the same song How You Say My Name twice now" — reported minutes after adding a Roy Woods album
+/// from the New tile. The tile mixes owned and unowned releases, so "Add remaining (n)" expands to
+/// EVERY track on the album, and each one was recorded as a provisional `amrec_<storeId>` row. For
+/// a track the user already had, that row landed BESIDE the real indexed song carrying the same
+/// `appleMusicId`: `AppModel.merge` dedups by ID only, so both survived, and any queue built off
+/// the catalog (an artist's songs, Recently added, a shuffle/rec set) held the same recording twice
+/// and played it twice.
+///
+/// The supersede that prevents this already existed — `withProvisionalSources` runs
+/// `DiscoverAddsStore.split` on every catalog BUILD. The LIVE inject path (which is what every ＋
+/// Add walks) skipped it, so the twin lived from the tap until the next full rebuild.
+@MainActor
+final class DiscoverDuplicateIdentityTests: XCTestCase {
+
+    private func tempURL(_ tag: String) -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-\(tag)-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    private func indexSong(_ id: String, am: String?, name: String = "How You Say My Name") -> IndexSong {
+        var obj: [String: Any] = ["id": id, "name": name, "artist": "Roy Woods"]
+        if let am { obj["appleMusicId"] = am }
+        return try! JSONDecoder().decode(IndexSong.self,
+                                         from: try! JSONSerialization.data(withJSONObject: obj))
+    }
+
+    private func indexAlbum(_ id: String, am: String?) -> IndexAlbum {
+        var obj: [String: Any] = ["id": id, "name": "Say Less", "artist": "Roy Woods", "trackList": []]
+        if let am { obj["appleMusicId"] = am }
+        return try! JSONDecoder().decode(IndexAlbum.self,
+                                         from: try! JSONSerialization.data(withJSONObject: obj))
+    }
+
+    private func entry(_ songId: String, am: String, title: String) -> DiscoverAddsStore.Entry {
+        DiscoverAddsStore.Entry(songId: songId, appleMusicId: am, title: title, artist: "Roy Woods",
+                                addedAtMs: 1_000)
+    }
+
+    /// The album path — the one the New tile actually walks.
+    func testAlbumAddDoesNotMintASecondIdentityForATrackTheCatalogAlreadyHolds() {
+        let app = AppModel()
+        // The user already owns this track: a catalog row claiming Apple Music id 999.
+        app.injectImported(songs: [indexSong("sng_real", am: "999")], albums: [])
+        XCTAssertEqual(app.songId(forAppleMusicId: "999"), "sng_real")
+        var supersededPairs: [(from: String, to: String)] = []
+        app.onDiscoverSupersede = { supersededPairs.append(contentsOf: $0) }
+
+        let adds = DiscoverAddsStore(fileURL: tempURL("dupe-adds"))
+        app.discoverAdds = adds
+        adds.onAlbumBatchAdded = { songs, album in
+            app.injectDiscoverAlbumBatch(songs: songs, album: album)
+        }
+
+        // Adding the album expands to EVERY track — the owned one included.
+        adds.addAlbumBatch(albumId: "amrec_album_111", appleMusicId: "111",
+                           title: "Say Less", artist: "Roy Woods",
+                           trackIds: ["amrec_999", "amrec_1000"], preparedCopies: false,
+                           songs: [entry("amrec_999", am: "999", title: "How You Say My Name"),
+                                   entry("amrec_1000", am: "1000", title: "Something New")])
+
+        // ONE recording, ONE row. Before the fix `amrec_999` was appended beside `sng_real`.
+        XCTAssertEqual(app.songs.filter { $0.appleMusicId == "999" }.map(\.id), ["sng_real"],
+                       "a track the catalog already holds must not gain a second identity")
+        XCTAssertNil(app.songsById["amrec_999"], "the provisional twin yields — it does not coexist")
+        // The genuinely-new track still becomes a citizen (the fix must not eat real adds).
+        XCTAssertNotNil(app.songsById["amrec_1000"])
+        // …and the provisional entry is pruned + remapped, exactly as the build-time split does.
+        XCTAssertEqual(adds.entries.map(\.songId), ["amrec_1000"])
+        XCTAssertEqual(supersededPairs.map(\.from), ["amrec_999"])
+        XCTAssertEqual(supersededPairs.map(\.to), ["sng_real"])
+    }
+
+    /// The provisional ALBUM row has the same failure mode — two album rows for one release,
+    /// which is how the same album shows up twice in Browse.
+    func testAlbumAddDoesNotMintASecondAlbumIdentity() {
+        let app = AppModel()
+        app.injectImported(songs: [], albums: [indexAlbum("alb_real", am: "111")])
+        XCTAssertEqual(app.albumId(forAppleMusicId: "111"), "alb_real")
+
+        let adds = DiscoverAddsStore(fileURL: tempURL("dupe-alb"))
+        app.discoverAdds = adds
+        adds.onAlbumBatchAdded = { songs, album in
+            app.injectDiscoverAlbumBatch(songs: songs, album: album)
+        }
+        adds.addAlbumBatch(albumId: "amrec_album_111", appleMusicId: "111",
+                           title: "Say Less", artist: "Roy Woods",
+                           trackIds: ["amrec_1000"], preparedCopies: false,
+                           songs: [entry("amrec_1000", am: "1000", title: "Something New")])
+
+        XCTAssertEqual(app.albums.filter { $0.appleMusicId == "111" }.map(\.id), ["alb_real"])
+        XCTAssertNil(app.albumsById["amrec_album_111"])
+        XCTAssertTrue(adds.albums.isEmpty, "the provisional album row is pruned, not left dangling")
+    }
+
+    /// The SONG path (a single ＋ Add, and every cloud-pulled add, which re-enters through the
+    /// same arm) carries the identical defect.
+    func testSongAddDoesNotMintASecondIdentity() {
+        let app = AppModel()
+        app.injectImported(songs: [indexSong("sng_real", am: "999")], albums: [])
+
+        let adds = DiscoverAddsStore(fileURL: tempURL("dupe-song"))
+        app.discoverAdds = adds
+        adds.onAdded = { song in app.injectDiscoverAdd(song) }
+        adds.add(songId: "amrec_999", appleMusicId: "999",
+                 title: "How You Say My Name", artist: "Roy Woods")
+
+        XCTAssertEqual(app.songs.filter { $0.appleMusicId == "999" }.map(\.id), ["sng_real"])
+        XCTAssertNil(app.songsById["amrec_999"])
+        XCTAssertTrue(adds.entries.isEmpty)
+    }
+
+    /// The guard is a CLAIM check, not a blanket refusal: an add for a recording nothing else
+    /// holds still becomes a first-class citizen, and a row with no Apple Music id at all
+    /// (nothing to collide on) is untouched.
+    func testUnclaimedAddsStillLand() {
+        let app = AppModel()
+        let adds = DiscoverAddsStore(fileURL: tempURL("dupe-ok"))
+        app.discoverAdds = adds
+        adds.onAdded = { song in app.injectDiscoverAdd(song) }
+        adds.add(songId: "amrec_7", appleMusicId: "7", title: "Fresh", artist: "Roy Woods")
+        XCTAssertNotNil(app.songsById["amrec_7"])
+        XCTAssertEqual(app.source(ofSong: "amrec_7"), DiscoverAddsStore.sourceName)
+        XCTAssertEqual(adds.entries.map(\.songId), ["amrec_7"])
+    }
+}

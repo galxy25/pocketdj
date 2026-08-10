@@ -165,6 +165,60 @@ final class AlbumPreviewTests: XCTestCase {
         XCTAssertNil(RootView.albumPreviewRef(forAlbumId: "amrec_album_", discoverAdds: adds))
     }
 
+
+    // MARK: - Download affordance (the ONLY route to the audio now that ＋ Add captures nothing)
+
+    /// REGRESSION (Levi, device, 2026-08-07): "it should add the items to the users apple music
+    /// library but not rip unless they hit download." Dropping the rip from ＋ Add makes this
+    /// button load-bearing, so it has to REPORT — a real-time capture takes minutes per track, and
+    /// a control that flipped straight back to "Download to device" would read as "nothing
+    /// happened" and invite a second request for work already running.
+    func testDownloadStateReportsProgressUntilEveryTrackLands() {
+        let ids = ["a", "b", "c"]
+        // Nothing requested yet → the idle call to action.
+        XCTAssertEqual(AlbumDownloadState.of(ids: [], onDevice: [], errors: [:]), .idle)
+        XCTAssertEqual(AlbumDownloadState.idle.label, "Download to device")
+        XCTAssertTrue(AlbumDownloadState.idle.isTappable)
+
+        // Requested, nothing on device yet — WORKING, and NOT tappable (a second tap is a no-op
+        // the user reads as a dead button).
+        let started = AlbumDownloadState.of(ids: ids, onDevice: [], errors: [:])
+        XCTAssertEqual(started, .working(done: 0, total: 3))
+        XCTAssertEqual(started.label, "Downloading… 0/3")
+        XCTAssertFalse(started.isTappable)
+        XCTAssertEqual(AlbumDownloadState.of(ids: ids, onDevice: ["a"], errors: [:]),
+                       .working(done: 1, total: 3))
+        // A failure while others are still in flight is NOT terminal — the album is still working.
+        XCTAssertEqual(AlbumDownloadState.of(ids: ids, onDevice: ["a"], errors: ["b": "No rip server"]),
+                       .working(done: 1, total: 3))
+
+        // Every track on device → done, and no longer offering to re-download.
+        let done = AlbumDownloadState.of(ids: ids, onDevice: ["a", "b", "c"], errors: [:])
+        XCTAssertEqual(done, .done(total: 3))
+        XCTAssertEqual(done.label, "On this device")
+        XCTAssertFalse(done.isTappable)
+    }
+
+    /// Settled-but-incomplete must say WHAT failed and stay retryable — the eternal-spinner trap
+    /// the album ADD capsule already learned (`DiscoverAlbumAddState`), applied to the download.
+    func testDownloadStateSettlesOnFailureAndStaysRetryable() {
+        let ids = ["a", "b"]
+        let partial = AlbumDownloadState.of(ids: ids, onDevice: ["a"], errors: ["b": "Couldn’t queue the download"])
+        XCTAssertEqual(partial, .failed(done: 1, total: 2, message: "Couldn’t queue the download"))
+        XCTAssertEqual(partial.label, "1/2 downloaded — Couldn’t queue the download")
+        XCTAssertTrue(partial.isTappable, "a settled failure must be retryable")
+
+        // Total failure leads with the reason, not a 0/n the user can't act on.
+        let none = AlbumDownloadState.of(ids: ids, onDevice: [],
+                                         errors: ["a": "No rip server", "b": "No rip server"])
+        XCTAssertEqual(none, .failed(done: 0, total: 2, message: "No rip server"))
+        XCTAssertEqual(none.label, "No rip server")
+
+        // A stale error on a track that LANDED anyway doesn't poison the result.
+        XCTAssertEqual(AlbumDownloadState.of(ids: ids, onDevice: ["a", "b"], errors: ["a": "transient"]),
+                       .done(total: 2))
+    }
+
     // MARK: - Runtime formatting (album totals cross the hour mark)
 
     func testRuntimeFormatsMinutesAndHours() {

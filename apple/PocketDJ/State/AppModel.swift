@@ -557,11 +557,53 @@ final class AppModel {
         onDiscoverSupersede?(all)
     }
 
+    // MARK: - Live supersede (the id-vs-recording guard)
+    //
+    // BUG (Levi, device, 2026-08-07): "im not sure if its caught in a loop because its played
+    // the same song How You Say My Name twice now", right after adding an album from the New
+    // tile. Cause: ONE recording with TWO live catalog identities — the provisional Discover
+    // row `amrec_<storeId>` and a real indexed song carrying the same `appleMusicId`. `merge`
+    // dedups by ID only, so both survive as separate rows, and any queue built off the catalog
+    // (an artist's songs, Recently added, a rec/shuffle set) contains the same track twice and
+    // plays it twice.
+    //
+    // The supersede that prevents this ALREADY EXISTS — `withProvisionalSources` runs
+    // `DiscoverAddsStore.split` against every source's `appleMusicId` on each catalog BUILD.
+    // The LIVE inject path (an add landing while the catalog is already loaded, which is every
+    // ＋ Add) simply skipped it: it guarded on `id`, which by construction never collides. So
+    // the twin existed from the tap until the next full rebuild — hours, or a relaunch.
+    //
+    // These helpers close that gap by applying the SAME rule at the same moment, so an add can
+    // no longer mint a second identity for a recording the catalog already holds.
+
+    /// The catalog id already claiming this song's Apple Music id, if any — i.e. the row a
+    /// provisional add must yield to instead of being appended beside. Same first-seen-wins
+    /// rule and same id space as the build-time split; O(1) via the revision-keyed memo.
+    private func claimant(forSong song: IndexSong) -> String? {
+        guard let amId = song.appleMusicId, let claimed = songId(forAppleMusicId: amId),
+              claimed != song.id else { return nil }
+        return claimed
+    }
+
+    /// The album twin of `claimant(forSong:)` — mirrors `splitAlbums`.
+    private func claimant(forAlbum album: IndexAlbum) -> String? {
+        guard let amId = album.appleMusicId, let claimed = albumId(forAppleMusicId: amId),
+              claimed != album.id else { return nil }
+        return claimed
+    }
+
     /// A Discover add landing while the catalog is LIVE: append the provisional row as a
     /// raw song of the synthetic source and rebuild the effective catalog (the edit-save
     /// rebuild path — synchronous, adds are user-initiated and rare).
     func injectDiscoverAdd(_ song: IndexSong) {
         guard rawSongsById[song.id] == nil, songsById[song.id] == nil else { return }
+        // An indexed twin already owns this recording — yield to it (never a second row for
+        // one song). Landed through the SAME `applySupersede` the build path uses, so the
+        // provisional entry is pruned and collection/favorite references follow.
+        if let claimed = claimant(forSong: song) {
+            applySupersede(discover: [(from: song.id, to: claimed)])
+            return
+        }
         rawSongs.append(song)
         rawSongsById[song.id] = song
         songSourceById[song.id] = DiscoverAddsStore.sourceName
@@ -576,6 +618,10 @@ final class AppModel {
     /// `injectDiscoverAdd`; the per-track songs arrive via `injectDiscoverAdd`).
     func injectDiscoverAlbumAdd(_ album: IndexAlbum) {
         guard rawAlbumsById[album.id] == nil, albumsById[album.id] == nil else { return }
+        if let claimed = claimant(forAlbum: album) {
+            applySupersede(discover: [], discoverAlbums: [(from: album.id, to: claimed)])
+            return
+        }
         rawAlbums.append(album)
         rawAlbumsById[album.id] = album
         albumSourceById[album.id] = DiscoverAddsStore.sourceName
@@ -590,19 +636,38 @@ final class AppModel {
     /// rebuild — an album add fans out to N tracks, and the ~90k-row rebuild is the per-batch
     /// cost, never per-track (the album twin of `injectImported`, mirroring its one-rebuild
     /// contract). Known ids are skipped. `album` is nil when only new tracks landed.
+    ///
+    /// A track (or the album) the catalog ALREADY holds under another id supersedes instead of
+    /// being appended — the whole batch's pairs land in ONE `applySupersede` so a part-owned
+    /// album still costs a single rebuild. This is the album path of the duplicate-identity fix
+    /// above, and the one the New tile actually walks: "Add remaining (n)" on a part-owned album
+    /// expands to EVERY track, so without it every track the user already had became a twin.
     func injectDiscoverAlbumBatch(songs newSongs: [IndexSong], album: IndexAlbum?) {
         var changed = false
+        var songPairs: [(from: String, to: String)] = []
+        var albumPairs: [(from: String, to: String)] = []
         for s in newSongs where rawSongsById[s.id] == nil && songsById[s.id] == nil {
+            if let claimed = claimant(forSong: s) {
+                songPairs.append((from: s.id, to: claimed))
+                continue
+            }
             rawSongs.append(s)
             rawSongsById[s.id] = s
             songSourceById[s.id] = DiscoverAddsStore.sourceName
             changed = true
         }
         if let album, rawAlbumsById[album.id] == nil, albumsById[album.id] == nil {
-            rawAlbums.append(album)
-            rawAlbumsById[album.id] = album
-            albumSourceById[album.id] = DiscoverAddsStore.sourceName
-            changed = true
+            if let claimed = claimant(forAlbum: album) {
+                albumPairs.append((from: album.id, to: claimed))
+            } else {
+                rawAlbums.append(album)
+                rawAlbumsById[album.id] = album
+                albumSourceById[album.id] = DiscoverAddsStore.sourceName
+                changed = true
+            }
+        }
+        if !songPairs.isEmpty || !albumPairs.isEmpty {
+            applySupersede(discover: songPairs, discoverAlbums: albumPairs)
         }
         guard changed else { return }
         if !availableSources.contains(DiscoverAddsStore.sourceName) {

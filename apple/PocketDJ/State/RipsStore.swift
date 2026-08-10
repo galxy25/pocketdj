@@ -1133,17 +1133,42 @@ final class RipsStore {
         } catch { return .empty }
     }
 
+    /// What an album add owes BEYOND the Apple Music library write. Stated by the CALLER, with
+    /// no default, because the two surfaces that add an album mean genuinely different things
+    /// and a defaulted parameter is how one of them silently inherited the other's promise.
+    ///
+    /// BUG (Levi, device, 2026-08-07): "I added the album X by Roy Woods from pocketdj in the new
+    /// tile and it is ripping the whole album, I dont think it should do that, it should add the
+    /// items to the users apple music library but not rip unless they hit download." The album
+    /// PREVIEW screen inherited `AlbumPreviewView`'s ancestry — the Shazam recognizer's
+    /// add-then-rip-and-burn screen — so a ＋ that says "Add album to your library" started a
+    /// real-time capture of all 12 tracks. Adding and downloading are different promises.
+    enum AlbumAddIntent: Equatable {
+        /// Library write + catalog citizenship, and NOTHING else. No audio is captured; the
+        /// tracks stream through the user's Apple Music subscription until they ask for a copy.
+        /// This is what "＋ Add" means on the album preview screen.
+        case libraryOnly
+        /// Library write + catalog citizenship + a per-track `amrec_` rip fan-out (the DOWNLOAD
+        /// intent). The Discover search album row is built around this: its whole trailing UI is
+        /// live per-track rip progress (n/m ready), and it has no separate download affordance.
+        case andPrepareCopies
+    }
+
     /// "＋ Add" for a Discover ALBUM — three app-side actions:
     ///   1. Add the album to the user's own Apple Music library when this device can write it
     ///      (on macOS `canAddToLibrary` is false — the caller opens the Music.app deep link
     ///      instead, mirroring the Shazam macOS fallback; this method just skips the write).
     ///   2. Expand the album into tracks — MusicKit `albumTracks` when authorized, else the
-    ///      subscription-free `/album-tracks` proxy — and fan each track out as a per-song
-    ///      `amrec_` rip through the EXISTING single-flight `requestRip` queue.
+    ///      subscription-free `/album-tracks` proxy.
     ///   3. Record a PROVISIONAL album (+ each track as a provisional song) in
     ///      `DiscoverAddsStore` so the album + its songs are browsable/collectable NOW.
+    /// `intent == .andPrepareCopies` adds a fourth: fan each track out as a per-song `amrec_`
+    /// rip through the EXISTING single-flight `requestRip` queue. `.libraryOnly` captures NO
+    /// audio — see `AlbumAddIntent`.
     /// Never throws; failures land in `discoverError`. Split out from the view like `discoverAdd`.
-    func discoverAddAlbum(_ hit: DiscoverAlbumHit, library: (any MusicLibraryContributor)? = nil) async {
+    func discoverAddAlbum(_ hit: DiscoverAlbumHit,
+                          library: (any MusicLibraryContributor)? = nil,
+                          intent: AlbumAddIntent) async {
         // 1) Library write (non-macOS only — canAddToLibrary is false on macOS).
         if let library, library.canAddToLibrary {
             try? await library.addAlbumToLibrary(storeID: hit.appleMusicId)
@@ -1177,28 +1202,36 @@ final class RipsStore {
             return
         }
 
-        // 3) Fan out the per-track rips on the shared queue FIRST, collecting ONLY the tracks
-        //    whose rip was ACCEPTED (ready / queued / inflight). A track the server can't
-        //    prepare (.noServer / .unknown / .failed) is dropped — recording it would leave a
-        //    permanent unplayable row (mirrors discoverAdd's gating). Nothing is written to the
-        //    provisional store inside this loop, so the catalog is NOT rebuilt per track.
+        // 3) `.andPrepareCopies` ONLY: fan out the per-track rips on the shared queue FIRST,
+        //    collecting ONLY the tracks whose rip was ACCEPTED (ready / queued / inflight). A
+        //    track the server can't prepare (.noServer / .unknown / .failed) is dropped —
+        //    recording it would leave a permanent unplayable row (mirrors discoverAdd's gating).
+        //    Nothing is written to the provisional store inside this loop, so the catalog is NOT
+        //    rebuilt per track.
+        //
+        //    `.libraryOnly` requests NOTHING: every expanded track is recorded as-is, exactly
+        //    like the serverless branch below — it carries its Apple Music catalog id, so it
+        //    streams through the subscription immediately, and the download button prepares a
+        //    copy later if the user asks for one.
         var accepted: [DiscoverAddsStore.Entry] = []
         var trackIds: [String] = []
         let addedAt = Date().timeIntervalSince1970 * 1000
         for d in descs {
-            let outcome = await requestRip(songId: d.songId, title: d.title, artist: d.artist,
-                                           appleMusicId: d.appleMusicId, lengthMs: d.lengthMs)
-            switch outcome {
-            case .ready:
-                await refreshManifest()
-            case .queued, .inflight:
-                if let jobId = jobs[d.songId]?.jobId { pollToReady(songId: d.songId, jobId: jobId) }
-            case .noServer:
-                // SERVERLESS (public-user audit fix): with no import server the track is STILL
-                // recorded — it streams via its Apple Music catalog id; only the rip isn't owed.
-                break
-            case .unknown, .failed:
-                continue   // a per-track miss records nothing — no dead row
+            if intent == .andPrepareCopies {
+                let outcome = await requestRip(songId: d.songId, title: d.title, artist: d.artist,
+                                               appleMusicId: d.appleMusicId, lengthMs: d.lengthMs)
+                switch outcome {
+                case .ready:
+                    await refreshManifest()
+                case .queued, .inflight:
+                    if let jobId = jobs[d.songId]?.jobId { pollToReady(songId: d.songId, jobId: jobId) }
+                case .noServer:
+                    // SERVERLESS (public-user audit fix): with no import server the track is STILL
+                    // recorded — it streams via its Apple Music catalog id; only the rip isn't owed.
+                    break
+                case .unknown, .failed:
+                    continue   // a per-track miss records nothing — no dead row
+                }
             }
             trackIds.append(d.songId)
             accepted.append(DiscoverAddsStore.Entry(
@@ -1231,6 +1264,11 @@ final class RipsStore {
                                     title: hit.title, artist: hit.artist, trackIds: trackIds,
                                     artworkUrl: hit.artworkUrl, year: hit.year,
                                     trackCount: hit.trackCount ?? trackIds.count, url: hit.url,
+                                    // Recorded so the progress capsule knows whether there is
+                                    // any capture to wait on — a library-only add settles to
+                                    // "In your library" at once instead of spinning on rips
+                                    // that were never requested.
+                                    preparedCopies: intent == .andPrepareCopies,
                                     songs: accepted)
     }
 

@@ -330,7 +330,7 @@ final class DiscoverStoreTests: XCTestCase {
             Data(#"{"jobId":"j","songId":"x","phase":"queued"}"#.utf8)
         let hit = RipsStore.DiscoverAlbumHit(appleMusicId: "111", albumId: "amrec_album_111",
                                              title: "RAM", artist: "Daft Punk", year: 2013)
-        await rips.discoverAddAlbum(hit)
+        await rips.discoverAddAlbum(hit, intent: .andPrepareCopies)
         XCTAssertEqual(DiscoverURLProtocol.count(path: "/album-tracks"), 1, "expands once via the proxy")
         XCTAssertEqual(DiscoverURLProtocol.count(path: "/rip"), 2, "one rip per track")
         // Provisional album + its per-track songs recorded.
@@ -373,7 +373,7 @@ final class DiscoverStoreTests: XCTestCase {
             Data(#"{"jobId":"j","songId":"x","phase":"queued"}"#.utf8)
         let hit = RipsStore.DiscoverAlbumHit(appleMusicId: "111", albumId: "amrec_album_111",
                                              title: "RAM", artist: "Daft Punk", year: 2013)
-        await rips.discoverAddAlbum(hit)
+        await rips.discoverAddAlbum(hit, intent: .andPrepareCopies)
 
         XCTAssertEqual(batchInjects, 1, "exactly ONE batched inject for the whole album")
         XCTAssertEqual(perRowSongInjects, 0, "no per-track song inject (that would rebuild per track)")
@@ -403,13 +403,117 @@ final class DiscoverStoreTests: XCTestCase {
         lib.tracks = [songRow("10", "A"), songRow("11", "B")]
         let hit = RipsStore.DiscoverAlbumHit(appleMusicId: "111", albumId: "amrec_album_111",
                                              title: "RAM", artist: "Daft Punk")
-        await rips.discoverAddAlbum(hit, library: lib)
+        await rips.discoverAddAlbum(hit, library: lib, intent: .andPrepareCopies)
 
         XCTAssertEqual(adds.entries.map(\.songId).sorted(), ["amrec_10", "amrec_11"],
                        "serverless tracks are recorded — they stream via their catalog ids")
         XCTAssertEqual(adds.albums.first?.albumId, "amrec_album_111")
         XCTAssertEqual(batchInjects, 1, "one batched inject for the whole album")
         XCTAssertNil(rips.discoverError, "a serverless add is not an error")
+    }
+
+    /// REGRESSION (Levi, device, 2026-08-07): "I added the album X by Roy Woods from pocketdj in
+    /// the new tile and it is ripping the whole album, I dont think it should do that, it should
+    /// add the items to the users apple music library but not rip unless they hit download."
+    ///
+    /// `.libraryOnly` — what the album PREVIEW's giant ＋ passes — must issue ZERO `/rip`
+    /// requests while still doing everything an add owes: the Apple Music library write, the
+    /// provisional album, and every track as a streamable catalog citizen. Before the fix this
+    /// fired one real-time capture per track (13 on a full album) off a button that only ever
+    /// promised "Add album to your library".
+    func testDiscoverAddAlbumLibraryOnlyRipsNothingButStillAdds() async {
+        let rips = makeStore()
+        let addsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-dadds-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: addsURL) }
+        let adds = DiscoverAddsStore(fileURL: addsURL)
+        rips.discoverAdds = adds
+        DiscoverURLProtocol.bodyByPath["/album-tracks"] = Data("""
+        { "id": "111", "tracks": [
+            { "id": "1", "title": "T1", "artist": "Roy Woods", "trackNumber": 1, "durationMs": 200000 },
+            { "id": "2", "title": "T2", "artist": "Roy Woods", "trackNumber": 2, "durationMs": 210000 },
+            { "id": "3", "title": "T3", "artist": "Roy Woods", "trackNumber": 3, "durationMs": 220000 }
+          ] }
+        """.utf8)
+        DiscoverURLProtocol.bodyByPath["/rip"] =
+            Data(#"{"jobId":"j","songId":"x","phase":"queued"}"#.utf8)
+        let lib = AlbumTracksStub()
+        lib.canAddToLibrary = true          // an iOS device that CAN write the AM library
+        let hit = RipsStore.DiscoverAlbumHit(appleMusicId: "111", albumId: "amrec_album_111",
+                                             title: "Say Less", artist: "Roy Woods")
+        await rips.discoverAddAlbum(hit, library: lib, intent: .libraryOnly)
+
+        XCTAssertEqual(DiscoverURLProtocol.count(path: "/rip"), 0,
+                       "＋ Add must capture NOTHING — ripping is the download button's job")
+        XCTAssertEqual(lib.addedAlbumStoreIDs, ["111"], "the Apple Music library write still happens")
+        // …and the album is fully a catalog citizen: every track recorded, streamable via its
+        // Apple Music id, in ONE batched inject.
+        XCTAssertEqual(adds.entries.map(\.songId).sorted(), ["amrec_1", "amrec_2", "amrec_3"])
+        XCTAssertEqual(adds.entries.map(\.appleMusicId).sorted(), ["1", "2", "3"],
+                       "each row carries its catalog id, so it streams with no local file")
+        XCTAssertEqual(adds.albums.first?.albumId, "amrec_album_111")
+        XCTAssertEqual(adds.albums.first?.trackIds, ["amrec_1", "amrec_2", "amrec_3"])
+        XCTAssertNil(rips.discoverError, "a library-only add is not an error")
+    }
+
+    /// The two album-add surfaces mean different things, and the parameter is what keeps them
+    /// from drifting: the Discover search row (`.andPrepareCopies`) still fans rips out — its
+    /// whole trailing control is per-track rip progress and it has no download button of its own.
+    func testDiscoverAddAlbumPrepareCopiesStillFansOutRips() async {
+        let rips = makeStore()
+        let addsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-dadds-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: addsURL) }
+        rips.discoverAdds = DiscoverAddsStore(fileURL: addsURL)
+        DiscoverURLProtocol.bodyByPath["/album-tracks"] = Data("""
+        { "id": "111", "tracks": [
+            { "id": "1", "title": "T1", "artist": "Roy Woods", "trackNumber": 1 },
+            { "id": "2", "title": "T2", "artist": "Roy Woods", "trackNumber": 2 }
+          ] }
+        """.utf8)
+        DiscoverURLProtocol.bodyByPath["/rip"] =
+            Data(#"{"jobId":"j","songId":"x","phase":"queued"}"#.utf8)
+        let hit = RipsStore.DiscoverAlbumHit(appleMusicId: "111", albumId: "amrec_album_111",
+                                             title: "Say Less", artist: "Roy Woods")
+        await rips.discoverAddAlbum(hit, intent: .andPrepareCopies)
+        XCTAssertEqual(DiscoverURLProtocol.count(path: "/rip"), 2, "the download intent still rips")
+    }
+
+    /// The progress capsule must SETTLE for a library-only add. `preparedCopies` records whether
+    /// there is any capture to wait on; without it the n/m readout sits at 0/3 forever, because
+    /// no rip was ever queued so no track can become ready.
+    func testLibraryOnlyAddRecordsPreparedCopiesFalseAndSettlesImmediately() async {
+        let rips = makeStore()
+        let addsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-dadds-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: addsURL) }
+        let adds = DiscoverAddsStore(fileURL: addsURL)
+        rips.discoverAdds = adds
+        let lib = AlbumTracksStub()
+        lib.tracks = [songRow("1", "T1"), songRow("2", "T2"), songRow("3", "T3")]
+        let hit = RipsStore.DiscoverAlbumHit(appleMusicId: "111", albumId: "amrec_album_111",
+                                             title: "Say Less", artist: "Roy Woods")
+        await rips.discoverAddAlbum(hit, library: lib, intent: .libraryOnly)
+
+        let entry = try! XCTUnwrap(adds.albums.first)
+        XCTAssertEqual(entry.preparedCopies, false)
+        // NOTHING is ready (no rips exist) and nothing errored — the old reducer would call that
+        // `.adding(0, 3)`, an eternal spinner. The entry-aware one settles.
+        XCTAssertEqual(DiscoverAlbumAddState.of(trackIds: entry.trackIds ?? [],
+                                                readyIds: [], erroredIds: []),
+                       .adding(ready: 0, total: 3), "the raw reducer still spins — that's the trap")
+        XCTAssertEqual(DiscoverAlbumAddState.of(entry: entry, readyIds: [], erroredIds: []),
+                       .added, "a library-only add has nothing to wait on")
+        // A prepare-copies album keeps the progress readout…
+        var ripped = entry
+        ripped.preparedCopies = true
+        XCTAssertEqual(DiscoverAlbumAddState.of(entry: ripped, readyIds: ["amrec_1"], erroredIds: []),
+                       .adding(ready: 1, total: 3))
+        // …and so does a LEGACY row written before the split (nil), which really was ripping.
+        var legacy = entry
+        legacy.preparedCopies = nil
+        XCTAssertEqual(DiscoverAlbumAddState.of(entry: legacy, readyIds: ["amrec_1"], erroredIds: []),
+                       .adding(ready: 1, total: 3))
     }
 
     /// FIX 4 (UX): an album settles when every track is TERMINAL (ready OR errored) — a
@@ -438,10 +542,13 @@ final class DiscoverStoreTests: XCTestCase {
         var tracks: [AppleMusicSongRow] = []
         var kind: StreamingProviderKind { .appleMusic }
         var canContribute: Bool { true }
-        var canAddToLibrary: Bool { false }
+        /// Stored (default false, as before) so a test can turn the library write ON and assert
+        /// that ＋ Add still performs it — the half of the add that must SURVIVE dropping the rip.
+        var canAddToLibrary: Bool = false
+        private(set) var addedAlbumStoreIDs: [String] = []
         func resolveForLibrary(storeID: String?, title: String?, artist: String?) async -> AppleMusicResolution? { nil }
         func addSongToLibrary(storeID: String) async throws {}
-        func addAlbumToLibrary(storeID: String) async throws {}
+        func addAlbumToLibrary(storeID: String) async throws { addedAlbumStoreIDs.append(storeID) }
         func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] { tracks }
     }
 
@@ -620,7 +727,7 @@ final class DiscoverStoreTests: XCTestCase {
                                              title: "Kind of Blue", artist: "Miles Davis",
                                              artworkUrl: "https://art/c.jpg",
                                              trackCount: 2, year: 1959)
-        await rips.discoverAddAlbum(hit)
+        await rips.discoverAddAlbum(hit, intent: .andPrepareCopies)
 
         XCTAssertEqual(adds.entries.count, 2)
         XCTAssertEqual(adds.entries.map(\.albumId),
