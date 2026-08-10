@@ -197,10 +197,15 @@ struct ForYouTilesView: View {
     /// snapshot's `zoneIds`/`zoneSource`, so `feed.revision` already covers it. Keying on live
     /// `recEngine` state as well would re-derive the cards off a fetch that has not been committed
     /// — the tile would count one list while its screen showed another.
+    ///  • `collections.membershipRevision` — an ADD landed. This is a CARD change, not a ranking
+    ///    change, and the distinction is the whole reason it is safe to key on here: the frozen ids
+    ///    are untouched, the membership filter over them just has one more song to drop. Leaving it
+    ///    out was the gap — a 👍 filed the song and the tile went on counting it.
     private var derivationKey: String {
         "\(feed?.revision ?? 0)|\(snapshot.refreshedAtMs)|\(feedback?.revision ?? 0)"
         + "|\(releaseFeed?.revision ?? 0)"
         + "|\(collections.playlists.count)|\(collections.pockets.count)"
+        + "|\(collections.membershipRevision)"
     }
 
     private func deriveTiles() {
@@ -233,8 +238,15 @@ struct ForYouTilesView: View {
             // The attribution rides the SNAPSHOT, not live engine state: it has to describe the
             // ids actually on screen, and those were frozen by whichever ranker produced them.
             zoneSource: snapshot.zoneSource,
+            // TWO filters, and both are needed. `live` drops the thumbed-down tail; the membership
+            // pass drops anything that is ALREADY IN the collection — evaluated HERE, at read, and
+            // not baked into the frozen list, because every add (including a 👍 made from this very
+            // tile) moves membership while the ranking stays put. Without it the card keeps
+            // promising a song he already filed. See `CollectionsStore.suggestionsExcludingMembers`.
             collections: crates.map { c in
-                (id: c.id, kind: c.kind, name: c.name, suggestions: live(c.songIds, c.id))
+                (id: c.id, kind: c.kind, name: c.name,
+                 suggestions: collections.suggestionsExcludingMembers(live(c.songIds, c.id),
+                                                                     ofCollection: c.id))
             },
             // A ZERO ON THE NEW TILE HAS FOUR DIFFERENT CAUSES. Say which — a bare 0 with
             // "no releases in the last 30 days" beneath it is the card asserting something it

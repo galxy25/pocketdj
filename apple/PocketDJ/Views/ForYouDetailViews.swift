@@ -551,7 +551,17 @@ struct ForYouSongListView: View {
         guard !didBuild else { return }
         didBuild = true
         if let frozen = feed?.songIds(forTileId: route.tileId) {
-            songIds = frozen
+            // ALREADY IN THE COLLECTION ⇒ not an offer, at READ time. The frozen list was filtered
+            // when it was built, but membership has moved since — every add does that, the 👍 on
+            // this very screen included — and a frozen filter goes stale the moment he acts on it.
+            // Re-applied here so the list that opens matches the card's count, which is derived
+            // through the same call. In Da Zone is a PLAY queue, not an add list, so it is
+            // deliberately untouched: replaying something you own is the feature there.
+            if route.kind == .collection, let cid = route.collectionId {
+                songIds = collections.suggestionsExcludingMembers(frozen, ofCollection: cid)
+            } else {
+                songIds = frozen
+            }
             if route.kind == .zone {
                 let buried = Set(feed?.snapshot.zoneBuriedIds ?? [])
                 pools = Dictionary(uniqueKeysWithValues: frozen.filter(buried.contains)

@@ -45,7 +45,7 @@ process.env.MAX_PROFILES = '1000';
 
 const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections, shedToFit,
         scoreSimilarToCollections, playCountSignal, recencySignal,
-        feedbackOf, feedbackMultiplier,
+        feedbackOf, feedbackMultiplier, identityKeys,
         primaryArtistKey, artistKey, artistFamiliarityOf, auxMix } =
   await import('./index.mjs');
 
@@ -639,6 +639,78 @@ test('scoreSimilarToCollections co-membership and co-play lift a song', () => {
   const scoreOf = (out, id) => out.songs.find((s) => s.songId === id)?.score ?? 0;
   assert.ok(scoreOf(lifted, 'sng_j3') > scoreOf(base, 'sng_j3'),
             'sharing another crate + a listening session with a member raises the score');
+});
+
+// ── "Already in that collection" — BY IDENTITY, not by string ───────────────────────────────────
+//
+// The owner's rule is that a suggestion tile never offers back a song the collection already has.
+// A membership test on raw ids gets that wrong for the two id forms one recording can also wear:
+// the `_clean`/`_explicit` variant and the `amrec_<storeId>` ad-hoc capture. The device filters
+// too (it can also join through the catalog's `appleMusicId`, which this route has no access to) —
+// this is the half the server can decide from the id string alone, so the answer does not come
+// back full of rows the client is about to throw away.
+
+test('identityKeys folds variants and ad-hoc captures onto one recording', () => {
+  assert.deepEqual(identityKeys('sng_e1'), ['sng_e1'], 'a plain id is its own identity');
+  assert.deepEqual(identityKeys('sng_0123456789ab_clean'), ['sng_0123456789ab']);
+  assert.deepEqual(identityKeys('sng_0123456789ab_explicit'), ['sng_0123456789ab']);
+  assert.deepEqual(identityKeys('amrec_944459436'), ['amrec_944459436', 'am:944459436']);
+  // A placeholder store id must NOT become a shared key — that would fold unrelated songs into
+  // one identity and silently delete real suggestions.
+  assert.deepEqual(identityKeys('amrec_0000'), ['amrec_0000']);
+  assert.deepEqual(identityKeys('amrec_12'), ['amrec_12']);
+  assert.deepEqual(identityKeys('amrec_nope'), ['amrec_nope']);
+  assert.deepEqual(identityKeys(''), []);
+});
+
+/// An index with REAL-SHAPED ids — the shared fixture uses short readable ones, and the
+/// `sng_<12 hex>_clean` variant convention deliberately does not match those. Three distinct
+/// artists so the max-2-per-artist diversity cap cannot be what trims the answer.
+///
+/// `sng_anchor…` is the crate's RESOLVABLE member (it builds the taste profile), `sng_0123…` is
+/// the twin the crate holds under another id, `sng_free…` is the genuine candidate.
+const identityIndex = () => new Map([
+  ['sng_0123456789ab', { i: 'sng_0123456789ab', al: 'alb_i1', a: 'Twinner', n: 'Twin',
+                         g: 'electronic', y: 2020, b: 120, c: '8A' }],
+  ['sng_aaaaaaaaaaaa', { i: 'sng_aaaaaaaaaaaa', al: 'alb_i2', a: 'Anchor', n: 'Anchor',
+                         g: 'electronic', y: 2020, b: 121, c: '8A' }],
+  ['sng_ffffffffffff', { i: 'sng_ffffffffffff', al: 'alb_i3', a: 'Freeman', n: 'Free',
+                         g: 'electronic', y: 2020, b: 122, c: '8A' }],
+]);
+const identityState = (songIds) => ({
+  v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+  collections: { atMs: 0, list: [{ id: 'pkt_i', kind: 'pocket', name: 'Crate', songIds }] },
+});
+
+test('scoreSimilarToCollections excludes the BASE of a variant member', () => {
+  const state = identityState(['sng_aaaaaaaaaaaa', 'sng_0123456789ab_clean']);
+  const ids = scoreSimilarToCollections(state, identityIndex(), ['pkt_i'], { nowMs: NOW })
+    .songs.map((s) => s.songId);
+  assert.ok(!ids.includes('sng_0123456789ab'), 'the clean rip in the crate IS this recording');
+  assert.deepEqual(ids, ['sng_ffffffffffff'], 'and the genuinely-absent song keeps its slot');
+});
+
+test('scoreSimilarToCollections excludes a variant of a plain member', () => {
+  const withVariant = new Map(identityIndex());
+  withVariant.set('sng_aaaaaaaaaaaa_explicit',
+                  { ...withVariant.get('sng_aaaaaaaaaaaa'), i: 'sng_aaaaaaaaaaaa_explicit' });
+  const ids = scoreSimilarToCollections(identityState(['sng_aaaaaaaaaaaa']), withVariant,
+                                        ['pkt_i'], { nowMs: NOW }).songs.map((s) => s.songId);
+  assert.ok(!ids.includes('sng_aaaaaaaaaaaa_explicit'), 'the sibling edition is the same song');
+  assert.deepEqual(ids.sort(), ['sng_0123456789ab', 'sng_ffffffffffff']);
+});
+
+test('scoreCollections never offers a collection the song is already in, under any id', () => {
+  // The crate resolves through `sng_aaaa…` (so it genuinely scores) and ALSO holds `sng_0123…`
+  // as its clean variant — so "add it to this crate" is a suggestion to do what is already done.
+  const already = scoreCollections(identityState(['sng_aaaaaaaaaaaa', 'sng_0123456789ab_clean']),
+                                   identityIndex(), 'sng_0123456789ab',
+                                   { nowMs: NOW, threshold: 0 });
+  assert.deepEqual(already.suggestions.map((s) => s.id), []);
+  // Control: the same crate WITHOUT that song does suggest it, so the exclusion is what moved.
+  const offered = scoreCollections(identityState(['sng_aaaaaaaaaaaa']), identityIndex(),
+                                   'sng_0123456789ab', { nowMs: NOW, threshold: 0 });
+  assert.deepEqual(offered.suggestions.map((s) => s.id), ['pkt_i']);
 });
 
 test('scoreSimilarToCollections is deterministic', () => {

@@ -2692,6 +2692,49 @@ final class CollectionsStore {
     private static let similarityMemberCap = 5_000
     private static let similarityTotalIdCap = 200_000
 
+    // MARK: - Membership as RECOMMENDATION IDENTITY (the "already in here" filter)
+
+    /// One `RecMembership` per collection id, memoized on `membershipRevision`.
+    @ObservationIgnored private var recMembershipCache: (revision: Int, byId: [String: RecMembership])?
+
+    /// Who is already in this collection, in the identity form the suggestion surfaces compare
+    /// against (see `RecMembership` — variant ids and `amrec_` captures fold onto the recording).
+    ///
+    /// MEMOIZED ON `membershipRevision`, which is exactly the right key in both directions:
+    /// `playableIdsForAnyCollection` walks a playlist's whole node tree (or a pocket's DAG) and is
+    /// main-actor work, so re-resolving it on every tile derivation would put a per-collection tree
+    /// walk on a render path — and the memo can never go stale, because the only thing that changes
+    /// membership is a persisted mutation, and every one of those bumps the revision.
+    func recMembership(forCollection id: String) -> RecMembership {
+        if let cache = recMembershipCache, cache.revision == membershipRevision,
+           let hit = cache.byId[id] { return hit }
+        let ids = playableIdsForAnyCollection(id)
+        let songs = app?.songsById
+        let m = RecMembership(memberIds: ids, appleMusicId: { songs?[$0]?.appleMusicId })
+        var byId = recMembershipCache?.revision == membershipRevision
+            ? (recMembershipCache?.byId ?? [:]) : [:]
+        byId[id] = m
+        recMembershipCache = (membershipRevision, byId)
+        return m
+    }
+
+    /// **THE READ-TIME HALF OF "never suggest what is already in here."**
+    ///
+    /// The suggestion lists are frozen by the owner's cache rule and only recomputed on an explicit
+    /// Refresh, but membership moves on every add — including the adds made from those very lists.
+    /// So the build-time filter in `ZoneEngine.suggestions` is necessary and NOT sufficient: without
+    /// this, a song thumbed-up into the collection keeps being counted on its tile and keeps being
+    /// offered after a relaunch, until the next scheduled refresh.
+    ///
+    /// Cheap enough to be unconditional: a set lookup per row over a list of ~25, against a memo
+    /// that only rebuilds when the collection actually changes.
+    func suggestionsExcludingMembers(_ suggestionIds: [String], ofCollection id: String) -> [String] {
+        let m = recMembership(forCollection: id)
+        guard !m.isEmpty else { return suggestionIds }
+        let songs = app?.songsById
+        return m.excluding(suggestionIds, appleMusicId: { songs?[$0]?.appleMusicId })
+    }
+
     private func save() {
         // Every mutator funnels through here, so this is the one honest memo key.
         membershipRevision &+= 1
