@@ -10,19 +10,29 @@ import SwiftUI
 ///
 /// ── WHAT EACH TILE IS ────────────────────────────────────────────────────────────────────────
 ///  • **New** — releases from the last 30 days by artists the owner actually plays. The only
-///    networked tile (`ReleaseFeedService`); everything it shows was fetched off a PLAY event,
-///    never off this render.
+///    networked tile (`ReleaseFeedService`); everything it shows was fetched off a PLAY event or
+///    the one-shot listening seed, never off this render. It is the one tile whose rows he does
+///    NOT own — which is why it keeps a ＋ and is not playable.
 ///  • **In Da Zone** — what to play right now, ranked from recent play history against the local
 ///    catalog (`ZoneEngine.inDaZone`). ≤3 songs per artist, 30–90 songs. No network, ever.
 ///  • **one per collection** — songs worth adding to that playlist/pocket
 ///    (`ZoneEngine.suggestions`). A collection only gets a tile when it actually yields
 ///    suggestions, so this list is short and honest rather than one tile per collection.
 ///
-/// ── WHY THE COUNTS ARE COMPUTED IN A TASK, NOT IN `body` ─────────────────────────────────────
-/// Ranking runs over the whole catalog (~96k rows). Doing that in a view body would re-rank on
-/// every observation change — the exact "derivations in SwiftUI bodies" regression this project
-/// has already paid for once. So the grid computes once per (catalog, history, collections)
-/// revision into `@State`, and `body` only reads the result.
+/// ── CACHED, NOT RECOMPUTED (the owner's rule) ────────────────────────────────────────────────
+/// This view used to re-rank whenever a signature of `(catalogRevision, history.revision,
+/// collection counts, membershipRevision, releaseFeed.revision)` moved — i.e. on every play and
+/// every add, WHILE HE WAS LOOKING AT IT. Owner, verbatim: *"history for you should cache the last
+/// result and only refresh when you hit a refresh button in the menu."*
+///
+/// So the ranking now lives in `ForYouFeedStore` (durable JSON), the grid renders it verbatim on
+/// every open including a cold launch, and the ONLY things that recompute it are the tab menu's
+/// Refresh and a first-ever build on an empty cache. `body` derives tile CARDS from those frozen
+/// ids — a cheap pass over a few thousand ids, never a catalog sweep.
+///
+/// THE ONE EXCEPTION IS THE OWNER'S OWN FEEDBACK. A 👍/👎 is him acting on this list, not the
+/// engine changing its mind: it re-runs the cheap derivation (counts drop, rejected rows sink)
+/// immediately, without touching the frozen ranking. Freezing the list must not freeze his hands.
 struct ForYouTilesView: View {
     @Environment(AppModel.self) private var app
     @Environment(PlayHistoryStore.self) private var history
@@ -38,13 +48,23 @@ struct ForYouTilesView: View {
     /// The 👍/👎 log — the tile COUNTS must already exclude rejected songs, or a tile promises
     /// twelve suggestions and opens on nine.
     @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
+    /// The frozen feed. Optional for the same reason as the others; with no store the grid still
+    /// works, it just cannot persist across launches (an in-memory fallback stands in).
+    @Environment(ForYouFeedStore.self) private var feed: ForYouFeedStore?
     @Binding var path: NavigationPath
+    /// Bumped by History's tab menu ▸ Refresh. The ONLY external trigger for a recompute.
+    var refreshToken: Int = 0
 
     @State private var tiles: [ForYouTile] = []
-    @State private var isBuilding = false
-    /// The inputs the current `tiles` were built from — recomputing only when one of these moves
-    /// is what keeps the ranking off the render path.
-    @State private var builtSignature: String = ""
+    /// Stands in for `feed` when no store is injected (previews / standalone test hosts). Not
+    /// durable, which is exactly the degradation intended.
+    @State private var fallback = ForYouFeedSnapshot()
+    @State private var fallbackRefreshing = false
+    /// Re-renders the "Updated …" line without a timer thrash — recomputed whenever the tiles are.
+    @State private var updatedLabel = ""
+
+    private var snapshot: ForYouFeedSnapshot { feed?.snapshot ?? fallback }
+    private var isRefreshing: Bool { feed?.isRefreshing ?? fallbackRefreshing }
 
     private var columns: [GridItem] {
         [GridItem(.adaptive(minimum: 150, maximum: 260), spacing: 12)]
@@ -61,18 +81,35 @@ struct ForYouTilesView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("foryou-tile-\(tile.id)")
+                    // A TILE IS A SETLIST — so it gets the SAME menu a collection does, from the
+                    // same component. Long-press / right-click, the standard iOS place for it.
+                    .contextMenu { tileMenu(tile) }
                 }
             }
             .padding(12)
-            // `tiles` is only ever empty BEFORE the first build — the builder always emits the
-            // pinned pair — so this is a first-paint spinner, not an empty state. (An "empty
-            // state" here would be unreachable code that could still flash on launch.)
-            if tiles.isEmpty {
+            // A cold install has nothing cached and is building its first feed — that is the ONLY
+            // state that shows a spinner. Every later open paints the cache on the first frame.
+            if tiles.isEmpty && !snapshot.hasResult {
                 ProgressView().padding(40)
             }
         }
         .background(Theme.bg)
-        .task(id: signature) { await rebuild() }
+        // The staleness readout. A frozen feed has to say it is frozen.
+        .safeAreaInset(edge: .top, spacing: 0) { freshnessBar }
+        // Derive the CARDS (cheap: counts over frozen ids). Never the ranking.
+        .task(id: derivationKey) { deriveTiles() }
+        // FIRST POPULATION only — and NOT before the catalog has landed.
+        //
+        // The gate is load-bearing. A refresh against an empty catalog produces an empty ranking,
+        // and that empty ranking would then be STAMPED as the cached result — leaving a brand-new
+        // install with a permanently blank For You that only a manual Refresh could fix. Keying
+        // the task on `app.state` is what re-arms it the moment the catalog arrives.
+        .task(id: app.state) {
+            guard !snapshot.hasResult, app.state == .loaded else { return }
+            await refresh()
+        }
+        // The owner's Refresh, from History's tab menu.
+        .onChange(of: refreshToken) { _, _ in Task { await refresh() } }
         // The cloud engine's refresh used to hang off the For You LIST's `.task`; the list now
         // sits one tap away behind its tile, so the trigger moves up here — otherwise the tile
         // could never appear (its count is what decides whether it exists). Gated internally on
@@ -80,84 +117,161 @@ struct ForYouTilesView: View {
         .task { await recEngine?.refreshForYou() }
     }
 
-    /// Cheap change-detector for the ranking inputs. Reading `playlists`/`pockets` (observed
-    /// arrays) is what SUBSCRIBES this view to collection changes; `membershipRevision` is
-    /// `@ObservationIgnored`, so it sharpens the comparison but could not wake the view on its
-    /// own. `history.revision` moves on every play, which is the frequent trigger in practice.
-    private var signature: String {
-        "\(app.catalogRevision)|\(history.revision)|\(collections.playlists.count)"
-        + "|\(collections.pockets.count)|\(collections.membershipRevision)"
-        + "|\(releaseFeed?.revision ?? 0)|\(recEngine?.forYou.count ?? 0)"
-        + "|\(feedback?.revision ?? 0)"
+    // ========================================================================
+    // MARK: - Freshness
+    // ========================================================================
+
+    private var freshnessBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "clock.arrow.circlepath").font(.caption2)
+            Text(isRefreshing ? "Refreshing…" : updatedLabel)
+                .font(.caption2)
+                .accessibilityIdentifier("foryou-updated-at")
+            Spacer()
+            if isRefreshing { ProgressView().controlSize(.mini) }
+        }
+        .foregroundStyle(Theme.fgDim)
+        .padding(.horizontal, 14).padding(.vertical, 6)
+        .frame(maxWidth: .infinity)
+        .background(Theme.bg)
     }
 
-    private func rebuild() async {
-        guard signature != builtSignature else { return }
-        isBuilding = true
-        defer { isBuilding = false }
+    // ========================================================================
+    // MARK: - Deriving the cards from the frozen ids
+    // ========================================================================
 
-        // Snapshot everything the ranking needs ON the main actor (these are @Observable stores),
-        // then do the actual work OFF it.
-        //
-        // The hop is not premature caution. The zone pass alone is one sweep of the catalog
-        // (~96k rows), and the collection pass is ONE SWEEP PER COLLECTION — 40 collections is
-        // ~4M scored rows. On the main actor that is a visible hang, which is precisely the
-        // failure this app has already had to fix once (Browse search/catalog were moved off the
-        // main actor for the same reason). Every captured value is Sendable, so the pure engine
-        // moves across cleanly.
-        let tracks = app.zoneTracks
-        let songs = app.songs
-        let genres = app.zoneGenreBySongId
-        let plays = history.recentPlaysForZone()
-        let counts = playCounts.snapshot()
-        // Combined Apple + local last-played. Without it a song he plays daily in Music.app but
-        // never through PocketDJ looks dormant, and the rediscovery pool offers it back.
-        let lastPlayed = playCounts.lastPlayedSnapshot()
+    /// What makes the CARDS different — never what makes the RANKING different.
+    ///
+    ///  • `feed.revision` — a refresh landed.
+    ///  • `feedback.revision` — the owner thumbed something: counts drop, rows sink. IMMEDIATE.
+    ///  • `releaseFeed.revision` / cloud count — the two tiles that are deliberately NOT frozen
+    ///    (their content lives in their own caches and their screens read those directly, so a
+    ///    frozen count here would disagree with the screen behind the card).
+    ///  • collection count — a collection deleted out from under a cached tile.
+    private var derivationKey: String {
+        "\(feed?.revision ?? 0)|\(snapshot.refreshedAtMs)|\(feedback?.revision ?? 0)"
+        + "|\(releaseFeed?.revision ?? 0)|\(recEngine?.forYou.count ?? 0)"
+        + "|\(collections.playlists.count)|\(collections.pockets.count)"
+    }
+
+    private func deriveTiles() {
+        let now = Date().timeIntervalSince1970 * 1000
+        updatedLabel = ForYouFeedStore.updatedLabel(refreshedAtMs: snapshot.refreshedAtMs, nowMs: now)
+
+        // The LIVE half of each list — the rows still being offered, with the thumbed-down tail
+        // taken off. `RecFeedbackOrder.sink` is the one implementation of that partition, and the
+        // opened list renders from the same call, so a card that promises twelve suggestions
+        // cannot open on nine.
+        func live(_ ids: [String], _ scope: String) -> [String] {
+            feedback?.partition(ids, scope: scope, nowMs: now).live ?? ids
+        }
+
+        let releases = releaseFeed?.feed(nowMs: now) ?? []
+        let soon = releases.filter { $0.status == .comingSoon }
+        let newScope = ForYouTileRoute.Kind.new.rawValue
+        let cloudIds = recEngine?.forYou.map(\.songId) ?? []
+
+        // Drop a cached tile whose collection has since been deleted — the ONE way a frozen feed
+        // could offer a door to nothing.
+        let crates = snapshot.crates.filter {
+            collections.playlist($0.id) != nil || collections.pocket($0.id) != nil
+        }
+
+        let newCount = live(releases.map(\.feedbackId), newScope).count
+        tiles = ForYouTiles.build(
+            newReleaseCount: newCount,
+            comingSoonCount: live(soon.map(\.feedbackId), newScope).count,
+            zone: live(snapshot.zoneIds, ForYouTileRoute.Kind.zone.rawValue),
+            collections: crates.map { c in
+                (id: c.id, kind: c.kind, name: c.name, suggestions: live(c.songIds, c.id))
+            },
+            cloudSuggestionCount: live(cloudIds, ForYouTileRoute.Kind.suggested.rawValue).count,
+            // A ZERO ON THE NEW TILE HAS FOUR DIFFERENT CAUSES. Say which — a bare 0 with
+            // "no releases in the last 30 days" beneath it is the card asserting something it
+            // has not checked, and it is why this feature read as broken.
+            newEmptyNote: newCount == 0 ? releaseFeed?.emptyReason().tileNote : nil)
+    }
+
+    // ========================================================================
+    // MARK: - Refresh (the ONLY recompute)
+    // ========================================================================
+
+    /// Snapshot everything the ranking needs ON the main actor (these are @Observable stores),
+    /// then hand it to the store, which does the work OFF it.
+    ///
+    /// The hop is not premature caution. The zone pass alone is one sweep of the catalog (~96k
+    /// rows), and the collection pass is ONE SWEEP PER COLLECTION — 40 collections is ~4M scored
+    /// rows. On the main actor that is a visible hang, which is precisely the failure this app has
+    /// already had to fix once (Browse search/catalog were moved off the main actor for the same
+    /// reason). Every captured value is Sendable, so the pure engine moves across cleanly.
+    private func refresh() async {
         let members = collections.suggestibleCollections()
         let now = Date().timeIntervalSince1970 * 1000
         // ONE feedback projection PER TILE, because suppression is SCOPED: a song thumbed down in
-        // one crate must not vanish from another tile's count. The taste half of each projection
-        // is the same global map; only `suppressed` differs.
-        //
-        // Every count below goes through `visibleCount`, THE SAME function the opened list's
-        // header uses — so a card that promises twelve suggestions opens on twelve. Computing the
-        // count one way here and the list another way there is exactly how a card and its screen
-        // end up disagreeing about what is behind it.
-        let zoneFb = feedback?.zoneFeedback(scope: ForYouTileRoute.Kind.zone.rawValue, nowMs: now)
-            ?? ZoneEngine.Feedback()
-        let crateFb = Dictionary(uniqueKeysWithValues: members.map {
-            ($0.id, feedback?.zoneFeedback(scope: $0.id, nowMs: now) ?? ZoneEngine.Feedback())
-        })
-        let cloudIds = recEngine?.forYou.map(\.songId) ?? []
-        let cloudCount = feedback?.visibleCount(cloudIds,
-                                                scope: ForYouTileRoute.Kind.suggested.rawValue,
-                                                nowMs: now) ?? cloudIds.count
-        let releases = releaseFeed?.feed(nowMs: now) ?? []
-        let newCount = feedback?.visibleCount(releases.map(\.feedbackId),
-                                              scope: ForYouTileRoute.Kind.new.rawValue,
-                                              nowMs: now) ?? releases.count
+        // one crate must not vanish from another tile's list.
+        let inputs = ForYouFeedInputs(
+            songs: app.songs,
+            tracks: app.zoneTracks,
+            genreBySongId: app.zoneGenreBySongId,
+            plays: history.recentPlaysForZone(),
+            playCount: playCounts.snapshot(),
+            // Combined Apple + local last-played. Without it a song he plays daily in Music.app but
+            // never through PocketDJ looks dormant, and the rediscovery pool offers it back.
+            lastPlayedMs: playCounts.lastPlayedSnapshot(),
+            crates: members.map { .init(id: $0.id, kind: $0.kind, name: $0.name, songIds: $0.songIds) },
+            zoneFeedback: feedback?.zoneFeedback(scope: ForYouTileRoute.Kind.zone.rawValue, nowMs: now)
+                ?? ZoneEngine.Feedback(),
+            crateFeedback: Dictionary(uniqueKeysWithValues: members.map {
+                ($0.id, feedback?.zoneFeedback(scope: $0.id, nowMs: now) ?? ZoneEngine.Feedback())
+            }),
+            nowMs: now)
 
-        let computed = await Task.detached(priority: .userInitiated) {
-            ForYouTiles.build(
-                newReleaseCount: newCount,
-                zone: ZoneEngine.inDaZone(songs: songs, genreBySongId: genres,
-                                          otherCollections: members.map(\.songIds),
-                                          plays: plays, playCount: { counts[$0] ?? 0 },
-                                          lastPlayedMs: lastPlayed, feedback: zoneFb,
-                                          nowMs: now).songIds,
-                collections: members.map { c in
-                    (id: c.id, kind: c.kind, name: c.name,
-                     suggestions: ZoneEngine.suggestions(memberSongIds: c.songIds, tracks: tracks,
-                                                         playCount: { counts[$0] ?? 0 },
-                                                         feedback: crateFb[c.id] ?? ZoneEngine.Feedback()))
-                },
-                cloudSuggestionCount: cloudCount)
-        }.value
-
-        tiles = computed
-        builtSignature = signature
+        if let feed {
+            await feed.refresh(inputs)
+        } else {
+            guard !fallbackRefreshing else { return }
+            fallbackRefreshing = true
+            defer { fallbackRefreshing = false }
+            fallback = await Task.detached(priority: .userInitiated) {
+                ForYouFeedBuilder.build(inputs)
+            }.value
+        }
+        deriveTiles()
     }
 
+    // ========================================================================
+    // MARK: - The tile menu (shared with collections)
+    // ========================================================================
+
+    /// A tile IS a setlist, so its menu is `CollectionPlayMenuItems` — the same component a
+    /// playlist or pocket row uses — rather than a tile-specific copy.
+    ///
+    /// **New is the exception, and it says so.** Its rows are releases the owner does NOT own; a
+    /// ▶ against them would resolve to nothing, so instead of offering three dead items the menu
+    /// carries one disabled line explaining why.
+    @ViewBuilder private func tileMenu(_ tile: ForYouTile) -> some View {
+        if tile.route.kind == .new {
+            Button {} label: { Label("Nothing to play yet", systemImage: "sparkles") }
+                .disabled(true)
+                .accessibilityIdentifier("foryou-tile-new-unplayable")
+        } else {
+            let ids = playableIds(for: tile.route)
+            let p = feedback?.partition(ids, scope: tile.route.feedbackContext) ?? (live: ids, sunk: [])
+            CollectionPlayMenuItems(title: tile.title, songIds: p.live, sunkIds: p.sunk,
+                                    idPrefix: "foryou-tile-\(tile.id)",
+                                    onStarted: { queue in
+                                        feedback?.beginPlayback(scope: tile.route.feedbackContext,
+                                                                songIds: queue)
+                                    })
+        }
+    }
+
+    /// The frozen ids behind a tile. `.suggested` is not frozen (the server owns it), so it is
+    /// read live — the same rule its card's count follows.
+    private func playableIds(for route: ForYouTileRoute) -> [String] {
+        if route.kind == .suggested { return recEngine?.forYou.map(\.songId) ?? [] }
+        return snapshot.songIds(forTileId: route.tileId) ?? []
+    }
 }
 
 // ============================================================================

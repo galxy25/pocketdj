@@ -145,15 +145,58 @@ struct NewReleasesView: View {
         return "\(days) days ago"
     }
 
+    /// AN EMPTY TILE THAT CANNOT EXPLAIN ITSELF READS AS A BROKEN FEATURE — which is precisely how
+    /// this one was reported ("my new tile is still empty"). Four genuinely different causes hid
+    /// behind one blank screen: the seed still running, Apple Music not authorized, the network
+    /// refusing, and the honest "nobody released anything". Each now says which it is.
     private var emptyState: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "sparkles").font(.system(size: 34)).foregroundStyle(Theme.fgDim)
-            Text("Nothing new in the last 30 days").font(.subheadline).foregroundStyle(Theme.fg)
-            Text("New releases appear here as you play the artists you follow.")
+        let reason = releaseFeed?.emptyReason() ?? .notAuthorized
+        return VStack(spacing: 8) {
+            Image(systemName: Self.emptySymbol(reason))
+                .font(.system(size: 34)).foregroundStyle(Theme.fgDim)
+            Text(Self.emptyTitle(reason)).font(.subheadline).foregroundStyle(Theme.fg)
+            Text(Self.emptyDetail(reason))
                 .font(.caption).foregroundStyle(Theme.fgDim).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity).padding(30)
         .accessibilityIdentifier("new-releases-empty")
+        .accessibilityValue(Self.emptyTitle(reason))
+    }
+
+    /// Pure copy tables — a unit test asserts every case is distinguishable without driving the UI.
+    static func emptySymbol(_ r: ReleaseFeedService.EmptyReason) -> String {
+        switch r {
+        case .checking:       return "arrow.triangle.2.circlepath"
+        case .notAuthorized:  return "person.crop.circle.badge.exclamationmark"
+        case .unreachable:    return "wifi.exclamationmark"
+        case .notCheckedYet:  return "hourglass"
+        case .nothingNew:     return "sparkles"
+        }
+    }
+
+    static func emptyTitle(_ r: ReleaseFeedService.EmptyReason) -> String {
+        switch r {
+        case .checking:       return "Checking for new releases…"
+        case .notAuthorized:  return "Apple Music isn’t connected"
+        case .unreachable:    return "Couldn’t reach Apple Music"
+        case .notCheckedYet:  return "Nothing checked yet"
+        case .nothingNew:     return "Nothing new in the last 30 days"
+        }
+    }
+
+    static func emptyDetail(_ r: ReleaseFeedService.EmptyReason) -> String {
+        switch r {
+        case .checking:
+            return "Looking up what the artists you’ve played in the last 30 days have put out."
+        case .notAuthorized:
+            return "Turn on Apple Music in Settings so PocketDJ can look up new releases."
+        case .unreachable(let e):
+            return "\(e) This retries by itself the next time you play something."
+        case .notCheckedYet:
+            return "Play something — the artists you listen to get checked for new releases."
+        case .nothingNew:
+            return "The artists you’ve played lately haven’t released anything this month."
+        }
     }
 }
 
@@ -183,6 +226,10 @@ struct ForYouSongListView: View {
     /// The 👍/👎 log. Optional like the other late-added stores so a preview host that renders
     /// this screen standalone degrades to "no feedback controls" rather than trapping.
     @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
+    /// The FROZEN feed. This screen renders the very ids the tile card counted, so the card's
+    /// promise and the list cannot disagree — and so nothing re-ranks under the reader between
+    /// two visits. Only History's tab menu ▸ Refresh changes it.
+    @Environment(ForYouFeedStore.self) private var feed: ForYouFeedStore?
 
     let route: ForYouTileRoute
     @Binding var path: NavigationPath
@@ -210,9 +257,11 @@ struct ForYouSongListView: View {
     /// engine dropped it — which the engine did, because the same tombstones were passed in as
     /// `ZoneEngine.Feedback.suppressed`. Filtering instead would take the lit 👎 off screen with
     /// the row, leaving a mis-tap undoable only by hunting that exact song down somewhere else.
-    private var visibleIds: [String] {
-        guard let feedback else { return songIds }
-        return feedback.rankedIds(songIds, scope: route.feedbackContext)
+    private var visibleIds: [String] { partition.live + partition.sunk }
+    /// The live picks and the sunk tail, kept apart — `RecFeedbackOrder.sink`, the one
+    /// implementation of the rule. ▶ Play takes the live half; ▶▶ Play All takes both.
+    private var partition: (live: [String], sunk: [String]) {
+        feedback?.partition(songIds, scope: route.feedbackContext) ?? (songIds, [])
     }
     /// The song an Add-to-collection sheet is up for (In Da Zone has no implicit target, so it
     /// routes through the normal sheet).
@@ -234,7 +283,12 @@ struct ForYouSongListView: View {
         .background(Theme.bg)
         .navigationTitle(route.title)
         .task { await build() }
-        .sheet(item: $addRef) { r in AddToCollectionView(item: .song(r.id)) }
+        // The 👍's add for In Da Zone (no implied target ⇒ the normal sheet). `onAdded` is what
+        // turns the row's ✓ on, so a thumbs-up that opened a sheet and a thumbs-up that added
+        // straight to a crate leave the row in the SAME state.
+        .sheet(item: $addRef) { r in
+            AddToCollectionView(item: .song(r.id), onAdded: { _ in added.insert(r.id) })
+        }
     }
 
     private var header: some View {
@@ -244,14 +298,32 @@ struct ForYouSongListView: View {
             Text(blendSummary).font(.caption).foregroundStyle(Theme.fgDim)
                 .accessibilityIdentifier("foryou-list-summary")
             Spacer()
-            Button { play(from: 0) } label: {
-                Label("Play all", systemImage: "play.fill").font(.caption)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Theme.accent)
-            .accessibilityIdentifier("foryou-play-all")
+            // A TILE IS A SETLIST — the same Play / Play All / Shuffle menu a collection row
+            // carries, from `CollectionPlayMenuItems`, not a screen-specific copy.
+            playMenu
         }
         .listRowBackground(Color.clear)
+    }
+
+    private var playMenu: some View {
+        Menu {
+            CollectionPlayMenuItems(title: route.title,
+                                    songIds: partition.live, sunkIds: partition.sunk,
+                                    idPrefix: "foryou",
+                                    onStarted: { queue in
+                                        // STAMP THE SCOPE. From here the deck, the mini bar, the
+                                        // lock screen, CarPlay and the widgets all know what is
+                                        // playing is a recommendation FROM THIS TILE and can file
+                                        // a verdict without the listener leaving playback.
+                                        feedback?.beginPlayback(scope: route.feedbackContext,
+                                                                songIds: queue)
+                                    })
+        } label: {
+            Label("Play", systemImage: "play.fill").font(.caption)
+        }
+        .menuStyle(.borderlessButton)
+        .foregroundStyle(Theme.accent)
+        .accessibilityIdentifier("foryou-play-menu")
     }
 
     /// The header count is `visibleCount`, the SAME function the tile card uses — so the card's
@@ -283,13 +355,32 @@ struct ForYouSongListView: View {
         feedback?.beginPlayback(scope: route.feedbackContext, songIds: queue)
     }
 
-    /// The ranking runs OFF the main actor for the same reason the tile grid's does: the zone pass
-    /// scores the whole catalog (~96k rows) through `PuzzleSimilarity`, and the collection pass
-    /// sweeps it once more. On the main actor that is a visible hang — the exact regression this
-    /// app has already had to fix once in Browse.
+    /// Load the list.
+    ///
+    /// ── THE FROZEN FEED IS THE FIRST ANSWER ──────────────────────────────────────────────────
+    /// The tile card counted a specific set of ids at the last refresh; this screen renders THAT
+    /// set. Reading it back is a dictionary hit, so the list paints instantly and — the point of
+    /// the whole change — a song the owner glanced at ten minutes ago is still in the same place
+    /// when he comes back for it. Only History's tab menu ▸ Refresh moves it.
+    ///
+    /// ── THE FALLBACK, AND WHY IT IS STILL OFF THE MAIN ACTOR ─────────────────────────────────
+    /// A snapshot that predates this tile (a collection that earned one after the last refresh, a
+    /// preview host with no store) has nothing cached, and an empty list would be a worse answer
+    /// than a slightly-out-of-band ranking. So it computes — and that pass scores the whole
+    /// catalog (~96k rows) through `PuzzleSimilarity`, which on the main actor is a visible hang,
+    /// the exact regression this app has already had to fix once in Browse.
     private func build() async {
         guard !didBuild else { return }
         didBuild = true
+        if let frozen = feed?.songIds(forTileId: route.tileId) {
+            songIds = frozen
+            if route.kind == .zone {
+                let buried = Set(feed?.snapshot.zoneBuriedIds ?? [])
+                pools = Dictionary(uniqueKeysWithValues: frozen.filter(buried.contains)
+                    .map { ($0, ZoneEngine.Pool.rediscovery) })
+            }
+            return
+        }
         let tracks = app.zoneTracks
         let songs = app.songs
         let genres = app.zoneGenreBySongId
@@ -357,12 +448,19 @@ struct ForYouSongListView: View {
             // already been bitten by).
             .accessibilityIdentifier("foryou-song-\(id)")
             Spacer()
-            // ASYNC MODE — the owner's "go back to the tile and accept / reject suggestions".
-            // The 👍 doubles as the row's Add (see `addButton` for the ＋ that remains for a
-            // silent add), so one tap both files the song and tells the engine why.
+            // TWO CONTROLS, NOT THREE. Owner, verbatim: the thumbs-up "should both send positive
+            // signal to recommendation engine and add the song to the collection". So 👍 IS the
+            // add — the separate ＋ that used to sit beside it is gone, because a row offering
+            // both made the same act look like two different ones. 👎 is its pair.
             RecFeedbackButtons(songId: id, scope: route.feedbackContext, surface: .tile,
                                onAccept: { accept(id) })
-            addButton(id)
+            // Ownership READOUT, not a control: the row states it is now in the collection. It
+            // renders only after the add lands, so it can never sit beside a ＋ offering to do
+            // what has already been done.
+            if added.contains(id) {
+                Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(Theme.accent)
+                    .accessibilityIdentifier("foryou-added-\(id)")
+            }
             if let song {
                 RowTransport(song: (id: song.id, title: song.name, artist: song.artist), startMs: nil)
             }
@@ -384,28 +482,12 @@ struct ForYouSongListView: View {
         }
     }
 
-    /// For a COLLECTION tile the target is unambiguous (this is that collection's suggestion
-    /// list), so ＋ adds straight to it — one tap, no sheet. In Da Zone has no implied target, so
-    /// it opens the normal Add sheet.
-    @ViewBuilder private func addButton(_ id: String) -> some View {
-        if added.contains(id) {
-            Image(systemName: "checkmark.circle.fill").font(.title3).foregroundStyle(Theme.accent)
-                .accessibilityIdentifier("foryou-added-\(id)")
-        } else {
-            Button {
-                accept(id)
-            } label: {
-                Image(systemName: "plus.circle").font(.title3).foregroundStyle(Theme.accent2)
-            }
-            .buttonStyle(.plain)
-            .accessibilityIdentifier("foryou-add-\(id)")
-        }
-    }
-
-    /// The ADD half of a 👍 (and the ＋ button's whole action). For a COLLECTION tile the target
-    /// is unambiguous, so it adds straight to it; In Da Zone has no implied target, so it opens
-    /// the normal Add sheet. Never touches the transport: accepting a suggestion while a song is
-    /// playing must not stop, skip or re-queue anything.
+    /// The ADD half of a 👍 — the SAME route the ＋ used, not a reimplementation. For a COLLECTION
+    /// tile the target is unambiguous (this is that collection's suggestion list), so it adds
+    /// straight to it through `CollectionsStore.addSong`; In Da Zone has no implied target, so it
+    /// opens the normal `AddToCollectionView` sheet, which is also the door to the Discover /
+    /// ad-hoc add for an id this catalog cannot resolve. Never touches the transport: accepting a
+    /// suggestion while a song is playing must not stop, skip or re-queue anything.
     private func accept(_ id: String) {
         if route.kind == .collection, let cid = route.collectionId,
            let target = collections.addTargetForAnyCollection(cid) {

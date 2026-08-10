@@ -26,6 +26,12 @@ struct ForYouTileRoute: Hashable, Sendable {
     /// learn "wrong for this crate" without concluding "disliked everywhere". Deliberately NOT the
     /// title: a rename must not orphan the feedback already recorded against the list.
     var feedbackContext: String { collectionId ?? kind.rawValue }
+
+    /// The id of the TILE this route came from — the key the frozen feed
+    /// (`ForYouFeedSnapshot.songIds(forTileId:)`) stores this list's ids under. Kept in lock-step
+    /// with the ids `ForYouTiles.build` mints, so the card the owner tapped and the list that
+    /// opens are literally the same array rather than two rankings that happen to agree.
+    var tileId: String { collectionId.map { "col-\($0)" } ?? kind.rawValue }
 }
 
 /// One tile in the For You grid.
@@ -91,11 +97,16 @@ enum ForYouTiles {
     ///   - cloudSuggestionCount: the cloud rec engine's suggestion count. 0 ⇒ no "Suggested"
     ///     tile at all, which is the default-OFF case — an empty tile for a feature the user has
     ///     not enabled would be worse than no tile.
+    ///   - newEmptyNote: why the New tile is empty, when it is and when the reason is not simply
+    ///     "nothing came out". A tile that renders a bare 0 with no explanation is how this
+    ///     feature got reported as broken; the card says which of seeding / unauthorized /
+    ///     offline / not-yet-checked it is, and the screen behind it says it at length.
     static func build(newReleaseCount: Int,
                       comingSoonCount: Int = 0,
                       zone: [String],
                       collections: [(id: String, kind: String, name: String, suggestions: [String])],
-                      cloudSuggestionCount: Int = 0
+                      cloudSuggestionCount: Int = 0,
+                      newEmptyNote: String? = nil
     ) -> [ForYouTile] {
         var out: [ForYouTile] = []
 
@@ -106,7 +117,8 @@ enum ForYouTiles {
         out.append(ForYouTile(
             id: "new",
             title: "New",
-            subtitle: newReleaseSubtitle(outNow: outNowCount, comingSoon: comingSoonCount),
+            subtitle: newReleaseSubtitle(outNow: outNowCount, comingSoon: comingSoonCount,
+                                         emptyNote: newEmptyNote),
             symbol: "sparkles",
             count: newReleaseCount,
             route: ForYouTileRoute(kind: .new, title: "New"),
@@ -170,7 +182,12 @@ enum ForYouTiles {
     /// bounded by 30 days. Saying "last 30 days" over a count that includes a pre-order shipping
     /// in three months is simply false, and it is the kind of false a reader cannot detect —
     /// the number looks right.
-    static func newReleaseSubtitle(outNow: Int, comingSoon: Int) -> String {
+    /// `emptyNote` wins at zero, and only at zero: "No releases in the last 30 days" is a CLAIM,
+    /// and it is a false one while the feed is still seeding, unauthorized or offline. Saying
+    /// nothing came out when nothing was ever asked is the specific way this tile lied.
+    static func newReleaseSubtitle(outNow: Int, comingSoon: Int,
+                                   emptyNote: String? = nil) -> String {
+        if outNow == 0, comingSoon == 0, let note = emptyNote, !note.isEmpty { return note }
         switch (outNow, comingSoon) {
         case (0, 0):  return "No releases in the last 30 days"
         case (0, _):  return "From artists you play · upcoming"

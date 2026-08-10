@@ -51,6 +51,11 @@ struct HistoryView: View {
     @State private var tab: HistoryTab = .unified
     /// The History row a rewind is pending on — nil unless the confirmation is up.
     @State private var rewindTarget: PlayHistoryStore.PlayEvent?
+    /// THE For You REFRESH. Bumped by the tab menu's Refresh and nothing else — For You is CACHED
+    /// (owner's rule), so this is the only thing in the app that re-ranks it. Lives here rather
+    /// than inside the grid because the owner asked for the control to be "in the menu", and this
+    /// screen owns the toolbar.
+    @State private var forYouRefreshToken = 0
 
     /// History's own filter/sort state — distinct persistence key so it never clobbers the
     /// Browser's, defaulting to most-recently-played first.
@@ -187,7 +192,7 @@ struct HistoryView: View {
             case .collection:
                 activityContent
             case .forYou:
-                ForYouTilesView(path: $path)
+                ForYouTilesView(path: $path, refreshToken: forYouRefreshToken)
             }
         }
         // Match every other tab's dark-blue canvas (the Lists are made transparent via
@@ -690,7 +695,22 @@ struct HistoryView: View {
                     }
                     .accessibilityIdentifier("history-filter")
                 }
-            } else if tab != .forYou, canBackfill {
+            } else if tab == .forYou {
+                // THE For You MENU. The tab is CACHED — it renders the last ranking that was
+                // computed and does not move on its own — so this is the one control that asks
+                // for a new one. A standard iOS Menu, not a bare button, because it is the place
+                // any future For You-wide action belongs.
+                Menu {
+                    Button { forYouRefreshToken &+= 1 } label: {
+                        Label("Refresh", systemImage: "arrow.clockwise")
+                    }
+                    .accessibilityIdentifier("foryou-refresh")
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .help("Recompute your For You tiles")
+                .accessibilityIdentifier("foryou-menu")
+            } else if canBackfill {
                 // Collection + Unified show your ADDs — offer to (re)send the recent ones to the
                 // Apple Music playlists they came from, for adds that never made it upstream (added
                 // before write-back shipped, or while offline / signed out). The look-back window
