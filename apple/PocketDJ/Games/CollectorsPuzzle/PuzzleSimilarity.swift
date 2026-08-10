@@ -141,6 +141,16 @@ enum PuzzleSimilarity {
     ///     baseline the term vanishes entirely instead of scoring every song a flat zero (which
     ///     would deflate every score by 5% uniformly — harmless to the order, but it would make
     ///     `.strict`'s absolute 0.15 floor quietly stricter than it reads).
+    ///   - memberWeights: OPTIONAL per-member weight. `nil` (the default, and what Gem Collector
+    ///     passes) means every member counts 1 — byte-identical to the behaviour this function
+    ///     shipped with, which is why the puzzle's pinned tests are untouched by this parameter.
+    ///
+    ///     It exists because In Da Zone builds its profile from PLAY EVENTS rather than from a
+    ///     collection's membership, and a play log is not a set: a song played nine times this
+    ///     week and one played once last month are not equal evidence of taste. The zone passes
+    ///     each seed's recency-decayed play weight here, so "what you have been bumping" is
+    ///     literally weighted by how much you have been bumping it. A collection genuinely IS a
+    ///     set — that is why the default stays uniform rather than being switched over.
     ///   - nowMs: "now" for the co-play edge decay; injected so tests are deterministic.
     static func profile(targetMemberIds: [[String]],
                         songsById: [String: IndexSong],
@@ -148,6 +158,7 @@ enum PuzzleSimilarity {
                         otherCollections: [[String]],
                         plays: [(songId: String, atMs: Double)],
                         hasRecency: Bool = false,
+                        memberWeights: [String: Double]? = nil,
                         nowMs: Double = Date().timeIntervalSince1970 * 1000) -> TargetProfile {
         var p = TargetProfile()
         var members = Set<String>()
@@ -157,21 +168,27 @@ enum PuzzleSimilarity {
 
         var artistCount: [String: Double] = [:]
         var genreCount: [String: Double] = [:]
-        var years: [Double] = []
+        // (year, weight) rather than a bare year, so the mean/sigma below can be weighted too —
+        // with uniform weights the formulas reduce exactly to the unweighted ones.
+        var years: [(y: Double, w: Double)] = []
         var keywordCount: [String: Double] = [:]
         var keywordBearers = 0.0
         var resolved = 0.0
 
         for id in members {
             guard let song = songsById[id] else { continue }
-            resolved += 1
-            artistCount[artistKey(song.artist), default: 0] += 1
-            if let cat = genreBySongId[id] { genreCount[cat, default: 0] += 1 }
-            if let y = song.year { years.append(Double(y)) }
+            // A weight of 0 (or a negative one from a corrupt caller) would contribute nothing but
+            // could still divide by zero downstream, so it is floored rather than trusted.
+            let w = max(0, memberWeights?[id] ?? 1)
+            guard w > 0 else { continue }
+            resolved += w
+            artistCount[artistKey(song.artist), default: 0] += w
+            if let cat = genreBySongId[id] { genreCount[cat, default: 0] += w }
+            if let y = song.year { years.append((Double(y), w)) }
             let kws = (song.sentimentKeywords ?? []).map { $0.lowercased() }
             if !kws.isEmpty {
-                keywordBearers += 1
-                for k in Set(kws) { keywordCount[k, default: 0] += 1 }
+                keywordBearers += w
+                for k in Set(kws) { keywordCount[k, default: 0] += w }
             }
         }
         // Not one target member resolves against this device's catalog (a collection full of
@@ -183,9 +200,10 @@ enum PuzzleSimilarity {
         p.genreShare = genreCount.mapValues { $0 / resolved }
         p.maxGenreShare = p.genreShare.values.max() ?? 0
         if !years.isEmpty {
-            let mean = years.reduce(0, +) / Double(years.count)
+            let wSum = years.reduce(0) { $0 + $1.w }
+            let mean = years.reduce(0) { $0 + $1.y * $1.w } / wSum
             p.yearMean = mean
-            let variance = years.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / Double(years.count)
+            let variance = years.reduce(0) { $0 + $1.w * ($1.y - mean) * ($1.y - mean) } / wSum
             p.yearSigma = max(8, variance.squareRoot())
         }
         if keywordBearers > 0 {
