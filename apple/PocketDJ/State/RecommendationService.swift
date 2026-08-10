@@ -937,19 +937,41 @@ final class RecommendationService {
                 out.append(RecCollectionSuggestionWire(id: p.id, kind: "pocket", name: p.name,
                                                        score: 1.0, reasons: ["Fits this song"]))
             }
-            return out
+            return dropRecsOff(out)
         }
         let now = Date().timeIntervalSince1970 * 1000
-        if let hit = suggestionCache[songId], now - hit.atMs < Self.cacheTTLMs { return hit.wire }
+        if let hit = suggestionCache[songId], now - hit.atMs < Self.cacheTTLMs {
+            return dropRecsOff(hit.wire)
+        }
         do {
             let key = ensureKey()
             let resp = try await client.collectionSuggestions(songId: songId, key: key,
                                                               profileId: scopedProfileId(key: key))
             cacheSuggestions(songId: songId, wire: resp.suggestions, atMs: now)
-            return resp.suggestions
+            return dropRecsOff(resp.suggestions)
         } catch {
             return []   // suggestion surfaces just stay hidden — never block UI
         }
+    }
+
+    /// **THE PER-COLLECTION OPT-OUT, APPLIED TO THE MIRROR SURFACE.**
+    ///
+    /// A For You tile asks "what should go INTO Comfort Zone"; SongDetail and the Add sheet ask
+    /// "which collections does THIS song belong in" — and Comfort Zone is one of the answers. They
+    /// are the same recommendation read from opposite ends, so switching the crate off has to
+    /// silence both, or the owner turns off the tile and the app keeps proposing the crate anyway.
+    ///
+    /// ── FILTERED HERE, ON THE DEVICE, AND NOT BY WITHHOLDING IT FROM THE SERVER ──────────────
+    /// The membership snapshot deliberately still carries a switched-off collection. It is what
+    /// lets the engine know what the owner already OWNS — the whole reason the server keeps a
+    /// catalog cache — and a crate dropped from the upload would make the engine start suggesting
+    /// songs he filed there years ago. So the server keeps knowing; the device decides what to
+    /// show. That split is also cheaper: one predicate over ≤10 rows, no re-upload, no hash churn.
+    ///
+    /// Applied on the CACHE READ as well as the fetch, because the 15-minute cache would otherwise
+    /// go on offering a crate for a quarter of an hour after it was switched off.
+    private func dropRecsOff(_ wire: [RecCollectionSuggestionWire]) -> [RecCollectionSuggestionWire] {
+        wire.filter { collections.recommendationsEnabled(forCollection: $0.id) }
     }
 
     // MARK: - Collection similarity (Gem Collector's cloud booster)

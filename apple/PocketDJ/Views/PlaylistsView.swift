@@ -1177,6 +1177,11 @@ struct PlaylistDetailView: View {
         amSyncDirectionMenuItem
         amSyncNowMenuItem
         cleanOnlyMenuItem
+        // For You's per-collection opt-out. It lives HERE as well as on the tile because the tile
+        // is the surface that disappears when you use it — and because a collection only earns a
+        // tile on a refresh that found something to add to it, so for a curated, finished crate
+        // (the exact case this switch is for) this menu is usually the ONLY place it is reachable.
+        CollectionRecsToggle(collectionId: playlistId, idPrefix: "playlist")
         Divider()
         CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.ripIds(forPlaylist: playlistId) }, noun: "playlist")
         Divider()

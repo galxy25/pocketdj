@@ -131,6 +131,13 @@ struct ForYouFeedInputs: Sendable {
     /// collection id → its own feedback projection. Suppression is SCOPED, so a song thumbed down
     /// in one crate must not vanish from another's list.
     var crateFeedback: [String: ZoneEngine.Feedback] = [:]
+    /// Crates the owner has switched OFF in the tile's ⋯ menu (`Playlist.recsEnabled == false`).
+    ///
+    /// They stay in `crates` on purpose — their membership is still In Da Zone's co-membership
+    /// signal (see `CollectionsStore.suggestibleCollections`) — but `build` computes NO suggestions
+    /// for them and emits NO crate, so they cost nothing and cannot produce a tile. Empty ⇒ the
+    /// ranking is byte-identical to what it was before this feature existed.
+    var recsOffCrateIds: Set<String> = []
     var nowMs: Double = 0
 }
 
@@ -153,13 +160,24 @@ enum ForYouFeedBuilder {
                                         lastPlayedMs: inputs.lastPlayedMs,
                                         feedback: inputs.zoneFeedback,
                                         nowMs: inputs.nowMs)
-        let crates = inputs.crates.map { c in
-            ForYouFeedSnapshot.Crate(
-                id: c.id, kind: c.kind, name: c.name,
-                songIds: ZoneEngine.suggestions(memberSongIds: c.songIds, tracks: inputs.tracks,
-                                                playCount: { counts[$0] ?? 0 },
-                                                feedback: inputs.crateFeedback[c.id] ?? ZoneEngine.Feedback()))
-        }
+        // ── THE OPT-OUT, APPLIED BEFORE THE WORK AND NOT AFTER IT ────────────────────────────
+        // `ZoneEngine.suggestions` is a CATALOG SWEEP PER CRATE (~96k rows each). A switched-off
+        // collection is therefore filtered here, ahead of the map — not rendered-then-hidden.
+        // Owner's requirement, verbatim: "no suggestions computed for it, and no wasted work —
+        // not merely a hidden tile that still ranks." Note this drops the crate from the SNAPSHOT
+        // too, so a switched-off collection cannot leave a stale frozen list behind to be
+        // resurrected by a later toggle-on without a refresh.
+        //
+        // The zone pass above still sees every crate (`inputs.crates`) — see `recsOffCrateIds`.
+        let crates = inputs.crates
+            .filter { !inputs.recsOffCrateIds.contains($0.id) }
+            .map { c in
+                ForYouFeedSnapshot.Crate(
+                    id: c.id, kind: c.kind, name: c.name,
+                    songIds: ZoneEngine.suggestions(memberSongIds: c.songIds, tracks: inputs.tracks,
+                                                    playCount: { counts[$0] ?? 0 },
+                                                    feedback: inputs.crateFeedback[c.id] ?? ZoneEngine.Feedback()))
+            }
         return ForYouFeedSnapshot(
             refreshedAtMs: inputs.nowMs,
             zoneIds: queue.songIds,

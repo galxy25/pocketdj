@@ -595,7 +595,20 @@ struct ForYouSongListView: View {
             pools = Dictionary(queue.picks.map { ($0.songId, $0.pool) },
                                uniquingKeysWith: { a, _ in a })
         case .collection:
-            let members = route.collectionId.map { collections.playableIdsForAnyCollection($0) } ?? []
+            // THE SECOND DOOR TO THE SAME WORK, AND IT HAS TO BE SHUT TOO.
+            //
+            // This branch is the on-demand fallback for a route whose crate is not in the frozen
+            // snapshot — and "not in the snapshot" is exactly what switching recommendations off
+            // produces (`ForYouFeedBuilder.build` stops emitting the crate). Without this guard,
+            // reaching this screen for a switched-off collection — a restored NavigationPath, a
+            // refresh that drops the crate while its screen is open — would run the very catalog
+            // sweep the switch exists to prevent, and show him the suggestions he turned off.
+            guard let cid = route.collectionId,
+                  collections.recommendationsEnabled(forCollection: cid) else {
+                songIds = []
+                return
+            }
+            let members = collections.playableIdsForAnyCollection(cid)
             songIds = await Task.detached(priority: .userInitiated) {
                 ZoneEngine.suggestions(memberSongIds: members, tracks: tracks,
                                        playCount: { counts[$0] ?? 0 }, feedback: fb)

@@ -347,6 +347,8 @@ struct PocketDetailView: View {
             .accessibilityIdentifier("pocket-link-source")
         }
         cleanOnlyMenuItem
+        // For You's per-collection opt-out — see the twin in `PlaylistDetailView.overflowMenu`.
+        CollectionRecsToggle(collectionId: pocketId, idPrefix: "pocket")
         Divider()
         CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.ripIds(forPocket: pocketId) }, noun: "pocket")
         Divider()

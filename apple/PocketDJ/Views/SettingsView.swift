@@ -711,14 +711,60 @@ struct SettingsView: View {
                         .accessibilityIdentifier("foryou-next-refresh")
                 }
             }
+            recsOffRows
         } header: {
             Text("For You")
         } footer: {
-            Text("History ▸ For You shows the last ranking it computed and holds it steady until it refreshes — so a suggestion you were half-deciding on doesn’t move while you look at it. \(forYouCadenceFooter)\n\nThe schedule is checked when you open the tab or come back to the app, so a refresh you were away for happens on your next visit rather than being skipped. “Refresh” in the tab’s ⋯ menu always recomputes immediately, whatever this is set to.")
+            Text("History ▸ For You shows the last ranking it computed and holds it steady until it refreshes — so a suggestion you were half-deciding on doesn’t move while you look at it. \(forYouCadenceFooter)\n\nThe schedule is checked when you open the tab or come back to the app, so a refresh you were away for happens on your next visit rather than being skipped. “Refresh” in the tab’s ⋯ menu always recomputes immediately, whatever this is set to.\(recsOffFooter)")
         }
         .onChange(of: settings.forYouRefreshCadence) { settings.persist() }
         .onChange(of: settings.forYouRefreshWeekday) { settings.persist() }
         .onChange(of: settings.forYouRefreshMinutes) { settings.persist() }
+    }
+
+    /// **THE WAY BACK.** Every collection whose recommendations are switched off, each with the
+    /// switch that turns it back on.
+    ///
+    /// ── WHY THIS SECTION HAS TO EXIST ────────────────────────────────────────────────────────
+    /// The control the owner asked for lives in a For You TILE's ⋯ menu, and using it DELETES THAT
+    /// TILE — so the off switch is the last thing that menu ever does. The collection's own ⋯ menu
+    /// carries the same toggle and survives, but finding it means remembering which crate you
+    /// closed, months later. This is the list that makes the action reversible without memory: it
+    /// enumerates the whole opt-out set, including collections that are EMPTY (and so could never
+    /// have had a tile in the first place — see `CollectionsStore.recommendationsOffCollections`).
+    ///
+    /// Renders NOTHING when nothing is switched off, which is the default and the common case: an
+    /// always-present empty row would be furniture explaining a feature most installs never touch.
+    @ViewBuilder private var recsOffRows: some View {
+        let off = collections.recommendationsOffCollections()
+        if !off.isEmpty {
+            ForEach(off, id: \.id) { item in
+                // Bound to the REAL flag, not to a constant `false` with an on-only action. A row
+                // that lies about its own state is a row XCUITest (and VoiceOver) reads wrong, and
+                // the honest binding costs nothing: every row here is off by construction, so the
+                // only reachable transition is on — after which the row leaves the list, because
+                // its entire reason for existing was being off.
+                Toggle(isOn: Binding(
+                    get: { collections.recommendationsEnabled(forCollection: item.id) },
+                    set: { collections.setRecommendationsEnabled($0, forCollection: item.id) })) {
+                    Label {
+                        Text(item.name)
+                    } icon: {
+                        Image(systemName: item.kind == "pocket" ? "square.stack" : "music.note.list")
+                    }
+                }
+                .accessibilityIdentifier("foryou-recs-off-\(item.id)")
+            }
+        }
+    }
+
+    /// The footer sentence that only makes sense when the rows above it are there.
+    private var recsOffFooter: String {
+        let n = collections.recommendationsOffCollections().count
+        guard n > 0 else { return "" }
+        return "\n\nRecommendations are off for \(n) collection\(n == 1 ? "" : "s") — "
+            + "\(n == 1 ? "it gets" : "they get") no tile in For You and nothing is ranked for "
+            + "\(n == 1 ? "it" : "them"). Switch one back on here, or from that collection’s ⋯ menu."
     }
 
     /// Minutes-past-midnight ⇄ Date bridge for the hour-and-minute picker (the same idiom the
