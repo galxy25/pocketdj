@@ -118,6 +118,24 @@ const PLAYCOUNT_CANDIDATE_WEIGHT = 0.75;
 /// The same term inside `/recs/similar` (Gem Collector). Lower still: that route is about
 /// resembling a CRATE, and familiarity is a tiebreak there rather than a reason.
 const PLAYCOUNT_SIMILAR_WEIGHT = 0.5;
+/// Half-life of the LAST-PLAYED signal, in days. Two years — the value at which recency lands on
+/// the same 0…1 scale as `playCountSignal` over a real library (measured on the owner's 56,224
+/// played songs: play-count mean 0.196, recency mean 0.206), which is what makes the weights
+/// below mean what they say. Shorter half-lives collapse the term onto a ~500-song sliver (the
+/// median song there was last played 5.8 years ago); longer ones flatten it into noise. Mirrors
+/// `PlayRecency.halfLifeDays` on the client — change both together.
+const RECENCY_HALF_LIFE_DAYS = 730;
+/// How much a song's RECENCY can add to its seed weight. Below `PLAYCOUNT_SEED_WEIGHT` because
+/// the two are on the same scale (see above), so this ratio is a deliberate statement — lifetime
+/// affinity outranks a single recent touch — rather than an artifact of units. The 30-day play
+/// window above already speaks for genuinely fresh listening.
+const RECENCY_SEED_WEIGHT = 0.75;
+/// A CANDIDATE's recency. One notch below `PLAYCOUNT_CANDIDATE_WEIGHT`, and well below the genre
+/// term (2.0), so neither play signal can dominate a recommendation on its own.
+const RECENCY_CANDIDATE_WEIGHT = 0.5;
+/// The same term inside `/recs/similar`, where — like familiarity — recency is a tiebreak about
+/// the crate rather than a reason for it.
+const RECENCY_SIMILAR_WEIGHT = 0.35;
 
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -462,7 +480,26 @@ function cleanPlayCounts(p) {
   rows.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
   const counts = {};
   for (const [songId, n] of rows.slice(0, MAX_PLAYCOUNT_SONGS)) counts[songId] = n;
-  return { atMs: num(p.atMs) ?? Date.now(), counts };
+  // LAST-PLAYED days ride the same snapshot, and are bounded by the SAME truncation: a date for
+  // a songId whose count did not survive is dropped, or the map would be unbounded (a real
+  // library carries 56k dates against a 20k count cap) and would describe rows nothing else
+  // stores. Whole days only; non-positive/garbage dropped, so absent stays "never played".
+  const src = p.lastPlayedDays;
+  let lastPlayedDays;
+  if (src && typeof src === 'object') {
+    const days = {};
+    let kept = 0;
+    for (const songId of Object.keys(counts)) {
+      const d = num(src[songId]);
+      if (d == null || !(d > 0)) continue;
+      days[songId] = Math.trunc(d);
+      kept += 1;
+    }
+    if (kept > 0) lastPlayedDays = days;
+  }
+  const out = { atMs: num(p.atMs) ?? Date.now(), counts };
+  if (lastPlayedDays) out.lastPlayedDays = lastPlayedDays;
+  return out;
 }
 
 function capOldest(arr, cap) {
@@ -541,7 +578,11 @@ export function mergeBatch(state, batch) {
   // Newer-snapshot-wins. Re-uploading the SAME snapshot is a no-op (equal atMs loses), which is
   // what makes an idempotent client flush free.
   if (pc && pc.atMs > (state.playCounts?.atMs || 0)) {
+    // SET, never merge — the dates are part of the same wholesale snapshot as the counts, so a
+    // newer reading REPLACES both together. Carrying old dates forward under new counts would
+    // resurrect rows the newer snapshot deliberately dropped.
     state.playCounts = { atMs: pc.atMs, counts: pc.counts };
+    if (pc.lastPlayedDays) state.playCounts.lastPlayedDays = pc.lastPlayedDays;
     accepted.playCounts = Object.keys(pc.counts).length;
   }
 
@@ -577,6 +618,34 @@ function playCountsOf(state) {
 }
 
 /**
+ * LAST-PLAYED as a 0…1 ranking signal — a SEPARATE AXIS from `playCountSignal`, never a
+ * refinement of it.
+ *
+ * Smooth exponential decay at a two-year half-life, not a "played in the last N days" flag. On a
+ * real library the last-played dates skew heavily old (median 5.8 years, and 0 songs inside a
+ * week), so a cliff scores 99.5% of the catalog identically zero and ranks on a sliver; the
+ * gradient is what lets the term say anything about the library the user actually owns.
+ *
+ * `lastPlayedDay` is WHOLE DAYS since the epoch (what the client sends — see `RecPlayCountsWire`).
+ * Returns 0 for absent, so a never-played song contributes nothing rather than a penalty. A
+ * FUTURE date (clock skew) clamps to 1 rather than growing without bound.
+ */
+export function recencySignal(lastPlayedDay, nowMs) {
+  if (!Number.isFinite(lastPlayedDay) || lastPlayedDay <= 0 || !Number.isFinite(nowMs)) return 0;
+  // BOTH SIDES IN WHOLE DAYS. Comparing a millisecond `now` against a day-granular date charges
+  // a song played this morning up to a full day of age depending on what time the request lands,
+  // which makes the signal wobble over the course of a day for input that never changed. Flooring
+  // `now` too makes the age an exact integer count of days.
+  const ageDays = Math.floor(nowMs / DAY_MS) - lastPlayedDay;
+  return Math.pow(0.5, Math.max(0, ageDays) / RECENCY_HALF_LIFE_DAYS);
+}
+
+/** The stored last-played days, `{}` when the client has never sent any. */
+function lastPlayedOf(state) {
+  return state.playCounts?.lastPlayedDays || {};
+}
+
+/**
  * Deterministic For You compute over the profile state + the features doc. Pure.
  *
  * `playCountSeedLimit` — how many of the most-played songs of all time are allowed to SEED. The
@@ -608,12 +677,21 @@ export function scoreForYou(state, featuresById,
   // recency still leads, and capped (see `playCountSeedLimit`) so a huge library can't swamp
   // stage 2 — and so the long tail of played songs stays available as candidates.
   const { counts: lifetime, maxN: maxLifetime } = playCountsOf(state);
+  const lastPlayedDays = lastPlayedOf(state);
   if (maxLifetime > 0 && playCountSeedLimit > 0) {
+    // Rank the seed shortlist by the COMBINED signal, not by raw count. Sorting by `n` alone
+    // meant a song played three times last week could never seed while 200 songs untouched since
+    // 2015 always did — which is exactly the "played a lot long ago" vs "played once yesterday"
+    // conflation this axis exists to undo. The two terms keep their own weights, so a song can
+    // qualify on either.
+    const seedWeightOf = (songId, n) =>
+      PLAYCOUNT_SEED_WEIGHT * playCountSignal(n, maxLifetime)
+      + RECENCY_SEED_WEIGHT * recencySignal(lastPlayedDays[songId], nowMs);
     const top = Object.entries(lifetime)
-      .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
+      .map(([songId, n]) => [songId, n, seedWeightOf(songId, n)])
+      .sort((a, b) => b[2] - a[2] || (a[0] < b[0] ? -1 : 1))
       .slice(0, playCountSeedLimit);
-    for (const [songId, n] of top) {
-      const bonus = PLAYCOUNT_SEED_WEIGHT * playCountSignal(n, maxLifetime);
+    for (const [songId, , bonus] of top) {
       if (bonus > 0) weights.set(songId, (weights.get(songId) || 0) + bonus);
     }
   }
@@ -706,6 +784,12 @@ export function scoreForYou(state, featuresById,
     if (lifetimeN > 0) {
       terms.push(['plays', PLAYCOUNT_CANDIDATE_WEIGHT * playCountSignal(lifetimeN, maxLifetime),
                   `You've played this ${lifetimeN} time${lifetimeN === 1 ? '' : 's'}`]);
+    }
+    // RECENCY — its own term, so two songs with identical lifetime counts are still separable by
+    // when they were last played (and vice versa).
+    const rec = recencySignal(lastPlayedDays[row.i], nowMs);
+    if (rec > 0) {
+      terms.push(['recency', RECENCY_CANDIDATE_WEIGHT * rec, 'You played this recently']);
     }
     const score = terms.reduce((s, [, v]) => s + v, 0);
     if (score <= 0) continue;
@@ -904,6 +988,7 @@ export function scoreSimilarToCollections(state, featuresById, collectionIds,
   //     about what resembles the crate; between two equally-fitting cards, the one the player
   //     actually listens to is the better card.
   const { counts: lifetime, maxN: maxLifetime } = playCountsOf(state);
+  const lastPlayedDays = lastPlayedOf(state);
 
   const scored = [];
   for (const row of featuresById.values()) {
@@ -944,6 +1029,10 @@ export function scoreSimilarToCollections(state, featuresById, collectionIds,
     if (lifetimeN > 0) {
       terms.push(['plays', PLAYCOUNT_SIMILAR_WEIGHT * playCountSignal(lifetimeN, maxLifetime),
                   `You've played this ${lifetimeN} time${lifetimeN === 1 ? '' : 's'}`]);
+    }
+    const rec = recencySignal(lastPlayedDays[row.i], nowMs);
+    if (rec > 0) {
+      terms.push(['recency', RECENCY_SIMILAR_WEIGHT * rec, 'You played this recently']);
     }
 
     const score = terms.reduce((s, [, v]) => s + v, 0);

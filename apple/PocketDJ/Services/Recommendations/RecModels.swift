@@ -72,6 +72,17 @@ struct RecPlayCountsWire: Codable, Equatable {
     var atMs: Double
     /// songId → lifetime plays. Sparse: only songs with a non-zero count.
     var counts: [String: Int]
+    /// songId → last-played date, as WHOLE DAYS since the epoch. A separate axis from `counts`,
+    /// not a refinement of it: "played 40 times, last in 2019" and "played once yesterday" rank
+    /// differently and the server weights them independently.
+    ///
+    /// DAYS, not milliseconds, on purpose — 5 digits per row instead of 13, which is ~200 KB
+    /// saved on a 20k-row upload against the server's 4 MB body cap, and a day's resolution is
+    /// still ~700× finer than the 2-year half-life it feeds.
+    ///
+    /// OPTIONAL so the field is invisible to an older server (which ignores unknown keys) and an
+    /// older client (which never sends it) — no version bump, the collections-schema doctrine.
+    var lastPlayedDays: [String: Int]?
 }
 
 struct RecUploadBatch: Encodable {

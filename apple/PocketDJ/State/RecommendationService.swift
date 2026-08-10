@@ -183,6 +183,12 @@ final class RecommendationService {
     /// the server's ranking is byte-identical to what it was before the signal existed.
     @ObservationIgnored var playCountsProvider: (() -> [String: Int])?
 
+    /// songId → last-played epoch ms (`PlayCountService.lastPlayedSnapshot()`). Rides the SAME
+    /// `shareLifetimePlayCounts` opt-out as the counts — it is the same record of the user's
+    /// listening, and a switch that shared "when" while claiming to withhold "how often" would
+    /// be a lie about what leaves the device.
+    @ObservationIgnored var lastPlayedProvider: (() -> [String: Double])?
+
     @ObservationIgnored private let keyFileURL: URL
     @ObservationIgnored private let stateFileURL: URL
     /// Sibling of the key doc — `…-rec-pending-delete.json` next to it.
@@ -746,14 +752,35 @@ final class RecommendationService {
                 .prefix(Self.playCountsCap)
             trimmed = Dictionary(uniqueKeysWithValues: head.map { ($0.key, $0.value) })
         }
-        return RecPlayCountsWire(atMs: Date().timeIntervalSince1970 * 1000, counts: trimmed)
+        // Dates for the songs that SURVIVED the truncation only. Sending the whole map would be
+        // unbounded (56k rows against a 20k count cap) and pointless — the server drops any row
+        // whose songId it did not store.
+        var lastPlayedDays: [String: Int]?
+        if let dates = lastPlayedProvider?(), !dates.isEmpty {
+            var days: [String: Int] = [:]
+            days.reserveCapacity(trimmed.count)
+            for id in trimmed.keys {
+                guard let ms = dates[id], ms > 0 else { continue }
+                days[id] = Int((ms / 86_400_000).rounded(.down))
+            }
+            if !days.isEmpty { lastPlayedDays = days }
+        }
+        return RecPlayCountsWire(atMs: Date().timeIntervalSince1970 * 1000, counts: trimmed,
+                                 lastPlayedDays: lastPlayedDays)
     }
 
-    /// Stable content hash of a play-count snapshot — over the COUNTS only, never `atMs` (which
+    /// Stable content hash of a play-count snapshot — over the CONTENT only, never `atMs` (which
     /// changes every call and would defeat the gate entirely, re-uploading 20k rows per flush).
+    ///
+    /// The DATES are hashed alongside the counts because they are re-upload-worthy on their own:
+    /// playing a song you have already played many times moves its date but can leave its
+    /// bucketed count looking unchanged, and a counts-only hash would then never re-upload the
+    /// one fact that changed. Prefixed lines keep the two namespaces from colliding.
     private static func playCountsHash(_ wire: RecPlayCountsWire) -> String {
-        let lines = wire.counts.map { "\($0.key)|\($0.value)" }.sorted().joined(separator: "\n")
-        return SHA256.hash(data: Data(lines.utf8)).map { String(format: "%02x", $0) }.joined()
+        var lines = wire.counts.map { "n|\($0.key)|\($0.value)" }
+        lines += (wire.lastPlayedDays ?? [:]).map { "d|\($0.key)|\($0.value)" }
+        let joined = lines.sorted().joined(separator: "\n")
+        return SHA256.hash(data: Data(joined.utf8)).map { String(format: "%02x", $0) }.joined()
     }
 
     /// Stable membership hash: one `id|kind|name|joined-songIds` line per entry, sorted, SHA-256.

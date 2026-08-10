@@ -1037,6 +1037,7 @@ struct PocketDJApp: App {
         // "favour/avoid what I play" reasons about a decade of listening instead of this app's
         // ~700 songs. Weak like the availability closure below.
         puzzle.playCountsProvider = { [weak playCounts] in playCounts?.snapshot() ?? [:] }
+        puzzle.lastPlayedProvider = { [weak playCounts] in playCounts?.lastPlayedSnapshot() ?? [:] }
         puzzle.audioAvailability = { [weak rips, weak burns, weak coordinator] in
             CollectorsPuzzleEngine.AudioAvailability(
                 ripManifest: rips?.manifest ?? [:],
@@ -1112,6 +1113,7 @@ struct PocketDJApp: App {
         // as a hash-gated SNAPSHOT into the user's OWN private profile state, never the shared
         // catalog. Weak, like every other seam here.
         recEngine.playCountsProvider = { [weak playCounts] in playCounts?.snapshot() ?? [:] }
+        recEngine.lastPlayedProvider = { [weak playCounts] in playCounts?.lastPlayedSnapshot() ?? [:] }
         // The CLOUD half of Gem Collector's similarity. It is a BOOSTER only: with the engine
         // off (the default) — or the route not deployed yet — this returns [] and the round
         // ranks entirely on device. Weak, like every other seam here.

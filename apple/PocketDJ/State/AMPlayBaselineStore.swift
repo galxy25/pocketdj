@@ -183,6 +183,15 @@ final class AMPlayBaselineStore {
     /// filters/sorts detached; the puzzle sampler does the same).
     func countsSnapshot() -> [String: Int] { counts.mapValues(\.n) }
 
+    /// Apple's last-played dates in bulk (epoch ms), for the same OFF-MAIN consumers
+    /// `countsSnapshot` serves. Sparse: `compactMapValues` drops the rows Apple gave a count but
+    /// no date (152 of 56,224 in the real file), so an absent key means "no date known" rather
+    /// than a zero that would read as the epoch.
+    ///
+    /// Reference data only, exactly like `lastPlayed` — never seed `PlayStatsStore.lastPlayedAt`
+    /// from this (that is the storage prune's eviction key).
+    func lastPlayedSnapshot() -> [String: Double] { counts.compactMapValues(\.lastMs) }
+
     // MARK: - Writes
 
     /// SET the baseline from a capture. Returns `false` when the capture was REJECTED.

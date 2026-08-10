@@ -69,6 +69,46 @@ final class PlayCountService {
     /// LRP eviction key, and seeding it from Apple would reshuffle the whole downloaded set.
     func applePlayedAt(_ songId: String) -> Double? { baseline.lastPlayed(songId) }
 
+    /// WHEN was this song last played, by anything — the recency axis, and the companion to
+    /// `combinedPlayCount`. Newest of Apple's stamp and this app's own; nil when neither knows.
+    ///
+    /// READ-ONLY IN BOTH DIRECTIONS. It reads `PlayStatsStore.lastPlayedAt` and it must never
+    /// write it: that field is the storage manager's LRP eviction key, and seeding it from
+    /// Apple's baseline (which reaches 56k songs against this app's ~700) would reshuffle the
+    /// whole downloaded set — deleting files the owner never touched. `max` here, no store.
+    ///
+    /// `max` rather than "Apple wins": this app plays rips, stems, vinyl and Mix decks that Apple
+    /// never sees, so for those songs the local stamp is the only true one — and for a song both
+    /// know, the later stamp is the correct answer whichever side it came from.
+    func lastPlayedAt(_ songId: String) -> Double? {
+        guard !songId.isEmpty else { return nil }
+        let apple = baseline.lastPlayed(songId)
+        guard let local = stats.lastPlayedAt(songId) else { return apple }
+        guard let apple else { return local }
+        return max(apple, local)
+    }
+
+    /// Every song with a known last-played date, as a plain value map — the OFF-MAIN counterpart
+    /// to `snapshot()`, taken on the main actor and read from a detached task.
+    ///
+    /// Sparse by construction: a song absent here has never been played by anything, which is
+    /// the same convention `snapshot()` uses for a zero count (see `PlayRecency.score`).
+    func lastPlayedSnapshot() -> [String: Double] {
+        var out = baseline.lastPlayedSnapshot()
+        for (id, ms) in stats.lastPlayedSnapshot() where ms > 0 {
+            out[id] = max(out[id] ?? 0, ms)
+        }
+        return out
+    }
+
+    /// Does this device know ANY last-played dates? The round-level applicability question —
+    /// distinct from "this song has never been played", which is an honest zero. A device with no
+    /// Apple baseline and no local history cannot speak to recency at all, and consumers drop the
+    /// term from their denominator rather than scoring every song zero on it.
+    /// O(1): both sides are emptiness checks on maps already in memory, never a snapshot build —
+    /// this is called once per round setup and per settings keystroke.
+    var hasRecencyData: Bool { !baseline.isEmpty || !stats.stats.isEmpty }
+
     /// Every song with a non-zero lifetime total, as a plain value map — the snapshot the OFF-MAIN
     /// Browse filter/sort and the Gem Collector sampler take on the main actor and then read from
     /// a detached task.

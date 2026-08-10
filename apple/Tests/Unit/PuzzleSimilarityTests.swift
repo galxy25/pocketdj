@@ -25,16 +25,23 @@ final class PuzzleSimilarityTests: XCTestCase {
         songs.map { (song: $0, weight: 1.0) }
     }
 
+    /// `nowMs` defaults to the co-play fixtures' own clock so a decayed edge is full-strength
+    /// unless a test deliberately ages it — the tests that pass no `plays` are unaffected either
+    /// way. `hasRecency` defaults FALSE, which keeps `wRecency` out of the denominator and every
+    /// pre-existing expectation exact.
     private func profile(members: [IndexSong],
                          genres: [String: String] = [:],
                          otherCollections: [[String]] = [],
                          plays: [(songId: String, atMs: Double)] = [],
-                         catalog: [IndexSong] = []) -> PuzzleSimilarity.TargetProfile {
+                         catalog: [IndexSong] = [],
+                         hasRecency: Bool = false,
+                         nowMs: Double = 1_000_000) -> PuzzleSimilarity.TargetProfile {
         let all = catalog.isEmpty ? members : catalog
         let byId = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         return PuzzleSimilarity.profile(targetMemberIds: [members.map(\.id)],
                                         songsById: byId, genreBySongId: genres,
-                                        otherCollections: otherCollections, plays: plays)
+                                        otherCollections: otherCollections, plays: plays,
+                                        hasRecency: hasRecency, nowMs: nowMs)
     }
 
     // MARK: - The no-targets guarantee
@@ -126,11 +133,15 @@ final class PuzzleSimilarityTests: XCTestCase {
                         otherCollections: [["t1", "shared"], ["loner-elsewhere"]],
                         plays: [(songId: "t1", atMs: 1_000_000),
                                 (songId: "recent", atMs: 1_000_000 + 10 * 60 * 1000),
-                                (songId: "later", atMs: 1_000_000 + 3 * 60 * 60 * 1000)])
+                                (songId: "later", atMs: 1_000_000 + 3 * 60 * 60 * 1000)],
+                        // "Now" AT the co-play, so the edge is undecayed and this test keeps
+                        // measuring the WINDOW rule rather than the decay.
+                        nowMs: 1_000_000 + 10 * 60 * 1000)
         XCTAssertTrue(p.coMemberIds.contains("shared"))
         XCTAssertFalse(p.coMemberIds.contains("loner"))
-        XCTAssertEqual(p.coPlayCount["recent"], 1, "played 10 min after a member ⇒ an edge")
-        XCTAssertNil(p.coPlayCount["later"], "played 3 h after ⇒ no edge")
+        XCTAssertEqual(p.coPlayWeight["recent"] ?? 0, 1, accuracy: 0.0001,
+                       "played 10 min after a member ⇒ a full-strength edge")
+        XCTAssertNil(p.coPlayWeight["later"], "played 3 h after ⇒ no edge")
 
         let shared = song("shared", artist: "Z")
         let recent = song("recent", artist: "Z")
@@ -371,5 +382,115 @@ final class PuzzleSimilarityTests: XCTestCase {
         XCTAssertTrue(s.summaryLine.contains("similar+"), s.summaryLine)
         s.similarity = .off
         XCTAssertTrue(s.summaryLine.contains("any"), s.summaryLine)
+    }
+
+    // MARK: - Recency: the candidate-side axis
+
+    /// A blob written before the recency axis existed decodes to `.off`, and its `summaryLine`
+    /// is UNCHANGED — Levi already has scoreboard history under the current semantics, and a
+    /// stored round must keep meaning exactly what it meant when it was recorded.
+    func testSettingsDecodeWithoutTheRecencyKeyAndSummaryIsUnchanged() throws {
+        let json = """
+        { "roundSeconds": 120, "playCountBias": "favor", "favoriteBias": "off",
+          "genreCategories": [], "membershipMode": "off", "membershipCollectionIds": [],
+          "targetCollectionIds": [] }
+        """
+        let s = try JSONDecoder().decode(PuzzleSettings.self, from: Data(json.utf8))
+        XCTAssertEqual(s.recencyBias, .off, "the new axis is absent ⇒ off")
+        XCTAssertEqual(s.playCountBias, .favor, "the EXISTING axis keeps its recorded meaning")
+        XCTAssertEqual(s.summaryLine, "2:00 · most played · free file",
+                       "an old round's summary line is byte-identical")
+    }
+
+    /// The two axes get their OWN labels, and a round can carry both at once — "most played"
+    /// never silently starts meaning "recently played".
+    func testSummaryLineNamesBothAxesSeparately() {
+        var s = PuzzleSettings()
+        s.recencyBias = .favor
+        XCTAssertTrue(s.summaryLine.contains("recently played"), s.summaryLine)
+        s.recencyBias = .avoid
+        XCTAssertTrue(s.summaryLine.contains("not played lately"), s.summaryLine)
+        s.playCountBias = .favor
+        XCTAssertTrue(s.summaryLine.contains("most played"), s.summaryLine)
+        XCTAssertTrue(s.summaryLine.contains("not played lately"),
+                      "both axes are named — one does not replace the other: \(s.summaryLine)")
+    }
+
+    /// ROUND-LEVEL renormalization: on a device that knows no dates, `wRecency` is not in the
+    /// denominator at all, so every score is EXACTLY what the shipped six-signal ranker produces.
+    /// (This is deliberately NOT per-song renormalization — see
+    /// `testProfileLevelDenominatorDoesNotRewardMissingMetadata`.)
+    func testNoRecencyDataLeavesScoresExactlyAsBefore() {
+        let members = [song("t1", artist: "Chromatics", year: 1994)]
+        let withoutRecency = profile(members: members, hasRecency: false)
+        let withRecency = profile(members: members, hasRecency: true)
+        XCTAssertEqual(withoutRecency.availableWeight,
+                       PuzzleSimilarity.wArtist + PuzzleSimilarity.wYear, accuracy: 1e-9,
+                       "no dates on this device ⇒ the term is absent from the denominator")
+        XCTAssertEqual(withRecency.availableWeight,
+                       PuzzleSimilarity.wArtist + PuzzleSimilarity.wYear + PuzzleSimilarity.wRecency,
+                       accuracy: 1e-9)
+
+        // A song with NO recency data is not penalised: against a profile that cannot speak the
+        // term, it scores identically to what the shipped ranker gave it.
+        let candidate = song("c", artist: "Chromatics", year: 1994)
+        XCTAssertEqual(PuzzleSimilarity.score(candidate, profile: withoutRecency, genre: nil),
+                       PuzzleSimilarity.score(candidate, profile: withoutRecency, genre: nil,
+                                              recency: 0.9),
+                       accuracy: 1e-12,
+                       "a term outside the denominator cannot contribute")
+    }
+
+    /// A song missing recency data must not be PENALISED relative to the round: with the term in
+    /// the denominator it still ranks by everything else, and an artist match still beats a
+    /// non-match no matter how recently the non-match was played.
+    func testRecencyCannotOutrankAStrongerSignal() {
+        let p = profile(members: [song("t1", artist: "Chromatics", year: 1994)], hasRecency: true)
+        let matchingArtistNeverPlayed = song("match", artist: "Chromatics", year: 1994)
+        let strangerPlayedToday = song("stranger", artist: "Nobody", year: 1994)
+        XCTAssertGreaterThan(
+            PuzzleSimilarity.score(matchingArtistNeverPlayed, profile: p, genre: nil, recency: 0),
+            PuzzleSimilarity.score(strangerPlayedToday, profile: p, genre: nil, recency: 1),
+            "a 0.05 tiebreak may never overturn the 0.30 artist term")
+    }
+
+    /// …but between two otherwise-identical songs it DOES decide, which is what a tiebreak is for.
+    func testRecencyBreaksTiesBetweenOtherwiseIdenticalSongs() {
+        let p = profile(members: [song("t1", artist: "Chromatics", year: 1994)], hasRecency: true)
+        let stale = song("stale", artist: "Chromatics", year: 1994)
+        let fresh = song("fresh", artist: "Chromatics", year: 1994)
+        XCTAssertGreaterThan(PuzzleSimilarity.score(fresh, profile: p, genre: nil, recency: 1),
+                             PuzzleSimilarity.score(stale, profile: p, genre: nil, recency: 0))
+
+        // …and it reaches the shortlist ORDER, not just the score.
+        let out = PuzzleSimilarity.shortlist(candidates([stale, fresh]), profile: p,
+                                             genreBySongId: [:],
+                                             recencies: ["fresh": 1, "stale": 0],
+                                             mode: .on, wanted: 60)
+        XCTAssertEqual(out.first?.song.id, "fresh")
+    }
+
+    /// CO-PLAY EDGES DECAY. "Often played together" must mean "played together LATELY" — on a
+    /// library whose median play is years old, an undecayed edge describes listening habits the
+    /// user has since abandoned.
+    func testCoPlayEdgesDecayWithAge() {
+        let base: Double = 1_700_000_000_000
+        let day: Double = 86_400_000
+        // Two co-plays with a target member: one today, one four years ago.
+        let p = profile(members: [song("t1")],
+                        plays: [(songId: "t1", atMs: base),
+                                (songId: "fresh", atMs: base + 60_000),
+                                (songId: "t1", atMs: base - 1460 * day),
+                                (songId: "stale", atMs: base - 1460 * day + 60_000)],
+                        nowMs: base)
+        let freshEdge = p.coPlayWeight["fresh"] ?? 0
+        let staleEdge = p.coPlayWeight["stale"] ?? 0
+        XCTAssertGreaterThan(freshEdge, 0.99, "today's co-play is full strength")
+        XCTAssertGreaterThan(staleEdge, 0, "an old co-play still counts for something")
+        XCTAssertLessThan(staleEdge, 0.3, "…but four years on it is a fraction (got \(staleEdge))")
+        XCTAssertGreaterThan(
+            PuzzleSimilarity.score(song("fresh"), profile: p, genre: nil),
+            PuzzleSimilarity.score(song("stale"), profile: p, genre: nil),
+            "the recent listening session ranks above the abandoned one")
     }
 }
