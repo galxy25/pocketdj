@@ -825,6 +825,31 @@ final class RecommendationService {
 
     // MARK: - For You
 
+    /// How many rows the For You fetch asks for. Above the 90-song In Da Zone ceiling on purpose:
+    /// the shaping pass on the device drops ids this catalog cannot resolve, songs still inside
+    /// the cooldown, thumbed-down rows and everything over the 3-per-artist cap, so the tile needs
+    /// headroom or a heavily-capped answer arrives short. 200 is the server's own clamp.
+    static let forYouFetchLimit = 200
+
+    /// THE CLOUD RANKING FOR In Da Zone — ids only, best first.
+    ///
+    /// Owner, verbatim: *"new and in da zone should use the recommendation engine if available,
+    /// only doing on device when not enabled."* This is the "if available" half, and it answers it
+    /// with a LIST OR NOTHING — never an error, never a partial state the caller has to interpret.
+    /// `[]` means "use your own ranking", and it covers every way this can fail to be useful:
+    /// the engine is off (the default — the privacy gate returns before any request), the server
+    /// is unreachable, the key is wedged, the profile has no state yet, or it simply had nothing
+    /// to say. `ForYouFeedStore.refresh` treats all of them identically, so a cloud outage is
+    /// invisible except in the tile's attribution.
+    ///
+    /// `force` is what a manual Refresh passes: the 15-minute TTL is right for an incidental read
+    /// and wrong for the owner explicitly asking for new recommendations.
+    func cloudZoneRanking(force: Bool = true) async -> [String] {
+        guard isEnabled else { return [] }
+        await refreshForYou(force: force)
+        return forYou.map(\.songId)
+    }
+
     func refreshForYou(force: Bool = false) async {
         guard isEnabled else { return }
         if fixtureOn {
@@ -839,7 +864,7 @@ final class RecommendationService {
         await flushNow()   // recs should see the latest plays
         do {
             let key = ensureKey()
-            let resp = try await client.forYou(limit: 50, key: key,
+            let resp = try await client.forYou(limit: Self.forYouFetchLimit, key: key,
                                                profileId: scopedProfileId(key: key))
             forYou = resp.songs.map {
                 SongSuggestion(songId: $0.songId, name: $0.name ?? $0.songId,
@@ -868,15 +893,26 @@ final class RecommendationService {
         "This PocketDJ build predates a recommendation-service reset. "
         + "Update the app to reconnect — your listening history is safe on this device."
 
-    /// Fixture canned rows (only under the seam). They render standalone — For You rows never
-    /// require catalog resolution.
+    /// Fixture canned rows (only under the seam).
+    ///
+    /// The ids are the BUNDLED FIXTURE CATALOG'S OWN (`fixture-index.json`), and that is the point
+    /// rather than a convenience: this list is now the cloud ranking for In Da Zone, and the
+    /// device shaping pass drops any id it cannot resolve. Canned ids from nowhere (`sng_fix_*`,
+    /// which is what these were while they fed the deleted Suggested tile) would shape away to
+    /// nothing and silently exercise the FALLBACK on every run — a UI test that believes it is
+    /// driving the cloud path while driving the local one is worse than no test.
+    ///
+    /// Deliberately NOT catalog order: the whole claim of the cloud path is that the SERVER'S
+    /// order survives to the tile, and an identity permutation cannot show that.
     private static let fixtureForYou: [SongSuggestion] = [
-        SongSuggestion(songId: "sng_fix_1", name: "Neon", artist: "Aria",
+        SongSuggestion(songId: "sng_5", name: "Blue Note", artist: "Bento",
                        reasons: ["Same genre as recent plays"]),
-        SongSuggestion(songId: "sng_fix_2", name: "Running It Up", artist: "Aria",
+        SongSuggestion(songId: "sng_7", name: "Slow Burn", artist: "Cobalt",
                        reasons: ["BPM near 120"]),
-        SongSuggestion(songId: "sng_fix_3", name: "Golden Hour", artist: "Mira",
+        SongSuggestion(songId: "sng_2", name: "Pulse", artist: "Aria",
                        reasons: ["Often played together"]),
+        SongSuggestion(songId: "sng_6", name: "Get Down", artist: "Cobalt",
+                       reasons: ["Harmonically compatible key"]),
     ]
 
     // MARK: - Collection suggestions (SongDetail + Add sheet)

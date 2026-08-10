@@ -737,6 +737,114 @@ enum ZoneEngine {
                           fallback: fallbackPool, target: target, tuning: tuning)
     }
 
+    // ========================================================================
+    // MARK: - In Da Zone, ranked ELSEWHERE (the cloud engine)
+    // ========================================================================
+
+    /// Shape a ranking this engine did NOT produce — the cloud recommendation engine's ordered
+    /// song ids — into an In Da Zone queue that obeys every local rule.
+    ///
+    /// ── THE DIVISION OF LABOUR ───────────────────────────────────────────────────────────────
+    /// The server RANKS; the device SHAPES. Owner, verbatim: *"new and in da zone should use the
+    /// recommendation engine if available, only doing on device when not enabled."* That makes the
+    /// cloud the source of the ORDER, and it does not make it the source of the tile's contract:
+    /// the tile is still "≤3 songs per artist, a blend that is at least half rediscovery, and
+    /// nothing the listener thumbed down". The server knows none of those (it does not hold the
+    /// scoped tombstones, it caps nothing per artist, and it has no notion of this device's two
+    /// pools), so a server list handed straight to the grid would quietly drop all three.
+    /// **A server list must never bypass client filtering.**
+    ///
+    /// So this is the one door a cloud ranking comes through, and it applies, in order:
+    ///  1. **RESOLUTION** — an id this install's catalog cannot resolve is dropped. The server
+    ///     ranks over a catalog snapshot that can outlive a source being toggled off here.
+    ///  2. **SUPPRESSION** — a scoped 7-day tombstone removes the row from the RANKING, exactly as
+    ///     it does on the device path. (The view re-injects sunk rows at the bottom, so the undo
+    ///     control stays reachable — that is not this function's job.)
+    ///  3. **COOLDOWN** — a song played in the last `cooldownHours` is out. The server excludes 72 h
+    ///     of the plays IT KNOWS ABOUT, which is a strictly smaller set: a play made on a device
+    ///     that has not flushed yet, or while the toggle was off, only exists here.
+    ///  4. **POOLS + THE FLOOR + THE CAP** — every surviving row is labelled `.familiar` or
+    ///     `.rediscovery` by the same `rediscoveryQuietDays` window the device path uses, and the
+    ///     two are interleaved by the SAME `interleave` (so ≥50% rediscovery holds on every
+    ///     prefix, and no artist exceeds `maxPerArtist`). The server's relative order is preserved
+    ///     WITHIN each pool — it is the ranking, and nothing here re-scores it.
+    ///
+    /// Empty in ⇒ empty out, and an empty result is the caller's signal to keep its on-device
+    /// ranking. That is the whole fallback story: unreachable, unenrolled, disabled and
+    /// "answered with nothing usable" all arrive here as the same empty queue.
+    ///
+    /// - Parameters:
+    ///   - songIds: the server's ranking, best first.
+    ///   - songs: this install's playable catalog — the resolution + artist source.
+    ///   - plays: recent play EVENTS (the cooldown + pool window; same projection `inDaZone` takes).
+    ///   - lastPlayedMs: combined Apple + local last-played, so a song played only in Music.app is
+    ///     not offered back as a "rediscovery".
+    ///   - feedback: the listener's verdicts. Only `suppressed` filters here; the taste halves
+    ///     (`accepted` / `rejected`) shaped the ranking that produced `songIds` server-side and
+    ///     re-applying them locally would double-count a signal the server already spent.
+    static func shapeCloudRanking(songIds: [String],
+                                  songs: [IndexSong],
+                                  plays: [Play] = [],
+                                  lastPlayedMs: [String: Double] = [:],
+                                  feedback: Feedback = Feedback(),
+                                  nowMs: Double,
+                                  tuning: Tuning = Tuning()) -> Queue {
+        guard !songIds.isEmpty, !songs.isEmpty else { return Queue() }
+        let songsById = Dictionary(songs.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+
+        let windowMs = tuning.rediscoveryQuietDays * 86_400_000
+        let cooldownMs = tuning.cooldownHours * 3_600_000
+
+        // The two facts the local play log carries that the server's copy may not: what is still
+        // ringing in the listener's ears, and what he touched inside the zone window.
+        var onCooldown = Set<String>()
+        var playedInWindow = Set<String>()
+        for p in plays {
+            let age = nowMs - p.playedAtMs
+            if age < cooldownMs { onCooldown.insert(p.songId) }
+            if age >= 0, age <= windowMs { playedInWindow.insert(p.songId) }
+        }
+
+        var familiar: [(id: String, capKey: String, score: Double)] = []
+        var rediscovery: [(id: String, capKey: String, score: Double)] = []
+        var seen = Set<String>()
+        var capKeyByArtist: [String: String] = [:]
+
+        for (rank, id) in songIds.enumerated() {
+            guard let song = songsById[id], seen.insert(id).inserted else { continue }
+            if feedback.suppressed.contains(id) { continue }
+            let lastPlayed = lastPlayedMs[id]
+            if onCooldown.contains(id) { continue }
+            if let lp = lastPlayed, nowMs - lp < cooldownMs { continue }
+
+            // The PRIMARY artist, memoized per credit — the key the per-artist budget is spent
+            // against, so a collaboration credit cannot walk around the cap.
+            let ak = PuzzleSimilarity.artistKey(song.artist)
+            let capKey: String
+            if let k = capKeyByArtist[ak] { capKey = k }
+            else {
+                capKey = RecNovelty.primaryArtistKey(song.artist)
+                capKeyByArtist[ak] = capKey
+            }
+
+            // The server's order IS the score. Descending, so `interleave`'s pools walk best-first
+            // exactly as the locally-ranked ones do.
+            let score = Double(songIds.count - rank)
+            let recentlyTouched = playedInWindow.contains(id)
+                || (lastPlayed.map { nowMs - $0 < windowMs } ?? false)
+            if recentlyTouched { familiar.append((id, capKey, score)) }
+            else { rediscovery.append((id, capKey, score)) }
+        }
+
+        guard !familiar.isEmpty || !rediscovery.isEmpty else { return Queue() }
+        // The ceiling, not the breadth-derived target the local path computes: that target is a
+        // function of how many artists the SEED SET held, and there is no seed set here — the
+        // server did the seeding. The pools are already short (the client asks for ~200 ids), so
+        // the honest bound is "as much as the cap and the pools allow, up to the tile's maximum".
+        return interleave(familiar: familiar, rediscovery: rediscovery, fallback: [],
+                          target: tuning.maxSongs, tuning: tuning)
+    }
+
     /// Weighted tempo/key shape of a seed set — built from the same fields `PuzzleSimilarity` reads
     /// in balanced mode. Kept for callers that want the profile on its own (and for the tests that
     /// pin the wheel); the ranking above gets tempo/key through family C rather than through this.

@@ -276,4 +276,135 @@ final class ForYouFeedCacheTests: XCTestCase {
                                                songIds: ["x"])])
         XCTAssertEqual(snap.songIds(forTileId: "col-gone"), ["x"])
     }
+
+    // ========================================================================
+    // MARK: - THE CLOUD RANKER FOR In Da Zone
+    // ========================================================================
+    //
+    // Owner, verbatim: "new and in da zone should use the recommendation engine if available,
+    // only doing on device when not enabled." The two halves of that sentence are two properties,
+    // and both of them are failures the other way round: a cloud answer that never reaches the
+    // tile, and a cloud FAILURE that empties it.
+
+    /// One play, ten days back, so BOTH rankers have something real to say: it seeds the local
+    /// taste profile (without it `inDaZone` scores every candidate zero and the local half of
+    /// these tests would be vacuously empty) and it makes exactly one row `.familiar` on the
+    /// cloud path, which is what the blend is made of.
+    private func cloudInputs(now: Double = 2_100_000_000_000) -> ForYouFeedInputs {
+        let songs = [song("s1", artist: "Aria"), song("s2", artist: "Aria"),
+                     song("s3", artist: "Bento"), song("s4", artist: "Cobalt")]
+        return ForYouFeedInputs(
+            songs: songs,
+            tracks: songs.map { ZoneEngine.Track(songId: $0.id, artistKey: $0.artist,
+                                                 artistName: $0.artist, genre: "house") },
+            genreBySongId: Dictionary(uniqueKeysWithValues: songs.map { ($0.id, "house") }),
+            plays: [.init(songId: "s1", playedAtMs: now - 10 * 86_400_000)],
+            nowMs: now)
+    }
+
+    func testACloudAnswerReplacesTheZoneAndSaysSo() async {
+        let store = ForYouFeedStore(fileURL: url())
+        await store.refresh(cloudInputs(), cloudZone: { ["s4", "s3", "s1"] })
+        XCTAssertEqual(store.snapshot.zoneSource, .cloud)
+        XCTAssertEqual(Set(store.snapshot.zoneIds), ["s4", "s3", "s1"],
+                       "the tile is built from the SERVER's rows, not the local ranking's")
+        // The server's relative order survives WITHIN a pool. Across pools the local blend
+        // interleaves (that is the tile's ≥50%-rediscovery contract, which the server knows
+        // nothing about), so the whole array is deliberately not asserted equal.
+        let ids = store.snapshot.zoneIds
+        XCTAssertLessThan(ids.firstIndex(of: "s4") ?? .max, ids.firstIndex(of: "s3") ?? .max,
+                          "s4 outranked s3 server-side and still does")
+        XCTAssertEqual(Set(store.snapshot.zoneBuriedIds), ["s4", "s3"],
+                       "the Buried badge is re-derived locally — the server does not know which "
+                       + "rows are dormant on THIS device")
+        XCTAssertTrue(store.snapshot.crates.isEmpty,
+                      "the cloud pass touches In Da Zone and nothing else")
+    }
+
+    /// THE ORDER IS THE FALLBACK. The local ranking must be committed BEFORE the network is
+    /// awaited, or every refresh is as slow as the slowest Lambda cold start and a timeout looks
+    /// like a hung refresh.
+    func testTheLocalRankingIsCommittedBeforeTheCloudIsEvenAsked() async {
+        let store = ForYouFeedStore(fileURL: url())
+        var zoneWhenAsked: [String]?
+        var revisionWhenAsked: Int?
+        await store.refresh(cloudInputs(), cloudZone: {
+            zoneWhenAsked = store.snapshot.zoneIds
+            revisionWhenAsked = store.revision
+            return ["s4"]
+        })
+        XCTAssertFalse(zoneWhenAsked?.isEmpty ?? true,
+                       "a complete on-device feed is already on screen when the request goes out")
+        XCTAssertEqual(revisionWhenAsked, 1, "…and it was committed, not merely computed")
+        XCTAssertEqual(store.revision, 2, "the cloud answer is a SECOND commit")
+    }
+
+    /// Every way the cloud can fail to be useful is the same outcome: the on-device feed stands.
+    /// Offline, 5xx, unenrolled, an empty list and a list of ids this catalog cannot resolve all
+    /// arrive here as "nothing usable".
+    func testEveryCloudFailureLeavesTheOnDeviceFeedExactlyAsItWas() async {
+        for (label, answer) in [("empty answer", [String]()),
+                                ("ids this catalog cannot resolve", ["nope_1", "nope_2"])] {
+            let store = ForYouFeedStore(fileURL: url("fallback-\(label).json"))
+            let inputs = cloudInputs()
+            await store.refresh(inputs)                    // the reference: local only
+            let local = store.snapshot
+            let localRevision = store.revision
+
+            let cloudStore = ForYouFeedStore(fileURL: url("cloudy-\(label).json"))
+            await cloudStore.refresh(inputs, cloudZone: { answer })
+            XCTAssertEqual(cloudStore.snapshot.zoneIds, local.zoneIds, "\(label): same ids")
+            XCTAssertEqual(cloudStore.snapshot.zoneSource, .onDevice,
+                           "\(label): and it does not claim the cloud produced them")
+            XCTAssertEqual(cloudStore.revision, localRevision,
+                           "\(label): no second commit for a non-answer")
+            XCTAssertFalse(cloudStore.snapshot.zoneIds.isEmpty,
+                           "\(label): a cloud problem NEVER empties the tile")
+        }
+    }
+
+    /// A disabled engine hands `refresh` no closure at all — the store must then behave exactly as
+    /// it did before this feature existed, which is what makes the default-OFF path un-regressed.
+    func testNoCloudClosureIsByteForByteTheOldBehaviour() async {
+        let inputs = cloudInputs()
+        let a = ForYouFeedStore(fileURL: url("a.json"))
+        let b = ForYouFeedStore(fileURL: url("b.json"))
+        await a.refresh(inputs)
+        await b.refresh(inputs, cloudZone: nil)
+        XCTAssertEqual(a.snapshot, b.snapshot)
+        XCTAssertEqual(a.revision, b.revision)
+    }
+
+    /// The cloud list goes through the SAME local rules the device ranking does. A server that has
+    /// not yet seen a 👎 (it was given seconds ago, or on a device that has not flushed) must not
+    /// be able to put that row back on the tile.
+    func testAServerListCannotBypassTheLocalTombstonesOrTheArtistCap() async {
+        let store = ForYouFeedStore(fileURL: url())
+        var inputs = cloudInputs()
+        inputs.zoneFeedback = ZoneEngine.Feedback(suppressed: ["s3"])
+        // Four Aria rows offered; the cap is 3 per artist and it is not negotiable.
+        let extra = [song("s5", artist: "Aria"), song("s6", artist: "Aria")]
+        inputs.songs += extra
+        await store.refresh(inputs, cloudZone: { ["s1", "s2", "s5", "s6", "s3", "s4"] })
+        XCTAssertFalse(store.snapshot.zoneIds.contains("s3"),
+                       "a thumbed-down row stays down even when the server offers it")
+        XCTAssertEqual(store.snapshot.zoneIds.filter { ["s1", "s2", "s5", "s6"].contains($0) }.count,
+                       ZoneEngine.Tuning().maxPerArtist,
+                       "the 3-per-artist cap holds against a server list")
+        XCTAssertTrue(store.snapshot.zoneIds.contains("s4"),
+                      "and the capped artist does not cost the queue its other rows")
+    }
+
+    /// The attribution is FROZEN WITH THE IDS. Deriving it at render from "is the engine on right
+    /// now" would let a toggle flip re-label a cached list the local engine produced.
+    func testTheAttributionSurvivesRelaunchAlongsideTheIdsItDescribes() async {
+        let file = url("attr.json")
+        let store = ForYouFeedStore(fileURL: file)
+        await store.refresh(cloudInputs(), cloudZone: { ["s4", "s1"] })
+        XCTAssertEqual(ForYouFeedStore(fileURL: file).snapshot.zoneSource, .cloud)
+
+        // …and a document written before the cloud path existed decodes as what produced it.
+        try? Data(#"{"zoneIds":["a"],"refreshedAtMs":9}"#.utf8).write(to: url("old.json"))
+        XCTAssertEqual(ForYouFeedStore(fileURL: url("old.json")).snapshot.zoneSource, .onDevice)
+    }
 }

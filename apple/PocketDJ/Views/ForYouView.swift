@@ -14,8 +14,12 @@ import SwiftUI
 ///    the one-shot listening seed, never off this render. It is the one tile whose rows he does
 ///    NOT own — which is why acting on a row means opening the release, and why playing the tile
 ///    STREAMS it (`ReleaseStreaming`) instead of resolving catalog ids.
-///  • **In Da Zone** — what to play right now, ranked from recent play history against the local
-///    catalog (`ZoneEngine.inDaZone`). ≤3 songs per artist, 30–90 songs. No network, ever.
+///  • **In Da Zone** — what to play right now. TWO POSSIBLE RANKERS: the cloud recommendation
+///    engine when it is enabled AND answers (`RecommendationService.cloudZoneRanking`), the local
+///    `ZoneEngine.inDaZone` otherwise. Either way the ids come out through
+///    `ZoneEngine.shapeCloudRanking` / `inDaZone` and obey the same rules — ≤3 songs per artist,
+///    ≥50% rediscovery, thumbed-down rows removed. The engine is opt-in and ships OFF, so the
+///    local path is the common case and must not regress; the cloud path never blocks a render.
 ///  • **one per collection** — songs worth adding to that playlist/pocket
 ///    (`ZoneEngine.suggestions`). A collection only gets a tile when it actually yields
 ///    suggestions, so this list is short and honest rather than one tile per collection.
@@ -44,7 +48,8 @@ struct ForYouTilesView: View {
     /// a test host that renders For You standalone degrades to "no New tile content" rather than
     /// trapping.
     @Environment(ReleaseFeedService.self) private var releaseFeed: ReleaseFeedService?
-    /// The cloud engine — optional and default-OFF. Its tile appears only when it has answers.
+    /// The cloud engine — optional and default-OFF. It no longer has a tile of its own; it is one
+    /// of the two possible RANKERS behind In Da Zone (see `refresh`).
     @Environment(RecommendationService.self) private var recEngine: RecommendationService?
     /// The 👍/👎 log — the tile COUNTS must already exclude rejected songs, or a tile promises
     /// twelve suggestions and opens on nine.
@@ -137,11 +142,11 @@ struct ForYouTilesView: View {
         // The owner's Refresh, from History's tab menu. Works under EVERY cadence, `.manual`
         // included — a schedule adds a trigger, it never replaces his hands.
         .onChange(of: refreshToken) { _, _ in Task { await refresh() } }
-        // The cloud engine's refresh used to hang off the For You LIST's `.task`; the list now
-        // sits one tap away behind its tile, so the trigger moves up here — otherwise the tile
-        // could never appear (its count is what decides whether it exists). Gated internally on
-        // `isEnabled`, so a default-OFF install does no work and makes no request.
-        .task { await recEngine?.refreshForYou() }
+        // THERE IS NO `.task { refreshForYou() }` HERE ANY MORE, and its absence is the point.
+        // The cloud fetch used to fire on every appearance because a tile's very existence
+        // depended on it. It now feeds In Da Zone, which is part of the FROZEN feed — so the
+        // fetch belongs to the refresh (see `refresh`), under the owner's cache-don't-recompute
+        // rule, rather than to the render. A tab open costs zero requests.
         .alert("Couldn’t start these releases",
                isPresented: Binding(get: { startError != nil },
                                     set: { if !$0 { startError = nil } })) {
@@ -181,15 +186,20 @@ struct ForYouTilesView: View {
 
     /// What makes the CARDS different — never what makes the RANKING different.
     ///
-    ///  • `feed.revision` — a refresh landed.
+    ///  • `feed.revision` — a refresh landed (INCLUDING the cloud engine's second commit).
     ///  • `feedback.revision` — the owner thumbed something: counts drop, rows sink. IMMEDIATE.
-    ///  • `releaseFeed.revision` / cloud count — the two tiles that are deliberately NOT frozen
-    ///    (their content lives in their own caches and their screens read those directly, so a
-    ///    frozen count here would disagree with the screen behind the card).
+    ///  • `releaseFeed.revision` — New is deliberately NOT frozen (its content lives in its own
+    ///    cache and its screen reads that directly, so a frozen count here would disagree with the
+    ///    screen behind the card).
     ///  • collection count — a collection deleted out from under a cached tile.
+    ///
+    /// The cloud engine is NOT a key any more: its answer reaches the grid through the frozen
+    /// snapshot's `zoneIds`/`zoneSource`, so `feed.revision` already covers it. Keying on live
+    /// `recEngine` state as well would re-derive the cards off a fetch that has not been committed
+    /// — the tile would count one list while its screen showed another.
     private var derivationKey: String {
         "\(feed?.revision ?? 0)|\(snapshot.refreshedAtMs)|\(feedback?.revision ?? 0)"
-        + "|\(releaseFeed?.revision ?? 0)|\(recEngine?.forYou.count ?? 0)"
+        + "|\(releaseFeed?.revision ?? 0)"
         + "|\(collections.playlists.count)|\(collections.pockets.count)"
     }
 
@@ -208,7 +218,6 @@ struct ForYouTilesView: View {
         let releases = releaseFeed?.feed(nowMs: now) ?? []
         let soon = releases.filter { $0.status == .comingSoon }
         let newScope = ForYouTileRoute.Kind.new.rawValue
-        let cloudIds = recEngine?.forYou.map(\.songId) ?? []
 
         // Drop a cached tile whose collection has since been deleted — the ONE way a frozen feed
         // could offer a door to nothing.
@@ -221,10 +230,12 @@ struct ForYouTilesView: View {
             newReleaseCount: newCount,
             comingSoonCount: live(soon.map(\.feedbackId), newScope).count,
             zone: live(snapshot.zoneIds, ForYouTileRoute.Kind.zone.rawValue),
+            // The attribution rides the SNAPSHOT, not live engine state: it has to describe the
+            // ids actually on screen, and those were frozen by whichever ranker produced them.
+            zoneSource: snapshot.zoneSource,
             collections: crates.map { c in
                 (id: c.id, kind: c.kind, name: c.name, suggestions: live(c.songIds, c.id))
             },
-            cloudSuggestionCount: live(cloudIds, ForYouTileRoute.Kind.suggested.rawValue).count,
             // A ZERO ON THE NEW TILE HAS FOUR DIFFERENT CAUSES. Say which — a bare 0 with
             // "no releases in the last 30 days" beneath it is the card asserting something it
             // has not checked, and it is why this feature read as broken.
@@ -285,15 +296,36 @@ struct ForYouTilesView: View {
             }),
             nowMs: now)
 
+        // THE CLOUD RANKER FOR In Da Zone, or nil. nil is not a degraded mode — it is the DEFAULT
+        // configuration (the engine ships off), and it means the store never awaits a network call
+        // at all. `cloudZoneRanking` re-checks the same gate, so this is belt-and-braces rather
+        // than the only guard.
+        let cloudZone: (() async -> [String])?
+        if let recEngine, recEngine.isEnabled {
+            cloudZone = { await recEngine.cloudZoneRanking() }
+        } else {
+            cloudZone = nil
+        }
+
         if let feed {
-            await feed.refresh(inputs)
+            await feed.refresh(inputs, cloudZone: cloudZone)
         } else {
             guard !fallbackRefreshing else { return }
             fallbackRefreshing = true
             defer { fallbackRefreshing = false }
-            fallback = await Task.detached(priority: .userInitiated) {
+            var built = await Task.detached(priority: .userInitiated) {
                 ForYouFeedBuilder.build(inputs)
             }.value
+            fallback = built
+            deriveTiles()   // the local answer lands before the network is even asked
+            if let cloudZone {
+                let ids = await cloudZone()
+                if !ids.isEmpty {
+                    built = ForYouFeedBuilder.applyingCloudZone(built, cloudZoneIds: ids,
+                                                                inputs: inputs)
+                    fallback = built
+                }
+            }
         }
         deriveTiles()
     }
@@ -365,11 +397,11 @@ struct ForYouTilesView: View {
         }
     }
 
-    /// The frozen ids behind a tile. `.suggested` is not frozen (the server owns it), so it is
-    /// read live — the same rule its card's count follows.
+    /// The frozen ids behind a tile — including In Da Zone's, whichever ranker produced them. A
+    /// cloud answer is committed to the SAME snapshot, so there is exactly one source of truth
+    /// here and the card, its menu and its screen can never disagree.
     private func playableIds(for route: ForYouTileRoute) -> [String] {
-        if route.kind == .suggested { return recEngine?.forYou.map(\.songId) ?? [] }
-        return snapshot.songIds(forTileId: route.tileId) ?? []
+        snapshot.songIds(forTileId: route.tileId) ?? []
     }
 }
 

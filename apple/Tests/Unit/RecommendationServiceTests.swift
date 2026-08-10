@@ -869,8 +869,11 @@ final class RecommendationServiceTests: XCTestCase {
         let env = makeEnv(enabled: false)
         env.svc.fixtureForTesting = true
         await env.svc.refreshForYou()
-        XCTAssertEqual(env.svc.forYou.map(\.songId), ["sng_fix_1", "sng_fix_2", "sng_fix_3"])
-        XCTAssertEqual(env.svc.forYou.first?.name, "Neon")
+        // The canned ids are the BUNDLED FIXTURE CATALOG'S own, because this list is now the cloud
+        // ranking for In Da Zone and the device drops ids it cannot resolve — ids from nowhere
+        // would make every UI run silently exercise the fallback instead of the cloud path.
+        XCTAssertEqual(env.svc.forYou.map(\.songId), ["sng_5", "sng_7", "sng_2", "sng_6"])
+        XCTAssertEqual(env.svc.forYou.first?.name, "Blue Note")
 
         // Canned collection suggestions come from the live collections (first playlists + pocket).
         _ = env.collections.createPocket("Soul")
@@ -881,5 +884,58 @@ final class RecommendationServiceTests: XCTestCase {
         XCTAssertTrue(sugs.contains { $0.kind == "pocket" && $0.name == "Soul" })
 
         XCTAssertEqual(env.spy.requests.count, 0, "the fixture seam never touches the network")
+    }
+
+    // ========================================================================
+    // MARK: - The cloud ranking for In Da Zone
+    // ========================================================================
+    //
+    // Owner, verbatim: "new and in da zone should use the recommendation engine if available,
+    // only doing on device when not enabled." `cloudZoneRanking` is the "if available" test, and
+    // its whole contract is that it answers with A LIST OR NOTHING — the caller must never have to
+    // interpret an error to decide whether to fall back.
+
+    func testCloudZoneRankingIsSilentAndEmptyWhileTheEngineIsOff() async {
+        let env = makeEnv(enabled: false)
+        let ids = await env.svc.cloudZoneRanking()
+        XCTAssertTrue(ids.isEmpty, "no answer ⇒ the caller keeps its on-device ranking")
+        XCTAssertEqual(env.spy.requests.count, 0,
+                       "and the default-OFF install still makes literally zero requests")
+    }
+
+    func testCloudZoneRankingReturnsTheServersOrderedIds() async {
+        let env = makeEnv(enabled: true)
+        env.spy.body = Data(#"""
+        {"songs":[{"songId":"sng_c"},{"songId":"sng_a"},{"songId":"sng_b"}]}
+        """#.utf8)
+        let ids = await env.svc.cloudZoneRanking()
+        XCTAssertEqual(ids, ["sng_c", "sng_a", "sng_b"], "server order, untouched")
+        let get = env.spy.requests.last
+        XCTAssertEqual(get?.httpMethod, "GET")
+        XCTAssertTrue(get?.url?.path.hasSuffix("/recs/songs") ?? false)
+        // The tile caps at 90 songs but the device then drops unresolvable ids, cooldowns,
+        // tombstones and everything over the 3-per-artist cap — so the fetch has to over-ask.
+        XCTAssertEqual(get?.url?.query?.contains("limit=\(RecommendationService.forYouFetchLimit)"),
+                       true)
+        XCTAssertGreaterThan(RecommendationService.forYouFetchLimit,
+                             ZoneEngine.Tuning().maxSongs)
+    }
+
+    /// An unreachable server, a 5xx and a wedged key are all the SAME answer to the caller: none.
+    /// Anything else — a throw, a partial list, a sentinel — would make a cloud outage visible as
+    /// an empty For You tile, which is the failure this shape exists to prevent.
+    func testEveryServerFailureIsAnEmptyAnswerRatherThanAnError() async {
+        let cases: [(String, (Spy) -> Void)] = [
+            ("offline", { $0.error = URLError(.notConnectedToInternet) }),
+            ("5xx", { $0.status = 503 }),
+            ("wedged key", { $0.status = 403; $0.body = Data(#"{"error":"key-mismatch"}"#.utf8) }),
+            ("empty list", { $0.body = Data(#"{"songs":[]}"#.utf8) }),
+        ]
+        for (label, apply) in cases {
+            let env = makeEnv(enabled: true)
+            apply(env.spy)
+            let ids = await env.svc.cloudZoneRanking()
+            XCTAssertTrue(ids.isEmpty, "\(label): the caller falls back rather than erroring")
+        }
     }
 }
