@@ -323,11 +323,91 @@ final class ForYouFeedStore {
 
     func songIds(forTileId tileId: String) -> [String]? { snapshot.songIds(forTileId: tileId) }
 
+    // ========================================================================
+    // MARK: - CloudSync — the feed follows the Apple ID
+    // ========================================================================
+
+    /// Owner, verbatim: *"syncing of recommendations (and accept reject) at the profile level so it
+    /// is synced across all devices."* The 👍/👎 half already synced (`rec-feedback`, union-by-id).
+    /// THIS is the other half — the ranking itself. Without it each device ran its own 4:20 sweep
+    /// and For You said something different on the phone than on the Mac, which is the complaint.
+    var syncFileURL: URL { fileURL }
+
+    /// THE MTIME OF THIS FILE IS ALWAYS `snapshot.refreshedAtMs`, AND THAT IS THE WHOLE DESIGN.
+    ///
+    /// `CloudSyncService` is whole-document last-writer-wins over FILE MODIFICATION TIMES. That is
+    /// right for a snapshot (a ranking is one indivisible answer — union-merging two of them the
+    /// way the verdict LOG is merged would interleave two rankings into a third that neither engine
+    /// produced), but the raw mtime is the wrong CLOCK. A pull WRITES the file, so a device that
+    /// merely received a peer's ranking gets an mtime of *now* while its contents are from whenever
+    /// that peer last refreshed. Two consequences, both silent:
+    ///   · it then looks NEWER than a genuinely fresher ranking a peer pushes moments later, so it
+    ///     refuses to pull it; and
+    ///   · its own push watermark equals that mtime, so it cannot publish either.
+    /// The device sits on a stale feed forever with no symptom and no way out but a manual Refresh
+    /// — exactly the divergence this feature exists to remove.
+    ///
+    /// Stamping the file's mtime with the refresh instant makes the engine's mtime comparison a
+    /// comparison of REFRESH RECENCY, on every device, with no second sync engine and no change to
+    /// `CloudSyncService`. The device that actually re-ranked most recently wins; PULLING NEVER
+    /// COUNTS AS REFRESHING. A never-refreshed feed stamps epoch 0, so a cold install can pull but
+    /// can never overwrite a real ranking with its empty one.
+    private nonisolated static func stampMtime(_ url: URL, refreshedAtMs: Double) {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try? FileManager.default.setAttributes(
+            [.modificationDate: Date(timeIntervalSince1970: max(0, refreshedAtMs) / 1000)],
+            ofItemAtPath: url.path)
+    }
+
+    /// CloudSync write seam. Lands the peer's document only when it is STRICTLY FRESHER than ours.
+    ///
+    /// The engine's own mtime gate already asks that question, so this is belt-and-braces there —
+    /// but `restoreForOnboarding` applies every cloud document unconditionally, and a corrupt or
+    /// half-written payload has to degrade to "keep what we have" rather than to a blank grid.
+    func applyPulledPayload(_ data: Data) {
+        guard let incoming = try? JSONDecoder().decode(ForYouFeedSnapshot.self, from: data),
+              incoming.refreshedAtMs > snapshot.refreshedAtMs else {
+            // Not fresher (or not decodable): keep ours, and re-stamp so the watermark
+            // `CloudSyncService` reads immediately after this call still describes OUR refresh.
+            Self.stampMtime(fileURL, refreshedAtMs: snapshot.refreshedAtMs)
+            return
+        }
+        try? data.write(to: fileURL, options: .atomic)
+        Self.stampMtime(fileURL, refreshedAtMs: incoming.refreshedAtMs)
+    }
+
+    /// Post-pull reload. REPLACES rather than merges — see `applyPulledPayload`.
+    ///
+    /// It deliberately does NOT save: the bytes on disk are already the pulled ones, and a re-save
+    /// would move the mtime off the refresh instant and break the invariant above. That also keeps
+    /// `CloudSyncService.applyPull`'s "did the reload rewrite the file?" check answering *no*, so
+    /// the pulled document is watermarked instead of being bounced straight back up.
+    @discardableResult
+    func reloadFromDisk() -> Bool {
+        guard let data = try? Data(contentsOf: fileURL),
+              let doc = try? JSONDecoder().decode(ForYouFeedSnapshot.self, from: data),
+              doc.refreshedAtMs > snapshot.refreshedAtMs else { return false }
+        snapshot = doc
+        revision &+= 1
+        return true
+    }
+
+    /// Account deletion / "Erase everything": forget the cached ranking AND the file, so a
+    /// re-onboarded install starts cold rather than re-publishing the erased feed off a leftover
+    /// document. (Deleting the file rather than saving an empty snapshot keeps the mtime invariant
+    /// out of the "epoch 0 file exists" corner.)
+    func clear() {
+        snapshot = ForYouFeedSnapshot()
+        revision &+= 1
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
     private func save() {
         guard let data = try? JSONEncoder().encode(snapshot) else { return }
         let tmp = fileURL.appendingPathExtension("tmp")
         guard (try? data.write(to: tmp, options: .atomic)) != nil else { return }
         _ = try? FileManager.default.replaceItemAt(fileURL, withItemAt: tmp)
+        Self.stampMtime(fileURL, refreshedAtMs: snapshot.refreshedAtMs)
     }
 
     /// "Updated 3 minutes ago" — deliberately coarse. A frozen feed has to SAY it is frozen, or

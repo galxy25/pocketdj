@@ -215,16 +215,40 @@ final class RecFeedbackStore {
     @ObservationIgnored private var nextSeq = 0
     var hasUnsavedChanges: Bool { pendingSave }
 
-    init(fileURL: URL = RecFeedbackStore.defaultURL()) {
+    /// WHERE THIS INSTALL'S IDENTITY LIVES — and why it is NOT the document.
+    ///
+    /// `installId` used to be read back out of the document on every launch. That was fine while
+    /// the file was device-local; it is wrong now that CloudSync pulls a PEER'S copy of it into
+    /// this exact path. After a pull that adds nothing (the common steady state — the merge only
+    /// re-saves when we hold rows the peer lacks), the bytes on disk are the peer's, carrying the
+    /// peer's `installId`, and the next launch would ADOPT IT. Two devices then share one identity:
+    /// `originInstallId` stops distinguishing them and the persisted `playing` scope below stops
+    /// being attributable at all. `reloadFromDisk` already refuses to adopt it mid-session (the
+    /// `PlayHistoryStore` rule); keeping it out of the document's reach entirely closes the launch
+    /// path too. Injectable so a test can simulate two devices in one process.
+    @ObservationIgnored private let identityKey: String
+    static let defaultIdentityKey = "PDJRecFeedbackInstallId"
+
+    init(fileURL: URL = RecFeedbackStore.defaultURL(),
+         identityKey: String = RecFeedbackStore.defaultIdentityKey) {
         self.fileURL = fileURL
-        if let data = try? Data(contentsOf: fileURL),
-           let doc = try? JSONDecoder().decode(Document.self, from: data) {
-            decisions = doc.decisions
-            installId = doc.installId
-            playing = doc.playing
-            nextSeq = max(doc.seq, (doc.decisions.map(\.seq).max() ?? 0) + 1)
+        self.identityKey = identityKey
+        let doc = (try? Data(contentsOf: fileURL)).flatMap { try? JSONDecoder().decode(Document.self, from: $0) }
+        // Adopt the document's id ONCE, and only to migrate an install that predates this key —
+        // after which the defaults copy is authoritative and a pulled document cannot move it.
+        if let stored = UserDefaults.standard.string(forKey: identityKey), !stored.isEmpty {
+            installId = stored
         } else {
-            installId = UUID().uuidString
+            installId = doc?.installId ?? UUID().uuidString
+            UserDefaults.standard.set(installId, forKey: identityKey)
+        }
+        if let doc {
+            decisions = doc.decisions
+            // THE PLAYING SCOPE IS DEVICE-LOCAL TRUTH, so it is adopted only when the document on
+            // disk is OURS. A pulled document describes what a PEER had queued; taking it would file
+            // the next lock-screen 👎 given here against a tile that is playing on the other device.
+            playing = doc.installId == installId ? doc.playing : nil
+            nextSeq = max(doc.seq, (doc.decisions.map(\.seq).max() ?? 0) + 1)
         }
         rebuildIndex()
     }
