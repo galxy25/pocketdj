@@ -140,24 +140,90 @@ final class WidgetNowPlayingTests: XCTestCase {
 
     func testCommandChannelRoundTripsWhenGroupAvailable() throws {
         try XCTSkipIf(NowPlayingShared.defaults == nil, "App Group not provisioned in this run")
+        _ = WidgetCommandChannel.drain(now: Date().timeIntervalSince1970)   // start clean
         WidgetCommandChannel.send(.next)
         // Fresh command drains once; a second drain is empty.
-        XCTAssertEqual(WidgetCommandChannel.drain(now: Date().timeIntervalSince1970), .next)
-        XCTAssertNil(WidgetCommandChannel.drain(now: Date().timeIntervalSince1970))
+        XCTAssertEqual(WidgetCommandChannel.drain(now: Date().timeIntervalSince1970).map(\.command),
+                       [.next])
+        XCTAssertTrue(WidgetCommandChannel.drain(now: Date().timeIntervalSince1970).isEmpty)
     }
 
     func testCommandChannelDropsStaleCommand() throws {
         try XCTSkipIf(NowPlayingShared.defaults == nil, "App Group not provisioned in this run")
+        _ = WidgetCommandChannel.drain(now: Date().timeIntervalSince1970)
         WidgetCommandChannel.send(.toggle)
-        // A drain far in the future exceeds maxAge → the stale command is discarded.
-        XCTAssertNil(WidgetCommandChannel.drain(now: Date().timeIntervalSince1970 + 120))
+        // A drain far in the future exceeds maxAge → the stale command is discarded, so a cold
+        // launch long after the tap does not jolt playback.
+        XCTAssertTrue(WidgetCommandChannel.drain(now: Date().timeIntervalSince1970 + 120).isEmpty)
     }
 
     func testCommandChannelFavoriteRoundTrips() throws {
         try XCTSkipIf(NowPlayingShared.defaults == nil, "App Group not provisioned in this run")
+        _ = WidgetCommandChannel.drain(now: Date().timeIntervalSince1970)
         WidgetCommandChannel.send(.favorite)
-        XCTAssertEqual(WidgetCommandChannel.drain(now: Date().timeIntervalSince1970), .favorite)
-        XCTAssertNil(WidgetCommandChannel.drain(now: Date().timeIntervalSince1970))
+        XCTAssertEqual(WidgetCommandChannel.drain(now: Date().timeIntervalSince1970).map(\.command),
+                       [.favorite])
+        XCTAssertTrue(WidgetCommandChannel.drain(now: Date().timeIntervalSince1970).isEmpty)
+    }
+
+    // MARK: The tuning loop's cold path (app quit → widget process → App Group → next wake)
+
+    /// A SECOND TAP MUST NOT ERASE THE FIRST.
+    ///
+    /// The channel used to be one slot: `send` overwrote it, so thumbs-down followed by ⏭ lost the
+    /// thumbs-down. For a transport command that is survivable — the listener sees nothing happen
+    /// and taps again. For a LEARNING signal it is not: the glyph filled, the listener believes the
+    /// engine heard them, and it never did.
+    func testTheChannelIsAQueueSoOneTapCannotEraseAnother() throws {
+        try XCTSkipIf(NowPlayingShared.defaults == nil, "App Group not provisioned in this run")
+        let now = Date().timeIntervalSince1970
+        _ = WidgetCommandChannel.drain(now: now)
+
+        WidgetCommandChannel.sendVerdict(songId: "s1", scope: "zone", verdict: "rejected", now: now)
+        WidgetCommandChannel.send(.next, now: now)
+        WidgetCommandChannel.sendVerdict(songId: "s2", scope: "zone", verdict: "accepted", now: now)
+
+        let drained = WidgetCommandChannel.drain(now: now)
+        XCTAssertEqual(drained.count, 3, "all three survived, in order")
+        XCTAssertEqual(drained[0].songId, "s1")
+        XCTAssertEqual(drained[0].verdict, "rejected")
+        XCTAssertEqual(drained[1].command, .next)
+        XCTAssertEqual(drained[2].songId, "s2")
+        XCTAssertTrue(WidgetCommandChannel.drain(now: now).isEmpty, "drain clears")
+    }
+
+    /// A VERDICT NAMES ITS OWN TARGET AND NEVER GOES STALE.
+    ///
+    /// Two defects in one test. Applying a queued verdict to "whatever is playing at drain time"
+    /// files it against the WRONG SONG — and after a cold launch the app cannot even resolve which
+    /// tile the track came from, so it used to be dropped outright. And a 30-second expiry loses a
+    /// judgement tapped on the lock screen just before the phone went into a pocket.
+    func testAQueuedVerdictCarriesItsSongAndScopeAndDoesNotExpire() throws {
+        try XCTSkipIf(NowPlayingShared.defaults == nil, "App Group not provisioned in this run")
+        let tapped = Date().timeIntervalSince1970
+        _ = WidgetCommandChannel.drain(now: tapped)
+
+        WidgetCommandChannel.sendVerdict(songId: "the-song", scope: "pkt_house",
+                                         verdict: "rejected", now: tapped)
+        // Drained an HOUR later, long past the transport max age.
+        let drained = WidgetCommandChannel.drain(now: tapped + 3600)
+        XCTAssertEqual(drained.count, 1, "a learning signal is never discarded for being old")
+        XCTAssertEqual(drained[0].kind, WidgetCommandChannel.verdictKind)
+        XCTAssertEqual(drained[0].songId, "the-song", "…and it still names the song it was about")
+        XCTAssertEqual(drained[0].scope, "pkt_house", "…and the list it belongs to")
+        XCTAssertEqual(drained[0].at, tapped, accuracy: 0.001,
+                       "the TAP time rides along, so latest-wins merges resolve correctly")
+    }
+
+    /// A verdict with no scope is refused at the door — there is no honest list to file it against,
+    /// and inventing one would file it against a tile the listener never opened.
+    func testAVerdictWithNoScopeIsNotQueued() throws {
+        try XCTSkipIf(NowPlayingShared.defaults == nil, "App Group not provisioned in this run")
+        let now = Date().timeIntervalSince1970
+        _ = WidgetCommandChannel.drain(now: now)
+        WidgetCommandChannel.sendVerdict(songId: "s", scope: "", verdict: "rejected", now: now)
+        WidgetCommandChannel.sendVerdict(songId: "", scope: "zone", verdict: "rejected", now: now)
+        XCTAssertTrue(WidgetCommandChannel.drain(now: now).isEmpty)
     }
 
     // MARK: WidgetSync ♥ wiring (widget button → favorites store → snapshot)

@@ -240,25 +240,35 @@ final class CarPlayModel {
         services.favorites.toggle(id, appleMusicId: app.songsById[id]?.appleMusicId)
     }
 
-    // MARK: - Recommendation feedback (the 👍/👎 on the CarPlay Now Playing template)
+    // MARK: - 👍 / 👎 on the CarPlay Now Playing template
 
-    /// The current track's accept/reject state, or nil when there is no decision (or nothing
-    /// playing). Drives which of the two CarPlay buttons renders filled.
-    func currentRecFeedback() -> RecFeedbackStore.Action? {
-        guard let id = currentSongId() else { return nil }
-        return services.recFeedback?.state(for: id)
-    }
-
-    /// 👍 / 👎 the current track, through the SAME `toggle` semantics every other surface uses
-    /// (press the live one to clear, press the other to flip) and into the SAME store. A decision
-    /// made at 70mph is already on the tile when the phone comes back out.
+    /// The current track's verdict, or nil when nothing is playing / no verdict is set — drives
+    /// which of the two thumb glyphs renders filled.
     ///
-    /// NEITHER SKIPS. The driver's hands are the reason: a reject that jumped the queue would
-    /// make a mis-tap cost the song with no recoverable gesture, and the pair has to read as
-    /// symmetric — accept does not skip, so reject does not either. No-op when nothing is playing.
-    func setCurrentRecFeedback(_ action: RecFeedbackStore.Action) {
-        guard let id = currentSongId(), let store = services.recFeedback else { return }
-        store.toggle(songId: id, to: action, surface: .carPlay)
+    /// CarPlay is the purest case of the SYNC half of the tuning loop: the driver hears a
+    /// suggestion and judges it without leaving playback, hands on the wheel. It writes the SAME
+    /// `RecFeedbackStore` row the tile writes, so the decision is already there when the tile is
+    /// next opened on the phone.
+    func currentFeedback() -> RecFeedbackStore.Verdict? { services.currentRecVerdict() }
+
+    /// Is the running queue a recommendation at all? CarPlay shows the pair only then — there is
+    /// no list to sink a song in otherwise, so the buttons would be inert, and the Now Playing
+    /// template's five-button budget is too tight to spend on inert controls.
+    func isRecQueue() -> Bool { services.currentRecTarget() != nil }
+
+    /// Record 👍 / 👎 for the current track. Tapping the already-lit control clears it (the same
+    /// `toggle` semantics every other surface uses — one function, so the car and the phone cannot
+    /// disagree about what a second tap means, and a driver's instinctive second tap is the undo).
+    ///
+    /// DOES NOT SKIP. A rejection is a statement about the recommendation, not a transport
+    /// command; auto-skipping on a mis-tap in a moving car is exactly the wrong failure mode, and
+    /// CarPlay already has a ⏭ six inches away for the other intent.
+    ///
+    /// Routed through `IntentServices` rather than reaching the store directly, so the car, the
+    /// widget and the lock screen are provably ONE code path.
+    @discardableResult
+    func recordCurrentFeedback(_ verdict: RecFeedbackStore.Verdict) -> RecFeedbackStore.Verdict? {
+        services.recordNowPlayingFeedback(verdict, surface: .carPlay)
     }
 
     // MARK: - CarPlay repeat / shuffle (mirror the Now Playing deck + widget)

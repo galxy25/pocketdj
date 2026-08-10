@@ -96,18 +96,17 @@ final class AppModel {
             // "similar" to every other one — the single biggest bucket in the catalog acting as
             // a similarity signal. It maps to nil instead, so those songs are ranked on artist
             // affinity alone.
-            let cat = Genre.category(s.albumId.flatMap { albumsById[$0] }?.genre)
+            let album = s.albumId.flatMap { albumsById[$0] }
+            let cat = Genre.category(album?.genre)
             return ZoneEngine.Track(songId: s.id,
                                     artistKey: IndexArtist.normalize(s.artist),
                                     artistName: s.artist,
                                     genre: cat == Genre.other ? nil : cat,
-                                    // The three fields the owner's rebalance ranks on beyond
-                                    // artist+genre. bpm/camelot are the audio-indexer's burned
-                                    // artifacts and are absent for most Apple Music rows — that
-                                    // sparseness is handled at ROUND level by
-                                    // `PuzzleSimilarity.familyScore`, never by scoring a missing
-                                    // field zero per song.
-                                    year: s.year, bpm: s.bpm, camelot: s.camelot)
+                                    // Year falls back to the ALBUM's — the song-level field is
+                                    // absent on a slice of the vinyl index while the album carries
+                                    // it, and family B is only as good as its coverage.
+                                    year: s.year ?? album?.year,
+                                    bpm: s.bpm, camelot: s.camelot)
         }
         zoneTracksCache = (catalogRevision, tracks)
         return tracks

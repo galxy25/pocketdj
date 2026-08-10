@@ -16,8 +16,7 @@ import SwiftUI
 struct RecSuggestionsListView: View {
     @Environment(RecommendationService.self) private var recEngine: RecommendationService?
     @Environment(AppModel.self) private var app
-    @Environment(CollectionsStore.self) private var collections
-    /// The accept/reject log — the SAME store the tiles and the now-playing surfaces write to.
+    /// The 👍/👎 log — the same one the local tiles and the now-playing surfaces write to.
     @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
     @Binding var path: NavigationPath
 
@@ -30,10 +29,10 @@ struct RecSuggestionsListView: View {
     var body: some View {
         Group {
             if let recEngine {
-                if recEngine.isLoadingForYou && recEngine.forYou.isEmpty {
+                if recEngine.isLoadingForYou && visible(recEngine).isEmpty {
                     ProgressView()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else if recEngine.forYou.isEmpty {
+                } else if visible(recEngine).isEmpty {
                     emptyState(error: recEngine.syncError)
                 } else {
                     list(recEngine)
@@ -50,58 +49,51 @@ struct RecSuggestionsListView: View {
     }
 
     private func list(_ recEngine: RecommendationService) -> some View {
-        // Rejected rows SINK rather than vanish (see `RecFeedbackOrder`), and this ONE ordering
-        // is what both the ForEach and the play controls read — so "play in order" cannot play a
-        // rejected suggestion second while the list shows it last.
-        let ordered = orderedIds(recEngine)
-        let byId = Dictionary(recEngine.forYou.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
-        let playable = ordered.filter { app.songsById[$0] != nil }
-        return List {
+        List {
             // Inline refresh row (not a toolbar item — History's toolbar belongs to the tabs).
-            HStack(spacing: 12) {
+            HStack {
                 Spacer()
-                Button {
-                    ForYouPlayback.play(playable, name: "Suggested", shuffle: false,
-                                        collections: collections, path: $path)
-                } label: { Label("Play", systemImage: "play.fill").font(.caption) }
-                .buttonStyle(.borderless)
-                .disabled(playable.isEmpty)
-                .foregroundStyle(playable.isEmpty ? Theme.fgDim : Theme.accent)
-                .accessibilityIdentifier("foryou-play-all")
-                Button {
-                    ForYouPlayback.play(playable, name: "Suggested", shuffle: true,
-                                        collections: collections, path: $path)
-                } label: { Label("Shuffle", systemImage: "shuffle").font(.caption) }
-                .buttonStyle(.borderless)
-                .disabled(playable.isEmpty)
-                .foregroundStyle(playable.isEmpty ? Theme.fgDim : Theme.accent)
-                .accessibilityIdentifier("foryou-shuffle-all")
                 Button {
                     Task { await recEngine.refreshForYou(force: true) }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
                         .font(.caption)
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.plain)
                 .foregroundStyle(Theme.accent)
                 .accessibilityIdentifier("foryou-refresh")
             }
             .listRowBackground(Color.clear)
-            ForEach(ordered, id: \.self) { id in
-                if let s = byId[id] { row(s) }
+            ForEach(visible(recEngine)) { s in
+                row(s)
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
     }
 
-    /// Suggestion ids in DISPLAY order — rejected ones sunk. Folded over this screen's ~50 rows
-    /// rather than the whole feedback log, so it stays cheap on a render path.
-    private func orderedIds(_ recEngine: RecommendationService) -> [String] {
-        let ids = recEngine.forYou.map(\.songId)
-        guard let feedback else { return ids }
-        return RecFeedbackOrder.sink(ids, rejected: Set(ids.filter { feedback.isRejected($0) }))
+    /// RECONCILIATION with decisions made elsewhere: applied at RENDER, not at fetch. The verdict
+    /// store is `@Observable` and is the only copy, so a 👎 given on the lock screen or in the car
+    /// while this screen was closed is already in place when it opens — and one given while it is
+    /// open sinks the row immediately. The cached `forYou` payload is never mutated, so an undo
+    /// restores the order without a round trip to the server.
+    ///
+    /// SUNK, not filtered — the same rule every other recommendation surface follows, so the lit
+    /// 👎 that undoes a mis-tap stays on screen. A row the SERVER already dropped is not
+    /// re-injected here (unlike the local tiles): the server sinks rather than excludes for
+    /// exactly this reason, and this client cannot manufacture a suggestion payload it was not
+    /// sent.
+    private func visible(_ recEngine: RecommendationService) -> [RecommendationService.SongSuggestion] {
+        guard let feedback else { return recEngine.forYou }
+        let sunk = feedback.activeTombstones(scope: Self.scope)
+        guard !sunk.isEmpty else { return recEngine.forYou }
+        return recEngine.forYou.filter { sunk[$0.songId] == nil }
+            + recEngine.forYou.filter { sunk[$0.songId] != nil }
     }
+
+    /// The reserved scope for the cloud tile — the same string `ForYouTileRoute.feedbackContext`
+    /// yields for `.suggested`.
+    static let scope = ForYouTileRoute.Kind.suggested.rawValue
 
     @ViewBuilder private func row(_ s: RecommendationService.SongSuggestion) -> some View {
         let resolved = app.songsById[s.songId]
@@ -119,14 +111,17 @@ struct RecSuggestionsListView: View {
             // absorb the add/transport buttons' identifiers (the propagation trap).
             .accessibilityIdentifier("foryou-row-\(s.songId)")
             Spacer()
-            RecFeedbackControls(songId: s.songId, surface: .tile, context: "suggested",
-                                onAccepted: { addRef = AddRef(id: s.songId) })
+            // ASYNC MODE on the cloud tile: the same matched pair as everywhere else. 👍 records
+            // the verdict AND opens the Add sheet; 👎 records it and sinks the row. Neither
+            // touches the transport.
+            RecFeedbackButtons(songId: s.songId, scope: Self.scope, surface: .tile,
+                               onAccept: { addRef = AddRef(id: s.songId) })
             Button {
                 addRef = AddRef(id: s.songId)
             } label: {
                 Image(systemName: "plus.circle").font(.title3).foregroundStyle(Theme.accent2)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.plain)
             .accessibilityIdentifier("foryou-add-\(s.songId)")
             if let song = resolved {
                 RowTransport(song: (id: song.id, title: song.name, artist: song.artist),
@@ -134,7 +129,6 @@ struct RecSuggestionsListView: View {
             }
         }
         .padding(.vertical, 2)
-        .opacity(feedback?.isRejected(s.songId) == true ? 0.45 : 1)
         .contentShape(Rectangle())
         .onTapGesture { if let song = resolved { path.append(song) } }
     }

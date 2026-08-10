@@ -57,6 +57,20 @@ enum PuzzleSampler {
         var hasRecency: Bool = false
         /// "Now" for the decay, injected so tests are deterministic rather than wall-clock.
         var nowMs: Double = Date().timeIntervalSince1970 * 1000
+
+        /// Songs the listener has thumbed down FOR ONE OF THIS ROUND'S TARGET COLLECTIONS, still
+        /// inside their seven-day tombstone.
+        ///
+        /// The puzzle asks "which crate does this song belong in", which is the same question a
+        /// collection's For You tile answers — so a 👎 given on that tile ("not for this crate")
+        /// has to mean the same thing here, or the app gives two contradictory answers about one
+        /// song in the same week. It is deliberately SCOPED to the targets and time-limited like
+        /// every other use of a tombstone: a reject in some unrelated crate does not touch the
+        /// round, and nothing is banned permanently.
+        ///
+        /// Default-empty, so a round with no rejections — and every existing test — samples exactly
+        /// as it did before the tuning loop existed.
+        var suppressedForTargets: Set<String> = []
     }
 
     struct Inputs {
@@ -94,6 +108,9 @@ enum PuzzleSampler {
         var similarityProfile = PuzzleSimilarity.TargetProfile()
         /// songId → 0…1 cloud rank bonus. Empty by default (the engine is off by default).
         var cloudRanks: [String: Double] = [:]
+        /// Thumbed down for one of this round's target collections, still tombstoned — see
+        /// `RawInputs.suppressedForTargets`. Empty by default.
+        var suppressedForTargets: Set<String> = []
 
         init(songs: [IndexSong], genreBySongId: [String: String], favoriteIds: Set<String>,
              playCounts: [String: Int], membershipUnion: Set<String>,
@@ -102,7 +119,9 @@ enum PuzzleSampler {
              similarityProfile: PuzzleSimilarity.TargetProfile = .init(),
              cloudRanks: [String: Double] = [:],
              recencies: [String: Double] = [:],
-             hasRecency: Bool = false) {
+             hasRecency: Bool = false,
+             suppressedForTargets: Set<String> = []) {
+            self.suppressedForTargets = suppressedForTargets
             self.songs = songs
             self.genreBySongId = genreBySongId
             self.favoriteIds = favoriteIds
@@ -172,7 +191,8 @@ enum PuzzleSampler {
                       similarityProfile: profile,
                       cloudRanks: raw.cloudRanks,
                       recencies: recencies,
-                      hasRecency: raw.hasRecency)
+                      hasRecency: raw.hasRecency,
+                      suppressedForTargets: raw.suppressedForTargets)
         }
     }
 
@@ -243,6 +263,12 @@ enum PuzzleSampler {
         let hasYearBound = settings.yearMin != nil || settings.yearMax != nil
         for song in inputs.songs {
             if excluding.contains(song.id) { continue }
+            // Thumbed down for one of this round's targets, inside its seven days. The puzzle
+            // asks the same question that tile asks — "does this belong in this crate" — so it
+            // must not keep offering a song the listener has just answered "no" about. Scoped and
+            // time-limited like every other tombstone; empty for a round with no rejections, which
+            // is what keeps the shipped ranking untouched.
+            if inputs.suppressedForTargets.contains(song.id) { continue }
             // Rip-ON-DEMAND deliberately does NOT count as playable: a fresh capture runs in
             // real time (minutes), which is not audio for a timed rush.
             if playableOnly, !inputs.isPlayableNow(song) { continue }

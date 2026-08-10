@@ -145,6 +145,13 @@ final class CollectionsStore {
     /// behavior it had before Studio existed (studio ids simply drop out).
     var studioLookup: ((String) -> (title: String, lengthMs: Int, bpm: Double?, camelot: String?)?)?
 
+    /// Fired from `playNow` BEFORE the new queue is built — "whatever was running is being
+    /// replaced". Wired in `PocketDJApp` to `RecFeedbackStore.endPlaybackScope`, so a recommendation
+    /// scope can never outlive the queue it describes. A closure rather than a store reference for
+    /// the same reason `studioLookup` is one: this store stays out of the recommendation graph, and
+    /// a unit test that never wires it behaves exactly as it did before the tuning loop existed.
+    var onPlaybackReplaced: (() -> Void)?
+
     /// The artist label stamped on a performance item when it's snapshotted into a setlist / Now
     /// Playing (the user's "PocketDJ name", `SettingsStore.pocketDJName`). Wired from settings at
     /// app init + on change; falls back to "Studio" when unset. `studioArtist` resolves it.
@@ -1954,6 +1961,19 @@ final class CollectionsStore {
     func playNow(songIds: [String], name: String = "Now Playing", shuffle: Bool = false,
                  source: PlayHistoryStore.PlaySource? = nil, repeats: [String: Int] = [:],
                  originId: String? = nil, variants: [String: SongVariant] = [:]) -> Setlist? {
+        // THE ONE FUNNEL every "start playing this set" path in the app goes through, which makes
+        // it the only correct place to retire a stale recommendation scope. A For You list calls
+        // `beginPlayback` immediately AFTER this returns; everything else (a playlist, an album,
+        // Browse, CarPlay, Siri) leaves the scope cleared, so the now-playing 👍/👎 pair hides
+        // instead of filing a verdict against a tile the listener has since left.
+        //
+        // Without this the scope outlives its queue: start a playlist that happens to contain a
+        // song from an earlier In Da Zone set and the thumbs reappear, filing against `zone`.
+        //
+        // Fired BEFORE the `app` guard on purpose. The guard is "this store has no catalog wired",
+        // which is a test/preview condition, not a runtime one — and a request to play something
+        // else has already invalidated the old scope by the time we find out we cannot serve it.
+        onPlaybackReplaced?()
         guard let app else { return nil }
         nowPlayingSource = source
         nowPlayingOriginId = originId

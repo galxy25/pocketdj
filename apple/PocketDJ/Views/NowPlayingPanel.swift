@@ -321,6 +321,22 @@ struct NowPlayingPanel: View {
         .overlay(alignment: .trailing) { favoriteToggle }
     }
 
+    /// 👍 / 👎 on WHAT IS PLAYING — the SYNC half of the tuning loop, and the reason this feature
+    /// is not "a list with buttons on it": the listener hears a suggestion, judges it in the
+    /// moment, and the next queue is better. Its own row under the transport rather than crowded
+    /// beside the ♥, because the two mean different things (a ♥ is a permanent library act that
+    /// can reach Apple Music; a 👎 is an instruction to the ranking) and a mis-tap between them
+    /// would be silently expensive.
+    ///
+    /// Neither control touches the transport. Accepting keeps playing; rejecting keeps playing.
+    @ViewBuilder private var feedbackRow: some View {
+        if currentItem != nil {
+            NowPlayingFeedbackButtons(font: .subheadline)
+                .padding(.top, 2)
+                .accessibilityIdentifier("np-feedback")
+        }
+    }
+
     /// ♥ — the current track's favorite, the SAME reusable control every song row uses (reads
     /// FavoritesStore, keyed on songId + appleMusicId, `.borderless` for macOS). Hidden when the
     /// deck is idle (no current item to favorite). A track with no Apple Music id (vinyl / My
@@ -331,28 +347,6 @@ struct NowPlayingPanel: View {
                            appleMusicId: app.songsById[item.id]?.appleMusicId,
                            font: .subheadline)
                 .padding(.trailing, 12)
-        }
-    }
-
-    /// 👍 / 👎 on what is PLAYING — the sync half of the tuning loop, on the deck the owner
-    /// already looks at. The same `RecFeedbackControls` the tile rows use, so a decision made here
-    /// is the same row in the same store; open a tile afterwards and it is already reflected.
-    ///
-    /// Deliberately its own line under the transport rather than crowded into the ⏮⏯⏭ row: that
-    /// row already carries the history toggle on one edge and the ♥ on the other, and a sixth and
-    /// seventh target there would be finger-sized on nothing. Shown whenever there is a current
-    /// track — including a single-song play, which is exactly when "less like this" is most
-    /// useful.
-    ///
-    /// NOTHING HERE TOUCHES PLAYBACK. No skip on reject: see `RecFeedbackControls` for why.
-    @ViewBuilder private var feedbackRow: some View {
-        if let item = currentItem {
-            HStack(spacing: 18) {
-                RecFeedbackControls(songId: item.id, surface: .nowPlaying, font: .subheadline)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.top, 2)
-            .accessibilityIdentifier("np-feedback-row")
         }
     }
 
@@ -462,8 +456,8 @@ struct NowPlayingPanel: View {
                         }
                 }
                 transport
-                feedbackRow
                 shuffleRepeatRow
+                feedbackRow
                 // F4 — the collapsible Mix mini-panel. Self-gates on `SetlistPlayer.mixAvailable`
                 // (hidden entirely for a non-mixable current track or while a Mix session plays),
                 // collapsed by default.
@@ -822,16 +816,17 @@ struct NowPlayingMiniBar: View {
                 .lineLimit(1)
                 .accessibilityIdentifier("np-mini-title")
             Spacer(minLength: 8)
-            // The current track's ♥ and its 👍/👎 — the same reusable controls, compact. Hidden
-            // while idle. The thumbs are here and not only on the full deck because the strip IS
-            // the now-playing surface for most of an iPhone session: if a listener with the phone
-            // in their pocket cannot accept or reject what they are hearing, the feature has not
-            // been built.
+            // The current track's ♥ — the same reusable control, compact. Hidden while idle.
             if let current {
                 FavoriteToggle(songId: current.id,
                                appleMusicId: app.songsById[current.id]?.appleMusicId,
                                font: .footnote)
-                RecFeedbackControls(songId: current.id, surface: .miniBar, font: .footnote)
+                // SYNC mode with the deck COLLAPSED — the phone-in-pocket case the whole loop is
+                // for. Same pair, same store, same rows; nothing here stops or skips playback.
+                // `NowPlayingFeedbackButtons` resolves the scope itself and hides when the running
+                // queue is not a recommendation, so the strip never offers to file a decision
+                // against a tile the listener never opened.
+                NowPlayingFeedbackButtons(font: .footnote)
             }
             Button { sequencer.skipPrevious() } label: {
                 Image(systemName: "backward.fill").font(.footnote)

@@ -128,16 +128,18 @@ private struct TitleBlock: View {
 private struct TransportRow: View {
     let isPlaying: Bool
     let isFavorite: Bool
+    /// "" / "accepted" / "rejected" — the current track's recommendation verdict.
+    var recVerdict: String = ""
+    /// Which For You list the track came from; "" ⇒ not a recommendation, so no 👍/👎 pair.
+    var recScope: String = ""
     /// Shuffle + repeat flank the trio only where there's room (the full-width Large family);
     /// Medium keeps the core ⏮⏯⏭♥ so 6 glyphs never crowd the cover.
     var showShuffleRepeat: Bool = false
     var shuffleOn: Bool = false
     var repeatMode: String = "off"
     var iconSize: CGFloat = 18
-    /// `RecFeedbackAction.rawValue` or "none" — which of the 👍/👎 renders filled.
-    var recFeedback: String = RecFeedbackAction.none
     var body: some View {
-        HStack(spacing: showShuffleRepeat ? 12 : 16) {
+        HStack(spacing: showShuffleRepeat ? 18 : 22) {
             if showShuffleRepeat {
                 Button(intent: NowPlayingShuffleIntent()) {
                     Image(systemName: "shuffle")
@@ -166,28 +168,36 @@ private struct TransportRow: View {
                     .foregroundStyle(isFavorite ? Color.accentColor : Color.primary)
             }
             .accessibilityIdentifier("widget-favorite-toggle")
-            // 👍/👎 — the recommendation tuning loop, reachable from the LOCK SCREEN without
-            // opening the app. Both run `AudioPlaybackIntent`s (so the tap doesn't foreground
-            // anything) that land in the same `RecFeedbackStore` the tiles write to. Neither
-            // touches playback.
-            Button(intent: NowPlayingRecAcceptIntent()) {
-                Image(systemName: recFeedback == RecFeedbackAction.accepted.rawValue
-                        ? RecFeedbackAction.acceptSymbolFilled : RecFeedbackAction.acceptSymbol)
-                    .foregroundStyle(recFeedback == RecFeedbackAction.accepted.rawValue
-                        ? Color.accentColor : Color.primary)
-            }
-            .accessibilityIdentifier("widget-rec-accept")
-            Button(intent: NowPlayingRecRejectIntent()) {
-                Image(systemName: recFeedback == RecFeedbackAction.rejected.rawValue
-                        ? RecFeedbackAction.rejectSymbolFilled : RecFeedbackAction.rejectSymbol)
-                    .foregroundStyle(recFeedback == RecFeedbackAction.rejected.rawValue
-                        ? Color.accentColor : Color.primary)
-            }
-            .accessibilityIdentifier("widget-rec-reject")
+            // Only while the running queue IS a recommendation — otherwise there is no list to
+            // sink the song in and no honest decision to record, so the pair is absent rather
+            // than present-and-inert. It also keeps the Medium family at five glyphs.
+            if !recScope.isEmpty { FeedbackPair(verdict: recVerdict) }
         }
         .font(.system(size: iconSize, weight: .semibold))
         .buttonStyle(.plain)
         .tint(.primary)
+    }
+}
+
+/// 👍 / 👎 — the SAME matched SF Symbol pair the app and CarPlay use, so the control means one
+/// thing everywhere. `Button(intent:)`, which on iOS runs the intent IN THE APP'S PROCESS while
+/// the app is alive — so a tap here reaches the live feedback store with no round trip and
+/// without foregrounding anything. Neither button touches the transport.
+private struct FeedbackPair: View {
+    let verdict: String
+    var body: some View {
+        Group {
+            Button(intent: NowPlayingRecAcceptIntent()) {
+                Image(systemName: verdict == "accepted" ? "hand.thumbsup.fill" : "hand.thumbsup")
+                    .foregroundStyle(verdict == "accepted" ? Color.accentColor : Color.primary)
+            }
+            .accessibilityIdentifier("widget-rec-accept")
+            Button(intent: NowPlayingRecRejectIntent()) {
+                Image(systemName: verdict == "rejected" ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                    .foregroundStyle(verdict == "rejected" ? Color.accentColor : Color.primary)
+            }
+            .accessibilityIdentifier("widget-rec-reject")
+        }
     }
 }
 
@@ -229,7 +239,8 @@ private struct MediumView: View {
                 Spacer(minLength: 0)
                 TransportRow(isPlaying: entry.snapshot.isPlaying,
                              isFavorite: entry.snapshot.isFavorite,
-                             recFeedback: entry.snapshot.recFeedback)
+                             recVerdict: entry.snapshot.recVerdict,
+                             recScope: entry.snapshot.recScope)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -246,9 +257,9 @@ private struct LargeView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             TransportRow(isPlaying: entry.snapshot.isPlaying, isFavorite: entry.snapshot.isFavorite,
+                         recVerdict: entry.snapshot.recVerdict, recScope: entry.snapshot.recScope,
                          showShuffleRepeat: true, shuffleOn: entry.snapshot.shuffleEnabled,
-                         repeatMode: entry.snapshot.repeatMode, iconSize: 20,
-                         recFeedback: entry.snapshot.recFeedback)
+                         repeatMode: entry.snapshot.repeatMode, iconSize: 20)
                 .frame(maxWidth: .infinity)
 
             if entry.snapshot.upNext.isEmpty {
@@ -299,6 +310,5 @@ extension NowPlayingSnapshot {
             .init(id: "3", songId: "c", title: "Wait", artist: "M83"),
         ],
         isFavorite: true, appleMusicId: nil,
-        repeatMode: "all", shuffleEnabled: true,
-        recFeedback: RecFeedbackAction.accepted.rawValue)
+        repeatMode: "all", shuffleEnabled: true, recVerdict: "accepted", recScope: "zone")
 }

@@ -419,35 +419,60 @@ final class ZoneEngineTests: XCTestCase {
     // MARK: - Musical metadata (bpm + camelot)
     // ========================================================================
 
-    func testCamelotAffinityFollowsTheWheel() {
-        XCTAssertEqual(ZoneEngine.camelotAffinity("8A", to: ["8A"]), 1.0, "exact match")
-        XCTAssertEqual(ZoneEngine.camelotAffinity("8B", to: ["8A"]), 0.75, "relative major/minor")
-        XCTAssertEqual(ZoneEngine.camelotAffinity("9A", to: ["8A"]), 0.6, "one step up")
-        XCTAssertEqual(ZoneEngine.camelotAffinity("7A", to: ["8A"]), 0.6, "one step down")
-        XCTAssertEqual(ZoneEngine.camelotAffinity("2A", to: ["8A"]), 0.0, "not a neighbour")
-        // The wheel wraps: 12 → 1 is one step, not eleven.
-        XCTAssertEqual(ZoneEngine.camelotAffinity("1A", to: ["12A"]), 0.6, "wraps at 12")
-        XCTAssertEqual(ZoneEngine.camelotAffinity("12A", to: ["1A"]), 0.6, "wraps the other way")
-        // Junk in, zero out — never a crash and never a false neighbour.
-        XCTAssertEqual(ZoneEngine.camelotAffinity(nil, to: ["8A"]), 0)
-        XCTAssertEqual(ZoneEngine.camelotAffinity("banana", to: ["8A"]), 0)
-        XCTAssertEqual(ZoneEngine.camelotAffinity("13A", to: ["8A"]), 0, "off the wheel")
-        XCTAssertEqual(ZoneEngine.camelotAffinity("8A", to: []), 0, "empty profile says nothing")
+    /// The wheel itself lives in `SimilarityFamilies` — ONE implementation, which is why this file
+    /// exercises it through the shape the zone actually builds rather than through a second copy.
+    /// The exhaustive adjacency + de-saturation cases are in `SimilarityFamiliesTests`.
+    func testMusicalProfileIsBuiltFromTheSeedAndFollowsTheWheel() {
+        let songs = [musicSong("m1", bpm: 120, camelot: "8A"),
+                     musicSong("m2", bpm: 122, camelot: "8A"),
+                     musicSong("m3", bpm: nil, camelot: nil)]
+        let byId = Dictionary(uniqueKeysWithValues: songs.map { ($0.id, $0) })
+        let p = ZoneEngine.musicalProfile(seedWeight: ["m1": 1, "m2": 1, "m3": 1], songsById: byId)
+        XCTAssertFalse(p.isEmpty)
+
+        XCTAssertEqual(SimilarityFamilies.camelotAffinity("8A", p), 1.0, "exact match")
+        XCTAssertEqual(SimilarityFamilies.camelotAffinity("8B", p), 0.75, "relative major/minor")
+        XCTAssertEqual(SimilarityFamilies.camelotAffinity("9A", p), 0.6, "one step up")
+        XCTAssertEqual(SimilarityFamilies.camelotAffinity("2A", p), 0.0, "not a neighbour")
+        XCTAssertGreaterThan(SimilarityFamilies.bpmAffinity(121, p), 0.8, "on tempo")
+        XCTAssertGreaterThan(SimilarityFamilies.bpmAffinity(60, p), 0.8, "half time is the same pulse")
+
+        // A seed with no tempo/key at all speaks nothing, rather than speaking zero.
+        let silent = ZoneEngine.musicalProfile(seedWeight: ["m3": 1], songsById: byId)
+        XCTAssertTrue(silent.isEmpty)
     }
 
-    /// Absent metadata must DROP OUT rather than score zero — scoring it zero would
-    /// systematically punish the unanalysed part of the catalog for missing a field.
-    func testMissingMusicalMetadataDropsTheTermInsteadOfScoringItZero() {
-        let p = ZoneEngine.MusicalProfile(bpmMean: 120, bpmSigma: 10, camelots: ["8A"])
-        XCTAssertNil(ZoneEngine.musicalFit(bpm: nil, camelot: nil, profile: p),
+    /// Absent metadata is IMPUTED at the round's measured mean, never scored zero (which would
+    /// punish the ~90% of the catalog the audio indexer has not reached) and never dropped from
+    /// the denominator (which would reward it). `rawMusicalFit` is the "we don't know" signal that
+    /// keeps those two cases distinguishable.
+    func testMissingMusicalMetadataIsImputedNotScoredZero() {
+        let songs = [musicSong("m1", bpm: 120, camelot: "8A")]
+        let byId = Dictionary(uniqueKeysWithValues: songs.map { ($0.id, $0) })
+        let p = ZoneEngine.musicalProfile(seedWeight: ["m1": 1], songsById: byId)
+
+        XCTAssertNil(SimilarityFamilies.rawMusicalFit(bpm: nil, camelot: nil, profile: p),
                      "a song with neither field is unmeasurable, not unfit")
-        // A profile that knows nothing likewise contributes nothing.
-        XCTAssertNil(ZoneEngine.musicalFit(bpm: 120, camelot: "8A",
-                                           profile: ZoneEngine.MusicalProfile()))
-        let exact = ZoneEngine.musicalFit(bpm: 120, camelot: "8A", profile: p)
-        let far = ZoneEngine.musicalFit(bpm: 200, camelot: "2A", profile: p)
-        XCTAssertNotNil(exact); XCTAssertNotNil(far)
-        XCTAssertGreaterThan(exact!, far!, "on-tempo and in-key beats neither")
+        XCTAssertNil(SimilarityFamilies.rawMusicalFit(bpm: 120, camelot: "8A",
+                                                      profile: SimilarityFamilies.MusicalProfile()),
+                     "a profile that knows nothing contributes nothing")
+
+        let cal = SimilarityFamilies.MusicalCalibration(neutral: 0.3, observations: 100)
+        let exact = SimilarityFamilies.musicalFit(bpm: 120, camelot: "8A", profile: p, calibration: cal)
+        let far = SimilarityFamilies.musicalFit(bpm: 200, camelot: "2A", profile: p, calibration: cal)
+        let unknown = SimilarityFamilies.musicalFit(bpm: nil, camelot: nil, profile: p, calibration: cal)
+        XCTAssertGreaterThan(exact, far, "on-tempo and in-key beats neither")
+        XCTAssertGreaterThan(exact, unknown, "and beats an unknown one")
+        XCTAssertGreaterThan(unknown, far, "…but unknown is not treated as WRONG")
+        XCTAssertEqual(unknown, 0.3, accuracy: 1e-9, "no evidence ⇒ exactly the round's mean")
+    }
+
+    private func musicSong(_ id: String, bpm: Double?, camelot: String?) -> IndexSong {
+        var obj: [String: Any] = ["id": id, "name": id, "artist": "A"]
+        if let bpm { obj["bpm"] = bpm }
+        if let camelot { obj["camelot"] = camelot }
+        return try! JSONDecoder().decode(IndexSong.self,
+                                         from: try! JSONSerialization.data(withJSONObject: obj))
     }
 
     // ========================================================================

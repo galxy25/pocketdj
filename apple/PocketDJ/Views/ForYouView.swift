@@ -35,8 +35,8 @@ struct ForYouTilesView: View {
     @Environment(ReleaseFeedService.self) private var releaseFeed: ReleaseFeedService?
     /// The cloud engine — optional and default-OFF. Its tile appears only when it has answers.
     @Environment(RecommendationService.self) private var recEngine: RecommendationService?
-    /// The accept/reject log. Optional for the same reason the two above are: a preview or a test
-    /// host that renders For You standalone degrades to "no feedback yet" rather than trapping.
+    /// The 👍/👎 log — the tile COUNTS must already exclude rejected songs, or a tile promises
+    /// twelve suggestions and opens on nine.
     @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
     @Binding var path: NavigationPath
 
@@ -61,17 +61,6 @@ struct ForYouTilesView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityIdentifier("foryou-tile-\(tile.id)")
-                    // ▶ / 🔀 ON THE CARD, in a context menu rather than as two more glyphs.
-                    //
-                    // The owner asked for both affordances "on the tile itself, if it does not
-                    // crowd the grid" — and it does: the card is 116pt tall in a 150pt-minimum
-                    // adaptive grid, already carrying a symbol, a count, a title and a two-line
-                    // subtitle. Two more tappable targets there would be finger-sized on nothing.
-                    // A context menu (long-press on iOS/visionOS, right-click on macOS) adds zero
-                    // pixels, and the same two actions are ALSO in the opened tile's header where
-                    // they are discoverable. A tile with nothing playable shows a disabled row
-                    // saying so rather than a live control that does nothing.
-                    .contextMenu { playMenu(tile) }
                 }
             }
             .padding(12)
@@ -99,10 +88,6 @@ struct ForYouTilesView: View {
         "\(app.catalogRevision)|\(history.revision)|\(collections.playlists.count)"
         + "|\(collections.pockets.count)|\(collections.membershipRevision)"
         + "|\(releaseFeed?.revision ?? 0)|\(recEngine?.forYou.count ?? 0)"
-        // A thumbs-down given in the car, on the lock screen or on a tile must change what the
-        // GRID says the next time it is looked at — the counts are the tile's whole content.
-        // `revision` moves on every decision from every surface, which is what makes the two
-        // entry points one feature rather than two that can disagree.
         + "|\(feedback?.revision ?? 0)"
     }
 
@@ -129,72 +114,48 @@ struct ForYouTilesView: View {
         // never through PocketDJ looks dormant, and the rediscovery pool offers it back.
         let lastPlayed = playCounts.lastPlayedSnapshot()
         let members = collections.suggestibleCollections()
-        let cloud = recEngine?.forYou.map(\.songId) ?? []
         let now = Date().timeIntervalSince1970 * 1000
-        let newCount = releaseFeed?.newReleases(nowMs: now).count ?? 0
-        // The feedback projection is built ON the main actor (the store is @MainActor) and handed
-        // across as a plain value — the same discipline every other input here follows.
-        let signal = feedbackSignal()
-        let known = Set(songs.map(\.id))
+        // ONE feedback projection PER TILE, because suppression is SCOPED: a song thumbed down in
+        // one crate must not vanish from another tile's count. The taste half of each projection
+        // is the same global map; only `suppressed` differs.
+        //
+        // Every count below goes through `visibleCount`, THE SAME function the opened list's
+        // header uses — so a card that promises twelve suggestions opens on twelve. Computing the
+        // count one way here and the list another way there is exactly how a card and its screen
+        // end up disagreeing about what is behind it.
+        let zoneFb = feedback?.zoneFeedback(scope: ForYouTileRoute.Kind.zone.rawValue, nowMs: now)
+            ?? ZoneEngine.Feedback()
+        let crateFb = Dictionary(uniqueKeysWithValues: members.map {
+            ($0.id, feedback?.zoneFeedback(scope: $0.id, nowMs: now) ?? ZoneEngine.Feedback())
+        })
+        let cloudIds = recEngine?.forYou.map(\.songId) ?? []
+        let cloudCount = feedback?.visibleCount(cloudIds,
+                                                scope: ForYouTileRoute.Kind.suggested.rawValue,
+                                                nowMs: now) ?? cloudIds.count
+        let releases = releaseFeed?.feed(nowMs: now) ?? []
+        let newCount = feedback?.visibleCount(releases.map(\.feedbackId),
+                                              scope: ForYouTileRoute.Kind.new.rawValue,
+                                              nowMs: now) ?? releases.count
 
         let computed = await Task.detached(priority: .userInitiated) {
-            let zoneIds = ZoneEngine.inDaZone(songs: songs, genreBySongId: genres,
-                                              otherCollections: members.map(\.songIds),
-                                              plays: plays, playCount: { counts[$0] ?? 0 },
-                                              lastPlayedMs: lastPlayed, feedback: signal,
-                                              nowMs: now).songIds
-            var suggestionsById: [String: [String]] = [:]
-            let perCollection = members.map { c -> (id: String, kind: String, name: String, suggestions: [String]) in
-                let ids = ZoneEngine.suggestions(memberSongIds: c.songIds, tracks: tracks,
-                                                 playCount: { counts[$0] ?? 0 }, feedback: signal)
-                suggestionsById[c.id] = ids
-                return (id: c.id, kind: c.kind, name: c.name, suggestions: ids)
-            }
-            return ForYouTiles.build(
+            ForYouTiles.build(
                 newReleaseCount: newCount,
-                zone: zoneIds,
-                collections: perCollection,
-                cloudSuggestionCount: cloud.count,
-                // Every zone/collection id came OUT of the catalog, so they are playable by
-                // construction; a CLOUD suggestion can name an id this device cannot resolve, so
-                // that one is counted rather than assumed.
-                playableZoneIds: zoneIds,
-                playableCloudIds: cloud.filter { known.contains($0) },
-                playableByCollectionId: suggestionsById)
+                zone: ZoneEngine.inDaZone(songs: songs, genreBySongId: genres,
+                                          otherCollections: members.map(\.songIds),
+                                          plays: plays, playCount: { counts[$0] ?? 0 },
+                                          lastPlayedMs: lastPlayed, feedback: zoneFb,
+                                          nowMs: now).songIds,
+                collections: members.map { c in
+                    (id: c.id, kind: c.kind, name: c.name,
+                     suggestions: ZoneEngine.suggestions(memberSongIds: c.songIds, tracks: tracks,
+                                                         playCount: { counts[$0] ?? 0 },
+                                                         feedback: crateFb[c.id] ?? ZoneEngine.Feedback()))
+                },
+                cloudSuggestionCount: cloudCount)
         }.value
 
         tiles = computed
         builtSignature = signature
-    }
-
-    /// ▶ / 🔀 for one tile. Disabled tiles get an explanatory row instead of a live control, so a
-    /// long-press on **New** never presents a Play button that cannot play.
-    @ViewBuilder private func playMenu(_ tile: ForYouTile) -> some View {
-        if tile.isPlayable {
-            Button {
-                ForYouPlayback.play(tile.playableSongIds, name: tile.title, shuffle: false,
-                                    collections: collections, path: $path)
-            } label: { Label("Play in order", systemImage: "play.fill") }
-            Button {
-                ForYouPlayback.play(tile.playableSongIds, name: tile.title, shuffle: true,
-                                    collections: collections, path: $path)
-            } label: { Label("Shuffle", systemImage: "shuffle") }
-        } else {
-            Label(tile.route.kind == .new ? "Nothing to play — add these first"
-                                          : "Nothing playable on this device",
-                  systemImage: "play.slash")
-                .disabled(true)
-        }
-    }
-
-    /// The accept/reject log projected for the ranking. Catalog lookups are closures so the store
-    /// never learns what a song is — it only knows ids.
-    private func feedbackSignal() -> ZoneEngine.Feedback {
-        guard let feedback else { return ZoneEngine.Feedback() }
-        let genres = app.zoneGenreBySongId
-        return feedback.signal(
-            artistKeyFor: { app.songsById[$0].map { PuzzleSimilarity.artistKey($0.artist) } },
-            genreFor: { genres[$0] })
     }
 
 }

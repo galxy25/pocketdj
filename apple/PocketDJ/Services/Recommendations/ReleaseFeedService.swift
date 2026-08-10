@@ -74,6 +74,18 @@ struct ReleaseFeedItem: Identifiable, Equatable {
     let entry: ArtistReleaseEntry
     let status: ReleaseStatus
     var id: Int { entry.artistId }
+
+    /// The id a 👍/👎 on this row is filed under.
+    ///
+    /// A release is not a catalog song — the listener does not own it yet, which is the whole
+    /// point of the tile — so it has no `IndexSong.id` to key on. The RELEASE's Apple store id is
+    /// used when there is one (a verdict then follows the record, not the artist), and the artist
+    /// otherwise, which is the only identity a releaseless row has. The `rel:` / `relartist:`
+    /// prefixes keep these out of the same namespace as song ids, so a rejected release can never
+    /// collide with a rejected song.
+    var feedbackId: String {
+        entry.releaseId.map { "rel:\($0)" } ?? "relartist:\(entry.artistId)"
+    }
 }
 
 @MainActor

@@ -47,13 +47,12 @@ final class IntentServices {
     /// gateway CarPlay already uses for every other store. `CarPlayModel` toggles the current
     /// track's favorite here (its `onChanged` reaches Apple Music only for an owner install).
     let favorites: FavoritesStore
-    /// The recommendation accept/reject log. The CarPlay scene runs OUTSIDE the SwiftUI
-    /// environment, so — exactly like `favorites` — it reaches the live store through this
-    /// bridge rather than constructing one of its own (which would fork the log and lose every
-    /// decision made in the car). Optional so the many tests that build `IntentServices` without
-    /// the rec graph keep compiling; nil ⇒ CarPlay simply shows no 👍/👎.
-    @ObservationIgnored var recFeedback: RecFeedbackStore?
-
+    /// The 👍/👎 log behind every recommendation surface. Reached through this bridge for the
+    /// same reason `favorites` is: CarPlay is its own `UIScene` and App Intents run outside the
+    /// SwiftUI environment entirely, so the widget/lock-screen/car controls need a way to the ONE
+    /// live store rather than a second copy. Optional so a test host can build the bridge without
+    /// the recommendation graph.
+    var recFeedback: RecFeedbackStore?
     /// Async "Create pocket" builder — kept observable so UI can surface progress later.
     let pocketBuilder: PocketBuilderService
 
@@ -279,6 +278,59 @@ final class IntentServices {
     }
 
     // MARK: - Create pocket (async build)
+
+    // MARK: - Recommendation feedback (👍 / 👎 on what is playing)
+
+    /// The song the tuning controls act on, and the For You list it is a recommendation IN — nil
+    /// when the running queue did not come from one, or when the current track is not one of that
+    /// list's rows. Every SYNC surface hides its controls on nil rather than guessing at a scope,
+    /// which is the honest answer: there is no tile to sink it in.
+    @MainActor
+    func currentRecTarget() -> (songId: String, scope: String)? {
+        guard let recFeedback else { return nil }
+        let p = setlistPlayer
+        guard p.isRunning, p.index < p.queue.count else { return nil }
+        let songId = p.queue[p.index].id
+        guard let scope = recFeedback.scope(forPlaying: songId) else { return nil }
+        return (songId, scope)
+    }
+
+    /// The verdict standing for the current track, for a surface that must render a filled or
+    /// hollow thumb.
+    @MainActor
+    func currentRecVerdict() -> RecFeedbackStore.Verdict? {
+        guard let t = currentRecTarget() else { return nil }
+        return recFeedback?.verdict(songId: t.songId, scope: t.scope)
+    }
+
+    /// Record a verdict for whatever is playing RIGHT NOW. The single entry point every SYNC
+    /// surface uses — widget intent, lock screen, CarPlay, the in-app deck — so "the same store,
+    /// the same intent, the same wire event" is enforced by there being exactly one function.
+    ///
+    /// Returns the verdict that LANDED (nil = the tap cleared an existing one), so a caller can
+    /// re-render its glyph without re-reading the store.
+    ///
+    /// ── IT DOES NOT TOUCH PLAYBACK ───────────────────────────────────────────────────────────
+    /// No stop, no re-shuffle, no jump, and specifically NO SKIP on a reject. See
+    /// `RecFeedbackButtons` for the full reasoning; the short version is that ⏭ already means "get
+    /// this off now", and a thumbs-down that also skipped would make a mis-tap in a moving car
+    /// instantly unrecoverable.
+    ///
+    /// Deliberately NOT vetoed during onboarding, unlike the playback intents: this writes a
+    /// device-local, CloudKit-synced opinion document and starts no playback, materializes no
+    /// collection, and creates no synced setlist — the invariant that veto protects. Vetoing it
+    /// would mean a thumbs-down given from a widget before setup completed is silently lost.
+    @discardableResult
+    @MainActor
+    func recordNowPlayingFeedback(_ verdict: RecFeedbackStore.Verdict,
+                                  surface: RecFeedbackStore.Surface) -> RecFeedbackStore.Verdict? {
+        guard let store = recFeedback, let t = currentRecTarget() else { return nil }
+        let song = app.songsById[t.songId]
+        return store.toggle(songId: t.songId, to: verdict, scope: t.scope, surface: surface,
+                            artistKey: song.map { PuzzleSimilarity.artistKey($0.artist) },
+                            genre: SimilarityFamilies.canonicalGenre(
+                                song?.albumId.flatMap { app.albumsById[$0] }?.genre))
+    }
 
     /// Kick off the on-device-LLM pocket build and return immediately (the intent's
     /// dialog promises the pocket "shortly"). Throws up-front when the model is

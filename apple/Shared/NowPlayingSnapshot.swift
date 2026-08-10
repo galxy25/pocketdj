@@ -36,11 +36,21 @@ struct NowPlayingSnapshot: Codable, Equatable {
     /// Whether the running set's upcoming tail is live-shuffled — drives the widget's shuffle glyph.
     /// Decode-tolerant (defaults false for pre-existing blobs).
     var shuffleEnabled: Bool
-    /// The current track's recommendation feedback state — `RecFeedbackStore.Action.rawValue`
-    /// ("accepted"/"rejected") or "none". Drives which of the widget's 👍/👎 glyphs renders
-    /// filled, so the pair says what the listener already told it rather than looking untouched
-    /// after a tap. Decode-tolerant (pre-existing blobs read "none").
-    var recFeedback: String
+    /// The current track's recommendation verdict — "" (none), "accepted" or "rejected". Drives
+    /// which of the widget's two thumb glyphs renders FILLED, so the pair reads the same in the
+    /// widget as it does in the app and in the car. A plain String rather than the store's enum
+    /// because this file compiles into the widget extension, which must not carry the app's state
+    /// graph. Decode-tolerant (a blob from an older app build decodes to "").
+    var recVerdict: String
+    /// WHICH For You list the current track is a recommendation in ("zone", "suggested", a
+    /// collection id), or "" when the running queue did not come from one.
+    ///
+    /// It is on the snapshot — rather than looked up when a tap arrives — because that is what
+    /// makes a widget verdict SELF-CONTAINED. A widget tap can be drained minutes later, after a
+    /// cold launch, with a different track playing; resolving the scope at drain time would file
+    /// the verdict against whatever happened to be current then. Carrying `songId` + `recScope`
+    /// with the command means it lands on the track the listener was actually looking at.
+    var recScope: String
 
     struct Track: Codable, Equatable, Identifiable {
         /// Per-row identity (the setlist `Item.uid`), so repeats render as distinct rows.
@@ -52,8 +62,9 @@ struct NowPlayingSnapshot: Codable, Equatable {
 
     init(isPlaying: Bool, hasContent: Bool, title: String, artist: String, songId: String?,
          coverVersion: Int, upNext: [Track], isFavorite: Bool = false, appleMusicId: String? = nil,
-         repeatMode: String = "off", shuffleEnabled: Bool = false,
-         recFeedback: String = "none") {
+         repeatMode: String = "off", shuffleEnabled: Bool = false, recVerdict: String = "",
+         recScope: String = "") {
+        self.recScope = recScope
         self.isPlaying = isPlaying
         self.hasContent = hasContent
         self.title = title
@@ -65,7 +76,7 @@ struct NowPlayingSnapshot: Codable, Equatable {
         self.appleMusicId = appleMusicId
         self.repeatMode = repeatMode
         self.shuffleEnabled = shuffleEnabled
-        self.recFeedback = recFeedback
+        self.recVerdict = recVerdict
     }
 
     /// Custom decode ONLY to tolerate blobs written before `isFavorite`/`appleMusicId` existed:
@@ -85,7 +96,8 @@ struct NowPlayingSnapshot: Codable, Equatable {
         appleMusicId = try c.decodeIfPresent(String.self, forKey: .appleMusicId)
         repeatMode = try c.decodeIfPresent(String.self, forKey: .repeatMode) ?? "off"
         shuffleEnabled = try c.decodeIfPresent(Bool.self, forKey: .shuffleEnabled) ?? false
-        recFeedback = try c.decodeIfPresent(String.self, forKey: .recFeedback) ?? "none"
+        recVerdict = try c.decodeIfPresent(String.self, forKey: .recVerdict) ?? ""
+        recScope = try c.decodeIfPresent(String.self, forKey: .recScope) ?? ""
     }
 
     static let empty = NowPlayingSnapshot(isPlaying: false, hasContent: false,

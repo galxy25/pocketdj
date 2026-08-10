@@ -105,6 +105,12 @@ final class CollectorsPuzzleEngine {
     /// "absent provider ⇒ old behaviour" contract `playCountsProvider` has.
     @ObservationIgnored var lastPlayedProvider: (() -> [String: Double])?
 
+    /// collection id → the songs thumbed down FOR THAT COLLECTION and still inside their seven-day
+    /// tombstone (`RecFeedbackStore.activeTombstones`). A closure seam like the two above, so this
+    /// engine keeps its narrow store list; nil (tests, previews) ⇒ no suppression at all and the
+    /// sampler behaves exactly as it did before the tuning loop existed.
+    @ObservationIgnored var recSuppressedProvider: ((String) -> Set<String>)?
+
     @ObservationIgnored private var tickerTask: Task<Void, Never>?
     /// Single-flight guard on the mid-round top-up sample.
     @ObservationIgnored private var toppingUp = false
@@ -199,7 +205,14 @@ final class CollectorsPuzzleEngine {
             cloudRanks: wantsSimilarity ? cloudRanks : [:],
             buildSimilarityProfile: wantsSimilarity,
             lastPlayedMs: lastPlayed,
-            hasRecency: !lastPlayed.isEmpty)
+            hasRecency: !lastPlayed.isEmpty,
+            // A 👎 given on a target collection's For You tile means "not for this crate", and
+            // this round is asking exactly that question — so the tombstone applies here too, for
+            // the same seven days and no longer. Nil seam (tests, previews) ⇒ empty ⇒ byte-
+            // identical sampling to before the tuning loop existed.
+            suppressedForTargets: settings.targetCollectionIds.reduce(into: Set<String>()) {
+                $0.formUnion(recSuppressedProvider?($1) ?? [])
+            })
     }
 
     /// What audio this device can start RIGHT NOW, snapshotted on the main actor as raw COW

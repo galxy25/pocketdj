@@ -1,83 +1,123 @@
 import SwiftUI
 
-/// 👍 / 👎 — the ONE accept/reject control, shared by every surface that has one: the For You
-/// tile rows, the Suggested list, the Now Playing deck, the iOS mini-bar. (The widget and CarPlay
-/// cannot render SwiftUI from this target, so they build the same pair from
-/// `RecFeedbackAction`'s symbols and call the same store through the same intents.)
-///
-/// ── WHY A PAIR AND NOT A SINGLE TOGGLE ───────────────────────────────────────────────────────
-/// "No opinion", "more like this" and "less like this" are three states, and a single control can
-/// only express two. The engine needs the distinction: an untouched suggestion is neutral input,
-/// a rejected one is negative input, and collapsing them would make every song the user has not
-/// yet judged look rejected.
+/// 👍 / 👎 — the accept + reject pair, ONE control used on every surface that shows a
+/// recommendation: the For You rows, the New tile, the cloud suggestions, the Now Playing deck,
+/// the mini bar, and (through `IntentServices` rather than this view) CarPlay and the widgets.
 ///
 /// ── THE ICONOGRAPHY IS SETTLED ───────────────────────────────────────────────────────────────
-/// SF Symbols, thumbs, as a matched pair — `hand.thumbsup` / `hand.thumbsdown`, filled when the
-/// decision is live. Chosen over checkmark/xmark because these rows ALREADY carry a ＋ that turns
-/// into a `checkmark.circle.fill` when a song has been added: a second checkmark meaning
-/// "accepted" beside it would be two different ticks a row apart. Never emoji — they would drag
-/// skin-tone rendering into a 14pt glyph on a lock screen.
+/// SF Symbols, `hand.thumbsup` / `hand.thumbsdown`, filled when the verdict is set. The owner
+/// offered thumbs OR check/x; thumbs won because the two controls must read as a MATCHED PAIR and
+/// a thumb beside an ✕ does not — one is an opinion, the other is a dismissal, and the asymmetry
+/// makes the reject look like "close this row" rather than "I don't like this". Thumbs also carry
+/// the meaning at 13pt in a car and at widget size, which a check/x pair does not. No emoji, no
+/// image assets: SF Symbols render natively on CarPlay and in WidgetKit, which is what makes the
+/// same pair reachable from the lock screen and the car for free.
+///
+/// ── ONE DECISION MODEL, TWO ENTRY POINTS ─────────────────────────────────────────────────────
+/// SYNC (act on what is playing) and ASYNC (come back to the tile and work the list) are both
+/// required, and neither replaces the other. They are the same button writing the same row into
+/// the same `RecFeedbackStore`, so a thumbs-down given in the car is already reflected the next
+/// time the tile is opened, and vice versa. There is deliberately NO per-surface state to
+/// reconcile — reconciliation is `verdict(songId:scope:)` at render time.
 ///
 /// ── ACTING NEVER INTERRUPTS PLAYBACK ─────────────────────────────────────────────────────────
-/// Neither control touches the queue. Accepting adds and keeps playing; rejecting records and
-/// keeps playing. A reject deliberately does NOT skip: the pair has to read as symmetric (accept
-/// doesn't skip either), a skip makes a mis-tap in the car cost you the song with no way back,
-/// and the visible consequence — the row sinking to the bottom of its tile, and the engine
-/// dropping it next build — is available without touching what is sounding.
-struct RecFeedbackControls: View {
+/// This view records a verdict and (on 👍, when a target is given) adds the song. It does not
+/// touch the transport: no stop, no skip, no re-shuffle, no queue rebuild.
+///
+/// A rejection does NOT skip the current song, and that is a deliberate choice rather than an
+/// omission. A 👎 is a statement about the RECOMMENDATION — "rank this lower here" — which is
+/// about the next pass, not this second; ⏭ already means "get this off now", and conflating them
+/// would leave the listener no way to say one without the other. It also decides the failure mode
+/// of a mis-tap: a thumbs-down that skips makes the mistake instantly unrecoverable in a moving
+/// car (the track you were enjoying is gone), while one that only sinks costs a tap to undo.
+struct RecFeedbackButtons: View {
     @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
+    @Environment(AppModel.self) private var app
 
     let songId: String
-    /// Which surface this instance is on — recorded with the decision.
+    /// WHICH LIST this row belongs to — a collection id, or a reserved tile name. A reject is
+    /// scoped to it: rejecting a song in one crate never suppresses it in another.
+    let scope: String
+    /// Where the tap happened — recorded, never branched on.
     var surface: RecFeedbackStore.Surface = .tile
-    /// The tile the decision was made from ("zone" / "suggested" / "col-<id>"), when there is one.
-    var context: String?
-    /// Glyph size. Rows keep the compact default; the deck's action cluster bumps it.
+    /// Glyph size. Rows keep `.caption`; the deck bumps it so the pair reads as a primary action.
     var font: Font = .caption
-    /// Run when a FRESH accept lands (not on a clear, and not on a re-tap). The tile's ＋ path
-    /// hangs off this, so "accept" and "add" are one gesture there without this view knowing
-    /// anything about collections.
-    var onAccepted: (() -> Void)?
-    /// Run when a reject lands, so a list can re-sort. Never called for a clear.
-    var onRejected: (() -> Void)?
+    /// Run on 👍 in addition to recording it — the row's existing Add action. Optional because the
+    /// now-playing surfaces have no implicit collection to add to; there a 👍 is pure feedback,
+    /// which is exactly what the tuning loop needs it to be.
+    var onAccept: (() -> Void)?
 
-    private var state: RecFeedbackStore.Action? { feedback?.state(for: songId) }
+    private var verdict: RecFeedbackStore.Verdict? {
+        feedback?.verdict(songId: songId, scope: scope)
+    }
 
     var body: some View {
         HStack(spacing: 10) {
             button(.accepted)
             button(.rejected)
         }
-        // The container carries NO accessibility identifier: putting one on a stack of buttons
-        // absorbs the children's identifiers and makes them invisible to XCUITest (and to
-        // VoiceOver on macOS — the NavigationLink-label trap this project has already hit).
     }
 
-    @ViewBuilder private func button(_ action: RecFeedbackStore.Action) -> some View {
-        let on = state == action
-        let accept = action == .accepted
+    @ViewBuilder private func button(_ v: RecFeedbackStore.Verdict) -> some View {
+        let isOn = verdict == v
+        let accept = v == .accepted
         Button {
-            guard let feedback else { return }
-            let resulting = feedback.toggle(songId: songId, to: action, surface: surface,
-                                            context: context)
-            if resulting == .accepted { onAccepted?() }
-            if resulting == .rejected { onRejected?() }
+            record(v)
         } label: {
-            Image(systemName: on
-                    ? (accept ? RecFeedbackAction.acceptSymbolFilled : RecFeedbackAction.rejectSymbolFilled)
-                    : (accept ? RecFeedbackAction.acceptSymbol : RecFeedbackAction.rejectSymbol))
+            Image(systemName: accept
+                  ? (isOn ? "hand.thumbsup.fill" : "hand.thumbsup")
+                  : (isOn ? "hand.thumbsdown.fill" : "hand.thumbsdown"))
                 .font(font)
                 .contentShape(Rectangle())
         }
-        // `.borderless`, exactly like `FavoriteToggle` and `RowTransport`: it keeps an enclosing
-        // NavigationLink from swallowing the tap AND it survives macOS hit-testing inside a
-        // ScrollView + LazyVStack, where `.plain` silently drops the press.
+        // `.borderless`, matching `FavoriteToggle` — it is what keeps an enclosing NavigationLink
+        // from swallowing the tap AND what survives macOS hit-testing inside a ScrollView +
+        // LazyVStack, where a `.plain` button silently drops its press.
         .buttonStyle(.borderless)
-        .foregroundStyle(on ? (accept ? Theme.accent : Theme.danger) : Theme.fgDim)
-        .disabled(feedback == nil)
+        .foregroundStyle(isOn ? (accept ? Theme.accent : Theme.fgDim.opacity(0.95)) : Theme.fgDim)
         .accessibilityIdentifier("rec-\(accept ? "accept" : "reject")-\(songId)")
         .accessibilityLabel(accept
-            ? (on ? "Clear more like this" : "More like this")
-            : (on ? "Clear less like this" : "Less like this"))
+                            ? (isOn ? "Undo more like this" : "More like this")
+                            : (isOn ? "Undo not for me" : "Not for me"))
+    }
+
+    private func record(_ v: RecFeedbackStore.Verdict) {
+        guard let feedback else { return }
+        let song = app.songsById[songId]
+        let landed = feedback.toggle(
+            songId: songId, to: v, scope: scope, surface: surface,
+            artistKey: song.map { PuzzleSimilarity.artistKey($0.artist) },
+            genre: SimilarityFamilies.canonicalGenre(
+                song?.albumId.flatMap { app.albumsById[$0] }?.genre))
+        // The Add only rides a 👍 that actually LANDED as accepted — tapping a lit thumbs-up is an
+        // undo, and undoing feedback must not silently add the song a second time.
+        if landed == .accepted { onAccept?() }
+    }
+}
+
+/// The now-playing variant: the SAME pair, keyed on whatever is playing right now, and hidden
+/// unless the running queue actually came from a For You list.
+///
+/// Exists so the deck, the mini bar and CarPlay can drop in one view instead of each re-deriving
+/// the current song id and its scope — the divergence that would let two surfaces disagree about
+/// which track a thumbs-down applied to, or file it against a tile the listener never opened.
+struct NowPlayingFeedbackButtons: View {
+    @Environment(SetlistPlayer.self) private var sequencer
+    @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
+    let font: Font
+
+    init(font: Font = .subheadline) { self.font = font }
+
+    private var target: (songId: String, scope: String)? {
+        guard sequencer.isRunning, sequencer.index < sequencer.queue.count else { return nil }
+        let id = sequencer.queue[sequencer.index].id
+        guard let scope = feedback?.scope(forPlaying: id) else { return nil }
+        return (id, scope)
+    }
+
+    var body: some View {
+        if let t = target {
+            RecFeedbackButtons(songId: t.songId, scope: t.scope, surface: .nowPlaying, font: font)
+        }
     }
 }

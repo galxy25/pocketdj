@@ -49,26 +49,28 @@ struct RecPuzzleEventWire: Codable, Equatable {
     var points: Int?
 }
 
-/// EXPLICIT feedback on a recommendation — the thumbs-up / thumbs-down the owner asked for.
+/// ACCEPT / REJECT on a recommendation — the tuning loop's return path, and the first NEGATIVE
+/// signal this wire has ever carried.
 ///
-/// An EVENT STREAM, not a snapshot, and deliberately so: "you rejected this three times" is a
-/// stronger statement than "this is rejected", and only a log can say it. The server folds the
-/// stream to last-writer-wins per song for the hard exclusion and counts the rows for the soft
-/// artist/genre penalty — the same two readings the on-device `RecFeedbackStore` makes.
+/// That is the reason it is its own event kind rather than another `RecActivityWire` row: every
+/// existing event on this wire means "the user engaged with this", and the server reads them all
+/// as positive evidence (a puzzle filing is worth a flat seed bonus; see `PuzzleRecEventBridge`
+/// for what happened the last time a negative decision was nearly folded into a positive stream).
+/// A rejection has to be unmistakably negative on arrival, so it carries its own `verdict`.
 ///
-/// Rides the ENGINE toggle, not `shareLifetimePlayCounts`: this is not a record of listening
-/// that Apple already holds, it is a deliberate instruction to the recommender, and a user who
-/// turned the recommender on and then pressed thumbs-down means it to be heard.
+/// `verdict` is "accepted" | "rejected" | "cleared" and NEVER renames once shipped (the
+/// wire-value doctrine at the top of this file). "cleared" is the undo — an explicit row rather
+/// than an absence, so the server can retract an opinion instead of keeping the first one forever.
 struct RecFeedbackWire: Codable, Equatable {
     var id: String
     var atMs: Double
     var songId: String
-    /// "accepted" | "rejected" | "cleared" — NEVER renamed once shipped (the doctrine above).
-    var action: String
-    /// Which surface it came from ("tile"/"nowPlaying"/"widget"/"carPlay"/…). Optional so an
-    /// older server ignores it and an older client never sends it — no version bump.
+    var verdict: String
+    /// Which surface it was given on ("tile" / "nowPlaying" / "carPlay" / "widget" / "songDetail").
+    /// Carried because "rejected while it was playing" is stronger evidence than "rejected while
+    /// scrolling", and the server may weight them apart later; nothing branches on it today.
     var surface: String?
-    /// The tile it was made from ("zone"/"suggested"/"col-<id>"), when there was one.
+    /// Which recommendation list produced the song ("zone", "suggested", a collection id).
     var context: String?
 }
 
@@ -116,8 +118,8 @@ struct RecUploadBatch: Encodable {
     var favorites: [RecFavoriteWire]?
     var activity: [RecActivityWire]?
     var puzzle: [RecPuzzleEventWire]?
-    /// Explicit accept/reject decisions. Optional like every other stream, so a build that has
-    /// none sends the same bytes it always did.
+    /// 👍/👎 on suggestions. OPTIONAL so an older server ignores the key and an older client
+    /// never sends it — no version bump (the collections-schema doctrine).
     var feedback: [RecFeedbackWire]?
     var collectionsSnapshot: RecCollectionsSnapshotWire?
     var playCounts: RecPlayCountsWire?

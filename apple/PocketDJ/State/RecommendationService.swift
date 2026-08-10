@@ -99,8 +99,9 @@ final class RecommendationService {
         var lastFavoriteAtMs: Double = 0
         var lastActivityAtMs: Double = 0
         var lastPuzzleAtMs: Double = 0
-        /// Cursor for the explicit accept/reject stream. ADDITIVE-OPTIONAL: an older doc decodes
-        /// to 0, which costs one idempotent re-send of whatever is inside the overlap window.
+        /// 👍/👎 upload cursor. ADDITIVE-OPTIONAL: a doc written before feedback existed decodes
+        /// to 0, which re-uploads the whole (small) log once and is then quiet — the server
+        /// dedupes by event id like every other stream here.
         var lastFeedbackAtMs: Double = 0
         var lastCollectionsHash: String?
         /// Hash of the last UPLOADED lifetime play-count snapshot. Gates re-sending a 20k-row map
@@ -183,11 +184,12 @@ final class RecommendationService {
     /// a WS-D type beyond the wire struct.
     @ObservationIgnored var puzzleEventsProvider: ((_ sinceMs: Double) -> [RecPuzzleEventWire])?
 
-    /// The accept/reject stream (`RecFeedbackStore.recFeedbackEvents`). A closure seam like
-    /// `puzzleEventsProvider`, installed in `PocketDJApp`, so this service keeps its narrow store
-    /// list. Nil ⇒ nothing is uploaded and the server ranks exactly as it did before the signal
-    /// existed.
-    @ObservationIgnored var feedbackEventsProvider: ((_ sinceMs: Double) -> [RecFeedbackWire])?
+    /// ACCEPT / REJECT seam: the listener's 👍/👎 on suggestions since a cursor
+    /// (`RecFeedbackStore.recFeedbackEvents`). A closure like `puzzleEventsProvider`, so this
+    /// service keeps its narrow store list and a unit test can declare the rows outright. Nil ⇒
+    /// nothing is uploaded and the server's ranking is byte-identical to what it was before the
+    /// signal existed.
+    @ObservationIgnored var feedbackProvider: ((_ sinceMs: Double) -> [RecFeedbackWire])?
 
     /// LIFETIME play counts (`PlayCountService.snapshot()`) — Apple's imported baseline plus this
     /// app's own plays. A closure seam like `puzzleEventsProvider`, so this service keeps its
@@ -517,7 +519,7 @@ final class RecommendationService {
         var puzzle = (puzzleEventsProvider?(puzzleFloor) ?? [])
             .filter { !sentPuzzle.contains(Self.ack($0.atMs, $0.id)) }
             .sorted { $0.atMs < $1.atMs }
-        var feedback = (feedbackEventsProvider?(feedbackFloor) ?? [])
+        var feedback = (feedbackProvider?(feedbackFloor) ?? [])
             .filter { !sentFeedback.contains(Self.ack($0.atMs, $0.id)) }
             .sorted { $0.atMs < $1.atMs }
 
@@ -542,8 +544,7 @@ final class RecommendationService {
             (playCountsHash != nil && playCountsHash != sync.lastPlayCountsHash) ? playCountsSnapshot : nil
 
         guard !plays.isEmpty || !favs.isEmpty || !acts.isEmpty || !puzzle.isEmpty
-                || !feedback.isEmpty || pendingSnapshot != nil || pendingPlayCounts != nil
-        else { return }
+                || !feedback.isEmpty || pendingSnapshot != nil || pendingPlayCounts != nil else { return }
 
         while !plays.isEmpty || !favs.isEmpty || !acts.isEmpty || !puzzle.isEmpty
                 || !feedback.isEmpty || pendingSnapshot != nil || pendingPlayCounts != nil {
@@ -622,8 +623,7 @@ final class RecommendationService {
             sync.uploadedPuzzle = Self.remember(sync.uploadedPuzzle,
                                                 batchPuzzle.map { Self.ack($0.atMs, $0.id) }, floor: puzzleFloor)
             sync.uploadedFeedback = Self.remember(sync.uploadedFeedback,
-                                                  batchFeedback.map { Self.ack($0.atMs, $0.id) },
-                                                  floor: feedbackFloor)
+                                                  batchFeedback.map { Self.ack($0.atMs, $0.id) }, floor: feedbackFloor)
             if snapshotDelivered { sync.lastCollectionsHash = snapshotHash }
             if playCountsDelivered { sync.lastPlayCountsHash = playCountsHash }
             pendingSnapshot = nil

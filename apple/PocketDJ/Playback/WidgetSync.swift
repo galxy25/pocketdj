@@ -30,11 +30,16 @@ final class WidgetSync {
     /// Resolves a song id → its Apple Music catalog id (nil for vinyl / My Digital / Studio),
     /// so a widget ♥ carries the id `FavoritesStore.toggle` needs for the owner-gated push.
     private let appleMusicId: (String) -> String?
-    /// The recommendation tuning loop's store. The widget's 👍/👎 write HERE — the same store the
-    /// For You tiles and the in-app deck write to — so a decision made from the lock screen is
-    /// already there when the tile is next opened. Optional so a test host can build a WidgetSync
-    /// without the rec graph (the seam idiom every late-added dependency here uses).
+    /// The 👍/👎 log — the widget's two thumb buttons write here, and the published snapshot
+    /// mirrors the current track's verdict so the glyphs render filled. Optional so the sync can
+    /// be built without the recommendation graph (unit tests, a preview host).
     private let recFeedback: RecFeedbackStore?
+    /// Resolve a song id → the shape a rejection has to remember (normalized artist key, canonical
+    /// genre). Denormalized onto the decision at record time so the negative evidence survives the
+    /// song's source being toggled off. Closures rather than an `AppModel` reference for the same
+    /// reason `appleMusicId` is one: this type stays out of the catalog graph.
+    private let recArtistKey: ((String) -> String?)?
+    private let recGenre: ((String) -> String?)?
 
     private var lastPublished: NowPlayingSnapshot?
     /// Cover identity = songId + its (late-arriving) AM artwork URL — see `publish()`.
@@ -45,7 +50,12 @@ final class WidgetSync {
     init(setlist: SetlistPlayer, player: PlayerEngine, rips: RipsStore,
          coordinator: PlaybackCoordinator, artCandidates: @escaping (String) -> [URL],
          favorites: FavoritesStore, appleMusicId: @escaping (String) -> String?,
-         recFeedback: RecFeedbackStore? = nil) {
+         recFeedback: RecFeedbackStore? = nil,
+         recArtistKey: ((String) -> String?)? = nil,
+         recGenre: ((String) -> String?)? = nil) {
+        self.recFeedback = recFeedback
+        self.recArtistKey = recArtistKey
+        self.recGenre = recGenre
         self.setlist = setlist
         self.player = player
         self.rips = rips
@@ -53,7 +63,6 @@ final class WidgetSync {
         self.artCandidates = artCandidates
         self.favorites = favorites
         self.appleMusicId = appleMusicId
-        self.recFeedback = recFeedback
         // Wire the widget's transport buttons → the SAME entry points the lock screen uses.
         WidgetPlaybackController.shared.toggle = { [weak self] in self?.transportToggle() }
         WidgetPlaybackController.shared.next = { [weak setlist] in setlist?.skipNext() }
@@ -63,8 +72,9 @@ final class WidgetSync {
         // Repeat/shuffle drive the running set's modes — same methods the in-app deck toggles call.
         WidgetPlaybackController.shared.cycleRepeat = { [weak setlist] in setlist?.cycleRepeatMode() }
         WidgetPlaybackController.shared.toggleShuffle = { [weak setlist] in setlist?.toggleShuffle() }
-        // 👍/👎 on the current track. NEITHER touches playback — no skip, no pause, no re-queue —
-        // which is the whole reason they are safe to put on a lock screen and in a car.
+        // 👍 / 👎 from a widget or the lock screen. They record a verdict and NOTHING ELSE — no
+        // skip, no pause, no queue rebuild — which is what makes them safe with the phone in a
+        // pocket, and what keeps "acting must not interrupt playback" true on every surface.
         WidgetPlaybackController.shared.acceptCurrent = { [weak self] in self?.recordFeedback(.accepted) }
         WidgetPlaybackController.shared.rejectCurrent = { [weak self] in self?.recordFeedback(.rejected) }
         // Drain a widget transport command the INSTANT it arrives (a widget click doesn't
@@ -111,37 +121,63 @@ final class WidgetSync {
         favorites.toggle(songId, appleMusicId: catalogId)
     }
 
-    /// Record 👍/👎 for whatever is playing, through the SAME `toggle` semantics every in-app
-    /// control uses (pressing the live one clears it, pressing the other flips it).
-    ///
-    /// Falls back to the PUBLISHED snapshot's song id when the live deck has not been restored
-    /// yet — the app-was-quit widget-tap path, exactly as `toggleFavoriteForCurrent` does. A
-    /// thumbs-down aimed at the track the widget was visibly showing must land on that track, not
-    /// be silently dropped because the process had not caught up.
-    private func recordFeedback(_ action: RecFeedbackStore.Action) {
-        guard let recFeedback else { return }
+    /// The current track and the For You list it is a recommendation IN — nil when the running
+    /// queue did not come from one, which is when the widget hides the pair entirely.
+    private func currentRecTarget() -> (songId: String, scope: String)? {
+        guard let recFeedback else { return nil }
+        // Prefer the live deck; fall back to the snapshot the widget was actually showing (the
+        // app-was-quit path), exactly as `toggleFavoriteForCurrent` does.
         let base = currentBase()
-        guard let songId = base.songId ?? NowPlayingShared.read().songId,
-              !songId.isEmpty else { return }
-        NPLog.trace("widgetSync recFeedback \(action.rawValue) songId=\(songId)")
-        recFeedback.toggle(songId: songId, to: action, surface: .widget)
-        publish()   // the glyph must fill immediately, not on the next playback change
+        let snap = base.songId == nil ? NowPlayingShared.read() : nil
+        guard let songId = base.songId ?? snap?.songId, !songId.isEmpty else { return nil }
+        if let scope = recFeedback.scope(forPlaying: songId) { return (songId, scope) }
+        if let s = snap?.recScope, !s.isEmpty { return (songId, s) }
+        return nil
     }
 
-    /// Drain a transport command a widget tap dropped while the app was fully quit — call when
-    /// the app becomes active (`scenePhase == .active`). Stale commands are discarded by `drain`.
+    /// Record 👍/👎 for the CURRENT track — the IN-PROCESS path (the app is alive, so the widget
+    /// intent reached this closure directly). Never touches the transport.
+    private func recordFeedback(_ verdict: RecFeedbackStore.Verdict) {
+        guard let recFeedback, let t = currentRecTarget() else { return }
+        NPLog.trace("widgetSync recFeedback \(verdict.rawValue) songId=\(t.songId) scope=\(t.scope)")
+        recFeedback.toggle(songId: t.songId, to: verdict, scope: t.scope, surface: .widget,
+                           artistKey: recArtistKey?(t.songId), genre: recGenre?(t.songId))
+        publish()
+    }
+
+    /// Apply a verdict queued by the WIDGET process while the app was quit. It names its own song
+    /// and scope, so nothing here is resolved against "what is playing now" — that drift is the
+    /// whole reason the payload carries them.
+    ///
+    /// `record`, not `toggle`: the widget already decided what the tap MEANT (it rendered the lit
+    /// or hollow glyph from the same snapshot), so re-deriving a toggle here against a store that
+    /// may since have changed would occasionally invert it.
+    private func applyQueuedVerdict(_ p: WidgetCommandChannel.Pending) {
+        guard let recFeedback, let songId = p.songId, let scope = p.scope,
+              let raw = p.verdict, let v = RecFeedbackStore.Verdict(rawValue: raw) else { return }
+        NPLog.trace("widgetSync queued verdict \(raw) songId=\(songId) scope=\(scope)")
+        recFeedback.record(songId: songId, scope: scope, verdict: v, surface: .widget,
+                           artistKey: recArtistKey?(songId), genre: recGenre?(songId),
+                           at: p.at * 1000)   // TAP time, not drain time
+        publish()
+    }
+
+    /// Drain everything a widget tap queued while the app was fully quit — call when the app
+    /// becomes active (`scenePhase == .active`) and whenever the Darwin wake-up fires. Stale
+    /// TRANSPORT commands are discarded by `drain`; verdicts never are.
     func drainPendingCommand(now: TimeInterval) {
-        guard let c = WidgetCommandChannel.drain(now: now) else { return }
-        NPLog.trace("widgetSync drain cmd=\(c.rawValue)")
-        switch c {
-        case .toggle:        transportToggle()
-        case .next:          setlist.skipNext()
-        case .previous:      setlist.skipPrevious()
-        case .favorite:      toggleFavoriteForCurrent()
-        case .cycleRepeat:   setlist.cycleRepeatMode()
-        case .toggleShuffle: setlist.toggleShuffle()
-        case .recAccept:     recordFeedback(.accepted)
-        case .recReject:     recordFeedback(.rejected)
+        for p in WidgetCommandChannel.drain(now: now) {
+            if p.kind == WidgetCommandChannel.verdictKind { applyQueuedVerdict(p); continue }
+            guard let c = p.command else { continue }
+            NPLog.trace("widgetSync drain cmd=\(c.rawValue)")
+            switch c {
+            case .toggle:        transportToggle()
+            case .next:          setlist.skipNext()
+            case .previous:      setlist.skipPrevious()
+            case .favorite:      toggleFavoriteForCurrent()
+            case .cycleRepeat:   setlist.cycleRepeatMode()
+            case .toggleShuffle: setlist.toggleShuffle()
+            }
         }
     }
 
@@ -168,8 +204,9 @@ final class WidgetSync {
             // A ♥ toggled ANYWHERE (widget, in-app row, an Apple Music pull) must republish so the
             // widget's heart fills/empties — reading the derived set arms the tracking on it.
             _ = favorites.favoriteIds
-            // Same rule for the 👍/👎: a decision made on a TILE has to fill the widget's glyph,
-            // or the two surfaces of one loop visibly disagree.
+            // A verdict given ANYWHERE (a tile row, the deck, CarPlay, a peer device's CloudKit
+            // pull) must republish so the widget's thumbs match. Reading the store's revision is
+            // what arms the tracking on it.
             _ = recFeedback?.revision
         } onChange: { [weak self] in
             Task { @MainActor in self?.publish(); self?.fanOutNowPlayingFavorite(); self?.arm() }
@@ -248,16 +285,21 @@ final class WidgetSync {
         // track / Apple Music play has no queue to repeat or shuffle, so the glyphs read off).
         let repeatRaw = setlist.isRunning ? setlist.repeatMode.rawValue : "off"
         let shuffleOn = setlist.isRunning ? setlist.shuffleEnabled : false
-        // Unlike repeat/shuffle this is NOT gated on a running set: feedback is about the TRACK,
-        // so it is meaningful for a single-song play and for an Apple Music stream too.
-        let feedbackRaw = base.songId.flatMap { recFeedback?.state(for: $0)?.rawValue }
-            ?? RecFeedbackAction.none
+        // THE TUNING LOOP ON THE WIDGET. The scope rides the snapshot so a tap made while the app
+        // is QUIT can name the list it belongs to without the widget process resolving anything —
+        // see `dispatchWidgetVerdict`. An empty scope means "not a recommendation queue", and the
+        // widget hides the pair rather than offering to file a decision against nothing.
+        let recScope = base.songId.flatMap { recFeedback?.scope(forPlaying: $0) } ?? ""
+        let recVerdict = base.songId.flatMap { id -> String? in
+            guard !recScope.isEmpty else { return nil }
+            return recFeedback?.verdict(songId: id, scope: recScope)?.rawValue
+        } ?? ""
         let snap = NowPlayingSnapshot(isPlaying: playing, hasContent: base.hasContent,
                                       title: base.title, artist: base.artist, songId: base.songId,
                                       coverVersion: coverVersion, upNext: base.upNext,
                                       isFavorite: isFavorite, appleMusicId: amCatalogId,
                                       repeatMode: repeatRaw, shuffleEnabled: shuffleOn,
-                                      recFeedback: feedbackRaw)
+                                      recVerdict: recVerdict, recScope: recScope)
         guard snap != lastPublished else { return }
         lastPublished = snap
         NPLog.trace("widgetSync publish title=\(snap.title) playing=\(snap.isPlaying) hasContent=\(snap.hasContent) upNext=\(snap.upNext.count) coverV=\(snap.coverVersion) groupOK=\(NowPlayingShared.defaults != nil)")

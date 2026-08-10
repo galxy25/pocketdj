@@ -22,43 +22,119 @@ final class WidgetPlaybackController {
     var cycleRepeat: (() -> Void)?
     /// Toggle live shuffle of the running set's upcoming tail (mirrors the deck's shuffle button).
     var toggleShuffle: (() -> Void)?
-    /// 👍 / 👎 on the CURRENT track — the SYNC half of the recommendation tuning loop. They land
-    /// in exactly the same `RecFeedbackStore` the tile's rows write to, so a decision made from
-    /// the lock screen is already there when the tile is next opened. Neither one touches
-    /// playback: accepting keeps playing, rejecting keeps playing.
+    /// 👍 / 👎 the CURRENT track as a recommendation (mirrors the in-app `RecFeedbackButtons`).
+    /// These write the SAME `RecFeedbackStore` row every other surface writes — the widget is an
+    /// entry point to one decision model, not a second one. Neither touches the transport.
     var acceptCurrent: (() -> Void)?
     var rejectCurrent: (() -> Void)?
 }
 
-/// Cross-process fallback: when a transport intent runs in the widget-extension process (the
-/// app was fully quit), it can't reach the live `WidgetPlaybackController`, so it drops the
-/// command into the shared App Group and the app drains it the moment it next becomes active.
+/// Cross-process fallback: when an intent runs in the widget-extension process (the app was fully
+/// quit), it can't reach the live `WidgetPlaybackController`, so it drops the command into the
+/// shared App Group and the app drains it the moment it next becomes active.
+///
+/// ── WHY THIS IS A QUEUE AND NOT A SLOT, AND WHY VERDICTS CARRY THEIR TARGET ──────────────────
+/// It used to be ONE slot with a 30-second expiry, applied to whatever was current at DRAIN time.
+/// That is defensible for a transport command — a stale ⏯ arriving after a cold launch would jolt
+/// playback, and losing one when a second is tapped on top of it costs nothing — but it is exactly
+/// wrong for a 👍/👎:
+///
+///   · **Overwrite.** Thumbs-down then ⏭ replaced the thumbs-down. A lost transport tap is
+///     obvious (nothing happened); a lost LEARNING signal is invisible — the listener saw the
+///     glyph fill and the engine never heard it. So: an append-only queue, capped.
+///   · **Expiry.** Thirty seconds is long enough to lose a verdict tapped on the lock screen just
+///     before the phone was pocketed. Transport commands still expire; verdicts never do.
+///   · **Drift.** Applying the verdict to whatever is playing at drain time files it against the
+///     WRONG SONG — and after a cold launch the app cannot even resolve which tile the track came
+///     from, so the verdict was dropped entirely. So a verdict carries its own `songId`, `scope`,
+///     verdict and TAP timestamp; nothing about it is resolved at drain time.
+///
+/// The write is a read-modify-write on App Group `UserDefaults`, so two processes appending in the
+/// same instant can in principle lose one. In practice only the WIDGET process ever appends (the
+/// app dispatches through the in-process closure and never touches this channel), which is why the
+/// simple encoding is enough — and it is strictly safer than the single slot it replaces.
 enum WidgetCommandChannel {
     enum Command: String {
         case toggle, next, previous, favorite, cycleRepeat, toggleShuffle
-        case recAccept, recReject
     }
-    private static let key = "pendingTransportCommand"
-    private static let atKey = "pendingTransportCommandAt"
 
-    static func send(_ c: Command) {
+    /// One queued item. `kind` is a `Command` rawValue, or `verdictKind` for a 👍/👎.
+    /// NEVER rename a shipped value — a queued item is read by whatever build drains it.
+    struct Pending: Codable, Equatable, Sendable {
+        var kind: String
+        /// Epoch SECONDS, matching the transport channel's existing clock.
+        var at: TimeInterval
+        /// Verdict payload — nil for a transport command.
+        var songId: String?
+        var scope: String?
+        /// `RecFeedbackStore.Verdict` rawValue ("accepted" / "rejected").
+        var verdict: String?
+
+        var command: Command? { Command(rawValue: kind) }
+    }
+
+    static let verdictKind = "recVerdict"
+    /// Plenty for a burst of taps between two app wakes; the oldest are shed first.
+    static let maxQueued = 32
+    private static let queueKey = "pendingWidgetCommands"
+    // The pre-queue single-slot keys, still read once on drain so a command queued by the previous
+    // build is honoured after the update rather than silently stranded.
+    private static let legacyKey = "pendingTransportCommand"
+    private static let legacyAtKey = "pendingTransportCommandAt"
+
+    static func send(_ c: Command, now: TimeInterval = Date().timeIntervalSince1970) {
+        enqueue(Pending(kind: c.rawValue, at: now))
+    }
+
+    /// Queue a SELF-CONTAINED 👍/👎: which song, in which list, and when it was tapped.
+    static func sendVerdict(songId: String, scope: String, verdict: String,
+                            now: TimeInterval = Date().timeIntervalSince1970) {
+        guard !songId.isEmpty, !scope.isEmpty else { return }
+        enqueue(Pending(kind: verdictKind, at: now, songId: songId, scope: scope, verdict: verdict))
+    }
+
+    private static func enqueue(_ p: Pending) {
         guard let d = NowPlayingShared.defaults else { return }
-        d.set(c.rawValue, forKey: key)
-        d.set(Date().timeIntervalSince1970, forKey: atKey)
-        // Wake the running app cross-process (works even when a widget click doesn't foreground
-        // the app — the App-Group write alone would sit undrained until the next scene-activation,
-        // which is why widget play/pause looked dead on macOS).
+        var queue = read(d)
+        queue.append(p)
+        if queue.count > maxQueued { queue.removeFirst(queue.count - maxQueued) }
+        write(queue, d)
+        // Wake the running app cross-process (a widget click doesn't foreground the app, so the
+        // App-Group write alone would sit undrained until the next scene-activation — which is why
+        // widget play/pause looked dead on macOS).
         WidgetCommandBridge.post()
     }
 
-    /// Pop the pending command if it's recent — a stale one (older than `maxAge`) is discarded
-    /// so a cold launch long after the tap doesn't jolt playback unexpectedly.
-    static func drain(now: TimeInterval, maxAge: TimeInterval = 30) -> Command? {
-        guard let d = NowPlayingShared.defaults, let raw = d.string(forKey: key) else { return nil }
-        let at = d.double(forKey: atKey)
-        d.removeObject(forKey: key); d.removeObject(forKey: atKey)
-        guard now - at <= maxAge, let c = Command(rawValue: raw) else { return nil }
-        return c
+    /// Pop everything queued, oldest first.
+    ///
+    /// Transport commands older than `transportMaxAge` are dropped — a cold launch long after the
+    /// tap must not jolt playback. VERDICTS ARE NEVER DROPPED BY AGE: a judgement the listener made
+    /// is still what they think an hour later, and it already names the song it applies to, so
+    /// there is nothing stale about it.
+    static func drain(now: TimeInterval, transportMaxAge: TimeInterval = 30) -> [Pending] {
+        guard let d = NowPlayingShared.defaults else { return [] }
+        var queue = read(d)
+        if let raw = d.string(forKey: legacyKey) {
+            queue.insert(Pending(kind: raw, at: d.double(forKey: legacyAtKey)), at: 0)
+            d.removeObject(forKey: legacyKey); d.removeObject(forKey: legacyAtKey)
+        }
+        d.removeObject(forKey: queueKey)
+        return queue.filter {
+            if $0.kind == verdictKind { return $0.songId?.isEmpty == false }
+            guard $0.command != nil else { return false }
+            return now - $0.at <= transportMaxAge
+        }
+    }
+
+    private static func read(_ d: UserDefaults) -> [Pending] {
+        guard let data = d.data(forKey: queueKey),
+              let rows = try? JSONDecoder().decode([Pending].self, from: data) else { return [] }
+        return rows
+    }
+
+    private static func write(_ rows: [Pending], _ d: UserDefaults) {
+        guard let data = try? JSONEncoder().encode(rows) else { return }
+        d.set(data, forKey: queueKey)
     }
 }
 
@@ -102,8 +178,6 @@ private func dispatchWidgetTransport(_ command: WidgetCommandChannel.Command) {
     case .favorite:      inProcess = c.toggleFavorite
     case .cycleRepeat:   inProcess = c.cycleRepeat
     case .toggleShuffle: inProcess = c.toggleShuffle
-    case .recAccept:     inProcess = c.acceptCurrent
-    case .recReject:     inProcess = c.rejectCurrent
     }
     // Which PROCESS an intent ran in is the crux of widget-button debugging: in the app
     // process the closure is wired (direct drive); in the widget process it's nil → the
@@ -166,27 +240,52 @@ struct NowPlayingShuffleIntent: AudioPlaybackIntent {
     }
 }
 
-/// 👍 / 👎 on what is playing.
+/// 👍 / 👎 ON WHAT IS PLAYING, from a widget or the lock screen.
 ///
-/// `AudioPlaybackIntent` like every other control here, and that choice is load-bearing rather
-/// than cosmetic: it is what lets the button run WITHOUT foregrounding the app, which is the
-/// whole point of putting the pair on the lock screen and in the car. They perform no transport
-/// action at all — they only record — but they belong to the same playback session, so they ride
-/// the same intent kind and the same in-process/command-channel dispatch as ⏯.
+/// `AudioPlaybackIntent` like the transport buttons rather than a plain `AppIntent`, for one
+/// concrete reason: on iOS an `AudioPlaybackIntent` invoked from a widget is run IN THE APP'S
+/// PROCESS whenever the app is alive — which it is while audio plays, i.e. exactly when these two
+/// controls are meaningful. That is what lets the tap reach the live `RecFeedbackStore` directly
+/// instead of round-tripping through the App Group, and it is why they never foreground the app.
+///
+/// ── THE COLD PATH IS THE ONE THAT HAD TO BE DESIGNED ────────────────────────────────────────
+/// With the app fully quit the intent runs in the WIDGET's process, where there is no store, no
+/// player and no idea which tile the track came from. So the intent does not ask: it reads the
+/// snapshot the widget is already rendering — the same one that decided which thumb to draw
+/// filled — and queues a verdict naming that `songId`, that `scope` and the tap time. The app
+/// applies it verbatim on the next wake. Nothing is resolved at drain time, which is what stops a
+/// judgement made on the lock screen from landing on whatever happens to be playing later.
+///
+/// They deliberately do NOT skip, pause, or otherwise touch playback — see `RecFeedbackButtons`.
+@MainActor
+private func dispatchWidgetVerdict(_ verdict: String) {
+    let c = WidgetPlaybackController.shared
+    let inProcess: (() -> Void)? = verdict == "accepted" ? c.acceptCurrent : c.rejectCurrent
+    NPLog.trace("intent recVerdict \(verdict) via \(inProcess != nil ? "in-process closure" : "command channel")")
+    if let inProcess { inProcess(); return }
+    // WIDGET PROCESS: the snapshot is the only truth available, and it is exactly the truth the
+    // button was drawn from. A snapshot with no scope means the running queue is not a
+    // recommendation list, so there is nothing honest to record — the widget hides the pair in
+    // that case, and this guard is the belt to that braces.
+    let snap = NowPlayingShared.read()
+    guard let songId = snap.songId, !songId.isEmpty, !snap.recScope.isEmpty else { return }
+    WidgetCommandChannel.sendVerdict(songId: songId, scope: snap.recScope, verdict: verdict)
+}
+
 @available(iOS 17.0, macOS 14.0, visionOS 1.0, *)
 struct NowPlayingRecAcceptIntent: AudioPlaybackIntent {
     static var title: LocalizedStringResource = "More Like This"
     @MainActor func perform() async throws -> some IntentResult {
-        dispatchWidgetTransport(.recAccept)
+        dispatchWidgetVerdict("accepted")
         return .result()
     }
 }
 
 @available(iOS 17.0, macOS 14.0, visionOS 1.0, *)
 struct NowPlayingRecRejectIntent: AudioPlaybackIntent {
-    static var title: LocalizedStringResource = "Less Like This"
+    static var title: LocalizedStringResource = "Not For Me"
     @MainActor func perform() async throws -> some IntentResult {
-        dispatchWidgetTransport(.recReject)
+        dispatchWidgetVerdict("rejected")
         return .result()
     }
 }

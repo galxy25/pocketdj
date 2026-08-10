@@ -173,34 +173,34 @@ final class CarPlayController {
         }
     }
 
-    /// 👍 / 👎 for the shared Now Playing template — the recommendation tuning loop, in the car.
+    /// 👍 / 👎 — the SAME matched SF Symbol pair the app and the widgets use, so the control means
+    /// one thing on every surface. They record a verdict into the shared `RecFeedbackStore` and
+    /// DO NOT touch the transport: no skip, no pause. A driver mis-tapping a thumbs-down at speed
+    /// must not lose the song, and CarPlay already has a ⏭ for the other intent.
     ///
-    /// Same immutable-button rule as the ♥: a state change REPLACES the array. Both write through
-    /// `CarPlayModel.setCurrentRecFeedback`, i.e. the same `RecFeedbackStore` and the same toggle
-    /// semantics the phone uses, so the two surfaces cannot drift. NEITHER touches playback.
-    private func recFeedbackButton(_ action: RecFeedbackStore.Action) -> CPNowPlayingImageButton {
-        let on = model?.currentRecFeedback() == action
-        let accept = action == .accepted
-        let name = on
-            ? (accept ? RecFeedbackAction.acceptSymbolFilled : RecFeedbackAction.rejectSymbolFilled)
-            : (accept ? RecFeedbackAction.acceptSymbol : RecFeedbackAction.rejectSymbol)
+    /// VERIFICATION NOTE: the CarPlay UI itself is not headless-testable in this repo (see the
+    /// CarPlay + History work) — the command layer under these two closures is what the unit
+    /// tests cover (`CarPlayModelTests`), and the template rendering is unverified.
+    private func feedbackButton(_ verdict: RecFeedbackStore.Verdict) -> CPNowPlayingImageButton {
+        let on = model?.currentFeedback() == verdict
+        let accept = verdict == .accepted
+        let name = accept ? (on ? "hand.thumbsup.fill" : "hand.thumbsup")
+                          : (on ? "hand.thumbsdown.fill" : "hand.thumbsdown")
         let image = UIImage(systemName: name) ?? UIImage()
         return CPNowPlayingImageButton(image: image) { [weak self] _ in
-            self?.model?.setCurrentRecFeedback(action)
-            self?.refreshNowPlayingButtons()
+            self?.model?.recordCurrentFeedback(verdict)
+            self?.refreshNowPlayingButtons()   // immutable buttons — rebuild to re-glyph
         }
     }
 
-    /// Rebuild the Now Playing template's buttons — called on a track change, a favorite change, a
-    /// repeat/shuffle change AND an accept/reject (all fan out through the shared observer →
-    /// `CarPlayController.current`), because the glyphs depend on that state and the button objects
-    /// are immutable.
-    ///
-    /// CarPlay allows at most FIVE Now Playing buttons and this is now exactly at that ceiling
-    /// while a set runs (🔀 ↻ ♥ 👍 👎), which is why the mode pair stays gated on `isSetRunning`
-    /// rather than always-on: shuffle and repeat are meaningless for a single-track play, while
-    /// the thumbs are meaningful for ANY track — so if something has to go, it is not the loop the
-    /// owner asked for. Ordered with the thumbs last so they sit together as a pair.
+    /// Rebuild the Now Playing template's buttons — called on a track change, a favorite change, AND
+    /// a repeat/shuffle change (all fan out through the shared observer → `CarPlayController.current`),
+    /// because the glyphs depend on that state and the button objects are immutable. Shuffle + repeat
+    /// appear only while a set is running (meaningless for a single-track play); CarPlay allows up to
+    /// five Now Playing buttons, so the ♥ + the two mode buttons fit comfortably.
+    /// CarPlay's documented ceiling for `updateNowPlayingButtons`.
+    static let maxNowPlayingButtons = 5
+
     func refreshNowPlayingButtons() {
         var buttons: [CPNowPlayingButton] = []
         if model?.isSetRunning() == true {
@@ -208,8 +208,18 @@ final class CarPlayController {
             buttons.append(repeatButton())
         }
         buttons.append(heartButton())
-        buttons.append(recFeedbackButton(.accepted))
-        buttons.append(recFeedbackButton(.rejected))
+        // CarPlay caps Now Playing at FIVE buttons, and shuffle + repeat + ♥ + 👍 + 👎 is exactly
+        // five while a set runs — so the pair is appended LAST and only while the running queue is
+        // a recommendation (otherwise the two controls would be inert).
+        //
+        // The pair is ALL-OR-NOTHING against the cap. A blind `prefix(5)` could keep 👍 and drop
+        // 👎, which is worse than showing neither: the two only mean anything as a matched pair,
+        // and a lone thumbs-up on a car screen reads as "this is a favorite button".
+        if model?.isRecQueue() == true, buttons.count + 2 <= Self.maxNowPlayingButtons {
+            buttons.append(feedbackButton(.accepted))
+            buttons.append(feedbackButton(.rejected))
+        }
+        buttons = Array(buttons.prefix(Self.maxNowPlayingButtons))
         CPNowPlayingTemplate.shared.updateNowPlayingButtons(buttons)
         // Same fan-out point covers the resume row: a set resumed/skipped from the phone stops
         // being "held", so the Continue row must stop offering it.

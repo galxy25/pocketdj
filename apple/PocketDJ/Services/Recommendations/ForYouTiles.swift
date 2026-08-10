@@ -20,6 +20,12 @@ struct ForYouTileRoute: Hashable, Sendable {
         self.collectionId = collectionId
         self.title = title
     }
+
+    /// What a 👍/👎 given on THIS list is recorded against (`RecFeedbackStore.Decision.context`).
+    /// The collection id for a collection tile, the kind otherwise — so the engine can eventually
+    /// learn "wrong for this crate" without concluding "disliked everywhere". Deliberately NOT the
+    /// title: a rename must not orphan the feedback already recorded against the list.
+    var feedbackContext: String { collectionId ?? kind.rawValue }
 }
 
 /// One tile in the For You grid.
@@ -40,20 +46,8 @@ struct ForYouTile: Identifiable, Equatable, Sendable {
     /// Stored as a hex so `ForYouTile` remains a plain value type that a unit test can build and
     /// compare without importing SwiftUI's `Color` equality semantics.
     let tintHex: UInt
-    /// This tile's items that resolve to a CATALOG song, IN DISPLAY ORDER — i.e. exactly what
-    /// "play in order" queues.
-    ///
-    /// Its own list, never derived from `count`, because the two genuinely differ. **New** counts
-    /// RELEASES the owner does not own (nothing to queue: empty), and a cloud suggestion can name
-    /// an id this device's catalog cannot resolve. A tile with nothing playable must present a
-    /// DISABLED ▶ rather than a live one that silently does nothing — a dead Play button is the
-    /// failure this field exists to make impossible.
-    let playableSongIds: [String]
 
     var tint: Color { Color(hex: tintHex) }
-    var playableCount: Int { playableSongIds.count }
-    /// Can this tile be played at all? Drives every ▶/🔀 affordance, on the card and in the header.
-    var isPlayable: Bool { !playableSongIds.isEmpty }
 }
 
 /// Builds the tile list. PURE — no stores, no views, no clock.
@@ -82,20 +76,10 @@ enum ForYouTiles {
     ///   - cloudSuggestionCount: the cloud rec engine's suggestion count. 0 ⇒ no "Suggested"
     ///     tile at all, which is the default-OFF case — an empty tile for a feature the user has
     ///     not enabled would be worse than no tile.
-    /// - Parameters (continued):
-    ///   - playableZoneIds / playableCloudIds / `playableByCollectionId`: which of that tile's
-    ///     ids this device can actually queue, in display order. Defaulted to the tile's own list
-    ///     (zone / collection ids come OUT of the catalog, so they are playable by construction),
-    ///     which is why every existing caller and test keeps working unchanged. The CLOUD list has
-    ///     no default: a suggestion can name an id this catalog cannot resolve, so the caller must
-    ///     say — and an absent one yields an unplayable Suggested tile rather than a lying count.
     static func build(newReleaseCount: Int,
                       zone: [String],
                       collections: [(id: String, kind: String, name: String, suggestions: [String])],
-                      cloudSuggestionCount: Int = 0,
-                      playableZoneIds: [String]? = nil,
-                      playableCloudIds: [String] = [],
-                      playableByCollectionId: [String: [String]] = [:]
+                      cloudSuggestionCount: Int = 0
     ) -> [ForYouTile] {
         var out: [ForYouTile] = []
 
@@ -112,11 +96,7 @@ enum ForYouTiles {
             count: newReleaseCount,
             route: ForYouTileRoute(kind: .new, title: "New"),
             isPinned: true,
-            tintHex: newTint,
-            // ALWAYS 0. A release the owner does not own has no catalog song behind it, so the
-            // New tile can never be played as a setlist — it offers Add (through the album
-            // preview) instead, and its ▶ is disabled rather than dead.
-            playableSongIds: []))
+            tintHex: newTint))
 
         // ── Tile 2: In Da Zone (ALWAYS second) ────────────────────────────────────────────────
         out.append(ForYouTile(
@@ -129,8 +109,7 @@ enum ForYouTiles {
             count: zone.count,
             route: ForYouTileRoute(kind: .zone, title: "In Da Zone"),
             isPinned: true,
-            tintHex: zoneTint,
-            playableSongIds: playableZoneIds ?? zone))
+            tintHex: zoneTint))
 
         // ── Then (when the cloud engine is on and has answers): its suggestions ───────────────
         // Placed after the pinned pair and before the collections: it is a whole-library
@@ -145,8 +124,7 @@ enum ForYouTiles {
                 count: cloudSuggestionCount,
                 route: ForYouTileRoute(kind: .suggested, title: "Suggested"),
                 isPinned: false,
-                tintHex: collectionTint,
-                playableSongIds: playableCloudIds))
+                tintHex: collectionTint))
         }
 
         // ── Then: one tile per collection that has something worth adding ─────────────────────
@@ -166,8 +144,7 @@ enum ForYouTiles {
                 count: c.suggestions.count,
                 route: ForYouTileRoute(kind: .collection, collectionId: c.id, title: c.name),
                 isPinned: false,
-                tintHex: collectionTint,
-                playableSongIds: playableByCollectionId[c.id] ?? c.suggestions))
+                tintHex: collectionTint))
         }
         return out
     }
