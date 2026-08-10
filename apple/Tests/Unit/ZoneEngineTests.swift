@@ -54,8 +54,7 @@ final class ZoneEngineTests: XCTestCase {
     private func artistOf(_ id: String) -> String { String(id.split(separator: "-")[0]) }
 
     private func zoneTracks(_ songs: [IndexSong], genres: [String: String] = [:]) -> [ZoneEngine.Track] {
-        songs.map { ZoneEngine.Track(songId: $0.id, artistKey: $0.artist, artistName: $0.artist,
-                                     genre: genres[$0.id]) }
+        songs.map { ZoneEngine.Track(songId: $0.id, artistName: $0.artist, genre: genres[$0.id]) }
     }
 
     // ========================================================================
@@ -610,9 +609,9 @@ final class ZoneEngineTests: XCTestCase {
 
     func testSuggestionsMatchTheCollectionsArtistsAndGenres() {
         let tracks = [
-            ZoneEngine.Track(songId: "m0", artistKey: "artist0", artistName: "A0", genre: "rock"),
-            ZoneEngine.Track(songId: "s1", artistKey: "artist0", artistName: "A0", genre: "rock"),
-            ZoneEngine.Track(songId: "s2", artistKey: "artist9", artistName: "A9", genre: "polka"),
+            ZoneEngine.Track(songId: "m0", artistName: "A0", genre: "rock"),
+            ZoneEngine.Track(songId: "s1", artistName: "A0", genre: "rock"),
+            ZoneEngine.Track(songId: "s2", artistName: "A9", genre: "polka"),
         ]
         let out = ZoneEngine.suggestions(memberSongIds: ["m0"], tracks: tracks,
                                          playCount: { _ in 0 })
@@ -627,6 +626,73 @@ final class ZoneEngineTests: XCTestCase {
         for id in out { perArtist[artistOf(id), default: 0] += 1 }
         XCTAssertTrue(perArtist.values.allSatisfy { $0 <= 3 }, "cap holds for collections too")
         XCTAssertLessThanOrEqual(out.count, 25)
+    }
+
+    // ── ONE definition of "same artist", across BOTH places the cap is applied ───────────────
+    //
+    // These are the regression tests for a real, measured defect: `suggestions` capped on the key
+    // the CALLER supplied (`IndexArtist.normalize` — trim + lowercase + collapse whitespace) while
+    // `inDaZone` capped on `PuzzleSimilarity.artistKey` (which also folds diacritics and strips a
+    // leading "the "). Same rule, two notions of identity, so each SPELLING got its own three-song
+    // budget. On the owner's real 96,021-song catalog that let 17 artists past the cap and 7 reach
+    // six slots. Both cases below returned 6 before `Track` started deriving the key itself.
+
+    /// Diacritics: "Jaÿ-Z" (138 songs) and "Jay-Z" (15) are the same man and get three slots
+    /// between them, not three each.
+    func testTheCapIsNotDefeatedByDiacriticSpellingVariants() {
+        var songs: [IndexSong] = []
+        for i in 0..<10 { songs.append(song("accent-\(i)", artist: "Jaÿ-Z")) }
+        for i in 0..<10 { songs.append(song("plain-\(i)", artist: "Jay-Z")) }
+        songs.append(song("seed", artist: "Jay-Z"))
+        // The old cap key really does split them — that is the whole defect, stated as an
+        // assertion so this test still means something if someone re-reads it cold.
+        XCTAssertNotEqual(IndexArtist.normalize("Jaÿ-Z"), IndexArtist.normalize("Jay-Z"))
+        let tracks = zoneTracks(songs, genres: Dictionary(uniqueKeysWithValues:
+            songs.map { ($0.id, "hiphop") }))
+        let out = ZoneEngine.suggestions(memberSongIds: ["seed"], tracks: tracks,
+                                         playCount: { _ in 1 }, limit: 25)
+        XCTAssertEqual(out.count, 3,
+                       "both spellings share ONE three-song budget (was 6: three per spelling)")
+    }
+
+    /// The other half of the same key: "The Game" (82 songs) and "Game" (2).
+    func testTheCapIsNotDefeatedByALeadingThe() {
+        var songs: [IndexSong] = []
+        for i in 0..<10 { songs.append(song("the-\(i)", artist: "The Game")) }
+        for i in 0..<10 { songs.append(song("bare-\(i)", artist: "Game")) }
+        songs.append(song("seed", artist: "Game"))
+        XCTAssertNotEqual(IndexArtist.normalize("The Game"), IndexArtist.normalize("Game"))
+        let tracks = zoneTracks(songs, genres: Dictionary(uniqueKeysWithValues:
+            songs.map { ($0.id, "hiphop") }))
+        let out = ZoneEngine.suggestions(memberSongIds: ["seed"], tracks: tracks,
+                                         playCount: { _ in 1 }, limit: 25)
+        XCTAssertEqual(out.count, 3, "'The Game' and 'Game' are one artist, not two")
+    }
+
+    /// The structural half: the key the cap uses is DERIVED, so no call site can supply a weaker
+    /// one. If `Track` ever takes an artist key as a parameter again, this stops holding.
+    func testTrackDerivesTheSameArtistKeyTheZoneCapUses() {
+        for name in ["Jaÿ-Z", "The Game", "  BANKS  ", "Emeli Sandé", "Thủy"] {
+            XCTAssertEqual(ZoneEngine.Track(songId: "x", artistName: name, genre: nil).artistKey,
+                           PuzzleSimilarity.artistKey(name),
+                           "Track must key on the SAME notion of artist identity as inDaZone")
+        }
+        XCTAssertEqual(ZoneEngine.Track(songId: "x", artistName: "Jaÿ-Z", genre: nil).artistKey,
+                       ZoneEngine.Track(songId: "y", artistName: "Jay-Z", genre: nil).artistKey)
+    }
+
+    /// And In Da Zone itself must agree — the same variants, through the other code path.
+    func testInDaZoneCapAlsoHoldsAcrossSpellingVariants() {
+        var songs: [IndexSong] = []
+        for i in 0..<20 { songs.append(song("accent-\(i)", artist: "Janelle Monáe")) }
+        for i in 0..<20 { songs.append(song("plain-\(i)", artist: "Janelle Monae")) }
+        let plays = (0..<10).map { ZoneEngine.Play(songId: "accent-\($0)",
+                                                   playedAtMs: now - Double($0 + 1) * 3_600_000) }
+        let q = ZoneEngine.inDaZone(songs: songs, genreBySongId: [:], otherCollections: [],
+                                    plays: plays, playCount: { _ in 5 }, lastPlayedMs: [:],
+                                    nowMs: now)
+        XCTAssertLessThanOrEqual(q.songIds.count, 3,
+                                 "one artist under two spellings is still one artist")
     }
 
     func testAnEmptyCollectionGetsNoSuggestions() {

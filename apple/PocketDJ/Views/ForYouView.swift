@@ -113,10 +113,14 @@ struct ForYouTilesView: View {
         let cloudCount = recEngine?.forYou.count ?? 0
         let now = Date().timeIntervalSince1970 * 1000
         let newCount = releaseFeed?.newReleases(nowMs: now).count ?? 0
+        // Split out only so the subtitle can be honest — the badge stays one number. Both reads
+        // are pure filters over the same cache; neither touches the network.
+        let soonCount = releaseFeed?.comingSoon(nowMs: now).count ?? 0
 
         let computed = await Task.detached(priority: .userInitiated) {
             ForYouTiles.build(
                 newReleaseCount: newCount,
+                comingSoonCount: soonCount,
                 zone: ZoneEngine.inDaZone(songs: songs, genreBySongId: genres,
                                           otherCollections: members.map(\.songIds),
                                           plays: plays, playCount: { counts[$0] ?? 0 },

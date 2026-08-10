@@ -80,6 +80,12 @@ try {
   const base = `http://localhost:${PORT}`;
   const TOKEN = 'amsync-test-tok';
   const dl = join(work, 'downloads'); mkdirSync(dl, { recursive: true });
+  // Sync artifacts moved OUT of ~/Downloads in 8036439f: change-sets now land in
+  // ~/Documents/PocketDJ and the 157 MB snapshots in a `snapshots.nosync` sibling (kept out of
+  // iCloud Drive). Point both at the temp tree and assert THERE — asserting the old Downloads
+  // path left four checks failing on main, which is exactly the noise that hides a real break.
+  const artifacts = join(work, 'artifacts'); mkdirSync(artifacts, { recursive: true });
+  const snaps = join(artifacts, 'snapshots.nosync'); mkdirSync(snaps, { recursive: true });
   const amState = join(work, 'am-state'); mkdirSync(amState, { recursive: true });
   // pre-seed the DETECTION cursor between v1 and v2 so the first check detects the 2 new tracks.
   writeFileSync(join(amState, 'state.json'), JSON.stringify({ lastDateAdded: '2021-01-01T00:00:00.000Z' }));
@@ -102,6 +108,8 @@ try {
     POCKETDJ_AM_LIBRARY_XML: join(FIX, 'library-v2.xml'),
     POCKETDJ_DOWNLOADS_DIR: dl,                        // change-set OUTPUT → TEMP, never real ~/Downloads
     POCKETDJ_AM_STATE_DIR: amState,
+    POCKETDJ_AM_ARTIFACT_DIR: artifacts,               // change-sets  → TEMP, never real ~/Documents
+    POCKETDJ_AM_SNAPSHOT_DIR: snaps,                   // 157 MB xml   → TEMP
     HOME: join(work, 'home'),                          // isolate ~/.pocketdj
   };
   mkdirSync(env.HOME, { recursive: true });
@@ -136,7 +144,7 @@ try {
     ok(view?.result?.added?.length === 2 && view.result.added.every((a) => a.songId && a.change === 'added'),
       'result.added carries 2 items shaped {songId,…,change:"added"}');
     const csPath = view?.result?.changeSetPath;
-    ok(typeof csPath === 'string' && csPath.startsWith(dl), `changeSetPath is under the TEMP Downloads (got ${csPath})`);
+    ok(typeof csPath === 'string' && csPath.startsWith(artifacts), `changeSetPath is under the TEMP artifact dir (got ${csPath})`);
     ok(existsSync(csPath), 'change-set file exists on disk');
 
     // change-set schema + sibling snapshot
@@ -146,11 +154,14 @@ try {
     ok(cs.added[0].title && cs.added[0].album !== undefined && 'trackNumber' in cs.added[0], 'change-set added items are FULL (title/album/trackNumber)');
     ok(typeof cs.librarySnapshot === 'string' && existsSync(cs.librarySnapshot), 'librarySnapshot path exists (the exact xml to rebuild from)');
     ok(/^[0-9a-f]{64}$/.test(cs.librarySnapshotSha256 || ''), 'librarySnapshotSha256 is a sha256 hex');
-    ok(cs.librarySnapshot.startsWith(dl) && cs.librarySnapshot.endsWith('.xml'), 'snapshot xml is under the TEMP Downloads');
+    ok(cs.librarySnapshot.startsWith(snaps) && cs.librarySnapshot.endsWith('.xml'), 'snapshot xml is under the TEMP snapshots.nosync dir');
 
-    // the REAL ~/Downloads must be untouched (we only ever wrote under the temp dir).
-    const wrote = readdirSync(dl).filter((f) => f.startsWith('pocketdj-am-'));
-    ok(wrote.length === 2, `exactly the change-set + snapshot were written to TEMP Downloads (got ${wrote.length})`);
+    // the REAL ~/Documents and ~/Downloads must be untouched (we only ever wrote under the temp tree).
+    const artifactFiles = () => readdirSync(artifacts).filter((f) => f.startsWith('pocketdj-am-'));
+    const snapFiles = () => readdirSync(snaps).filter((f) => f.endsWith('.xml'));
+    ok(artifactFiles().length === 1, `exactly ONE change-set written (got ${artifactFiles().length})`);
+    ok(snapFiles().length === 1, `exactly ONE snapshot written (got ${snapFiles().length})`);
+    ok(readdirSync(dl).length === 0, 'nothing was written to the Downloads dir at all');
 
     // re-run: exclusive boundary (since=cursor+1ms) ⇒ 0 added, NO new change-set written.
     const post2 = await fetch(`${base}/am-sync`, { method: 'POST', headers: { 'content-type': 'application/json', ...auth }, body: '{}' });
@@ -164,8 +175,8 @@ try {
     }
     ok(view2?.result?.counts?.added === 0, `re-run detects 0 added (exclusive boundary, no churn) (got ${view2?.result?.counts?.added})`);
     ok(view2?.result?.changeSetPath === null, 're-run writes NO change-set (changeSetPath null)');
-    const wrote2 = readdirSync(dl).filter((f) => f.startsWith('pocketdj-am-'));
-    ok(wrote2.length === 2, `no extra files written on the no-change re-run (still ${wrote2.length})`);
+    ok(artifactFiles().length === 1 && snapFiles().length === 1,
+      `no extra files written on the no-change re-run (still ${artifactFiles().length} + ${snapFiles().length})`);
 
     // unauthorized (no token) is rejected — proves the endpoints sit behind the existing auth gate.
     const noauth = await fetch(`${base}/am-sync`, { method: 'POST', body: '{}' });
@@ -348,12 +359,15 @@ exit 0
     { id: 'sng_a', name: 'A', artist: 'X', appleMusicId: '111' },
     { id: 'sng_b', name: 'B', artist: 'Y', appleMusicId: '222' },
     { id: 'sng_c', name: 'C', artist: 'Z' },                    // genuine miss — never resolved
+  ], artists: [
+    { key: 'x', name: 'X', id: 1001, songs: 1 },
+    { key: 'y', name: 'Y', id: 1002, songs: 1 },
   ] };
   const newIdx = { manifest: { counts: {} }, albums: [], songs: [
     { id: 'sng_a', name: 'A', artist: 'X' },                    // rebuild DROPPED the resolved id
     { id: 'sng_b', name: 'B2', artist: 'Y' },                   // edited title, same id
     { id: 'sng_c', name: 'C', artist: 'Z' },
-    { id: 'sng_d', name: 'D', artist: 'W' },                    // brand-new track (no id yet)
+    { id: 'sng_d', name: 'D', artist: '  X  ' },                // new track, whitespace variant of X
   ] };
   writeFileSync(join(mergeDir, 'old.json'), JSON.stringify(oldIdx));
   writeFileSync(join(mergeDir, 'new.json'), JSON.stringify(newIdx));
@@ -367,6 +381,41 @@ exit 0
   ok(byId.sng_c.appleMusicId === undefined, 'a genuine miss stays unresolved');
   ok(!byId.sng_d.appleMusicId, 'a brand-new track has no id (the resolver crawl will fill it later)');
   ok(merged.manifest.counts.songsWithAppleMusicId === 2, 'coverage count refreshed (2 songs with ids)');
+
+  // ── The ARTIST TABLE: the same carry-forward, but NOT song-keyed ──────────────────────────
+  // index-apple-music.mjs emits no `artists` key at all, so a rebuild drops the whole table with
+  // ZERO per-song evidence that anything went missing — every song is intact and the release feed
+  // just has no artist ids to ask Apple about. Nothing covered this before.
+  const artistById = Object.fromEntries((merged.artists || []).map((a) => [a.key, a]));
+  ok((merged.artists || []).length === 2, `artist table carried forward (got ${(merged.artists || []).length})`);
+  ok(artistById.x?.id === 1001 && artistById.y?.id === 1002, 'artist → Apple Music id mapping preserved');
+  ok(artistById.x?.songs === 2, `per-artist counts RE-DERIVED against the new songs (X: 1 → 2, got ${artistById.x?.songs})`);
+  ok(merged.manifest.counts.artists === 2, `manifest artist count refreshed (got ${merged.manifest.counts.artists})`);
+  ok(merged.manifest.counts.songsWithArtistId === 3,
+    `songsWithArtistId counts the whitespace variant too (expect 3, got ${merged.manifest.counts.songsWithArtistId})`);
+
+  // `[]` is TRUTHY in JS: a rebuild emitting an EMPTY artists array used to skip the carry-forward
+  // and ship a wiped table, while the log still read a cheerful "carried 0 artist(s)".
+  console.log('\n(5b) an EMPTY artists array is treated as "no table", not as a table');
+  writeFileSync(join(mergeDir, 'new-empty-artists.json'),
+    JSON.stringify({ ...newIdx, artists: [] }));
+  const mr2 = await runNode(['scripts/am-merge-catalog-ids.mjs', '--old', join(mergeDir, 'old.json'),
+    '--new', join(mergeDir, 'new-empty-artists.json'), '--out', join(mergeDir, 'merged-empty.json')]);
+  ok(mr2.code === 0, `merge exits 0 (got ${mr2.code})`);
+  const merged2 = JSON.parse(readFileSync(join(mergeDir, 'merged-empty.json'), 'utf8'));
+  ok((merged2.artists || []).length === 2,
+    `artists: [] still carries the old table forward (got ${(merged2.artists || []).length})`);
+
+  // And the guard that would REFUSE to publish such a wipe, since the merge is a single point of
+  // failure with no alarm on it.
+  console.log('\n(5c) am-check-enrichment refuses to publish an index whose artist table collapsed');
+  writeFileSync(join(mergeDir, 'wiped.json'), JSON.stringify({ ...oldIdx, artists: [] }));
+  const wipe = await runNode(['scripts/am-check-enrichment.mjs', '--old', join(mergeDir, 'old.json'),
+    '--new', join(mergeDir, 'wiped.json')]);
+  ok(wipe.code === 1, `a wiped artist table FAILS the enrichment guard (got exit ${wipe.code})`);
+  const kept = await runNode(['scripts/am-check-enrichment.mjs', '--old', join(mergeDir, 'old.json'),
+    '--new', join(mergeDir, 'merged.json')]);
+  ok(kept.code === 0, `a correctly merged index PASSES the enrichment guard (got exit ${kept.code})`);
 
   console.log(`\n${fail ? '✗ ' + fail + ' check(s) failed' : '✓ all am-sync dry-run checks passed'}`);
 } finally {

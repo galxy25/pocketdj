@@ -58,19 +58,35 @@ enum ForYouTiles {
     static let zoneTint: UInt = 0x6ea8ff      // Theme.accent
     static let collectionTint: UInt = 0x97a2c0 // Theme.fgDim
 
-    /// A collection needs at least this many suggestions to earn a tile. Below it the tile is
-    /// noise — the point of a per-collection tile is "there is something worth adding here",
-    /// and two speculative rows do not clear that bar.
-    static let minCollectionSuggestions = 5
+    /// A collection needs at least this many suggestions to earn a tile.
+    ///
+    /// ── WHY THIS IS 1 AND NOT A NOISE THRESHOLD ──────────────────────────────────────────────
+    /// The owner's words are the spec: "one tile for each collection that **we have suggestions of
+    /// items to add to**". One suggestion IS having something to add. This was 5 for a while on a
+    /// noise-suppression argument, and that argument is somebody else's product opinion overriding
+    /// a literal instruction — a collection with three genuinely good additions was silently given
+    /// no way in at all, which is the failure the tile exists to prevent.
+    ///
+    /// Emptiness is still handled, twice over: `CollectionsStore.suggestibleCollections()` drops
+    /// collections with no playable members, and `ZoneEngine.suggestions` only offers a candidate
+    /// that matches the collection on artist or genre — so "0 suggestions" means there is honestly
+    /// nothing to add, and that collection still gets no tile.
+    static let minCollectionSuggestions = 1
 
     /// - Parameters:
-    ///   - newReleaseCount: how many releases are inside the feed window right now.
+    ///   - newReleaseCount: how many releases are in the feed right now — BOTH states.
+    ///   - comingSoonCount: how many of those are future-dated pre-orders. Passed separately for
+    ///     the SUBTITLE only: the count is one number, but "last 30 days" is a lie about a record
+    ///     that ships in three weeks, and `classify` puts no upper bound on the future side at
+    ///     all (deliberately — see `ReleaseFeedPolicy.classify`). So the wording has to know the
+    ///     split even though the badge does not.
     ///   - zone: the In Da Zone song ids (already capped by `ZoneEngine`).
     ///   - collections: one entry per collection, with its suggestion ids.
     ///   - cloudSuggestionCount: the cloud rec engine's suggestion count. 0 ⇒ no "Suggested"
     ///     tile at all, which is the default-OFF case — an empty tile for a feature the user has
     ///     not enabled would be worse than no tile.
     static func build(newReleaseCount: Int,
+                      comingSoonCount: Int = 0,
                       zone: [String],
                       collections: [(id: String, kind: String, name: String, suggestions: [String])],
                       cloudSuggestionCount: Int = 0
@@ -80,12 +96,11 @@ enum ForYouTiles {
         // ── Tile 1: New (ALWAYS first) ────────────────────────────────────────────────────────
         // Shown even at zero: "no new releases this month" is a real, useful answer, and a tile
         // that vanishes when empty would make the pinned pair jump around. Its subtitle says so.
+        let outNowCount = max(0, newReleaseCount - comingSoonCount)
         out.append(ForYouTile(
             id: "new",
             title: "New",
-            subtitle: newReleaseCount == 0
-                ? "No releases in the last 30 days"
-                : "From artists you play · last 30 days",
+            subtitle: newReleaseSubtitle(outNow: outNowCount, comingSoon: comingSoonCount),
             symbol: "sparkles",
             count: newReleaseCount,
             route: ForYouTileRoute(kind: .new, title: "New"),
@@ -141,5 +156,20 @@ enum ForYouTiles {
                 tintHex: collectionTint))
         }
         return out
+    }
+
+    /// Wording for the New tile that matches what the tile actually counts.
+    ///
+    /// The badge is one number but the feed holds two kinds of thing, and only one of them is
+    /// bounded by 30 days. Saying "last 30 days" over a count that includes a pre-order shipping
+    /// in three months is simply false, and it is the kind of false a reader cannot detect —
+    /// the number looks right.
+    static func newReleaseSubtitle(outNow: Int, comingSoon: Int) -> String {
+        switch (outNow, comingSoon) {
+        case (0, 0):  return "No releases in the last 30 days"
+        case (0, _):  return "From artists you play · upcoming"
+        case (_, 0):  return "From artists you play · last 30 days"
+        default:      return "From artists you play · last 30 days + upcoming"
+        }
     }
 }

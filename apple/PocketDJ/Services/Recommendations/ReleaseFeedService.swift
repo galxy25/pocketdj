@@ -112,16 +112,22 @@ final class ReleaseFeedService {
     /// catalog has not finished loading and answering "owned" would silently empty the feed.
     @ObservationIgnored var ownsRelease: ((String) -> Bool)?
 
-    /// Scales every backoff sleep. 1 in production; tests set it near zero so a full retry
-    /// sequence runs in milliseconds instead of the ~30 s the real schedule takes.
-    @ObservationIgnored private let backoffScale: Double
+    /// Scales EVERY wall-clock wait in this service — the burst-coalescing debounce and each
+    /// backoff sleep. 1 in production; tests set it near zero so a full retry sequence (and the
+    /// drain scheduling that rides on it) runs in milliseconds instead of the ~30 s the real
+    /// schedule takes. Scaling both is what makes the drain-scheduling path testable at all.
+    @ObservationIgnored private let timeScale: Double
+
+    /// How long a play waits before its drain runs, so a burst (a set list starting, a shuffle)
+    /// coalesces into one batch instead of firing a request per song.
+    @ObservationIgnored static let drainDebounceSeconds: Double = 2
 
     init(transport: Transport? = ReleaseFeedService.defaultTransport(),
          fileURL: URL? = nil,
-         backoffScale: Double = 1) {
+         timeScale: Double = 1) {
         self.transport = transport
         self.fileURL = fileURL ?? Self.launchURL()
-        self.backoffScale = backoffScale
+        self.timeScale = timeScale
         load()
     }
 
@@ -201,20 +207,56 @@ final class ReleaseFeedService {
         if !pending.isEmpty { scheduleDrain() }
     }
 
+    /// Arm the debounced drain, unless one is already armed OR already running.
+    ///
+    /// ── WHY `!isFetching` IS PART OF THE GUARD (load-bearing) ────────────────────────────────
+    /// `maxConcurrentRequests` is 2, but that budget is spent INSIDE one `drain()`. This guard is
+    /// therefore the only thing making the cap GLOBAL. It used to test `drainTask == nil` alone
+    /// while `drain()` released its handle on ENTRY — so every play landing during a drain armed
+    /// a second one beside it, each with its own pair of requests.
+    ///
+    /// That path is not exotic; it is the 429 path itself. A failed batch re-queues, the re-queue
+    /// rides the next play, and a drain sleeping through five backoff attempts holds the window
+    /// open for tens of seconds — so the fan-out multiplies exactly when the limiter is already
+    /// refusing, and nothing bounds how many drains stack up. MEASURED on the unguarded code: two
+    /// overlapping drains reached 4 in flight, and a 429 storm with plays still arriving reached
+    /// **12** — six times the cap that was chosen because 40-way fan-out returned 24x HTTP 429.
+    ///
+    /// Nothing is lost by not arming: a drain that finishes cleanly re-arms itself for whatever
+    /// was queued while it ran (see the tail of `drain()`).
     private func scheduleDrain() {
-        guard drainTask == nil else { return }
+        guard drainTask == nil, !isFetching else { return }
+        let wait = Self.drainDebounceSeconds * timeScale
         drainTask = Task { [weak self] in
             // Let a burst of plays (a set list starting, a shuffle) accumulate into one batch
             // instead of firing a request per song.
-            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(max(0, wait) * 1_000_000_000))
             await self?.drain()
         }
     }
 
-    /// Fetch every pending artist in batches of 50, two requests in flight.
+    /// Fetch every pending artist in batches of 50, two requests in flight — and never beside
+    /// another drain (`isFetching` is the reentrancy guard, which also keeps that flag honest for
+    /// the UI: with overlapping drains the first one to finish cleared it while the other was
+    /// still working).
     func drain() async {
+        guard !isFetching else { return }
         drainTask = nil
-        guard let transport, transport.canSync, !pending.isEmpty else { return }
+        let allSucceeded = await runDrainPass()
+        // Plays that landed WHILE the pass was in flight are still queued — re-arm for them, so a
+        // play during a drain is not stranded until the next unrelated play happens along.
+        //
+        // ONLY on a clean pass. A failed batch re-queues its own ids, so re-arming there would
+        // spin against an outage instead of riding the next play — which is the lazy trigger the
+        // whole feature runs on, and the reason `apply` deliberately does not reschedule either.
+        if allSucceeded, !pending.isEmpty { scheduleDrain() }
+    }
+
+    /// One pass over the queue. Returns whether EVERY batch came back — the caller uses that to
+    /// decide whether re-arming is safe. Separated from `drain()` so `isFetching` is already back
+    /// to false (via the `defer`) by the time the re-arm decision is made.
+    private func runDrainPass() async -> Bool {
+        guard let transport, transport.canSync, !pending.isEmpty else { return false }
         let due = pending
         pending = [:]
         isFetching = true
@@ -226,12 +268,13 @@ final class ReleaseFeedService {
             batches.append(Array(ids[i..<min(i + ReleaseFeedPolicy.idsPerRequest, ids.count)]))
         }
 
+        var allSucceeded = true
         await withTaskGroup(of: BatchOutcome.self) { group in
             var next = 0
             var running = 0
             func start(_ batch: [Int]) {
-                group.addTask { [transport, backoffScale] in
-                    await Self.fetchBatch(batch, transport: transport, backoffScale: backoffScale)
+                group.addTask { [transport, timeScale] in
+                    await Self.fetchBatch(batch, transport: transport, timeScale: timeScale)
                 }
             }
             while next < batches.count && running < ReleaseFeedPolicy.maxConcurrentRequests {
@@ -240,11 +283,13 @@ final class ReleaseFeedService {
             while running > 0 {
                 guard let outcome = await group.next() else { break }
                 running -= 1
+                if !outcome.succeeded { allSucceeded = false }
                 apply(outcome, fallbackNames: due)
                 if next < batches.count { start(batches[next]); next += 1; running += 1 }
             }
         }
         save()
+        return allSucceeded
     }
 
     /// What one batch came back with, and — critically — whether it came back AT ALL.
@@ -262,7 +307,7 @@ final class ReleaseFeedService {
     /// One batch, with backoff. `nonisolated` + static so the request itself runs off the main
     /// actor — this is network I/O and must never block a frame.
     private nonisolated static func fetchBatch(_ ids: [Int], transport: Transport,
-                                               backoffScale: Double) async -> BatchOutcome {
+                                               timeScale: Double) async -> BatchOutcome {
         func failed() -> BatchOutcome { BatchOutcome(ids: ids, entries: [], succeeded: false) }
         guard !ids.isEmpty else { return BatchOutcome(ids: ids, entries: [], succeeded: true) }
         var comps = URLComponents(string: "https://api.music.apple.com/v1/catalog/us/artists")!
@@ -295,7 +340,7 @@ final class ReleaseFeedService {
                 // an unjittered schedule would put them to sleep and wake them in lockstep —
                 // reproducing the burst that caused the 429 in the first place.
                 let base = min(30, pow(2.0, Double(attempt + 1)))
-                let wait = (base + Double.random(in: 0...(base / 2))) * backoffScale
+                let wait = (base + Double.random(in: 0...(base / 2))) * timeScale
                 try? await Task.sleep(nanoseconds: UInt64(max(0, wait) * 1_000_000_000))
             }
         }

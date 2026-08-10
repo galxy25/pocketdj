@@ -32,10 +32,26 @@ if (!oldPath || !newPath) {
 // Each field is counted over songs, never over the raw file, so a shrinking library can't
 // masquerade as a coverage gain.
 const FIELDS = ['appleMusicId', 'appleMusicIdExplicit', 'appleMusicIdClean', 'explicit'];
+
+// The artist table is the same shape of rebuild-lossy enrichment, but it is NOT song-keyed, so the
+// loop above cannot see it: index-apple-music.mjs emits no `artists` key at all, and the table
+// survives only because am-merge-catalog-ids.mjs carries it forward. A rebuild that drops it leaves
+// ZERO per-song evidence — every song is intact and the release feed simply has no artist ids to
+// ask Apple about, so the "New" tile goes quietly empty. Counted here as two more coverage numbers:
+// the table's own size, and how many songs still JOIN to it (which is what the feed actually uses,
+// and the number that would fall if the key normalization ever drifted from the backfill script's).
+const norm = (s) => String(s).trim().toLowerCase().replace(/\s+/g, ' ');
+const ARTIST_FIELDS = ['artists', 'songsWithArtistId'];
+
 const coverage = (path) => {
-  const songs = JSON.parse(readFileSync(path, 'utf8')).songs || [];
+  const idx = JSON.parse(readFileSync(path, 'utf8'));
+  const songs = idx.songs || [];
   const c = Object.fromEntries(FIELDS.map((f) => [f, 0]));
   for (const s of songs) for (const f of FIELDS) if (s[f]) c[f]++;
+  const artists = Array.isArray(idx.artists) ? idx.artists : [];
+  const keys = new Set(artists.map((a) => a.key));
+  c.artists = artists.length;
+  c.songsWithArtistId = songs.filter((s) => s.artist && keys.has(norm(s.artist))).length;
   return { songs: songs.length, ...c };
 };
 
@@ -45,14 +61,14 @@ const before = coverage(oldPath), after = coverage(newPath);
 // collapse is a bug — anything under 90 % of the prior count, and ANY total wipe of a field
 // that used to be populated (the exact shape of the failure above).
 const failures = [];
-for (const f of FIELDS) {
+for (const f of [...FIELDS, ...ARTIST_FIELDS]) {
   if (before[f] === 0) continue;                       // nothing to lose
   if (after[f] === 0 || after[f] < before[f] * 0.9) {
     failures.push(`${f}: ${before[f]} → ${after[f]}`);
   }
 }
 
-const fmt = (c) => FIELDS.map((f) => `${f}=${c[f]}`).join(' ');
+const fmt = (c) => [...FIELDS, ...ARTIST_FIELDS].map((f) => `${f}=${c[f]}`).join(' ');
 console.error(`  committed: songs=${before.songs} ${fmt(before)}`);
 console.error(`  candidate: songs=${after.songs} ${fmt(after)}`);
 

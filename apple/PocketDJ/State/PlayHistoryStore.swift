@@ -238,8 +238,30 @@ final class PlayHistoryStore {
     /// This is the reason the ranking reads THIS store and not the library XML: "Play Date UTC"
     /// there keeps only the last play per track, which erases exactly the repeat listening that
     /// makes a zone a zone.
-    func recentPlaysForZone(limit: Int = 2000) -> [ZoneEngine.Play] {
-        events.suffix(limit).map { ZoneEngine.Play(songId: $0.songId, playedAtMs: $0.playedAt) }
+    ///
+    /// ── WHY THE TAIL IS EXTENDED, NOT JUST TRUNCATED (load-bearing) ─────────────────────────
+    /// `ZoneEngine` uses ONE constant for two jobs: `rediscoveryQuietDays` is both the window
+    /// whose plays build the taste profile and the gate that admits a song to the rediscovery
+    /// pool. That identity is what makes the two pools exactly complementary — but only if the
+    /// profile actually SEES the whole window. A flat 2,000-event tail does not: for a heavy
+    /// listener 2,000 plays can span well under 60 days, and a song played 45 days ago then falls
+    /// outside the profile while still being inside the "played recently" gate. It ends up in
+    /// neither pool. (It is never MISLABELLED — the combined last-played guard catches it — it
+    /// simply sits the queue out, which is a quieter kind of wrong.)
+    ///
+    /// So the tail is a FLOOR, not a ceiling: take the newest `limit` events, then keep walking
+    /// back while the events are still inside the coverage window. The log is capped at
+    /// `maxEvents` anyway, so the worst case is one linear pass over a bounded array, once per
+    /// rebuild.
+    func recentPlaysForZone(limit: Int = 2000,
+                            coverageDays: Double = ZoneEngine.Tuning().rediscoveryQuietDays,
+                            nowMs: Double = Date().timeIntervalSince1970 * 1000) -> [ZoneEngine.Play] {
+        var start = max(0, events.count - limit)
+        let cutoff = nowMs - coverageDays * 86_400_000
+        // Events are appended in play order, so this walk stops at the first event older than the
+        // window rather than scanning the whole log.
+        while start > 0, events[start - 1].playedAt >= cutoff { start -= 1 }
+        return events[start...].map { ZoneEngine.Play(songId: $0.songId, playedAtMs: $0.playedAt) }
     }
 
     /// Epoch ms of the last play of this song, or nil if never played.

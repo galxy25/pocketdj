@@ -34,15 +34,34 @@ enum ZoneEngine {
     /// album's genre, so the engine has no opinion about how a genre is resolved.
     struct Track: Hashable, Sendable {
         let songId: String
-        /// `IndexArtist.normalize(artist)` — the same key the artist table joins on.
+        /// THE definition of "same artist" for this engine — `PuzzleSimilarity.artistKey`:
+        /// diacritic- and case-folded, trimmed, leading "the " stripped.
+        ///
+        /// ── WHY IT IS DERIVED HERE AND NOT PASSED IN (load-bearing) ──────────────────────────
+        /// The owner's 3-per-artist cap is one rule, and it is applied in two places: `inDaZone`
+        /// (which keys on `PuzzleSimilarity.artistKey`) and `suggestions` (which keyed on
+        /// whatever the caller put in this field — `IndexArtist.normalize`, i.e. trim + lowercase
+        /// + collapse whitespace, and NOTHING else). Two notions of "same artist" for one rule
+        /// meant every SPELLING got its own three-song budget in a collection tile.
+        ///
+        /// That is not theoretical on this catalog. Measured over all 96,021 rows of
+        /// public/apple-music-index.json: 12,656 normalize-keys vs 12,636 artistKeys, 20 artists
+        /// split across the two, **17 of which could exceed the cap and 7 could reach six slots**
+        /// — Jay-Z (138 songs as "jaÿ-z" + 15 as "jay-z"), Janelle Monáe (66 + 19), Sinéad
+        /// Harnett (48 + 8), Emeli Sandé (96 + 1), The Game (82 + 2), The Alchemist (52 + 1),
+        /// Gang Starr, Luiz Bonfá, Andrés, Thủy.
+        ///
+        /// Deriving it in the initializer — rather than accepting it as a parameter — is what
+        /// makes the two call sites incapable of drifting apart again. It is computed once per
+        /// catalog load (`AppModel.zoneTracks`), not per suggestion pass, so it costs nothing.
         let artistKey: String
         let artistName: String
         /// Top-tier genre category, or nil when the album carries none.
         let genre: String?
 
-        init(songId: String, artistKey: String, artistName: String, genre: String?) {
+        init(songId: String, artistName: String, genre: String?) {
             self.songId = songId
-            self.artistKey = artistKey
+            self.artistKey = PuzzleSimilarity.artistKey(artistName)
             self.artistName = artistName
             self.genre = genre
         }
@@ -654,7 +673,24 @@ enum ZoneEngine {
     /// collection with a generic "here is more music" list.
     ///
     /// The per-artist cap is the same rule the owner set for In Da Zone: no collection tile
-    /// should turn into one artist's discography.
+    /// should turn into one artist's discography. Literally the same rule AND literally the same
+    /// key — `Track.artistKey` is derived, not supplied, so "same artist" cannot mean one thing
+    /// here and another in `inDaZone` (see the note on `Track.artistKey`).
+    ///
+    /// ── WHAT THE CAP DELIBERATELY DOES *NOT* SPLIT ───────────────────────────────────────────
+    /// It keys on the whole credit string, so "Future & Metro Boomin" is a different act from
+    /// "Metro Boomin", and each gets its own three. That is a decision, not an oversight. On this
+    /// catalog 5,216 of 12,636 artist keys (41%) contain "&" or "," — splitting on them would
+    /// shred "Earth, Wind & Fire" and "Sly & the Family Stone" into fragments. Stripping
+    /// "featuring"/"feat." is no safer: only 131 of 96,021 songs carry a marker at all, and the
+    /// two biggest of those are "Maze featuring Frankie Beverly" and "Rufus featuring Chaka Khan"
+    /// — canonical BAND names, whose bare forms ("maze", "rufus") are also both real, distinct
+    /// artists in this same catalog. Stripping would merge them wrongly for exactly the rows it
+    /// would most affect.
+    ///
+    /// It is also partly self-limiting: `PuzzleSimilarity`'s artist term uses the same full
+    /// string, so a collaboration only competes for slots when its own credit actually matches
+    /// the collection.
     static func suggestions(memberSongIds: [String],
                             tracks: [Track],
                             playCount: (String) -> Int,

@@ -112,6 +112,54 @@ final class PlayHistoryStoreTests: XCTestCase {
         XCTAssertNil(store.lastPlayedAt("s1"))
         XCTAssertEqual(store.installId, install)
     }
+
+    // ── The zone projection covers the window the ZONE actually uses ─────────────────────────
+
+    /// `ZoneEngine` leans on one constant doing two jobs: `rediscoveryQuietDays` is both the
+    /// window whose plays build the taste profile and the gate admitting a song to the
+    /// rediscovery pool — which is what makes the two pools exactly complementary. A flat
+    /// 2,000-event tail broke that for a heavy listener: 2,000 plays can span far less than 60
+    /// days, so a song played 45 days ago fell outside the profile while still being inside the
+    /// "played recently" gate, and landed in neither pool.
+    func testZoneProjectionReachesBackAcrossTheWholeRediscoveryWindow() {
+        let (store, _) = makeStore()
+        let now: Double = 1_800_000_000_000
+        let day: Double = 86_400_000
+        // 3,000 plays crammed into the last 20 days — the tail alone would start ~13 days back.
+        var events: [PlayHistoryStore.PlayEvent] = []
+        for i in 0..<3000 {
+            let at = now - (20 * day) * (Double(3000 - i) / 3000)
+            events.append(PlayHistoryStore.PlayEvent(id: UUID(), songId: "s\(i)", playedAt: at,
+                                                     source: .setlist))
+        }
+        // …plus one play 45 days ago: inside the 60-day window, far outside the 2,000 tail.
+        events.insert(PlayHistoryStore.PlayEvent(id: UUID(), songId: "buried",
+                                                 playedAt: now - 45 * day, source: .setlist),
+                      at: 0)
+        store.replaceAll(events)
+
+        let plays = store.recentPlaysForZone(nowMs: now)
+        XCTAssertTrue(plays.contains { $0.songId == "buried" },
+                      "a play inside rediscoveryQuietDays must reach the profile, tail or not")
+        XCTAssertGreaterThan(plays.count, 2000, "the tail is a FLOOR, not a ceiling")
+    }
+
+    /// …and the window is still a bound: plays older than it are not dragged in, so the
+    /// projection cannot quietly become "the whole log".
+    func testZoneProjectionStillStopsAtTheEdgeOfTheWindow() {
+        let (store, _) = makeStore()
+        let now: Double = 1_800_000_000_000
+        let day: Double = 86_400_000
+        store.replaceAll([
+            PlayHistoryStore.PlayEvent(id: UUID(), songId: "ancient", playedAt: now - 400 * day,
+                                       source: .setlist),
+            PlayHistoryStore.PlayEvent(id: UUID(), songId: "recent", playedAt: now - day,
+                                       source: .setlist),
+        ])
+        let plays = store.recentPlaysForZone(limit: 1, nowMs: now)
+        XCTAssertEqual(plays.map(\.songId), ["recent"],
+                       "a year-old play is outside the window and stays out")
+    }
 }
 
 // MARK: - Universal history: union merge across devices (R8)

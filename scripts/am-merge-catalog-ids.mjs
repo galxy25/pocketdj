@@ -76,8 +76,13 @@ const songs = next.songs || [];
 // Artist table: present-on-new wins (idempotent), else carry the old one forward. The name→id
 // mapping is the irreplaceable part; the per-artist song counts are re-derived below against the
 // NEW song set so a rebuild that adds or removes tracks doesn't leave stale totals behind.
+// `!next.artists?.length` and NOT `!next.artists`: in JS `[]` is TRUTHY, so a rebuild that emitted
+// `artists: []` skipped the carry-forward entirely and wrote an empty table — the whole 10,057-row
+// join gone, the release feed silently empty, and the log still reading a cheerful "carried 0
+// artist(s)". An absent key and an empty array mean the same thing here (the rebuild has no artist
+// table), so they must be treated the same.
 let artistsCarried = 0;
-if (!next.artists && Array.isArray(oldIdx.artists) && oldIdx.artists.length) {
+if (!next.artists?.length && Array.isArray(oldIdx.artists) && oldIdx.artists.length) {
   next.artists = oldIdx.artists.map((a) => ({ ...a }));
   artistsCarried = next.artists.length;
 }

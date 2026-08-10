@@ -97,8 +97,11 @@ final class AppModel {
             // a similarity signal. It maps to nil instead, so those songs are ranked on artist
             // affinity alone.
             let cat = Genre.category(s.albumId.flatMap { albumsById[$0] }?.genre)
+            // No artist KEY is passed: `Track` derives it (`PuzzleSimilarity.artistKey`) so the
+            // 3-per-artist cap cannot mean one thing in `inDaZone` and another in `suggestions`.
+            // `IndexArtist.normalize` used to be handed in here, and it does not fold diacritics
+            // or strip a leading "the " — which gave "Jaÿ-Z" and "Jay-Z" three slots EACH.
             return ZoneEngine.Track(songId: s.id,
-                                    artistKey: IndexArtist.normalize(s.artist),
                                     artistName: s.artist,
                                     genre: cat == Genre.other ? nil : cat)
         }
