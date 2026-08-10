@@ -504,9 +504,10 @@ enum SongLibraryAffordance: Equatable {
 
     /// `amrec_<storeId>` ad-hoc rip ids carry their Apple Music store id in the name
     /// (the recognizer/Discover convention) — recover it for membership resolution.
-    static func adHocStoreID(_ songId: String) -> String? {
-        guard songId.hasPrefix("amrec_") else { return nil }
-        let raw = String(songId.dropFirst("amrec_".count))
-        return !raw.isEmpty && raw.allSatisfy(\.isNumber) ? raw : nil
-    }
+    ///
+    /// FORWARDS to `RecMembership`, which needs the same parse to decide whether a suggestion is
+    /// the song the listener already filed under an ad-hoc id. One implementation: two parsers of
+    /// the same convention is how "already in this collection" and "already in your library" end
+    /// up disagreeing about one song.
+    static func adHocStoreID(_ songId: String) -> String? { RecMembership.adHocStoreId(songId) }
 }

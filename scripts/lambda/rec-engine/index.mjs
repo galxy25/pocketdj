@@ -410,6 +410,51 @@ export function genreOf(byId, songId) {
   return byId.get(songId)?.g ?? null;
 }
 
+// ── Song IDENTITY (the "already in that collection" rule) ───────────────────────────────────────
+
+/**
+ * Every key one song id can be recognised by — the SERVER half of the client's `RecMembership`.
+ *
+ * Owner: "don't recommend songs that are already in that collection for adding to a collection."
+ * The device filters, and it filters better than this can (it holds the catalog, so it can join a
+ * `sng_` row to an `amrec_` capture through `appleMusicId`). But a client-side filter alone
+ * silently WASTES CANDIDATE SLOTS: every member this route emits is a row the client then throws
+ * away, so a 200-song answer can come back 190 songs long for no reason the owner can see. So the
+ * server applies everything it can decide from the id STRING ALONE:
+ *
+ *   · `sng_<hex>_clean` / `_explicit`  -> the base recording (`SongVariant.baseId` on the client)
+ *   · `amrec_<storeId>`                -> `am:<storeId>` (the ad-hoc capture convention)
+ *
+ * It deliberately does NOT try the catalog join: `rec-features.json` carries no Apple Music store
+ * id (fields are i/al/a/n/g/y/b/c/s), and inventing one here would mean shipping catalog metadata
+ * to the server that the device already has. The device computes; the server receives ids.
+ */
+export function identityKeys(songId) {
+  const id = String(songId || '');
+  if (!id) return [];
+  const out = [];
+  const variant = /^(sng_[0-9a-f]{12})_(clean|explicit)$/.exec(id);
+  out.push(variant ? variant[1] : id);
+  const adhoc = /^amrec_(\d+)$/.exec(id);
+  // Same guard as the client's `validStoreKey`: a short or all-zero "store id" is a placeholder,
+  // and folding a placeholder into one identity would delete real suggestions wholesale.
+  if (adhoc && adhoc[1].length >= 4 && /[1-9]/.test(adhoc[1])) out.push(`am:${adhoc[1]}`);
+  return out;
+}
+
+/** The identity keys of a whole membership list, as one Set. */
+export function identitySet(songIds) {
+  const out = new Set();
+  for (const id of songIds || []) for (const k of identityKeys(id)) out.add(k);
+  return out;
+}
+
+/** Is `songId` already in `keys` (an `identitySet`), under ANY of its identities? */
+export function identityHas(keys, songId) {
+  for (const k of identityKeys(songId)) if (keys.has(k)) return true;
+  return false;
+}
+
 // ── State shape + batch merge ───────────────────────────────────────────────────────────────────
 
 function freshState(profileId) {
@@ -1168,7 +1213,10 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
 
   const scored = [];
   for (const col of state.collections?.list || []) {
-    if (!col.songIds?.length || col.songIds.includes(songId)) continue;
+    // NEVER OFFER A COLLECTION THE SONG IS ALREADY IN, under any of its ids — `includes` alone
+    // misses the `_clean`/`_explicit` variant and the `amrec_<storeId>` capture of the same
+    // recording, which is how this route came to suggest "add it to the crate it is already in".
+    if (!col.songIds?.length || identityHas(identitySet(col.songIds), songId)) continue;
     const sample = col.songIds.slice(0, 200);
     const rows = sample.map((id) => featuresById.get(id)).filter(Boolean);
     const terms = [];
@@ -1257,6 +1305,10 @@ export function scoreSimilarToCollections(state, featuresById, collectionIds,
   const members = new Set();
   for (const c of targets) for (const id of c.songIds || []) members.add(id);
   if (members.size === 0) return { v: 1, generatedAtMs: nowMs, songs: [] };
+  // The same membership by IDENTITY rather than by string — see `identityKeys`. `members` itself
+  // stays the raw id set: it is also the key the taste aggregates and the co-play term join on,
+  // and those must match the features file's own ids exactly.
+  const memberKeys = identitySet(members);
 
   // 1) Taste aggregates over the members' feature rows (unweighted — a crate has no recency).
   const genreCount = new Map(); const seedGenreN = new Map(); const artistCount = new Map();
@@ -1333,8 +1385,9 @@ export function scoreSimilarToCollections(state, featuresById, collectionIds,
   const scored = [];
   for (const row of featuresById.values()) {
     // 5) EXCLUDE EXISTING MEMBERS — they are already filed, and a card the player cannot
-    //    score is dead weight in a timed game.
-    if (members.has(row.i)) continue;
+    //    score is dead weight in a timed game. BY IDENTITY: a `_clean` variant or an
+    //    `amrec_<storeId>` capture of a filed song is that song, not a new card.
+    if (identityHas(memberKeys, row.i)) continue;
     if (fbSimilar.rejected.has(row.i)) continue;
     const terms = [];
     if (row.g && maxGenre > 0 && genreCount.has(row.g)) {

@@ -46,9 +46,18 @@ enum ZoneEngine {
         let year: Int?
         let bpm: Double?
         let camelot: String?
+        /// Apple Music catalog store id (`IndexSong.appleMusicId`), when the crawl resolved one.
+        ///
+        /// NOT a ranking signal — it is here purely for IDENTITY. It is what lets `suggestions`
+        /// recognise that the candidate `sng_…` it is about to offer is the SAME RECORDING as the
+        /// `amrec_<storeId>` row the listener already filed into this collection (see
+        /// `RecMembership`). Absent on most of the catalog and defaulted, so no call site or
+        /// fixture has to say anything about it.
+        let appleMusicId: String?
 
         init(songId: String, artistKey: String, artistName: String, genre: String?,
-             year: Int? = nil, bpm: Double? = nil, camelot: String? = nil) {
+             year: Int? = nil, bpm: Double? = nil, camelot: String? = nil,
+             appleMusicId: String? = nil) {
             self.songId = songId
             self.artistKey = artistKey
             self.artistName = artistName
@@ -56,6 +65,7 @@ enum ZoneEngine {
             self.year = year
             self.bpm = bpm
             self.camelot = camelot
+            self.appleMusicId = appleMusicId
         }
     }
 
@@ -968,6 +978,18 @@ enum ZoneEngine {
     ///
     /// The per-artist cap is the same rule the owner set for In Da Zone: no collection tile should
     /// turn into one artist's discography.
+    ///
+    /// ── NOTHING ALREADY IN THE COLLECTION, UNDER ANY OF ITS IDS ──────────────────────────────
+    /// Owner, verbatim: *"don't recommend songs that are already in that collection for adding to
+    /// a collection."* The exclusion runs through `RecMembership` rather than `Set(memberSongIds)`
+    /// because one recording wears up to three different ids here (catalog · `_clean`/`_explicit`
+    /// variant · `amrec_<storeId>` ad-hoc capture), and a raw string set treats them as three
+    /// different songs — so the tile offers back exactly what the listener already filed, and the
+    /// 👍 that "adds" it does nothing. See `RecMembership` for the identity rule.
+    ///
+    /// This is the BUILD-time half. It cannot be the whole answer: the lists are frozen and
+    /// membership moves on every add, so the same filter runs again at READ time over the frozen
+    /// ids (`CollectionsStore.suggestionsExcludingMembers`).
     static func suggestions(memberSongIds: [String],
                             tracks: [Track],
                             playCount: (String) -> Int,
@@ -977,6 +999,10 @@ enum ZoneEngine {
         let members = Set(memberSongIds)
         guard !members.isEmpty, !tracks.isEmpty else { return [] }
         let trackById = Dictionary(tracks.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
+        // Members resolve their store id through the catalog projection when they ARE in it (the
+        // ordinary `sng_` member), which is what makes the ad-hoc join work in both directions.
+        let membership = RecMembership(memberIds: memberSongIds,
+                                       appleMusicId: { trackById[$0]?.appleMusicId })
 
         // The profile: the collection's members, plus anything the listener has 👍'd for it (a
         // thumbs-up is a statement about what belongs here even before the add lands).
@@ -1067,7 +1093,10 @@ enum ZoneEngine {
         for (k, v) in negGenres { negGenres[k] = min(1, v / Tuning.rejectionSaturation) }
 
         var scored: [(id: String, artist: String, capKey: String, score: Double)] = []
-        for t in tracks where !members.contains(t.songId) {
+        // `membership.contains`, NOT `members.contains` — a variant id or an ad-hoc capture of a
+        // song already in here is the same song, and offering it is the defect this filter exists
+        // to prevent.
+        for t in tracks where !membership.contains(t.songId, appleMusicId: t.appleMusicId) {
             // Tombstoned IN THIS TILE ⇒ out of the ranking (the view re-injects it at the bottom).
             // Scoped and expiring — a 👎 given on another tile does not remove the row here; its
             // shape reaches the score through `negArtists`/`negGenres` below. See `inDaZone`.

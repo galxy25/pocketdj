@@ -106,7 +106,12 @@ final class AppModel {
                                     // absent on a slice of the vinyl index while the album carries
                                     // it, and family B is only as good as its coverage.
                                     year: s.year ?? album?.year,
-                                    bpm: s.bpm, camelot: s.camelot)
+                                    bpm: s.bpm, camelot: s.camelot,
+                                    // IDENTITY, not a ranking signal: it is how a suggestion tile
+                                    // recognises that this catalog row and an `amrec_<storeId>`
+                                    // row already in the collection are one recording
+                                    // (`RecMembership`).
+                                    appleMusicId: s.appleMusicId)
         }
         zoneTracksCache = (catalogRevision, tracks)
         return tracks
