@@ -564,6 +564,40 @@ final class ReleaseFeedService {
     }
     /// Test seam: how many artists are waiting on a batch.
     var pendingCountForTesting: Int { pending.count }
+
+    // ── UI-test seam ─────────────────────────────────────────────────────────────────────────
+
+    /// Whether to stand the New tile up from canned rows instead of the network.
+    ///
+    /// The tile's real content arrives from one Apple Music catalog call, which the UI suite must
+    /// never make — but "New is playable" is now a claim about a TOOLBAR, and a toolbar over an
+    /// empty list is greyed out and proves nothing. DOUBLE-GATED exactly like
+    /// `RecommendationService.wantsFixture`, so a stray `PDJ_REC_FIXTURE` in a real run can never
+    /// light it up on its own.
+    nonisolated static var wantsUIFixture: Bool {
+        let env = ProcessInfo.processInfo.environment
+        return env["PDJ_REC_FIXTURE"] == "1" && env["PDJ_USE_FIXTURE"] != nil
+    }
+
+    /// Two out-now releases and one pre-order — enough to render both sections, and to prove that
+    /// only the out-now half is what ▶ queues.
+    nonisolated static func uiFixtureEntries(nowMs: Double = Date().timeIntervalSince1970 * 1000) -> [ArtistReleaseEntry] {
+        let day = 86_400_000.0
+        return [
+            ArtistReleaseEntry(artistId: 900_001, artistName: "The Test Pressing",
+                               checkedAtMs: nowMs, releaseId: "9000000001",
+                               releaseName: "Second Side", releaseAtMs: nowMs - 2 * day,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 9),
+            ArtistReleaseEntry(artistId: 900_002, artistName: "Dust & Groove",
+                               checkedAtMs: nowMs, releaseId: "9000000002",
+                               releaseName: "Late Cut", releaseAtMs: nowMs - 9 * day,
+                               releaseArtworkUrl: nil, releaseKind: "single", trackCount: 2),
+            ArtistReleaseEntry(artistId: 900_003, artistName: "Northbound",
+                               checkedAtMs: nowMs, releaseId: "9000000003",
+                               releaseName: "Preorder EP", releaseAtMs: nowMs + 6 * day,
+                               releaseArtworkUrl: nil, releaseKind: "ep", trackCount: 5),
+        ]
+    }
 }
 
 // ============================================================================

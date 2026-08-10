@@ -12,7 +12,8 @@ import SwiftUI
 ///  • **New** — releases from the last 30 days by artists the owner actually plays. The only
 ///    networked tile (`ReleaseFeedService`); everything it shows was fetched off a PLAY event or
 ///    the one-shot listening seed, never off this render. It is the one tile whose rows he does
-///    NOT own — which is why it keeps a ＋ and is not playable.
+///    NOT own — which is why acting on a row means opening the release, and why playing the tile
+///    STREAMS it (`ReleaseStreaming`) instead of resolving catalog ids.
 ///  • **In Da Zone** — what to play right now, ranked from recent play history against the local
 ///    catalog (`ZoneEngine.inDaZone`). ≤3 songs per artist, 30–90 songs. No network, ever.
 ///  • **one per collection** — songs worth adding to that playlist/pocket
@@ -51,11 +52,18 @@ struct ForYouTilesView: View {
     /// The frozen feed. Optional for the same reason as the others; with no store the grid still
     /// works, it just cannot persist across launches (an in-memory fallback stands in).
     @Environment(ForYouFeedStore.self) private var feed: ForYouFeedStore?
+    /// What the New card's ▶ needs — the two expansion tiers plus the queue itself. See
+    /// `ReleaseStreaming`.
+    @Environment(RipsStore.self) private var rips
+    @Environment(StreamingStore.self) private var streaming
+    @Environment(SetlistPlayer.self) private var sequencer
     @Binding var path: NavigationPath
     /// Bumped by History's tab menu ▸ Refresh. The ONLY external trigger for a recompute.
     var refreshToken: Int = 0
 
     @State private var tiles: [ForYouTile] = []
+    /// A New-card expansion is in flight (one network round trip per release).
+    @State private var startingReleases = false
     /// Stands in for `feed` when no store is injected (previews / standalone test hosts). Not
     /// durable, which is exactly the degradation intended.
     @State private var fallback = ForYouFeedSnapshot()
@@ -243,17 +251,35 @@ struct ForYouTilesView: View {
     // MARK: - The tile menu (shared with collections)
     // ========================================================================
 
-    /// A tile IS a setlist, so its menu is `CollectionPlayMenuItems` — the same component a
-    /// playlist or pocket row uses — rather than a tile-specific copy.
+    /// A tile IS a setlist, so its menu is `CollectionPlayMenuItems` — the same ▶ / ▶▶ / 🔀 the
+    /// tile's own screen floats in its toolbar, in the one place a CARD can carry actions — rather
+    /// than a tile-specific copy.
     ///
-    /// **New is the exception, and it says so.** Its rows are releases the owner does NOT own; a
-    /// ▶ against them would resolve to nothing, so instead of offering three dead items the menu
-    /// carries one disabled line explaining why.
+    /// **New goes through its own door**, not because it can't play (it can — owner, verbatim:
+    /// *"we want to be able to play or shuffle New as well"*) but because its rows are RELEASES
+    /// that have to be expanded into tracks and streamed by store id. `ReleaseStreaming` is that
+    /// path, shared with `NewReleasesView`, so the card and the screen behind it start the same
+    /// queue.
     @ViewBuilder private func tileMenu(_ tile: ForYouTile) -> some View {
         if tile.route.kind == .new {
-            Button {} label: { Label("Nothing to play yet", systemImage: "sparkles") }
-                .disabled(true)
-                .accessibilityIdentifier("foryou-tile-new-unplayable")
+            let releases = releaseFeed?.outNow() ?? []
+            let scope = ForYouTileRoute.Kind.new.rawValue
+            let sunk = feedback?.activeTombstones(scope: scope) ?? [:]
+            let live = releases.filter { sunk[$0.feedbackId] == nil }
+            Button { startReleases(live, shuffle: false) } label: {
+                Label("Play", systemImage: "play.fill")
+            }
+            .disabled(live.isEmpty || startingReleases)
+            .accessibilityIdentifier("foryou-tile-\(tile.id)-play")
+            CollectionPlayAllButton(idPrefix: "foryou-tile-\(tile.id)") {
+                startReleases(releases, shuffle: false)
+            }
+            .disabled(releases.isEmpty || startingReleases)
+            Button { startReleases(live, shuffle: true) } label: {
+                Label("Shuffle", systemImage: "shuffle")
+            }
+            .disabled(live.isEmpty || startingReleases)
+            .accessibilityIdentifier("foryou-tile-\(tile.id)-shuffle")
         } else {
             let ids = playableIds(for: tile.route)
             let p = feedback?.partition(ids, scope: tile.route.feedbackContext) ?? (live: ids, sunk: [])
@@ -263,6 +289,23 @@ struct ForYouTilesView: View {
                                         feedback?.beginPlayback(scope: tile.route.feedbackContext,
                                                                 songIds: queue)
                                     })
+        }
+    }
+
+    /// The New card's ▶ — the SAME expansion + `am:<storeID>` queue `NewReleasesView` uses. Only
+    /// **out now** releases: a "coming soon" row is a pre-order with no audio behind it.
+    private func startReleases(_ items: [ReleaseFeedItem], shuffle: Bool) {
+        let ids = items.compactMap(\.entry.releaseId)
+        guard !ids.isEmpty, !startingReleases else { return }
+        startingReleases = true
+        let library = streaming.providers.libraryContributors.first
+        Task {
+            let rows = await ReleaseStreaming.tracks(forReleaseIds: ids, rips: rips, library: library)
+            var queue = ReleaseStreaming.items(rows, catalogSongId: { app.songId(forAppleMusicId: $0) })
+            if shuffle { queue.shuffle() }
+            startingReleases = false
+            guard !queue.isEmpty else { return }
+            sequencer.play(queue)
         }
     }
 

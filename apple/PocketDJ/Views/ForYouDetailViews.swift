@@ -15,7 +15,20 @@ struct NewReleasesView: View {
     /// add on each one, and this tile is one of the two pinned at the top of For You, so leaving
     /// it as the one untunable surface would have been the most visible gap in the feature.
     @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
+    /// The three the ▶ needs. `AppModel` lets a track he DOES already own play under its own
+    /// catalog id (so device mode can reach its burned file); `RipsStore` + `StreamingStore` are
+    /// the two expansion tiers `ReleaseStreaming` walks; `SetlistPlayer` is the queue itself.
+    @Environment(AppModel.self) private var app
+    @Environment(RipsStore.self) private var rips
+    @Environment(StreamingStore.self) private var streaming
+    @Environment(SetlistPlayer.self) private var sequencer
     @Binding var path: NavigationPath
+
+    /// An expansion is in flight. Each release is one network round trip, so the transport says so
+    /// rather than looking dead for a second and a half.
+    @State private var starting = false
+    /// Nothing came back expandable — stated, never swallowed.
+    @State private var startError: String?
 
     /// The reserved scope for this tile — the same string `ForYouTileRoute.feedbackContext`
     /// produces for `.new`, so a verdict given here and one given anywhere else about the New tile
@@ -39,6 +52,79 @@ struct NewReleasesView: View {
         .scrollContentBackground(.hidden)
         .background(Theme.bg)
         .navigationTitle("New")
+        #if os(iOS)
+        // Same as the zone screen and the playlist screen: the name gets its own line rather than
+        // competing with the transport for navigation-bar width.
+        .navigationBarTitleDisplayMode(.large)
+        #endif
+        // NEW IS PLAYABLE, and wears the same furniture as every other list screen. Owner,
+        // verbatim: *"we want to be able to play or shuffle New as well, that is the equivalent of
+        // cloud mode for a collection."* ▶ takes the live releases, ▶▶ takes the thumbed-down ones
+        // too, 🔀 shuffles — and the 📱/☁️ toggle is genuinely live: cloud streams the records he
+        // doesn't own, device plays only the parts he has already pulled down. See
+        // `ReleaseStreaming` for the whole path.
+        //
+        // ONLY **out now** plays. A "coming soon" row is a pre-order — Apple has published the
+        // record's existence, not its audio — so queueing one could only ever produce a skip.
+        //
+        // NO ⋯. Every list-wide action this screen could offer either doesn't exist yet or belongs
+        // to a row (acting on a release means opening it), and an empty ⋯ is furniture pretending
+        // to be a control.
+        .collectionToolbar(idPrefix: "foryou-new", noun: "list",
+                           canPlay: !starting && !outNow.isEmpty, showsMenu: false,
+                           play: { start(live(outNow), shuffle: $0) },
+                           playAll: { start(outNow, shuffle: false) },
+                           menuItems: { EmptyView() })
+        .alert("Couldn’t start these releases", isPresented: startErrorShowing) {
+            Button("OK") { startError = nil }
+        } message: {
+            Text(startError ?? "")
+        }
+    }
+
+    private var startErrorShowing: Binding<Bool> {
+        Binding(get: { startError != nil }, set: { if !$0 { startError = nil } })
+    }
+
+    /// The releases still being OFFERED — the thumbed-down tail taken off. ▶ plays these; ▶▶ plays
+    /// the whole section including them (`sunkLast` has already moved them to the bottom, so
+    /// "everything" is still in the order the screen shows).
+    private func live(_ items: [ReleaseFeedItem]) -> [ReleaseFeedItem] {
+        guard let feedback else { return items }
+        let sunk = feedback.activeTombstones(scope: scope)
+        guard !sunk.isEmpty else { return items }
+        return items.filter { sunk[$0.feedbackId] == nil }
+    }
+
+    /// Expand these releases into tracks and hand them to the sequencer.
+    ///
+    /// Deliberately NOT `CollectionPlayback.start`: that funnel runs through
+    /// `CollectionsStore.playNow`, which drops every id the local catalog cannot resolve — i.e.
+    /// every track of a record he doesn't own, i.e. all of them. `ReleaseStreaming` queues the
+    /// namespaced `am:<storeID>` ids the Jukebox and Music with Friends already use, which
+    /// `PlaybackCoordinator` routes to MusicKit.
+    ///
+    /// It also does NOT stamp a feedback scope, unlike the song tiles. A verdict on the New tile
+    /// is filed against a RELEASE (`rel:<albumId>`), and what plays here is TRACKS — so a
+    /// now-playing 👍 would have no honest release to attribute itself to. The 👍/👎 on the rows
+    /// stay the way to tune this tile.
+    private func start(_ items: [ReleaseFeedItem], shuffle: Bool) {
+        let ids = items.compactMap(\.entry.releaseId)
+        guard !ids.isEmpty, !starting else { return }
+        starting = true
+        let library = streaming.providers.libraryContributors.first
+        Task {
+            let rows = await ReleaseStreaming.tracks(forReleaseIds: ids, rips: rips, library: library)
+            var queue = ReleaseStreaming.items(rows, catalogSongId: { app.songId(forAppleMusicId: $0) })
+            if shuffle { queue.shuffle() }
+            starting = false
+            guard !queue.isEmpty else {
+                startError = "Apple Music didn’t return a track list for these releases. "
+                    + "Check your connection (or your Apple Music sign-in in Settings) and try again."
+                return
+            }
+            sequencer.play(queue)
+        }
     }
 
     /// A rejected release SINKS to the bottom of its section — the same rule every other
@@ -223,6 +309,9 @@ struct ForYouSongListView: View {
     @Environment(PlayHistoryStore.self) private var history
     @Environment(PlayCountService.self) private var playCounts
     @Environment(SetlistPlayer.self) private var sequencer
+    /// How the toolbar's ▶/🔀 start a set — the same door the tile card's menu uses.
+    /// Optional so a preview host that renders this screen standalone degrades rather than traps.
+    @Environment(IntentServices.self) private var intents: IntentServices?
     /// The 👍/👎 log. Optional like the other late-added stores so a preview host that renders
     /// this screen standalone degrades to "no feedback controls" rather than trapping.
     @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
@@ -267,6 +356,9 @@ struct ForYouSongListView: View {
     /// routes through the normal sheet).
     private struct AddRef: Identifiable { let id: String }
     @State private var addRef: AddRef?
+    /// The whole live list, when ⋯ ▸ "Add all to…" is up.
+    private struct AddAllRef: Identifiable { let id = "all"; let ids: [String] }
+    @State private var addAllRef: AddAllRef?
 
     var body: some View {
         List {
@@ -282,12 +374,39 @@ struct ForYouSongListView: View {
         .scrollContentBackground(.hidden)
         .background(Theme.bg)
         .navigationTitle(route.title)
+        #if os(iOS)
+        // FIVE primary-action items is one more than an inline title leaves room for on a
+        // compact-width iPhone, and SwiftUI resolves that by dropping the TITLE — measured: the
+        // zone screen came back with a bare back-chevron and no name at all. Forcing the large
+        // title moves it onto its own line, where the toolbar can't crowd it out. (The playlist
+        // screen already renders this way, so the two still match.)
+        .navigationBarTitleDisplayMode(.large)
+        #endif
         .task { await build() }
+        // A TILE IS A SETLIST, so it wears the SAME furniture a playlist does — 📱/☁️ · ▶ · ▶▶ ·
+        // 🔀 · ⋯, from the shared `CollectionToolbar`. Owner, verbatim: *"i want the native menu
+        // controls that float in too like in a playlist."* The device/cloud toggle is genuinely
+        // live here: these are catalog songs he owns, started through the same `playNow` →
+        // `SetlistPlayer` path, and `SettingsStore.playbackMode` decides whether they come off
+        // burned files or the cloud exactly as it does on a playlist screen.
+        //
+        // THIS IS THE SCREEN WHERE ▶ AND ▶▶ GENUINELY DIFFER: ▶ takes the live picks, ▶▶ takes the
+        // thumbed-down tail as well (rejected rows are SUNK, not removed, so the lit 👎 that undoes
+        // a mis-tap stays reachable). Both render unconditionally all the same — owner, verbatim:
+        // *"always show play and play all and shuffle."*
+        .collectionToolbar(idPrefix: "foryou-list", noun: "list",
+                           canPlay: !partition.live.isEmpty,
+                           play: { start(partition.live, shuffle: $0) },
+                           playAll: { start(everything, shuffle: false) },
+                           menuItems: { overflowMenu })
         // The 👍's add for In Da Zone (no implied target ⇒ the normal sheet). `onAdded` is what
         // turns the row's ✓ on, so a thumbs-up that opened a sheet and a thumbs-up that added
         // straight to a crate leave the row in the SAME state.
         .sheet(item: $addRef) { r in
             AddToCollectionView(item: .song(r.id), onAdded: { _ in added.insert(r.id) })
+        }
+        .sheet(item: $addAllRef) { r in
+            AddToCollectionView(item: .songs(r.ids), onAdded: { _ in added.formUnion(r.ids) })
         }
     }
 
@@ -298,32 +417,48 @@ struct ForYouSongListView: View {
             Text(blendSummary).font(.caption).foregroundStyle(Theme.fgDim)
                 .accessibilityIdentifier("foryou-list-summary")
             Spacer()
-            // A TILE IS A SETLIST — the same Play / Play All / Shuffle menu a collection row
-            // carries, from `CollectionPlayMenuItems`, not a screen-specific copy.
-            playMenu
         }
         .listRowBackground(Color.clear)
     }
 
-    private var playMenu: some View {
-        Menu {
-            CollectionPlayMenuItems(title: route.title,
-                                    songIds: partition.live, sunkIds: partition.sunk,
-                                    idPrefix: "foryou",
-                                    onStarted: { queue in
-                                        // STAMP THE SCOPE. From here the deck, the mini bar, the
-                                        // lock screen, CarPlay and the widgets all know what is
-                                        // playing is a recommendation FROM THIS TILE and can file
-                                        // a verdict without the listener leaving playback.
-                                        feedback?.beginPlayback(scope: route.feedbackContext,
-                                                                songIds: queue)
-                                    })
-        } label: {
-            Label("Play", systemImage: "play.fill").font(.caption)
+    /// Everything ▶▶ **Play All** takes: the live picks plus the tail thumbed down and sunk.
+    private var everything: [String] {
+        let p = partition
+        return p.live + p.sunk.filter { !p.live.contains($0) }
+    }
+
+    /// The ⋯ menu — the tile's context actions, everything beyond the floating transport.
+    @ViewBuilder private var overflowMenu: some View {
+        // The list-wide version of the row's 👍-add: take the whole offer into a collection in one
+        // go, through the same `AddToCollectionView` a single row uses.
+        Button { addAllRef = AddAllRef(ids: partition.live) } label: {
+            Label("Add all to…", systemImage: "text.badge.plus")
         }
-        .menuStyle(.borderlessButton)
-        .foregroundStyle(Theme.accent)
-        .accessibilityIdentifier("foryou-play-menu")
+        .disabled(partition.live.isEmpty)
+        .accessibilityIdentifier("foryou-list-add-all")
+        // A collection tile is ABOUT a collection — the way back to it belongs in its menu.
+        if route.kind == .collection, let cid = route.collectionId {
+            if let pl = collections.playlist(cid) {
+                Button { path.append(pl) } label: { Label("Open \(pl.name)", systemImage: "music.note.list") }
+                    .accessibilityIdentifier("foryou-list-open-collection")
+            } else if let pk = collections.pocket(cid) {
+                Button { path.append(pk) } label: { Label("Open \(pk.name)", systemImage: "rectangle.stack") }
+                    .accessibilityIdentifier("foryou-list-open-collection")
+            }
+        }
+    }
+
+    /// Start a queue from this tile and STAMP THE SCOPE — from there the deck, the mini bar, the
+    /// lock screen, CarPlay and the widgets all know what is playing is a recommendation FROM THIS
+    /// TILE and can file a verdict without the listener leaving playback. Deliberately does NOT
+    /// push the Now Playing deck the way a playlist's ▶ does: `playSongIds` already starts the
+    /// audio, and staying here keeps the 👍/👎 on the rows that are playing within reach.
+    private func start(_ ids: [String], shuffle: Bool) {
+        CollectionPlayback.start(ids, title: route.title, shuffle: shuffle, intents: intents,
+                                 onStarted: { queue in
+                                     feedback?.beginPlayback(scope: route.feedbackContext,
+                                                             songIds: queue)
+                                 })
     }
 
     /// The header count is `visibleCount`, the SAME function the tile card uses — so the card's
