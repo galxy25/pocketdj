@@ -187,7 +187,7 @@ struct HistoryView: View {
             case .collection:
                 activityContent
             case .forYou:
-                ForYouListView(path: $path)
+                ForYouTilesView(path: $path)
             }
         }
         // Match every other tab's dark-blue canvas (the Lists are made transparent via

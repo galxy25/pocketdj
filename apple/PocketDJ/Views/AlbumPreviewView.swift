@@ -18,11 +18,18 @@ enum AlbumOwnership: Equatable {
     ///   • the provisional Discover/recognizer id (`amrec_<storeID>`) is in the catalog,
     ///   • some catalog song claims that Apple Music id (the real indexed song, post-supersede),
     ///   • the rips manifest holds a prepared copy.
+    ///
+    /// `adHocPrefix` is the ONLY thing that differs between a track and a whole album: the three
+    /// routes are identical, but an album arrives under `amrec_album_<id>` rather than
+    /// `amrec_<id>` (the convention `RipsStore` synthesizes). The release feed passes that prefix
+    /// so "does he already have this album" is answered by THIS predicate — a second one would
+    /// start identical and drift the first time either is fixed.
     static func owns(storeID: String,
                      catalogSongIds: Set<String>,
                      catalogAppleMusicIds: Set<String>,
-                     rippedSongIds: Set<String>) -> Bool {
-        let adHoc = "amrec_\(storeID)"
+                     rippedSongIds: Set<String>,
+                     adHocPrefix: String = "amrec_") -> Bool {
+        let adHoc = adHocPrefix + storeID
         return catalogSongIds.contains(adHoc)
             || catalogAppleMusicIds.contains(storeID)
             || rippedSongIds.contains(adHoc)

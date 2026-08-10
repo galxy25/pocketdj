@@ -116,6 +116,14 @@ final class RecEngineUITests: XCTestCase {
                       "the fixture seam lights the For You tab")
         forYouTab.tap()
 
+        // For You is now a GRID OF TILES; the cloud engine's suggestions live behind the
+        // "Suggested" tile (New and In Da Zone are the pinned pair). One extra tap to reach the
+        // same list — the rows below are unchanged.
+        let suggestedTile = app.el("foryou-tile-suggested")
+        XCTAssertTrue(suggestedTile.waitForExistence(timeout: 10),
+                      "the engine has fixture suggestions ⇒ the Suggested tile exists")
+        suggestedTile.tap()
+
         XCTAssertTrue(app.any("foryou-row-sng_fix_1").waitForExistence(timeout: 10),
                       "the canned suggestion renders (no catalog resolution required)")
         XCTAssertTrue(app.staticTexts["Neon"].firstMatch.exists)

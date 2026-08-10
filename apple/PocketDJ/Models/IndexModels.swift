@@ -10,13 +10,59 @@ struct IndexJSON: Decodable {
     /// Apple Music user playlists carried in the catalog (optional / back-compat:
     /// the fixture & vinyl sources have none). Read-only "From your sources" lists.
     let playlists: [IndexPlaylist]?
+    /// Apple Music ARTIST ids, keyed by normalized artist name — stamped by
+    /// `scripts/backfill-artist-ids.mjs`. Optional: only the Apple Music source carries them,
+    /// and older/vinyl indexes have none. See `IndexArtist` for why this is a table and not a
+    /// per-song field.
+    let artists: [IndexArtist]?
 
     init(manifest: Manifest, albums: [IndexAlbum], songs: [IndexSong],
-         playlists: [IndexPlaylist]? = nil) {
+         playlists: [IndexPlaylist]? = nil, artists: [IndexArtist]? = nil) {
         self.manifest = manifest
         self.albums = albums
         self.songs = songs
         self.playlists = playlists
+        self.artists = artists
+    }
+}
+
+/// One artist's Apple Music catalog id, joined to songs by NORMALIZED NAME.
+///
+/// WHY A TABLE AND NOT A PER-SONG `artistId`. The id belongs to the artist, so a per-song field
+/// writes the same integer once per song — ~10x amplification (96,021 songs over 10,057 artists),
+/// which is ~2.1 MB of duplication on a document every install downloads, against ~800 KB for the
+/// whole table. The table is also the shape the release feed reads: its unit of work is "the set
+/// of artists played recently", which a per-song field would force a full-catalog scan to rebuild.
+/// And keying by name reaches the ~15k songs that carry no store id of their own but share an
+/// artist with a track that does.
+///
+/// `key` is `name.trimmed.lowercased` with runs of whitespace collapsed — the app MUST normalize
+/// identically (see `IndexArtist.normalize`) or the join silently misses.
+struct IndexArtist: Decodable, Identifiable, Hashable {
+    /// Normalized join key.
+    let key: String
+    /// Most common raw spelling, for display.
+    let name: String
+    /// Apple Music catalog artist id.
+    let id: Int
+    /// How many catalog songs are credited to this name.
+    ///
+    /// ADVISORY ONLY — do not branch on it. The nightly INCREMENTAL sync carries the table
+    /// forward wholesale (`{ ...idx }` in `am-incremental-sync.mjs`), which preserves the
+    /// irreplaceable name→id mapping but leaves this count as of the last backfill; only a full
+    /// rebuild through `am-merge-catalog-ids.mjs` recomputes it against the new song set.
+    let songs: Int?
+    /// Other artist ids seen under this same name — compilation/feature credits that resolved to a
+    /// different entity. `id` is the DOMINANT one (most songs); these are kept so nothing is lost.
+    let alt: [Int]?
+
+    /// The one normalization the join depends on. Must stay byte-identical to `norm()` in
+    /// `scripts/backfill-artist-ids.mjs` and `scripts/am-merge-catalog-ids.mjs`.
+    static func normalize(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .split(whereSeparator: { $0.isWhitespace })
+            .joined(separator: " ")
     }
 }
 

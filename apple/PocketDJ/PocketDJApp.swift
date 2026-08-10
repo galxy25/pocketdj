@@ -215,6 +215,10 @@ struct PocketDJApp: App {
     /// 56k-row doc in whole-document LWW would be pure churn.
     @State private var amPlayBaseline: AMPlayBaselineStore
     @State private var playCounts: PlayCountService
+    /// For You ▸ New — what the artists you play have released in the last 30 days. Its cache is
+    /// per-install and PERSONAL (derived from play history), so it never goes near the shared
+    /// catalog index. Refreshes lazily off the play event only; see `ReleaseFeedService`.
+    @State private var releaseFeed: ReleaseFeedService
     /// Device-local, append-only COLLECTION ACTIVITY log (F11) — add/heart/unheart/remove events
     /// behind the History view's Activity segment. Its own synced JSON, distinct from the play log.
     @State private var collectionActivity: CollectionActivityStore
@@ -448,6 +452,32 @@ struct PocketDJApp: App {
         // counter — a re-merge or a device restore would otherwise inflate it.
         playStats.peerLastPlayedAt = { [weak playHistory] songId in
             playHistory?.lastPlayedAtAnyDevice(songId)
+        }
+        // ── Release feed (For You ▸ New) ─────────────────────────────────────────────────────
+        // LAZY, ON-PLAY, NEVER SCHEDULED. The ONLY thing that starts a catalog request is a
+        // recorded play, hooked here off `PlayHistoryStore.onRecord` — the one choke point every
+        // play surface already funnels through, and one that fires only for plays the 30 s
+        // re-count window did NOT collapse. Nothing about the feed runs on a render path.
+        let releaseFeed = ReleaseFeedService()
+        _releaseFeed = State(initialValue: releaseFeed)
+        // The TTL is derived from the owner's OWN play counts for the artist (Apple exposes no
+        // artist-popularity field), summed across the artist's catalog songs.
+        releaseFeed.playsForArtist = { [weak app, weak playCounts] artistId in
+            guard let app, let playCounts else { return 0 }
+            return app.songIds(forArtistId: artistId).reduce(0) { $0 + playCounts.combinedPlayCount($1) }
+        }
+        // Don't offer him a record he already has. Applied on READ (not at fetch time) so an
+        // album added today drops out of the feed immediately, with no refetch — see
+        // `ReleaseFeedService.feed`.
+        releaseFeed.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        playHistory.onRecord = { [weak app, weak releaseFeed] event in
+            // The play event carries an artist NAME; the catalog endpoint needs an artist ID.
+            // That join is exactly what the index's `artists` table exists for — and a name it
+            // cannot place simply doesn't trigger a check.
+            guard let app, let releaseFeed else { return }
+            let name = event.artist ?? app.songsById[event.songId]?.artist
+            guard let name, let artistId = app.artistId(forArtistName: name) else { return }
+            releaseFeed.noteArtistPlayed(artistId: artistId, name: name)
         }
         let collectionActivity = CollectionActivityStore(fileURL: CollectionActivityStore.launchURL())
         _collectionActivity = State(initialValue: collectionActivity)
@@ -1297,6 +1327,7 @@ struct PocketDJApp: App {
                 .environment(playStats)
                 .environment(amPlayBaseline)
                 .environment(playCounts)
+                .environment(releaseFeed)
                 .environment(playHistory)
                 .environment(collectionActivity)
                 .environment(storage)

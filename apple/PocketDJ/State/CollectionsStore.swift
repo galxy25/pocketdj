@@ -1746,6 +1746,48 @@ final class CollectionsStore {
         var seen = Set<String>()
         return catalog().resolvePocketSongs(id, seen: &seen).map { $0.id }
     }
+    /// Every collection the For You grid may offer "add these" suggestions for.
+    ///
+    /// Both playlists and pockets, resolved through `playableIds` so a pocket's DAG and a
+    /// playlist's album/pocket members are expanded to real songs — suggesting a song that is
+    /// already in the collection via an album member would be an obvious wrong answer.
+    ///
+    /// EMPTY COLLECTIONS ARE EXCLUDED: with no members there is no profile to match against, so
+    /// any "suggestion" would be arbitrary. Setlists are excluded too — a setlist is a FROZEN
+    /// performance instance, so proposing additions to one is meaningless.
+    func suggestibleCollections() -> [(id: String, kind: String, name: String, songIds: [String])] {
+        var out: [(id: String, kind: String, name: String, songIds: [String])] = []
+        for p in playlists {
+            let ids = playableIds(forPlaylist: p.id)
+            if !ids.isEmpty { out.append((p.id, "playlist", p.name, ids)) }
+        }
+        for p in pockets {
+            let ids = playableIds(forPocket: p.id)
+            if !ids.isEmpty { out.append((p.id, "pocket", p.name, ids)) }
+        }
+        return out
+    }
+
+    /// Playable ids for a collection id whose KIND the caller doesn't know — the For You tiles
+    /// carry only an id, since the tile was built from `suggestibleCollections()`. Playlist is
+    /// tried first (ids are disjoint across the two stores, so order is arbitrary); an id that
+    /// matches neither returns [] rather than trapping, which is what a tile for a
+    /// since-deleted collection needs.
+    func playableIdsForAnyCollection(_ id: String) -> [String] {
+        if playlist(id) != nil { return playableIds(forPlaylist: id) }
+        if pocket(id) != nil { return playableIds(forPocket: id) }
+        return []
+    }
+
+    /// The `AddTarget` for a collection id of unknown kind — the For You collection tile's
+    /// one-tap ＋. nil when the id no longer resolves, so the caller falls back to the sheet
+    /// instead of adding into nothing.
+    func addTargetForAnyCollection(_ id: String) -> AddTarget? {
+        if playlist(id) != nil { return AddTarget(kind: .playlist, id: id, sequenceId: nil) }
+        if pocket(id) != nil { return AddTarget(kind: .pocket, id: id) }
+        return nil
+    }
+
     /// A frozen setlist's playable ids in FROZEN ORDER — studio rows included (they're
     /// snapshotted tracks like any other); only text cues (no backing item) drop out.
     func playableIds(forSetlist id: String) -> [String] {
