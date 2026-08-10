@@ -240,12 +240,11 @@ struct PocketDetailView: View {
         // The SHARED `CollectionToolbar` — identical furniture to the playlist screen. Adopting it
         // also fixed a real drift: this screen's ▶/🔀 were bare `Image`s where the playlist's were
         // `Label`s, so VoiceOver read them as unnamed buttons here and named ones there.
-        // ▶▶ Play All rides along for the same reason it does on the playlist screen: the owner
-        // asked for all three every time, and the two collection screens must not differ from each
-        // other OR from the tile screens. A pocket has no sunk tail, so ▶▶ is ▶ — accepted.
+        // It carries no ▶▶ Play All, for the same reason the playlist screen doesn't: the owner
+        // removed it everywhere at once (see `CollectionToolbar`), and these two screens must not
+        // differ from each other OR from the tile screens.
         .collectionToolbar(idPrefix: "pocket", noun: "pocket", canPlay: hasSongs,
                            play: { play(shuffle: $0) },
-                           playAll: { play(shuffle: false) },
                            menuItems: { overflowMenu })
         .alert("Add note", isPresented: $addingNote) {
             TextField("Note (a line of poetry, a cue…)", text: $noteDraft)

@@ -1080,19 +1080,12 @@ struct PlaylistDetailView: View {
         .scrollContentBackground(.hidden).background(Theme.bg)
         // Reappears when the user pops back from Now Playing — allow the next Play to push.
         .onAppear { nowPlayingPushed = false }
-        // 📱/☁️ · ▶ · ▶▶ · 🔀 · ⋯ — the SHARED `CollectionToolbar`. This screen is the one the owner
-        // points at ("like in a playlist"), and it is now the same FIVE items the pocket screen and
-        // the For You tile screens wear, from one definition.
-        //
-        // ▶▶ Play All is here even though a playlist has no thumbed-down tail for it to add, so it
-        // resolves to the same act as ▶. Owner, verbatim: *"always show play and play all and
-        // shuffle."* That was said about the tiles; applying it only there would have made the
-        // transport CHANGE SHAPE between two screens that are meant to be the same furniture —
-        // which is the drift this whole extraction exists to stop. A redundant control that never
-        // moves beats a control that appears and disappears by screen.
+        // 📱/☁️ · ▶ · 🔀 · ⋯ — the SHARED `CollectionToolbar`. This screen is the one the owner
+        // points at ("like in a playlist"), and it is now the same FOUR items the pocket screen and
+        // the For You tile screens wear, from one definition. (It briefly carried a fifth, ▶▶ Play
+        // All, which the owner removed — see `CollectionToolbar`.)
         .collectionToolbar(idPrefix: "playlist", noun: "playlist", canPlay: itemCount > 0,
                            play: { play(shuffle: $0) },
-                           playAll: { play(shuffle: false) },
                            menuItems: { overflowMenu })
         .modifier(playlistAlerts)
         .alert("Sync from source", isPresented: syncResultShowing) {
