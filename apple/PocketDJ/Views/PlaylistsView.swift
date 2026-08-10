@@ -557,16 +557,12 @@ struct PlaylistsView: View {
         .listRowBackground(dropTargetId == pl.id ? Theme.accent.opacity(0.18) : nil)
     }
 
+    /// MANAGEMENT ONLY — NO PLAY ITEMS HERE. A round of this shipped ▶/🔀 straight off the row and
+    /// the owner rejected it outright ("i dont want a row level play menu"): playing a collection
+    /// is what its DETAIL screen's floating toolbar is for, and duplicating it into every row
+    /// turned a long-press meant for rename/move/delete into a transport. `CollectionToolbar` is
+    /// where that pair lives now — one screen, one place.
     @ViewBuilder private func playlistRowMenu(_ pl: Playlist) -> some View {
-        // ▶ Play / 🔀 Shuffle straight off the row — the SHARED `CollectionPlayMenuItems`, the
-        // same component the For You tiles use ("a tile is just a setlist"). Playing a collection
-        // used to require opening it first; these are its detail toolbar's Play/Shuffle in menu
-        // form, defined once so the two surfaces cannot drift apart.
-        CollectionPlayMenuItems(title: pl.name,
-                                songIds: collections.playableIds(forPlaylist: pl.id),
-                                source: .playlist, originId: pl.id,
-                                idPrefix: "playlist-row-\(pl.id)")
-        Divider()
         Button { nameDraft = pl.name; renamingId = pl.id } label: { Label("Rename", systemImage: "pencil") }
             .accessibilityIdentifier("list-rename-\(pl.id)")
         Menu {
@@ -619,13 +615,8 @@ struct PlaylistsView: View {
         .listRowBackground(dropTargetId == pocket.id ? Theme.accent.opacity(0.18) : nil)
     }
 
+    /// Management only — same rule as `playlistRowMenu` above: no transport on a row.
     @ViewBuilder private func pocketRowMenu(_ pocket: Pocket) -> some View {
-        // Same shared trio as the playlist row above (and as a For You tile).
-        CollectionPlayMenuItems(title: pocket.name,
-                                songIds: collections.playableIds(forPocket: pocket.id),
-                                source: .pocket, originId: pocket.id,
-                                idPrefix: "pocket-row-\(pocket.id)")
-        Divider()
         Button { pocketNameDraft = pocket.name; renamingPocketId = pocket.id } label: { Label("Rename", systemImage: "pencil") }
             .accessibilityIdentifier("list-rename-\(pocket.id)")
         // Move to folder
@@ -1089,73 +1080,12 @@ struct PlaylistDetailView: View {
         .scrollContentBackground(.hidden).background(Theme.bg)
         // Reappears when the user pops back from Now Playing — allow the next Play to push.
         .onAppear { nowPlayingPushed = false }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                PlaybackModeToggle()
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { play(shuffle: false) } label: { Label("Play", systemImage: "play.fill") }
-                    .help("Play this playlist now")
-                    .disabled(itemCount == 0)
-                    .accessibilityIdentifier("playlist-play")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                Button { play(shuffle: true) } label: { Label("Shuffle", systemImage: "shuffle") }
-                    .help("Shuffle-play this playlist now")
-                    .disabled(itemCount == 0)
-                    .accessibilityIdentifier("playlist-shuffle")
-            }
-            // The ⋯ menu holds everything beyond the primary Play/Shuffle so the toolbar
-            // stays at 4 items and never overflows on compact-width iPhone (where a 7th
-            // item used to collapse the whole menu behind a nested system "More").
-            ToolbarItem(placement: .primaryAction) {
-                Menu {
-                    // Per-playlist sort + filter (folded into the ⋯ menu). Applies within each chapter.
-                    CollectionSortFilterMenuButtons(browse: browse, showSort: $showSort, showFilter: $showFilter)
-                    // Multi-select: arm Select mode for this list / paste the copied songs
-                    // (→ default chapter, deduped).
-                    Button { rowSelection.enterSelectMode(scope: selectionScope, initial: nil) } label: {
-                        Label("Select songs", systemImage: "checklist")
-                    }
-                    .accessibilityIdentifier("select-songs")
-                    Button { rowSelection.performPaste() } label: {
-                        Label("Paste songs", systemImage: "doc.on.clipboard")
-                    }
-                    .disabled(!SongPasteboard.hasSongs)
-                    .accessibilityIdentifier("paste-songs")
-                    Divider()
-                    Button { realizeToSetlist() } label: { Label("Make set list", systemImage: "list.bullet.clipboard") }
-                        .disabled(itemCount == 0)
-                        .accessibilityIdentifier("playlist-realize")
-                    Button { showNewSeq = true } label: { Label("Add chapter", systemImage: "plus.rectangle.on.rectangle") }
-                        .accessibilityIdentifier("add-chapter")
-                    #if os(iOS)
-                    EditButton().accessibilityIdentifier("edit-order")   // toggles drag-reorder of chapters + items
-                    #endif
-                    Divider()
-                    Button { nameDraft = playlist?.name ?? ""; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
-                        .accessibilityIdentifier("rename-playlist")
-                    Button { showFormatDialog = true } label: { Label("Export…", systemImage: "square.and.arrow.up") }
-                        .accessibilityIdentifier("export-playlist")
-                    Button { convertToPocket() } label: { Label("Convert to pocket", systemImage: "rectangle.stack.badge.plus") }
-                        .disabled(itemCount == 0)
-                        .accessibilityIdentifier("convert-to-pocket")
-                    if playlist?.hasSource == true { sourceSyncMenuItems }
-                    // ALL playlists can push to Apple Music (create-if-absent), so the DIRECTION
-                    // control shows unconditionally (Levi 2026-07-29): "Get only" = never push —
-                    // the smart-playlist setting; "Off" = never sync either way.
-                    amSyncDirectionMenuItem
-                    amSyncNowMenuItem
-                    cleanOnlyMenuItem
-                    Divider()
-                    CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.ripIds(forPlaylist: playlistId) }, noun: "playlist")
-                    Divider()
-                    Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete playlist", systemImage: "trash") }
-                        .accessibilityIdentifier("delete-playlist")
-                } label: { Image(systemName: "ellipsis.circle") }
-                    .accessibilityIdentifier("playlist-menu")
-            }
-        }
+        // 📱/☁️ · ▶ · 🔀 · ⋯ — the SHARED `CollectionToolbar`. This screen is the one the owner
+        // points at ("like in a playlist"), and it is now the same four items the pocket screen
+        // and the For You tile screens wear, from one definition.
+        .collectionToolbar(idPrefix: "playlist", noun: "playlist", canPlay: itemCount > 0,
+                           play: { play(shuffle: $0) },
+                           menuItems: { overflowMenu })
         .modifier(playlistAlerts)
         .alert("Sync from source", isPresented: syncResultShowing) {
             Button("OK") { syncResult = nil }
@@ -1195,6 +1125,55 @@ struct PlaylistDetailView: View {
         } message: {
             Text("PocketDJ keeps everything (re-importable). CSV is a universal tracklist (title, artist, album, year, genre).")
         }
+    }
+
+    /// The ⋯ menu — everything beyond the primary Play/Shuffle, so the toolbar stays at 4 items
+    /// and never overflows on compact-width iPhone (where a 7th item used to collapse the whole
+    /// menu behind a nested system "More"). Lifted out of `body` for the type-checker, same
+    /// medicine as `playlistAlerts` below.
+    @ViewBuilder private var overflowMenu: some View {
+        // Per-playlist sort + filter (folded into the ⋯ menu). Applies within each chapter.
+        CollectionSortFilterMenuButtons(browse: browse, showSort: $showSort, showFilter: $showFilter)
+        // Multi-select: arm Select mode for this list / paste the copied songs
+        // (→ default chapter, deduped).
+        Button { rowSelection.enterSelectMode(scope: selectionScope, initial: nil) } label: {
+            Label("Select songs", systemImage: "checklist")
+        }
+        .accessibilityIdentifier("select-songs")
+        Button { rowSelection.performPaste() } label: {
+            Label("Paste songs", systemImage: "doc.on.clipboard")
+        }
+        .disabled(!SongPasteboard.hasSongs)
+        .accessibilityIdentifier("paste-songs")
+        Divider()
+        Button { realizeToSetlist() } label: { Label("Make set list", systemImage: "list.bullet.clipboard") }
+            .disabled(itemCount == 0)
+            .accessibilityIdentifier("playlist-realize")
+        Button { showNewSeq = true } label: { Label("Add chapter", systemImage: "plus.rectangle.on.rectangle") }
+            .accessibilityIdentifier("add-chapter")
+        #if os(iOS)
+        EditButton().accessibilityIdentifier("edit-order")   // toggles drag-reorder of chapters + items
+        #endif
+        Divider()
+        Button { nameDraft = playlist?.name ?? ""; renaming = true } label: { Label("Rename…", systemImage: "pencil") }
+            .accessibilityIdentifier("rename-playlist")
+        Button { showFormatDialog = true } label: { Label("Export…", systemImage: "square.and.arrow.up") }
+            .accessibilityIdentifier("export-playlist")
+        Button { convertToPocket() } label: { Label("Convert to pocket", systemImage: "rectangle.stack.badge.plus") }
+            .disabled(itemCount == 0)
+            .accessibilityIdentifier("convert-to-pocket")
+        if playlist?.hasSource == true { sourceSyncMenuItems }
+        // ALL playlists can push to Apple Music (create-if-absent), so the DIRECTION
+        // control shows unconditionally (Levi 2026-07-29): "Get only" = never push —
+        // the smart-playlist setting; "Off" = never sync either way.
+        amSyncDirectionMenuItem
+        amSyncNowMenuItem
+        cleanOnlyMenuItem
+        Divider()
+        CollectionRipBurnButtons(controller: ripBurn, songIds: { collections.ripIds(forPlaylist: playlistId) }, noun: "playlist")
+        Divider()
+        Button(role: .destructive) { confirmingDelete = true } label: { Label("Delete playlist", systemImage: "trash") }
+            .accessibilityIdentifier("delete-playlist")
     }
 
     /// New-chapter / rename-playlist / rename-chapter / add-note alerts, grouped into
