@@ -207,4 +207,39 @@ final class SettingsUITests: XCTestCase {
         shot.name = "settings-mix-section"; shot.lifetime = .keepAlways
         add(shot)
     }
+
+    /// HOW OFTEN For You REFRESHES (owner: *"default to Friday @ 4:20 and support hourly, daily,
+    /// or monthly"*). The schedule's arithmetic is unit-tested in `ForYouRefreshScheduleTests`;
+    /// what this proves is the part no unit test can — that the section RENDERS, that it ships on
+    /// Weekly, and that the dependent rows are bound to the cadence rather than always drawn.
+    ///
+    /// The weekday row is the tell: it exists ONLY under Weekly. If the picker were unbound (a
+    /// dead control that changes nothing), the row would still be there after switching away.
+    func testForYouRefreshScheduleSectionRendersAndBinds() {
+        let app = launch()
+        let cadence = app.descendants(matching: .any)["foryou-cadence"]
+        XCTAssertTrue(reveal(app, cadence, tries: 16), "the For You refresh-cadence picker")
+        // The shipped default is Weekly → weekday + time + the next-refresh readout are all shown.
+        let weekday = app.descendants(matching: .any)["foryou-weekday"]
+        XCTAssertTrue(weekday.waitForExistence(timeout: 5), "Weekly shows a weekday row")
+        XCTAssertTrue(app.descendants(matching: .any)["foryou-time"].exists, "and a time row")
+        XCTAssertTrue(app.descendants(matching: .any)["foryou-next-refresh"].exists,
+                      "and says when the next refresh lands")
+        snap("foryou-schedule-weekly")
+
+        // Choose "Only when I ask" — the option that preserves the tab's shipped
+        // refresh-on-demand behaviour — and the weekday/time rows must go away.
+        cadence.tap()
+        let manual = app.buttons["Only when I ask"]
+        guard manual.waitForExistence(timeout: 5) else {
+            // A picker that opened no menu is still a rendered picker; don't fail the suite on a
+            // platform's presentation style, but say so.
+            XCTFail("the cadence picker offered no options menu")
+            return
+        }
+        manual.tap()
+        snap("foryou-schedule-manual")
+        wait(for: [expectation(for: NSPredicate(format: "exists == false"), evaluatedWith: weekday)],
+             timeout: 5)   // the weekday row is gone ⇒ the picker really drove the setting
+    }
 }
