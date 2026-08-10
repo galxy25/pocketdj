@@ -77,7 +77,8 @@ struct DemuxInstrumentalView: View {
             if !bars.isEmpty { barChips }
             FollowScoreView(pages: pages, bpm: takeBpm, firstDownbeatMs: firstDownbeatMs,
                             player: player, follow: follow, currentSystem: currentSystem,
-                            marksByPage: marksByPage, slots: slots, onSeek: onSeek)
+                            marksByPage: marksByPage, slots: slots, onSeek: onSeek,
+                            onTapSystem: { currentSystem = $0 })
         }
         .task(id: rebuildKey) { await rebuild() }
         // ONE shared follow poll: read the non-Observable player clock and advance BOTH the bar
@@ -302,6 +303,11 @@ struct FollowScoreView: View {
     /// SONG-relative seek — the same callback the bar chips use, so tapping the score and tapping
     /// a bar mean the same thing. Default no-op keeps a read-only follower read-only.
     var onSeek: (Int) -> Void = { _ in }
+    /// A system was TAPPED (index): the host moves `currentSystem` there so the single playback
+    /// overlay follows the tap. Matters with Follow OFF, where the follow poll is parked and the
+    /// system the user has hand-scrolled to is exactly the one that isn't painted — without this a
+    /// tap out there would move the song with no visible cursor.
+    var onTapSystem: (Int) -> Void = { _ in }
 
     /// Map a playhead time (original-audio clock, ms) to a score system index. Re-anchors to
     /// `firstDownbeatMs` (0 ms = beat 1, the score's own anchor), then measure → system. Pure +
@@ -358,9 +364,26 @@ struct FollowScoreView: View {
         // FIX 3: ONE clocked overlay for the whole score — only the CURRENT system carries the
         // playback paint, so a long score runs a single 10 Hz host clock instead of one per
         // system. `currentSystem` is the follow poll's output (playing OR paused scrub).
-        return ScorePageView(page: page, playback: i == currentSystem ? layer(for: i) : nil)
+        //
+        // The SEEK is wired on every system regardless (it costs nothing — no clock, no timer):
+        // with Follow off, the system the user has hand-scrolled to is precisely the one that is
+        // NOT painted, and that is exactly when they tap it to jump there.
+        return ScorePageView(page: page, playback: i == currentSystem ? layer(for: i) : nil,
+                             seekTarget: seekTarget(for: i))
             .aspectRatio(page.size.width / page.size.height, contentMode: .fit)
             .accessibilityIdentifier("score-system-\(i)")
+    }
+
+    /// Tap the score → seek the SONG: score clock (0 ms = beat 1) back through the same
+    /// `firstDownbeatMs` anchor the playhead uses, into `onSeek` — the very callback the bar chips
+    /// call, so tapping the sheet and tapping a bar mean the same thing, just at note resolution.
+    /// The tapped system also becomes the painted one, so the cursor appears where the finger went.
+    private func seekTarget(for i: Int) -> ScorePageView.SeekTarget {
+        let firstDownbeatMs = firstDownbeatMs, onSeek = onSeek, onTapSystem = onTapSystem
+        return ScorePageView.SeekTarget(bpm: bpm) { scoreMs in
+            onTapSystem(i)
+            onSeek(max(0, scoreMs + firstDownbeatMs))
+        }
     }
 
     /// The current system's playback layer: cursor + played-behind + current/last-played note,
@@ -368,9 +391,11 @@ struct FollowScoreView: View {
     /// comes from `ScoreLayout.playhead` — the note heads' own `xPosition` — instead of a
     /// system-wide linear interpolation, which drifted off the heads by the per-measure padding.
     private func layer(for i: Int) -> ScorePlaybackLayer {
-        let firstDownbeatMs = firstDownbeatMs, onSeek = onSeek
+        let firstDownbeatMs = firstDownbeatMs
         return ScorePlaybackLayer(
             pageIndex: i, pages: pages, marks: marksByPage[i] ?? [], slots: slots, bpm: bpm,
+            // PAINT only — the tap is wired per row by `seekTarget` (see `systemRow`), because a
+            // system that isn't painted must still be tappable.
             clock: ScorePlaybackClock(
                 positionMs: {
                     // Song clock → score clock (0 ms = beat 1). `currentTime` returns
@@ -379,9 +404,6 @@ struct FollowScoreView: View {
                     let ms = player.currentTime * 1_000
                     guard ms.isFinite else { return 0 }
                     return Int(min(max(ms, 0), 86_400_000)) - firstDownbeatMs
-                },
-                // Tap the score → seek the SONG, the inverse of the same anchor (score clock →
-                // song clock). Identical to tapping a bar chip, just at note resolution.
-                seek: { scoreMs in onSeek(max(0, scoreMs + firstDownbeatMs)) }))
+                }))
     }
 }

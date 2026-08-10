@@ -79,14 +79,21 @@ final class ScoreCursorStore {
 
     /// Remember (or, with `nil`, forget) a take's cursor. Writing through immediately: the marks
     /// are tiny, the write points are user-paced (a tap-seek, a replay ending, leaving the screen),
-    /// and a debounce would just be a way to lose the last one to a force-quit.
+    /// and a debounce would just be a way to lose the last one to a force-quit. (The disk write
+    /// itself is off the main thread — see `save()` — so a burst of taps never does file I/O
+    /// inside the gesture handler.)
+    ///
+    /// A write that doesn't MOVE the cursor is dropped entirely — compared on `ms`, not on the
+    /// whole mark, because `updatedAt` always differs and would re-encode + rewrite the file every
+    /// time a score is merely opened and closed. The mark keeps its original `updatedAt`, so the
+    /// capacity eviction below ranks takes by when their position last CHANGED.
     func setPosition(_ ms: Int?, for takeId: String,
                      at now: Double = Date().timeIntervalSince1970 * 1000) {
         guard !takeId.isEmpty else { return }
         guard let ms else { remove(takeId); return }
-        let mark = Mark(ms: max(0, min(ms, Self.maxMs)), updatedAt: now)
-        guard marks[takeId] != mark else { return }
-        marks[takeId] = mark
+        let clamped = max(0, min(ms, Self.maxMs))
+        guard marks[takeId]?.ms != clamped else { return }
+        marks[takeId] = Mark(ms: clamped, updatedAt: now)
         marks = Self.pruned(marks, capacity: Self.capacity)
         save()
     }
@@ -97,17 +104,19 @@ final class ScoreCursorStore {
         save()
     }
 
-    /// Drop marks for takes that no longer exist (called when the studio document is reconciled).
+    /// Drop marks for takes that no longer exist — called by `StudioStore.init` once the studio
+    /// document has decoded, so a take removed by any path (not just `deleteTake`) can't leave a
+    /// mark behind for an id that will never be asked for again.
     func prune(keeping takeIds: Set<String>) {
         let before = marks.count
         marks = marks.filter { takeIds.contains($0.key) }
         if marks.count != before { save() }
     }
 
-    func clear() {
-        marks = [:]
-        try? FileManager.default.removeItem(at: fileURL)
-    }
+    /// TEST/teardown seam: block until every queued write has landed on disk. Production never
+    /// needs it — the queue is serial and each write is atomic, so the file is always either the
+    /// previous or the next state — but a test that re-reads the file right after writing does.
+    func flush() { Self.io.sync {} }
 
     /// Keep the `capacity` most recently written marks. Pure + static so the eviction order is
     /// testable without touching the disk.
@@ -122,9 +131,17 @@ final class ScoreCursorStore {
         return Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
     }
 
+    /// SERIAL, off the main thread. Every write point here is a UI gesture (a tap-to-seek, leaving
+    /// a score), and an atomic write is file I/O — temp file, rename — which has no business
+    /// blocking a gesture handler. One serial queue keeps the writes in order, and each is atomic,
+    /// so a reader only ever sees a whole document. Only the encoded BYTES cross the boundary,
+    /// never `self`.
+    private static let io = DispatchQueue(label: "com.pocketdj.score-cursors", qos: .utility)
+
     private func save() {
         guard let data = try? JSONEncoder().encode(Document(marks: marks)) else { return }
-        try? data.write(to: fileURL, options: .atomic)
+        let url = fileURL
+        Self.io.async { try? data.write(to: url, options: .atomic) }
     }
 }
 

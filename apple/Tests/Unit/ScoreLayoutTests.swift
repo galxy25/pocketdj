@@ -323,23 +323,69 @@ final class ScoreLayoutTests: XCTestCase {
         XCTAssertEqual(far, 16, accuracy: 1e-6)
     }
 
-    /// A tap that misses every system (the header band, the gap between systems, a NaN point) is
-    /// no seek at all — the same refusal `locate` gives note entry.
-    func testTime16thsIsNilOffEverySystem() {
+    /// A tap that misses every staff band still SEEKS — to the nearest system. A single-staff band
+    /// is only ~42 pt on an iPhone with dead strips between the systems, and a tap that does nothing
+    /// with no feedback reads as broken. (Note ENTRY keeps refusing those points — `locate` does
+    /// not use this fallback, because placing a note is destructive and a cursor move is not.)
+    func testTapsOffTheStaffSeekTheNearestSystem() {
         var measures = (0..<8).map { ScoreMeasure(index: $0, items: []) }
         measures[0].items = [note(0, 64)]
         let pages = ScoreLayout.paginate(score: doc(measures), title: "T", instrument: .violin)
         let page = pages[0]
-        XCTAssertNil(ScoreLayout.time16ths(at: CGPoint(x: 200, y: 4), page: page),
-                     "the title/header band is not a seek")
-        XCTAssertNil(ScoreLayout.time16ths(at: CGPoint(x: 200, y: CGFloat.nan), page: page))
-        XCTAssertNil(ScoreLayout.time16ths(at: CGPoint(x: 200, y: 10_000), page: page))
-        // The gap BETWEEN two systems: below system 0's ledger headroom, above system 1's.
         let s0 = page.systems[0], s1 = page.systems[1]
-        let gapY = (s0.strips.last!.top + 4 * s0.spacing + 3 * s0.spacing
-                    + s1.strips.first!.top - 3 * s1.spacing) / 2
-        XCTAssertNil(ScoreLayout.time16ths(at: CGPoint(x: 200, y: gapY), page: page),
-                     "the gap between systems belongs to neither")
+        let x = s0.measures[0].x + s0.measures[0].width / 2
+        // The gap BETWEEN two systems: below system 0's ledger headroom, above system 1's.
+        let gap0 = s0.strips.last!.top + 4 * s0.spacing + 3 * s0.spacing
+        let gap1 = s1.strips.first!.top - 3 * s1.spacing
+        let justBelow0 = try! XCTUnwrap(ScoreLayout.time16ths(at: CGPoint(x: x, y: gap0 + 1), page: page))
+        let justAbove1 = try! XCTUnwrap(ScoreLayout.time16ths(at: CGPoint(x: x, y: gap1 - 1), page: page))
+        XCTAssertLessThan(justBelow0, 4 * 16, "just under system 0 belongs to system 0's measures")
+        XCTAssertGreaterThanOrEqual(justAbove1, 4 * 16, "just over system 1 belongs to system 1's")
+        // The title/header band and the bottom margin resolve to the first / last system, not nil.
+        let head = CGPoint(x: s0.measures[0].x + 1, y: 4)   // above everything, at bar 1's left edge
+        XCTAssertEqual(try! XCTUnwrap(ScoreLayout.time16ths(at: head, page: page)),
+                       0, accuracy: 1e-6, "a tap in the header seeks the top system's first bar")
+        XCTAssertNotNil(ScoreLayout.time16ths(at: CGPoint(x: x, y: 10_000), page: page))
+        // But note ENTRY still refuses every one of them — the fallback is seek-only.
+        XCTAssertNil(ScoreLayout.locate(point: CGPoint(x: x, y: gap0 + 1), page: page))
+        XCTAssertNil(ScoreLayout.locate(point: head, page: page))
+        // A non-coordinate is never a seek, and a page with nothing laid on it has nowhere to seek.
+        XCTAssertNil(ScoreLayout.time16ths(at: CGPoint(x: 200, y: CGFloat.nan), page: page))
+        XCTAssertNil(ScoreLayout.time16ths(at: CGPoint(x: CGFloat.infinity, y: 20), page: page))
+        let empty = ScoreLayout.paginate(score: doc([]), title: "T", instrument: .violin)[0]
+        XCTAssertTrue(empty.systems.isEmpty)
+        XCTAssertNil(ScoreLayout.time16ths(at: CGPoint(x: 200, y: 200), page: empty))
+    }
+
+    /// The measure PADS. `xPosition` lays a bar's 16 slots inside its width with `measureHeadPad`
+    /// of breathing room at each end, so no x in a pad is any slot's x and a tap there CLAMPS. The
+    /// right pad therefore reads as the bar's END — which is the same instant as the next bar's
+    /// downbeat, and that is where the cursor draws. Pinning the semantics: the mapping is exact
+    /// about TIME, and the cursor may legitimately land a pad (or a line-break) from the finger.
+    func testTapInAMeasuresRightPadIsTheNextBarsDownbeat() {
+        var measures = (0..<8).map { ScoreMeasure(index: $0, items: []) }
+        measures[1].items = [note(0, 64)]
+        let pages = ScoreLayout.paginate(score: doc(measures), title: "T", instrument: .violin)
+        let page = pages[0]
+        let sys = page.systems[0]
+        let m0 = sys.measures[0], m1 = sys.measures[1]
+        let y = sys.strips[0].top + 2 * sys.spacing
+        // A tap in bar 0's right pad — past its last head, before the barline.
+        let t = try! XCTUnwrap(ScoreLayout.time16ths(at: CGPoint(x: m0.x + m0.width - 2, y: y),
+                                                     page: page))
+        XCTAssertEqual(t, 16, accuracy: 1e-9, "the end of bar 0 == the downbeat of bar 1")
+        // …and the cursor for that time draws on bar 1's downbeat, on the same page.
+        let ph = try! XCTUnwrap(ScoreLayout.playhead(at: t, pages: pages))
+        XCTAssertEqual(ph.x, ScoreLayout.xPosition(fractional16ths: 0, measureX: m1.x,
+                                                   measureWidth: m1.width), accuracy: 1e-9)
+        // The LEFT pad clamps the other way: it is that bar's own downbeat, never the bar before.
+        let left = try! XCTUnwrap(ScoreLayout.time16ths(at: CGPoint(x: m1.x + 1, y: y), page: page))
+        XCTAssertEqual(left, 16, accuracy: 1e-9)
+        // Which makes the whole strip between two heads monotonic in time — no bar ever reads
+        // backwards, whichever side of a barline the finger lands.
+        let ts = stride(from: m0.x + 1, to: m1.x + m1.width - 1, by: 3)
+            .map { ScoreLayout.time16ths(at: CGPoint(x: $0, y: y), page: page) ?? -1 }
+        for i in 1..<ts.count { XCTAssertGreaterThanOrEqual(ts[i], ts[i - 1]) }
     }
 
     /// Score-clock ms ↔ fractional 16ths must invert too — the seek is expressed in the same ms

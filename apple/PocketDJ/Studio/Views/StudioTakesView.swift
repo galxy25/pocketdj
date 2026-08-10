@@ -672,6 +672,11 @@ enum StudioTakeReplay {
     /// `fromMs` starts the replay part-way in — the score screen passes where its cursor was left
     /// (`resumeMs`) so tapping the sheet and then pressing Replay plays from there. The takes LIST
     /// leaves it 0: the parked cursor there could belong to a different instrumental entirely.
+    ///
+    /// Every replay is STAMPED with its take (`forTake:`), wherever it was started from — the row
+    /// button here included. That stamp is what lets a score screen tell "my cursor" from "the
+    /// clock of the instrumental someone started in the list", which it must, because remembering
+    /// the wrong one is now durable.
     @discardableResult
     static func toggle(take: StudioTake, instruments: InstrumentEngine,
                        packs: InstrumentPackStore, fromMs: Int = 0) -> Bool {
@@ -681,7 +686,8 @@ enum StudioTakeReplay {
         }
         guard !take.scoreEvents.isEmpty else { return true }   // nothing to play — not an error
         if instruments.currentInstrument == take.instrument {
-            instruments.replayTake(events: take.scoreEvents, instrument: take.instrument, fromMs: fromMs)
+            instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
+                                   fromMs: fromMs, forTake: take.id)
             return true
         }
         // Wrong (or no) instrument loaded: load the right bank first when it's downloaded.
@@ -690,14 +696,15 @@ enum StudioTakeReplay {
             Task { @MainActor in
                 _ = await instruments.loadInstrument(take.instrument, bankURL: url)
                 instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
-                                       fromMs: fromMs)
+                                       fromMs: fromMs, forTake: take.id)
             }
             return true
         }
         // No bank for this instrument on disk. If SOMETHING is loaded, degrade to it
         // (audible, logged); with nothing loaded the sampler is silent — report that.
         if instruments.currentInstrument != nil {
-            instruments.replayTake(events: take.scoreEvents, instrument: take.instrument, fromMs: fromMs)
+            instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
+                                   fromMs: fromMs, forTake: take.id)
             return true
         }
         return false

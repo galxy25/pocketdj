@@ -166,6 +166,12 @@ final class StudioStore {
             arrangements = doc.arrangements
             arrangementFolders = doc.arrangementFolders
             arrangementArtifacts = doc.arrangementArtifacts
+            // Drop score cursors whose instrumental is gone. `deleteTake` already removes them one
+            // by one; this catches every OTHER way a take can leave the document (an import that
+            // replaces it, a hand-edited doc), so the sibling file can't accumulate dead ids.
+            // Inside the decode branch on purpose: a doc that failed to load must NOT be read as
+            // "there are no takes" and take every remembered cursor with it.
+            scoreCursors.prune(keeping: Set(takes.map(\.id)))
         }
     }
 
@@ -1493,6 +1499,9 @@ final class StudioStore {
         // Persist a pending debounced cue nudge to the SYNCED mirror before suspension (only when a
         // cue change is actually pending — never on a non-cue background flush, so no spurious push).
         if cueMirrorDirty { writeCueMirror() }
+        // Score cursors write on a background queue; wait for the queue to drain so a suspension
+        // (or a test re-reading the file) can't land between the seek and its write.
+        scoreCursors.flush()
         let w = writer
         Task { await w.markWritten(v) }
     }

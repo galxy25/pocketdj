@@ -215,18 +215,50 @@ enum ScoreLayout {
     nonisolated static func measure(at p: CGPoint, page: ScorePage)
         -> (system: LaidSystem, measure: LaidMeasure)? {
         guard p.x.isFinite, p.y.isFinite else { return nil }
-        for sys in page.systems {
-            let s = sys.spacing
-            guard let first = sys.strips.first, let last = sys.strips.last else { continue }
-            let top = first.top - 3 * s                 // ledgerPad = 3·spacing headroom
-            let bottom = last.top + 4 * s + 3 * s
-            guard p.y >= top, p.y <= bottom else { continue }
-            let lm = sys.measures.first { p.x >= $0.x && p.x < $0.x + $0.width }
-                ?? sys.measures.min { abs(($0.x + $0.width / 2) - p.x) < abs(($1.x + $1.width / 2) - p.x) }
-            guard let lm else { continue }
+        for sys in page.systems where verticalDistance(from: p.y, to: sys) == 0 {
+            guard let lm = measure(inSystem: sys, atX: p.x) else { continue }
             return (sys, lm)
         }
         return nil
+    }
+
+    /// How far a y is OUTSIDE a system's hit band (staves + ledger headroom); 0 = inside it.
+    /// The one definition of that band — `measure(at:)` tests it for zero, the seek fallback below
+    /// minimises it.
+    private nonisolated static func verticalDistance(from y: CGFloat, to sys: LaidSystem) -> CGFloat {
+        guard let first = sys.strips.first, let last = sys.strips.last else { return .infinity }
+        let s = sys.spacing
+        let top = first.top - 3 * s                     // ledgerPad = 3·spacing headroom
+        let bottom = last.top + 4 * s + 3 * s
+        if y < top { return top - y }
+        if y > bottom { return y - bottom }
+        return 0
+    }
+
+    /// Which measure of a system an x falls in, snapping to the nearest when the x is between
+    /// measures (a short last system's right-hand slack). Shared so every hit-test picks the bar
+    /// the same way.
+    private nonisolated static func measure(inSystem sys: LaidSystem, atX x: CGFloat) -> LaidMeasure? {
+        sys.measures.first { x >= $0.x && x < $0.x + $0.width }
+            ?? sys.measures.min { abs(($0.x + $0.width / 2) - x) < abs(($1.x + $1.width / 2) - x) }
+    }
+
+    /// SEEK-ONLY: the nearest system on the page when a point misses every hit band — the gap
+    /// between two systems, the title header, the bottom margin. A cursor is a coarse target
+    /// (a single-staff band is ~42 pt on an iPhone, and the gaps between them are dead), and a tap
+    /// that does nothing with no feedback reads as broken; the nearest system is unambiguous
+    /// because systems are stacked, never side by side.
+    ///
+    /// Deliberately NOT used by `locate`: note ENTRY must refuse an off-staff tap rather than guess
+    /// which staff it meant — placing a note is destructive, moving a cursor is not.
+    private nonisolated static func nearestMeasure(at p: CGPoint, page: ScorePage)
+        -> (system: LaidSystem, measure: LaidMeasure)? {
+        guard p.x.isFinite, p.y.isFinite else { return nil }
+        let ranked = page.systems.map { ($0, verticalDistance(from: p.y, to: $0)) }
+            .filter { $0.1.isFinite }
+            .min { $0.1 < $1.1 }
+        guard let sys = ranked?.0, let lm = measure(inSystem: sys, atX: p.x) else { return nil }
+        return (sys, lm)
     }
 
     /// Invert a page-space tap into score coordinates. Picks the system + measure
@@ -339,8 +371,9 @@ enum ScoreLayout {
 
     /// THE INVERSE of `playhead(at:pages:)`: a PAGE-space point on a laid page → the absolute
     /// FRACTIONAL 16th the cursor sits at for that x — i.e. what tapping the sheet means in time.
-    /// nil when the point misses every system on the page (the gap between systems, the header
-    /// band, the margins), which is exactly when `locate` refuses a tap too.
+    /// nil only when the page has no systems to seek into (an empty score's header-only page) or
+    /// the point is not a real coordinate; a point that misses every staff band falls back to the
+    /// nearest system, so the dead strips between systems still seek (`nearestMeasure`).
     ///
     /// Inverse by CONSTRUCTION, not by parallel derivation: the measure comes from the same
     /// `measure(at:page:)` the note editor uses, and the within-measure fraction from
@@ -348,11 +381,19 @@ enum ScoreLayout {
     /// precisely the time whose cursor is drawn at that x — `ScoreLayoutTests
     /// .testTime16thsInvertsThePlayheadOnALaidScore` pins the round trip on really laid pages.
     ///
-    /// A tap past the last head of a measure reads as that measure's END (16/16), which is the
-    /// same position the cursor parks at there — the two agree at the boundary rather than
-    /// disagreeing by one bar.
+    /// BOUNDARIES. `xPosition` maps a bar's 16 slots onto its inner width, leaving a `measureHeadPad`
+    /// of breathing room at each end, so the pads are outside the mapped range and a tap in them
+    /// CLAMPS: the left pad reads as the bar's downbeat, the right pad as its END, 16/16. The end of
+    /// bar M and the downbeat of bar M + 1 are the SAME INSTANT, and that instant's cursor is drawn
+    /// at bar M + 1's downbeat — so a tap in a bar's right pad seeks to the next bar's downbeat and
+    /// the cursor draws there (up to a pad or two, or a line-break, away from the finger). That is
+    /// the mapping being exact about time, not drifting: `testTapInAMeasuresRightPadIsTheNextBarsDownbeat`
+    /// pins it. Only for the LAST laid measure — where there is no next bar — does the cursor park
+    /// on the tap itself.
     nonisolated static func time16ths(at p: CGPoint, page: ScorePage) -> Double? {
-        guard let hit = measure(at: p, page: page) else { return nil }
+        guard let hit = measure(at: p, page: page) ?? nearestMeasure(at: p, page: page) else {
+            return nil
+        }
         let within = fractional16ths(atX: p.x, measureX: hit.measure.x,
                                      measureWidth: hit.measure.width)
         let absolute = Double(max(0, hit.measure.measureIndex)) * 16 + within
