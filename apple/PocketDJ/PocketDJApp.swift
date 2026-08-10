@@ -466,6 +466,10 @@ struct PocketDJApp: App {
             guard let app, let playCounts else { return 0 }
             return app.songIds(forArtistId: artistId).reduce(0) { $0 + playCounts.combinedPlayCount($1) }
         }
+        // Don't offer him a record he already has. Applied on READ (not at fetch time) so an
+        // album added today drops out of the feed immediately, with no refetch — see
+        // `ReleaseFeedService.feed`.
+        releaseFeed.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
         playHistory.onRecord = { [weak app, weak releaseFeed] event in
             // The play event carries an artist NAME; the catalog endpoint needs an artist ID.
             // That join is exactly what the index's `artists` table exists for — and a name it

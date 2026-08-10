@@ -86,11 +86,48 @@ enum ReleaseFeedPolicy {
         return ageDays >= releaseTTLDays(plays: plays)
     }
 
-    /// Whether a release date falls inside the feed window.
-    static func isWithinWindow(releaseAtMs: Double, nowMs: Double) -> Bool {
+    /// Where a release sits relative to today. `nil` means it is not in the feed at all.
+    ///
+    /// ── WHY THE TWO STATES ARE NOT ONE LIST ──────────────────────────────────────────────────
+    /// Apple returns pre-orders from `latest-release`, so the newest thing an artist has is
+    /// routinely something that HAS NOT COME OUT YET. Those are the one class of item in the feed
+    /// the owner cannot play, and presenting them beside things he can would make the screen lie:
+    /// a record shipping in three weeks would read as "released today" under any age-in-days
+    /// wording. They are worth showing — a pre-order is the freshest possible signal — but they
+    /// have to be labelled as what they are.
+    ///
+    /// ── WHY COMING SOON HAS NO UPPER BOUND ───────────────────────────────────────────────────
+    /// The 30-day window is a RECENCY filter: it exists to stop stale back-catalogue from
+    /// crowding out new work. That reasoning does not run forwards. A pre-order announced 90 days
+    /// out is still the artist's next release and nothing newer can displace it, so bounding the
+    /// future side would mean the feed's freshest item is the one item it refuses to show.
+    static func classify(releaseAtMs: Double, nowMs: Double) -> ReleaseStatus? {
         let ageDays = (nowMs - releaseAtMs) / 86_400_000
-        // A future-dated pre-release (ageDays < 0) still counts as new — Apple returns those.
-        return ageDays <= windowDays
+        if ageDays < 0 { return .comingSoon }
+        return ageDays <= windowDays ? .outNow : nil
+    }
+
+    /// Whether a release date falls inside the feed at all — the union of both states.
+    /// Defined in terms of `classify` so there is exactly ONE definition of the window and the
+    /// two can never drift apart.
+    static func isWithinWindow(releaseAtMs: Double, nowMs: Double) -> Bool {
+        classify(releaseAtMs: releaseAtMs, nowMs: nowMs) != nil
+    }
+}
+
+/// Out now, or still ahead. Kept as a first-class value rather than a `Bool isFuture` so the
+/// sectioning, the tile copy, and the tests all agree on the same two names.
+enum ReleaseStatus: String, Codable, Equatable, CaseIterable {
+    /// Released on or before today, no more than `windowDays` ago — playable now.
+    case outNow
+    /// Future-dated. Apple returns pre-orders here; it cannot be played yet.
+    case comingSoon
+
+    var title: String {
+        switch self {
+        case .outNow: return "Out now"
+        case .comingSoon: return "Coming soon"
+        }
     }
 }
 

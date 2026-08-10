@@ -83,6 +83,33 @@ final class ReleaseFeedPolicyTests: XCTestCase {
         XCTAssertFalse(ReleaseFeedPolicy.isWithinWindow(releaseAtMs: now - 31 * day, nowMs: now))
     }
 
+    // ── OUT NOW vs COMING SOON ───────────────────────────────────────────────────────────────
+
+    /// Apple returns pre-orders from `latest-release`, so future-dated releases are routine.
+    /// They belong in the feed but must be labelled — an age-in-days wording would render a
+    /// record that ships in three weeks as "released today".
+    func testClassifySplitsOutNowFromComingSoon() {
+        let now: Double = 1_700_000_000_000
+        let day: Double = 86_400_000
+        XCTAssertEqual(ReleaseFeedPolicy.classify(releaseAtMs: now, nowMs: now), .outNow)
+        XCTAssertEqual(ReleaseFeedPolicy.classify(releaseAtMs: now - day, nowMs: now), .outNow)
+        XCTAssertEqual(ReleaseFeedPolicy.classify(releaseAtMs: now - 30 * day, nowMs: now), .outNow)
+        XCTAssertEqual(ReleaseFeedPolicy.classify(releaseAtMs: now + day, nowMs: now), .comingSoon)
+        // Past the window on the OUT NOW side, it leaves the feed entirely.
+        XCTAssertNil(ReleaseFeedPolicy.classify(releaseAtMs: now - 31 * day, nowMs: now))
+    }
+
+    /// The 30-day window is a RECENCY filter and that reasoning does not run forwards: a
+    /// pre-order 90 days out is still the artist's next release, and nothing newer can displace
+    /// it. Bounding the future side would hide the freshest item in the feed.
+    func testComingSoonIsNotBoundedByTheThirtyDayWindow() {
+        let now: Double = 1_700_000_000_000
+        let day: Double = 86_400_000
+        XCTAssertEqual(ReleaseFeedPolicy.classify(releaseAtMs: now + 90 * day, nowMs: now),
+                       .comingSoon)
+        XCTAssertTrue(ReleaseFeedPolicy.isWithinWindow(releaseAtMs: now + 90 * day, nowMs: now))
+    }
+
     /// 50 is a measured hard cap (100 ids returns HTTP 400), not a style choice.
     func testBatchSizeAndConcurrencyStayWithinMeasuredLimits() {
         XCTAssertLessThanOrEqual(ReleaseFeedPolicy.idsPerRequest, 50)
@@ -113,6 +140,54 @@ final class IndexArtistJoinTests: XCTestCase {
     func testCaseVariantsCollapseToOneKey() {
         XCTAssertEqual(IndexArtist.normalize("BANKS"), IndexArtist.normalize("Banks"))
         XCTAssertEqual(IndexArtist.normalize("USHER"), IndexArtist.normalize("Usher"))
+    }
+}
+
+// ============================================================================
+// MARK: - Ownership predicate (shared with AlbumPreviewView)
+// ============================================================================
+
+final class ReleaseOwnershipPredicateTests: XCTestCase {
+
+    /// The release feed asks "does he own this ALBUM" through the SAME predicate the album
+    /// screen uses for tracks — only the provisional-id prefix differs. A second predicate would
+    /// start identical and drift the first time either was fixed.
+    func testAlbumOwnershipUsesTheAlbumAdHocPrefix() {
+        // The provisional id an earlier Discover/recognizer add synthesizes.
+        XCTAssertTrue(AlbumOwnership.owns(storeID: "1000",
+                                          catalogSongIds: ["amrec_album_1000"],
+                                          catalogAppleMusicIds: [],
+                                          rippedSongIds: [],
+                                          adHocPrefix: "amrec_album_"))
+        // A real indexed album claiming that Apple Music id (post-supersede).
+        XCTAssertTrue(AlbumOwnership.owns(storeID: "1000",
+                                          catalogSongIds: [],
+                                          catalogAppleMusicIds: ["1000"],
+                                          rippedSongIds: [],
+                                          adHocPrefix: "amrec_album_"))
+        XCTAssertFalse(AlbumOwnership.owns(storeID: "1000",
+                                           catalogSongIds: [],
+                                           catalogAppleMusicIds: [],
+                                           rippedSongIds: [],
+                                           adHocPrefix: "amrec_album_"))
+        // The TRACK prefix must not match an album's provisional id, or every album would look
+        // unowned and the feed would offer records he already has.
+        XCTAssertFalse(AlbumOwnership.owns(storeID: "1000",
+                                           catalogSongIds: ["amrec_album_1000"],
+                                           catalogAppleMusicIds: [],
+                                           rippedSongIds: []))
+    }
+
+    /// The default keeps every existing track call site behaving exactly as before.
+    func testTrackOwnershipDefaultsToTheTrackPrefix() {
+        XCTAssertTrue(AlbumOwnership.owns(storeID: "55",
+                                          catalogSongIds: ["amrec_55"],
+                                          catalogAppleMusicIds: [],
+                                          rippedSongIds: []))
+        XCTAssertTrue(AlbumOwnership.owns(storeID: "55",
+                                          catalogSongIds: [],
+                                          catalogAppleMusicIds: [],
+                                          rippedSongIds: ["amrec_55"]))
     }
 }
 
@@ -207,14 +282,27 @@ final class StubReleaseTransport: ReleaseFeedTransport, @unchecked Sendable {
     private(set) var requests: [URLRequest] = []
     private let lock = NSLock()
 
+    /// Thrown on EVERY call once set — "the network is simply down / the limiter is angry".
+    var persistentError: Error?
+    /// Thrown once each, from the front, before falling through to `persistentError`/`body` —
+    /// for "it failed twice then recovered".
+    var errorScript: [Error] = []
+
     init(canSync: Bool = true, body: Data = Data("{\"data\":[]}".utf8)) {
         self.canSync = canSync
         self.body = body
     }
 
     func fetch(_ request: URLRequest) async throws -> Data {
-        lock.lock(); requests.append(request); lock.unlock()
-        return body
+        lock.lock()
+        requests.append(request)
+        let scripted = errorScript.isEmpty ? nil : errorScript.removeFirst()
+        let persistent = persistentError
+        let payload = body
+        lock.unlock()
+        if let scripted { throw scripted }
+        if let persistent { throw persistent }
+        return payload
     }
 
     var requestCount: Int { lock.lock(); defer { lock.unlock() }; return requests.count }
@@ -317,15 +405,256 @@ final class ReleaseFeedServiceTests: XCTestCase {
         let day: Double = 86_400_000
         svc.seedForTesting([
             ArtistReleaseEntry(artistId: 1, artistName: "Old", checkedAtMs: now,
-                               releaseAtMs: now - 60 * day),
+                               releaseId: "r1", releaseAtMs: now - 60 * day),
             ArtistReleaseEntry(artistId: 2, artistName: "Recent", checkedAtMs: now,
-                               releaseAtMs: now - 2 * day),
+                               releaseId: "r2", releaseAtMs: now - 2 * day),
             ArtistReleaseEntry(artistId: 3, artistName: "Newest", checkedAtMs: now,
-                               releaseAtMs: now - 1 * day),
-            ArtistReleaseEntry(artistId: 4, artistName: "NoDate", checkedAtMs: now),
+                               releaseId: "r3", releaseAtMs: now - 1 * day),
+            ArtistReleaseEntry(artistId: 4, artistName: "NoDate", checkedAtMs: now,
+                               releaseId: "r4"),
         ])
         let feed = svc.newReleases(nowMs: now)
         XCTAssertEqual(feed.map(\.artistId), [3, 2], "60-day-old and date-less entries excluded")
+    }
+
+    /// A release with no store id cannot be opened (there is nothing to push) and cannot be
+    /// matched against the catalog, so it must not be offered — a row that does nothing when
+    /// tapped, and might be something he already owns, is worse than no row.
+    func testReleaseWithNoStoreIdIsNotOffered() {
+        let svc = ReleaseFeedService(transport: nil, fileURL: tempURL())
+        let now: Double = 1_700_000_000_000
+        svc.seedForTesting([
+            ArtistReleaseEntry(artistId: 1, artistName: "NoId", checkedAtMs: now,
+                               releaseId: nil, releaseName: "Ghost",
+                               releaseAtMs: now - 86_400_000),
+        ])
+        XCTAssertTrue(svc.feed(nowMs: now).isEmpty)
+    }
+
+    /// OUT NOW reads newest-first ("what just landed"), but COMING SOON reads soonest-first —
+    /// for something that has not happened yet, "next" is the useful ordering, not "furthest
+    /// away". Sorting both the same way would bury the imminent release under the distant one.
+    func testOutNowIsNewestFirstAndComingSoonIsSoonestFirst() {
+        let svc = ReleaseFeedService(transport: nil, fileURL: tempURL())
+        let now: Double = 1_700_000_000_000
+        let day: Double = 86_400_000
+        svc.seedForTesting([
+            ArtistReleaseEntry(artistId: 1, artistName: "A", checkedAtMs: now,
+                               releaseId: "1", releaseAtMs: now - 10 * day),
+            ArtistReleaseEntry(artistId: 2, artistName: "B", checkedAtMs: now,
+                               releaseId: "2", releaseAtMs: now - 2 * day),
+            ArtistReleaseEntry(artistId: 3, artistName: "C", checkedAtMs: now,
+                               releaseId: "3", releaseAtMs: now + 40 * day),
+            ArtistReleaseEntry(artistId: 4, artistName: "D", checkedAtMs: now,
+                               releaseId: "4", releaseAtMs: now + 5 * day),
+        ])
+        XCTAssertEqual(svc.outNow(nowMs: now).map(\.entry.artistId), [2, 1])
+        XCTAssertEqual(svc.comingSoon(nowMs: now).map(\.entry.artistId), [4, 3])
+    }
+
+    /// A pre-order dated weeks out used to render as "Today", because the wording only handled
+    /// the past. The screen stating the opposite of the truth is worse than saying nothing.
+    func testRelativeWordingDistinguishesFutureFromPast() {
+        let now: Double = 1_700_000_000_000
+        let day: Double = 86_400_000
+        XCTAssertEqual(NewReleasesView.relative(now, nowMs: now), "Today")
+        XCTAssertEqual(NewReleasesView.relative(now - day, nowMs: now), "Yesterday")
+        XCTAssertEqual(NewReleasesView.relative(now - 3 * day, nowMs: now), "3 days ago")
+        XCTAssertEqual(NewReleasesView.relative(now + day, nowMs: now), "Tomorrow")
+        XCTAssertEqual(NewReleasesView.relative(now + 21 * day, nowMs: now), "In 21 days")
+    }
+
+    // ── Ownership exclusion ──────────────────────────────────────────────────────────────────
+
+    /// The point of the whole feature is "here is something NEW". An album already in the
+    /// library is the one thing that definitionally is not, so it must not appear.
+    func testAlreadyOwnedReleaseIsNotOfferedAsNew() {
+        let svc = ReleaseFeedService(transport: nil, fileURL: tempURL())
+        let now: Double = 1_700_000_000_000
+        let day: Double = 86_400_000
+        svc.seedForTesting([
+            ArtistReleaseEntry(artistId: 1, artistName: "Owned", checkedAtMs: now,
+                               releaseId: "1000", releaseName: "Have It", releaseAtMs: now - day),
+            ArtistReleaseEntry(artistId: 2, artistName: "New", checkedAtMs: now,
+                               releaseId: "2000", releaseName: "Don't Have It",
+                               releaseAtMs: now - 2 * day),
+        ])
+        svc.ownsRelease = { $0 == "1000" }
+        XCTAssertEqual(svc.feed(nowMs: now).map(\.entry.artistId), [2])
+    }
+
+    /// An UNSET probe must mean "own nothing", not "own everything". A cold launch has no
+    /// catalog yet, and the opposite default would silently empty the feed exactly when the
+    /// user first opens it — an empty screen that looks like "no new releases".
+    func testUnsetOwnershipProbeShowsEverythingRatherThanNothing() {
+        let svc = ReleaseFeedService(transport: nil, fileURL: tempURL())
+        let now: Double = 1_700_000_000_000
+        svc.seedForTesting([
+            ArtistReleaseEntry(artistId: 1, artistName: "A", checkedAtMs: now,
+                               releaseId: "1000", releaseAtMs: now - 86_400_000),
+        ])
+        XCTAssertNil(svc.ownsRelease)
+        XCTAssertEqual(svc.feed(nowMs: now).count, 1)
+    }
+
+    // ── Rate limiting ────────────────────────────────────────────────────────────────────────
+
+    /// A 429 is retried with backoff rather than abandoned...
+    func testRateLimitedRequestRetriesWithBackoff() async {
+        let stub = StubReleaseTransport()
+        stub.persistentError = ReleaseFeedTransportError.http(status: 429)
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        svc.playsForArtist = { _ in 0 }
+        svc.noteArtistPlayed(artistId: 1, name: "A")
+        await svc.drain()
+        XCTAssertEqual(stub.requestCount, 5, "429 must be retried, not abandoned on first failure")
+    }
+
+    /// ...and a 429 that eventually clears produces the real answer, not an empty one.
+    func testRateLimitedRequestSucceedsOnceTheLimiterClears() async {
+        let body = """
+        {"data":[{"id":"1","attributes":{"name":"A"},"views":{"latest-release":{"data":[
+          {"id":"r1","attributes":{"name":"Rec","releaseDate":"2026-08-01"}}]}}}]}
+        """
+        let stub = StubReleaseTransport(body: Data(body.utf8))
+        stub.errorScript = [ReleaseFeedTransportError.http(status: 429),
+                            ReleaseFeedTransportError.http(status: 429)]
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        svc.playsForArtist = { _ in 0 }
+        svc.noteArtistPlayed(artistId: 1, name: "A")
+        await svc.drain()
+        XCTAssertEqual(stub.requestCount, 3, "two failures then success")
+        XCTAssertEqual(svc.entries[1]?.releaseName, "Rec")
+    }
+
+    /// A 401/403/400 will fail identically however many times it is asked. Retrying it just
+    /// spends the limiter's budget — and because a failed batch re-queues, it would do so on
+    /// every single play.
+    func testNonRetryableStatusFailsFastWithoutBurningRetries() async {
+        let stub = StubReleaseTransport()
+        stub.persistentError = ReleaseFeedTransportError.http(status: 401)
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        svc.playsForArtist = { _ in 0 }
+        svc.noteArtistPlayed(artistId: 1, name: "A")
+        await svc.drain()
+        XCTAssertEqual(stub.requestCount, 1, "a revoked token must not be retried five times")
+    }
+
+    func testRetryabilityIsDecidedByStatusClass() {
+        XCTAssertTrue(ReleaseFeedTransportError.http(status: 429).isRetryable)
+        XCTAssertTrue(ReleaseFeedTransportError.http(status: 500).isRetryable)
+        XCTAssertTrue(ReleaseFeedTransportError.http(status: 503).isRetryable)
+        XCTAssertFalse(ReleaseFeedTransportError.http(status: 400).isRetryable)
+        XCTAssertFalse(ReleaseFeedTransportError.http(status: 401).isRetryable)
+        XCTAssertFalse(ReleaseFeedTransportError.http(status: 404).isRetryable)
+        XCTAssertFalse(ReleaseFeedTransportError.unavailable.isRetryable)
+    }
+
+    // ── Failure must never poison the cache ──────────────────────────────────────────────────
+
+    /// THE regression that matters most. A failed batch must NOT stamp its artists' TTL clocks:
+    /// doing so would mark up to fifty artists "checked" off a request that never succeeded, and
+    /// blind the feed to their releases for as long as fourteen days — silently, with nothing to
+    /// retry against. The ids must go back on the queue instead.
+    func testFailedBatchDoesNotStampTheClockAndRequeuesTheArtists() async {
+        let stub = StubReleaseTransport()
+        stub.persistentError = ReleaseFeedTransportError.http(status: 429)
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        svc.playsForArtist = { _ in 0 }
+        svc.noteArtistPlayed(artistId: 1, name: "A")
+        await svc.drain()
+        XCTAssertNil(svc.entries[1], "a failed check must not create a 'checked' entry")
+        XCTAssertEqual(svc.pendingCountForTesting, 1, "the artist must go back on the queue")
+        // And the very next play still finds it due, rather than 'fresh' for a fortnight.
+        let now = Date().timeIntervalSince1970 * 1000
+        XCTAssertTrue(ReleaseFeedPolicy.isDue(lastCheckedAtMs: svc.entries[1]?.checkedAtMs,
+                                              plays: 0, nowMs: now))
+    }
+
+    /// The retry must ride the NEXT play — any play — not only a play of an artist that is
+    /// itself due. A queue made entirely of re-queued ids would otherwise stall until one of
+    /// them happened to be played again, which for a once-a-year artist is indistinguishable
+    /// from having lost it.
+    func testRequeuedArtistsAreRetriedOnThePlayOfAnyArtist() async {
+        let stub = StubReleaseTransport()
+        stub.persistentError = ReleaseFeedTransportError.http(status: 503)
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        svc.playsForArtist = { _ in 0 }
+        svc.noteArtistPlayed(artistId: 1, name: "A")
+        await svc.drain()
+        XCTAssertEqual(svc.pendingCountForTesting, 1, "the failed id went back on the queue")
+
+        // A DIFFERENT artist plays, and its entry is fresh — on its own it queues nothing.
+        let now = Date().timeIntervalSince1970 * 1000
+        svc.seedForTesting([ArtistReleaseEntry(artistId: 2, artistName: "B", checkedAtMs: now)])
+        svc.noteArtistPlayed(artistId: 2, name: "B", nowMs: now)
+        XCTAssertEqual(svc.pendingCountForTesting, 1, "the fresh artist must not be queued")
+
+        // The limiter clears, and the retry carries the ORIGINAL artist through.
+        stub.persistentError = nil
+        await svc.drain()
+        XCTAssertNotNil(svc.entries[1], "the re-queued artist must eventually get checked")
+        XCTAssertEqual(svc.pendingCountForTesting, 0)
+    }
+
+    /// A 200 carrying an error envelope (or any body that isn't this endpoint's) decodes
+    /// "successfully" into `data == nil`, because every field of the wire model is optional.
+    /// Treating that as a good answer is the same poisoning path by a different route.
+    func testResponseWithNoDataKeyIsTreatedAsFailureNotAsAnEmptyAnswer() async {
+        let stub = StubReleaseTransport(body: Data("{\"errors\":[{\"status\":\"429\"}]}".utf8))
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        svc.playsForArtist = { _ in 0 }
+        svc.noteArtistPlayed(artistId: 7, name: "A")
+        await svc.drain()
+        XCTAssertNil(svc.entries[7], "an error envelope must not stamp a TTL clock")
+        XCTAssertEqual(svc.pendingCountForTesting, 1)
+    }
+
+    /// One batch failing must not let a SIBLING batch stamp its artists. The first batch to
+    /// return used to walk the whole due set, so it marked artists belonging to requests that
+    /// were still in flight — or that went on to fail.
+    func testAFailedBatchIsNotStampedByASucceedingSibling() async {
+        let stub = StubReleaseTransport()
+        // Every request fails, so all 120 artists across all 3 batches must survive unstamped.
+        stub.persistentError = ReleaseFeedTransportError.http(status: 503)
+        let svc = ReleaseFeedService(transport: stub, fileURL: tempURL(), backoffScale: 0.0001)
+        svc.playsForArtist = { _ in 0 }
+        for id in 1...120 { svc.noteArtistPlayed(artistId: id, name: "A\(id)") }
+        await svc.drain()
+        XCTAssertTrue(svc.entries.isEmpty, "no artist may be stamped when every batch failed")
+        XCTAssertEqual(svc.pendingCountForTesting, 120, "all three batches must re-queue")
+    }
+
+    // ── Cold cache ───────────────────────────────────────────────────────────────────────────
+
+    /// A first launch: no file, no entries, no network yet. Every reader must answer emptily
+    /// rather than crash, spin, or nil-crash on the missing document.
+    func testColdCacheReadsEmptyOnEveryAccessor() {
+        let svc = ReleaseFeedService(transport: nil, fileURL: tempURL())
+        XCTAssertTrue(svc.entries.isEmpty)
+        XCTAssertTrue(svc.feed().isEmpty)
+        XCTAssertTrue(svc.outNow().isEmpty)
+        XCTAssertTrue(svc.comingSoon().isEmpty)
+        XCTAssertTrue(svc.newReleases().isEmpty)
+        XCTAssertTrue(svc.similarArtistIds(for: [1, 2, 3]).isEmpty)
+        XCTAssertFalse(svc.isFetching, "a cold cache must not look like a request in flight")
+        XCTAssertNil(svc.lastError)
+    }
+
+    /// A cold cache survives a round trip through disk — the durable half of the same story.
+    func testCacheRoundTripsThroughDisk() async {
+        let url = tempURL()
+        let body = """
+        {"data":[{"id":"1","attributes":{"name":"A"},"views":{"latest-release":{"data":[
+          {"id":"r1","attributes":{"name":"Saved","releaseDate":"2026-08-01"}}]}}}]}
+        """
+        let svc = ReleaseFeedService(transport: StubReleaseTransport(body: Data(body.utf8)),
+                                     fileURL: url)
+        svc.playsForArtist = { _ in 0 }
+        svc.noteArtistPlayed(artistId: 1, name: "A")
+        await svc.drain()
+        let reopened = ReleaseFeedService(transport: nil, fileURL: url)
+        XCTAssertEqual(reopened.entries[1]?.releaseName, "Saved")
     }
 
     func testSimilarArtistIdsDedupeAndExcludeTheSeeds() {

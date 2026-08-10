@@ -14,22 +14,38 @@ struct NewReleasesView: View {
     @Binding var path: NavigationPath
 
     var body: some View {
-        let items = releaseFeed?.newReleases() ?? []
+        // OUT NOW first: it is the part he can act on. COMING SOON is real news but nothing can
+        // be played from it, so it sits underneath rather than at the top.
+        let outNow = releaseFeed?.outNow() ?? []
+        let soon = releaseFeed?.comingSoon() ?? []
         List {
-            if items.isEmpty {
+            if outNow.isEmpty && soon.isEmpty {
                 emptyState.listRowBackground(Color.clear)
             } else {
-                ForEach(items) { entry in
-                    Button { push(entry) } label: { row(entry) }
-                        .buttonStyle(.plain)
-                        .accessibilityIdentifier("new-release-\(entry.artistId)")
-                }
+                section(ReleaseStatus.outNow, outNow)
+                section(ReleaseStatus.comingSoon, soon)
             }
         }
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .background(Theme.bg)
         .navigationTitle("New")
+    }
+
+    @ViewBuilder
+    private func section(_ status: ReleaseStatus, _ items: [ReleaseFeedItem]) -> some View {
+        if !items.isEmpty {
+            Section {
+                ForEach(items) { item in
+                    Button { push(item.entry) } label: { row(item) }
+                        .buttonStyle(.plain)
+                        .accessibilityIdentifier("new-release-\(item.entry.artistId)")
+                }
+            } header: {
+                Text(status.title).font(.caption).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("new-release-section-\(status.rawValue)")
+            }
+        }
     }
 
     /// A release with no store id can't be previewed — the row simply doesn't navigate rather
@@ -45,7 +61,8 @@ struct NewReleasesView: View {
             url: URL(string: "https://music.apple.com/us/album/\(id)")))
     }
 
-    @ViewBuilder private func row(_ e: ArtistReleaseEntry) -> some View {
+    @ViewBuilder private func row(_ item: ReleaseFeedItem) -> some View {
+        let e = item.entry
         HStack(spacing: 10) {
             artwork(e)
             VStack(alignment: .leading, spacing: 2) {
@@ -86,9 +103,17 @@ struct NewReleasesView: View {
 
     /// Deliberately coarse ("3 days ago"): the feed window is 30 days, so day resolution is all
     /// the precision the screen can use.
+    ///
+    /// Future dates get their OWN wording. Apple returns pre-orders, so a release date weeks
+    /// ahead is routine — and an age-in-days phrasing collapses every one of them to "Today",
+    /// which is the screen confidently stating the opposite of the truth.
     static func relative(_ atMs: Double, nowMs: Double = Date().timeIntervalSince1970 * 1000) -> String {
         let days = Int(((nowMs - atMs) / 86_400_000).rounded())
-        if days <= 0 { return "Today" }
+        if days < 0 {
+            let ahead = -days
+            return ahead == 1 ? "Tomorrow" : "In \(ahead) days"
+        }
+        if days == 0 { return "Today" }
         if days == 1 { return "Yesterday" }
         return "\(days) days ago"
     }
@@ -133,6 +158,9 @@ struct ForYouSongListView: View {
     @Binding var path: NavigationPath
 
     @State private var songIds: [String] = []
+    /// Pool per song, for the zone route only — drives the "Buried" badge and the header's blend
+    /// readout. Empty for collection routes, which have no pools.
+    @State private var pools: [String: ZoneEngine.Pool] = [:]
     @State private var didBuild = false
     /// Ids added on THIS screen — the row's ＋ flips to a ✓ so a long suggestion list does not
     /// lose track of what has already been taken.
@@ -156,18 +184,18 @@ struct ForYouSongListView: View {
         .scrollContentBackground(.hidden)
         .background(Theme.bg)
         .navigationTitle(route.title)
-        .task { build() }
+        .task { await build() }
         .sheet(item: $addRef) { r in AddToCollectionView(item: .song(r.id)) }
     }
 
     private var header: some View {
         HStack {
-            Text("\(songIds.count) songs").font(.caption).foregroundStyle(Theme.fgDim)
+            // For the zone the blend IS the feature, so the count says what it is made of rather
+            // than just how long it is.
+            Text(blendSummary).font(.caption).foregroundStyle(Theme.fgDim)
+                .accessibilityIdentifier("foryou-list-summary")
             Spacer()
-            Button {
-                collections.playNow(songIds: songIds, name: route.title, shuffle: false,
-                                    source: .browser, originId: nil)
-            } label: {
+            Button { play(from: 0) } label: {
                 Label("Play all", systemImage: "play.fill").font(.caption)
             }
             .buttonStyle(.plain)
@@ -177,21 +205,54 @@ struct ForYouSongListView: View {
         .listRowBackground(Color.clear)
     }
 
-    private func build() {
+    private var blendSummary: String {
+        let buried = pools.values.reduce(0) { $1 == .rediscovery ? $0 + 1 : $0 }
+        guard route.kind == .zone, buried > 0 else { return "\(songIds.count) songs" }
+        return "\(songIds.count) songs · \(buried) buried"
+    }
+
+    /// Start the queue at `index` and let it run — the ordinary "play from here" a music list
+    /// does. Routes through `CollectionsStore.playNow`, the same funnel every other ▶ in the app
+    /// uses, so this is a genuine Now Playing setlist (lock screen, CarPlay, auto-advance,
+    /// durable session) rather than a one-off sound.
+    private func play(from index: Int) {
+        guard songIds.indices.contains(index) else { return }
+        collections.playNow(songIds: Array(songIds[index...]), name: route.title,
+                            shuffle: false, source: .browser, originId: nil)
+    }
+
+    /// The ranking runs OFF the main actor for the same reason the tile grid's does: the zone pass
+    /// scores the whole catalog (~96k rows) through `PuzzleSimilarity`, and the collection pass
+    /// sweeps it once more. On the main actor that is a visible hang — the exact regression this
+    /// app has already had to fix once in Browse.
+    private func build() async {
         guard !didBuild else { return }
         didBuild = true
         let tracks = app.zoneTracks
+        let songs = app.songs
+        let genres = app.zoneGenreBySongId
         let counts = playCounts.snapshot()
+        let lastPlayed = playCounts.lastPlayedSnapshot()
+        let plays = history.recentPlaysForZone()
+        let crates = collections.suggestibleCollections().map(\.songIds)
+        let now = Date().timeIntervalSince1970 * 1000
+
         switch route.kind {
         case .zone:
-            songIds = ZoneEngine.inDaZone(tracks: tracks,
-                                          plays: history.recentPlaysForZone(),
-                                          playCount: { counts[$0] ?? 0 },
-                                          nowMs: Date().timeIntervalSince1970 * 1000)
+            let queue = await Task.detached(priority: .userInitiated) {
+                ZoneEngine.inDaZone(songs: songs, genreBySongId: genres, otherCollections: crates,
+                                    plays: plays, playCount: { counts[$0] ?? 0 },
+                                    lastPlayedMs: lastPlayed, nowMs: now)
+            }.value
+            songIds = queue.songIds
+            pools = Dictionary(queue.picks.map { ($0.songId, $0.pool) },
+                               uniquingKeysWith: { a, _ in a })
         case .collection:
             let members = route.collectionId.map { collections.playableIdsForAnyCollection($0) } ?? []
-            songIds = ZoneEngine.suggestions(memberSongIds: members, tracks: tracks,
-                                             playCount: { counts[$0] ?? 0 })
+            songIds = await Task.detached(priority: .userInitiated) {
+                ZoneEngine.suggestions(memberSongIds: members, tracks: tracks,
+                                       playCount: { counts[$0] ?? 0 })
+            }.value
         case .new, .suggested:
             // Both have their own screens (`NewReleasesView` / `RecSuggestionsListView`) and are
             // never routed here; the case exists so adding a tile kind is a compile error rather
@@ -205,8 +266,22 @@ struct ForYouSongListView: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(song?.name ?? id).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
-                if let a = song?.artist, !a.isEmpty {
-                    Text(a).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+                HStack(spacing: 5) {
+                    if let a = song?.artist, !a.isEmpty {
+                        Text(a).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+                    }
+                    // Only the rediscovery half is labelled. Badging both would just be noise on
+                    // every row; badging the buried ones is the point — it is what tells him this
+                    // is not a replay of his week.
+                    if pools[id] == .rediscovery {
+                        Text("Buried")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(RoundedRectangle(cornerRadius: 3)
+                                .fill(Theme.accent2.opacity(0.22)))
+                            .foregroundStyle(Theme.accent2)
+                            .accessibilityIdentifier("foryou-buried-\(id)")
+                    }
                 }
             }
             // The identifier lives on the TEXT stack, never the row container — a container id
@@ -221,7 +296,16 @@ struct ForYouSongListView: View {
         }
         .padding(.vertical, 2)
         .contentShape(Rectangle())
-        .onTapGesture { if let song { path.append(song) } }
+        // In Da Zone is a QUEUE, so a tap plays it from here — the ordinary music-list gesture.
+        // A collection tile's list is an ADD list, not a queue, so there a tap still opens the
+        // song. Same view, two purposes, and the gesture follows the purpose.
+        .onTapGesture {
+            if route.kind == .zone {
+                play(from: songIds.firstIndex(of: id) ?? 0)
+            } else if let song {
+                path.append(song)
+            }
+        }
     }
 
     /// For a COLLECTION tile the target is unambiguous (this is that collection's suggestion
