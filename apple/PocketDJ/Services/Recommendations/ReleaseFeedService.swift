@@ -70,7 +70,7 @@ enum ReleaseFeedTransportError: Error, Equatable {
 ///
 /// The filter used to take the store id alone, which quietly made "does he own this" mean "does
 /// some catalog album claim this exact adam id". That is one of several identities a record wears
-/// here (see `AppModel.ownedAlbumRecordIndex(forArtistName:)` for the three ways it breaks on the
+/// here (see `AppModel.ownedAlbumRecordIndex(forArtistName:artistId:)` for the ways it breaks on the
 /// owner's real library), and passing only that one is what let albums he already has — and
 /// pre-orders he had already added — sit in Out Now and Coming Soon.
 ///
@@ -79,6 +79,13 @@ enum ReleaseFeedTransportError: Error, Equatable {
 struct ReleaseIdentity: Equatable, Sendable {
     /// The release's Apple Music ALBUM store id.
     let storeId: String
+    /// The release's Apple Music ARTIST id. Carried beside the name because the two answer
+    /// different halves of the ownership join: the name reaches albums the index's `artists` table
+    /// never saw (anything the live Apple Music library source contributed), and the id reaches
+    /// albums his catalog files under a DIFFERENT name for the same artist.
+    let artistId: Int
+    /// Apple's CANONICAL name for that one artist — never a collaboration credit, which is why
+    /// the owned side has to be indexed under every name in its credit to meet it.
     let artistName: String
     /// Apple's title for the release. Optional exactly as `ArtistReleaseEntry.releaseName` is —
     /// a nameless row simply cannot be matched on text and falls back to the id route.
@@ -220,8 +227,8 @@ final class ReleaseFeedService {
                 // under a different id, under no id, or only in the live Apple Music library.
                 // BOTH sections read this: a pre-order he added crosses from Coming Soon into Out
                 // Now on its release date and must stay filtered on both sides of that line.
-                let identity = ReleaseIdentity(storeId: releaseId, artistName: e.artistName,
-                                               title: e.releaseName)
+                let identity = ReleaseIdentity(storeId: releaseId, artistId: e.artistId,
+                                               artistName: e.artistName, title: e.releaseName)
                 guard !(ownsRelease?(identity) ?? false) else { return nil }
                 // …and not a DIFFERENT VERSION of something he has (feature 6): the Deluxe /
                 // Expanded / Bonus Track reissue, or a single that is a remix or extended cut of a
@@ -696,19 +703,25 @@ extension ReleaseFeedService {
     ///   • **NEW** — an album he owns that NAMES THE SAME RECORD (artist + base title, via the
     ///     feature-6 `RecVersionIdentity` parse reused as an equality relation). This is the route
     ///     that catches the reported bug: Apple ships several store ids for one record, and a
-    ///     pre-order or a same-day library add has no resolvable id at all. See
-    ///     `AppModel.ownedAlbumRecordIndex(forArtistName:)` for the three measured failure modes.
+    ///     pre-order or a same-day library add has no resolvable id at all. Both the artist NAME
+    ///     and the artist ID are handed to it, because neither join is complete on its own — see
+    ///     `AppModel.ownedAlbumRecordIndex(forArtistName:artistId:)` for the measured failure modes.
+    /// Each is a ROUTE TO AN IDENTITY, not a verdict: `owns` is still the thing that decides, and
+    /// the record route reaches it as its own named argument (`localRecordMatch`) rather than by
+    /// forging a store id the catalog never claimed.
     ///
     /// ── WHAT STOPS IT OVER-SUPPRESSING ───────────────────────────────────────────────────────
     /// The third route only fires on SAME ARTIST + SAME BASE TITLE against his own ALBUM titles.
     /// A genuinely new record by an artist he owns other albums by has a different title, lands in
     /// no owned bucket, and is offered exactly as before — owning *Rumours* never hides *Tango In
     /// the Night*. A `.distinct` performance (Live / Acoustic / Instrumental — and anything this
-    /// parse does not recognise) fails OPEN in both directions, so a live album is still new music.
+    /// parse does not recognise) fails OPEN unless the two titles are letter-for-letter identical,
+    /// so a live album of a record he owns is still new music.
     ///
-    /// Still O(1) per row after the first call for an artist: the record index is memoized on
-    /// `catalogRevision` and built for one artist at a time, which is what keeps this safe on the
-    /// render path the feed applies it from.
+    /// O(1) per row: the album→artist grouping is built with the catalog (off the main actor) and
+    /// the per-artist record index is memoized on `catalogRevision`, so a read costs a dictionary
+    /// hit plus that artist's own title parses — which is what keeps this safe on the render path
+    /// the feed applies it from.
     ///
     /// Built as a CLOSURE over the app model rather than a stored reference: the service must not
     /// hold the catalog, and a closure keeps the dependency one-directional and easy to stub.
@@ -720,12 +733,13 @@ extension ReleaseFeedService {
             // Minimal singleton sets, never the whole catalog's ids — building an O(90k) set per
             // row is the collections-perf trap, and the predicate only ever asks about this one.
             let provisional: Set<String> = app.albumsById[adHocId] != nil ? [adHocId] : []
-            let claimsById = app.albumId(forAppleMusicId: release.storeId) != nil
+            let claimed: Set<String> = app.albumId(forAppleMusicId: release.storeId) != nil
+                ? [release.storeId] : []
             let claimsByRecord = release.title.map {
-                app.ownedAlbumRecordIndex(forArtistName: release.artistName)
+                app.ownedAlbumRecordIndex(forArtistName: release.artistName,
+                                          artistId: release.artistId)
                     .hasRecord(title: $0, artist: release.artistName)
             } ?? false
-            let claimed: Set<String> = (claimsById || claimsByRecord) ? [release.storeId] : []
             return AlbumOwnership.owns(storeID: release.storeId,
                                        catalogSongIds: provisional,
                                        catalogAppleMusicIds: claimed,
@@ -733,7 +747,8 @@ extension ReleaseFeedService {
                                        // song. Per-track rips are covered by the album already
                                        // being in the catalog, which is what a rip produces.
                                        rippedSongIds: [],
-                                       adHocPrefix: "amrec_album_")
+                                       adHocPrefix: "amrec_album_",
+                                       localRecordMatch: claimsByRecord)
         }
     }
 

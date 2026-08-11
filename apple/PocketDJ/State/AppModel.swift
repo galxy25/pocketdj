@@ -119,12 +119,31 @@ final class AppModel {
         return index
     }
 
-    /// Memo for the ALBUM grouping `ownedAlbumRecordIndex(forArtistName:)` is built from:
-    /// `RecVersionIdentity.artistKey` ⇒ indices into `albums`. ONE pass over the album table per
-    /// catalog revision — an order of magnitude fewer rows than the 96k-song pass
-    /// `songIds(forArtistId:)` already makes on the same frame for feature 6.
-    @ObservationIgnored private var albumsByArtistKeyCache: (revision: Int, map: [String: [Int]])?
-    /// Memo for `ownedAlbumRecordIndex(forArtistName:)` — one entry per artist ASKED ABOUT.
+    /// **THE ALBUM GROUPING `ownedAlbumRecordIndex` READS** — every artist key an album is
+    /// credited to (`RecVersionIdentity.creditArtistKeys`) ⇒ indices into `albums`.
+    ///
+    /// Built in `buildEffective` alongside the browse rows, NOT lazily on first use. The lazy
+    /// version walked the whole album table the first time a New tile drew, which measured
+    /// **54 ms on the main actor** on this library — three dropped frames, from inside a view
+    /// body, re-armed after every catalog revision (an Apple Music library sync triggers one).
+    /// The launch build already runs `Task.detached`, so moving it there takes the cost off the
+    /// render path entirely and leaves the read as a dictionary hit plus a handful of title
+    /// parses.
+    private(set) var albumIndicesByArtistKey: [String: [Int]] = [:]
+
+    /// Apple Music artist id ⇒ the `RecVersionIdentity.artistKey`s the index files that artist
+    /// under, including its `alt` (compilation/feature) ids. Derived from `artistsByKey` in
+    /// `buildDerived` — off the main actor, and untouched by an edit save, which cannot change
+    /// the artists table.
+    ///
+    /// This is the id half of the ownership join: Apple's canonical name for an artist and the
+    /// credit Music.app wrote into Library.xml are frequently different STRINGS for the same
+    /// entity ("Ye" / "Kanye West"), and the artists table is the only thing that knows they are
+    /// one artist.
+    private(set) var artistKeysByAppleArtistId: [Int: [String]] = [:]
+
+    /// Memo for `ownedAlbumRecordIndex(forArtistName:artistId:)` — one entry per artist ASKED
+    /// ABOUT, keyed on `catalogRevision`.
     @ObservationIgnored private var ownedAlbumRecordCache: (revision: Int, byArtistKey: [String: RecVersionIndex])?
 
     /// **WHICH ALBUMS BY THIS ARTIST HE ALREADY HAS, IN VERSION SPACE** — the identity set the New
@@ -148,11 +167,24 @@ final class AppModel {
     ///     is permanently invisible to an id probe.
     /// 26% of this library's albums carry no `appleMusicId`, so this is not a long tail.
     ///
-    /// ── WHY ARTIST NAME AND NOT ARTIST ID ────────────────────────────────────────────────────
-    /// The id join runs through the index's `artists` table, which the synthetic Apple Music
-    /// library source does not contribute to — the exact case (3) above. `RecVersionIdentity`'s
-    /// own bucket key is the normalized credit anyway, so keying on it removes a dependency
-    /// instead of adding one.
+    /// ── NAME **AND** ID, BECAUSE NEITHER JOIN IS COMPLETE ────────────────────────────────────
+    /// An id-only join is empty for exactly the albums that need it most: the artists table is
+    /// built by the indexer and the synthetic Apple Music library source does not contribute to
+    /// it — case (3). A name-only join misses the other half, which is what the first cut of this
+    /// fix shipped and what measurement caught:
+    ///  · `ArtistReleaseEntry.artistName` is APPLE'S CANONICAL NAME FOR ONE ARTIST ID, while the
+    ///    owned side carries whatever Music.app wrote — for a collaboration, the FULL credit.
+    ///    Both of his Dinner Party albums are filed under *"Dinner Party, Terrace Martin, Robert
+    ///    Glasper, 9th Wonder & Kamasi Washington"*, so "dinner party" met nothing. Handled by
+    ///    indexing an album under EVERY artist named in its credit
+    ///    (`RecVersionIdentity.creditArtistKeys`) — 149 of the 161 misses measured over his 510
+    ///    id-less 2026 albums.
+    ///  · Where the two strings are different names for one entity ("Ye" / "Kanye West"), only
+    ///    the artists table knows — hence the `artistKeysByAppleArtistId` route, which asks what
+    ///    HIS index calls the artist the release is filed under and looks that up as well.
+    /// The routes are a UNION into one identity set handed to one relation, not competing
+    /// answers: whatever they find is re-keyed under the ASKED artist so the comparison that
+    /// decides anything is still title-against-title.
     ///
     /// ── ALBUMS ONLY, WHICH IS HOW THE NO-OVER-SUPPRESSION LINE IS HELD ───────────────────────
     /// `ownedVersionIndex(forArtistId:)` indexes songs AND albums, which is right for "is this a
@@ -164,24 +196,38 @@ final class AppModel {
     ///
     /// Both the plain and the spaceless key are seeded so the match is symmetric — see
     /// `RecVersionIdentity.spacelessKey`.
-    func ownedAlbumRecordIndex(forArtistName raw: String) -> RecVersionIndex {
-        let artistKey = RecVersionIdentity.artistKey(raw)
+    ///
+    /// `artistId` is the release's Apple Music artist id where the caller has one (the feed always
+    /// does); passing `nil` simply drops the id route.
+    func ownedAlbumRecordIndex(forArtistName raw: String, artistId: Int? = nil) -> RecVersionIndex {
+        let artistKey = RecVersionIdentity.ownershipArtistKey(raw)
         guard !artistKey.isEmpty else { return .empty }
+        // The id is part of the memo key: the same name asked about with and without one can
+        // legitimately resolve to different album sets.
+        let memoKey = artistId.map { "\(artistKey)\u{1}\($0)" } ?? artistKey
         if let c = ownedAlbumRecordCache, c.revision == catalogRevision,
-           let hit = c.byArtistKey[artistKey] { return hit }
+           let hit = c.byArtistKey[memoKey] { return hit }
 
-        if albumsByArtistKeyCache?.revision != catalogRevision {
-            var map: [String: [Int]] = [:]
-            for (i, a) in albums.enumerated() {
-                let k = RecVersionIdentity.artistKey(a.artist)
-                guard !k.isEmpty else { continue }
-                map[k, default: []].append(i)
+        // ROUTE 1 — the artist key itself, and every album crediting it (the grouping is built
+        // from `creditArtistKeys`, so a collaboration credit is filed under each name on it).
+        var indices = albumIndicesByArtistKey[artistKey] ?? []
+        // ROUTE 2 — whatever HIS index calls the artist this release is filed under, which is a
+        // different string from Apple's canonical name often enough to matter. UNIONED with route
+        // 1 rather than used as a fallback: the two reach different albums, and an album the name
+        // route already found must not be added twice.
+        if let artistId, let aliases = artistKeysByAppleArtistId[artistId] {
+            var seen: Set<Int> = indices.isEmpty ? [] : Set(indices)
+            for alias in aliases where alias != artistKey {
+                for i in albumIndicesByArtistKey[alias] ?? [] where seen.insert(i).inserted {
+                    indices.append(i)
+                }
             }
-            albumsByArtistKeyCache = (catalogRevision, map)
         }
 
         var keys: [RecVersionIdentity.Key] = []
-        for i in albumsByArtistKeyCache?.map[artistKey] ?? [] {
+        for i in indices {
+            // Re-keyed under the ASKED artist: the routes above have already decided that these
+            // albums are his by this artist, so what is left to compare is the title.
             guard let k = RecVersionIdentity.key(title: albums[i].name, artistKey: artistKey) else {
                 continue
             }
@@ -191,7 +237,7 @@ final class AppModel {
         let index = RecVersionIndex(owned: keys)
         var byArtistKey = ownedAlbumRecordCache?.revision == catalogRevision
             ? (ownedAlbumRecordCache?.byArtistKey ?? [:]) : [:]
-        byArtistKey[artistKey] = index
+        byArtistKey[memoKey] = index
         ownedAlbumRecordCache = (catalogRevision, byArtistKey)
         return index
     }
@@ -1150,6 +1196,8 @@ final class AppModel {
         let rawAlbumsById: [String: IndexAlbum]
         let rawSongsById: [String: IndexSong]
         let artistsByKey: [String: IndexArtist]
+        /// See `AppModel.artistKeysByAppleArtistId`.
+        let artistKeysByAppleArtistId: [Int: [String]]
         let effective: Effective
     }
 
@@ -1167,6 +1215,9 @@ final class AppModel {
         let songSearchKeys: [String]
         let artistBrowseItems: [BrowseItem]
         let artistSearchKeys: [String]
+        /// See `AppModel.albumIndicesByArtistKey` — built here so the New feed's ownership filter
+        /// costs a dictionary hit on the render path instead of an album-table walk.
+        let albumIndicesByArtistKey: [String: [Int]]
     }
 
     /// Merge source indexes → tag by source → overlay edits → sort → index → build browse rows.
@@ -1194,7 +1245,29 @@ final class AppModel {
             rawSongsById: Dictionary(rawSongs.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }),
             artistsByKey: Dictionary((index.artists ?? []).map { ($0.key, $0) },
                                      uniquingKeysWith: { first, _ in first }),
+            artistKeysByAppleArtistId: artistKeysByAppleId(index.artists ?? []),
             effective: effective)
+    }
+
+    /// Invert the index's `artists` table into "what does HIS catalog call the artist Apple knows
+    /// by this id" — the id half of the New feed's ownership join (see
+    /// `ownedAlbumRecordIndex(forArtistName:artistId:)`). `alt` ids are included: the table records
+    /// them precisely because the same credited name resolved to more than one Apple entity, and an
+    /// ownership probe wants every one of them.
+    ///
+    /// `nonisolated` and called from `buildDerived`, so the ~10k `artistKey` calls happen on the
+    /// background executor the catalog build already runs on. An edit save cannot change the
+    /// artists table, so this is never rebuilt by `applyEdits`.
+    nonisolated static func artistKeysByAppleId(_ artists: [IndexArtist]) -> [Int: [String]] {
+        var map: [Int: [String]] = [:]
+        for a in artists {
+            let key = RecVersionIdentity.ownershipArtistKey(a.name.isEmpty ? a.key : a.name)
+            guard !key.isEmpty else { continue }
+            for id in [a.id] + (a.alt ?? []) where !(map[id]?.contains(key) ?? false) {
+                map[id, default: []].append(key)
+            }
+        }
+        return map
     }
 
     /// Overlay edits onto the raw catalog, sort albums, index by id, and pre-build the browse rows
@@ -1252,7 +1325,31 @@ final class AppModel {
         return Effective(albums: albums, songs: songs, songsById: songsById, albumsById: albumsById,
                          albumBrowseItems: albumItems, songBrowseItems: songItems,
                          albumSearchKeys: albumKeys, songSearchKeys: songKeys,
-                         artistBrowseItems: artistItems, artistSearchKeys: artistKeys)
+                         artistBrowseItems: artistItems, artistSearchKeys: artistKeys,
+                         albumIndicesByArtistKey: albumIndicesByArtistKey(albums))
+    }
+
+    /// Group album INDICES by every artist key each album's credit names — the map behind
+    /// `AppModel.ownedAlbumRecordIndex`. See `albumIndicesByArtistKey` for why it is built here
+    /// rather than lazily on the render path.
+    ///
+    /// The credit parse is memoized per DISTINCT credit string: `albums` is sorted by artist, and
+    /// this library has 6,182 distinct credits across 12,642 albums, so the memo halves the work
+    /// outright and makes a long collaboration credit cost one parse rather than one per album.
+    nonisolated static func albumIndicesByArtistKey(_ albums: [IndexAlbum]) -> [String: [Int]] {
+        var map: [String: [Int]] = [:]
+        var keysByCredit: [String: [String]] = [:]
+        for (i, a) in albums.enumerated() {
+            let keys: [String]
+            if let memo = keysByCredit[a.artist] {
+                keys = memo
+            } else {
+                keys = RecVersionIdentity.creditArtistKeys(a.artist)
+                keysByCredit[a.artist] = keys
+            }
+            for k in keys { map[k, default: []].append(i) }
+        }
+        return map
     }
 
     /// One case- AND diacritic-insensitive haystack from an item's searchable fields, matched with a
@@ -1276,6 +1373,7 @@ final class AppModel {
         manifest = d.manifest
         indexPlaylists = d.indexPlaylists
         artistsByKey = d.artistsByKey
+        artistKeysByAppleArtistId = d.artistKeysByAppleArtistId
         // Remember them for the next cold launch. `record` ignores an empty set, so a build that
         // legitimately produced no source playlists never erases the last good snapshot.
         sourcePlaylistsCache.record(d.indexPlaylists)
@@ -1303,6 +1401,7 @@ final class AppModel {
         songSearchKeys = e.songSearchKeys
         artistBrowseItems = e.artistBrowseItems
         artistSearchKeys = e.artistSearchKeys
+        albumIndicesByArtistKey = e.albumIndicesByArtistKey
         catalogRevision &+= 1
         browseResultsCache.removeAll(keepingCapacity: true)
         browseResultsOrder.removeAll(keepingCapacity: true)
