@@ -1022,6 +1022,17 @@ enum ZoneEngine {
     /// smooth gradient that is never quite zero), so admitting on it would turn every collection
     /// into a tile of the whole library ranked by era. Once admitted, all three families score.
     ///
+    /// ── THE YEAR TERM IS THE COLLECTION'S ERA, NOT A MEAN ────────────────────────────────────
+    /// Owner: *"also factor in year range for recommendation along with genre as a feature, eg
+    /// some playlist like 808 & swinging is very new jack swing 88-94 r&b."* The year sub-term
+    /// here scores against `SimilarityFamilies.eraWindow` — the p15–p85 (±2y) window of the
+    /// members' own years — flat inside the window, decaying outside. A feature, not a filter,
+    /// and it fails OPEN in both directions: an undated collection drops the term and
+    /// `termWeights` renormalizes; an undated candidate scores the round's measured neutral
+    /// (`EraCalibration`), never zero. See the era section of `SimilarityFamilies` for the
+    /// measured windows on the real pockets, including why "808 and Swinging" honestly windows
+    /// wider than the owner's remembered 88–94.
+    ///
     /// The per-artist cap is the same rule the owner set for In Da Zone: no collection tile should
     /// turn into one artist's discography.
     ///
@@ -1091,13 +1102,12 @@ enum ZoneEngine {
         if let maxA = artists.values.max(), maxA > 0 { for (k, v) in artists { artists[k] = v / maxA } }
         if let maxG = genres.values.max(), maxG > 0 { for (k, v) in genres { genres[k] = v / maxG } }
 
-        func meanSigma(_ xs: [Double], floor: Double) -> (mean: Double, sigma: Double)? {
-            guard !xs.isEmpty else { return nil }
-            let m = xs.reduce(0, +) / Double(xs.count)
-            let v = xs.reduce(0) { $0 + ($1 - m) * ($1 - m) } / Double(xs.count)
-            return (m, max(floor, v.squareRoot()))
-        }
-        let year = meanSigma(years, floor: 8)
+        // THE COLLECTION'S ERA — the owner's year-range feature ("808 & swinging is very new jack
+        // swing 88-94 r&b"): a percentile window over the members' own years, per
+        // `SimilarityFamilies.eraWindow`. Replaces the old mean±sigma year fit HERE ONLY — the
+        // zone's seed-proximity year term (`PuzzleSimilarity.yearMean`) is a different question
+        // ("near what the listener plays", not "inside this crate's era") and keeps its shape.
+        let era = SimilarityFamilies.eraWindow(years: years)
         let musical = SimilarityFamilies.musicalProfile(musicalMembers)
 
         // ROUND-level renormalization: a collection whose members carry no year at all, or no
@@ -1105,13 +1115,19 @@ enum ZoneEngine {
         // CAN speak instead of every candidate scoring an identical zero on a dead term.
         let terms = SimilarityFamilies.termWeights(tuning.balance ?? .even,
                                                    hasGenre: !genres.isEmpty,
-                                                   hasYear: year != nil,
+                                                   hasYear: era != nil,
                                                    hasMusical: !musical.isEmpty,
                                                    scaledTo: 1.0)
         // …and the same ROUND-level neutral the zone uses, measured over the candidate pool this
         // tile is actually drawn from rather than baked in as a constant.
         let musicalCal = SimilarityFamilies.calibrate(
             tracks.lazy.map { (bpm: $0.bpm, camelot: $0.camelot) }, profile: musical)
+        // The era term's round neutral — what an UNDATED candidate scores. Fail open, same
+        // mechanism as `musicalCal`: at 99.2% year coverage a zero here would bury the odd
+        // untagged song for its tag, not its fit.
+        let eraCal = era.map {
+            SimilarityFamilies.eraCalibrate(tracks.lazy.map { $0.year.map(Double.init) }, window: $0)
+        }
 
         // ONE PASS over `tracks`: the play-count ceiling, the primary-artist CAP key (memoized per
         // artist, not per track), and the per-artist play totals the novelty axis is built from.
@@ -1175,8 +1191,9 @@ enum ZoneEngine {
             let g = t.genre.flatMap { genres[$0] } ?? 0
             guard a > 0 || g > 0 else { continue }
             var score = terms.artist * a + terms.genre * g
-            if let year, let y = t.year {
-                score += terms.year * exp(-abs(Double(y) - year.mean) / year.sigma)
+            if let era, let eraCal {
+                score += terms.year * SimilarityFamilies.eraFit(year: t.year.map(Double.init),
+                                                                window: era, calibration: eraCal)
             }
             if terms.musical > 0 {
                 score += terms.musical * SimilarityFamilies.musicalFit(
@@ -1261,6 +1278,10 @@ enum ZoneEngine {
         let members = Set(memberSongIds)
         let memberArtists = Set(memberSongIds.compactMap { trackById[$0]?.artistKey })
         let memberGenres = Set(memberSongIds.compactMap { trackById[$0]?.genre })
+        // The same era window `suggestions` scored against (members only — the 👍 profile add is
+        // an approximation this explainer already makes for artists and genres).
+        let era = SimilarityFamilies.eraWindow(
+            years: memberSongIds.compactMap { trackById[$0]?.year.map(Double.init) })
         _ = members
         return ids.map { id in
             guard let t = trackById[id] else { return (id, "Fits this collection") }
@@ -1273,6 +1294,9 @@ enum ZoneEngine {
             }
             if memberArtists.contains(t.artistKey) { return (id, "An artist already in here") }
             if let g = t.genre, memberGenres.contains(g) { return (id, "Mostly \(g), like this collection") }
+            if let era, let y = t.year, era.contains(Double(y)) {
+                return (id, "From this collection's \(Int(era.lo))–\(Int(era.hi)) era")
+            }
             return (id, "Fits this collection")
         }
     }

@@ -368,7 +368,7 @@ if (existsSync(lambdaPath)) {
   for (const s of fy.songs) for (const r of s.reasons) {
     const k = /played this/.test(r) ? 'plays' : /played this recently|recently/.test(r) ? 'recency'
       : /Same genre/.test(r) ? 'genre' : /BPM/.test(r) ? 'bpm' : /Harmonically/.test(r) ? 'camelot'
-      : /From around/.test(r) ? 'year' : /collection/.test(r) ? 'collection'
+      : /From around|era/.test(r) ? 'year' : /collection/.test(r) ? 'collection'
       : /Artist you/.test(r) ? 'artist' : /mood/.test(r) ? 'sentiment' : 'other';
     reasonTally.set(k, (reasonTally.get(k) || 0) + 1);
   }

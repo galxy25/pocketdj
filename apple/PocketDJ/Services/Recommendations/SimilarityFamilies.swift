@@ -210,6 +210,124 @@ enum SimilarityFamilies {
     }
 
     // ========================================================================
+    // MARK: - The era window (a collection's year range)
+    // ========================================================================
+
+    /// A collection's ERA — the year range its own members occupy.
+    ///
+    /// Owner, verbatim: *"also factor in year range for recommendation along with genre as a
+    /// feature, eg some playlist like 808 & swinging is very new jack swing 88-94 r&b."* So a
+    /// collection carries a year WINDOW derived from its own members, and candidates for THAT
+    /// collection score on era fit alongside genre — a FEATURE, never a hard filter.
+    ///
+    /// ── PERCENTILE, NEVER MIN/MAX ────────────────────────────────────────────────────────────
+    /// The window is p15–p85 of the members' years, padded ±2y. A deliberate era-outlier the
+    /// owner filed stays in the collection and widens NOTHING: on the real catalog (source
+    /// backup 2026-08-11, 81 pockets) the "🏋🏾‍♀️" pocket carries a member tagged year **1012** —
+    /// an obvious tagging error — and still windows to 1999–2018, where min/max would have made
+    /// its era a millennium wide.
+    ///
+    /// ── WHAT THE REAL POCKETS SAY (rec-features.json years, 99.2% coverage) ──────────────────
+    ///     "Bad Bitch Radio"    35 members, all 2015–2026   → 2020–2027  (tight, modern)
+    ///     "🏋🏾‍♀️"              500 members, outlier 1012    → 1999–2018  (percentile shrugs it off)
+    ///     "808 and Swinging"   87 members, 1986–2025       → 1987–2024  (WIDE — and honestly so)
+    /// The owner remembers "808 and Swinging" as ≈1988–1994 new jack swing. Its year data is
+    /// verified correct song-by-song (Keith Sweat 1987, SWV 1992, Kodak Black 2023; 86/87 dated);
+    /// the membership has simply grown past its founding core — a ~30-song 1986–1998 cluster plus
+    /// two whole 2001/2003 albums and a modern R&B tail he added himself. A wide window is the
+    /// truthful era of THAT membership: narrowing it to 88–94 would score the very songs he filed
+    /// as misfits. The new-jack-swing SOUND is the genre term's job, not this one's.
+    ///
+    /// ── FAIL OPEN, BOTH DIRECTIONS ───────────────────────────────────────────────────────────
+    /// An undated COLLECTION (no member year anywhere) produces no window: the era term drops at
+    /// ROUND level and `termWeights` renormalizes the family weights over the live axes — an
+    /// unearnable term must never sit in the denominator (the cloud's scoreForYou audio-term
+    /// finding). An undated CANDIDATE against a live window is scored at the ROUND NEUTRAL — the
+    /// measured mean era fit of the round's dated candidates — exactly the `MusicalCalibration`
+    /// mechanism and for the same reason: zeroing it buries a song for a missing tag, while a
+    /// per-song denominator would reward the missing tag. No shrinkage here, unlike the musical
+    /// term: year coverage is 99.2%, not 10.4%, so there is no sparse-coverage winner's curse to
+    /// correct.
+    struct EraWindow: Equatable, Sendable {
+        var lo: Double
+        var hi: Double
+        func contains(_ year: Double) -> Bool { year >= lo && year <= hi }
+    }
+
+    /// The percentile pair the window is cut at. p15–p85 keeps a 70% core and lets up to 15% of
+    /// deliberate outliers on EACH side say nothing about the era.
+    static let eraPercentileLow = 0.15
+    static let eraPercentileHigh = 0.85
+    /// Padding added outside the percentile cut, in years — the cut itself lands ON member years,
+    /// and a candidate from the adjacent year is not outside the era in any musical sense.
+    static let eraPaddingYears = 2.0
+    /// e-folding distance of the fit OUTSIDE the window. At 4y a candidate 2 years out keeps 61%
+    /// of the term, 8 years out 14%, and a 2020 track against a 1986–1996 window is at ~0.3% —
+    /// buried on era while still fully able to win on genre/artist, which is what "a feature, not
+    /// a filter" means.
+    static let eraDecayYears = 4.0
+    /// Fallback neutral for a round with too few dated candidates to measure one from. MEASURED:
+    /// the mean era fit of the full dated catalog (106,879 songs) against the 81 real pocket
+    /// windows is **0.758** (see the era fixtures in `SimilarityFamiliesTests`). High on purpose —
+    /// most real windows are wide, so most of the catalog fits most eras; the tight-window rounds
+    /// this constant would misrepresent are exactly the rounds with plenty of observations, which
+    /// never reach it (year coverage 99.2% ⇒ the round mean is essentially always available).
+    static let fallbackNeutralEraFit = 0.76
+
+    /// The percentile window over a collection's member years, or nil for an undated collection.
+    /// Nearest-rank percentile — deterministic, and identical to the Lambda's weighted
+    /// `eraWindow` under uniform weights, which is what keeps cloud and device windows equal for
+    /// the same membership.
+    static func eraWindow(years: [Double]) -> EraWindow? {
+        let ys = years.filter { $0.isFinite && $0 > 0 }.sorted()
+        guard !ys.isEmpty else { return nil }
+        func rank(_ p: Double) -> Double {
+            let idx = min(ys.count - 1, max(0, Int((p * Double(ys.count)).rounded(.up)) - 1))
+            return ys[idx]
+        }
+        return EraWindow(lo: rank(eraPercentileLow) - eraPaddingYears,
+                         hi: rank(eraPercentileHigh) + eraPaddingYears)
+    }
+
+    /// 0…1 era fit of one dated song: 1.0 anywhere inside the window (an era is a RANGE — 1989 is
+    /// not "more 88–94" than 1993), decaying outside it.
+    static func eraFit(year: Double, window w: EraWindow) -> Double {
+        if w.contains(year) { return 1 }
+        let gap = year < w.lo ? w.lo - year : year - w.hi
+        return exp(-gap / eraDecayYears)
+    }
+
+    /// The round's imputation constant for undated candidates — same shape as
+    /// `MusicalCalibration`, same round-level-never-per-song rule.
+    struct EraCalibration: Sendable, Equatable {
+        var neutral: Double = fallbackNeutralEraFit
+        var observations: Int = 0
+        var usedRoundMean: Bool { observations >= minObservationsForRoundNeutral }
+    }
+
+    /// Measure the round's era neutral from the candidate pool the ranking is about to read.
+    static func eraCalibrate<S: Sequence>(_ candidateYears: S, window w: EraWindow)
+        -> EraCalibration where S.Element == Double? {
+        var sum = 0.0, n = 0
+        for y in candidateYears {
+            guard let y, y.isFinite, y > 0 else { continue }
+            sum += eraFit(year: y, window: w)
+            n += 1
+        }
+        var cal = EraCalibration(neutral: fallbackNeutralEraFit, observations: n)
+        if n >= minObservationsForRoundNeutral { cal.neutral = sum / Double(n) }
+        return cal
+    }
+
+    /// The era sub-term as the scorer sees it: the observed fit, or the round neutral when the
+    /// candidate is undated. FAIL OPEN — an undated candidate is scored at the mean of its
+    /// competitors, never at zero and never through a per-song denominator.
+    static func eraFit(year: Double?, window w: EraWindow, calibration c: EraCalibration) -> Double {
+        guard let year, year.isFinite, year > 0 else { return c.neutral }
+        return eraFit(year: year, window: w)
+    }
+
+    // ========================================================================
     // MARK: - The tempo/key shape of a seed set
     // ========================================================================
 

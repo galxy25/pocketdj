@@ -623,4 +623,107 @@ final class SimilarityFamiliesTests: XCTestCase {
         XCTAssertGreaterThan(unanalysedInTop, 0,
                              "the 90% of the catalog with no beat grid can still be recommended")
     }
+
+    // ========================================================================
+    // MARK: - The era window (owner: "factor in year range … along with genre")
+    // ========================================================================
+    //
+    // The pocket year-histograms below are REAL DATA, not invented: the member years of the
+    // owner's actual pockets (source-backup.pocketdj, 2026-08-11) joined against
+    // public/rec-features.json — song year with album-year fallback, 106,879 of 107,757 rows
+    // dated (99.2%). They mirror the fixtures in the Lambda's test-rec-engine.mjs EXACTLY, which
+    // is the point: cloud and device must compute the same window for the same membership.
+
+    private func years(_ hist: [Int: Int]) -> [Double] {
+        hist.flatMap { (y, k) in Array(repeating: Double(y), count: k) }
+    }
+
+    /// "808 and Swinging" — 87 members, 86 dated. The owner remembers it as ≈1988–1994 new jack
+    /// swing; the year data is verified correct song-by-song (Keith Sweat 1987 ✓, SWV 1992 ✓,
+    /// Kodak Black 2023 ✓) and the membership genuinely spans 1986–2025 — a ~30-song 1986–1998
+    /// founding core, two whole 2001/2003 albums, and a modern R&B tail he added himself. The
+    /// window is honestly WIDE: narrowing it to 88–94 would score the very songs he filed as
+    /// misfits. The new-jack-swing SOUND is the genre term's job.
+    private let p808AndSwinging: [Int: Int] = [
+        1986: 1, 1987: 9, 1988: 2, 1989: 1, 1990: 2, 1992: 4, 1993: 1, 1994: 1, 1995: 2, 1996: 3,
+        1997: 1, 1998: 1, 2000: 3, 2001: 12, 2003: 15, 2005: 2, 2007: 1, 2008: 2, 2011: 1, 2013: 1,
+        2015: 2, 2016: 1, 2018: 2, 2019: 1, 2020: 1, 2021: 1, 2022: 2, 2023: 8, 2025: 3,
+    ]
+    /// "Bad Bitch Radio" — 35 members, all dated 2015–2026: a tight, modern pocket.
+    private let pBadBitchRadio: [Int: Int] = [
+        2015: 1, 2018: 3, 2019: 1, 2022: 2, 2023: 15, 2024: 1, 2025: 11, 2026: 1,
+    ]
+    /// "🏋🏾‍♀️" — 500 members, 486 dated, one member tagged year **1012** (a tagging error, kept on
+    /// purpose: the real catalog's own argument for a percentile window over min/max).
+    private let pWorkout: [Int: Int] = [
+        1012: 1, 1967: 1, 1976: 2, 1977: 1, 1978: 1, 1980: 3, 1981: 3, 1982: 2, 1983: 3, 1984: 2,
+        1986: 3, 1987: 1, 1989: 2, 1990: 3, 1991: 1, 1993: 2, 1996: 6, 1997: 1, 1998: 7, 1999: 5,
+        2000: 5, 2001: 18, 2002: 7, 2003: 9, 2004: 11, 2005: 8, 2006: 18, 2007: 21, 2008: 27,
+        2009: 32, 2010: 38, 2011: 41, 2012: 29, 2013: 28, 2014: 26, 2015: 26, 2016: 29, 2017: 22,
+        2018: 12, 2019: 5, 2020: 2, 2021: 5, 2022: 1, 2023: 10, 2024: 2, 2025: 2, 2026: 2,
+    ]
+
+    func testEraWindowOfTheRealPocketsMatchesTheLambda() {
+        XCTAssertEqual(SimilarityFamilies.eraWindow(years: years(p808AndSwinging)),
+                       SimilarityFamilies.EraWindow(lo: 1987, hi: 2024),
+                       "808 and Swinging — wide, and honestly so (see the fixture doc)")
+        XCTAssertEqual(SimilarityFamilies.eraWindow(years: years(pBadBitchRadio)),
+                       SimilarityFamilies.EraWindow(lo: 2020, hi: 2027),
+                       "a modern pocket gets a tight modern window")
+        XCTAssertEqual(SimilarityFamilies.eraWindow(years: years(pWorkout)),
+                       SimilarityFamilies.EraWindow(lo: 1999, hi: 2018),
+                       "a 2000s–2010s pocket gets a 2000s–2010s window")
+        // Three real pockets, three obviously different eras.
+        let windows = [p808AndSwinging, pBadBitchRadio, pWorkout]
+            .compactMap { SimilarityFamilies.eraWindow(years: years($0)) }
+        XCTAssertEqual(Set(windows.map { "\($0.lo):\($0.hi)" }).count, 3)
+    }
+
+    func testEraWindowPercentileShrugsOffTheYear1012TaggingError() {
+        let ys = years(pWorkout)
+        XCTAssertEqual(ys.min(), 1012, "the outlier really is in the input")
+        XCTAssertEqual(SimilarityFamilies.eraWindow(years: ys)?.lo, 1999,
+                       "min/max would have started this window at 1010")
+    }
+
+    func testEraWindowFailsOpenOnUndatedInput() {
+        XCTAssertNil(SimilarityFamilies.eraWindow(years: []))
+        XCTAssertNil(SimilarityFamilies.eraWindow(years: [0, -3, .nan]),
+                     "no usable year ⇒ no window ⇒ the term drops and `termWeights` renormalizes")
+        // The nearest-rank agreement case the Lambda pins too: a small set whose modern outlier
+        // sits above p85 and says nothing.
+        XCTAssertEqual(SimilarityFamilies.eraWindow(years: [1990, 1991, 1992, 1993, 1994, 1995, 2024]),
+                       SimilarityFamilies.EraWindow(lo: 1989, hi: 1997))
+    }
+
+    func testEraFitIsFlatInsideTheWindowAndDecaysOutside() {
+        let w = SimilarityFamilies.EraWindow(lo: 1988, hi: 1994)
+        XCTAssertEqual(SimilarityFamilies.eraFit(year: 1988, window: w), 1)
+        XCTAssertEqual(SimilarityFamilies.eraFit(year: 1991, window: w), 1,
+                       "an era is a RANGE — 1991 is not 'more 88–94' than 1993")
+        XCTAssertEqual(SimilarityFamilies.eraFit(year: 1994, window: w), 1)
+        XCTAssertEqual(SimilarityFamilies.eraFit(year: 1996, window: w),
+                       exp(-2 / SimilarityFamilies.eraDecayYears), accuracy: 1e-12)
+        XCTAssertLessThan(SimilarityFamilies.eraFit(year: 2020, window: w), 0.002,
+                          "a 2020 track against an 88–94 window is buried on era — and still free "
+                          + "to win on genre or artist, which is what 'a feature, not a filter' means")
+    }
+
+    func testAnUndatedSongIsImputedTheRoundNeutralNeverZero() {
+        let w = SimilarityFamilies.EraWindow(lo: 1988, hi: 1994)
+        // A pool big enough to measure from: 30 in-window (fit 1) + 10 far outside (fit ≈ 0).
+        let pool: [Double?] = Array(repeating: 1990.0, count: 30)
+            + Array(repeating: 2024.0, count: 10)
+        let cal = SimilarityFamilies.eraCalibrate(pool, window: w)
+        XCTAssertTrue(cal.usedRoundMean)
+        XCTAssertEqual(cal.neutral, 30.0 / 40.0, accuracy: 0.01, "the neutral IS the pool mean")
+        XCTAssertEqual(SimilarityFamilies.eraFit(year: nil, window: w, calibration: cal),
+                       cal.neutral, "undated ⇒ the neutral — fail open, not a zero")
+        XCTAssertEqual(SimilarityFamilies.eraFit(year: 1990, window: w, calibration: cal), 1,
+                       "a dated song keeps its own evidence — no shrinkage at 99.2% coverage")
+        // Too few observations ⇒ the measured global fallback, not garbage from a tiny mean.
+        let tiny = SimilarityFamilies.eraCalibrate([Double?](arrayLiteral: 1990), window: w)
+        XCTAssertFalse(tiny.usedRoundMean)
+        XCTAssertEqual(tiny.neutral, SimilarityFamilies.fallbackNeutralEraFit)
+    }
 }

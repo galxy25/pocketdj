@@ -668,4 +668,69 @@ final class ZoneEngineTests: XCTestCase {
         XCTAssertTrue(ZoneEngine.suggestions(memberSongIds: ["nope-1", "nope-2"], tracks: tracks,
                                              playCount: { _ in 1 }).isEmpty)
     }
+
+    // ========================================================================
+    // MARK: - The collection's ERA (owner: "factor in year range … along with genre")
+    // ========================================================================
+
+    /// A track with an explicit genre + year — the era tests need both axes under control.
+    private func track(_ id: String, artist: String, genre: String?, year: Int?) -> ZoneEngine.Track {
+        ZoneEngine.Track(songId: id, artistKey: artist.lowercased(), artistName: artist,
+                         genre: genre, year: year)
+    }
+
+    /// A same-genre crate whose members are the 808 pocket's real founding-core years (1987–1994
+    /// → window 1985–1996), plus three same-genre candidates the genre term cannot separate: one
+    /// inside the era, one 26 years outside it, one undated. Distinct artists throughout, so the
+    /// artist family cannot separate them either — the era term has to, or fail open trying.
+    private func eraCrate() -> (members: [String], tracks: [ZoneEngine.Track]) {
+        let members = [track("m-1987", artist: "Keith Sweat", genre: "soul", year: 1987),
+                       track("m-1988", artist: "Luther Vandross", genre: "soul", year: 1988),
+                       track("m-1990", artist: "Tony Toni Tone", genre: "soul", year: 1990),
+                       track("m-1992", artist: "SWV", genre: "soul", year: 1992),
+                       track("m-1994", artist: "Outkast", genre: "soul", year: 1994)]
+        let candidates = [track("c-inside", artist: "Jodeci", genre: "soul", year: 1992),
+                          track("c-outside", artist: "Talii", genre: "soul", year: 2022),
+                          track("c-undated", artist: "Zhane", genre: "soul", year: nil)]
+        return (members.map { $0.songId }, members + candidates)
+    }
+
+    func testSuggestionsPreferTheCollectionsEraWithinTheSameGenre() {
+        let (members, tracks) = eraCrate()
+        let out = ZoneEngine.suggestions(memberSongIds: members, tracks: tracks,
+                                         playCount: { _ in 0 })
+        XCTAssertTrue(out.contains("c-inside") && out.contains("c-outside"))
+        XCTAssertLessThan(out.firstIndex(of: "c-inside")!, out.firstIndex(of: "c-outside")!,
+                          "1992 belongs to the 1985–1996 crate; 2022 does not — era separates "
+                          + "what genre cannot")
+    }
+
+    func testAnUndatedCandidateIsImputedNotBuriedBySuggestions() {
+        let (members, tracks) = eraCrate()
+        let out = ZoneEngine.suggestions(memberSongIds: members, tracks: tracks,
+                                         playCount: { _ in 0 })
+        // FAIL OPEN: the undated candidate scores the era term at the round neutral (the
+        // measured fallback here — the pool is far below `minObservationsForRoundNeutral`), so it
+        // sits between a true era match and a 26-years-outside miss. Zeroing it would have ranked
+        // it WITH the miss, for a missing tag rather than a bad fit.
+        XCTAssertLessThan(out.firstIndex(of: "c-undated")!, out.firstIndex(of: "c-outside")!,
+                          "undated ≠ buried")
+        XCTAssertLessThan(out.firstIndex(of: "c-inside")!, out.firstIndex(of: "c-undated")!,
+                          "the neutral is a mean, not a reward — real fit still wins")
+    }
+
+    func testAnUndatedCollectionDropsTheEraTermAndRenormalizes() {
+        // No member carries a year ⇒ no window ⇒ `termWeights(hasYear: false)` redistributes the
+        // era weight over the live axes. A candidate's own year must then be unable to help or
+        // hurt: with every other axis identical, the two candidates tie and the deterministic id
+        // tiebreak decides — the year 1955 vs 2022 never enters the score.
+        let members = [track("m-a", artist: "A", genre: "rock", year: nil),
+                       track("m-b", artist: "B", genre: "rock", year: nil)]
+        let tracks = members + [track("c-1955", artist: "C", genre: "rock", year: 1955),
+                                track("c-2022", artist: "D", genre: "rock", year: 2022)]
+        let out = ZoneEngine.suggestions(memberSongIds: members.map { $0.songId }, tracks: tracks,
+                                         playCount: { _ in 0 })
+        XCTAssertEqual(out, ["c-1955", "c-2022"],
+                       "score tie broken by id order — an undated crate has no era to score on")
+    }
 }
