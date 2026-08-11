@@ -99,8 +99,8 @@ async function loadIndex(name) {
   return JSON.parse(readFileSync(p, 'utf8'));
 }
 
-/** One reduced feature row per song; nulls omitted. */
-function reduce(index) {
+/** One reduced feature row per song; nulls omitted. Exported for tests. */
+export function reduce(index) {
   const albums = new Map((index.albums || []).map((a) => [a.id, a]));
   const rows = [];
   for (const s of index.songs || []) {
@@ -113,11 +113,15 @@ function reduce(index) {
     if (g !== 'other') row.g = g;
     const year = s.year ?? album?.year;
     if (Number.isFinite(year)) row.y = year;
-    // bpm/camelot: song-level first, else the album audioTracks row matched by trackNumber
-    // (vinyl segment analysis lives there).
+    // bpm/camelot: song-level first, else the album audioTracks row that IS this song's audio —
+    // identified by the segment boundaries stamped on the song's pointer (startMs) at analysis
+    // time. NEVER match by trackNumber: catalog trackNumber is the wiki-tracklist position, not
+    // the rip's segment ordinal, and un-analyzed duplicate/bonus entries (pointer.startMs absent)
+    // would silently borrow ANOTHER recording's bpm/key (49 fabricated rows shipped 08-07..08-10).
     let bpm = s.bpm; let camelot = s.camelot;
-    if ((bpm == null || camelot == null) && album?.audioTracks && s.trackNumber != null) {
-      const at = album.audioTracks.find((t) => t.trackNumber === s.trackNumber);
+    if ((bpm == null || camelot == null) && album?.audioTracks
+        && Number.isFinite(s.pointer?.startMs)) {
+      const at = album.audioTracks.find((t) => t.startMs === s.pointer.startMs);
       if (at) { bpm = bpm ?? at.bpm; camelot = camelot ?? at.camelot; }
     }
     if (Number.isFinite(bpm)) row.b = Math.round(bpm * 10) / 10;
