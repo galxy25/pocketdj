@@ -502,10 +502,23 @@ The base rows come from the event log, not the catalog: `buildItems()` runs on t
 
 ### 8.1 The Activity segment — the collection-activity log (F11)
 
-**Why a second store, not more `PlayEvent`s.** History now has **two timelines** behind a
-`Plays | Activity` segmented control (`HistoryView.HistoryTab`): song plays, and **collection
-activity** — "Added *X* to *Y*", "Hearted *Z*", "Removed heart from *Z*", "Removed *X* from
-*Y*". `PlayEvent` is deliberately song-play-centric (the 30 s re-count window, the
+**The tab set (Levi, 2026-08-10).** History has exactly **three** tabs (`HistoryView.HistoryTab`):
+**Playback** (the default), **For You** (only while the recommendation engine is on), and
+**Collection**. The **Unified** view — plays and collection activity interleaved newest-first,
+filtered by the search query alone — was **removed**; the owner's words were "playback, for you,
+collection tabs only (remove unified)". What went with it is the ability to see a play and a
+collection change *adjacent in time*; each stream survives whole in its own tab. Its only
+exclusive action, the **Rewind to here** row menu, moved onto the Playback rows (which carry the
+same `PlayRef.eventId` `rewindSlice` keys on). Nothing persisted the History tab — it is
+per-appearance `@State`, so there was no stored `"Unified"` to migrate; the one stored
+"where was I" seam, `SettingsStore.lastSection`, names the app SECTION, never a tab inside it.
+The control itself now renders **every** available tab with the current one filled (it used to
+show only the views you were *not* in — a trick that degenerates to a lone full-width button
+once there are only two tabs left).
+
+**Why a second store, not more `PlayEvent`s.** History carries **two event streams** behind that
+control: song plays, and **collection activity** — "Added *X* to *Y*", "Hearted *Z*", "Removed
+heart from *Z*", "Removed *X* from *Y*". `PlayEvent` is deliberately song-play-centric (the 30 s re-count window, the
 `countIndex`/`lastPlayedIndex` aggregates feed recently-played reads), so an add/heart/remove
 is a different **kind** of fact and gets its own append-only store —
 `CollectionActivityStore`, persisted to `pocketdj-collection-activity.json` — with zero

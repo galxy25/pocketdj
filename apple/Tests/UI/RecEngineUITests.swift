@@ -87,14 +87,11 @@ final class RecEngineUITests: XCTestCase {
 
         XCTAssertTrue(app.el("history-tab-playback").waitForExistence(timeout: 20))
         XCTAssertFalse(app.el("history-tab-for-you").exists,
-                       "engine off (default) → no For You tab from Unified")
-        // Switch views — the tab must stay absent from every tab bar.
-        app.el("history-tab-playback").tap()
-        XCTAssertTrue(app.el("history-tab-unified").waitForExistence(timeout: 5))
-        XCTAssertFalse(app.el("history-tab-for-you").exists,
-                       "engine off → no For You tab from Playback either")
+                       "engine off (default) → no For You tab from Playback")
+        // Switch views — the tab must stay absent from every tab bar. With Unified removed the
+        // bar shows EVERY tab (current one filled), so Collection is reachable directly.
         app.el("history-tab-collection").tap()
-        XCTAssertTrue(app.el("history-tab-unified").waitForExistence(timeout: 5))
+        XCTAssertTrue(app.el("history-tab-playback").waitForExistence(timeout: 5))
         XCTAssertFalse(app.el("history-tab-for-you").exists,
                        "engine off → no For You tab from Collection either")
     }
