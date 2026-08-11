@@ -298,6 +298,20 @@ const NOVELTY_AUX_GAIN = 0.40;
 /// The same term inside `/recs/similar`, where — like familiarity — recency is a tiebreak about
 /// the crate rather than a reason for it.
 const RECENCY_SIMILAR_WEIGHT = 0.35;
+/// ── THE INCUMBENT CAP (the owner's 50% newcomer floor) ─────────────────────────────────────────
+/// Owner, verbatim: *"cap our for you per collection at max 50% of suggestions for artists that
+/// are already in the pocket, that way we can learn the features of related artists to make our
+/// recommendations more novel and collection expanding vs model collapse."*
+///
+/// A COMPOSITION CONSTRAINT, not a scoring change: `scoreCollections` ranks exactly as before,
+/// then `composeIncumbentCap` composes the final suggestion list so rows that are INCUMBENT —
+/// here, a collection that ALREADY HOLDS any of the song's credited artists — are at most this
+/// share, rounding in the newcomers' favor on odd counts (⌊n·share⌋ incumbents in an n-row list).
+/// FAIL OPEN: when the newcomer pool runs dry the remainder fills from incumbents rather than
+/// starving the list — the floor is a target, never a hole. Mirrors
+/// `ZoneEngine.Tuning.suggestionIncumbentMaxShare` on the device; the newcomer-parity fixture
+/// pins the two compose implementations to identical output.
+const INCUMBENT_MAX_SHARE = 0.5;
 
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 
@@ -1058,6 +1072,152 @@ export function primaryArtistKey(credit) {
   return artistKey(s);
 }
 
+// ── The credit split (incumbent identity) ──────────────────────────────────────────────────────
+// MIRRORS `RecVersionIdentity.creditArtistKeys` on the device, helper for helper. The incumbent
+// test ("is this artist already in the pocket?") must run on CREDIT keys, never raw strings:
+// measured on the owner's real library, both of his Dinner Party albums are filed under
+// "Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi Washington" and the raw
+// string never meets "Terrace Martin". The newcomer-parity fixture pins this mirror to the Swift.
+
+const RVI_CREDIT_SPLIT_WORDS = [' and ', ' x ', ' with ', ' vs ', ' versus '];
+const RVI_MAX_CREDIT_NAMES = 12;
+
+/// `RecVersionIdentity.fold` — diacritic-folded, lowercased, `&` ⇒ ` and `, 7"/12" ⇒ ` inch `.
+function rviFold(raw) {
+  let t = String(raw || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  if (t.includes('&')) t = t.replace(/&/g, ' and ');
+  if (t.includes('"') || t.includes("''") || t.includes('inch')) {
+    t = t.replace(/\b(7|12)\s*(?:"|''|-?\s*inch)/g, ' inch ');
+  }
+  return t;
+}
+
+/// `RecVersionIdentity.tokens` — alphanumeric runs, everything else a separator.
+const rviTokens = (s) => s.match(/[\p{L}\p{N}]+/gu) || [];
+
+/// `RecVersionIdentity.stripParenGroups` — bracketed groups removed, depth-aware.
+function rviStripParenGroups(s) {
+  let out = '';
+  let depth = 0;
+  for (const ch of s) {
+    if (ch === '(' || ch === '[' || ch === '{') { depth += 1; continue; }
+    if (ch === ')' || ch === ']' || ch === '}') { if (depth > 0) depth -= 1; continue; }
+    if (depth === 0) out += ch;
+  }
+  return out;
+}
+
+/// `RecVersionIdentity.stripCreditTail` — an un-parenthesized trailing credit dropped ("Song
+/// feat. X"). `with` deliberately not a tail marker there (it IS a split word below).
+function rviStripCreditTail(s) {
+  const toks = rviTokens(s);
+  const idx = toks.findIndex((t) => t === 'feat' || t === 'featuring' || t === 'ft');
+  if (idx <= 0) return s;
+  return toks.slice(0, idx).join(' ');
+}
+
+/// `RecVersionIdentity.artistKey` — the loose artist key the credit split emits.
+function rviArtistKey(raw) {
+  const s = rviStripCreditTail(rviStripParenGroups(rviFold(raw)));
+  const t = rviTokens(s).join(' ');
+  if (t.startsWith('the ') && t.length > 4) return t.slice(4);
+  return t;
+}
+
+/// `RecVersionIdentity.splitCredit` — break a folded credit into names on `, ; /` and the padded
+/// word separators (whole words only — " and " never splits "Bandit").
+function rviSplitCredit(folded) {
+  let pieces = folded.split(/[,;/]/).filter((p) => p !== '');
+  for (const word of RVI_CREDIT_SPLIT_WORDS) {
+    pieces = pieces.flatMap((piece) => {
+      const padded = ` ${piece} `;
+      if (!padded.includes(word)) return [piece];
+      return padded.split(word);
+    });
+  }
+  return pieces;
+}
+
+/**
+ * EVERY ARTIST NAMED IN A CREDIT — the whole-string key plus one per name. Mirrors
+ * `RecVersionIdentity.creditArtistKeys` exactly (the newcomer-parity fixture is the law): a
+ * bracketed credit is read twice ("[IVY] & XIRA" must index "ivy"), a compilation sleeve naming
+ * more than RVI_MAX_CREDIT_NAMES stops indexing, duplicates keep first position.
+ */
+export function creditArtistKeys(raw) {
+  const s = String(raw || '');
+  const out = [];
+  const seen = new Set();
+  const add = (k) => {
+    if (k && out.length < RVI_MAX_CREDIT_NAMES && !seen.has(k)) { seen.add(k); out.push(k); }
+  };
+  const debracketed = s.replace(/[()[\]{}]/g, ' ');
+  for (const source of (debracketed === s ? [s] : [s, debracketed])) {
+    add(rviArtistKey(source));
+    const folded = rviStripCreditTail(rviStripParenGroups(rviFold(source)));
+    if (!/[,;/]/.test(folded) && !RVI_CREDIT_SPLIT_WORDS.some((w) => folded.includes(w))) continue;
+    for (const piece of rviSplitCredit(folded)) add(rviArtistKey(piece));
+  }
+  return out;
+}
+
+/**
+ * THE OWNER'S 50% NEWCOMER FLOOR, as a pure composition function — the shared idiom both sides
+ * run (`RecComposition.compose` on the device; the newcomer-parity fixture pins the two).
+ *
+ * Rank first, compose after: `rows` arrive in FINAL RANKED ORDER, each knowing its `capKey`
+ * (per-artist budget key; '' ⇒ uncapped) and whether it is INCUMBENT. The composition then:
+ *
+ *   1. sizes the list exactly as the plain capped walk would (`n` — the floor may reorder the
+ *      list, never shorten it);
+ *   2. walks the ranking in order, taking every row the artist budget allows EXCEPT incumbents
+ *      beyond ⌊n·incumbentMaxShare⌋, which spill — so newcomers deeper in the ranking are pulled
+ *      up and relative order is preserved WITHIN each pool (the 3-per-artist cap idiom);
+ *   3. FAILS OPEN: spilled incumbents refill the remainder, in order, when the newcomer pool runs
+ *      dry — a tiny catalog gets its full list, never a hole.
+ *
+ * A list already under the cap is untouched (the budget never binds), and ⌊·⌋ rounds odd counts
+ * in the newcomers' favor.
+ */
+export function composeIncumbentCap(rows, { limit = Infinity, maxPerArtist = Infinity,
+                                            incumbentMaxShare = INCUMBENT_MAX_SHARE } = {}) {
+  const cap = maxPerArtist > 0 ? maxPerArtist : Infinity;
+  // Phase 0 — the target size: what the plain artist-capped walk returns today.
+  let n = 0;
+  {
+    const per = new Map();
+    for (const r of rows) {
+      if (n >= limit) break;
+      const k = r.capKey || '';
+      if (k && (per.get(k) || 0) >= cap) continue;
+      if (k) per.set(k, (per.get(k) || 0) + 1);
+      n += 1;
+    }
+  }
+  const incumbentCap = Math.min(n, Math.max(0, Math.floor(n * incumbentMaxShare)));
+  const per = new Map();
+  const out = [];
+  const spill = [];
+  let incumbents = 0;
+  const blocked = (r) => { const k = r.capKey || ''; return !!k && (per.get(k) || 0) >= cap; };
+  const take = (r) => { const k = r.capKey || ''; if (k) per.set(k, (per.get(k) || 0) + 1); out.push(r); };
+  // Phase A — the capped walk, incumbents budgeted.
+  for (const r of rows) {
+    if (out.length >= n) break;
+    if (blocked(r)) continue;
+    if (r.isIncumbent && incumbents >= incumbentCap) { spill.push(r); continue; }
+    if (r.isIncumbent) incumbents += 1;
+    take(r);
+  }
+  // Phase B — fail open: the newcomer pool ran dry, refill from the spilled incumbents in order.
+  for (const r of spill) {
+    if (out.length >= n) break;
+    if (blocked(r)) continue;
+    take(r);
+  }
+  return out;
+}
+
 /**
  * ARTIST-level familiarity, 0…1, log-scaled against the listener's own top artist.
  *
@@ -1773,6 +1933,28 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
   const simRenormCol = deadWeight > 0
     ? COLLECTIONS_SIM_BUDGET / (COLLECTIONS_SIM_BUDGET - deadWeight) : 1;
 
+  // ── THE INCUMBENT TEST (the owner's 50% newcomer floor) ───────────────────────────────────
+  // Is S's artist ALREADY IN this pocket? By CREDIT identity, never raw string: a pocket holding
+  // "Dinner Party, Terrace Martin, …" is incumbent for a Terrace Martin song and vice versa —
+  // one shared credit is enough. Keys are memoized per credit string (a collection sweep sees
+  // the same few thousand credits over and over).
+  const sCreditKeys = new Set(creditArtistKeys(S.a || ''));
+  const creditKeyCache = new Map();
+  const creditKeysOf = (credit) => {
+    let k = creditKeyCache.get(credit);
+    if (k === undefined) { k = creditArtistKeys(credit); creditKeyCache.set(credit, k); }
+    return k;
+  };
+  const holdsArtist = (col) => {
+    if (!sCreditKeys.size) return false;
+    for (const id of col.songIds) {
+      const a = featuresById.get(id)?.a;
+      if (!a) continue;
+      if (creditKeysOf(a).some((k) => sCreditKeys.has(k))) return true;
+    }
+    return false;
+  };
+
   const scored = [];
   for (const col of state.collections?.list || []) {
     // NEVER OFFER A COLLECTION THE SONG IS ALREADY IN, under any of its ids — `includes` alone
@@ -1865,10 +2047,25 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
     if (score <= 0) continue;
     const reasons = [...terms].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([, , r]) => r);
     scored.push({ id: col.id, kind: col.kind, name: col.name,
-                  score: Math.round(score * 100) / 100, reasons });
+                  score: Math.round(score * 100) / 100, reasons,
+                  isIncumbent: holdsArtist(col) });
   }
   scored.sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1));
-  return { v: 1, songId, suggestions: scored.filter((s) => s.score >= threshold).slice(0, 5) };
+  // ── COMPOSE, DON'T RE-SCORE (the owner's 50% newcomer floor) ──────────────────────────────
+  // Ranked exactly as before; the final list is then composed so collections that already hold
+  // S's artist take at most INCUMBENT_MAX_SHARE of the rows — the other half proposes crates the
+  // artist would be NEW to, which is the collection-expanding half of the owner's instruction.
+  // Fail open: with no newcomer crates above threshold the list is exactly what it was.
+  const eligible = scored.filter((s) => s.score >= threshold);
+  const composed = composeIncumbentCap(eligible, { limit: 5 });
+  return { v: 1, songId, suggestions: composed.map(({ isIncumbent, ...row }) => {
+    // A newcomer row's WHY says so when there is room — below every scored term in precedence,
+    // and only when S actually carries an artist to be new (`sCreditKeys` non-empty).
+    if (!isIncumbent && sCreditKeys.size && row.reasons.length < 3) {
+      return { ...row, reasons: [...row.reasons, 'New artist for this crate'] };
+    }
+    return row;
+  }) };
 }
 
 // ── Similar-to-collections (GET /recs/similar?collectionIds=…) ──────────────────────────────────

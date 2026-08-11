@@ -322,6 +322,21 @@ enum ZoneEngine {
         var suggestionNoveltyWeight: Double = 0.75
         var suggestionFamiliarityWeight: Double = 0.25
 
+        /// ── THE OWNER'S 50% INCUMBENT CAP (collection tiles only) ────────────────────────────
+        /// Owner, verbatim: *"cap our for you per collection at max 50% of suggestions for
+        /// artists that are already in the pocket, that way we can learn the features of related
+        /// artists to make our recommendations more novel and collection expanding vs model
+        /// collapse."*
+        ///
+        /// A COMPOSITION constraint, not a scoring one — the ranking above is untouched, and the
+        /// final list is composed by `RecComposition.compose` so INCUMBENT rows (an artist the
+        /// collection already holds, by CREDIT identity — see the incumbent set in
+        /// `suggestions`) take at most this share, rounding odd counts in the newcomers' favor
+        /// and FAILING OPEN from incumbents when the newcomer pool runs dry. Measured before
+        /// (scripts/measure-incumbent-share.mjs, his real pockets): 57.9% of all rows incumbent,
+        /// 52/86 collections over 50%, 13 pockets at 100%. `≥ 1` disables the floor.
+        var suggestionIncumbentMaxShare: Double = 0.5
+
         /// ── TIMBRE (audio-similarity v2) ─────────────────────────────────────────────────────
         /// How far a candidate's timbre fit to the profile's sound may lift it:
         /// `net × (1 + timbreGain × fit)` — the same BOUNDED MULTIPLIER shape as `auxGain` /
@@ -1146,6 +1161,37 @@ enum ZoneEngine {
         let versionKeys = versions ?? Self.versionKeys(tracks)
         let ownedVersions = RecVersionIndex(owned: memberSongIds.compactMap { versionKeys[$0] })
 
+        // ── THE INCUMBENT SET (the owner's 50% newcomer floor) ───────────────────────────────
+        // Which artists are ALREADY IN this collection — in CREDIT space, never raw strings.
+        // `RecVersionIdentity.creditArtistKeys` splits a collaboration credit into every name on
+        // it, so "Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi Washington"
+        // makes the pocket incumbent for a Terrace Martin candidate AND a collab candidate
+        // sharing one credit with the pocket counts as incumbent — the raw-string join misses
+        // both directions (that mismatch measured 149 of 161 release-feed misses; see
+        // `creditArtistKeys`). Memoized per artist key: a catalog sweep meets ~12.7k distinct
+        // artists across ~96k rows, so the splitter runs per ARTIST, not per track. Members the
+        // projection cannot place contribute no keys — the same fail-open posture as above.
+        var creditKeysByArtist: [String: [String]] = [:]
+        func creditKeys(_ artistKey: String, _ artistName: String) -> [String] {
+            if let k = creditKeysByArtist[artistKey] { return k }
+            let k = RecVersionIdentity.creditArtistKeys(artistName)
+            creditKeysByArtist[artistKey] = k
+            return k
+        }
+        var memberCreditKeys: Set<String> = []
+        for id in members {
+            guard let t = trackById[id] else { continue }
+            memberCreditKeys.formUnion(creditKeys(t.artistKey, t.artistName))
+        }
+        var incumbentByArtist: [String: Bool] = [:]
+        func isIncumbent(_ t: Track) -> Bool {
+            if let v = incumbentByArtist[t.artistKey] { return v }
+            let v = !memberCreditKeys.isEmpty
+                && creditKeys(t.artistKey, t.artistName).contains { memberCreditKeys.contains($0) }
+            incumbentByArtist[t.artistKey] = v
+            return v
+        }
+
         // The profile: the collection's members, plus anything the listener has 👍'd for it (a
         // thumbs-up is a statement about what belongs here even before the add lands).
         var profileIds = members
@@ -1261,7 +1307,8 @@ enum ZoneEngine {
         for (k, v) in negArtists { negArtists[k] = min(1, v / Tuning.rejectionSaturation) }
         for (k, v) in negGenres { negGenres[k] = min(1, v / Tuning.rejectionSaturation) }
 
-        var scored: [(id: String, artist: String, capKey: String, score: Double)] = []
+        var scored: [(id: String, artist: String, capKey: String, score: Double,
+                      isIncumbent: Bool)] = []
         // `membership.contains`, NOT `members.contains` — a variant id or an ad-hoc capture of a
         // song already in here is the same song, and offering it is the defect this filter exists
         // to prevent.
@@ -1322,7 +1369,7 @@ enum ZoneEngine {
                 net *= 1 + tuning.timbreGain * fit
             }
             guard net > 0 else { continue }
-            scored.append((t.songId, t.artistKey, capKey, net))
+            scored.append((t.songId, t.artistKey, capKey, net, isIncumbent(t)))
         }
         scored.sort { $0.score > $1.score || ($0.score == $1.score && $0.id < $1.id) }
 
@@ -1332,16 +1379,17 @@ enum ZoneEngine {
         // because a cap that "Drake & Future" walks around is not a cap: measured over 40 real
         // tiles, Drake held 25 rows under his own name plus 7 more through collaborations — 32
         // rows under a cap of 3 per tile.
-        var perArtist: [String: Int] = [:]
-        var out: [String] = []
-        for c in scored {
-            guard out.count < limit else { break }
-            let n = perArtist[c.capKey] ?? 0
-            guard n < tuning.maxPerArtist else { continue }
-            perArtist[c.capKey] = n + 1
-            out.append(c.id)
-        }
-        return out
+        //
+        // The walk itself is `RecComposition.compose` — the same artist-cap walk this loop used
+        // to be, PLUS the owner's 50% incumbent cap: rows whose artist the collection already
+        // holds take at most `suggestionIncumbentMaxShare` of the list, newcomers deeper in the
+        // ranking are pulled up in their own order, and the floor fails OPEN from incumbents when
+        // the newcomer pool runs dry. A list already under the cap comes back byte-identical.
+        return RecComposition.compose(
+            scored.map { RecComposition.Row(id: $0.id, capKey: $0.capKey,
+                                            isIncumbent: $0.isIncumbent) },
+            limit: limit, maxPerArtist: tuning.maxPerArtist,
+            incumbentMaxShare: tuning.suggestionIncumbentMaxShare)
     }
 
     /// The same ranking, with the one-line WHY each row earned its place.
@@ -1378,8 +1426,27 @@ enum ZoneEngine {
         }
         let artistFam = RecNovelty.ArtistFamiliarity(artistPlays: artistPlays)
         let members = Set(memberSongIds)
-        let memberArtists = Set(memberSongIds.compactMap { trackById[$0]?.artistKey })
         let memberGenres = Set(memberSongIds.compactMap { trackById[$0]?.genre })
+        // The SAME incumbent test `suggestions` composed under — credit identity, so the caption
+        // "An artist already in here" is true of exactly the rows the floor counted as incumbent
+        // (a Terrace Martin row against a crate filed under the five-name Dinner Party credit is
+        // incumbent in both places, or the captions and the composition would disagree).
+        var creditCache: [String: [String]] = [:]
+        func creditKeys(_ t: ZoneEngine.Track) -> [String] {
+            if let k = creditCache[t.artistKey] { return k }
+            let k = RecVersionIdentity.creditArtistKeys(t.artistName)
+            creditCache[t.artistKey] = k
+            return k
+        }
+        var memberCreditKeys: Set<String> = []
+        for id in members {
+            guard let t = trackById[id] else { continue }
+            memberCreditKeys.formUnion(creditKeys(t))
+        }
+        func isIncumbent(_ t: ZoneEngine.Track) -> Bool {
+            !memberCreditKeys.isEmpty
+                && creditKeys(t).contains { memberCreditKeys.contains($0) }
+        }
         // The same era window `suggestions` scored against (members only — the 👍 profile add is
         // an approximation this explainer already makes for artists and genres).
         let era = SimilarityFamilies.eraWindow(
@@ -1395,13 +1462,14 @@ enum ZoneEngine {
         return ids.map { id in
             guard let t = trackById[id] else { return (id, "Fits this collection") }
             let cap = capKeyByArtist[t.artistKey] ?? t.artistKey
+            let incumbent = isIncumbent(t)
             // NOVELTY FIRST when it is what set this row apart — that is the honest reading of a
             // ranking where novelty is the reordering signal, and it is what makes a 👍 on the row
             // legible as a verdict on an unknown rather than a nod at a favourite.
-            if let why = artistFam.reason(cap), !memberArtists.contains(t.artistKey) {
+            if let why = artistFam.reason(cap), !incumbent {
                 return (id, why)
             }
-            if memberArtists.contains(t.artistKey) { return (id, "An artist already in here") }
+            if incumbent { return (id, "An artist already in here") }
             // TIMBRE speaks only when it was OBSERVED (the row has a vector) and the fit is real
             // (inside or near the crate's own spread) — never off the imputed neutral, and never
             // in words the adjective table cannot honestly produce. ABOVE genre in precedence,
@@ -1418,6 +1486,12 @@ enum ZoneEngine {
             if let era, let y = t.year, era.contains(Double(y)) {
                 return (id, "From this collection's \(Int(era.lo))–\(Int(era.hi)) era")
             }
+            // A NEWCOMER row's reason says so when nothing stronger exists — below timbre/genre/
+            // era in precedence, deliberately: those are measured claims about THIS row, while
+            // this is the composition's claim about the crate. Only when the crate has an artist
+            // roster to be new TO (`memberCreditKeys` non-empty — an unresolvable membership must
+            // not caption every row "new").
+            if !memberCreditKeys.isEmpty, !incumbent { return (id, "New artist for this crate") }
             return (id, "Fits this collection")
         }
     }

@@ -47,7 +47,7 @@ const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections, sh
         scoreSimilarToCollections, playCountSignal, recencySignal,
         feedbackOf, feedbackMultiplier, identityKeys,
         primaryArtistKey, artistKey, artistFamiliarityOf, auxMix, mergeAudioFeatures,
-        eraWindow, eraFit,
+        eraWindow, eraFit, creditArtistKeys, composeIncumbentCap,
         timbreDistance, timbreProfile, timbreFit, timbreNetFit, timbreAdjectives } =
   await import('./index.mjs');
 
@@ -2141,6 +2141,152 @@ test('scoreCollections: an unanalysed SONG renormalizes the round instead of qui
             `an unanalysed song still gets collection suggestions: ${JSON.stringify(out.suggestions)}`);
   const scores = new Set(out.suggestions.map((s) => s.score));
   assert.equal(scores.size, 1, 'with no vector on the song, the sound-distinct crates tie exactly');
+});
+
+// ── The owner's 50% newcomer floor (composeIncumbentCap + the credit-split incumbent test) ──────
+
+test('creditArtistKeys splits a collaboration credit into every name on it', () => {
+  assert.deepEqual(creditArtistKeys('Drake'), ['drake']);
+  assert.deepEqual(creditArtistKeys('Drake & Future'), ['drake and future', 'drake', 'future']);
+  assert.deepEqual(
+    creditArtistKeys('Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi Washington'),
+    ['dinner party terrace martin robert glasper 9th wonder and kamasi washington',
+     'dinner party', 'terrace martin', 'robert glasper', '9th wonder', 'kamasi washington'],
+    'the Dinner Party credit is the measured raw-string trap this split exists for');
+  assert.deepEqual(creditArtistKeys('Bandit'), ['bandit'], '" and " never splits a name mid-word');
+  assert.ok(creditArtistKeys('[IVY] & XIRA').includes('ivy'), 'a bracketed name is read via debracket');
+});
+
+test('composeIncumbentCap: incumbents beyond ⌊n·share⌋ spill and newcomers pull up, in pool order', () => {
+  const R = (id, capKey, inc) => ({ id, capKey, isIncumbent: inc });
+  const rows = [R('i1', 'a', true), R('i2', 'b', true), R('i3', 'c', true), R('i4', 'd', true),
+                R('n1', 'e', false), R('n2', 'f', false), R('n3', 'g', false)];
+  const out = composeIncumbentCap(rows, { limit: 5, maxPerArtist: 3, incumbentMaxShare: 0.5 });
+  assert.deepEqual(out.map((r) => r.id), ['i1', 'i2', 'n1', 'n2', 'n3'],
+                   'a 5-row list seats ⌊2.5⌋ = 2 incumbents — odd counts round in the newcomers\' favor');
+});
+
+test('composeIncumbentCap fails OPEN: a dry newcomer pool refills from incumbents, never a short list', () => {
+  const R = (id, capKey, inc) => ({ id, capKey, isIncumbent: inc });
+  const rows = [R('i1', 'a', true), R('i2', 'b', true), R('i3', 'c', true)];
+  const out = composeIncumbentCap(rows, { limit: 5, maxPerArtist: 3, incumbentMaxShare: 0.5 });
+  assert.deepEqual(out.map((r) => r.id), ['i1', 'i2', 'i3'],
+                   'the floor is a target, never a hole — the full list still lands');
+});
+
+test('composeIncumbentCap leaves a list already under the cap byte-identical', () => {
+  const R = (id, capKey, inc) => ({ id, capKey, isIncumbent: inc });
+  const rows = [R('n1', 'a', false), R('i1', 'b', true), R('n2', 'c', false),
+                R('n3', 'd', false), R('n4', 'e', false)];
+  const out = composeIncumbentCap(rows, { limit: 5, maxPerArtist: 3, incumbentMaxShare: 0.5 });
+  assert.deepEqual(out.map((r) => r.id), ['n1', 'i1', 'n2', 'n3', 'n4'],
+                   'a pocket already under 50% must not be disturbed');
+});
+
+test('composeIncumbentCap keeps the per-artist cap in force on both phases', () => {
+  const R = (id, capKey, inc) => ({ id, capKey, isIncumbent: inc });
+  const rows = [R('i1', 'a', true), R('i2', 'a', true), R('i3', 'a', true), R('i4', 'a', true),
+                R('n1', 'b', false), R('n2', 'b', false), R('n3', 'b', false), R('n4', 'b', false)];
+  const out = composeIncumbentCap(rows, { limit: 25, maxPerArtist: 3, incumbentMaxShare: 1 });
+  assert.deepEqual(out.map((r) => r.id), ['i1', 'i2', 'i3', 'n1', 'n2', 'n3'],
+                   'share 1 disables the floor and the walk is exactly the old capped walk');
+});
+
+/// The per-song → collections route: a small index where "Solo Star" is already in some crates
+/// (one via a collaboration credit — the split, not the raw string) and new to others.
+const floorIndex = () => new Map([
+  ['sng_s1', { i: 'sng_s1', al: 'alb_f0', a: 'Solo Star', n: 'Anthem', g: 'electronic', y: 2020, b: 120, c: '8A' }],
+  ['sng_c1', { i: 'sng_c1', al: 'alb_f1', a: 'Solo Star & Friendo', n: 'Duet', g: 'electronic', y: 2020, b: 121, c: '8A' }],
+  ['sng_c2', { i: 'sng_c2', al: 'alb_f2', a: 'Solo Star', n: 'B-Side', g: 'electronic', y: 2021, b: 119, c: '8A' }],
+  ['sng_c3', { i: 'sng_c3', al: 'alb_f6', a: 'Solo Star', n: 'C-Side', g: 'electronic', y: 2020, b: 120, c: '8A' }],
+  ['sng_c4', { i: 'sng_c4', al: 'alb_f7', a: 'Solo Star & Friendo', n: 'Reunion', g: 'electronic', y: 2021, b: 121, c: '8A' }],
+  ['sng_n1', { i: 'sng_n1', al: 'alb_f3', a: 'Newman', n: 'Fresh', g: 'electronic', y: 2020, b: 122, c: '8A' }],
+  ['sng_n2', { i: 'sng_n2', al: 'alb_f4', a: 'Otherton', n: 'Different', g: 'electronic', y: 2020, b: 118, c: '8A' }],
+  ['sng_n3', { i: 'sng_n3', al: 'alb_f5', a: 'Thirdman', n: 'Card', g: 'electronic', y: 2019, b: 120, c: '8A' }],
+]);
+const floorState = (list) => ({ v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+                                collections: { atMs: 0, list } });
+const crate = (id, name, songIds) => ({ id, kind: 'pocket', name, songIds });
+
+test('scoreCollections caps incumbent crates at 50% of the suggestions', () => {
+  // Four crates already hold Solo Star (pls_a via the COLLABORATION credit — the raw string
+  // "Solo Star & Friendo" never equals "Solo Star", so this passing is the credit split working)
+  // and three would be new. Ids order the head incumbent so the floor has something to do.
+  const out = scoreCollections(floorState([
+    crate('pls_a', 'A', ['sng_c1']), crate('pls_b', 'B', ['sng_c2']),
+    crate('pls_c', 'C', ['sng_c3']), crate('pls_d', 'D', ['sng_c4']),
+    crate('pls_x', 'X', ['sng_n1']), crate('pls_y', 'Y', ['sng_n2']),
+    crate('pls_z', 'Z', ['sng_n3']),
+  ]), floorIndex(), 'sng_s1', { nowMs: NOW, threshold: 0 });
+  const ids = out.suggestions.map((s) => s.id);
+  assert.equal(ids.length, 5, 'the list is never shortened by the floor');
+  const incumbents = ids.filter((id) => ['pls_a', 'pls_b', 'pls_c', 'pls_d'].includes(id));
+  assert.equal(incumbents.length, 2, `⌊5·0.5⌋ = 2 incumbent crates at most: ${JSON.stringify(ids)}`);
+  assert.deepEqual(ids.filter((id) => ['pls_x', 'pls_y', 'pls_z'].includes(id)).length, 3,
+                   'the newcomer crates take the rest — collection-expanding');
+});
+
+test('scoreCollections fails open when every crate already holds the artist', () => {
+  const out = scoreCollections(floorState([
+    crate('pls_a', 'A', ['sng_c1']), crate('pls_b', 'B', ['sng_c2']),
+    crate('pls_c', 'C', ['sng_c3']),
+  ]), floorIndex(), 'sng_s1', { nowMs: NOW, threshold: 0 });
+  assert.equal(out.suggestions.length, 3, 'a dry newcomer pool refills from incumbents — no hole');
+});
+
+test('scoreCollections: a collab SONG is incumbent for a crate holding one of its credits', () => {
+  // The song is "Solo Star & Friendo"; pls_b holds plain Solo Star. One shared credit ⇒ incumbent.
+  const out = scoreCollections(floorState([
+    crate('pls_b', 'B', ['sng_c2']), crate('pls_x', 'X', ['sng_n1']),
+    crate('pls_y', 'Y', ['sng_n2']), crate('pls_z', 'Z', ['sng_n3']),
+  ]), floorIndex(), 'sng_c1', { nowMs: NOW, threshold: 0 });
+  const ids = out.suggestions.map((s) => s.id);
+  // 4 eligible ⇒ n = 4, incumbent cap ⌊2⌋ = 2 — pls_b is the only incumbent so nothing spills;
+  // the check is the REASON: the incumbent crate must not carry the newcomer caption.
+  const b = out.suggestions.find((s) => s.id === 'pls_b');
+  assert.ok(b, 'the incumbent crate still ranks');
+  assert.ok(!b.reasons.includes('New artist for this crate'),
+            'a crate holding one credit of the collab is INCUMBENT — the split works both directions');
+  assert.ok(ids.includes('pls_x'), 'newcomer crates rank alongside');
+});
+
+test('scoreCollections captions a newcomer crate when there is room below the scored reasons', () => {
+  // Sparse members (genre only — no bpm/key/year) keep the term list short enough that the
+  // newcomer caption has room; it must sit BELOW every scored term, never displace one.
+  const sparse = new Map([
+    ['sng_s1', { i: 'sng_s1', a: 'Solo Star', n: 'Anthem', g: 'electronic' }],
+    ['sng_n1', { i: 'sng_n1', a: 'Newman', n: 'Fresh', g: 'electronic' }],
+    ['sng_c2', { i: 'sng_c2', a: 'Solo Star', n: 'B-Side', g: 'electronic' }],
+  ]);
+  const out = scoreCollections(floorState([
+    crate('pls_x', 'X', ['sng_n1']), crate('pls_b', 'B', ['sng_c2']),
+  ]), sparse, 'sng_s1', { nowMs: NOW, threshold: 0 });
+  const x = out.suggestions.find((s) => s.id === 'pls_x');
+  const b = out.suggestions.find((s) => s.id === 'pls_b');
+  assert.ok(x.reasons.includes('New artist for this crate'), JSON.stringify(x.reasons));
+  assert.equal(x.reasons[x.reasons.length - 1], 'New artist for this crate',
+               'the newcomer caption is the LAST reason — below every scored term');
+  assert.ok(!b.reasons.includes('New artist for this crate'));
+});
+
+test('newcomer parity fixture: the Lambda reproduces every list and key the device is held to', async () => {
+  const { fileURLToPath } = await import('node:url');
+  const { dirname } = await import('node:path');
+  const fx = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)),
+                                          '..', '..', '..', 'apple', 'Tests', 'Fixtures',
+                                          'newcomer-parity.json'), 'utf8'));
+  assert.ok(fx.credits.length >= 20 && fx.compositions.length >= 40, 'the fixture is not a stub');
+  for (const c of fx.credits) {
+    assert.deepEqual(creditArtistKeys(c.raw), c.keys,
+                     `credit split drift on ${JSON.stringify(c.raw)}`);
+  }
+  for (const [i, c] of fx.compositions.entries()) {
+    const out = composeIncumbentCap(c.rows, {
+      limit: c.limit, maxPerArtist: c.maxPerArtist ?? Infinity,
+      incumbentMaxShare: c.incumbentMaxShare,
+    }).map((r) => r.id);
+    assert.deepEqual(out, c.out, `composition case ${i} drifted from the fixture`);
+  }
 });
 
 // ── The cloud/device parity fixture — one law, two implementations ──────────────────────────────
