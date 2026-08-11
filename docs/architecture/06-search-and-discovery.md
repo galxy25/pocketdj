@@ -592,6 +592,36 @@ Tapping an artist row pushes `Artist(name:)`, which `ArtistDetailView` resolves 
 
 ---
 
+## 10. Targeted audio analysis — teaching feedback about *musicality*
+
+Everything the recommenders score against is **metadata**: artist, genre, year, tempo, Camelot. So a 👍 can only ever mean "more of this artist" or "more of this genre" — `RecFeedbackStore` literally projects a verdict onto those two axes. A listener who likes the sparse, dry half of an artist's catalogue and dislikes the loud maximalist half has no way to say so, because both halves carry the same artist and the same genre.
+
+**Why this is not simply "analyse the library."** A librosa pass costs ~11 s of CPU per song, and the catalogue is 107,757 rows — a 330 CPU-hour sweep, most of it spent on songs no one will ever be offered. Worse, only **1,939 rows (1.8%)** have local audio at all; the rest would have to be captured from Apple Music in real time first. So the analysis is *targeted*, and the target is the recommender's own output.
+
+**The pipeline, in order.**
+
+1. **v1 produces the candidates.** Unchanged. The ids are whatever `ForYouFeedBuilder.build` just froze — In Da Zone plus every crate's suggestion list.
+2. **The device selects a bounded shortlist** (`RecAudioShortlist.select`, ~40 a night): the most **novel** (artist-level, `RecNovelty.ArtistFamiliarity`) and the most **similar to recent listening** (genre share, tempo, Camelot, renormalised over the axes this device can speak), **strictly alternating** rather than a fixed half-and-half — with a 50/50 split, a night where only three rows are eligible on the novel side ships a 94%-similar shortlist and calls it balanced.
+3. **In-catalog only**, and structurally rather than by filter: candidates are looked up in `inputs.tracks`, so an id this device does not own has no row to contribute. That is what keeps the job bounded and why the 13-day bulk-rip problem does not apply.
+4. **The nightly job analyses them** (`scripts/rec-audio-nightly.mjs`, launchd 02:00, hard stop 06:00) using the **existing** analyser — same Docker image, same `analyzeAudio`, same 90 s window as bpm/key, plus a new `analyze-timbre.py` stage.
+5. **The vectors go back to the engine** as additional features (`rec/audio/<profileHash>.json`).
+
+**What leaves the device: ids, nothing else.** The shortlist rides the existing `/events` flush as `audioQueue` — the same additive-optional doctrine as `feedback` and `playCounts`, so there is no second upload contract, no second retry policy and no second failure mode. It is a **set**, not a log: re-proposing an id the server already holds is a no-op, which is what makes a client that lost its `pendingIds` (a reinstall, a restore) harmless.
+
+**The worker is profile-blind.** It holds no bearer key and cannot derive the scoped profile id (`HMAC(profileId, bearerKey)` — the key never leaves the device), so `GET /audio/queue` authenticates on the **enrollment secret alone** and hands back opaque profile hashes that the worker relays verbatim to `POST /audio/features`. Reporting an id — with a vector *or* as unanalysable — **drains it from the queue**, so a permanently undecodable song cannot sit at the head of the queue and be retried first every night forever.
+
+**Stopping is correct, not failure.** `--until 06:00` is a hard deadline checked before each song starts, never a budget the job tries to fit into; the two sibling nightlies (`am-sync` 04:00, `digital-sync` 05:00) want the same Docker daemon. Work is resumable at song granularity — every completed vector is posted and drained — so a truncated night costs the night and nothing else. Songs with no local audio are **not** skipped: they are queued on the rip server's existing durable queue (`POST /rip-collection`, once each — `ripRequested` is what stops a song with no Apple Music match being re-requested nightly forever) and analysed on a later night once the capture exists.
+
+**The 14 axes** are named things a person could say about a record — `bright`, `brightVar`, `air`, `width`, `noisy`, `fizz`, `punch`, `busy`, `dynamic`, `loud` — plus `m1…m4`, an unnamed spectral-envelope residual. Every value is normalised to 0…1 **at extraction time**, against a lo/hi table measured as the p02/p98 of the real catalogue, so a plain distance works without a per-feature scaler anywhere downstream. The first cut used plausible textbook ranges and three axes came back **dead** (`m1` pinned at 1.0 for 88% of songs, `m3` for 66%): a saturated axis is not a weak feature, it is a missing one that still costs a slot. `--raw` dumps the pre-normalisation values so the table can be re-derived; `TIMBRE_VERSION` is what makes the nightly job re-analyse after a recalibration instead of mixing two calibrations in one corpus.
+
+**Analog songs are analysed from their per-song `cutKey`, never the album-level `key`** — the same rule `analyzeBeatgridForSong` follows. Reading `key` analyses the whole side and hands every track on it an identical vector; the first calibration run did exactly that and two eight-song artist groups came back with a pairwise distance of **0.0000**.
+
+**Does it actually discriminate?** Measured on the owner's own ripped catalogue — 96 songs, 12 artist+genre groups: mean pairwise timbre distance **0.205 within one artist and genre** against **0.288 between groups** (ratio **0.71**), widest same-artist pair **0.705**, nearly 3× the between-group median. Songs that share an artist *and* a genre sit almost as far apart in timbre as songs that share neither. All 14 axes separate same-artist songs, led by `m2` (0.83 of its between-group spread), `brightVar` (0.80), `punch` (0.79) and `dynamic` (0.78) — i.e. *how much the brightness moves*, *drum-forward vs pad-forward*, *brickwalled vs breathing*. The signal is real.
+
+**The ranking change is deferred, on purpose.** Nothing in `scoreForYou` reads the corpus yet. It starts empty and fills at ~40 a night against a 1.8%-ripped catalogue, so a timbre term switched on today would apply to a handful of candidates and none of the rest — not a weak signal but an **incomparable** one, with two songs ranked by different formulas and the tile reordering for reasons no verdict caused. The trigger conditions (≥ ~60% candidate-pool coverage; enough verdicts *on analysed songs* to define centroids; entry as a bounded multiplier like `NOVELTY_AUX_GAIN`) are written at the feature store in `scripts/lambda/rec-engine/index.mjs`.
+
+---
+
 ## Next
 
 → [Chapter 7 — Distribution, Clients & the Edits Round-Trip](./07-distribution-and-clients.md)

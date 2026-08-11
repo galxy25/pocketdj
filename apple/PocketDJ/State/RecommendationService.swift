@@ -121,12 +121,26 @@ final class RecommendationService {
         /// type doc)? ADDITIVE-OPTIONAL: a pre-scoped-id doc decodes to false, which is
         /// exactly what schedules its migration.
         var didMigrateScopedProfile: Bool = false
+        /// AUDIO-ANALYSIS SHORTLIST, not yet uploaded. Persisted rather than held in memory
+        /// because a refresh at 4:20 followed by a force-quit would otherwise lose the night's
+        /// shortlist silently — the ids are cheap and the ranking that produced them is not.
+        var audioPendingUpload: [String] = []
+        /// Shortlist ids the SERVER has acknowledged. This is the `pendingIds` set the selector
+        /// subtracts, so a second refresh the same day proposes NEW songs rather than re-ranking
+        /// the ones the worker is already holding.
+        ///
+        /// It is deliberately not "already analysed" — the device is never told what the worker
+        /// finished, and does not need to be: the worker keeps its own `done` map and the server
+        /// drains its queue on report, so a re-proposal is a no-op at both. This list only has to
+        /// stop the CLIENT from spending its nightly budget on the same rows twice.
+        var audioQueued: [String] = []
 
         private enum CodingKeys: String, CodingKey {
             case schemaVersion, lastPlayAtMs, lastFavoriteAtMs, lastActivityAtMs,
                  lastPuzzleAtMs, lastFeedbackAtMs, lastCollectionsHash, lastPlayCountsHash,
                  lastSyncedAtMs, uploadedPlays, uploadedFavorites, uploadedActivity,
-                 uploadedPuzzle, uploadedFeedback, didMigrateScopedProfile
+                 uploadedPuzzle, uploadedFeedback, didMigrateScopedProfile,
+                 audioPendingUpload, audioQueued
         }
         init() {}
         init(from decoder: Decoder) throws {
@@ -146,6 +160,8 @@ final class RecommendationService {
             uploadedPuzzle = (try? c.decode([String].self, forKey: .uploadedPuzzle)) ?? []
             uploadedFeedback = (try? c.decode([String].self, forKey: .uploadedFeedback)) ?? []
             didMigrateScopedProfile = (try? c.decode(Bool.self, forKey: .didMigrateScopedProfile)) ?? false
+            audioPendingUpload = (try? c.decode([String].self, forKey: .audioPendingUpload)) ?? []
+            audioQueued = (try? c.decode([String].self, forKey: .audioQueued)) ?? []
         }
     }
 
@@ -543,11 +559,19 @@ final class RecommendationService {
         var pendingPlayCounts: RecPlayCountsWire? =
             (playCountsHash != nil && playCountsHash != sync.lastPlayCountsHash) ? playCountsSnapshot : nil
 
+        // THE AUDIO SHORTLIST — attached to the FIRST batch only. It is a set on the server, so
+        // repeating it across every batch of a multi-batch drain would be pure duplicate payload.
+        var pendingAudio: RecAudioQueueWire? = sync.audioPendingUpload.isEmpty ? nil
+            : RecAudioQueueWire(atMs: Date().timeIntervalSince1970 * 1000,
+                                songIds: sync.audioPendingUpload)
+
         guard !plays.isEmpty || !favs.isEmpty || !acts.isEmpty || !puzzle.isEmpty
-                || !feedback.isEmpty || pendingSnapshot != nil || pendingPlayCounts != nil else { return }
+                || !feedback.isEmpty || pendingSnapshot != nil || pendingPlayCounts != nil
+                || pendingAudio != nil else { return }
 
         while !plays.isEmpty || !favs.isEmpty || !acts.isEmpty || !puzzle.isEmpty
-                || !feedback.isEmpty || pendingSnapshot != nil || pendingPlayCounts != nil {
+                || !feedback.isEmpty || pendingSnapshot != nil || pendingPlayCounts != nil
+                || pendingAudio != nil {
             let batchPlays = Array(plays.prefix(Self.batchCap))
             let batchFavs = Array(favs.prefix(Self.batchCap))
             let batchActs = Array(acts.prefix(Self.batchCap))
@@ -564,10 +588,12 @@ final class RecommendationService {
                     puzzle: batchPuzzle.isEmpty ? nil : batchPuzzle,
                     feedback: batchFeedback.isEmpty ? nil : batchFeedback,
                     collectionsSnapshot: snap,
-                    playCounts: counts)
+                    playCounts: counts,
+                    audioQueue: pendingAudio)
             }
             var snapshotDelivered = pendingSnapshot != nil
             var playCountsDelivered = pendingPlayCounts != nil
+            let audioDelivered = pendingAudio != nil
             do {
                 do {
                     _ = try await client.postEvents(makeBatch(pendingSnapshot, pendingPlayCounts),
@@ -626,8 +652,21 @@ final class RecommendationService {
                                                   batchFeedback.map { Self.ack($0.atMs, $0.id) }, floor: feedbackFloor)
             if snapshotDelivered { sync.lastCollectionsHash = snapshotHash }
             if playCountsDelivered { sync.lastPlayCountsHash = playCountsHash }
+            if audioDelivered, let sent = pendingAudio {
+                // Move the shortlist from "to upload" to "the server has it". Only what was
+                // ACTUALLY SENT moves — `enqueueAudioAnalysis` can have appended more while this
+                // request was in flight, and those must stay pending rather than being marked
+                // delivered by a batch that predates them.
+                let sentIds = Set(sent.songIds)
+                sync.audioPendingUpload.removeAll { sentIds.contains($0) }
+                sync.audioQueued.append(contentsOf: sent.songIds)
+                if sync.audioQueued.count > Self.audioQueuedMemoryCap {
+                    sync.audioQueued.removeFirst(sync.audioQueued.count - Self.audioQueuedMemoryCap)
+                }
+            }
             pendingSnapshot = nil
             pendingPlayCounts = nil
+            pendingAudio = nil
             plays.removeFirst(batchPlays.count)
             favs.removeFirst(batchFavs.count)
             acts.removeFirst(batchActs.count)
@@ -914,6 +953,46 @@ final class RecommendationService {
         SongSuggestion(songId: "sng_6", name: "Get Down", artist: "Cobalt",
                        reasons: ["Harmonically compatible key"]),
     ]
+
+    // MARK: - Targeted audio analysis
+
+    /// How many shortlist ids this device will hold un-uploaded, and how many it remembers having
+    /// uploaded. Both are small by construction — a night's shortlist is ~40 — so these are flood
+    /// guards rather than working limits: they bound what a pathological loop (a refresh in a
+    /// retry storm, a restore that keeps re-proposing) can park in a document that is written on
+    /// every flush. Oldest-first eviction, like every other cap here.
+    static let audioPendingCap = 400
+    static let audioQueuedMemoryCap = 4000
+
+    /// Ids the server is already holding — what `ForYouFeedBuilder.audioShortlist` subtracts so a
+    /// second refresh spends the night's budget on new songs.
+    var audioPendingIds: Set<String> {
+        Set(sync.audioQueued).union(sync.audioPendingUpload)
+    }
+
+    /// Take a shortlist from the ranking pass and schedule it for upload.
+    ///
+    /// Owner's rule for everything cloud-touching here, verbatim: *"computing as much of that
+    /// information on device and just sending the ids of songs to analyze"*. The whole selection —
+    /// the candidate list, the novelty and similarity ranking, the per-artist cap, the in-catalog
+    /// restriction — has already happened by the time this is called. All that is left is a list
+    /// of ids, and this schedules it onto the SAME `/events` flush that already carries plays and
+    /// feedback. No second upload contract, no second retry policy, no second failure mode.
+    ///
+    /// GATED ON `isEnabled` like every other cloud call: with the engine off (the default) this
+    /// does nothing at all, so a device that never opted in never computes or stores a shortlist.
+    func enqueueAudioAnalysis(_ ids: [String]) {
+        guard isEnabled, !ids.isEmpty else { return }
+        let known = audioPendingIds
+        let fresh = ids.filter { !known.contains($0) }
+        guard !fresh.isEmpty else { return }
+        sync.audioPendingUpload.append(contentsOf: fresh)
+        if sync.audioPendingUpload.count > Self.audioPendingCap {
+            sync.audioPendingUpload.removeFirst(sync.audioPendingUpload.count - Self.audioPendingCap)
+        }
+        persistSyncState()
+        flushSoon()
+    }
 
     // MARK: - Collection suggestions (SongDetail + Add sheet)
 

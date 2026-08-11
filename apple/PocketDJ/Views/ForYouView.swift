@@ -333,6 +333,29 @@ struct ForYouTilesView: View {
             }
         }
         deriveTiles()
+        await scheduleAudioAnalysis(inputs)
+    }
+
+    /// TARGETED AUDIO ANALYSIS, scheduled off the ranking that just landed.
+    ///
+    /// Ordered LAST on purpose, after `deriveTiles()`: it is a background errand for the *next*
+    /// ranking, not part of producing this one, and nothing the owner is looking at may wait on
+    /// it. It is also the only place the two refresh paths (`feed` and the `fallback`) can be
+    /// joined, since both have committed a snapshot by the time it runs.
+    ///
+    /// The whole selection happens on device (`ForYouFeedBuilder.audioShortlist`) and only the
+    /// resulting ids are handed to the service, which rides them onto the next `/events` flush.
+    /// With the engine off — the default — `enqueueAudioAnalysis` returns immediately and this
+    /// costs one dictionary build over ids the refresh already had in hand.
+    private func scheduleAudioAnalysis(_ inputs: ForYouFeedInputs) async {
+        guard let recEngine, recEngine.isEnabled else { return }
+        let snapshot = feed?.snapshot ?? fallback
+        guard snapshot.hasResult else { return }
+        let pending = recEngine.audioPendingIds
+        let ids = await Task.detached(priority: .background) {
+            ForYouFeedBuilder.audioShortlist(snapshot, inputs: inputs, pending: pending)
+        }.value
+        recEngine.enqueueAudioAnalysis(ids)
     }
 
     // ========================================================================

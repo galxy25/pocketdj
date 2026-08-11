@@ -46,7 +46,7 @@ process.env.MAX_PROFILES = '1000';
 const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections, shedToFit,
         scoreSimilarToCollections, playCountSignal, recencySignal,
         feedbackOf, feedbackMultiplier, identityKeys,
-        primaryArtistKey, artistKey, artistFamiliarityOf, auxMix } =
+        primaryArtistKey, artistKey, artistFamiliarityOf, auxMix, mergeAudioFeatures } =
   await import('./index.mjs');
 
 const PROFILE = 'profile-test-1234';
@@ -1642,4 +1642,114 @@ test('on real-SHAPED input the tile stops being one artist and starts proposing 
   assert.ok(neverPlayed >= out.songs.length / 2,
             'at equal similarity the never-played tail is what fills the tile — that is the '
             + `headroom a thumbs-up now carries information about (got ${neverPlayed}/${out.songs.length})`);
+});
+
+// ── TARGETED AUDIO ANALYSIS (F10) ───────────────────────────────────────────────────────────────
+// The queue is what carries the device's shortlist to the nightly librosa job, and the feature
+// store is where the vectors land. Both are new SURFACES on an object that is read-modify-written
+// on every upload, so the tests here are mostly about what must NOT happen: no unbounded growth,
+// no second copy of an id, no leftover corpus after a deletion, no open door without the secret.
+
+const AUDIO_PROFILE = 'profile-audio-1234';
+const audioHash = (p) => createHash('sha256').update(p).digest('hex');
+
+test('audio queue: ids ride the /events flush and are a SET, not a log', async () => {
+  const opts = { profile: AUDIO_PROFILE };
+  const r1 = await call('POST', '/events', {
+    ...opts, body: { audioQueue: { atMs: NOW, songIds: ['sng_e1', 'sng_e2'] } },
+  });
+  assert.equal(r1.status, 200);
+  assert.equal(r1.json.accepted.audioQueue, 2);
+
+  // Re-proposing the same ids is a NO-OP — the idempotence the whole refresh protocol rests on:
+  // a client that lost its `pendingIds` (a reinstall, a restore) must not double-queue the night.
+  const r2 = await call('POST', '/events', {
+    ...opts, body: { audioQueue: { atMs: NOW + 1, songIds: ['sng_e1', 'sng_e2', 'sng_e3'] } },
+  });
+  assert.equal(r2.json.accepted.audioQueue, 1, 'only the genuinely new id counts');
+
+  const state = JSON.parse(readFileSync(statePath(AUDIO_PROFILE), 'utf8'));
+  assert.deepEqual(state.audioQueue, ['sng_e1', 'sng_e2', 'sng_e3']);
+});
+
+test('audio queue: the worker routes need the enrollment secret and nothing else', async () => {
+  // No secret ⇒ 403, even holding a valid bearer key for a real profile.
+  const bad = await handler({ rawPath: '/audio/queue', requestContext: { http: { method: 'GET' } },
+                              headers: {} });
+  assert.equal(bad.statusCode, 403);
+
+  // …and WITH it, no profile header and no bearer key are needed: the worker is profile-blind and
+  // gets back opaque hashes it relays verbatim.
+  const ok = await handler({ rawPath: '/audio/queue', requestContext: { http: { method: 'GET' } },
+                             headers: { 'x-pocketdj-enroll': ENROLL } });
+  assert.equal(ok.statusCode, 200);
+  const doc = JSON.parse(ok.body);
+  const mine = doc.profiles.find((p) => p.p === audioHash(AUDIO_PROFILE));
+  assert.ok(mine, 'the enrolled profile with a pending queue is listed');
+  assert.deepEqual(mine.songIds, ['sng_e1', 'sng_e2', 'sng_e3']);
+  assert.equal(doc.timbreVersion, 1, 'the worker is told which calibration this engine expects');
+});
+
+test('audio features: posting vectors stores them AND drains the queue', async () => {
+  const post = (body) => handler({
+    rawPath: '/audio/features', requestContext: { http: { method: 'POST' } },
+    headers: { 'x-pocketdj-enroll': ENROLL }, body: JSON.stringify(body),
+  });
+
+  const r = await post({
+    p: audioHash(AUDIO_PROFILE),
+    features: [{ songId: 'sng_e1', v: 1, f: { bright: 0.4, punch: 0.9 } }],
+    // Reported-but-unanalysable: no local audio and no way to get any. It MUST drain too, or it
+    // sits at the head of the queue forever and every night retries it first.
+    done: ['sng_e2'],
+  });
+  assert.equal(r.statusCode, 200);
+  const ack = JSON.parse(r.body);
+  assert.equal(ack.accepted, 1);
+  assert.equal(ack.drained, 2, 'both the analysed id and the drained one leave the queue');
+
+  const state = JSON.parse(readFileSync(statePath(AUDIO_PROFILE), 'utf8'));
+  assert.deepEqual(state.audioQueue, ['sng_e3'], 'only the un-worked id is left for tomorrow');
+
+  const corpus = JSON.parse(readFileSync(
+    join(HOME, 'rec', 'audio', `${audioHash(AUDIO_PROFILE)}.json`), 'utf8'));
+  assert.deepEqual(corpus.songs.sng_e1.f, { bright: 0.4, punch: 0.9 });
+
+  // A re-analysis REPLACES rather than accumulating: one recording, one vector, whichever
+  // calibration produced it last.
+  await post({ p: audioHash(AUDIO_PROFILE),
+               features: [{ songId: 'sng_e1', v: 2, f: { bright: 0.1 } }] });
+  const again = JSON.parse(readFileSync(
+    join(HOME, 'rec', 'audio', `${audioHash(AUDIO_PROFILE)}.json`), 'utf8'));
+  assert.deepEqual(again.songs.sng_e1, { v: 2, f: { bright: 0.1 }, atMs: again.songs.sng_e1.atMs });
+});
+
+test('audio features: hostile shapes are dropped, not stored', async () => {
+  const { doc } = mergeAudioFeatures(null, [
+    { songId: 'ok', f: { bright: 0.5, 'Bad Key!': 1, huge: 99, neg: -3, nan: NaN } },
+    { songId: 'nofeatures', f: {} },
+    { songId: '', f: { bright: 1 } },
+    { f: { bright: 1 } },
+    'garbage',
+  ]);
+  assert.deepEqual(Object.keys(doc.songs), ['ok']);
+  assert.deepEqual(doc.songs.ok.f, { bright: 0.5, huge: 1, neg: 0 },
+                   'axis names are validated and values clamped to 0…1');
+});
+
+test('audio queue: bounded, oldest evicted', async () => {
+  const state = { plays: [], favorites: {}, activity: [], puzzle: [], feedback: [], audioQueue: [] };
+  mergeBatch(state, { audioQueue: { songIds: Array.from({ length: 500 }, (_, i) => `q${i}`) } });
+  assert.equal(state.audioQueue.length, 400);
+  assert.equal(state.audioQueue[0], 'q100', 'the OLDEST requests are the ones shed');
+});
+
+test('audio features: DELETE /state removes the corpus too', async () => {
+  const corpusPath = join(HOME, 'rec', 'audio', `${audioHash(AUDIO_PROFILE)}.json`);
+  assert.ok(existsSync(corpusPath));
+  const r = await call('DELETE', '/state', { profile: AUDIO_PROFILE });
+  assert.equal(r.status, 200);
+  assert.ok(!existsSync(corpusPath),
+            '"Delete cloud data" has to mean all of it — a per-profile corpus derived from '
+            + 'listening cannot survive the deletion of the state it was derived from');
 });

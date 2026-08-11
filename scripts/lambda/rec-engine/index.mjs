@@ -111,6 +111,28 @@ const defaultMaxProfiles = () => {
   const n = Number(process.env.MAX_PROFILES);
   return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 10;
 };
+/// How many song ids may sit in the AUDIO-ANALYSIS QUEUE at once (`state.audioQueue`).
+///
+/// The device asks for ~40 a night (`RecAudioShortlist.defaultPerNight`) and the nightly worker
+/// drains what it can before its 06:00 cut-off, so the queue is a short backlog, not a corpus.
+/// The cap is what stops a device that refreshes For You twenty times in a day — or one that has
+/// lost its `pendingIds` and re-proposes the same rows — from parking an unbounded id list inside
+/// an object that is re-read and re-written on every `/events` call. Oldest-first eviction, so a
+/// flood pushes out stale requests rather than refusing new ones.
+const MAX_AUDIO_QUEUE = 400;
+/// How many analysed songs the per-profile FEATURE STORE holds (`rec/audio/<hash>.json`).
+///
+/// A separate object from the state on purpose: the state is on the hot path of every upload, and
+/// a corpus that grows by 40 rows a night forever would put a slowly-inflating read-modify-write
+/// in front of every play the user records. This one is read only when a ranking needs it.
+/// 20,000 rows ≈ 500 nights at the observed rate — past the point where the corpus stops being
+/// the limiting factor — and ≈ 4 MB serialized, which a 1024 MB Lambda parses without noticing.
+const MAX_AUDIO_FEATURES = 20_000;
+/// Which calibration of the timbre extractor this deployment expects. MIRRORS `TIMBRE_VERSION` in
+/// `scripts/lib/audio-analyze.mjs`; served on `GET /audio/queue` so the worker can tell whether a
+/// vector it already holds was produced by the current lo/hi table or a superseded one, without
+/// the two halves having to be deployed in lockstep.
+const TIMBRE_VERSION = 1;
 const MAX_COLLECTIONS = 500;
 const MAX_SONGIDS_PER_COLLECTION = 5000;
 const MAX_SNAPSHOT_SONGIDS = 100_000;
@@ -203,6 +225,9 @@ async function s3() {
 
 const stateKey = (profileHash) => `rec/state/${profileHash}.json`;
 const localStatePath = (profileHash) => join(LOCAL_DIR, 'rec', 'state', `${profileHash}.json`);
+/// The AUDIO FEATURE STORE — one object per profile, beside the state and never inside it.
+const audioKey = (profileHash) => `rec/audio/${profileHash}.json`;
+const localAudioPath = (profileHash) => join(LOCAL_DIR, 'rec', 'audio', `${profileHash}.json`);
 
 class Precondition extends Error {}
 
@@ -340,10 +365,148 @@ async function deleteState(profileHash) {
   if (LOCAL_DIR) {
     const p = localStatePath(profileHash);
     if (existsSync(p)) unlinkSync(p);
+    const a = localAudioPath(profileHash);
+    if (existsSync(a)) unlinkSync(a);
     return;
   }
   const { client, mod } = await s3();
   await client.send(new mod.DeleteObjectCommand({ Bucket: REC_BUCKET, Key: stateKey(profileHash) }));
+  // "Delete cloud data" has to mean ALL of it. The audio-feature store lives in its own object,
+  // so a delete that only removed the state would leave a per-profile corpus behind — derived
+  // from listening, addressable by the same hash, and invisible to the user who asked for
+  // erasure. Best-effort: a profile with no corpus yet has no object, and a failure here must
+  // not turn a successful state deletion into an error the app reports as "not deleted".
+  try {
+    await client.send(new mod.DeleteObjectCommand({ Bucket: REC_BUCKET, Key: audioKey(profileHash) }));
+  } catch { /* absent or already gone */ }
+}
+
+// ── AUDIO FEATURE STORE (rec/audio/<hash>.json) ─────────────────────────────────────────────────
+// The timbre vectors the nightly librosa job produced, per profile. Plain read/overwrite: exactly
+// ONE writer exists (the nightly worker, serially, once a night), so the ETag-conditional dance
+// the state object needs would be ceremony without a race to prevent.
+//
+// ── THE RANKING CHANGE IS DEFERRED, DELIBERATELY, AND HERE IS THE TRIGGER ───────────────────────
+// Nothing in `scoreForYou` / `scoreCollections` reads this store yet. That is a decision, not an
+// omission, and the reason is arithmetic rather than taste.
+//
+// The corpus starts EMPTY and fills at ~40 songs a night, and it can only analyse songs that have
+// LOCAL AUDIO — 1,939 of the owner's 107,757 catalog rows today (1.8%). So the first nights are
+// mostly the worker asking the rip server to capture things; a usable corpus is weeks away, not
+// hours. A timbre term switched on now would apply to a handful of candidates and to none of the
+// rest, which is not "a weak signal" — it is an INCOMPARABLE one: two songs would be ranked by
+// different formulas and the tile would reorder for reasons no thumbs-up caused. That is precisely
+// the "half-wired ranking change that silently degrades suggestions" this feature was told to
+// avoid, and it is much worse than an unfinished pipeline because it is invisible.
+//
+// WHAT HAS TO BE TRUE BEFORE IT IS WIRED IN, measured rather than felt:
+//   1. COVERAGE — at least ~60% of a typical `/recs/songs` candidate pool carries a vector, so the
+//      term applies to a comparable set rather than a lucky subset. Below that the honest shape is
+//      a tiebreak among the covered rows, not a score term.
+//   2. FEEDBACK — enough 👍/👎 on ANALYSED songs to define a positive and a negative centroid.
+//      A verdict on a song with no vector teaches nothing about musicality, so the count that
+//      matters is verdicts∩corpus, not total verdicts.
+//   3. BOUNDED — it enters as a multiplier on the existing similarity (`sim × (1 + gain × aux)`),
+//      the same shape `NOVELTY_AUX_GAIN` uses and for the same reason: added on, a timbre term at
+//      the bottom of the admitted similarity range is a multi-fold swing, which turns "this kind
+//      of sound" into noise.
+//
+// The discrimination the whole idea rests on IS already measured, on the owner's real catalog:
+// 96 songs across 12 artist+genre groups, mean pairwise timbre distance 0.205 WITHIN one artist
+// and genre against 0.288 BETWEEN groups — a ratio of 0.71, with the widest same-artist pair at
+// 0.705 (nearly 3× the between-group median). Every one of the 14 axes separates same-artist
+// songs, led by `m2` (0.83 of its between-group spread), `brightVar` (0.80) and `punch` (0.79).
+// So a 👍 CAN carry "I like this kind of sound" rather than only "I like this artist". What is
+// missing is the corpus, not the signal.
+
+async function readAudio(profileHash) {
+  if (LOCAL_DIR) {
+    const p = localAudioPath(profileHash);
+    if (!existsSync(p)) return null;
+    return JSON.parse(readFileSync(p, 'utf8'));
+  }
+  const { client, mod } = await s3();
+  try {
+    const out = await client.send(new mod.GetObjectCommand({ Bucket: REC_BUCKET, Key: audioKey(profileHash) }));
+    return JSON.parse(await out.Body.transformToString());
+  } catch (e) {
+    if (e.name === 'NoSuchKey' || e.name === 'NotFound' || e.$metadata?.httpStatusCode === 404) return null;
+    throw e;
+  }
+}
+
+async function writeAudio(profileHash, doc) {
+  const body = JSON.stringify(doc);
+  if (LOCAL_DIR) {
+    const p = localAudioPath(profileHash);
+    mkdirSync(dirname(p), { recursive: true });
+    writeFileSync(p, body);
+    return;
+  }
+  const { client, mod } = await s3();
+  await client.send(new mod.PutObjectCommand({
+    Bucket: REC_BUCKET, Key: audioKey(profileHash), Body: body, ContentType: 'application/json',
+  }));
+}
+
+/// Which profiles have state at all — the worker's "whose queues should I drain" list. Only the
+/// nightly job calls this (once a night, holding the enrollment secret), so a full prefix LIST is
+/// the right shape; nothing on the request path pays for it.
+async function listProfileHashes() {
+  if (LOCAL_DIR) {
+    const dir = join(LOCAL_DIR, 'rec', 'state');
+    if (!existsSync(dir)) return [];
+    return readdirSync(dir).filter((f) => f.endsWith('.json')).map((f) => f.slice(0, -5));
+  }
+  const { client, mod } = await s3();
+  const hashes = []; let token;
+  do {
+    const out = await client.send(new mod.ListObjectsV2Command({
+      Bucket: REC_BUCKET, Prefix: 'rec/state/', ContinuationToken: token, MaxKeys: 1000,
+    }));
+    for (const o of out.Contents || []) {
+      const m = /^rec\/state\/([0-9a-f]{64})\.json$/.exec(o.Key || '');
+      if (m) hashes.push(m[1]);
+    }
+    token = out.IsTruncated ? out.NextContinuationToken : undefined;
+  } while (token);
+  return hashes;
+}
+
+/// Fold a worker's batch into a profile's feature corpus. LAST WRITE WINS PER SONG so a
+/// re-analysis at a newer `TIMBRE_VERSION` replaces the old vector instead of accumulating two
+/// readings of the same recording under one id.
+///
+/// Exported for the tests: this is where the corpus cap and the shape validation live, and both
+/// are far easier to pin here than through an HTTP fixture.
+export function mergeAudioFeatures(doc, rows) {
+  const out = doc && typeof doc === 'object' && doc.songs && typeof doc.songs === 'object'
+    ? doc : { v: 1, songs: {}, updatedAtMs: 0 };
+  let accepted = 0;
+  for (const raw of Array.isArray(rows) ? rows : []) {
+    const songId = str(raw?.songId);
+    const f = raw?.f;
+    if (!songId || !f || typeof f !== 'object') continue;
+    const clean = {};
+    for (const [k, v] of Object.entries(f)) {
+      // Axis names are short identifiers and values are 0…1 — anything else is a bug or a
+      // hostile worker, and either way it must not reach the scorer.
+      if (!/^[a-z][a-z0-9]{0,11}$/.test(k)) continue;
+      if (!Number.isFinite(v)) continue;
+      clean[k] = Math.round(Math.min(1, Math.max(0, v)) * 1000) / 1000;
+    }
+    if (!Object.keys(clean).length) continue;
+    out.songs[songId] = { v: Number.isFinite(raw.v) ? raw.v : 1, f: clean, atMs: Date.now() };
+    accepted += 1;
+  }
+  // Oldest-first eviction, matching every other cap here.
+  const ids = Object.keys(out.songs);
+  if (ids.length > MAX_AUDIO_FEATURES) {
+    ids.sort((a, b) => (out.songs[a].atMs || 0) - (out.songs[b].atMs || 0));
+    for (const id of ids.slice(0, ids.length - MAX_AUDIO_FEATURES)) delete out.songs[id];
+  }
+  out.updatedAtMs = Date.now();
+  return { doc: out, accepted };
 }
 
 // ── Features cache (module-level, survives warm invocations) ────────────────────────────────────
@@ -656,7 +819,7 @@ function capFavorites(favorites, cap) {
  *  with an `accepted` tally. */
 export function mergeBatch(state, batch) {
   const accepted = { plays: 0, favorites: 0, activity: 0, puzzle: 0, feedback: 0,
-                     collectionsSnapshot: false, playCounts: 0 };
+                     collectionsSnapshot: false, playCounts: 0, audioQueue: 0 };
 
   const playIds = new Set(state.plays.map((e) => e.id));
   for (const raw of batch.plays || []) {
@@ -705,6 +868,23 @@ export function mergeBatch(state, batch) {
 
   const snap = cleanSnapshot(batch.collectionsSnapshot);
   if (snap) { state.collections = { atMs: snap.atMs, list: snap.list }; accepted.collectionsSnapshot = true; }
+
+  // AUDIO-ANALYSIS QUEUE — a SET of song ids, merged rather than replaced.
+  //
+  // Merged, because two devices can each propose a shortlist between two nightly runs and the
+  // second must not erase the first. A SET, because the client's own `pendingIds` can be lost
+  // (a reinstall, a restore) and the re-proposal that follows has to be a no-op — that is the
+  // idempotence the whole refresh protocol rests on. Oldest-first eviction at the cap.
+  if (!Array.isArray(state.audioQueue)) state.audioQueue = [];
+  const queued = new Set(state.audioQueue);
+  for (const raw of batch.audioQueue?.songIds || []) {
+    const id = str(raw);
+    if (!id || queued.has(id)) continue;
+    queued.add(id); state.audioQueue.push(id); accepted.audioQueue += 1;
+  }
+  if (state.audioQueue.length > MAX_AUDIO_QUEUE) {
+    state.audioQueue = state.audioQueue.slice(state.audioQueue.length - MAX_AUDIO_QUEUE);
+  }
 
   const pc = cleanPlayCounts(batch.playCounts);
   // Newer-snapshot-wins. Re-uploading the SAME snapshot is a no-op (equal atMs loses), which is
@@ -1504,6 +1684,74 @@ export async function handler(event) {
 
   if (method === 'GET' && path === '/health') {
     return reply(200, { ok: true, service: 'rec-engine', version: 1 });
+  }
+
+  // ── WORKER ROUTES (the nightly audio-analysis job) ──────────────────────────────────────────
+  // Authenticated by the ENROLLMENT SECRET ALONE, and placed AHEAD of `authOf` because they are
+  // deliberately PROFILE-BLIND: the worker is a batch job on the owner's Mac, it holds no bearer
+  // key, and it cannot derive the scoped profile id (that is `HMAC(profileId, bearerKey)` and the
+  // key never leaves the device). So the queue route hands back OPAQUE PROFILE HASHES and the
+  // worker relays them back verbatim — it learns nothing it did not already have the standing to
+  // learn by holding the secret, and no profile id is invented, guessed or transmitted.
+  //
+  // The secret is the same capability token the enrollment path uses, with the same caveat (it
+  // ships in the app binary, so it is rotatable rather than secret-forever) and the same
+  // fail-closed behaviour: `enrollOk` returns false when REC_ENROLL_SECRET is unset, so a
+  // deployment that forgets the variable exposes nothing.
+  try {
+    if (method === 'GET' && path === '/audio/queue') {
+      if (!enrollOk(event)) return reply(403, { error: 'enrollment-required' });
+      const hashes = await listProfileHashes();
+      const profiles = [];
+      for (const p of hashes) {
+        const read = await readState(p);
+        const ids = Array.isArray(read?.state?.audioQueue) ? read.state.audioQueue : [];
+        if (ids.length) profiles.push({ p, songIds: ids });
+      }
+      return reply(200, { v: 1, timbreVersion: TIMBRE_VERSION, profiles });
+    }
+
+    if (method === 'POST' && path === '/audio/features') {
+      if (!enrollOk(event)) return reply(403, { error: 'enrollment-required' });
+      if (bodyBytes(event) > MAX_BODY_BYTES) return reply(413, { error: 'body-too-large', max: MAX_BODY_BYTES });
+      let body;
+      try { body = parseBody(event); } catch { return reply(400, { error: 'bad-request' }); }
+      const p = typeof body.p === 'string' && /^[0-9a-f]{64}$/.test(body.p) ? body.p : null;
+      if (!p) return reply(400, { error: 'bad-request' });
+
+      const { doc, accepted } = mergeAudioFeatures(await readAudio(p), body.features);
+      if (accepted) await writeAudio(p, doc);
+
+      // DRAIN THE QUEUE for everything the worker reported on — including ids it reported as
+      // UNANALYSABLE (`done`, no vector). A song with no local audio and no way to get any would
+      // otherwise sit at the head of the queue forever and every night would retry it first,
+      // which is how a resumable job turns into a stuck one.
+      const reported = new Set([
+        ...(Array.isArray(body.features) ? body.features.map((r) => r?.songId) : []),
+        ...(Array.isArray(body.done) ? body.done : []),
+      ].filter((s) => typeof s === 'string' && s));
+      let drained = 0;
+      if (reported.size) {
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const read = await readState(p);
+          if (!read) break;
+          const before = Array.isArray(read.state.audioQueue) ? read.state.audioQueue : [];
+          const after = before.filter((id) => !reported.has(id));
+          drained = before.length - after.length;
+          if (!drained) break;
+          read.state.audioQueue = after;
+          try { await writeState(p, read.state, { ifMatch: read.etag }); } catch (e) {
+            if (e instanceof Precondition) continue;   // an /events call raced us — re-read
+            throw e;
+          }
+          break;
+        }
+      }
+      return reply(200, { ok: true, accepted, drained, stored: Object.keys(doc.songs).length });
+    }
+  } catch (e) {
+    const status = e.statusCode && e.statusCode >= 400 && e.statusCode < 600 ? e.statusCode : 502;
+    return reply(status, { error: e.message || 'internal' });
   }
 
   const auth = authOf(event);

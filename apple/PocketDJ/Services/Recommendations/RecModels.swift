@@ -110,6 +110,28 @@ struct RecPlayCountsWire: Codable, Equatable {
     var lastPlayedDays: [String: Int]?
 }
 
+/// THE AUDIO-ANALYSIS SHORTLIST — ids and nothing else.
+///
+/// `RecAudioShortlist.select` picked these on device out of the ranking that was just computed:
+/// the most novel and the most similar-to-recent of v1's candidates, in-catalog only, capped at a
+/// night's worth. The server holds them as a work queue for the nightly librosa job
+/// (`scripts/rec-audio-nightly.mjs`), which returns a timbre vector per song.
+///
+/// IDS AND NOTHING ELSE, deliberately. The cross-cutting rule for every cloud-touching part of
+/// this system is that the DEVICE COMPUTES and the SERVER RECEIVES IDS: everything that decided
+/// this list — the play history it was ranked against, the artist familiarity, the genre shares —
+/// stays here. The server already knows the catalog metadata for these ids from
+/// `rec-features.json`, so sending any of it again would widen what leaves the device for nothing.
+///
+/// A SET, NOT A LOG. Re-sending an id the server is already holding is a no-op, which is what
+/// makes the client safe to retry: a flush that fails after the PUT, a relaunch mid-upload, or two
+/// devices refreshing For You within a minute of each other all converge on the same pending set
+/// rather than queueing the same song twice.
+struct RecAudioQueueWire: Codable, Equatable {
+    var atMs: Double
+    var songIds: [String]
+}
+
 struct RecUploadBatch: Encodable {
     var v = 1
     var deviceId: String
@@ -123,6 +145,9 @@ struct RecUploadBatch: Encodable {
     var feedback: [RecFeedbackWire]?
     var collectionsSnapshot: RecCollectionsSnapshotWire?
     var playCounts: RecPlayCountsWire?
+    /// Songs this device wants audio-analysed. Same additive-optional doctrine as `feedback`:
+    /// invisible to an older server, never sent by an older client.
+    var audioQueue: RecAudioQueueWire?
 }
 
 // MARK: - Response wire types (ALL fields lenient — the collections-schema doctrine)

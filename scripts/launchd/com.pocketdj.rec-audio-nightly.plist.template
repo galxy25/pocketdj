@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PocketDJ TARGETED AUDIO ANALYSIS — launchd timer TEMPLATE.
+
+  Install/refresh with:  scripts/install-rec-audio-nightly.sh
+  (fills __LAUNCHER__ / __HOME__, copies to ~/Library/LaunchAgents, reloads the job).
+
+  02:00 daily, and the hour is chosen so this job is DONE before its two siblings begin:
+  am-sync-nightly at 04:00 and digital-sync-nightly at 05:00 both want the same Docker
+  daemon and the same AWS credentials, and a run that overlapped them would contend for
+  both. The worker takes --until 06:00 as a HARD DEADLINE anyway — it stops mid-queue
+  rather than running over, and resumes tomorrow where it stopped — so the worst case is
+  a truncated night, never a collision.
+
+  What the run does: pull the per-profile analysis queue the app uploaded (ids only, chosen
+  on device by RecAudioShortlist), run the librosa timbre extractor over each song's LOCAL
+  audio, post the vectors back to the rec engine, and ask the rip server to capture the
+  queued songs that have no local audio yet so a later night can analyse them.
+
+  RunAtLoad stays false so (re)loading the job doesn't fire a run at an arbitrary hour.
+
+  Stop:     launchctl unload ~/Library/LaunchAgents/com.pocketdj.rec-audio-nightly.plist
+  Preview:  node scripts/rec-audio-nightly.mjs --dry-run --until 06:00
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pocketdj.rec-audio-nightly</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__LAUNCHER__</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AWS_PROFILE</key>
+    <string>levi</string>
+    <!-- launchd has a minimal PATH; include node, aws, git, docker locations. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <!-- 02:00 daily (well ahead of the 04:00 Apple Music and 05:00 digital nightlies). -->
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key><integer>2</integer>
+    <key>Minute</key><integer>0</integer>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <false/>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.pocketdj/rec-audio-nightly.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.pocketdj/rec-audio-nightly.err.log</string>
+</dict>
+</plist>
