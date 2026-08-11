@@ -1,13 +1,84 @@
 {
  "v": 1,
- "generatedAt": "2026-08-11T04:32:09.774Z",
+ "generatedAt": "2026-08-11T06:57:02.859Z",
  "counts": {
-  "audioBearing": 12002,
-  "candidates": 97391,
-  "aliases": 2862,
-  "rejectedLane1": 0
+  "audioBearing": 12030,
+  "candidates": 97363,
+  "aliases": 2867,
+  "rejectedLane1": 14
  },
- "rejectedLane1": [],
+ "rejectedLane1": [
+  {
+   "from": "sng_2c400a914f04",
+   "to": "sng_514218143322",
+   "reason": "lane1-unknown-id"
+  },
+  {
+   "from": "sng_cbdfffc73630",
+   "to": "sng_56a20d1a1b3e",
+   "reason": "lane1-unknown-id"
+  },
+  {
+   "from": "sng_d75f3976e26d",
+   "to": "sng_a19dc90fd14b",
+   "reason": "lane1-unknown-id"
+  },
+  {
+   "from": "sng_c05973050618",
+   "to": "sng_934e5ff16077",
+   "reason": "lane1-unknown-id"
+  },
+  {
+   "from": "sng_bbf3351dee34",
+   "to": "sng_98c4a94d4642",
+   "reason": "lane1-unknown-id"
+  },
+  {
+   "from": "sng_d6a26db58c07",
+   "to": "sng_e7ba6b42e990",
+   "reason": "lane1-unknown-id"
+  },
+  {
+   "from": "sng_cd3e88c6b0ad",
+   "to": "sng_71bb50800d4e",
+   "reason": "lane1-unknown-id"
+  },
+  {
+   "from": "sng_6dfb1682c58f",
+   "to": "sng_d3f7d21b090f",
+   "reason": "lane1-unknown-id"
+  },
+  {
+   "from": "sng_32873524ee69",
+   "to": "sng_ad5a692735cc",
+   "reason": "lane1-unknown-id"
+  },
+  {
+   "from": "sng_2f28356fd5da",
+   "to": "sng_93f86a9ad33a",
+   "reason": "lane1-length-mismatch"
+  },
+  {
+   "from": "sng_86ab681280cc",
+   "to": "sng_92c8fafcde6e",
+   "reason": "lane1-unknown-id"
+  },
+  {
+   "from": "sng_cb62ba0ee389",
+   "to": "sng_f86a5032f8f4",
+   "reason": "lane1-unknown-id"
+  },
+  {
+   "from": "sng_9b2a742bab5a",
+   "to": "sng_dd799970a64a",
+   "reason": "lane1-unknown-id"
+  },
+  {
+   "from": "sng_d35a77520b8b",
+   "to": "sng_607f117a4b92",
+   "reason": "lane1-unknown-id"
+  }
+ ],
  "aliases": {
   "sng_0040f32812a1": {
    "to": "sng_19f4f88ff1b7",
@@ -753,6 +824,10 @@
   "sng_10d0b1c096f4": {
    "to": "sng_9817b0ffd14e",
    "dLenMs": 280
+  },
+  "sng_10e7540178ba": {
+   "to": "sng_c3f4d5b3da9d",
+   "dLenMs": 0
   },
   "sng_1114e8b649a7": {
    "to": "sng_5e95b67f5e0f",
@@ -3521,6 +3596,10 @@
    "to": "sng_b448fde1f793",
    "dLenMs": 57
   },
+  "sng_4c2ba654ff1d": {
+   "to": "sng_199971bfeda9",
+   "dLenMs": 0
+  },
   "sng_4c4311738b21": {
    "to": "sng_3381b4b1eb0b",
    "dLenMs": 0
@@ -4921,11 +5000,8 @@
    "dLenMs": 0
   },
   "sng_6c09122d2eac": {
-   "to": "sng_3e2df0a73c42",
-   "dLenMs": 13,
-   "alternatives": [
-    "sng_69e2e6dc9e48"
-   ]
+   "to": "sng_69e2e6dc9e48",
+   "dLenMs": 13
   },
   "sng_6c245ca04560": {
    "to": "sng_c5496094b81e",
@@ -5317,11 +5393,8 @@
    "dLenMs": 0
   },
   "sng_755e5a5a151a": {
-   "to": "sng_5ed89d1dc514",
-   "dLenMs": 1,
-   "alternatives": [
-    "sng_eba5a0e9d521"
-   ]
+   "to": "sng_eba5a0e9d521",
+   "dLenMs": 1
   },
   "sng_7561fc12dccb": {
    "to": "sng_0bda118ea69c",
@@ -6534,6 +6607,10 @@
    "to": "sng_e94cbd3fce22",
    "dLenMs": 0
   },
+  "sng_8f225a8f04f2": {
+   "to": "sng_21a97ea1670b",
+   "dLenMs": 0
+  },
   "sng_8f3a2a261450": {
    "to": "sng_6a0c4e1cbba5",
    "dLenMs": 70
@@ -7595,6 +7672,10 @@
    "to": "sng_829f599ddf87",
    "dLenMs": 4
   },
+  "sng_a4480f01ca6f": {
+   "to": "sng_c863b297a542",
+   "dLenMs": 0
+  },
   "sng_a45c3076ee3c": {
    "to": "sng_12613f6fc83a",
    "dLenMs": 68
@@ -7738,6 +7819,10 @@
   "sng_a783ec3f02cc": {
    "to": "sng_49a704bf6d9d",
    "dLenMs": 0
+  },
+  "sng_a78c80291f16": {
+   "to": "sng_bfae725826c0",
+   "dLenMs": 27
   },
   "sng_a790495dcf93": {
    "to": "sng_5ca5183b88ad",
@@ -8891,11 +8976,8 @@
    "dLenMs": 0
   },
   "sng_c366188c83a6": {
-   "to": "sng_71493232f1ad",
-   "dLenMs": 0,
-   "alternatives": [
-    "sng_a9abc0598b32"
-   ]
+   "to": "sng_a9abc0598b32",
+   "dLenMs": 0
   },
   "sng_c39de2fbee7b": {
    "to": "sng_6d5e9ee7e5c0",
@@ -11149,11 +11231,8 @@
    ]
   },
   "sng_f2f34fba8e53": {
-   "to": "sng_31b9d4de68ff",
-   "dLenMs": 0,
-   "alternatives": [
-    "sng_ccbd99ef202b"
-   ]
+   "to": "sng_ccbd99ef202b",
+   "dLenMs": 805
   },
   "sng_f2f88384b074": {
    "to": "sng_027942870e73",
