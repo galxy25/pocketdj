@@ -1386,6 +1386,13 @@ struct PocketDJApp: App {
         // CarPlay + App Intents reach the ONE feedback store through the bridge, exactly like the
         // ♥ does — never a second instance.
         intents.recFeedback = recFeedback
+        // …and the rest of the recommendation graph CarPlay's For You tab reads: the frozen
+        // ranking, the New feed, and the streaming accounts whose Apple Music contributor expands
+        // an unowned release into playable tracks. All READ-ONLY from the car — the refresh stays
+        // on the phone (see `IntentServices.forYouFeed`).
+        intents.forYouFeed = forYouFeed
+        intents.releaseFeed = releaseFeed
+        intents.streaming = streaming
         // Starting ANY set retires the previous recommendation scope, so the now-playing 👍/👎
         // pair can never file a verdict against a tile the listener has already left. `playNow` is
         // the single funnel every play path in the app goes through, which is why the hook lives

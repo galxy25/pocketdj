@@ -53,6 +53,21 @@ final class IntentServices {
     /// live store rather than a second copy. Optional so a test host can build the bridge without
     /// the recommendation graph.
     var recFeedback: RecFeedbackStore?
+    /// The FROZEN For You ranking. CarPlay's For You tab renders this snapshot verbatim — it never
+    /// triggers a refresh, and that is deliberate: a refresh is two catalog sweeps (~96k rows each,
+    /// once per collection), which is not something to start because a car connected. The phone owns
+    /// the refresh (its tab task + the 4:20 schedule); the car reads the result.
+    /// Optional so a test host can build the bridge without the recommendation graph.
+    var forYouFeed: ForYouFeedStore?
+    /// The New tile's content. Read-only from CarPlay for the same reason as `forYouFeed`: its
+    /// fetches ride PLAY events and the one-shot seed, never a render — least of all a render in a
+    /// moving car.
+    var releaseFeed: ReleaseFeedService?
+    /// Streaming accounts — CarPlay needs exactly one thing from it, the Apple Music library
+    /// contributor that expands a New release into its tracks (`ReleaseStreaming.tracks`). nil ⇒
+    /// the expansion falls through to the rip server's subscription-free proxy, which is the same
+    /// degradation the phone takes.
+    var streaming: StreamingStore?
     /// Async "Create pocket" builder — kept observable so UI can surface progress later.
     let pocketBuilder: PocketBuilderService
 
@@ -84,8 +99,14 @@ final class IntentServices {
     @ObservationIgnored var onboardingIncomplete: (() -> Bool)?
 
     private func vetoDuringOnboarding() throws {
-        if onboardingIncomplete?() == true { throw PocketDJIntentError.setupIncomplete }
+        if isOnboardingIncomplete { throw PocketDJIntentError.setupIncomplete }
     }
+
+    /// The same veto, as a QUESTION rather than a throw — for the one playback path that does not
+    /// run through `playSongIds` and so cannot inherit its guard: a New-tile queue, whose ids are
+    /// unowned `am:<storeID>` streams that `CollectionsStore.playNow` would drop on the floor (see
+    /// `ReleaseStreaming`). It goes straight to the sequencer, so it has to ask.
+    var isOnboardingIncomplete: Bool { onboardingIncomplete?() == true }
 
     /// Process-wide handle to the live bridge, for scene delegates that run OUTSIDE the SwiftUI
     /// environment and can't receive `.environment`-injected stores — specifically the CarPlay

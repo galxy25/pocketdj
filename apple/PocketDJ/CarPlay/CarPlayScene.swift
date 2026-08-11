@@ -24,9 +24,14 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 }
 
 /// Builds + drives the CarPlay template hierarchy from `CarPlayModel`.
-/// Root = a tab bar: Playlists · Pockets · Albums · Artists. Collections drill into their songs
+/// Root = a tab bar: **Playlists · Pockets · For You**. Collections drill into their songs
 /// (with a "Play all" row); a song opens an action sheet (Play now / Add to…). Everything plays
 /// through the shared sequencer, so the head unit's Now Playing matches the phone.
+///
+/// Albums and Artists used to be the third and fourth tabs; the owner replaced both with For You
+/// (see `CarPlayModel`'s note where their browse lists were). For You's own rows are New first,
+/// In Da Zone second, then a row per collection with suggestions — the phone's order, guaranteed by
+/// both surfaces calling `ForYouGrid.tiles` rather than by two lists being kept in step.
 @MainActor
 final class CarPlayController {
     /// The live controller for the connected head unit (nil when no CarPlay scene is up). The
@@ -86,14 +91,15 @@ final class CarPlayController {
                             playAll: { await model.playPocket(id: row.id) },
                             shuffleAll: { await model.playPocket(id: row.id, shuffle: true) })
         }
-        let albums = albumsTemplate(model)
-        let artists = artistsTemplate(model)
+        let forYou = forYouTemplate(model)
 
         // NO Search tab: CarPlay's keyboard search left the app frozen in the vehicle until a
         // force-quit (the head-unit keyboard is blocked in motion and never returned control), so
-        // it was removed. The A–Z index on Albums / Artists is the keyboard-free way to find a
-        // track; hands-free search is available via Siri / the App Intents.
-        let tabBar = CPTabBarTemplate(templates: [playlists, pockets, albums, artists])
+        // it was removed — and nothing here reintroduces one. For You is a fixed, short list of
+        // tiles, built off the FROZEN feed with no catalog sweep and no network on this path, so
+        // opening the tab does no work that could block the head unit. Hands-free find is available
+        // via Siri / the App Intents.
+        let tabBar = CPTabBarTemplate(templates: [playlists, pockets, forYou])
         interfaceController.setRootTemplate(tabBar, animated: true, completion: nil)
         configureNowPlaying()
     }
@@ -240,65 +246,93 @@ final class CarPlayController {
         return template
     }
 
-    /// A tab grouped into A–Z sections with a `sectionIndexTitle` on each so the head unit shows the
-    /// alphabet quick-scroll — the keyboard-free way to "find" while driving (Albums, Artists).
-    private func azListTemplate(title: String, tabImageName: String, emptyText: String,
-                                rows: [CarPlayModel.Row],
-                                onSelect: @escaping (CarPlayModel.Row) -> Void) -> CPListTemplate {
-        let sorted = rows.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
-        var sections: [CPListSection] = []
-        for row in sorted {
-            let letter = Self.indexLetter(row.title)
-            let item = listItem(row, showsDisclosure: true) { onSelect(row) }
-            if let last = sections.last, last.sectionIndexTitle == letter {
-                sections[sections.count - 1] = CPListSection(items: last.items + [item],
-                                                             header: nil, sectionIndexTitle: letter)
-            } else {
-                sections.append(CPListSection(items: [item], header: nil, sectionIndexTitle: letter))
-            }
+    // MARK: - For You
+
+    /// The **For You** tab: one row per tile, in the phone's order — New, In Da Zone, then the
+    /// collections with something worth adding. Built once on connect, off the FROZEN feed, so this
+    /// costs a pass over a few thousand cached ids and never a catalog sweep.
+    ///
+    /// A cold cache (a device that has never opened History) gets a sentence saying where the
+    /// recommendations come from, not a blank list — the car must never be the surface that
+    /// computes a ranking, so it has to be able to say why there isn't one yet.
+    private func forYouTemplate(_ model: CarPlayModel) -> CPListTemplate {
+        let rows = model.forYouTiles()
+        let items = rows.map { row -> CPListItem in
+            listItem(row, showsDisclosure: true) { [weak self] in self?.pushForYou(row, model) }
         }
-        let template = CPListTemplate(title: title, sections: sections.isEmpty
-            ? [CPListSection(items: [CPListItem(text: emptyText, detailText: nil)])] : sections)
-        template.tabImage = UIImage(systemName: tabImageName)
-        template.tabTitle = title
+        let section = CPListSection(items: items.isEmpty
+            ? [CPListItem(text: "Nothing yet", detailText: CarPlayModel.coldFeedNote)] : items)
+        let template = CPListTemplate(title: "For You", sections: [section])
+        template.tabImage = UIImage(systemName: "sparkles")
+        template.tabTitle = "For You"
         return template
     }
 
-    private func albumsTemplate(_ model: CarPlayModel) -> CPListTemplate {
-        azListTemplate(title: "Albums", tabImageName: "opticaldisc", emptyText: "No albums",
-                       rows: model.albums()) { [weak self] row in
-            self?.pushSongs(title: row.title, rows: model.songs(inAlbum: row.id),
-                            playAll: { await model.playAlbum(id: row.id) },
-                            shuffleAll: { await model.playAlbum(id: row.id, shuffle: true) })
-        }
+    /// Drill into one tile (depth 2 = tab root → this list, within CarPlay's audio-app template
+    /// stack limit). Its rows are songs for In Da Zone / a collection, and RELEASES for New — both
+    /// playable, which is the requirement; the action sheet is what differs.
+    private func pushForYou(_ tile: CarPlayModel.Row, _ model: CarPlayModel) {
+        let releases = model.isReleaseTile(tile.id)
+        pushRows(title: tile.title, rows: model.forYouRows(tileId: tile.id),
+                 header: releases ? "Releases" : "Songs",
+                 emptyText: releases ? "No new releases to play" : "Nothing to suggest right now",
+                 playAll: { await model.playForYouTile(tile.id) },
+                 shuffleAll: { await model.playForYouTile(tile.id, shuffle: true) },
+                 onSelect: { [weak self] row in self?.presentForYouActions(row, inTile: tile, model) })
     }
 
-    private func artistsTemplate(_ model: CarPlayModel) -> CPListTemplate {
-        azListTemplate(title: "Artists", tabImageName: "music.mic", emptyText: "No artists",
-                       rows: model.artists()) { [weak self] row in
-            // Selecting an artist pushes a FLAT list of every one of their songs (depth 2 =
-            // tab-root → this list), NOT artist → albums → songs (depth 3). CarPlay audio apps
-            // cap the template stack at 2 including the root on iOS ≤ 26.3 (3 on ≥ 26.4), and a
-            // third push throws a runtime exception. `pushSongs` keeps the "▶ Play all" /
-            // "🔀 Shuffle all" affordances on top, playing the whole discography.  row.title ==
-            // artist name.
-            self?.pushSongs(title: row.title, rows: model.songs(byArtist: row.title),
-                            playAll: { await model.playArtist(name: row.title) },
-                            shuffleAll: { await model.playArtist(name: row.title, shuffle: true) })
+    /// A For You row tap → Play now (from here), Add to… (catalog songs only), Cancel.
+    ///
+    /// A RELEASE row carries no song id — it is a record the owner does not own — so "Add to pocket
+    /// / playlist" is genuinely impossible for it and is omitted rather than offered and failed.
+    private func presentForYouActions(_ row: CarPlayModel.Row, inTile tile: CarPlayModel.Row,
+                                      _ model: CarPlayModel) {
+        var actions: [CPAlertAction] = [
+            CPAlertAction(title: "Play now", style: .default) { [weak self] _ in
+                self?.interfaceController.dismissTemplate(animated: true, completion: nil)
+                Task { [weak self] in
+                    if await model.playForYouRow(row.id, inTile: tile.id) { self?.showNowPlaying() }
+                    else { self?.toast(CarPlayController.couldNotPlay) }
+                }
+            }
+        ]
+        if row.isSong {
+            actions.append(CPAlertAction(title: "Add to pocket / playlist", style: .default) { [weak self] _ in
+                self?.interfaceController.dismissTemplate(animated: true) { _, _ in
+                    self?.pushAddTargets(for: row)
+                }
+            })
         }
+        actions.append(CPAlertAction(title: "Cancel", style: .cancel) { [weak self] _ in
+            self?.interfaceController.dismissTemplate(animated: true, completion: nil)
+        })
+        let sheet = CPActionSheetTemplate(title: row.title, message: row.subtitle, actions: actions)
+        interfaceController.presentTemplate(sheet, animated: true, completion: nil)
     }
 
-    /// First-letter index key: A–Z, else "#".
-    private static func indexLetter(_ s: String) -> String {
-        guard let c = s.trimmingCharacters(in: .whitespaces).first?.uppercased(),
-              c.range(of: "^[A-Z]$", options: .regularExpression) != nil else { return "#" }
-        return c
-    }
+    /// What a tap that produced no audio says. A New expansion needs the network and can legitimately
+    /// come back with nothing; saying so is the difference between "Apple Music didn't answer" and a
+    /// button the driver thinks is broken.
+    static let couldNotPlay = "Couldn’t start that — check your connection and try again"
+
+    // MARK: - Drill-in list
 
     /// Drill into a collection's songs, with "Play all" + "Shuffle all" rows on top; a song opens
     /// the action sheet.
     private func pushSongs(title: String, rows: [CarPlayModel.Row],
                            playAll: @escaping () async -> Void, shuffleAll: @escaping () async -> Void) {
+        pushRows(title: title, rows: rows, header: "Songs", emptyText: "No songs",
+                 playAll: { await playAll() }, shuffleAll: { await shuffleAll() },
+                 onSelect: { [weak self] row in self?.presentSongActions(row) })
+    }
+
+    /// The one drill-in list: "▶ Play all" / "🔀 Shuffle all" on top, then the rows. Shared by
+    /// collections and For You tiles so the two cannot drift apart in layout, wording or the
+    /// push-then-show-Now-Playing sequence; only the header, the empty line and the row action
+    /// differ.
+    private func pushRows(title: String, rows: [CarPlayModel.Row], header: String, emptyText: String,
+                          playAll: @escaping () async -> Void, shuffleAll: @escaping () async -> Void,
+                          onSelect: @escaping (CarPlayModel.Row) -> Void) {
         var sections: [CPListSection] = []
         if !rows.isEmpty {
             let playAllItem = CPListItem(text: "▶ Play all", detailText: nil)
@@ -311,11 +345,12 @@ final class CarPlayController {
             }
             sections.append(CPListSection(items: [playAllItem, shuffleItem]))
         }
-        let songItems = rows.map { row -> CPListItem in
-            listItem(row, showsDisclosure: false) { [weak self] in self?.presentSongActions(row) }
+        let rowItems = rows.map { row -> CPListItem in
+            listItem(row, showsDisclosure: false) { onSelect(row) }
         }
-        sections.append(CPListSection(items: songItems.isEmpty
-            ? [CPListItem(text: "No songs", detailText: nil)] : songItems, header: "Songs", sectionIndexTitle: nil))
+        sections.append(CPListSection(items: rowItems.isEmpty
+            ? [CPListItem(text: emptyText, detailText: nil)] : rowItems,
+            header: header, sectionIndexTitle: nil))
         let template = CPListTemplate(title: title, sections: sections)
         interfaceController.pushTemplate(template, animated: true, completion: nil)
     }

@@ -228,56 +228,16 @@ struct ForYouTilesView: View {
         + "|\(collections.recommendationsOffIds().sorted().joined(separator: ","))"
     }
 
+    /// Derive the cards. The whole computation lives in `ForYouGrid.tiles` — moved out of this view
+    /// when CarPlay grew a For You tab, because the owner's requirement there is that the car's
+    /// tiles match the phone's ORDER, and two implementations of "which tiles, in what order" is
+    /// exactly how that stops being true. One function, two surfaces, and the one that cannot be
+    /// headless-tested (CarPlay) inherits this one's tests.
     private func deriveTiles() {
         let now = Date().timeIntervalSince1970 * 1000
         updatedLabel = ForYouFeedStore.updatedLabel(refreshedAtMs: snapshot.refreshedAtMs, nowMs: now)
-
-        // The LIVE half of each list — the rows still being offered, with the thumbed-down tail
-        // taken off. `RecFeedbackOrder.sink` is the one implementation of that partition, and the
-        // opened list renders from the same call, so a card that promises twelve suggestions
-        // cannot open on nine.
-        func live(_ ids: [String], _ scope: String) -> [String] {
-            feedback?.partition(ids, scope: scope, nowMs: now).live ?? ids
-        }
-
-        let releases = releaseFeed?.feed(nowMs: now) ?? []
-        let soon = releases.filter { $0.status == .comingSoon }
-        let newScope = ForYouTileRoute.Kind.new.rawValue
-
-        // Drop a cached tile whose collection has since been deleted — the ONE way a frozen feed
-        // could offer a door to nothing — and one the owner has switched OFF.
-        //
-        // The opt-out is enforced in BOTH passes, and both are needed for different windows of
-        // time. `ForYouFeedBuilder.build` stops the WORK, but only from the next refresh onward;
-        // this stops the TILE from the next frame, over a snapshot frozen before the switch was
-        // flipped. Without this the tile would sit there until the schedule came round on Friday.
-        let crates = snapshot.crates.filter {
-            (collections.playlist($0.id) != nil || collections.pocket($0.id) != nil)
-                && collections.recommendationsEnabled(forCollection: $0.id)
-        }
-
-        let newCount = live(releases.map(\.feedbackId), newScope).count
-        tiles = ForYouTiles.build(
-            newReleaseCount: newCount,
-            comingSoonCount: live(soon.map(\.feedbackId), newScope).count,
-            zone: live(snapshot.zoneIds, ForYouTileRoute.Kind.zone.rawValue),
-            // The attribution rides the SNAPSHOT, not live engine state: it has to describe the
-            // ids actually on screen, and those were frozen by whichever ranker produced them.
-            zoneSource: snapshot.zoneSource,
-            // TWO filters, and both are needed. `live` drops the thumbed-down tail; the membership
-            // pass drops anything that is ALREADY IN the collection — evaluated HERE, at read, and
-            // not baked into the frozen list, because every add (including a 👍 made from this very
-            // tile) moves membership while the ranking stays put. Without it the card keeps
-            // promising a song he already filed. See `CollectionsStore.suggestionsExcludingMembers`.
-            collections: crates.map { c in
-                (id: c.id, kind: c.kind, name: c.name,
-                 suggestions: collections.suggestionsExcludingMembers(live(c.songIds, c.id),
-                                                                     ofCollection: c.id))
-            },
-            // A ZERO ON THE NEW TILE HAS FOUR DIFFERENT CAUSES. Say which — a bare 0 with
-            // "no releases in the last 30 days" beneath it is the card asserting something it
-            // has not checked, and it is why this feature read as broken.
-            newEmptyNote: newCount == 0 ? releaseFeed?.emptyReason().tileNote : nil)
+        tiles = ForYouGrid.tiles(snapshot: snapshot, collections: collections,
+                                 feedback: feedback, releaseFeed: releaseFeed, nowMs: now)
     }
 
     // ========================================================================

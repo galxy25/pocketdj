@@ -127,23 +127,10 @@ final class CarPlayModelTests: XCTestCase {
     }
 
     // MARK: Browse
-
-    func testAlbumsListCatalogAlbums() async {
-        let (model, _, _) = await makeModel()
-        let albums = model.albums()
-        XCTAssertTrue(albums.contains { $0.id == "alb_1" && $0.title == "Night Drive" && $0.subtitle == "Aria" })
-        XCTAssertFalse(albums.first { $0.id == "alb_1" }!.isSong)
-    }
-
-    func testSongsInAlbumResolvesOrderedTrackList() async {
-        let (model, _, _) = await makeModel()
-        let rows = model.songs(inAlbum: "alb_1")
-        XCTAssertEqual(rows.map(\.id), ["sng_1", "sng_2", "sng_3"])
-        XCTAssertEqual(rows[0].title, "Neon")
-        XCTAssertEqual(rows[0].subtitle, "Aria")
-        XCTAssertTrue(rows[0].isSong)
-        XCTAssertEqual(rows[0].artworkAlbumId, "alb_1")
-    }
+    //
+    // Albums and Artists are GONE from CarPlay — the owner replaced both tabs with For You (see
+    // `CarPlayForYouTests`), and the browse lists that existed only to fill them went with them.
+    // Their tests went too rather than being left asserting over unreachable code.
 
     func testPlaylistsAndPocketsListWithCountsAndDrill() async {
         let (model, _, collections) = await makeModel()
@@ -196,34 +183,7 @@ final class CarPlayModelTests: XCTestCase {
         XCTAssertEqual(collections.nowPlayingSetlist()?.name, "AM Faves")
     }
 
-    // MARK: Artists
-
-    func testArtistsTabListsAndPlaysDiscography() async {
-        let (model, _, collections) = await makeModel()
-        XCTAssertEqual(Set(model.artists().map(\.title)), ["Aria", "Bento", "Cobalt"])
-        XCTAssertEqual(model.albums(byArtist: "Aria").map(\.id), ["alb_1"])
-        XCTAssertEqual(model.artists().first { $0.title == "Aria" }?.subtitle, "1 album · 3 songs")
-        // The Artists tab now pushes a FLAT song list (depth 2, not artist → albums → songs)
-        // to stay within CarPlay's audio-app template-depth limit — see CarPlayScene.
-        XCTAssertEqual(model.songs(byArtist: "Aria").map(\.id), ["sng_1", "sng_2", "sng_3"])
-        XCTAssertTrue(model.songs(byArtist: "Aria").allSatisfy(\.isSong))
-
-        await model.playArtist(name: "Aria")
-        XCTAssertEqual(collections.nowPlayingSetlist()?.tracks.map(\.songId), ["sng_1", "sng_2", "sng_3"])
-        XCTAssertEqual(collections.nowPlayingSource, .artist)     // History attributes as Artist
-        XCTAssertEqual(collections.nowPlayingSetlist()?.name, "Aria")
-    }
-
     // MARK: Play (routes through the shared sequencer)
-
-    func testPlayAlbumStartsSequencerWithAlbumSource() async {
-        let (model, services, collections) = await makeModel()
-        await model.playAlbum(id: "alb_1")
-        XCTAssertTrue(services.setlistPlayer.isRunning)
-        XCTAssertEqual(services.setlistPlayer.queue.map(\.id), ["sng_1", "sng_2", "sng_3"])
-        XCTAssertEqual(collections.nowPlayingSource, .album)               // History attributes as Album
-        XCTAssertEqual(collections.nowPlayingSetlist()?.name, "Night Drive")
-    }
 
     func testPlaySongStartsSequencerAsBrowserSingle() async {
         let (model, services, collections) = await makeModel()

@@ -1,7 +1,7 @@
 import Foundation
 
 /// The template-agnostic heart of the CarPlay app: it turns the shared stores into the row lists
-/// CarPlay browses (Playlists / Pockets / Albums / Artists → songs) and routes
+/// CarPlay browses (Playlists / Pockets / For You → songs) and routes
 /// the two write actions — play a collection/song, add a song to a pocket/playlist.
 ///
 /// Deliberately free of any `CarPlay` import, so it unit-tests on the plain test host and compiles
@@ -19,7 +19,12 @@ final class CarPlayModel {
         let subtitle: String?
         /// Album id to resolve a thumbnail from (nil → generic icon).
         let artworkAlbumId: String?
-        /// True for a playable SONG row (vs. a collection/album drill-in row).
+        /// True for a CATALOG SONG row — one with an `IndexSong` behind it.
+        ///
+        /// False covers two different things and the distinction matters at the action sheet: a
+        /// drill-in row (a playlist, a For You tile), and a For You **release** row, which IS
+        /// playable but is a record the owner does not own. Only a true `isSong` row can be added
+        /// to a pocket or playlist, because only it has a song id to add.
         let isSong: Bool
     }
 
@@ -93,55 +98,25 @@ final class CarPlayModel {
         }
     }
 
-    func albums() -> [Row] {
-        app.albums.map { Row(id: $0.id, title: $0.name, subtitle: $0.artist, artworkAlbumId: $0.id, isSong: false) }
-    }
-
-    /// Distinct artists (from the prebuilt artist groupings), for the CarPlay Artists tab.
-    func artists() -> [Row] {
-        app.artistBrowseItems.compactMap { item in
-            guard case .artist(let name, let albumCount, let songCount, let albumId) = item else { return nil }
-            return Row(id: "artist:\(name)", title: name,
-                       subtitle: "\(albumCount) album\(albumCount == 1 ? "" : "s") · \(songCount) songs",
-                       artworkAlbumId: albumId, isSong: false)
-        }
-    }
-
-    /// One artist's albums (drill-in from the Artists tab). Case-insensitive (see AppModel grouping).
-    func albums(byArtist name: String) -> [Row] {
-        albumsByArtist(name).map {
-            Row(id: $0.id, title: $0.name, subtitle: "\($0.trackList.count) tracks",
-                artworkAlbumId: $0.id, isSong: false)
-        }
-    }
-
-    /// One artist's whole discography as a FLAT list of song rows (their albums' track lists,
-    /// concatenated in album order). CarPlay audio apps cap the template stack at depth 2 (root +
-    /// one push) on iOS ≤ 26.3, so the Artists tab pushes this flat list directly instead of
-    /// artist → albums → songs (which would be depth 3 and throws at runtime). Case-insensitive.
-    func songs(byArtist name: String) -> [Row] {
-        songRows(albumsByArtist(name).flatMap(\.trackList))
-    }
-
-    /// ▶/🔀 an artist's whole discography.
-    func playArtist(name: String, shuffle: Bool = false) async {
-        let ids = albumsByArtist(name).flatMap(\.trackList)
-        try? await services.playSongIds(ids, name: name, shuffle: shuffle, source: .artist)
-    }
-
-    private func albumsByArtist(_ name: String) -> [IndexAlbum] {
-        app.albums.filter { $0.artist.localizedCaseInsensitiveCompare(name) == .orderedSame }
-    }
+    // ── THERE IS NO `albums()` / `artists()` ANY MORE ────────────────────────────────────────
+    // The CarPlay tab bar is Playlists · Pockets · For You. Owner, verbatim: *"in CarPlay replace
+    // artists & albums (if both exist, otherwise replace what does so we only have Playlists,
+    // Pockets & For You) with For You"*. Both existed, so both went, and the browse lists that
+    // existed ONLY to fill those two tabs (`albums`, `artists`, `albums(byArtist:)`,
+    // `songs(byArtist:)`, `songs(inAlbum:)`, `playArtist`, `playAlbum`) went with them rather than
+    // staying behind as unreachable code that still has to compile and still looks supported.
+    //
+    // Nothing was lost that the car can still reach: an album or an artist is a KEYBOARD search
+    // away on the phone, and hands-free it is one App Intent away ("play Night Drive in PocketDJ").
+    // The A–Z quick-scroll those tabs carried was the keyboard-free way to find a record; For You
+    // answers the question that actually comes up while driving — *what should I put on* — which is
+    // the trade the owner asked for.
 
     func songs(inPlaylist id: String) -> [Row] {
         if let sp = sourcePlaylist(id) { return songRows(sp.songIds) }
         return songRows(collections.playableIds(forPlaylist: id))
     }
     func songs(inPocket id: String) -> [Row] { songRows(collections.playableIds(forPocket: id)) }
-    func songs(inAlbum id: String) -> [Row] {
-        guard let album = app.albumsById[id] else { return [] }
-        return songRows(album.trackList)
-    }
 
     // MARK: - Play (all through the one unified sequencer)
 
@@ -153,7 +128,6 @@ final class CarPlayModel {
         }
     }
     func playPocket(id: String, shuffle: Bool = false) async { try? await services.playPocket(id: id, shuffle: shuffle) }
-    func playAlbum(id: String, shuffle: Bool = false) async { try? await services.playAlbum(id: id, shuffle: shuffle) }
     func playSong(id: String) async { try? await services.playSong(id: id) }
 
     // MARK: - Add-to (pocket / playlist)
