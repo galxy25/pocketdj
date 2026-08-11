@@ -299,13 +299,16 @@ async function loadManifest() {
 // can't interleave: two writers sharing the one temp file + out-of-order S3 uploads would drop
 // updates. Each queued save re-serializes the LATEST in-memory manifest when it runs, so a save
 // queued behind another still captures every mutation made meanwhile.
+// Resolves true on a successful S3 upload, false on failure (never rejects) — callers that
+// must not discard their trigger until the manifest is durable (pumpStemResults) check it.
 let saveChain = Promise.resolve();
 function saveManifest() {
   saveChain = saveChain.then(async () => {
     const tmp = join(CFG.tmp, 'manifest.json');
     writeFileSync(tmp, JSON.stringify(manifest));
     await aws(['s3', 'cp', tmp, `s3://${CFG.bucket}/rips/manifest.json`, '--content-type', 'application/json']);
-  }).catch((e) => { console.error('  saveManifest failed:', e.message); });
+    return true;
+  }).catch((e) => { console.error('  saveManifest failed:', e.message); return false; });
   return saveChain;
 }
 
@@ -1759,6 +1762,18 @@ async function pumpStemResults() {
       try {
         const r = JSON.parse(m.Body);
         const e = r.songId && manifest[r.songId];
+        // A DERIVED-ARTIFACT result (stems/lyrics/analysis uploaded to S3) for a song this
+        // process's manifest doesn't know must NOT be deleted-with-nothing-folded — that
+        // permanently orphans the S3 artifacts (the exact sng_2ab1d3de5692/sng_3be2079ad5e3/
+        // sng_9fdce3817845 incident: complete stems on S3, no manifest stamp, invisible to the
+        // app). The entry can be missing legitimately-and-briefly: a restart raced the rip's
+        // saveManifest, or loadManifest fell back to {}. Leave the message invisible; the
+        // visibility timeout redelivers it once the entry exists, and queue retention bounds
+        // a truly-stray result.
+        if (!e && r.songId && r.ok !== false && (r.stems || r.lyrics || r.analysis)) {
+          console.error(`  ⚠ result for unknown song ${r.songId} — left on queue for redelivery`);
+          continue;
+        }
         const ok = e && r.ok !== false;
         // STEMS: only stamp on a genuine success for a known, NOT-canceled song. finishStem +
         // state-clear gate on the SAME condition so a failed/stray/canceled result can't flip a
@@ -1802,7 +1817,15 @@ async function pumpStemResults() {
         // (or an SQS redelivery) must see its OWN lyrics stamp before wantLyrics decides —
         // else every combined result would enqueue a guaranteed-redundant lyrics job.
         if (stemsOk && CFG.lyricsOffload && wantLyrics(e)) offloadLyrics(r.songId);
-        if (changed) await saveManifest();
+        // The message may only be deleted once the fold is DURABLE. saveManifest swallows
+        // its own errors (resolves false); deleting on a failed save left the stamp
+        // in-memory-only, and a crash before the next successful save lost it forever
+        // (stems on S3, manifest never learns). Leave the message for redelivery instead —
+        // the fold is idempotent, so a re-stamp is harmless.
+        if (changed && !(await saveManifest())) {
+          console.error(`  ⚠ manifest save failed after folding ${r.songId} — left on queue for redelivery`);
+          continue;
+        }
         if (r.stems && r.songId) stemCanceled.delete(r.songId);   // a STEM result clears its OWN cancel tombstone (analysis results don't)
         if (stemsOk) { stemAttempts.delete(r.songId); clearStemWant(r.songId); finishStem(r.songId); stemInflight.delete(r.songId); }
         await aws(['sqs', 'delete-message', '--queue-url', CFG.stemResultsQueue, '--receipt-handle', m.ReceiptHandle]);
