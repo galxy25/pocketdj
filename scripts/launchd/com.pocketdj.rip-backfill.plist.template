@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  PocketDJ POCKET RIP BACKFILL — long-lived queue-driver TEMPLATE.
+
+  Install/refresh with:  scripts/install-rip-backfill.sh   (the LEAD runs this — building the
+  files never installs them; fills __LAUNCHER__ / __HOME__, copies to ~/Library/LaunchAgents,
+  loads the job).
+
+  NOT a nightly timer: this is a KeepAlive daemon that pumps the rip server's durable queue
+  SHALLOW (~10 requests) from the owner's pocket backup until the whole corpus is captured —
+  weeks of serial 1x real-time capture. RunAtLoad + KeepAlive-on-crash make it survive reboots:
+  the state file resumes the plan, the server's own durable queue resumes the in-flight capture.
+  KeepAlive is keyed on SuccessfulExit=false so the daemon's clean "ALL DONE" exit 0 STAYS
+  exited instead of respawning forever, while a crash or a reboot restarts it.
+
+  The driver runs its OWN pump only — capture stays entirely on com.pocketdj.ripserver.
+
+  Stop:     launchctl unload ~/Library/LaunchAgents/com.pocketdj.rip-backfill.plist
+            (SIGTERM -> state saved; the in-flight capture finishes server-side)
+  Resume:   launchctl load   ~/Library/LaunchAgents/com.pocketdj.rip-backfill.plist
+  Monitor:  tail -f ~/.pocketdj/rip-backfill.log     (grep HEARTBEAT for the JSON line)
+  Preview:  node scripts/rip-backfill.mjs --dry-run
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pocketdj.rip-backfill</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__LAUNCHER__</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AWS_PROFILE</key>
+    <string>levi</string>
+    <!-- launchd has a minimal PATH; node, aws, unzip live here. -->
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <!-- Restart on crash/reboot; a clean exit 0 ("ALL DONE") stays down. -->
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <!-- A crash-looping driver must not hammer the rip server or S3. -->
+  <key>ThrottleInterval</key>
+  <integer>60</integer>
+
+  <key>StandardOutPath</key>
+  <string>__HOME__/.pocketdj/rip-backfill.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/.pocketdj/rip-backfill.err.log</string>
+</dict>
+</plist>
