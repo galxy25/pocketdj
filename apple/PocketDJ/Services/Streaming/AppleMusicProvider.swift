@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import os        // library-add diagnostics ride the shared mixdiag pipe
 
 // MARK: - Configuration
 
@@ -69,6 +70,12 @@ final class AppleMusicProvider: StreamingProvider, StreamingSearch, SongRecogniz
     /// catalog songs stream their PRIMARY cut untouched — edition substitution stays off),
     /// false = prefer clean, true = prefer explicit. Default nil keeps tests inert.
     var preferExplicitVersions: () -> Bool? = { nil }
+
+    /// The web-API transport for the LIBRARY-ADD fallback (`AppleMusicLibraryAddFallback`:
+    /// native `MusicLibrary.add` threw → `POST /v1/me/library`). Injectable for tests,
+    /// following `WebAPIPlaylistWriteBackTransport(sender:)`; nil (production) means the
+    /// real `MusicDataRequestSender` is created on first use.
+    @ObservationIgnored var libraryAddSender: (any AppleMusicWebSender)?
 
     /// Available only when the build opted in. (MusicKit itself is always linked.)
     var isAvailable: Bool { AppleMusicCredentials.isEnabled }
@@ -396,33 +403,65 @@ extension AppleMusicProvider: MusicLibraryContributor {
     }
 
     @discardableResult
-    func addSongToLibrary(storeID: String) async throws -> Bool {
+    func addSongToLibrary(storeID: String) async throws -> AppleMusicLibraryAddResult {
         #if os(macOS)
         throw StreamingError.notConfigured   // MusicLibrary.add is unavailable on macOS
         #else
         guard let song = try await Self.fetchSong(storeID: storeID) else { throw StreamingError.notConfigured }
-        _ = try await MusicLibrary.shared.add(song)
-        // POST-WRITE CONFIRMATION (the four-albums bug): `add` returning is not the same
-        // as the song being in the library — probe with the same library search the
-        // recognizer flow trusts, retrying once because a fresh add can take a beat to
-        // become visible to `MusicLibrarySearchRequest`.
-        return await Self.confirmInLibrary { await Self.isInLibrary(title: song.title, artist: song.artistName) }
+        // Native first (unchanged when it works) → web-API fallback when the native add
+        // THROWS: on iOS 27 beta `MusicLibrary.add` throws MPErrorDomain#0 for ordinary
+        // catalog items (see `AppleMusicLibraryAddFallback`).
+        return try await AppleMusicLibraryAddFallback.run(
+            kind: .songs, storeID: storeID, sender: addFallbackSender, diag: { Self.dlog($0) },
+            native: {
+                _ = try await MusicLibrary.shared.add(song)
+                // POST-WRITE CONFIRMATION (the four-albums bug): `add` returning is not the
+                // same as the song being in the library — probe with the same library search
+                // the recognizer flow trusts, retrying once because a fresh add can take a
+                // beat to become visible to `MusicLibrarySearchRequest`.
+                return await Self.confirmInLibrary { await Self.isInLibrary(title: song.title, artist: song.artistName) }
+            },
+            probe: { await Self.isInLibrary(title: song.title, artist: song.artistName) })
         #endif
     }
 
     @discardableResult
-    func addAlbumToLibrary(storeID: String) async throws -> Bool {
+    func addAlbumToLibrary(storeID: String) async throws -> AppleMusicLibraryAddResult {
         #if os(macOS)
         throw StreamingError.notConfigured   // MusicLibrary.add is unavailable on macOS
         #else
         var req = MusicCatalogResourceRequest<MusicKit.Album>(matching: \.id, equalTo: MusicItemID(storeID))
         req.limit = 1
         guard let album = try await req.response().items.first else { throw StreamingError.notConfigured }
-        _ = try await MusicLibrary.shared.add(album)
-        // Post-write confirmation, album flavor (see addSongToLibrary).
         let (title, artist) = (album.title, album.artistName)
-        return await Self.confirmInLibrary { await Self.albumIsInLibrary(title: title, artist: artist) }
+        return try await AppleMusicLibraryAddFallback.run(
+            kind: .albums, storeID: storeID, sender: addFallbackSender, diag: { Self.dlog($0) },
+            native: {
+                _ = try await MusicLibrary.shared.add(album)
+                // Post-write confirmation, album flavor (see addSongToLibrary).
+                return await Self.confirmInLibrary { await Self.albumIsInLibrary(title: title, artist: artist) }
+            },
+            probe: { await Self.albumIsInLibrary(title: title, artist: artist) })
         #endif
+    }
+
+    /// The injectable seam's production default, created on first use (the provider is
+    /// constructed before MusicKit consent exists; `MusicDataRequestSender.canSend`
+    /// re-checks authorization per send).
+    private var addFallbackSender: any AppleMusicWebSender {
+        if let libraryAddSender { return libraryAddSender }
+        let s = MusicDataRequestSender()
+        libraryAddSender = s
+        return s
+    }
+
+    /// Same diagnostics pipe as MixEngine (`mixdiag` subsystem/category): os_log always,
+    /// plus the Settings ▸ Debug capture buffer while a session runs — the owner's device
+    /// capture showed only mixdiag lines because this write path logged nothing there.
+    private static let amDiag = Logger(subsystem: "com.levi.pocketdj", category: "mixdiag")
+    private static func dlog(_ s: String) {
+        amDiag.info("\(s, privacy: .public)")
+        MixDiag.shared.append(s)
     }
 
     #if !os(macOS)
@@ -590,9 +629,9 @@ extension AppleMusicProvider: MusicLibraryContributor {
     var canAddToLibrary: Bool { false }
     func resolveForLibrary(storeID: String?, title: String?, artist: String?) async -> AppleMusicResolution? { nil }
     @discardableResult
-    func addSongToLibrary(storeID: String) async throws -> Bool { throw StreamingError.notConfigured }
+    func addSongToLibrary(storeID: String) async throws -> AppleMusicLibraryAddResult { throw StreamingError.notConfigured }
     @discardableResult
-    func addAlbumToLibrary(storeID: String) async throws -> Bool { throw StreamingError.notConfigured }
+    func addAlbumToLibrary(storeID: String) async throws -> AppleMusicLibraryAddResult { throw StreamingError.notConfigured }
     func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] { [] }
 }
 #endif

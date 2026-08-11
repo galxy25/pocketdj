@@ -1300,7 +1300,20 @@ final class RipsStore {
     /// recorded as success. `attempt` returns the post-write membership confirmation.
     static func attemptLibraryWrite(
         _ library: (any MusicLibraryContributor)?,
-        attempt: (any MusicLibraryContributor) async throws -> Bool
+        attempt: (any MusicLibraryContributor) async throws -> AppleMusicLibraryAddResult
+    ) async -> AppleMusicLibraryWriteOutcome {
+        let outcome = await attemptLibraryWriteOutcome(library, attempt: attempt)
+        // The write story reaches the Settings ▸ Debug capture (the owner's device
+        // capture contained only mixdiag lines — this path logged nothing there). The
+        // provider logs the per-route detail; this line records the SETTLED outcome
+        // token, including the skip cases that never reach the provider.
+        MixDiag.shared.append("amwrite outcome: \(outcome.storageToken)")
+        return outcome
+    }
+
+    private static func attemptLibraryWriteOutcome(
+        _ library: (any MusicLibraryContributor)?,
+        attempt: (any MusicLibraryContributor) async throws -> AppleMusicLibraryAddResult
     ) async -> AppleMusicLibraryWriteOutcome {
         guard let library else {
             return .skipped(reason: "no Apple Music connection")
@@ -1316,7 +1329,14 @@ final class RipsStore {
             #endif
         }
         do {
-            return try await attempt(library) ? .confirmed : .unconfirmed
+            switch try await attempt(library) {
+            case .confirmed: return .confirmed
+            case .unconfirmed: return .unconfirmed
+            // A web 202 is Apple accepting the add into the CLOUD library — proven; the
+            // token records the route. Local sync lag must not downgrade it (the
+            // provider already ran + logged the local probe for the record).
+            case .webAccepted: return .confirmedWeb
+            }
         } catch {
             return .failed(reason: Self.libraryWriteFailureDetail(error))
         }
@@ -1350,7 +1370,7 @@ final class RipsStore {
                                             noun: String, hadLibrary: Bool) {
         guard discoverError == nil else { return }
         switch outcome {
-        case .confirmed:
+        case .confirmed, .confirmedWeb:
             return
         case .skipped:
             #if os(macOS)
@@ -1367,7 +1387,7 @@ final class RipsStore {
     /// The user-facing message for a write that didn't land (pure → unit-testable).
     static func libraryWriteNotice(_ outcome: AppleMusicLibraryWriteOutcome, noun: String) -> String? {
         switch outcome {
-        case .confirmed:
+        case .confirmed, .confirmedWeb:
             return nil
         case .unconfirmed:
             return "Added to PocketDJ, but the \(noun) hasn’t appeared in your Apple Music library yet"
