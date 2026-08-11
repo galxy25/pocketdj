@@ -46,7 +46,8 @@ process.env.MAX_PROFILES = '1000';
 const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections, shedToFit,
         scoreSimilarToCollections, playCountSignal, recencySignal,
         feedbackOf, feedbackMultiplier, identityKeys,
-        primaryArtistKey, artistKey, artistFamiliarityOf, auxMix, mergeAudioFeatures } =
+        primaryArtistKey, artistKey, artistFamiliarityOf, auxMix, mergeAudioFeatures,
+        eraWindow, eraFit } =
   await import('./index.mjs');
 
 const PROFILE = 'profile-test-1234';
@@ -750,10 +751,13 @@ test('GET /recs/similar: 400 without ids, 200+empty without state, then real row
 /// The renamed reason string RENDERS INSIDE THE APP (AddToCollectionView's Suggested section),
 /// so it is user-visible server output. Assert the literal so the rename can't silently regress.
 test('the Gem Collector reason string is the one the app renders', () => {
+  // The collection member is the JAZZ song on purpose: an era-matching member (sng_e2, 2020,
+  // window 2018–2022 around sng_e3's 2021) saturates the era term at 0.5 — tying the puzzle term
+  // and, being pushed first, displacing it from the top-3 reasons this test reads.
   const state = {
     v: 1, plays: [], favorites: {}, activity: [],
     puzzle: [{ id: 'p1', atMs: NOW, songId: 'sng_e1', collectionId: 'pls_x', action: 'added' }],
-    collections: { atMs: 0, list: [{ id: 'pls_x', kind: 'playlist', name: 'X', songIds: ['sng_e2'] }] },
+    collections: { atMs: 0, list: [{ id: 'pls_x', kind: 'playlist', name: 'X', songIds: ['sng_j1'] }] },
   };
   const out = scoreCollections(state, featureIndex(), 'sng_e3', { nowMs: NOW, threshold: 0 });
   const reasons = out.suggestions.flatMap((s) => s.reasons);
@@ -1752,4 +1756,190 @@ test('audio features: DELETE /state removes the corpus too', async () => {
   assert.ok(!existsSync(corpusPath),
             '"Delete cloud data" has to mean all of it — a per-profile corpus derived from '
             + 'listening cannot survive the deletion of the state it was derived from');
+});
+
+// ── THE ERA WINDOW (owner: "also factor in year range for recommendation along with genre as a
+//    feature, eg some playlist like 808 & swinging is very new jack swing 88-94 r&b") ────────────
+//
+// The pocket histograms below are REAL DATA, not invented: the member years of the owner's actual
+// pockets (source-backup.pocketdj, 2026-08-11) joined against public/rec-features.json, whose
+// year field is song year with album-year fallback (106,879 of 107,757 rows dated = 99.2%).
+
+const yearsOf = (hist) => Object.entries(hist).flatMap(([y, k]) => Array(k).fill(Number(y)));
+
+/// "808 and Swinging" — 87 members, 86 dated. The owner remembers this pocket as ≈1988–1994 new
+/// jack swing. Its year data is verified correct song-by-song (Keith Sweat 1987 ✓, SWV 1992 ✓,
+/// Kodak Black 2023 ✓), and the membership genuinely spans 1986–2025: a ~30-song 1986–1998
+/// founding core, two whole 2001/2003 albums, and a modern R&B tail he added himself. So the
+/// window is honestly WIDE — narrowing it to 88–94 would score the very songs he filed as
+/// misfits. The new-jack-swing SOUND is the genre term's job; the era term reports the years the
+/// crate actually holds.
+const P808_AND_SWINGING = {
+  1986: 1, 1987: 9, 1988: 2, 1989: 1, 1990: 2, 1992: 4, 1993: 1, 1994: 1, 1995: 2, 1996: 3,
+  1997: 1, 1998: 1, 2000: 3, 2001: 12, 2003: 15, 2005: 2, 2007: 1, 2008: 2, 2011: 1, 2013: 1,
+  2015: 2, 2016: 1, 2018: 2, 2019: 1, 2020: 1, 2021: 1, 2022: 2, 2023: 8, 2025: 3,
+};
+/// "Bad Bitch Radio" — 35 members, all dated 2015–2026: a tight, modern pocket.
+const P_BAD_BITCH_RADIO = { 2015: 1, 2018: 3, 2019: 1, 2022: 2, 2023: 15, 2024: 1, 2025: 11, 2026: 1 };
+/// "🏋🏾‍♀️" (workout) — 500 members, 486 dated, and one member tagged year **1012** — an obvious
+/// tagging error, kept in the fixture on purpose: it is the real catalog's own argument for a
+/// percentile window over min/max.
+const P_WORKOUT = {
+  1012: 1, 1967: 1, 1976: 2, 1977: 1, 1978: 1, 1980: 3, 1981: 3, 1982: 2, 1983: 3, 1984: 2,
+  1986: 3, 1987: 1, 1989: 2, 1990: 3, 1991: 1, 1993: 2, 1996: 6, 1997: 1, 1998: 7, 1999: 5,
+  2000: 5, 2001: 18, 2002: 7, 2003: 9, 2004: 11, 2005: 8, 2006: 18, 2007: 21, 2008: 27, 2009: 32,
+  2010: 38, 2011: 41, 2012: 29, 2013: 28, 2014: 26, 2015: 26, 2016: 29, 2017: 22, 2018: 12,
+  2019: 5, 2020: 2, 2021: 5, 2022: 1, 2023: 10, 2024: 2, 2025: 2, 2026: 2,
+};
+
+test('eraWindow: the real "808 and Swinging" pocket → 1987–2024 (wide, and honestly so)', () => {
+  assert.deepEqual(eraWindow(yearsOf(P808_AND_SWINGING)), { lo: 1987, hi: 2024 });
+});
+
+test('eraWindow: real pockets with different eras get distinct windows', () => {
+  const w808 = eraWindow(yearsOf(P808_AND_SWINGING));
+  const wBbr = eraWindow(yearsOf(P_BAD_BITCH_RADIO));
+  const wGym = eraWindow(yearsOf(P_WORKOUT));
+  assert.deepEqual(wBbr, { lo: 2020, hi: 2027 }, 'modern pocket → tight modern window');
+  assert.deepEqual(wGym, { lo: 1999, hi: 2018 }, '2000s–2010s pocket → 2000s–2010s window');
+  const keys = new Set([w808, wBbr, wGym].map((w) => `${w.lo}:${w.hi}`));
+  assert.equal(keys.size, 3, 'three pockets, three distinct eras');
+});
+
+test('eraWindow: the percentile shrugs off the year-1012 tagging error where min/max would not', () => {
+  const ys = yearsOf(P_WORKOUT);
+  assert.equal(Math.min(...ys), 1012, 'the outlier really is in the input');
+  const w = eraWindow(ys);
+  assert.equal(w.lo, 1999, 'a min/max window would start at 1010; the percentile ignores it');
+});
+
+test('eraWindow: undated → null, junk filtered, weights pull the window', () => {
+  assert.equal(eraWindow([]), null);
+  assert.equal(eraWindow([null, undefined, 0, -3, NaN]), null, 'no usable year ⇒ no window (fail open)');
+  // Uniform weights are the device's unweighted nearest-rank exactly.
+  const ys = yearsOf(P808_AND_SWINGING);
+  assert.deepEqual(eraWindow(ys, ys.map(() => 1)), eraWindow(ys));
+  // A heavily-weighted modern seed drags the window toward it; at uniform weight the same seed
+  // is a p85 outlier and says nothing.
+  const years = [1990, 1991, 1992, 1993, 1994, 1995, 2024];
+  assert.deepEqual(eraWindow(years), { lo: 1989, hi: 1997 });
+  assert.deepEqual(eraWindow(years, [1, 1, 1, 1, 1, 1, 10]), { lo: 1990, hi: 2026 });
+});
+
+test('eraFit: flat inside the window (an era is a RANGE), exponential decay outside', () => {
+  const w = { lo: 1988, hi: 1994 };
+  assert.equal(eraFit(1988, w), 1);
+  assert.equal(eraFit(1991, w), 1, '1991 is not "more 88–94" than 1993');
+  assert.equal(eraFit(1994, w), 1);
+  assert.ok(Math.abs(eraFit(1996, w) - Math.exp(-2 / 4)) < 1e-12, '2y out keeps 61%');
+  assert.ok(eraFit(2020, w) < 0.002, 'a 2020 track against an 88–94 window is buried on era');
+  assert.equal(eraFit(null, w), 0);
+  assert.equal(eraFit(1990, null), 0);
+});
+
+// ── Era as a SCORING feature (fail open, renormalized — never a hard filter) ────────────────────
+
+/// One genre across the board so genre cannot separate the candidates — the era term has to do
+/// the separating, or fail open trying. Seed years are the 808 pocket's real founding core.
+const eraScoringFeatures = (opts = {}) => new Map([
+  ['sng_s1', { i: 'sng_s1', a: 'Keith Sweat', n: 'I Want Her', g: 'soul', y: opts.undatedSeeds ? undefined : 1987 }],
+  ['sng_s2', { i: 'sng_s2', a: 'Luther Vandross', n: 'Any Love', g: 'soul', y: opts.undatedSeeds ? undefined : 1988 }],
+  ['sng_s3', { i: 'sng_s3', a: 'Tony! Toni! Toné!', n: 'Feels Good', g: 'soul', y: opts.undatedSeeds ? undefined : 1990 }],
+  ['sng_s4', { i: 'sng_s4', a: 'SWV', n: 'Weak', g: 'soul', y: opts.undatedSeeds ? undefined : 1992 }],
+  ['sng_s5', { i: 'sng_s5', a: 'Outkast', n: 'Southernplayalistic', g: 'soul', y: opts.undatedSeeds ? undefined : 1994 }],
+  ['sng_in', { i: 'sng_in', a: 'Jodeci', n: 'Inside the Era', g: 'soul', y: 1992 }],
+  ['sng_out', { i: 'sng_out', a: 'Talii', n: 'Far Outside', g: 'soul', y: 2022 }],
+  ['sng_nd', { i: 'sng_nd', a: 'Zhané', n: 'Undated', g: 'soul' }],
+]);
+
+const eraSeedState = () => ({
+  v: 1,
+  plays: ['sng_s1', 'sng_s2', 'sng_s3', 'sng_s4', 'sng_s5'].map((id) => play(id, NOW - 5 * DAY)),
+  favorites: {}, activity: [], puzzle: [], collections: { atMs: 0, list: [] },
+});
+
+test('scoreForYou: same-genre candidate inside the seed era outranks one far outside', () => {
+  // Seeds 1987–1994 → window 1985–1996. All three candidates are identical on genre.
+  const out = scoreForYou(eraSeedState(), eraScoringFeatures(), { nowMs: NOW });
+  const rank = out.songs.map((s) => s.songId);
+  assert.ok(rank.indexOf('sng_in') < rank.indexOf('sng_out'),
+            `inside-era must outrank far-outside, got ${JSON.stringify(rank)}`);
+  const inside = out.songs.find((s) => s.songId === 'sng_in');
+  assert.ok(inside.reasons.some((r) => r.includes('1985–1996 era')),
+            `the era reason names the window: ${JSON.stringify(inside.reasons)}`);
+});
+
+test('scoreForYou: an undated candidate is NOT structurally buried (round-neutral imputation)', () => {
+  const out = scoreForYou(eraSeedState(), eraScoringFeatures(), { nowMs: NOW });
+  const rank = out.songs.map((s) => s.songId);
+  // Fail open: the undated candidate scores the round neutral on the era term — comfortably
+  // above a candidate 26 years outside the window, below one inside it. Zeroing it (the old
+  // behavior) would have ranked it WITH the far-outside candidate for a missing tag.
+  assert.ok(rank.indexOf('sng_nd') < rank.indexOf('sng_out'),
+            `undated must not sink to the bottom: ${JSON.stringify(rank)}`);
+  assert.ok(rank.indexOf('sng_in') < rank.indexOf('sng_nd'),
+            'the neutral is a mean, not a reward — real fit still wins');
+});
+
+test('scoreForYou: no dated seed ⇒ the era term drops and its weight renormalizes (never a dead denominator)', () => {
+  const out = scoreForYou(eraSeedState(), eraScoringFeatures({ undatedSeeds: true }), { nowMs: NOW });
+  const inside = out.songs.find((s) => s.songId === 'sng_in');
+  const outside = out.songs.find((s) => s.songId === 'sng_out');
+  assert.ok(inside && outside, 'candidates still surface with the era term dead');
+  assert.equal(inside.score, outside.score,
+               'with no window, a year can neither help nor hurt');
+  // genre 2.0 scaled by 7.75/7.25 — the dead term's weight redistributed over the live axes,
+  // NOT silently vanished (the audio-term lesson: an unearnable term must leave the denominator).
+  assert.equal(inside.score, Math.round(2.0 * (7.75 / 7.25) * 100) / 100);
+  assert.ok(!inside.reasons.some((r) => r.includes('era')), 'no era reason without a window');
+});
+
+// ── scoreCollections: the era is the COLLECTION's, matched against the song ─────────────────────
+
+const eraColState = () => ({
+  v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+  collections: {
+    atMs: 0,
+    list: [
+      { id: 'col_old', kind: 'pocket', name: 'NJS Core', songIds: ['sng_s1', 'sng_s2', 'sng_s3', 'sng_s4', 'sng_s5'] },
+      { id: 'col_new', kind: 'pocket', name: 'Modern', songIds: ['sng_out'] },
+      { id: 'col_und', kind: 'pocket', name: 'Undated', songIds: ['sng_nd'] },
+    ],
+  },
+});
+
+test('scoreCollections: the era-matching collection outranks the era-mismatched one', () => {
+  const feats = eraScoringFeatures();
+  feats.set('sng_q', { i: 'sng_q', a: 'Guy', n: 'Query 1991', g: 'soul', y: 1991 });
+  const out = scoreCollections(eraColState(), feats, 'sng_q', { nowMs: NOW, threshold: 0 });
+  const ids = out.suggestions.map((s) => s.id);
+  assert.ok(ids.indexOf('col_old') < ids.indexOf('col_new'),
+            `1991 belongs to the 1985–1996 crate, not the 2020–2024 one: ${JSON.stringify(ids)}`);
+  const old = out.suggestions.find((s) => s.id === 'col_old');
+  assert.ok(old.reasons.some((r) => r.includes('1985–1996 era')),
+            `the reason names the crate's window: ${JSON.stringify(old.reasons)}`);
+});
+
+test('scoreCollections: an undated COLLECTION fails open — imputed at the round neutral, not zeroed', () => {
+  const feats = eraScoringFeatures();
+  feats.set('sng_q', { i: 'sng_q', a: 'Guy', n: 'Query 1991', g: 'soul', y: 1991 });
+  const out = scoreCollections(eraColState(), feats, 'sng_q', { nowMs: NOW, threshold: 0 });
+  const score = (id) => out.suggestions.find((s) => s.id === id).score;
+  // The neutral is the mean of the song's fit across the dated crates (≈(1.0 + 0)/2), so the
+  // undated crate lands BETWEEN the era-matching and era-mismatched ones — visible, unbiased.
+  assert.ok(score('col_old') > score('col_und'), 'a real era match still beats the imputation');
+  assert.ok(score('col_und') > score('col_new'), 'no member years ≠ buried');
+});
+
+test('scoreCollections: an undated SONG renormalizes the round instead of quietly raising the bar', () => {
+  const feats = eraScoringFeatures();
+  feats.set('sng_q', { i: 'sng_q', a: 'Guy', n: 'Query Undated', g: 'soul' });
+  const out = scoreCollections(eraColState(), feats, 'sng_q', { nowMs: NOW });
+  // The default threshold (0.8) still passes on genre alone: the era term's 0.5 redistributes
+  // (×7.5/7.0) rather than sitting unearnable in front of a fixed bar.
+  const ids = out.suggestions.map((s) => s.id);
+  assert.ok(ids.includes('col_old') && ids.includes('col_new') && ids.includes('col_und'),
+            `an undated song still gets collection suggestions: ${JSON.stringify(out.suggestions)}`);
+  const scores = new Set(out.suggestions.map((s) => s.score));
+  assert.equal(scores.size, 1, 'with no era anywhere, the genre-identical crates tie exactly');
 });

@@ -137,6 +137,44 @@ const MAX_COLLECTIONS = 500;
 const MAX_SONGIDS_PER_COLLECTION = 5000;
 const MAX_SNAPSHOT_SONGIDS = 100_000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+// ── THE ERA WINDOW (owner: "also factor in year range for recommendation along with genre as a
+//    feature, eg some playlist like 808 & swinging is very new jack swing 88-94 r&b") ────────────
+// A seed set / collection carries a year WINDOW derived from its own members — p15–p85 of the
+// member years, padded ±2y — and candidates score on era fit alongside genre. PERCENTILE, never
+// min/max: a deliberate era-outlier the owner filed widens nothing (the real "🏋🏾‍♀️" pocket holds a
+// member tagged year 1012 and still windows to 1999–2018). MIRRORS
+// `SimilarityFamilies.eraWindow` on the device — cloud and device must compute the SAME window
+// for the same membership, or the local tile and the cloud tile disagree about what fits a crate.
+const ERA_PCT_LOW = 0.15;
+const ERA_PCT_HIGH = 0.85;
+const ERA_PAD_YEARS = 2;
+/// e-folding of the fit OUTSIDE the window, in years: 2y out keeps 61%, 8y out 14%. A feature,
+/// not a filter — a 2020 song against a 1986–1996 window is buried on ERA and still free to win
+/// on genre/artist.
+const ERA_DECAY_YEARS = 4;
+/// Exactly the weight the old |year − mean| term carried, so the rebalance the owner asked for is
+/// in the SHAPE of the term (range fit, fail-open), not a quiet reweighting of the score.
+const ERA_TERM_WEIGHT = 0.5;
+/// Fallback neutral for a round with too few dated candidates to measure one. MEASURED: mean era
+/// fit of the full dated catalog (106,879 songs) vs the 81 real pocket windows = 0.758. Mirrors
+/// `SimilarityFamilies.fallbackNeutralEraFit`.
+const ERA_NEUTRAL_FALLBACK = 0.76;
+/// Below this many dated candidates the round mean is noise — same order as a seed set, mirroring
+/// `SimilarityFamilies.minObservationsForRoundNeutral`.
+const ERA_MIN_NEUTRAL_OBS = 25;
+// The similarity BUDGETS the era term renormalizes against when it is structurally dead for a
+// whole round (no dated seed / no dated member anywhere / an undated query song): the sum of the
+// nominal max weights of each route's similarity terms. The known scoreForYou finding is that an
+// unearnable term does NOT renormalize and quietly shrinks every candidate against any absolute
+// threshold — the era term refuses to repeat that: when it cannot be earned AT ALL this round,
+// its weight redistributes proportionally over the live axes (a uniform ×budget/(budget−era)
+// on the summed similarity — ranking-neutral within the round, magnitude-honest across rounds).
+//   scoreForYou:      genre 2.0 + bpm 1.0 + camelot 1.0 + year 0.5 + sentiment 1.0
+//                     + collection 1.5 + artist 0.75                            = 7.75
+//   scoreCollections: genre 2.0 + bpm 1.0 + camelot 0.75 + year 0.5 + sentiment 1.0
+//                     + coplay 1.25 + recency 0.5 + puzzle 0.5                  = 7.5
+const FORYOU_SIM_BUDGET = 7.75;
+const COLLECTIONS_SIM_BUDGET = 7.5;
 /// How many songs of the LIFETIME play-count snapshot are stored. The client sends its
 /// most-played rows first, so the truncation drops the tail — the rows that carry the least
 /// ranking signal anyway. A real library tops out around 56k songs with plays; 20k is where the
@@ -1029,6 +1067,49 @@ export function auxMix({ novelty, plays, recency, hasNovelty, hasPlays, hasRecen
   return den > 0 ? num / den : 0;
 }
 
+/**
+ * The ERA WINDOW of a set of member years — p15–p85 (weighted nearest-rank), padded ±2y — or
+ * null when nothing is dated. See the ERA constants above for the owner's brief and why it is a
+ * percentile and never min/max. `weights` (optional, parallel to `years`) lets a recency-weighted
+ * seed set count a heavy seed as more of the era than a marginal one; uniform weights make this
+ * EXACTLY the device's `SimilarityFamilies.eraWindow`, which is what keeps the two sides' windows
+ * identical for the same membership.
+ */
+export function eraWindow(years, weights = null) {
+  const rows = [];
+  for (let i = 0; i < (years?.length || 0); i++) {
+    const y = years[i];
+    if (!Number.isFinite(y) || y <= 0) continue;
+    const w = weights ? weights[i] : 1;
+    if (!Number.isFinite(w) || w <= 0) continue;
+    rows.push([y, w]);
+  }
+  if (!rows.length) return null;
+  rows.sort((a, b) => a[0] - b[0]);
+  const total = rows.reduce((s, [, w]) => s + w, 0);
+  // Weighted nearest-rank: the smallest member year at which the cumulative weight reaches p.
+  // The epsilon absorbs float summing so uniform weights reproduce ceil(p·n) exactly.
+  const at = (p) => {
+    const target = p * total - 1e-9;
+    let cum = 0;
+    for (const [y, w] of rows) { cum += w; if (cum >= target) return y; }
+    return rows[rows.length - 1][0];
+  };
+  return { lo: at(ERA_PCT_LOW) - ERA_PAD_YEARS, hi: at(ERA_PCT_HIGH) + ERA_PAD_YEARS };
+}
+
+/**
+ * 0…1 era fit of one dated song against a window: 1.0 anywhere INSIDE (an era is a range — 1989
+ * is not "more 88–94" than 1993), exponential decay outside. Mirrors
+ * `SimilarityFamilies.eraFit`.
+ */
+export function eraFit(year, window) {
+  if (!window || !Number.isFinite(year)) return 0;
+  if (year >= window.lo && year <= window.hi) return 1;
+  const gap = year < window.lo ? window.lo - year : year - window.hi;
+  return Math.exp(-gap / ERA_DECAY_YEARS);
+}
+
 /** The stored lifetime counts as `{ counts, maxN }`, with `maxN` 0 when there is no signal. */
 function playCountsOf(state) {
   const counts = state.playCounts?.counts || {};
@@ -1215,7 +1296,8 @@ export function scoreForYou(state, featuresById,
 
   // 2) Taste aggregates from the seed feature rows, weighted by w.
   const genreCount = new Map(); const seedGenreN = new Map(); const artistCount = new Map();
-  let bpmW = 0; let bpmSum = 0; let yearW = 0; let yearSum = 0;
+  let bpmW = 0; let bpmSum = 0;
+  const seedYears = []; const seedYearWeights = [];
   const neighborSet = new Set(); const kwCount = new Map();
   for (const [songId, w] of seeds) {
     const row = featuresById.get(songId);
@@ -1226,12 +1308,30 @@ export function scoreForYou(state, featuresById,
     }
     if (row.a) artistCount.set(row.a, (artistCount.get(row.a) || 0) + w);
     if (row.b != null) { bpmW += w; bpmSum += w * row.b; }
-    if (row.y != null) { yearW += w; yearSum += w * row.y; }
+    if (row.y != null) { seedYears.push(row.y); seedYearWeights.push(w); }
     for (const c of camelotNeighbors(row.c)) neighborSet.add(c);
     for (const kw of row.s || []) kwCount.set(kw, (kwCount.get(kw) || 0) + w);
   }
   const mu = bpmW > 0 ? bpmSum / bpmW : null;
-  const yearMean = yearW > 0 ? yearSum / yearW : null;
+  // THE SEEDS' ERA — the year-range feature (see the ERA constants): the weighted p15–p85 window
+  // of the seed years, not their mean. A listener whose month spans 1992 soul and 2024 rap has a
+  // WIDE era, and a mean would claim 2008 — a year they play nothing from.
+  const eraWin = eraWindow(seedYears, seedYearWeights);
+  // The round neutral an UNDATED candidate scores on the era term — the measured mean fit of the
+  // dated candidate pool, mirroring the device's `EraCalibration`. FAIL OPEN: at 99.2% year
+  // coverage, scoring the odd untagged song 0 buries it for its tag; a per-candidate denominator
+  // would instead reward the missing tag. Round-level, one number, applied identically.
+  let eraNeutral = ERA_NEUTRAL_FALLBACK;
+  if (eraWin) {
+    let s = 0; let n = 0;
+    for (const row of featuresById.values()) {
+      if (row.y != null) { s += eraFit(row.y, eraWin); n += 1; }
+    }
+    if (n >= ERA_MIN_NEUTRAL_OBS) eraNeutral = s / n;
+  }
+  // …and when NO seed is dated the term is unearnable for every candidate: it drops and its
+  // weight renormalizes over the live axes (see the SIM_BUDGET constants — the audio-term lesson).
+  const eraRenorm = eraWin ? 1 : FORYOU_SIM_BUDGET / (FORYOU_SIM_BUDGET - ERA_TERM_WEIGHT);
   const maxGenre = Math.max(0, ...genreCount.values());
   const top20 = new Set([...kwCount.entries()]
     .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
@@ -1277,8 +1377,14 @@ export function scoreForYou(state, featuresById,
     if (row.c && neighborSet.has(row.c)) {
       terms.push(['camelot', 1.0, `Harmonically compatible key (${row.c})`]);
     }
-    if (row.y != null && yearMean != null) {
-      terms.push(['year', 0.5 * Math.exp(-Math.abs(row.y - yearMean) / 10), `From around ${Math.round(yearMean)}`]);
+    if (eraWin) {
+      if (row.y != null) {
+        terms.push(['year', ERA_TERM_WEIGHT * eraFit(row.y, eraWin),
+                    `From your ${Math.round(eraWin.lo)}–${Math.round(eraWin.hi)} era`]);
+      } else {
+        // Undated candidate, live window ⇒ the round neutral (fail open; see `eraNeutral`).
+        terms.push(['year', ERA_TERM_WEIGHT * eraNeutral, 'Era unknown — scored neutrally']);
+      }
     }
     if (row.s?.length && top20.size) {
       const overlap = row.s.reduce((n, k) => n + (top20.has(k) ? 1 : 0), 0);
@@ -1293,7 +1399,9 @@ export function scoreForYou(state, featuresById,
       terms.push(['artist', 0.75, `Artist you've played: ${row.a}`]);
     }
     // SIMILARITY is everything above, and it is what this row had to earn to be here at all.
-    const sim = terms.reduce((s, [, v]) => s + v, 0);
+    // `eraRenorm` is 1 whenever the era term is live; when no seed is dated it redistributes the
+    // dead term's weight uniformly over what WAS earnable (ranking-neutral within the round).
+    const sim = terms.reduce((s, [, v]) => s + v, 0) * eraRenorm;
     if (sim <= 0) continue;
 
     // ── THE AUX MIX: novelty · lifetime affinity · recency ──────────────────────────────────
@@ -1391,6 +1499,36 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
     }
   }
 
+  // EACH COLLECTION'S ERA (see the ERA constants): the p15–p85 (±2y) window of its own members'
+  // years, matched against S's year — "does this song belong to that crate's era", the owner's
+  // year-range feature. Pre-passed because the round neutral below needs every window first.
+  const eraByCol = new Map();
+  if (S.y != null) {
+    for (const col of state.collections?.list || []) {
+      if (!col.songIds?.length) continue;
+      const yrs = col.songIds.slice(0, 200)
+        .map((id) => featuresById.get(id)?.y).filter((y) => y != null);
+      const w = eraWindow(yrs);
+      if (w) eraByCol.set(col.id, w);
+    }
+  }
+  // Live iff S is dated AND at least one collection has a dated member. When live, an UNDATED
+  // collection scores the term at the round neutral — the mean fit S earns across the dated
+  // collections (the exact quantity being imputed, so ≥1 observation is usable; a user's
+  // collections are far too few for a 25-observation floor). When dead, the term drops for every
+  // collection and its weight renormalizes over the live axes — with a fixed `threshold` (0.8), a
+  // silently unearnable 0.5-weight term would make the bar quietly stricter for an undated song,
+  // which is the scoreForYou audio-term mistake this refuses to repeat.
+  const eraLive = eraByCol.size > 0;
+  let eraNeutralCol = ERA_NEUTRAL_FALLBACK;
+  if (eraLive) {
+    let s = 0;
+    for (const w of eraByCol.values()) s += eraFit(S.y, w);
+    eraNeutralCol = s / eraByCol.size;
+  }
+  const eraRenormCol = eraLive
+    ? 1 : COLLECTIONS_SIM_BUDGET / (COLLECTIONS_SIM_BUDGET - ERA_TERM_WEIGHT);
+
   const scored = [];
   for (const col of state.collections?.list || []) {
     // NEVER OFFER A COLLECTION THE SONG IS ALREADY IN, under any of its ids — `includes` alone
@@ -1417,10 +1555,15 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
       const frac = camelots.reduce((n, c) => n + (sNeighbors.has(c) ? 1 : 0), 0) / camelots.length;
       if (frac > 0) terms.push(['camelot', 0.75 * frac, 'Harmonically compatible keys']);
     }
-    const years = rows.map((r) => r.y).filter((y) => y != null);
-    if (S.y != null && years.length) {
-      const muy = years.reduce((a, b) => a + b, 0) / years.length;
-      terms.push(['year', 0.5 * Math.exp(-Math.abs(S.y - muy) / 10), `Era fits (~${Math.round(muy)})`]);
+    if (eraLive) {
+      const w = eraByCol.get(col.id);
+      if (w) {
+        terms.push(['year', ERA_TERM_WEIGHT * eraFit(S.y, w),
+                    `Fits this collection's ${Math.round(w.lo)}–${Math.round(w.hi)} era`]);
+      } else {
+        // Undated collection, live round ⇒ the round neutral (fail open; see `eraNeutralCol`).
+        terms.push(['year', ERA_TERM_WEIGHT * eraNeutralCol, 'Era unknown — scored neutrally']);
+      }
     }
     const withKw = rows.filter((r) => r.s?.length);
     if (S.s?.length && withKw.length) {
@@ -1454,7 +1597,8 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
       terms.push(['puzzle', 0.5, 'Matches your Gem Collector picks']);
     }
 
-    const score = terms.reduce((s, [, v]) => s + v, 0);
+    // `eraRenormCol` is 1 whenever the era term is live this round — see the pre-pass above.
+    const score = terms.reduce((s, [, v]) => s + v, 0) * eraRenormCol;
     if (score <= 0) continue;
     const reasons = [...terms].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([, , r]) => r);
     scored.push({ id: col.id, kind: col.kind, name: col.name,
