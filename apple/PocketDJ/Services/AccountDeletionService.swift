@@ -40,7 +40,7 @@ final class AccountDeletionService {
     /// added here too, or its cloud copy would survive an account deletion.
     static let cloudDocKeys: [String] = [
         "profile", "collections", "edits", "favorites", "play-stats", "play-history",
-        "collection-activity", "mix-sessions", "playback-session", "mix-decks",
+        "collection-activity", "timeline-cues", "mix-sessions", "playback-session", "mix-decks",
         "discover-adds", "imported-songs", "profile-source", "apple-music-library", "studio-cues",
         "game-scores", "puzzle-decisions", "rec-key",
         // The recommendation pair. "rec-feedback" was registered with CloudSyncService but never
@@ -87,6 +87,10 @@ final class AccountDeletionService {
     private let playStats: PlayStatsStore
     private let playHistory: PlayHistoryStore
     private let collectionActivity: CollectionActivityStore
+    /// Collection-timeline cue points (F8). OPTIONAL + defaulted so a host that constructs this
+    /// service without the store (previews, a future test) still compiles — the same shape
+    /// `recFeedback`/`forYouFeed` use.
+    private let timelineCues: TimelineCueStore?
     private let edits: EditsStore
     private let discoverAdds: DiscoverAddsStore
     private let importedSongs: ImportedSongsStore
@@ -136,6 +140,7 @@ final class AccountDeletionService {
          playStats: PlayStatsStore,
          playHistory: PlayHistoryStore,
          collectionActivity: CollectionActivityStore,
+         timelineCues: TimelineCueStore? = nil,
          edits: EditsStore,
          discoverAdds: DiscoverAddsStore,
          importedSongs: ImportedSongsStore,
@@ -167,6 +172,7 @@ final class AccountDeletionService {
         self.playStats = playStats
         self.playHistory = playHistory
         self.collectionActivity = collectionActivity
+        self.timelineCues = timelineCues
         self.edits = edits
         self.discoverAdds = discoverAdds
         self.importedSongs = importedSongs
@@ -239,6 +245,7 @@ final class AccountDeletionService {
         playStats.clear()
         playHistory.clear()
         collectionActivity.clear()
+        timelineCues?.clear()
         edits.clearAll()
         discoverAdds.clear()
         importedSongs.clear()

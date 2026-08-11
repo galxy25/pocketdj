@@ -258,6 +258,10 @@ struct PocketDJApp: App {
     /// Device-local, append-only COLLECTION ACTIVITY log (F11) — add/heart/unheart/remove events
     /// behind the History view's Activity segment. Its own synced JSON, distinct from the play log.
     @State private var collectionActivity: CollectionActivityStore
+    /// NAMED BOOKMARKS on the Collection tab's One True Timeline (F8) — "the vinyl binge",
+    /// "lockdown". Positions in the ADD-DATE stream, NOT audio cue points (those live in
+    /// `StudioStore`). App-scoped so a jump menu is populated the moment the tab opens.
+    @State private var timelineCues: TimelineCueStore
     /// The Settings ▸ Storage prune engine: when the user sets a soft cap, a once-a-day
     /// pass evicts least-recently-played burned media until the footprint fits. Cap unset
     /// (default) ⇒ never deletes anything on its own.
@@ -552,6 +556,8 @@ struct PocketDJApp: App {
                                                    collectionName: $0.collectionName)
             })
         }
+        let timelineCues = TimelineCueStore(fileURL: TimelineCueStore.launchURL())
+        _timelineCues = State(initialValue: timelineCues)
         let storage = StorageManager(burns: burns, playStats: playStats, settings: settings)
         _storage = State(initialValue: storage)
         // ── Studio (Performance tab) stores + engines ──────────────────────────
@@ -1260,6 +1266,7 @@ struct PocketDJApp: App {
         cloudSync.register("play-stats", fileURL: playStats.syncFileURL) { [weak playStats] in playStats?.reloadFromDisk() }
         cloudSync.register("play-history", fileURL: playHistory.syncFileURL) { [weak playHistory] in playHistory?.reloadFromDisk() }
         cloudSync.register("collection-activity", fileURL: collectionActivity.syncFileURL) { [weak collectionActivity] in collectionActivity?.reloadFromDisk() }
+        cloudSync.register("timeline-cues", fileURL: timelineCues.syncFileURL) { [weak timelineCues] in timelineCues?.reloadFromDisk() }
         cloudSync.register("mix-sessions", fileURL: mixSessions.syncFileURL) { [weak mixSessions] in mixSessions?.reloadFromDisk() }
         // No push veto on the session doc. One was tried and removed: gating the push on "this
         // process is driving a session" stranded a set played offline or in the background whose
@@ -1347,6 +1354,7 @@ struct PocketDJApp: App {
             cloudDeleteEnabled: { !cloudKitOff },
             collections: collections, favorites: favorites, playStats: playStats,
             playHistory: playHistory, collectionActivity: collectionActivity,
+            timelineCues: timelineCues,
             edits: edits, discoverAdds: discoverAdds,
             importedSongs: importedSongs, appleMusicLibrary: appleMusicLibrary,
             profileSource: profileSource, playlistWriteBack: playlistWriteBack,
@@ -1440,6 +1448,7 @@ struct PocketDJApp: App {
                 .environment(forYouFeed)
                 .environment(playHistory)
                 .environment(collectionActivity)
+                .environment(timelineCues)
                 .environment(storage)
                 .environment(studio)
                 .environment(studioEngine)

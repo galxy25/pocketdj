@@ -64,6 +64,13 @@ struct HistoryView: View {
     /// stored "where was I" seam in this app is `SettingsStore.lastSection`, which names the app
     /// SECTION — "History" — never a tab inside it.)
     @State private var tab: HistoryTab = .playback
+    /// Which stream the COLLECTION tab is showing (F8). `.activity` is the default and is the view
+    /// this tab has always had; `.songs` / `.albums` are the One True Timeline.
+    ///
+    /// EPHEMERAL `@State`, deliberately — exactly like `tab` above. Persisting it would mean the
+    /// Collection tab could open on the timeline, and the owner's requirement is that the default
+    /// screen is unchanged. Nothing to migrate, nothing to strand.
+    @State private var collectionGrain: TimelineGrain = .activity
     /// The History row a rewind is pending on — nil unless the confirmation is up.
     @State private var rewindTarget: PlayHistoryStore.PlayEvent?
     /// THE For You REFRESH. Bumped by the tab menu's Refresh and nothing else — For You is CACHED
@@ -184,7 +191,7 @@ struct HistoryView: View {
                     historyList
                 }
             case .collection:
-                activityContent
+                collectionContent
             case .forYou:
                 ForYouTilesView(path: $path, refreshToken: forYouRefreshToken)
             }
@@ -261,6 +268,41 @@ struct HistoryView: View {
         .padding(.horizontal).padding(.vertical, 8)
         // NB: no container accessibilityIdentifier here — a parent id absorbs the child buttons'
         // identifiers and makes `history-tab-<mode>` unqueryable in XCUITest.
+    }
+
+    // MARK: - Collection tab: the ONE TRUE TIMELINE (F8)
+
+    /// The Collection tab. `.activity` — the feed of adds / hearts / unhearts / removes this tab has
+    /// always been — is the DEFAULT and is what opens; the owner was explicit that "by default it
+    /// just shows its current view of the most recent additions to your collection and favoriting".
+    /// The grain picker is the one new thing on that default screen, and moving it off Activity
+    /// swaps in `CollectionTimelineView`: the whole catalog on an add-date axis.
+    @ViewBuilder private var collectionContent: some View {
+        VStack(spacing: 0) {
+            grainPicker
+            if collectionGrain == .activity {
+                activityContent
+            } else {
+                CollectionTimelineView(path: $path, grain: collectionGrain, query: browse.query)
+            }
+        }
+    }
+
+    /// Activity | Songs | Albums. A plain segmented `Picker` (not the hand-rolled button row the
+    /// TAB bar uses): this is a mode switch inside one view, and the system control reads correctly
+    /// as such on all three platforms.
+    ///
+    /// `Text`, not `Label`: a segmented Picker collapses a `Label` toward its icon when space is
+    /// tight, which on iPhone would leave three unlabelled glyphs — and would take the segment's
+    /// accessibility label with it, so `app.segment("Songs")` (the ONE cross-platform way this repo
+    /// drives a segmented picker) could not find it.
+    private var grainPicker: some View {
+        Picker("View", selection: $collectionGrain) {
+            ForEach(TimelineGrain.allCases) { g in Text(g.label).tag(g) }
+        }
+        .pickerStyle(.segmented)
+        .padding(.horizontal).padding(.bottom, 8)
+        .accessibilityIdentifier("collection-grain")
     }
 
     // MARK: - Collection activity timeline (F11)
