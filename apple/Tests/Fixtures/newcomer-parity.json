@@ -1,0 +1,5331 @@
+{
+ "v": 1,
+ "credits": [
+  {
+   "raw": "Drake",
+   "keys": [
+    "drake"
+   ]
+  },
+  {
+   "raw": "Drake & Future",
+   "keys": [
+    "drake and future",
+    "drake",
+    "future"
+   ]
+  },
+  {
+   "raw": "Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi Washington",
+   "keys": [
+    "dinner party terrace martin robert glasper 9th wonder and kamasi washington",
+    "dinner party",
+    "terrace martin",
+    "robert glasper",
+    "9th wonder",
+    "kamasi washington"
+   ]
+  },
+  {
+   "raw": "Terrace Martin",
+   "keys": [
+    "terrace martin"
+   ]
+  },
+  {
+   "raw": "Tyler, The Creator",
+   "keys": [
+    "tyler the creator",
+    "tyler",
+    "creator"
+   ]
+  },
+  {
+   "raw": "Earth, Wind & Fire",
+   "keys": [
+    "earth wind and fire",
+    "earth",
+    "wind",
+    "fire"
+   ]
+  },
+  {
+   "raw": "Simon and Garfunkel",
+   "keys": [
+    "simon and garfunkel",
+    "simon",
+    "garfunkel"
+   ]
+  },
+  {
+   "raw": "[IVY] & XIRA",
+   "keys": [
+    "and xira",
+    "xira",
+    "ivy and xira",
+    "ivy"
+   ]
+  },
+  {
+   "raw": "Beyoncé",
+   "keys": [
+    "beyonce"
+   ]
+  },
+  {
+   "raw": "The Weeknd",
+   "keys": [
+    "weeknd"
+   ]
+  },
+  {
+   "raw": "JAY-Z / Kanye West",
+   "keys": [
+    "jay z kanye west",
+    "jay z",
+    "kanye west"
+   ]
+  },
+  {
+   "raw": "Silk Sonic (Bruno Mars & Anderson .Paak)",
+   "keys": [
+    "silk sonic",
+    "silk sonic bruno mars and anderson paak",
+    "silk sonic bruno mars",
+    "anderson paak"
+   ]
+  },
+  {
+   "raw": "DJ Khaled feat. Drake",
+   "keys": [
+    "dj khaled"
+   ]
+  },
+  {
+   "raw": "Sade (feat. Sweetback)",
+   "keys": [
+    "sade"
+   ]
+  },
+  {
+   "raw": "KAYTRANADA x Kali Uchis",
+   "keys": [
+    "kaytranada x kali uchis",
+    "kaytranada",
+    "kali uchis"
+   ]
+  },
+  {
+   "raw": "Run–DMC vs Aerosmith",
+   "keys": [
+    "run dmc vs aerosmith",
+    "run dmc",
+    "aerosmith"
+   ]
+  },
+  {
+   "raw": "A Tribe Called Quest with Busta Rhymes",
+   "keys": [
+    "a tribe called quest with busta rhymes",
+    "a tribe called quest",
+    "busta rhymes"
+   ]
+  },
+  {
+   "raw": "Bandit",
+   "keys": [
+    "bandit"
+   ]
+  },
+  {
+   "raw": "Fetty Wap",
+   "keys": [
+    "fetty wap"
+   ]
+  },
+  {
+   "raw": "Xavier",
+   "keys": [
+    "xavier"
+   ]
+  },
+  {
+   "raw": "A; B; C",
+   "keys": [
+    "a b c",
+    "a",
+    "b",
+    "c"
+   ]
+  },
+  {
+   "raw": "One, Two, Three, Four, Five, Six, Seven, Eight, Nine, Ten, Eleven, Twelve, Thirteen, Fourteen",
+   "keys": [
+    "one two three four five six seven eight nine ten eleven twelve thirteen fourteen",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven"
+   ]
+  },
+  {
+   "raw": "the pharcyde",
+   "keys": [
+    "pharcyde"
+   ]
+  },
+  {
+   "raw": "",
+   "keys": []
+  }
+ ],
+ "compositions": [
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "f",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "f",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "f",
+     "isIncumbent": false
+    },
+    {
+     "id": "r19",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r21",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r22",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r23",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r24",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r25",
+     "capKey": "a",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.34,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r06",
+    "r11",
+    "r12",
+    "r18",
+    "r20",
+    "r22"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r03",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "b",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": 2,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04",
+    "r09",
+    "r06"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "d",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": 1,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r04",
+    "r10",
+    "r07",
+    "r08"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r14",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r17",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r18",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r19",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r21",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r22",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r23",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r24",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r25",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r26",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r27",
+     "capKey": "a",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 3,
+   "maxPerArtist": 1,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r13",
+    "r20"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "c",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 1,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04",
+    "r05",
+    "r06",
+    "r09",
+    "r17",
+    "r18"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": 2,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r02",
+    "r01"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r14",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r20",
+     "capKey": "a",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 3,
+   "maxPerArtist": 2,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "e",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 3,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 1,
+   "out": [
+    "r00",
+    "r01",
+    "r02"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r14",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "a",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": 1,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r03",
+    "r09",
+    "r17"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r16",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r18",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r19",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r22",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r23",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r24",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r25",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r26",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r27",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r28",
+     "capKey": "b",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 0,
+   "out": [
+    "r00",
+    "r01",
+    "r09",
+    "r15",
+    "r17",
+    "r18",
+    "r21",
+    "r26",
+    "r27",
+    "r02"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r05",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "d",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": 1,
+   "incumbentMaxShare": 0,
+   "out": [
+    "r01",
+    "r03",
+    "r05",
+    "r06",
+    "r07"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r05",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r14",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r16",
+     "capKey": "d",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 1,
+   "maxPerArtist": 2,
+   "incumbentMaxShare": 1,
+   "out": [
+    "r00"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r03",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r08",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04",
+    "r05",
+    "r06",
+    "r07",
+    "r08",
+    "r09"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "a",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 3,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 1,
+   "out": [
+    "r00",
+    "r01",
+    "r02"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r03",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r05",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r18",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "b",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 5,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r05",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "f",
+     "isIncumbent": false
+    },
+    {
+     "id": "r08",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "f",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "f",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r15",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r16",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r17",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r19",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r22",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r23",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r24",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r25",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r26",
+     "capKey": "c",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": 1,
+   "incumbentMaxShare": 0.34,
+   "out": [
+    "r00",
+    "r02",
+    "r04",
+    "r07",
+    "r08",
+    "r09",
+    "r14"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r05",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r15",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r17",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r19",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r20",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r22",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r23",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r24",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r25",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r26",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r27",
+     "capKey": "b",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0,
+   "out": [
+    "r00",
+    "r03",
+    "r04",
+    "r06",
+    "r12",
+    "r14",
+    "r16",
+    "r21",
+    "r24",
+    "r25",
+    "r27",
+    "r01",
+    "r09"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r05",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r17",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r20",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r22",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r23",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r24",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r25",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r26",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r27",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r28",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r29",
+     "capKey": "a",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 5,
+   "maxPerArtist": 1,
+   "incumbentMaxShare": 0,
+   "out": [
+    "r01",
+    "r04",
+    "r06",
+    "r08",
+    "r12"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r03",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r16",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r20",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r22",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r23",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r24",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r25",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r26",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r27",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r28",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r29",
+     "capKey": "b",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 5,
+   "maxPerArtist": 2,
+   "incumbentMaxShare": 1,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r03",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 3,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 0,
+   "out": [
+    "r00",
+    "r02",
+    "r05"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r15",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "b",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.34,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r08",
+    "r10",
+    "r14",
+    "r16",
+    "r04"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "b",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 3,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r05",
+    "r09"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r14",
+     "capKey": "f",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 5,
+   "maxPerArtist": 2,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r06"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "a",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": 2,
+   "incumbentMaxShare": 0.34,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04",
+    "r07",
+    "r08"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "c",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 5,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r04",
+    "r03"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r05",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r08",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "c",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04",
+    "r05",
+    "r07",
+    "r06",
+    "r08",
+    "r09"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "f",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 3,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 1,
+   "out": [
+    "r00",
+    "r01",
+    "r02"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r15",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "b",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04",
+    "r05",
+    "r06",
+    "r07",
+    "r08",
+    "r09",
+    "r11",
+    "r14",
+    "r18",
+    "r10",
+    "r12",
+    "r13",
+    "r15",
+    "r16",
+    "r17"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r05",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r08",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "b",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 5,
+   "maxPerArtist": 2,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r03",
+    "r07",
+    "r10"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "f",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r15",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "f",
+     "isIncumbent": false
+    },
+    {
+     "id": "r18",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r20",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r22",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r23",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r24",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r25",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r26",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r27",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r28",
+     "capKey": "f",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04",
+    "r05",
+    "r06",
+    "r07",
+    "r08",
+    "r09",
+    "r10",
+    "r11",
+    "r12",
+    "r13",
+    "r14",
+    "r15",
+    "r17",
+    "r19",
+    "r24",
+    "r25",
+    "r26",
+    "r27",
+    "r28",
+    "r16",
+    "r18"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r03",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r08",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r15",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r21",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r22",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r23",
+     "capKey": "b",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 5,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r05",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r08",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r18",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r19",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r22",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r23",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r24",
+     "capKey": "b",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04",
+    "r05",
+    "r06",
+    "r07",
+    "r08",
+    "r09",
+    "r10",
+    "r13",
+    "r22",
+    "r14"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "f",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r03",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r08",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "f",
+     "isIncumbent": false
+    },
+    {
+     "id": "r14",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r16",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "f",
+     "isIncumbent": false
+    },
+    {
+     "id": "r18",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r21",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r22",
+     "capKey": "b",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 3,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 0.34,
+   "out": [
+    "r00",
+    "r01",
+    "r02"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r08",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r21",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r22",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r23",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r24",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r25",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r26",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r27",
+     "capKey": "b",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": 1,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r08",
+    "r10",
+    "r11"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r03",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "a",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": 2,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04",
+    "r05",
+    "r06",
+    "r08"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r15",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r16",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r22",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r23",
+     "capKey": "c",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": 2,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04",
+    "r05",
+    "r11",
+    "r06",
+    "r18",
+    "r21"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "d",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": 1,
+   "incumbentMaxShare": 0,
+   "out": [
+    "r01",
+    "r00"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r08",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r17",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r18",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r22",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r23",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r24",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r25",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r26",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r27",
+     "capKey": "e",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 5,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.34,
+   "out": [
+    "r00",
+    "r07",
+    "r10",
+    "r11",
+    "r16"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r03",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "c",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0,
+   "out": [
+    "r02",
+    "r05",
+    "r00",
+    "r01",
+    "r03",
+    "r04"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r05",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "d",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 1,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r03"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "e",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r08",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r10",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "f",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r17",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r19",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r21",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r22",
+     "capKey": "d",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": 1,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r03",
+    "r04",
+    "r05",
+    "r07",
+    "r16"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r05",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r07",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r14",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r22",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r23",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r24",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r25",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r26",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r27",
+     "capKey": "a",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 3,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r04"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r09",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r11",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r15",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r18",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r19",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r20",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r21",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r22",
+     "capKey": "b",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 5,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 1,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r04",
+     "capKey": "a",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r02",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "c",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": 1,
+   "incumbentMaxShare": 1,
+   "out": [
+    "r00",
+    "r01"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r08",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 10,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 1,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04",
+    "r05",
+    "r06",
+    "r07",
+    "r08",
+    "r09"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r01",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r03",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r06",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r12",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r13",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r14",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r15",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r16",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r18",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r19",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r20",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r22",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r23",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r24",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r25",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r26",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "r27",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r28",
+     "capKey": "c",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 1,
+   "maxPerArtist": null,
+   "incumbentMaxShare": 1,
+   "out": [
+    "r00"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "r00",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r01",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r02",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "r03",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r04",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r05",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r06",
+     "capKey": "",
+     "isIncumbent": true
+    },
+    {
+     "id": "r07",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r08",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r09",
+     "capKey": "d",
+     "isIncumbent": true
+    },
+    {
+     "id": "r10",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r11",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r12",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "r13",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r14",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "r15",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "r16",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r17",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r18",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r19",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "r20",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "r21",
+     "capKey": "b",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 25,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "r00",
+    "r01",
+    "r02",
+    "r03",
+    "r04",
+    "r05",
+    "r06",
+    "r07",
+    "r09",
+    "r10",
+    "r11",
+    "r13",
+    "r16"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "i1",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "i2",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "i3",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "n1",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "n2",
+     "capKey": "e",
+     "isIncumbent": false
+    },
+    {
+     "id": "n3",
+     "capKey": "f",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 4,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "i1",
+    "i2",
+    "n1",
+    "n2"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "i1",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "i2",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "i3",
+     "capKey": "c",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 5,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "i1",
+    "i2",
+    "i3"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "i1",
+     "capKey": "a",
+     "isIncumbent": true
+    },
+    {
+     "id": "n1",
+     "capKey": "b",
+     "isIncumbent": false
+    },
+    {
+     "id": "i2",
+     "capKey": "c",
+     "isIncumbent": true
+    },
+    {
+     "id": "n2",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "i3",
+     "capKey": "e",
+     "isIncumbent": true
+    }
+   ],
+   "limit": 5,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "i1",
+    "n1",
+    "i2",
+    "n2",
+    "i3"
+   ]
+  },
+  {
+   "rows": [
+    {
+     "id": "n1",
+     "capKey": "a",
+     "isIncumbent": false
+    },
+    {
+     "id": "i1",
+     "capKey": "b",
+     "isIncumbent": true
+    },
+    {
+     "id": "n2",
+     "capKey": "c",
+     "isIncumbent": false
+    },
+    {
+     "id": "n3",
+     "capKey": "d",
+     "isIncumbent": false
+    },
+    {
+     "id": "n4",
+     "capKey": "e",
+     "isIncumbent": false
+    }
+   ],
+   "limit": 5,
+   "maxPerArtist": 3,
+   "incumbentMaxShare": 0.5,
+   "out": [
+    "n1",
+    "i1",
+    "n2",
+    "n3",
+    "n4"
+   ]
+  }
+ ]
+}

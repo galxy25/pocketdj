@@ -654,6 +654,121 @@ final class ZoneEngineTests: XCTestCase {
         XCTAssertLessThanOrEqual(out.count, 25)
     }
 
+    // ========================================================================
+    // MARK: - The owner's 50% newcomer floor (incumbent-artist cap)
+    // ========================================================================
+
+    /// Same-genre tracks under distinct artists — the floor tests need admission (genre) held
+    /// constant while artist membership varies.
+    private func fTrack(_ id: String, _ artist: String, genre: String = "rock") -> ZoneEngine.Track {
+        ZoneEngine.Track(songId: id, artistKey: artist.lowercased(), artistName: artist, genre: genre)
+    }
+
+    func testIncumbentArtistRowsAreCappedAtHalfTheList() {
+        // Members by Alpha + Beta; six incumbent candidates OUTSCORE four newcomers (the artist
+        // term), so today's walk would fill a 6-row list entirely with incumbents. The floor
+        // seats ⌊6·0.5⌋ = 3 and pulls the newcomers up in their own order.
+        var tracks = [fTrack("m-a", "Alpha"), fTrack("m-b", "Beta")]
+        for i in 0..<3 { tracks.append(fTrack("ia-\(i)", "Alpha")) }
+        for i in 0..<3 { tracks.append(fTrack("ib-\(i)", "Beta")) }
+        for a in ["Gamma", "Delta", "Epsilon", "Zeta"] { tracks.append(fTrack("n-\(a)", a)) }
+        let out = ZoneEngine.suggestions(memberSongIds: ["m-a", "m-b"], tracks: tracks,
+                                         playCount: { _ in 0 }, limit: 6)
+        XCTAssertEqual(out.count, 6, "the floor may reorder a list, never shorten it")
+        XCTAssertEqual(out.filter { $0.hasPrefix("i") }.count, 3,
+                       "at most ⌊n·0.5⌋ incumbent-artist rows (got \(out))")
+        XCTAssertEqual(out.filter { $0.hasPrefix("n-") }.count, 3,
+                       "newcomer artists take the other half — collection-expanding")
+    }
+
+    func testOddCountsRoundInTheNewcomersFavor() {
+        var tracks = [fTrack("m-a", "Alpha"), fTrack("m-b", "Beta")]
+        for i in 0..<3 { tracks.append(fTrack("ia-\(i)", "Alpha")) }
+        for i in 0..<3 { tracks.append(fTrack("ib-\(i)", "Beta")) }
+        for a in ["Gamma", "Delta", "Epsilon", "Zeta"] { tracks.append(fTrack("n-\(a)", a)) }
+        let out = ZoneEngine.suggestions(memberSongIds: ["m-a", "m-b"], tracks: tracks,
+                                         playCount: { _ in 0 }, limit: 5)
+        XCTAssertEqual(out.count, 5)
+        XCTAssertEqual(out.filter { $0.hasPrefix("i") }.count, 2,
+                       "a 5-row list seats ⌊2.5⌋ = 2 incumbents — the odd slot goes to a newcomer")
+    }
+
+    func testTheFloorFailsOpenWhenTheCatalogHasOnlyIncumbents() {
+        // A tiny catalog where every candidate is by the member's artist: the newcomer pool is
+        // genuinely dry, so the floor must fill from incumbents rather than starve the tile.
+        var tracks = [fTrack("m-a", "Alpha")]
+        for i in 0..<3 { tracks.append(fTrack("ia-\(i)", "Alpha")) }
+        let out = ZoneEngine.suggestions(memberSongIds: ["m-a"], tracks: tracks,
+                                         playCount: { _ in 0 })
+        XCTAssertEqual(out.count, 3, "the floor is a target, never a hole (got \(out))")
+    }
+
+    func testACollectionAlreadyUnderTheCapIsUndisturbed() {
+        // One incumbent row in six is already under 50%: the composed list must be byte-identical
+        // to the floor switched off (share 1) — the cap never disturbs a compliant tile.
+        var tracks = [fTrack("m-a", "Alpha"), fTrack("ia-0", "Alpha")]
+        for a in ["Gamma", "Delta", "Epsilon", "Zeta", "Eta"] { tracks.append(fTrack("n-\(a)", a)) }
+        var off = ZoneEngine.Tuning()
+        off.suggestionIncumbentMaxShare = 1.0
+        let composed = ZoneEngine.suggestions(memberSongIds: ["m-a"], tracks: tracks,
+                                              playCount: { _ in 0 })
+        let uncapped = ZoneEngine.suggestions(memberSongIds: ["m-a"], tracks: tracks,
+                                              playCount: { _ in 0 }, tuning: off)
+        XCTAssertEqual(composed, uncapped)
+        XCTAssertEqual(composed.count, 6)
+    }
+
+    func testACollabCreditCountsAsIncumbentThroughTheSplit() {
+        // The crate holds plain Drake; "Drake & Future" candidates share ONE credit ⇒ INCUMBENT,
+        // though their raw artist key never equals the member's (the known raw-string trap). All
+        // candidates tie on score (genre only), so today's order is id-ascending — the floor
+        // defers df-3 for the newcomer and refills it at the tail, which can only happen if the
+        // collab was recognised as incumbent.
+        let tracks = [fTrack("m-d", "Drake"),
+                      fTrack("df-1", "Drake & Future"), fTrack("df-2", "Drake & Future"),
+                      fTrack("df-3", "Drake & Future"), fTrack("nz-1", "Zeta")]
+        let out = ZoneEngine.suggestions(memberSongIds: ["m-d"], tracks: tracks,
+                                         playCount: { _ in 0 }, limit: 4)
+        XCTAssertEqual(out, ["df-1", "df-2", "nz-1", "df-3"])
+    }
+
+    func testASoloCandidateIsIncumbentForACrateFiledUnderTheCollabCredit() {
+        // The other direction: the crate's one member is filed under the five-name Dinner Party
+        // credit, and plain "Terrace Martin" rows count as incumbent against it.
+        let dp = "Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi Washington"
+        let tracks = [fTrack("m-dp", dp),
+                      fTrack("tm-1", "Terrace Martin"), fTrack("tm-2", "Terrace Martin"),
+                      fTrack("tm-3", "Terrace Martin"), fTrack("z-1", "Zeta")]
+        let out = ZoneEngine.suggestions(memberSongIds: ["m-dp"], tracks: tracks,
+                                         playCount: { _ in 0 }, limit: 4)
+        XCTAssertEqual(out, ["tm-1", "tm-2", "z-1", "tm-3"])
+    }
+
+    func testWhyStringsSpeakTheFloorsLanguage() {
+        // The caption uses the SAME credit-identity incumbent test as the composition (play
+        // counts all zero, so the novelty captions stay out of the way).
+        let dp = "Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi Washington"
+        let tracks = [fTrack("m-dp", dp), fTrack("tm-1", "Terrace Martin")]
+        let rows = ZoneEngine.suggestionsExplained(memberSongIds: ["m-dp"], tracks: tracks,
+                                                   playCount: { _ in 0 })
+        XCTAssertEqual(rows.first?.why, "An artist already in here",
+                       "a shared credit is incumbent in the caption exactly as in the composition")
+    }
+
+    func testANewcomerRowSaysSoWhenNothingStrongerExists() {
+        // Admitted through the 👍 profile (an accepted jazz row by the same new artist), so
+        // neither the member-genre caption nor the era caption can claim the row — the newcomer
+        // fallback speaks, above only the generic "Fits this collection".
+        let tracks = [fTrack("m-a", "Alpha", genre: "rock"),
+                      fTrack("liked", "New Guy", genre: "jazz"),
+                      fTrack("cand", "New Guy", genre: "jazz")]
+        let rows = ZoneEngine.suggestionsExplained(
+            memberSongIds: ["m-a"], tracks: tracks, playCount: { _ in 0 },
+            feedback: .init(accepted: ["liked": 1.0]))
+        let byId = Dictionary(uniqueKeysWithValues: rows.map { ($0.songId, $0.why) })
+        XCTAssertEqual(byId["cand"], "New artist for this crate")
+    }
+
     func testAnEmptyCollectionGetsNoSuggestions() {
         let tracks = zoneTracks(catalog(artists: 5, perArtist: 5))
         XCTAssertTrue(ZoneEngine.suggestions(memberSongIds: [], tracks: tracks,
