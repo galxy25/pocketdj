@@ -99,8 +99,29 @@ async function loadIndex(name) {
   return JSON.parse(readFileSync(p, 'utf8'));
 }
 
-/** One reduced feature row per song; nulls omitted. Exported for tests. */
-export function reduce(index) {
+// ── Timbre corpus (public/timbre.json, written by scripts/fold-timbre.mjs) ─────────────────────
+/// Resolve the corpus into a flat id → 14-axis vector map. Aliases ({alias:"sng_x"}) are the
+/// EXPLICIT same-recording indirections built by build-timbre-aliases.mjs — resolved here, at
+/// read time, one hop only (an alias to an alias is a build error and resolves to nothing
+/// rather than chasing a chain into a cycle).
+export function timbreMap(doc) {
+  const m = new Map();
+  const songs = doc?.songs && typeof doc.songs === 'object' ? doc.songs : {};
+  for (const [id, row] of Object.entries(songs)) {
+    if (row?.f && typeof row.f === 'object') m.set(id, row.f);
+  }
+  for (const [id, row] of Object.entries(songs)) {
+    if (row?.alias && !m.has(id)) {
+      const f = m.get(row.alias);
+      if (f) m.set(id, f);
+    }
+  }
+  return m;
+}
+
+/** One reduced feature row per song; nulls omitted. Exported for tests.
+ *  `timbre`: optional Map(id → f) from timbreMap() — attached as row.t (absent when unknown). */
+export function reduce(index, timbre = null) {
   const albums = new Map((index.albums || []).map((a) => [a.id, a]));
   const rows = [];
   for (const s of index.songs || []) {
@@ -130,6 +151,9 @@ export function reduce(index) {
       row.s = s.sentimentKeywords.slice(0, 6).map((k) => String(k).toLowerCase());
     }
     if (s.appleMusicId) row.am = String(s.appleMusicId);
+    // Timbre vector — under the song's OWN id (or its explicit alias, resolved upstream).
+    const t = timbre?.get(s.id);
+    if (t) row.t = t;
     rows.push(row);
   }
   return rows;
@@ -142,12 +166,15 @@ async function main() {
     ['digital-index.json', await loadIndex('digital-index.json')],
     ['current-index.json', await loadIndex('current-index.json')],
   ];
+  // Timbre corpus rides along when present (built by fold-timbre.mjs; absent = no `t` fields).
+  const timbre = timbreMap(await loadIndex('timbre.json'));
+  if (timbre.size) console.log(`[rec-features] timbre corpus: ${timbre.size} songs`);
   const seenAm = new Set();
   const songs = [];
   for (const [name, index] of sources) {
     if (!index) continue;
     let kept = 0; let dropped = 0;
-    for (const row of reduce(index)) {
+    for (const row of reduce(index, timbre)) {
       if (row.am) {
         if (seenAm.has(row.am)) { dropped += 1; continue; }
         seenAm.add(row.am);
