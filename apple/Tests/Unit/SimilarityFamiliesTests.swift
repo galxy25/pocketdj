@@ -726,4 +726,125 @@ final class SimilarityFamiliesTests: XCTestCase {
         XCTAssertFalse(tiny.usedRoundMean)
         XCTAssertEqual(tiny.neutral, SimilarityFamilies.fallbackNeutralEraFit)
     }
+
+    // ========================================================================
+    // MARK: - Timbre (audio-similarity v2)
+    // ========================================================================
+    //
+    // The pure math here; the ranking-level behavior is in `ZoneEngineTests`, and the
+    // cloud/device agreement is pinned case-by-case by `TimbreParityTests` (the generated
+    // fixture both suites replay). Sound A below is the "punchy, busy, dark" shape — the
+    // new-jack profile F10's axes were picked to be able to describe.
+
+    private func tvec(_ base: Double, _ overrides: [String: Double] = [:],
+                      shift: Double = 0) -> SimilarityFamilies.TimbreVector {
+        Dictionary(uniqueKeysWithValues: SimilarityFamilies.timbreAxes.map { axis in
+            (axis, min(1, max(0, (overrides[axis] ?? base) + shift)))
+        })
+    }
+    private func soundA(_ shift: Double = 0) -> SimilarityFamilies.TimbreVector {
+        tvec(0.2, ["punch": 0.9, "busy": 0.8], shift: shift)
+    }
+    private func soundAFlipped() -> SimilarityFamilies.TimbreVector {
+        tvec(0.8, ["punch": 0.1, "busy": 0.2])
+    }
+
+    func testTimbreDistanceIsRMSOverSharedAxesAndRefusesFragments() {
+        let a = soundA()
+        XCTAssertEqual(SimilarityFamilies.timbreDistance(a, a), 0)
+        // One axis moved by 0.14 → RMS = √(0.14² / 14).
+        var b = a
+        b["punch"] = a["punch"]! - 0.14
+        XCTAssertEqual(SimilarityFamilies.timbreDistance(a, b)!,
+                       (0.14 * 0.14 / 14).squareRoot(), accuracy: 1e-12)
+        // A 6-axis fragment is not comparable — half a vector is a different instrument.
+        let sparse = Dictionary(uniqueKeysWithValues:
+            SimilarityFamilies.timbreAxes.prefix(6).map { ($0, 0.5) })
+        XCTAssertNil(SimilarityFamilies.timbreDistance(a, sparse))
+    }
+
+    func testTimbreProfileLivenessBarIsThreeVectorsOneForTheNegative() {
+        XCTAssertNil(SimilarityFamilies.timbreProfile([(soundA(), 1), (soundA(0.1), 1)]),
+                     "a centroid of two songs is those two songs, not a sound")
+        let neg = SimilarityFamilies.timbreProfile([(soundA(), 1)], minVectors: 1)
+        XCTAssertNotNil(neg, "one 👎 is already a sound to drift from")
+        XCTAssertEqual(neg?.spread, 0)
+        let p = SimilarityFamilies.timbreProfile([(soundA(0.01), 1), (soundA(-0.01), 1), (soundA(), 1)])
+        XCTAssertEqual(p?.vectors, 3)
+        XCTAssertGreaterThan(p?.spread ?? -1, 0, "spread is the members' own mean distance")
+    }
+
+    func testTimbreFitSaturatesInsideTheProfilesOwnSpreadAndDecaysOutside() throws {
+        let p = try XCTUnwrap(SimilarityFamilies.timbreProfile(
+            [(soundA(0.01), 1), (soundA(-0.01), 1), (soundA(), 1)]))
+        XCTAssertEqual(SimilarityFamilies.timbreFit(soundA(), profile: p), 1)
+        XCTAssertEqual(SimilarityFamilies.timbreFit(soundA(0.005), profile: p), 1,
+                       "inside the crate's own spread is not 'less the sound'")
+        let far = try XCTUnwrap(SimilarityFamilies.timbreFit(soundAFlipped(), profile: p))
+        XCTAssertLessThan(far, 0.01,
+                          "the flipped sound is buried on timbre — and still free to win on genre/artist")
+        let mid = try XCTUnwrap(SimilarityFamilies.timbreFit(soundA(0.06), profile: p))
+        XCTAssertTrue(mid > 0.2 && mid < 0.6, "a nearby sound keeps a graded share, got \(mid)")
+    }
+
+    func testTimbreNetFitSubtractsTheRejectedSoundFlooredAtZero() throws {
+        let pos = try XCTUnwrap(SimilarityFamilies.timbreProfile(
+            [(soundA(0.01), 1), (soundA(-0.01), 1), (soundA(), 1)]))
+        let neg = SimilarityFamilies.timbreProfile([(soundA(0.06), 1)], minVectors: 1)
+        // The candidate that IS the rejected sound: positive fit partial, negative fit 1.0 →
+        // floored subtraction. Its twin on the far side of the centroid keeps most of its fit.
+        let atRejected = try XCTUnwrap(SimilarityFamilies.timbreNetFit(
+            soundA(0.06), positive: pos, negative: neg, rejectionWeight: 0.5))
+        let twin = try XCTUnwrap(SimilarityFamilies.timbreNetFit(
+            soundA(-0.06), positive: pos, negative: neg, rejectionWeight: 0.5))
+        XCTAssertLessThan(atRejected, twin,
+                          "equal positive fit — only the 👎'd sound separates the twins")
+        XCTAssertGreaterThanOrEqual(atRejected, 0, "floored, never negative")
+    }
+
+    func testTimbreCalibrationImputesTheRoundMeanNeverZero() throws {
+        let pos = try XCTUnwrap(SimilarityFamilies.timbreProfile(
+            [(soundA(0.01), 1), (soundA(-0.01), 1), (soundA(), 1)]))
+        // A pool big enough to measure from: 20 in-spread (fit 1) + 10 flipped (fit ≈ 0).
+        let poolVectors: [SimilarityFamilies.TimbreVector?] =
+            Array(repeating: soundA(0.003), count: 20)
+            + Array(repeating: soundAFlipped(), count: 10)
+        let cal = SimilarityFamilies.timbreCalibrate(poolVectors, positive: pos, negative: nil,
+                                                     rejectionWeight: 0.5)
+        XCTAssertTrue(cal.usedRoundMean)
+        XCTAssertEqual(cal.neutral, 20.0 / 30.0, accuracy: 0.01, "the neutral IS the pool mean")
+        XCTAssertEqual(SimilarityFamilies.timbreFit(nil, positive: pos, negative: nil,
+                                                    rejectionWeight: 0.5, calibration: cal),
+                       cal.neutral, "unanalysed ⇒ the neutral — fail open, not a zero")
+        // An analysed song is SHRUNK toward the neutral, not taken at face value — the
+        // `timbrePrior` winner's-curse correction 14% coverage demands (a fit-1.0 song lands a
+        // third of the way from the round mean to 1.0, still strictly above the unanalysed).
+        XCTAssertEqual(SimilarityFamilies.timbreFit(soundA(), positive: pos, negative: nil,
+                                                    rejectionWeight: 0.5, calibration: cal),
+                       (SimilarityFamilies.timbrePrior * cal.neutral + 1)
+                           / (SimilarityFamilies.timbrePrior + 1),
+                       accuracy: 1e-12,
+                       "observed evidence is shrunk toward the round mean, never replaced by it")
+        XCTAssertGreaterThan(SimilarityFamilies.timbreFit(soundA(), positive: pos, negative: nil,
+                                                          rejectionWeight: 0.5, calibration: cal),
+                             cal.neutral, "…and a real fit still beats the imputation")
+        // Too few observations ⇒ the measured global fallback, not garbage from a tiny mean.
+        let tiny = SimilarityFamilies.timbreCalibrate([soundA()] as [SimilarityFamilies.TimbreVector?],
+                                                      positive: pos, negative: nil,
+                                                      rejectionWeight: 0.5)
+        XCTAssertFalse(tiny.usedRoundMean)
+        XCTAssertEqual(tiny.neutral, SimilarityFamilies.fallbackNeutralTimbreFit)
+    }
+
+    func testTimbreAdjectivesSpeakNamedAxesOnlyAndDeterministically() {
+        XCTAssertEqual(SimilarityFamilies.timbreAdjectives(["punch": 0.9, "bright": 0.2,
+                                                            "m1": 0.99, "brightVar": 0.99]),
+                       ["punchy", "dark"],
+                       "m1/brightVar never speak — a why-string must not say things the owner cannot hear")
+        XCTAssertEqual(SimilarityFamilies.timbreAdjectives(["punch": 0.64, "bright": 0.36]), [],
+                       "inside the threshold nothing is claimed")
+        XCTAssertEqual(SimilarityFamilies.timbreAdjectives(soundA()),
+                       ["punchy", "busy", "clean"],
+                       "ties break on the word so the sentence is deterministic")
+    }
 }

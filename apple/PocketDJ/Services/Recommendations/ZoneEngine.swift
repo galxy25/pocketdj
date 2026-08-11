@@ -322,6 +322,28 @@ enum ZoneEngine {
         var suggestionNoveltyWeight: Double = 0.75
         var suggestionFamiliarityWeight: Double = 0.25
 
+        /// ── TIMBRE (audio-similarity v2) ─────────────────────────────────────────────────────
+        /// How far a candidate's timbre fit to the profile's sound may lift it:
+        /// `net × (1 + timbreGain × fit)` — the same BOUNDED MULTIPLIER shape as `auxGain` /
+        /// `suggestionAuxGain`, and for the same reason: added on, a timbre term at the bottom of
+        /// the admitted similarity range is a multi-fold swing, which turns "this kind of sound"
+        /// into noise. As a multiplier the guarantee is exact: nothing can outrank a candidate
+        /// more than `1 + timbreGain` (1.35×) more similar on the metadata families.
+        ///
+        /// 0.35 puts the term's maximum influence between the era sub-term and the genre term —
+        /// deliberately below the 1.40× aux band, because timbre's measured separation against
+        /// same-genre songs is real but modest (AUC 0.56 — see `SimilarityFamilies`'s timbre
+        /// section), and a signal that modest must reorder within tiers, not decide them.
+        ///
+        /// The FIT ITSELF fails open (`SimilarityFamilies.timbreFit(_:positive:negative:…)`): an
+        /// unanalysed candidate scores the round's measured neutral, so at ~14% corpus coverage
+        /// the analysed and unanalysed halves of the catalog stay comparable — the exact
+        /// incomparability that deferred this term at 1.75% coverage. A profile with fewer than
+        /// `SimilarityFamilies.timbreMinVectors` analysed members produces NO profile and the
+        /// multiplier drops entirely (ranking-neutral by construction — a multiplicative term
+        /// needs no denominator renormalization).
+        var timbreGain: Double = 0.35
+
         public init() {}
     }
 
@@ -460,6 +482,8 @@ enum ZoneEngine {
     ///     queue outright AND its shape becomes a second, subtracted profile; an accepted song
     ///     joins the taste profile without joining the familiar pool. Empty ⇒ this function is
     ///     exactly what it was before feedback existed.
+    ///   - timbre: song id → 14-axis timbre vector (`TimbreCatalog.vectors()`). Empty ⇒ the
+    ///     timbre term is dead and the ranking is byte-identical to pre-v2.
     static func inDaZone(songs: [IndexSong],
                          genreBySongId: [String: String] = [:],
                          otherCollections: [[String]] = [],
@@ -467,6 +491,7 @@ enum ZoneEngine {
                          playCount: (String) -> Int,
                          lastPlayedMs: [String: Double] = [:],
                          feedback: Feedback = Feedback(),
+                         timbre: [String: SimilarityFamilies.TimbreVector] = [:],
                          nowMs: Double,
                          tuning: Tuning = Tuning()) -> Queue {
         guard !songs.isEmpty else { return Queue() }
@@ -549,6 +574,29 @@ enum ZoneEngine {
         // Calibrated against the SAME pool as the positive profile, so the two scores subtract on
         // one scale. Calibrating them separately would make the difference meaningless.
         distaste?.calibrate(against: songs)
+
+        // ── THE TASTE'S SOUND (audio-similarity v2) ──────────────────────────────────────────
+        // The weighted timbre centroid of the seed set — recent plays at their recency weight,
+        // PLUS the 👍'd songs `tasteWeight` already folded in, so an accepted analysed song
+        // shifts the centroid exactly as F10 intended ("a 👍 can carry I like this kind of
+        // sound"). The rejected songs' vectors form the negative sound, subtracted inside the
+        // fit — the same two-profile shape as `taste`/`distaste`, on the timbre axis. Fewer than
+        // `timbreMinVectors` analysed seeds ⇒ no profile ⇒ the multiplier below drops for the
+        // whole round (fail open, ranking-neutral — a multiplicative term needs no denominator).
+        let timbreProfile = SimilarityFamilies.timbreProfile(
+            tasteWeight.compactMap { id, w in timbre[id].map { (vector: $0, weight: w) } })
+        let negTimbreProfile = timbreProfile == nil ? nil : SimilarityFamilies.timbreProfile(
+            feedback.rejected.compactMap { id, w in timbre[id].map { (vector: $0, weight: w) } },
+            minVectors: 1)
+        // The round neutral an UNANALYSED candidate scores — measured over the pool about to be
+        // ranked, the `MusicalCalibration` mechanism. At ~14% coverage this constant is what
+        // keeps a candidate without a vector comparable to one with a poor fit, instead of
+        // structurally buried below every analysed row.
+        let timbreCal = timbreProfile.map { pos in
+            SimilarityFamilies.timbreCalibrate(songs.lazy.map { timbre[$0.id] },
+                                               positive: pos, negative: negTimbreProfile,
+                                               rejectionWeight: tuning.rejectionWeight)
+        }
 
         // ── 3. Familiarity, log-scaled ───────────────────────────────────────────────────────
         // Play counts are heavy-tailed; a linear term would let one 2,000-play song outweigh
@@ -764,7 +812,20 @@ enum ZoneEngine {
             // is NOT here any more: it is family C of the similarity score itself, at full weight,
             // rather than a ≤1.6× nudge on top of it.
             let aux = auxBaseDen > 0 ? auxOnly(id, c.capKey) : 0
-            rediscoveryPool.append((id, c.capKey, net * (1 + tuning.auxGain * aux)))
+            var lifted = net * (1 + tuning.auxGain * aux)
+            // ── THE TIMBRE MULTIPLIER (audio-similarity v2) ──────────────────────────────────
+            // Rediscovery only — the FAMILIAR pool is ranked by how hard he has been leaning on
+            // each exact song, which is not a similarity question. Bounded at 1.35× like every
+            // aux signal: sound reorders within a tier, similarity still decides the tier. An
+            // unanalysed candidate gets the round-neutral multiplier — never structurally buried.
+            if let timbreProfile, let timbreCal {
+                let fit = SimilarityFamilies.timbreFit(timbre[id], positive: timbreProfile,
+                                                       negative: negTimbreProfile,
+                                                       rejectionWeight: tuning.rejectionWeight,
+                                                       calibration: timbreCal)
+                lifted *= 1 + tuning.timbreGain * fit
+            }
+            rediscoveryPool.append((id, c.capKey, lifted))
         }
 
         // Ties break on song id so the tile is stable between renders and tests are not flaky.
@@ -1060,13 +1121,18 @@ enum ZoneEngine {
     /// - Parameter versions: `ZoneEngine.versionKeys(tracks)`, derived ONCE by the caller and
     ///   shared across every crate. `nil` ⇒ derive it here, which is right for the single-crate
     ///   callers and ruinous for the multi-crate one — see `versionKeys`.
+    /// - Parameter timbre: song id → 14-axis timbre vector (`TimbreCatalog.vectors()`), for the
+    ///   members that have been analysed. Empty ⇒ the timbre term is dead everywhere and the
+    ///   ranking is byte-identical to what it was before audio-similarity v2 — the same
+    ///   default-argument posture every other new input here has taken.
     static func suggestions(memberSongIds: [String],
                             tracks: [Track],
                             playCount: (String) -> Int,
                             feedback: Feedback = Feedback(),
                             limit: Int = 25,
                             tuning: Tuning = Tuning(),
-                            versions: [String: RecVersionIdentity.Key]? = nil) -> [String] {
+                            versions: [String: RecVersionIdentity.Key]? = nil,
+                            timbre: [String: SimilarityFamilies.TimbreVector] = [:]) -> [String] {
         let members = Set(memberSongIds)
         guard !members.isEmpty, !tracks.isEmpty else { return [] }
         let trackById = Dictionary(tracks.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
@@ -1110,6 +1176,20 @@ enum ZoneEngine {
         let era = SimilarityFamilies.eraWindow(years: years)
         let musical = SimilarityFamilies.musicalProfile(musicalMembers)
 
+        // THE COLLECTION'S SOUND — audio-similarity v2: the member-vector centroid + the crate's
+        // own spread (`SimilarityFamilies`'s timbre section: centroid over kNN by measurement,
+        // AUC 0.557 vs 0.538 on the real pockets). The 👍 profile add above means an accepted
+        // analysed song shifts this centroid too — F10's stated purpose ("a 👍 can carry I like
+        // this kind of sound"). Fewer than `timbreMinVectors` analysed members ⇒ nil ⇒ the
+        // multiplier below drops for the whole round (fail open, ranking-neutral).
+        let timbreProfile = SimilarityFamilies.timbreProfile(
+            profileIds.compactMap { id in timbre[id].map { (vector: $0, weight: 1.0) } })
+        // …and the rejected sound, subtracted inside the fit — one 👎 on an analysed song is
+        // already a sound to drift from, hence `minVectors: 1` (every verdict is deliberate).
+        let negTimbreProfile = timbreProfile == nil ? nil : SimilarityFamilies.timbreProfile(
+            feedback.rejected.compactMap { id, w in timbre[id].map { (vector: $0, weight: w) } },
+            minVectors: 1)
+
         // ROUND-level renormalization: a collection whose members carry no year at all, or no
         // tempo/key at all, simply loses that family — the weight redistributes over the ones it
         // CAN speak instead of every candidate scoring an identical zero on a dead term.
@@ -1127,6 +1207,14 @@ enum ZoneEngine {
         // untagged song for its tag, not its fit.
         let eraCal = era.map {
             SimilarityFamilies.eraCalibrate(tracks.lazy.map { $0.year.map(Double.init) }, window: $0)
+        }
+        // …and the timbre term's, measured over the same candidate pool. At ~14% coverage this is
+        // the constant that keeps the analysed and unanalysed halves of the catalog COMPARABLE —
+        // an unanalysed candidate scores the mean of its analysed competitors, never zero.
+        let timbreCal = timbreProfile.map { pos in
+            SimilarityFamilies.timbreCalibrate(tracks.lazy.map { timbre[$0.songId] },
+                                               positive: pos, negative: negTimbreProfile,
+                                               rejectionWeight: tuning.rejectionWeight)
         }
 
         // ONE PASS over `tracks`: the play-count ceiling, the primary-artist CAP key (memoized per
@@ -1220,7 +1308,19 @@ enum ZoneEngine {
                                      noveltyWeight: tuning.suggestionNoveltyWeight,
                                      familiarityWeight: tuning.suggestionFamiliarityWeight,
                                      isLive: artistFam.isLive)
-            let net = sim * (1 + tuning.suggestionAuxGain * aux)
+            var net = sim * (1 + tuning.suggestionAuxGain * aux)
+            // ── THE TIMBRE MULTIPLIER (audio-similarity v2) ──────────────────────────────────
+            // Bounded exactly like the aux mix: similarity still gates, sound reorders inside a
+            // 1.35× band. An unanalysed candidate gets the round-neutral multiplier — identical
+            // across every unanalysed row, so no candidate is ever structurally buried for
+            // lacking a vector (the fairness rule the tests assert on the real catalog).
+            if let timbreProfile, let timbreCal {
+                let fit = SimilarityFamilies.timbreFit(timbre[t.songId], positive: timbreProfile,
+                                                       negative: negTimbreProfile,
+                                                       rejectionWeight: tuning.rejectionWeight,
+                                                       calibration: timbreCal)
+                net *= 1 + tuning.timbreGain * fit
+            }
             guard net > 0 else { continue }
             scored.append((t.songId, t.artistKey, capKey, net))
         }
@@ -1257,10 +1357,12 @@ enum ZoneEngine {
                                      feedback: Feedback = Feedback(),
                                      limit: Int = 25,
                                      tuning: Tuning = Tuning(),
-                                     versions: [String: RecVersionIdentity.Key]? = nil)
+                                     versions: [String: RecVersionIdentity.Key]? = nil,
+                                     timbre: [String: SimilarityFamilies.TimbreVector] = [:])
     -> [(songId: String, why: String)] {
         let ids = suggestions(memberSongIds: memberSongIds, tracks: tracks, playCount: playCount,
-                              feedback: feedback, limit: limit, tuning: tuning, versions: versions)
+                              feedback: feedback, limit: limit, tuning: tuning, versions: versions,
+                              timbre: timbre)
         guard !ids.isEmpty else { return [] }
         let trackById = Dictionary(tracks.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
         var maxPlays = 0
@@ -1282,6 +1384,13 @@ enum ZoneEngine {
         // an approximation this explainer already makes for artists and genres).
         let era = SimilarityFamilies.eraWindow(
             years: memberSongIds.compactMap { trackById[$0]?.year.map(Double.init) })
+        // The same timbre profile `suggestions` scored against (members only, same approximation)
+        // and the words its sound can honestly be described in — "punchy, dark, dynamic".
+        let timbreProfile = SimilarityFamilies.timbreProfile(
+            memberSongIds.compactMap { id in timbre[id].map { (vector: $0, weight: 1.0) } })
+        let timbreWords = timbreProfile.map {
+            SimilarityFamilies.timbreAdjectives($0.centroid).joined(separator: ", ")
+        }
         _ = members
         return ids.map { id in
             guard let t = trackById[id] else { return (id, "Fits this collection") }
@@ -1293,6 +1402,18 @@ enum ZoneEngine {
                 return (id, why)
             }
             if memberArtists.contains(t.artistKey) { return (id, "An artist already in here") }
+            // TIMBRE speaks only when it was OBSERVED (the row has a vector) and the fit is real
+            // (inside or near the crate's own spread) — never off the imputed neutral, and never
+            // in words the adjective table cannot honestly produce. ABOVE genre in precedence,
+            // deliberately: an admitted candidate matched the crate's artists or genres by
+            // construction, so "Mostly soul, like this collection" is true of nearly every row
+            // and says nothing — while a measured "sounds like the crate" is the sharpest claim
+            // this explainer can make about THIS row, and it only ever fires on real evidence.
+            if let timbreProfile, let words = timbreWords, !words.isEmpty,
+               let v = timbre[id], let fit = SimilarityFamilies.timbreFit(v, profile: timbreProfile),
+               fit >= 0.8 {
+                return (id, "Sounds like this crate: \(words)")
+            }
             if let g = t.genre, memberGenres.contains(g) { return (id, "Mostly \(g), like this collection") }
             if let era, let y = t.year, era.contains(Double(y)) {
                 return (id, "From this collection's \(Int(era.lo))–\(Int(era.hi)) era")

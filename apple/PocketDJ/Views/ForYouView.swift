@@ -279,6 +279,12 @@ struct ForYouTilesView: View {
         // suggestion sweep. See `ForYouFeedInputs.recsOffCrateIds`.
         let recsOff = collections.recommendationsOffIds()
         let now = Date().timeIntervalSince1970 * 1000
+        // THE TIMBRE CORPUS (audio-similarity v2) — awaited BEFORE the inputs are frozen, off the
+        // paint path (the cached grid is already on screen; this is the refresh, not the render).
+        // First call decodes the 2.9 MB corpus once on the actor; after that it is a memo hit.
+        // Unavailable — offline cold install, corpus not deployed — arrives as [:], which is the
+        // term-dead, byte-identical-to-pre-v2 ranking. Fail open, never a spinner.
+        let timbre = await TimbreCatalog.shared.vectors(nowMs: now)
         // ONE feedback projection PER TILE, because suppression is SCOPED: a song thumbed down in
         // one crate must not vanish from another tile's list.
         let inputs = ForYouFeedInputs(
@@ -299,6 +305,7 @@ struct ForYouTilesView: View {
                     ($0.id, feedback?.zoneFeedback(scope: $0.id, nowMs: now) ?? ZoneEngine.Feedback())
                 }),
             recsOffCrateIds: recsOff,
+            timbre: timbre,
             nowMs: now)
 
         // THE CLOUD RANKER FOR In Da Zone, or nil. nil is not a degraded mode — it is the DEFAULT

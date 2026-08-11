@@ -138,6 +138,11 @@ struct ForYouFeedInputs: Sendable {
     /// for them and emits NO crate, so they cost nothing and cannot produce a tile. Empty ⇒ the
     /// ranking is byte-identical to what it was before this feature existed.
     var recsOffCrateIds: Set<String> = []
+    /// song id → 14-axis timbre vector (`TimbreCatalog.vectors()`, awaited by the caller OFF the
+    /// paint path). Empty — a cold install with no network, the corpus not yet deployed, or a
+    /// test that isn't about sound — means the timbre term is dead everywhere and the ranking is
+    /// byte-identical to pre-v2.
+    var timbre: [String: SimilarityFamilies.TimbreVector] = [:]
     var nowMs: Double = 0
 }
 
@@ -159,6 +164,7 @@ enum ForYouFeedBuilder {
                                         playCount: { counts[$0] ?? 0 },
                                         lastPlayedMs: inputs.lastPlayedMs,
                                         feedback: inputs.zoneFeedback,
+                                        timbre: inputs.timbre,
                                         nowMs: inputs.nowMs)
         // ── THE OPT-OUT, APPLIED BEFORE THE WORK AND NOT AFTER IT ────────────────────────────
         // `ZoneEngine.suggestions` is a CATALOG SWEEP PER CRATE (~96k rows each). A switched-off
@@ -185,7 +191,8 @@ enum ForYouFeedBuilder {
                     songIds: ZoneEngine.suggestions(memberSongIds: c.songIds, tracks: inputs.tracks,
                                                     playCount: { counts[$0] ?? 0 },
                                                     feedback: inputs.crateFeedback[c.id] ?? ZoneEngine.Feedback(),
-                                                    versions: versions))
+                                                    versions: versions,
+                                                    timbre: inputs.timbre))
             }
         return ForYouFeedSnapshot(
             refreshedAtMs: inputs.nowMs,
