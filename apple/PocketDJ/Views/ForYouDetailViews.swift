@@ -62,25 +62,23 @@ struct NewReleasesView: View {
         #endif
         // NEW IS PLAYABLE, and wears the same furniture as every other list screen. Owner,
         // verbatim: *"we want to be able to play or shuffle New as well, that is the equivalent of
-        // cloud mode for a collection."* ▶ takes the live releases, ▶▶ takes the thumbed-down ones
-        // too, 🔀 shuffles — and the 📱/☁️ toggle is genuinely live: cloud streams the records he
-        // doesn't own, device plays only the parts he has already pulled down. See
-        // `ReleaseStreaming` for the whole path.
+        // cloud mode for a collection."* ▶ and 🔀 take the LIVE releases — and the 📱/☁️ toggle is
+        // genuinely live: cloud streams the records he doesn't own, device plays only the parts he
+        // has already pulled down. See `ReleaseStreaming` for the whole path.
         //
         // ONLY **out now** plays. A "coming soon" row is a pre-order — Apple has published the
         // record's existence, not its audio — so queueing one could only ever produce a skip.
         //
-        // ── ▶ AND ▶▶ GATE ON DIFFERENT LISTS, BECAUSE THEY PLAY DIFFERENT LISTS ────────────────
-        // ▶/🔀 take the live releases, so they are live only while SOMETHING is live; ▶▶ takes the
-        // thumbed-down tail as well, so it stays available for exactly the case that greys the
-        // other two out. Gating all three on `outNow` (the shipped bug) left ▶ lit over an empty
-        // queue when every release had been thumbed down, and the tap did nothing at all.
+        // ── THE TRANSPORT GATES ON `liveOutNow`, NEVER ON `outNow` ─────────────────────────────
+        // A release he thumbed down still RENDERS (sunk to the bottom of its section, with the lit
+        // 👎 that undoes it) but is not in any queue — owner, verbatim: *"we don't need play all,
+        // if we thumbs down we don't need to play those tracks."* So `outNow` is a render list and
+        // `liveOutNow` is the play list, and the gate must read the one it actually plays: gating
+        // on `outNow` (the shipped bug this replaces) left ▶ LIT over an empty queue once every
+        // release was thumbed down, and the tap hit an `isEmpty` guard and did nothing at all.
         .collectionToolbar(idPrefix: "foryou-new", noun: "list",
                            canPlay: !starting && !liveOutNow.isEmpty,
-                           canPlayAll: !starting && !outNow.isEmpty,
                            play: { start(liveOutNow, shuffle: $0) },
-                           playAll: { start(outNow, shuffle: false) },
-                           playAllHelp: "Play every new release, including the ones you thumbed down",
                            menuItems: { overflowMenu })
         .alert("Couldn’t start these releases", isPresented: startErrorShowing) {
             Button("OK") { startError = nil }
@@ -117,9 +115,9 @@ struct NewReleasesView: View {
         Binding(get: { startError != nil }, set: { if !$0 { startError = nil } })
     }
 
-    /// The releases still being OFFERED — the thumbed-down tail taken off. ▶ plays these; ▶▶ plays
-    /// the whole section including them (`sunkLast` has already moved them to the bottom, so
-    /// "everything" is still in the order the screen shows).
+    /// The releases still being OFFERED — the thumbed-down tail taken off. ▶ / 🔀 play THESE and
+    /// only these; the rejected ones stay in the rendered section (`sunkLast` has moved them to the
+    /// bottom) purely so the 👎 that undoes them is still reachable.
     private func live(_ items: [ReleaseFeedItem]) -> [ReleaseFeedItem] {
         guard let feedback else { return items }
         let sunk = feedback.activeTombstones(scope: scope)
@@ -381,7 +379,8 @@ struct ForYouSongListView: View {
     /// the row, leaving a mis-tap undoable only by hunting that exact song down somewhere else.
     private var visibleIds: [String] { partition.live + partition.sunk }
     /// The live picks and the sunk tail, kept apart — `RecFeedbackOrder.sink`, the one
-    /// implementation of the rule. ▶ Play takes the live half; ▶▶ Play All takes both.
+    /// implementation of the rule. The screen RENDERS both (`visibleIds`, sunk at the bottom, so a
+    /// mis-tapped 👎 stays undoable); only `live` is ever played.
     private var partition: (live: [String], sunk: [String]) {
         feedback?.partition(songIds, scope: route.feedbackContext) ?? (songIds, [])
     }
@@ -416,27 +415,23 @@ struct ForYouSongListView: View {
         .navigationBarTitleDisplayMode(.large)
         #endif
         .task { await build() }
-        // A TILE IS A SETLIST, so it wears the SAME furniture a playlist does — 📱/☁️ · ▶ · ▶▶ ·
-        // 🔀 · ⋯, from the shared `CollectionToolbar`. Owner, verbatim: *"i want the native menu
+        // A TILE IS A SETLIST, so it wears the SAME furniture a playlist does — 📱/☁️ · ▶ · 🔀 ·
+        // ⋯, from the shared `CollectionToolbar`. Owner, verbatim: *"i want the native menu
         // controls that float in too like in a playlist."* The device/cloud toggle is genuinely
         // live here: these are catalog songs he owns, started through the same `playNow` →
         // `SetlistPlayer` path, and `SettingsStore.playbackMode` decides whether they come off
         // burned files or the cloud exactly as it does on a playlist screen.
         //
-        // THIS IS THE SCREEN WHERE ▶ AND ▶▶ GENUINELY DIFFER: ▶ takes the live picks, ▶▶ takes the
-        // thumbed-down tail as well (rejected rows are SUNK, not removed, so the lit 👎 that undoes
-        // a mis-tap stays reachable). Both render unconditionally all the same — owner, verbatim:
-        // *"always show play and play all and shuffle."*
-        //
-        // ▶▶ gates on `everything`, not on the live half: a list whose every row has been thumbed
-        // down is precisely the case Play All exists for, and gating it on `live` greyed it out
-        // exactly there.
+        // THE TRANSPORT PLAYS `partition.live` AND NOTHING ELSE. This is the screen with a sunk
+        // tail, and it is the screen where the owner killed ▶▶ Play All: *"we don't need play all,
+        // if we thumbs down we don't need to play those tracks."* The rejected rows keep RENDERING
+        // at the bottom (`visibleIds`) so the lit 👎 that undoes a mis-tap stays reachable — that
+        // is a visible record of his verdict, not a queue — but nothing on this screen will play
+        // them. A list whose every row is thumbed down therefore greys the whole transport, which
+        // is correct: its queue is empty.
         .collectionToolbar(idPrefix: "foryou-list", noun: "list",
                            canPlay: !partition.live.isEmpty,
-                           canPlayAll: !everything.isEmpty,
                            play: { start(partition.live, shuffle: $0) },
-                           playAll: { start(everything, shuffle: false) },
-                           playAllHelp: "Play everything in this list, including anything you thumbed down",
                            menuItems: { overflowMenu })
         // The tile screens do not push Now Playing, so this is the only screen that can raise the
         // device-mode banner for a queue they started. `playSongIds` runs under the reserved
@@ -462,12 +457,6 @@ struct ForYouSongListView: View {
             Spacer()
         }
         .listRowBackground(Color.clear)
-    }
-
-    /// Everything ▶▶ **Play All** takes: the live picks plus the tail thumbed down and sunk.
-    private var everything: [String] {
-        let p = partition
-        return p.live + p.sunk.filter { !p.live.contains($0) }
     }
 
     /// The ⋯ menu — the tile's context actions, everything beyond the floating transport.

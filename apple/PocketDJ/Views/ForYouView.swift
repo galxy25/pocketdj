@@ -379,9 +379,14 @@ struct ForYouTilesView: View {
     // MARK: - The tile menu (shared with collections)
     // ========================================================================
 
-    /// A tile IS a setlist, so its menu is `CollectionPlayMenuItems` — the same ▶ / ▶▶ / 🔀 the
-    /// tile's own screen floats in its toolbar, in the one place a CARD can carry actions — rather
-    /// than a tile-specific copy.
+    /// A tile IS a setlist, so its menu is `CollectionPlayMenuItems` — the same ▶ / 🔀 the tile's
+    /// own screen floats in its toolbar, in the one place a CARD can carry actions — rather than a
+    /// tile-specific copy.
+    ///
+    /// Both take the LIVE rows only. The card used to carry a third item, ▶▶ Play All, which added
+    /// the thumbed-down tail; the owner removed it (*"we don't need play all, if we thumbs down we
+    /// don't need to play those tracks."*) and it had to go from the card and the screen together,
+    /// or the two would offer different sets of controls for the same tile.
     ///
     /// **New goes through its own door**, not because it can't play (it can — owner, verbatim:
     /// *"we want to be able to play or shuffle New as well"*) but because its rows are RELEASES
@@ -399,10 +404,6 @@ struct ForYouTilesView: View {
             }
             .disabled(live.isEmpty || startingReleases)
             .accessibilityIdentifier("foryou-tile-\(tile.id)-play")
-            CollectionPlayAllButton(idPrefix: "foryou-tile-\(tile.id)") {
-                startReleases(releases, shuffle: false)
-            }
-            .disabled(releases.isEmpty || startingReleases)
             Button { startReleases(live, shuffle: true) } label: {
                 Label("Shuffle", systemImage: "shuffle")
             }
@@ -410,8 +411,10 @@ struct ForYouTilesView: View {
             .accessibilityIdentifier("foryou-tile-\(tile.id)-shuffle")
         } else {
             let ids = playableIds(for: tile.route)
-            let p = feedback?.partition(ids, scope: tile.route.feedbackContext) ?? (live: ids, sunk: [])
-            CollectionPlayMenuItems(title: tile.title, songIds: p.live, sunkIds: p.sunk,
+            // The LIVE half only. The sunk tail still renders on the tile's own screen, where its
+            // lit 👎 can be undone — it is a record of a verdict, never a queue.
+            let live = feedback?.partition(ids, scope: tile.route.feedbackContext).live ?? ids
+            CollectionPlayMenuItems(title: tile.title, songIds: live,
                                     idPrefix: "foryou-tile-\(tile.id)",
                                     onStarted: { queue in
                                         feedback?.beginPlayback(scope: tile.route.feedbackContext,

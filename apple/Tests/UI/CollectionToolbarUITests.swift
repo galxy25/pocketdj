@@ -1,22 +1,26 @@
 import XCTest
 
-/// THE SAME SCREEN FURNITURE EVERYWHERE — 📱/☁️ · ▶ · ▶▶ · 🔀 · ⋯.
+/// THE SAME SCREEN FURNITURE EVERYWHERE — 📱/☁️ · ▶ · 🔀 · ⋯.
 ///
 /// Owner, verbatim: *"i dont want a row level play menu, i want the native menu controls that
 /// float in too like in a playlist we have the cloud or on device toggle play and shuffle and …
-/// menu item for the context menus."* Plus the two corrections that followed: *"always show play
-/// and play all and shuffle"*, and *"we want to be able to play or shuffle New as well, that is
-/// the equivalent of cloud mode for a collection."*
+/// menu item for the context menus."* Plus the corrections that followed: *"we want to be able to
+/// play or shuffle New as well, that is the equivalent of cloud mode for a collection"*, and the
+/// one that took a control back out — *"we don't need play all, if we thumbs down we don't need to
+/// play those tracks."*
 ///
-/// Three claims to protect, none of them provable from the unit suite, because all three are about
+/// Four claims to protect, none of them provable from the unit suite, because all four are about
 /// what a navigation bar renders:
 ///
 ///  1. **A For You tile screen wears the playlist's toolbar** — from the shared `CollectionToolbar`,
 ///     so the two screens are the same furniture.
 ///  2. **New wears it too, live.** It is the tile whose rows he does not own, and it still floats a
-///     working ▶ / ▶▶ / 🔀 and the device/cloud toggle that decides how they play.
+///     working ▶ / 🔀 and the device/cloud toggle that decides how they play.
 ///  3. **A collection ROW carries no transport.** A round of this shipped ▶/🔀 in the playlist and
 ///     pocket row context menus and was rejected; a long-press there is for rename/move/delete.
+///  4. **There is no ▶▶ Play All, anywhere.** It shipped and was removed. A removed control coming
+///     back is invisible to a compiler and to every unit test, so the ABSENCE is asserted on each
+///     screen alongside the presence of the rest.
 ///
 /// Screenshots are attached (`keepAlways`) so the toolbars can be compared side by side.
 final class CollectionToolbarUITests: XCTestCase {
@@ -43,15 +47,18 @@ final class CollectionToolbarUITests: XCTestCase {
         add(shot)
     }
 
-    /// The five items every list screen floats. `any` (not `buttons`) because the mode toggle and
-    /// the ⋯ resolve to different element types across platforms.
+    /// The four items every list screen floats — and the fifth it must NOT. `any` (not `buttons`)
+    /// because the mode toggle and the ⋯ resolve to different element types across platforms.
     private func assertToolbar(_ app: XCUIApplication, _ prefix: String,
                                menu: Bool = true, file: StaticString = #filePath, line: UInt = #line) {
         XCTAssertTrue(app.any("\(prefix)-play").waitForExistence(timeout: 15),
                       "▶ floats in the toolbar, not in a row menu", file: file, line: line)
-        XCTAssertTrue(app.any("\(prefix)-play-all").exists,
-                      "▶▶ Play All beside it — owner: always show all three", file: file, line: line)
         XCTAssertTrue(app.any("\(prefix)-shuffle").exists, "…and 🔀", file: file, line: line)
+        // The removed control. ▶ has already been waited for, so the toolbar is rendered and a
+        // missing ▶▶ is a real absence rather than a race with the navigation push.
+        XCTAssertFalse(app.any("\(prefix)-play-all").exists,
+                       "NO ▶▶ Play All — owner: \"we don't need play all, if we thumbs down we "
+                       + "don't need to play those tracks\"", file: file, line: line)
         XCTAssertTrue(app.any("playback-mode").exists,
                       "the same 📱/☁️ toggle a playlist screen floats", file: file, line: line)
         if menu {
@@ -115,12 +122,17 @@ final class CollectionToolbarUITests: XCTestCase {
         shoot(app, "new-overflow-menu")
     }
 
-    /// **THE DEFECT THIS ROUND FIXED, driven end to end.**
+    /// **THUMB DOWN EVERY RELEASE AND THE TRANSPORT GOES DARK — the whole point of the round that
+    /// removed ▶▶ Play All, driven end to end.**
     ///
-    /// New's whole transport was enabled on `!outNow.isEmpty` (every out-now release) while ▶
-    /// played only the LIVE half. Thumb down every release and ▶ stayed lit over a queue its own
-    /// `guard !ids.isEmpty` would refuse — a decoy control. ▶▶ Play All is the one that must stay
-    /// live there, because playing the thumbed-down tail is exactly what it is for.
+    /// Two defects, one test. New's transport was originally enabled on `!outNow.isEmpty` (every
+    /// out-now release) while ▶ played only the LIVE half, so thumbing down every release left ▶
+    /// lit over a queue its own `guard !ids.isEmpty` would refuse — a decoy control. That was first
+    /// fixed by splitting the gate and letting ▶▶ Play All stay live to play the rejected tail; the
+    /// owner then removed ▶▶ outright (*"we don't need play all, if we thumbs down we don't need to
+    /// play those tracks"*). So the correct end state is the one asserted here: ▶ and 🔀 both grey
+    /// out, there is no third control still offering the tail, and the rejected rows are STILL ON
+    /// SCREEN with their lit 👎 so a mis-tap can be undone.
     ///
     /// The PRECONDITION is asserted, not assumed: an earlier review of this screen "reproduced"
     /// the bug against taps that had never landed. The reject's own accessibility label flipping to
@@ -128,7 +140,7 @@ final class CollectionToolbarUITests: XCTestCase {
     /// which it only does because `RecFeedbackStore.derived` is observed (see
     /// `testEveryDerivedReadRegistersAnObservationDependency`).
     @MainActor
-    func testThumbingDownEveryReleaseGreysPlayButLeavesPlayAllLive() {
+    func testThumbingDownEveryReleaseGreysTheWholeTransport() {
         let app = launchOnForYou()
         openNew(app)
         XCTAssertTrue(app.any("foryou-new-play").waitForExistence(timeout: 15))
@@ -153,8 +165,13 @@ final class CollectionToolbarUITests: XCTestCase {
             XCTAssertNil(err, "▶ must grey out: every release is thumbed down, so its queue is empty")
         }
         XCTAssertFalse(app.any("foryou-new-shuffle").isEnabled, "🔀 plays the same live list as ▶")
-        XCTAssertTrue(app.any("foryou-new-play-all").isEnabled,
-                      "▶▶ stays live — the thumbed-down tail is precisely what Play All plays")
+        XCTAssertFalse(app.any("foryou-new-play-all").exists,
+                       "and nothing is left offering to play the tail he just rejected")
+        // SUNK, NOT GONE. The verdict is undoable precisely because the row stays on screen — that
+        // is why a rejection sinks instead of deleting, and it is the half of the behaviour that
+        // removing ▶▶ must NOT have taken with it.
+        XCTAssertTrue(app.el("rec-reject-rel:9000000001").exists,
+                      "the thumbed-down release is still visible, with its lit 👎 to undo")
         shoot(app, "new-toolbar-all-thumbed-down")
     }
 
@@ -208,10 +225,10 @@ final class CollectionToolbarUITests: XCTestCase {
     }
 
     /// The reference screen, after the extraction into `CollectionToolbar`: the same items, same
-    /// ids, same placement — and now the same COUNT as the tile screens. Owner, verbatim: *"always
-    /// show play and play all and shuffle."* A playlist has no thumbed-down tail, so its ▶▶ is the
-    /// same act as its ▶; rendering it anyway is what keeps the transport from changing shape
-    /// between two screens that are meant to be one piece of furniture.
+    /// ids, same placement — and the same COUNT as the tile screens, which is the property that
+    /// keeps the transport from changing shape between two screens meant to be one piece of
+    /// furniture. It is also why ▶▶ Play All had to leave HERE too when the owner removed it from
+    /// the recommendation screens, even though a playlist never had a thumbed-down tail to play.
     @MainActor
     func testPlaylistDetailStillFloatsTheSameToolbar() {
         let (app, row) = launchWithAPlaylist("Toolbar")

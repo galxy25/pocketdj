@@ -427,8 +427,10 @@ final class RecFeedbackStore {
     }
 
     /// The same partition, kept APART — for a caller that has to treat the two halves differently
-    /// rather than just render them in order. `CollectionPlayMenuItems` is the one that does:
-    /// ▶ Play takes the live picks and ▶▶ Play All takes both.
+    /// rather than just render them in order. The tile screens are what do: they RENDER `live +
+    /// sunk` (so a mis-tapped 👎 stays on screen and undoable) but hand only `live` to ▶ / 🔀.
+    /// Owner, verbatim: *"we don't need play all, if we thumbs down we don't need to play those
+    /// tracks."* Nothing plays `sunk`.
     func partition(_ ids: [String], scope: String,
                    nowMs: Double = Date().timeIntervalSince1970 * 1000)
         -> (live: [String], sunk: [String]) {
@@ -632,9 +634,10 @@ let recFeedbackSchemaVersion = 1
 /// THE SINK RULE, as a pure function over `(ids, tombstones)` — no store, no clock, no actor.
 ///
 /// Extracted so the ordering has exactly ONE implementation. Two call sites needed it in two
-/// shapes (concatenated, for rendering; split, for ▶ Play vs ▶▶ Play All), and a second copy of a
-/// stable partition is precisely how a card, a list and a play button end up disagreeing about
-/// which rows the listener rejected.
+/// shapes (concatenated, for rendering the whole list in order; split, so the transport can queue
+/// the live half and leave the rejected tail alone), and a second copy of a stable partition is
+/// precisely how a card, a list and a play button end up disagreeing about which rows the listener
+/// rejected.
 enum RecFeedbackOrder {
 
     /// Survivors keep the engine's order exactly; the tombstoned rows move to the bottom in REJECT

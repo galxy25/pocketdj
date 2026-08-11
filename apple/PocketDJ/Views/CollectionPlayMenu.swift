@@ -36,8 +36,8 @@ enum CollectionPlayback {
 // MARK: - The floating toolbar every "list of songs" screen wears
 // ============================================================================
 
-/// 📱/☁️ **mode** · ▶ **Play** · ▶▶ **Play All** · 🔀 **Shuffle** · ⋯ **menu** — the primary-action
-/// items a PocketDJ list-of-songs screen floats in its navigation bar.
+/// 📱/☁️ **mode** · ▶ **Play** · 🔀 **Shuffle** · ⋯ **menu** — the primary-action items a PocketDJ
+/// list-of-songs screen floats in its navigation bar.
 ///
 /// ── WHY THIS IS A MODIFIER AND NOT FOUR COPIES ───────────────────────────────────────────────
 /// Owner, verbatim: *"i want the native menu controls that float in too like in a playlist we have
@@ -46,8 +46,8 @@ enum CollectionPlayback {
 /// exactly this (one used `Label`, the other a bare `Image`), which is what hand-copying it onto
 /// the three For You tile screens would have compounded. So the arrangement — the ORDER, the
 /// placement, the SF Symbols, the wording and the accessibility ids — lives here once, and each
-/// screen supplies only what is genuinely its own: whether it can play, what Play does, what
-/// Play All does, and what goes in the ⋯.
+/// screen supplies only what is genuinely its own: whether it can play, what Play does, and what
+/// goes in the ⋯.
 ///
 /// ── THE DEVICE/CLOUD TOGGLE IS GLOBAL, WHICH IS WHY EVERY PLAYING SCREEN WEARS IT ────────────
 /// `PlaybackModeToggle` flips `SettingsStore.playbackMode`, which `SetlistPlayer` reads for EVERY
@@ -58,15 +58,17 @@ enum CollectionPlayback {
 /// verbatim: *"we want to be able to play or shuffle New as well, that is the equivalent of cloud
 /// mode for a collection."* It is therefore shown wherever the screen can play at all.
 ///
-/// ── PLAY, PLAY ALL AND SHUFFLE ALL SHOW, ALWAYS ──────────────────────────────────────────────
-/// Owner, verbatim: *"always show play and play all and shuffle."* This overrules the earlier
-/// judgement that ▶▶ should hide where it resolves to the same act as ▶. A screen that supplies a
-/// `playAll` gets all three every time; where the two are identical for a given list that is
-/// accepted, because a control that appears and disappears depending on the data is worse than a
-/// redundant one. The distinction is kept where it is REAL: on a recommendation list ▶ takes the
-/// live picks and ▶▶ takes everything, including the rows thumbed down and sunk to the bottom.
+/// ── THERE IS NO ▶▶ PLAY ALL, AND THAT IS THE POINT ───────────────────────────────────────────
+/// A round of this shipped a ▶▶ **Play All** that took the live picks PLUS the tail the listener
+/// had thumbed down. The owner removed it, verbatim: *"we don't need play all, if we thumbs down
+/// we don't need to play those tracks."* A thumbed-down row is SUNK rather than deleted so he can
+/// still SEE it and UNDO it — the sink is a visible audit of his own verdict, not a play queue —
+/// and ▶ / 🔀 already operate on the live picks, so ▶▶ existed only to offer the one thing he
+/// explicitly does not want: hearing the tracks he just rejected. The sink ordering itself
+/// (`RecFeedbackOrder.sink`) is untouched; only the ability to PLAY the sunk tail as a block is
+/// gone. Do not re-add it.
 struct CollectionToolbar<MenuItems: View>: ViewModifier {
-    /// Accessibility-id stem: `"<idPrefix>-play"` / `"-play-all"` / `"-shuffle"` / `"-menu"`.
+    /// Accessibility-id stem: `"<idPrefix>-play"` / `"-shuffle"` / `"-menu"`.
     /// Must be unique app-wide — two live registrations of one id make BOTH unqueryable in
     /// XCUITest (`foryou-menu` is already History's For You tab menu, hence `foryou-list-`).
     let idPrefix: String
@@ -74,31 +76,17 @@ struct CollectionToolbar<MenuItems: View>: ViewModifier {
     let noun: String
     /// Greys ▶ and 🔀 — the two that play the LIVE list (an empty playlist still shows them, like
     /// every music app).
-    var canPlay: Bool = true
-    /// Greys ▶▶ **Play All**, which plays a DIFFERENT (larger) list. Defaults to `canPlay`, which
-    /// is right wherever the two lists are the same thing.
     ///
-    /// ── WHY THIS IS A SEPARATE GATE (a shipped bug, not a hypothetical) ──────────────────────
-    /// The New screen enabled its whole transport on `!outNow.isEmpty` while ▶ played `live(outNow)`
-    /// — so thumbing down every out-now release left ▶ LIT over an empty queue, and the tap hit an
-    /// `isEmpty` guard and did nothing. One `canPlay` cannot describe two lists. Splitting it also
-    /// fixes the mirror-image error the other tile screens had: they gated everything on the LIVE
-    /// half, so a fully-thumbed-down list greyed out ▶▶ Play All — the one control whose entire
-    /// purpose is to play the tail that was thumbed down.
-    var canPlayAll: Bool? = nil
+    /// ONE gate is now enough because there is only one list: a fully-thumbed-down recommendation
+    /// list greys the whole transport, which is correct — its live queue is empty and the shipped
+    /// bug this replaces was a ▶ left LIT over exactly that empty queue, hitting an `isEmpty` guard
+    /// and doing nothing.
+    var canPlay: Bool = true
     /// Set false where the screen has no context actions to carry — an empty ⋯ is furniture
     /// pretending to be a control.
     var showsMenu: Bool = true
     /// `true` = shuffle.
     var play: (Bool) -> Void = { _ in }
-    /// ▶▶ **Play All**. Every screen that floats this toolbar supplies one — owner, verbatim:
-    /// *"always show play and play all and shuffle."* On a playlist or pocket it resolves to the
-    /// same act as ▶ (there is no thumbed-down tail to add), and that redundancy is the accepted
-    /// cost of the three controls never moving between screens.
-    var playAll: (() -> Void)? = nil
-    /// The ▶▶ help text. Defaults to the plain reading; a recommendation list overrides it, because
-    /// there ▶▶ genuinely takes MORE than ▶ and the tooltip is where that is explained.
-    var playAllHelp: String? = nil
     /// The context actions. Everything beyond the transport belongs here. (Built by the
     /// `collectionToolbar` modifier below, which is where the `@ViewBuilder` lives — a stored
     /// builder property would re-apply the transform to an already-built closure.)
@@ -112,13 +100,6 @@ struct CollectionToolbar<MenuItems: View>: ViewModifier {
                     .help("Play this \(noun) now")
                     .disabled(!canPlay)
                     .accessibilityIdentifier("\(idPrefix)-play")
-            }
-            if let playAll {
-                ToolbarItem(placement: .primaryAction) {
-                    CollectionPlayAllButton(idPrefix: idPrefix, action: playAll)
-                        .help(playAllHelp ?? "Play everything in this \(noun)")
-                        .disabled(!(canPlayAll ?? canPlay))
-                }
             }
             ToolbarItem(placement: .primaryAction) {
                 Button { play(true) } label: { Label("Shuffle", systemImage: "shuffle") }
@@ -140,16 +121,12 @@ extension View {
     /// The standard collection/tile toolbar. See `CollectionToolbar`.
     func collectionToolbar<MenuItems: View>(
         idPrefix: String, noun: String,
-        canPlay: Bool = true, canPlayAll: Bool? = nil, showsMenu: Bool = true,
+        canPlay: Bool = true, showsMenu: Bool = true,
         play: @escaping (Bool) -> Void = { _ in },
-        playAll: (() -> Void)? = nil,
-        playAllHelp: String? = nil,
         @ViewBuilder menuItems: @escaping () -> MenuItems
     ) -> some View {
         modifier(CollectionToolbar(idPrefix: idPrefix, noun: noun, canPlay: canPlay,
-                                   canPlayAll: canPlayAll, showsMenu: showsMenu,
-                                   play: play, playAll: playAll, playAllHelp: playAllHelp,
-                                   menuItems: menuItems))
+                                   showsMenu: showsMenu, play: play, menuItems: menuItems))
     }
 }
 
@@ -208,35 +185,19 @@ extension View {
 }
 
 // ============================================================================
-// MARK: - ▶▶ Play All
+// MARK: - The same pair, as menu items
 // ============================================================================
 
-/// ▶▶ **Play All** — the whole list *including* the tail the listener thumbed down.
+/// ▶ **Play** · 🔀 **Shuffle** as standard iOS *menu items*, for the one surface that has no
+/// toolbar of its own to float them in: a **For You tile CARD** in the grid, where long-press /
+/// right-click is the only place a card's actions can live.
 ///
-/// ONE definition, worn by both surfaces that offer it: the tile screen's floating toolbar and the
-/// tile card's context menu in the grid. Where a list has no sunk tail this plays exactly what ▶
-/// plays; that redundancy is deliberate (see `CollectionToolbar`), because the owner asked for the
-/// three controls to be present every time rather than to appear and disappear with the data.
-struct CollectionPlayAllButton: View {
-    let idPrefix: String
-    let action: () -> Void
-
-    var body: some View {
-        Button(action: action) { Label("Play All", systemImage: "play.square.stack") }
-            .accessibilityIdentifier("\(idPrefix)-play-all")
-    }
-}
-
-// ============================================================================
-// MARK: - The same trio, as menu items
-// ============================================================================
-
-/// ▶ **Play** · ▶▶ **Play All** · 🔀 **Shuffle** as standard iOS *menu items*, for the one surface
-/// that has no toolbar of its own to float them in: a **For You tile CARD** in the grid, where
-/// long-press / right-click is the only place a card's actions can live.
-///
-/// All three, always — the same rule the toolbar follows, so the card menu and the screen it opens
-/// cannot offer different sets of controls.
+/// Both, always — the same rule the toolbar follows, so the card menu and the screen it opens
+/// cannot offer different sets of controls. That is also why the ▶▶ **Play All** this once carried
+/// is gone from BOTH at the same time: owner, verbatim, *"we don't need play all, if we thumbs
+/// down we don't need to play those tracks."* Both controls take the LIVE picks; the rows he
+/// thumbed down stay sunk-but-visible on the tile's screen so he can undo a mis-tap, which is a
+/// record of his verdict rather than a queue to play (see `CollectionToolbar`).
 ///
 /// It is NOT used on collection rows. That shipped once and the owner rejected it outright ("i
 /// dont want a row level play menu") — a playlist row long-press is for rename/move/delete, and
@@ -246,19 +207,16 @@ struct CollectionPlayMenuItems: View {
 
     /// Display name for the Now Playing set.
     let title: String
-    /// The list as offered — the live rows, in order.
+    /// The list as offered — the LIVE rows, in order. The caller has already partitioned off the
+    /// tail it sinks (`RecFeedbackStore.partition`); nothing here plays that tail.
     let songIds: [String]
-    /// Rows this list SINKS but still shows; only `Play All` includes them.
-    var sunkIds: [String] = []
     /// What History files these plays under.
     var source: PlayHistoryStore.PlaySource = .browser
-    /// Accessibility-id stem: `"<idPrefix>-play"` / `"-play-all"` / `"-shuffle"`.
+    /// Accessibility-id stem: `"<idPrefix>-play"` / `"-shuffle"`.
     let idPrefix: String
     /// Ran with the queue that was actually started — For You uses it to stamp the feedback scope
     /// so the now-playing 👍/👎 file against the right tile.
     var onStarted: (([String]) -> Void)? = nil
-
-    private var everything: [String] { songIds + sunkIds.filter { !songIds.contains($0) } }
 
     var body: some View {
         Button { start(songIds, shuffle: false) } label: {
@@ -266,9 +224,6 @@ struct CollectionPlayMenuItems: View {
         }
         .disabled(songIds.isEmpty)
         .accessibilityIdentifier("\(idPrefix)-play")
-
-        CollectionPlayAllButton(idPrefix: idPrefix) { start(everything, shuffle: false) }
-            .disabled(everything.isEmpty)
 
         Button { start(songIds, shuffle: true) } label: {
             Label("Shuffle", systemImage: "shuffle")
