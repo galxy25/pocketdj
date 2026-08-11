@@ -577,7 +577,6 @@ LWW would let device B silently drop device A's local events.
                         name: artistName, shuffle:, source: .artist)
                     → reserved Now Playing setlist (Ch. 4 §6)
 
- Same app.artistBrowseItems ─▶ CarPlay Artists tab (Ch. 7)
  Plays attribute to History as PlaySource .artist (Ch. 6 §8)
 ```
 
@@ -589,7 +588,7 @@ The grouping lives in `AppModel.buildEffective`, computed off the main actor onc
 
 Tapping an artist row pushes `Artist(name:)`, which `ArtistDetailView` resolves back into the discography with the *same* case-insensitive predicate: `app.albums.filter { $0.artist.localizedCaseInsensitiveCompare(artistName) == .orderedSame }`, then `allSongIds = albums.flatMap(\.trackList)` — every track, album by album, in catalog order. The header's **Play all** and **Shuffle all** both call `CollectionsStore.playNow(songIds: allSongIds, name: artistName, shuffle:, source: .artist)`, which snapshots those ids literally (no realize autofill or pocket sampling) into the reserved, reusable **Now Playing** setlist (Ch. 4 §6) and opens it autostarting — the same seam `AlbumDetailView` uses for a single album, just fed the whole discography. `shuffle` reorders the resolved tracks fresh on each call; **Shuffle all** is therefore a one-tap "play this artist's entire catalog on random," which is the kind's reason to exist.
 
-Two consumers ride the exact same grouping so the artist model stays single-sourced. **CarPlay** (Ch. 7) builds its Artists tab straight from `app.artistBrowseItems` (`CarPlayModel.artists()` unwraps the `.artist` cases), drills into an artist with the identical case-insensitive `app.albums.filter`, and plays via `playSongIds(…, source: .artist)` — the head-unit and the phone browse the same synthesized artists and never diverge. And every artist-initiated play is attributed to **Play history** as `PlaySource.artist` (Ch. 6 §8) — a distinct token (raw value `"artist"`, labelled "Artist", symbol `music.mic`) that sits beside `browser`/`playlist`/`pocket`/`album`/`setlist`/`mix`, so the timeline can tell "played from an artist's discography" apart from "played from an album." Because those raw values are the persisted history tokens, the `artist` case must never be renamed.
+`app.artistBrowseItems` had a second consumer until the owner replaced CarPlay's Albums and Artists tabs with **For You** (Ch. 7 §9); the head unit no longer browses artists, and `CarPlayModel.artists()` was deleted with the tab. The grouping is now single-consumer, and `ArtistDetailView` is where it lands. Every artist-initiated play is attributed to **Play history** as `PlaySource.artist` (Ch. 6 §8) — a distinct token (raw value `"artist"`, labelled "Artist", symbol `music.mic`) that sits beside `browser`/`playlist`/`pocket`/`album`/`setlist`/`mix`, so the timeline can tell "played from an artist's discography" apart from "played from an album." Because those raw values are the persisted history tokens, the `artist` case must never be renamed.
 
 ---
 
