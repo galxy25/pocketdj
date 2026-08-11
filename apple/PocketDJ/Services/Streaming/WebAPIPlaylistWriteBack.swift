@@ -83,6 +83,27 @@ enum AppleMusicWebAPI {
         return r
     }
 
+    /// The `ids[...]` resource key on `POST /v1/me/library` — which flavor of catalog
+    /// id is being added to the user's library itself.
+    enum LibraryAddKind: String, Sendable {
+        case songs, albums
+    }
+
+    /// POST the catalog ids into the user's LIBRARY itself (no playlist):
+    /// `POST /v1/me/library?ids[albums]=…` (or `ids[songs]=…`). Documented success is
+    /// HTTP **202 Accepted** with an EMPTY body — Apple accepting the add into the
+    /// cloud library, which "may take a delay before … appear[ing] in a user's
+    /// library" locally. This is the delivery route the library-add fallback uses when
+    /// the native `MusicLibrary.add` throws (the iOS 27-beta MPErrorDomain#0
+    /// regression).
+    static func addToLibraryRequest(kind: LibraryAddKind, ids: [String]) -> URLRequest {
+        var c = URLComponents(string: base + "/v1/me/library")!
+        c.queryItems = [.init(name: "ids[\(kind.rawValue)]", value: ids.joined(separator: ","))]
+        var r = URLRequest(url: c.url!)
+        r.httpMethod = "POST"
+        return r
+    }
+
     static func storefrontRequest() -> URLRequest {
         URLRequest(url: URL(string: base + "/v1/me/storefront")!)
     }
@@ -194,6 +215,96 @@ enum WriteBackPlaylistMatcher {
             $0.name.trimmingCharacters(in: .whitespacesAndNewlines)
                 .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil) == folded
         }
+    }
+}
+
+// MARK: - Library-ADD fallback (native MusicLibrary.add → POST /v1/me/library)
+
+/// Native-first, WEB-fallback delivery for one Apple Music LIBRARY add.
+///
+/// WHY. On iOS 27 beta (24A5390f) `MusicLibrary.shared.add` throws MPErrorDomain#0
+/// ("An unknown error occurred.", no underlying chain) for ordinary catalog albums on
+/// an authorized, subscription-backed session — a MediaPlayer-daemon regression, not an
+/// app state. The Apple Music WEB API (`POST /v1/me/library?ids[albums]=…`) is a
+/// separate delivery path through `MusicDataRequest`, which this app already trusts for
+/// playlist write-back and favorites. So: try native (unchanged), and only when it
+/// THROWS, deliver through the web.
+///
+/// Pure orchestration over injected closures + the `AppleMusicWebSender` seam, so unit
+/// tests script every route (native success / native-throw + web-202 / both failing)
+/// with no MusicKit, no account and no network — mirroring
+/// `WebAPIPlaylistWriteBackTransport`.
+@MainActor
+enum AppleMusicLibraryAddFallback {
+
+    /// NSError domain for a BOTH-routes-failed add. The code is the web HTTP status
+    /// (0 = the web transport itself threw); the NATIVE error rides as
+    /// `NSUnderlyingErrorKey`. `RipsStore.libraryWriteFailureDetail` then renders BOTH
+    /// identities: the sentence carries the native sentence + web status/body, and the
+    /// domain#code chain carries this domain followed by the native chain.
+    static let webFallbackErrorDomain = "PDJAppleMusicWebAdd"
+
+    /// `native` performs the MusicKit add + membership confirmation (returning the
+    /// probe's verdict); `probe` is the single-shot membership check, run after a web
+    /// 202 for the LOG only. `diag` receives the route/outcome story (wired to the
+    /// mixdiag pipe in production so a Settings ▸ Debug capture shows the write story).
+    static func run(kind: AppleMusicWebAPI.LibraryAddKind,
+                    storeID: String,
+                    sender: any AppleMusicWebSender,
+                    diag: (String) -> Void,
+                    native: () async throws -> Bool,
+                    probe: () async -> Bool) async throws -> AppleMusicLibraryAddResult {
+        let nativeError: Error
+        do {
+            let confirmed = try await native()
+            diag("amwrite \(kind.rawValue) \(storeID) native → \(confirmed ? "confirmed" : "unconfirmed")")
+            return confirmed ? .confirmed : .unconfirmed
+        } catch {
+            nativeError = error
+            let ns = error as NSError
+            diag("amwrite \(kind.rawValue) \(storeID) native THREW \(ns.domain)#\(ns.code) — trying web API")
+        }
+
+        let data: Data
+        let status: Int
+        do {
+            (data, status) = try await sender.send(
+                AppleMusicWebAPI.addToLibraryRequest(kind: kind, ids: [storeID]))
+        } catch {
+            diag("amwrite \(kind.rawValue) \(storeID) web transport failed: \(error.localizedDescription)")
+            throw webFailure(native: nativeError, status: 0,
+                             summary: "web fallback couldn’t send: \(error.localizedDescription)")
+        }
+        guard (200...299).contains(status) else {   // documented success is 202 Accepted
+            let body = bodySummary(data)
+            diag("amwrite \(kind.rawValue) \(storeID) web → HTTP \(status)\(body.isEmpty ? "" : " " + body)")
+            throw webFailure(native: nativeError, status: status,
+                             summary: "web fallback HTTP \(status)\(body.isEmpty ? "" : ": " + body)")
+        }
+        diag("amwrite \(kind.rawValue) \(storeID) web → HTTP \(status) (accepted)")
+        // The probe is for the LOG only: a 202 is Apple accepting the add into the
+        // CLOUD library, and Apple documents a delay before it appears locally — local
+        // sync lag must never downgrade the accepted write to a failure.
+        let visible = await probe()
+        diag("amwrite \(kind.rawValue) \(storeID) post-web probe → "
+             + (visible ? "visible in local library" : "not visible locally yet (cloud add stands)"))
+        return .webAccepted
+    }
+
+    private static func webFailure(native: Error, status: Int, summary: String) -> NSError {
+        NSError(domain: webFallbackErrorDomain, code: status, userInfo: [
+            NSLocalizedDescriptionKey: "\(native.localizedDescription) — \(summary)",
+            NSUnderlyingErrorKey: native as NSError,
+        ])
+    }
+
+    /// First ~200 chars of the response body, newline-flattened — enough of Apple's
+    /// `errors` array to name the failure without shipping a novel into the token.
+    static func bodySummary(_ data: Data) -> String {
+        guard !data.isEmpty, let s = String(data: data, encoding: .utf8) else { return "" }
+        let flat = s.replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return flat.count > 200 ? String(flat.prefix(200)) + "…" : flat
     }
 }
 

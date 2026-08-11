@@ -179,9 +179,9 @@ final class DiscoverStoreTests: XCTestCase {
         var canAddToLibrary: Bool { canAdd }
         func resolveForLibrary(storeID: String?, title: String?, artist: String?) async -> AppleMusicResolution? { nil }
         @discardableResult
-        func addSongToLibrary(storeID: String) async throws -> Bool { added.append(storeID); return true }
+        func addSongToLibrary(storeID: String) async throws -> AppleMusicLibraryAddResult { added.append(storeID); return .confirmed }
         @discardableResult
-        func addAlbumToLibrary(storeID: String) async throws -> Bool { true }
+        func addAlbumToLibrary(storeID: String) async throws -> AppleMusicLibraryAddResult { .confirmed }
         func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] { [] }
     }
 
@@ -553,9 +553,9 @@ final class DiscoverStoreTests: XCTestCase {
         private(set) var addedAlbumStoreIDs: [String] = []
         func resolveForLibrary(storeID: String?, title: String?, artist: String?) async -> AppleMusicResolution? { nil }
         @discardableResult
-        func addSongToLibrary(storeID: String) async throws -> Bool { true }
+        func addSongToLibrary(storeID: String) async throws -> AppleMusicLibraryAddResult { .confirmed }
         @discardableResult
-        func addAlbumToLibrary(storeID: String) async throws -> Bool { addedAlbumStoreIDs.append(storeID); return true }
+        func addAlbumToLibrary(storeID: String) async throws -> AppleMusicLibraryAddResult { addedAlbumStoreIDs.append(storeID); return .confirmed }
         func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] { tracks }
     }
 
