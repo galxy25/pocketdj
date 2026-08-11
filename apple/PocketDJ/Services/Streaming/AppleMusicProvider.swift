@@ -395,16 +395,23 @@ extension AppleMusicProvider: MusicLibraryContributor {
             songURL: song.url)
     }
 
-    func addSongToLibrary(storeID: String) async throws {
+    @discardableResult
+    func addSongToLibrary(storeID: String) async throws -> Bool {
         #if os(macOS)
         throw StreamingError.notConfigured   // MusicLibrary.add is unavailable on macOS
         #else
         guard let song = try await Self.fetchSong(storeID: storeID) else { throw StreamingError.notConfigured }
         _ = try await MusicLibrary.shared.add(song)
+        // POST-WRITE CONFIRMATION (the four-albums bug): `add` returning is not the same
+        // as the song being in the library — probe with the same library search the
+        // recognizer flow trusts, retrying once because a fresh add can take a beat to
+        // become visible to `MusicLibrarySearchRequest`.
+        return await Self.confirmInLibrary { await Self.isInLibrary(title: song.title, artist: song.artistName) }
         #endif
     }
 
-    func addAlbumToLibrary(storeID: String) async throws {
+    @discardableResult
+    func addAlbumToLibrary(storeID: String) async throws -> Bool {
         #if os(macOS)
         throw StreamingError.notConfigured   // MusicLibrary.add is unavailable on macOS
         #else
@@ -412,8 +419,24 @@ extension AppleMusicProvider: MusicLibraryContributor {
         req.limit = 1
         guard let album = try await req.response().items.first else { throw StreamingError.notConfigured }
         _ = try await MusicLibrary.shared.add(album)
+        // Post-write confirmation, album flavor (see addSongToLibrary).
+        let (title, artist) = (album.title, album.artistName)
+        return await Self.confirmInLibrary { await Self.albumIsInLibrary(title: title, artist: artist) }
         #endif
     }
+
+    #if !os(macOS)
+    /// Run a membership probe up to twice, ~1.5 s apart: MusicKit's library can lag a
+    /// fresh `add` by a moment, and a single instant probe would report a healthy write
+    /// as `.unconfirmed`. Two attempts keeps the add responsive while giving the library
+    /// a beat to catch up; a write that is still invisible after that is honestly
+    /// UNPROVEN and reported as such (retryable — re-adding is idempotent).
+    private static func confirmInLibrary(_ probe: () async -> Bool) async -> Bool {
+        if await probe() { return true }
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        return await probe()
+    }
+    #endif
 
     func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] {
         guard canContribute else { return [] }
@@ -473,6 +496,24 @@ extension AppleMusicProvider: MusicLibraryContributor {
             guard ShazamCatalogMatch.norm(s.title) == nt else { return false }
             guard !na.isEmpty else { return true }
             let sa = ShazamCatalogMatch.norm(s.artistName)
+            return sa == na || sa.contains(na) || na.contains(sa)
+        }
+    }
+
+    /// Album twin of `isInLibrary` — searches the user's LIBRARY for a normalized
+    /// title + compatible-artist ALBUM hit. The discover-add post-write confirmation
+    /// reads this; same fuzzy match so the two probes can't disagree about membership.
+    private static func albumIsInLibrary(title: String, artist: String) async -> Bool {
+        guard let term = libraryTerm(title: title, artist: artist) else { return false }
+        var req = MusicLibrarySearchRequest(term: term, types: [MusicKit.Album.self])
+        req.limit = 10
+        guard let resp = try? await req.response() else { return false }
+        let nt = ShazamCatalogMatch.norm(title)
+        let na = ShazamCatalogMatch.norm(artist)
+        return resp.albums.contains { a in
+            guard ShazamCatalogMatch.norm(a.title) == nt else { return false }
+            guard !na.isEmpty else { return true }
+            let sa = ShazamCatalogMatch.norm(a.artistName)
             return sa == na || sa.contains(na) || na.contains(sa)
         }
     }
@@ -548,8 +589,10 @@ extension AppleMusicProvider: MusicLibraryContributor {
     var canContribute: Bool { false }
     var canAddToLibrary: Bool { false }
     func resolveForLibrary(storeID: String?, title: String?, artist: String?) async -> AppleMusicResolution? { nil }
-    func addSongToLibrary(storeID: String) async throws { throw StreamingError.notConfigured }
-    func addAlbumToLibrary(storeID: String) async throws { throw StreamingError.notConfigured }
+    @discardableResult
+    func addSongToLibrary(storeID: String) async throws -> Bool { throw StreamingError.notConfigured }
+    @discardableResult
+    func addAlbumToLibrary(storeID: String) async throws -> Bool { throw StreamingError.notConfigured }
     func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] { [] }
 }
 #endif

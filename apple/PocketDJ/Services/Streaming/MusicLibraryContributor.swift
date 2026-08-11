@@ -39,6 +39,66 @@ struct AppleMusicResolution: Hashable {
 }
 
 // ============================================================================
+// MARK: - Apple Music library-write OUTCOME (MusicKit-free → unit-testable)
+// ============================================================================
+
+/// The TRUTHFUL result of the Apple Music LIBRARY-WRITE half of a Discover "＋ Add".
+///
+/// BUG (Levi, device, 2026-08-07): four New-tile album adds each logged
+/// "Added … to your library" while none of them ever reached his Apple Music library.
+/// The write was a `try? await library.addAlbumToLibrary(...)` behind an
+/// `if let library, library.canAddToLibrary` — a skipped gate and a swallowed throw were
+/// both recorded as success, because nothing recorded the write's outcome at all.
+///
+/// This type is that record. Every discover-add flow now computes one and stamps it on
+/// the provisional entry AND the `.catalogAdd` History event, so "Added to your library"
+/// is only ever asserted for a write that RETURNED **and was then found by the
+/// library-membership probe** — MusicKit's `add()` returning without throwing is not the
+/// same thing as the item being in the library.
+enum AppleMusicLibraryWriteOutcome: Equatable {
+    /// The write returned AND the post-write membership probe found the item.
+    case confirmed
+    /// The write returned but the probe could NOT find the item — treated as NOT a
+    /// success anywhere the outcome is reported (History, error text, retry gate).
+    case unconfirmed
+    /// The write threw (auth loss mid-flight, catalog resolve, network, Apple-side).
+    case failed(reason: String)
+    /// The write was never attempted: no contributor, macOS (`canAddToLibrary` false
+    /// by platform), or an unauthorized MusicKit session.
+    case skipped(reason: String)
+
+    var isConfirmed: Bool { self == .confirmed }
+
+    /// The token persisted on provisional entries + activity events. `confirmedToken`
+    /// for a proven write; otherwise a human-readable annotation ("Apple Music write
+    /// failed: …" / "… skipped: …" / "… unconfirmed …") rendered verbatim by History.
+    var storageToken: String { annotation ?? Self.confirmedToken }
+
+    /// nil for `.confirmed` (no qualifier owed), else the History-facing annotation.
+    var annotation: String? {
+        switch self {
+        case .confirmed:
+            return nil
+        case .unconfirmed:
+            return "Apple Music write unconfirmed — not visible in your library yet"
+        case let .failed(reason):
+            return "Apple Music write failed: \(reason)"
+        case let .skipped(reason):
+            return "Apple Music write skipped: \(reason)"
+        }
+    }
+
+    /// The persisted marker for a PROVEN write. A nil stored token means the entry
+    /// predates outcome tracking (legacy) — treated as NOT proven, so the retry
+    /// affordance stays reachable for exactly the adds this bug silently dropped.
+    static let confirmedToken = "confirmed"
+
+    /// Whether a stored token proves the Apple Music write landed. nil (legacy entry,
+    /// recorded before outcomes existed) is NOT proof — those are the four albums.
+    static func provenByToken(_ token: String?) -> Bool { token == confirmedToken }
+}
+
+// ============================================================================
 // MARK: - MusicLibraryContributor seam
 // ============================================================================
 
@@ -75,10 +135,17 @@ protocol MusicLibraryContributor: AnyObject {
     func resolveForLibrary(storeID: String?, title: String?, artist: String?) async -> AppleMusicResolution?
 
     /// Add the catalog SONG (by store id) to the user's library. Throws on failure.
-    func addSongToLibrary(storeID: String) async throws
+    /// Returns whether the POST-WRITE membership probe actually FOUND the song in the
+    /// library — `MusicLibrary.add` returning without throwing is not the same thing
+    /// (the Levi four-albums bug). `@discardableResult` keeps the recognizer/detail
+    /// call sites (which surface only the throw) compiling unchanged.
+    @discardableResult
+    func addSongToLibrary(storeID: String) async throws -> Bool
 
     /// Add the catalog ALBUM (by store id) to the user's library. Throws on failure.
-    func addAlbumToLibrary(storeID: String) async throws
+    /// Returns the post-write membership confirmation, exactly like the song variant.
+    @discardableResult
+    func addAlbumToLibrary(storeID: String) async throws -> Bool
 
     /// The album's ordered tracklist, for the synthesized "album not in your index"
     /// screen. Best-effort: returns [] on any failure.

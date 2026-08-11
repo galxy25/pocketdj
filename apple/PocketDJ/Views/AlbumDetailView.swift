@@ -7,11 +7,14 @@ struct AlbumDetailView: View {
     @Environment(SetlistPlayer.self) private var sequencer
     @Environment(CollectionsStore.self) private var collections
     @Environment(RipsStore.self) private var rips
+    @Environment(StreamingStore.self) private var streaming
     let album: IndexAlbum
     @Binding var path: NavigationPath
     @State private var showEdit = false
     @State private var showAdd = false
     @State private var showAudioEdit = false
+    /// "Add to Apple Music again" (provisional Discover albums only) in flight.
+    @State private var retryingLibraryWrite = false
     /// Album-level "Stemify each song" — reuses the shared collection controller (progress
     /// pill + over-cap confirm). Per-track Stemify is already free via each row's RowTransport.
     @State private var ripBurn = CollectionRipBurnController()
@@ -128,6 +131,7 @@ struct AlbumDetailView: View {
                     Tag(text: src, color: Theme.fgDim)
                         .accessibilityIdentifier("source-tag")
                 }
+                libraryWriteRetry
                 Text("\(tracks.count) tracks")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(Theme.fgDim)
@@ -144,6 +148,62 @@ struct AlbumDetailView: View {
                 Spacer(minLength: 0)
             }
             Spacer(minLength: 0)
+        }
+    }
+
+    /// The provisional Discover entry backing THIS album, when it is one (`amrec_album_…`).
+    private var discoverAlbumEntry: DiscoverAddsStore.AlbumEntry? {
+        rips.discoverAdds?.albums.first { $0.albumId == current.id }
+    }
+
+    /// "Add to Apple Music again" for a provisional Discover album whose Apple Music
+    /// library write isn't PROVEN (recorded failure/skip/unconfirmed, or a legacy entry
+    /// from before write outcomes were tracked — Levi's four silently-failed albums).
+    /// It lives HERE because this is the screen those albums are still reachable from:
+    /// the New feed now correctly hides owned albums, so the feed offers no way back to
+    /// the failed write. Idempotent on Apple's side, so a legacy entry that DID land is
+    /// safe to re-add.
+    @ViewBuilder private var libraryWriteRetry: some View {
+        if let entry = discoverAlbumEntry,
+           AlbumLibraryWriteRetry.needsRetry(
+               token: entry.libraryWrite,
+               canAddToLibrary: streaming.providers.libraryContributors.first?.canAddToLibrary ?? false) {
+            VStack(alignment: .leading, spacing: 4) {
+                if let note = entry.libraryWrite {
+                    Text(note).font(.caption2).foregroundStyle(Theme.danger)
+                        .accessibilityIdentifier("album-am-note")
+                }
+                Button {
+                    retryLibraryWrite(entry)
+                } label: {
+                    Label {
+                        Text(retryingLibraryWrite ? "Adding to Apple Music…" : "Add to Apple Music again")
+                    } icon: {
+                        if retryingLibraryWrite { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "arrow.clockwise.circle") }
+                    }
+                    .font(.caption.weight(.semibold)).foregroundStyle(Theme.accent2)
+                }
+                .buttonStyle(.plain)
+                .disabled(retryingLibraryWrite)
+                .accessibilityIdentifier("album-am-retry")
+            }
+        } else if let entry = discoverAlbumEntry,
+                  AppleMusicLibraryWriteOutcome.provenByToken(entry.libraryWrite) {
+            // The heal's receipt: a PROVEN write reads as such (and the button is gone).
+            Label("In your Apple Music library", systemImage: "checkmark.circle.fill")
+                .font(.caption2).foregroundStyle(.green)
+                .accessibilityIdentifier("album-am-confirmed")
+        }
+    }
+
+    private func retryLibraryWrite(_ entry: DiscoverAddsStore.AlbumEntry) {
+        retryingLibraryWrite = true
+        Task {
+            _ = await rips.retryAlbumLibraryWrite(
+                albumId: entry.albumId, appleMusicId: entry.appleMusicId,
+                library: streaming.providers.libraryContributors.first)
+            retryingLibraryWrite = false
         }
     }
 

@@ -171,6 +171,21 @@ enum AlbumPreviewUnavailable: Equatable {
     }
 }
 
+/// Whether a provisional Discover album should offer "Add to Apple Music again".
+/// PURE (the AlbumOwnership doctrine): "the retry never appeared" is exactly the class
+/// of defect that ships green when the decision lives inline in a view.
+///
+/// Retry is owed whenever the stored write token doesn't PROVE the write landed — a
+/// recorded failure/skip/unconfirmed, or a LEGACY entry (nil) from before outcomes were
+/// tracked, which cannot prove anything (Levi's four albums are these). Only offered
+/// where the device can actually write the library right now: a button that can only
+/// re-skip is a dead control (on macOS the open-in-Music link is the path instead).
+enum AlbumLibraryWriteRetry {
+    static func needsRetry(token: String?, canAddToLibrary: Bool) -> Bool {
+        canAddToLibrary && !AppleMusicLibraryWriteOutcome.provenByToken(token)
+    }
+}
+
 // ============================================================================
 // MARK: - The preview screen
 // ============================================================================
@@ -207,6 +222,8 @@ struct AlbumPreviewView: View {
     @State private var unavailable: AlbumPreviewUnavailable?
     @State private var adding = false
     @State private var errorText: String?
+    /// "Add to Apple Music again" in flight (distinct from `adding`, which is the ＋).
+    @State private var retryingLibraryWrite = false
     /// The burn ids the download request was made under — the handle `downloadState` reports
     /// against. Empty until the user actually taps Download (idle).
     @State private var downloadIds: [String] = []
@@ -474,6 +491,43 @@ struct AlbumPreviewView: View {
                 .buttonStyle(.plain)
                 .accessibilityIdentifier("album-preview-open")
             }
+
+            // RETRY the Apple Music library write when the recorded outcome doesn't PROVE it
+            // landed (failed / skipped / unconfirmed — or a legacy entry from before outcomes
+            // existed, which is exactly Levi's four albums). This affordance is load-bearing:
+            // once the add records the album as owned, the New feed correctly hides it, so
+            // without this there is NO path back to the write from the feed.
+            if AlbumLibraryWriteRetry.needsRetry(token: entry.libraryWrite,
+                                                 canAddToLibrary: canAddToLibrary) {
+                if let note = entry.libraryWrite {
+                    Text(note).font(.caption).foregroundStyle(Theme.danger)
+                        .accessibilityIdentifier("album-preview-am-note")
+                }
+                Button { retryLibraryWrite(entry) } label: {
+                    Label {
+                        Text(retryingLibraryWrite ? "Adding to Apple Music…" : "Add to Apple Music again")
+                    } icon: {
+                        if retryingLibraryWrite { ProgressView().controlSize(.small) }
+                        else { Image(systemName: "arrow.clockwise.circle") }
+                    }
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.accent2)
+                }
+                .buttonStyle(.plain)
+                .disabled(retryingLibraryWrite)
+                .accessibilityIdentifier("album-preview-am-retry")
+            }
+        }
+    }
+
+    /// Re-run ONLY the Apple Music library write for the already-recorded provisional album.
+    private func retryLibraryWrite(_ entry: DiscoverAddsStore.AlbumEntry) {
+        retryingLibraryWrite = true; errorText = nil
+        Task {
+            let outcome = await rips.retryAlbumLibraryWrite(albumId: entry.albumId,
+                                                            appleMusicId: entry.appleMusicId,
+                                                            library: contributor)
+            if !outcome.isConfirmed { errorText = rips.discoverError }
+            retryingLibraryWrite = false
         }
     }
 
