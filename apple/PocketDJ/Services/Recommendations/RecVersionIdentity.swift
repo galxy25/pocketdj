@@ -136,6 +136,114 @@ enum RecVersionIdentity {
         return supersedes(candidate: c, owned: o)
     }
 
+    /// The same identity with the base's WORD BOUNDARIES removed — `pop star` ⇒ `popstar`.
+    /// `nil` when the base has no spaces, so a caller can skip a lookup that would be identical.
+    ///
+    /// ── WHY THIS EXISTS (a real row, not a hypothetical) ─────────────────────────────────────
+    /// Tinashe's pre-order is written `Popstar` in the owner's Library.xml and was reported off
+    /// the New screen as "Pop Star". One of Apple's own two spellings of one record is what the
+    /// library stored and the other is what the feed showed, and `tokens` splits them into
+    /// different bases, so the record read as two.
+    ///
+    /// Used ONLY by the OWNERSHIP relation (`RecVersionIndex.hasRecord`), never by `supersedes`:
+    /// widening feature 6's bucket would change which rows it calls "a different version", which
+    /// is a separate question with its own settled answer. Safe to be this loose here because the
+    /// artist must already match and the letter sequence must be identical — two DIFFERENT albums
+    /// by one artist whose titles differ only in spacing is not a thing that happens.
+    static func spacelessKey(_ k: Key) -> Key? {
+        let squashed = k.base.replacingOccurrences(of: " ", with: "")
+        guard squashed != k.base, !squashed.isEmpty else { return nil }
+        return Key(artistKey: k.artistKey, base: squashed, signature: k.signature, klass: k.klass)
+    }
+
+    /// **EVERY ARTIST NAMED IN A CREDIT** — `artistKey` for the whole string, plus one for each
+    /// name in it. `"Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi Washington"`
+    /// ⇒ the long key AND `dinner party`, `terrace martin`, `robert glasper`, `9th wonder`,
+    /// `kamasi washington`. A single-name credit returns exactly one key and costs one `artistKey`.
+    ///
+    /// ── WHY (measured on the owner's real library, not a hypothesis) ─────────────────────────
+    /// `ArtistReleaseEntry.artistName` is APPLE'S CANONICAL NAME FOR ONE ARTIST ID
+    /// (`ReleaseFeedModels.entries` ⇒ `artist.attributes.name`) — never a collaboration string.
+    /// The owned side is whatever Music.app wrote into Library.xml, which for a collaboration is
+    /// the FULL credit: both of his Dinner Party albums are filed under the long string above, and
+    /// the artists table has no plain "Dinner Party" row at all. `artistKey` does not split a
+    /// credit, so "dinner party" never met "dinner party terrace martin …" and the album he owns
+    /// was still offered. Measured over the 510 id-less 2026 albums in his index, that mismatch
+    /// alone accounted for 149 of the 161 misses — almost all of them collaboration singles.
+    ///
+    /// ── WHY THIS CANNOT OVER-SUPPRESS ────────────────────────────────────────────────────────
+    /// These keys are only ever used to decide WHICH OF HIS ALBUMS to compare a release against;
+    /// the release is then suppressed only if the BASE TITLE matches letter-for-letter. So the
+    /// widening says exactly "he owns a record with this title that this artist is credited on",
+    /// which is the ownership question. A band name that reads as a list ("Earth, Wind & Fire",
+    /// "Simon and Garfunkel") does gain spurious keys — but to delete anything, a release by an
+    /// artist literally named "Wind" would have to carry the identical album title.
+    ///
+    /// Used ONLY by the ownership grouping (`AppModel.ownedAlbumRecordIndex`), never by
+    /// `supersedes` — widening feature 6's buckets would change which rows it calls "a different
+    /// version", a separate question with its own settled answer.
+    static func creditArtistKeys(_ raw: String) -> [String] {
+        var out: [String] = []
+        var seen: Set<String> = []
+        func add(_ k: String) {
+            guard !k.isEmpty, out.count < maxCreditNames, seen.insert(k).inserted else { return }
+            out.append(k)
+        }
+        // A credit written with brackets is read TWICE — once as-is, once with the brackets
+        // neutralised — because `stripParenGroups` deletes a bracketed NAME along with the
+        // bracketed credits it exists to remove. "[IVY] & XIRA" otherwise indexes only "xira".
+        let debracketed = debracket(raw)
+        for source in (debracketed == raw ? [raw] : [raw, debracketed]) {
+            add(artistKey(source))
+            // Split the FOLDED credit — `fold` has already turned "&" into " and ", which is the
+            // separator Apple's collaboration credits overwhelmingly use.
+            let folded = stripCreditTail(stripParenGroups(fold(source)))
+            guard folded.contains(where: { creditSplitChars.contains($0) })
+                    || creditSplitWords.contains(where: { folded.contains($0) }) else { continue }
+            for piece in splitCredit(folded) { add(artistKey(piece)) }
+        }
+        return out
+    }
+
+    /// **THE ARTIST KEY THE OWNERSHIP JOIN USES.** `artistKey`, except that a name written
+    /// ENTIRELY inside brackets is not an artist-less row.
+    ///
+    /// `artistKey` strips bracketed groups as version/credit material, which is right for a title
+    /// and right for "Sade (feat. Sweetback)" — but it reduces `"[IVY]"` to the empty string, and
+    /// an empty key is `isUsable == false`, so the row silently drops out of the comparison
+    /// entirely. That was the LAST of the 510 id-less 2026 albums in his library still offered
+    /// after the credit split ("[IVY] & XIRA — Car Crash"; the feed names that artist "[IVY]").
+    /// Applied only when the normal key comes back empty, so no name that already has one changes,
+    /// and only on the ownership path — feature 6's bucketing is untouched.
+    static func ownershipArtistKey(_ raw: String) -> String {
+        let k = artistKey(raw)
+        return k.isEmpty ? artistKey(debracket(raw)) : k
+    }
+
+    private static func debracket(_ s: String) -> String {
+        String(s.map { "()[]{}".contains($0) ? " " : $0 })
+    }
+
+    /// A credit that names more than this is a compilation sleeve, not a collaboration; indexing
+    /// every name on it buys nothing and grows the map for no one.
+    private static let maxCreditNames = 12
+    private static let creditSplitChars: Set<Character> = [",", ";", "/"]
+    private static let creditSplitWords = [" and ", " x ", " with ", " vs ", " versus "]
+
+    /// Break a folded credit into individual names on the separators above. Word separators must
+    /// be whole words (" and " never splits "Bandit"), which is what the space padding buys.
+    private static func splitCredit(_ folded: String) -> [String] {
+        var pieces = folded.split(whereSeparator: { creditSplitChars.contains($0) }).map(String.init)
+        for word in creditSplitWords {
+            pieces = pieces.flatMap { piece -> [String] in
+                let padded = " " + piece + " "
+                guard padded.contains(word) else { return [piece] }
+                return padded.components(separatedBy: word)
+            }
+        }
+        return pieces
+    }
+
     // ========================================================================
     // MARK: - Normalization (ported from am-match.mjs)
     // ========================================================================
@@ -444,16 +552,34 @@ struct RecVersionIndex: Sendable, Equatable {
     /// `artistKey \u{1} base` ⇒ the version signatures owned under it.
     private let byBucket: [String: Set<String>]
 
+    /// `bucket \u{1} signature` for the `.distinct` entries `byBucket` deliberately drops.
+    ///
+    /// Read ONLY by `hasRecord`, and only on an EXACT signature match, so it can answer "he
+    /// literally has this record" for a title whose parenthetical this file does not recognise —
+    /// *"Yo Favorite Trappa Favorite Rappa (Hosted by DJ Holiday)"*, *"SIR TOO $HORT, VOL. 2
+    /// (DRINK & SMOKE)"* — without touching the fail-open rule that keeps a LIVE album of an owned
+    /// record in the feed. Those two are different questions: "(Live)" against a plain title is a
+    /// different signature and still fails open; the identical title is not a different
+    /// performance, it is the same record. `supersedes` never consults this.
+    private let distinctExact: Set<String>
+
     static let empty = RecVersionIndex(owned: [RecVersionIdentity.Key]())
 
     init(owned: some Sequence<RecVersionIdentity.Key>) {
         var m: [String: Set<String>] = [:]
-        for k in owned where k.isUsable && !k.isDistinct {
-            m[k.bucket, default: []].insert(k.signature)
+        var d: Set<String> = []
+        for k in owned where k.isUsable {
+            if k.isDistinct { d.insert(k.bucket + "\u{1}" + k.signature) }
+            else { m[k.bucket, default: []].insert(k.signature) }
         }
         byBucket = m
+        distinctExact = d
     }
 
+    /// Nothing here can supersede anything — the FEATURE-6 question, which is what every caller of
+    /// this property is asking. An index holding only `.distinct` entries is `isEmpty`, because a
+    /// live take he owns is not grounds to suppress a single row; those entries exist solely for
+    /// `hasRecord`'s exact-title case, which guards itself.
     var isEmpty: Bool { byBucket.isEmpty }
 
     /// Does he already have this record in ANOTHER version?
@@ -472,5 +598,55 @@ struct RecVersionIndex: Sendable, Equatable {
         guard !byBucket.isEmpty,
               let k = RecVersionIdentity.key(title: title, artist: artist) else { return false }
         return supersedes(k)
+    }
+
+    // ── The OWNERSHIP question (adjacent to `supersedes`, and not the same one) ───────────────
+
+    /// **DOES HE ALREADY HAVE THIS RECORD AT ALL?** — regardless of which edition either side is.
+    ///
+    /// `supersedes` asks whether the candidate is a DIFFERENT VERSION of something owned, and its
+    /// last clause (`signature != `) deliberately refuses to answer on artist + title alone. That
+    /// guard is right for feature 6 and stays exactly as it is — but it is also why an album the
+    /// owner literally has can march through the New feed: same artist, same title, same (empty)
+    /// signature, so "different version" is honestly *no*.
+    ///
+    /// This is the other half of that sentence, and it belongs to the OWNERSHIP path: the bucket
+    /// existing at all means he owns a record by this artist under this title. It is strictly
+    /// broader than `supersedes` (every superseding pair shares a bucket), so the two never
+    /// disagree — this one simply also covers the equal-signature case.
+    ///
+    /// The `.distinct` fail-open is unchanged WHERE IT MEANS SOMETHING: a live/acoustic/demo cut of
+    /// a record he owns is new music and is never suppressed, and owning a live album is never
+    /// grounds to hide the studio record — both of those compare a `.distinct` title against a
+    /// DIFFERENT signature. What this does answer is the identical title on both sides
+    /// (`distinctExact`): a parenthetical this file cannot classify is not evidence of a different
+    /// performance when the two strings are letter-for-letter the same record.
+    func hasRecord(_ candidate: RecVersionIdentity.Key) -> Bool {
+        guard candidate.isUsable else { return false }
+        if candidate.isDistinct {
+            return distinctExact.contains(candidate.bucket + "\u{1}" + candidate.signature)
+                || RecVersionIdentity.spacelessKey(candidate).map {
+                    distinctExact.contains($0.bucket + "\u{1}" + $0.signature)
+                } == true
+        }
+        if byBucket[candidate.bucket] != nil { return true }
+        // "Pop Star" vs "Popstar" — one record, two of Apple's own spellings. See `spacelessKey`.
+        // Matching is only symmetric if the OWNED side was seeded with its spaceless keys too;
+        // `AppModel.ownedAlbumRecordIndex(forArtistName:artistId:)` — the one builder feeding
+        // this — does.
+        guard let squashed = RecVersionIdentity.spacelessKey(candidate) else { return false }
+        return byBucket[squashed.bucket] != nil
+    }
+
+    /// String convenience, for the release feed (which holds raw text, never a catalog row).
+    /// Normalizes the artist with `ownershipArtistKey`, which is what the owned side was indexed
+    /// with — the two halves of a join have to agree on the key or a bracketed artist name reads
+    /// as artist-less on one side only.
+    func hasRecord(title: String, artist: String) -> Bool {
+        guard !byBucket.isEmpty || !distinctExact.isEmpty,
+              let k = RecVersionIdentity.key(
+                title: title, artistKey: RecVersionIdentity.ownershipArtistKey(artist))
+        else { return false }
+        return hasRecord(k)
     }
 }
