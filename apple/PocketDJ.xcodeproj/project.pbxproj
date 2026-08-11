@@ -170,6 +170,7 @@
 		4D2B471E5A6C13F4BA25A961 /* WidgetNowPlayingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4978B8669DF99AC562256F3 /* WidgetNowPlayingTests.swift */; };
 		4ED59E7A84025167F2AB1052 /* JukeboxClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = ADBD79D43E580685546B35DA /* JukeboxClient.swift */; };
 		4F0FABA111A21AB11C49C42E /* PuzzlePlayabilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6847266CA8BB84DE6F265BE0 /* PuzzlePlayabilityTests.swift */; };
+		5042D55C0512417B0AC52A06 /* RecAudioShortlistTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CE20A71D44E6464CCFCAC6F /* RecAudioShortlistTests.swift */; };
 		50AFF7753809D4765F5063E5 /* StudioSliceEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12B8946BC54B554F1789BD45 /* StudioSliceEditorView.swift */; };
 		50CC6524B0F24DC694BD30ED /* DemuxChordDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E03FA39CA13DD4EF52F719 /* DemuxChordDetailView.swift */; };
 		50D5B90D705DE20789DFEA36 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C814FEF25275F5A6AE683C1 /* Config.swift */; };
@@ -396,6 +397,7 @@
 		C2ED9BFABA86D3F6F44BBA35 /* DemuxCloudLyricsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 965C2BB9FBBCAB3DF71E888F /* DemuxCloudLyricsTests.swift */; };
 		C4B2E5685D8D8E489A8AA918 /* SearchQueryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6EACEA867F1B6AD8B5461CCC /* SearchQueryTests.swift */; };
 		C551980B55691B322E918045 /* StudioEngineMathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A492DFF20D12B0B40DDC34A /* StudioEngineMathTests.swift */; };
+		C638EF2055B954FB412FD21A /* RecAudioShortlist.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0561384CF1E17A9FA87F562E /* RecAudioShortlist.swift */; };
 		C65ACA729564F730EDFFC7AB /* SessionFolders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 54612EED3E2E31CA19356FF5 /* SessionFolders.swift */; };
 		C670EE5E38747E3D31FAD8E8 /* JukeboxLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50091CDA29D95533C2BDD21A /* JukeboxLink.swift */; };
 		C7139728F4D720D9DC956BE7 /* Genre.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2D835E1B471258348AC54331 /* Genre.swift */; };
@@ -561,6 +563,7 @@
 		02AE25A0F889C29EFF74A434 /* MixSessionsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixSessionsView.swift; sourceTree = "<group>"; };
 		03308285792BC711ACEE2733 /* Format.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Format.swift; sourceTree = "<group>"; };
 		04695760188BA9DCF11A76AB /* PocketDJWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PocketDJWidgets.entitlements; sourceTree = "<group>"; };
+		0561384CF1E17A9FA87F562E /* RecAudioShortlist.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecAudioShortlist.swift; sourceTree = "<group>"; };
 		062A71FEE25295D13FE6D0C5 /* CollectionEntities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionEntities.swift; sourceTree = "<group>"; };
 		063FAE1C470F096D086F0D1B /* ExplicitStreamEditionRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExplicitStreamEditionRegressionTests.swift; sourceTree = "<group>"; };
 		06ADEE00236DCF749ECD0FA2 /* GameScoreboardStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GameScoreboardStoreTests.swift; sourceTree = "<group>"; };
@@ -851,6 +854,7 @@
 		8A82E2D4A8E5C53F1CAC9691 /* AppleMusicCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicCatalog.swift; sourceTree = "<group>"; };
 		8ABF8191645BD48E1298D78D /* RealizeEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RealizeEngineTests.swift; sourceTree = "<group>"; };
 		8C443AFD6A7310B3D2F70B7F /* MixDeckLayoutUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixDeckLayoutUITests.swift; sourceTree = "<group>"; };
+		8CE20A71D44E6464CCFCAC6F /* RecAudioShortlistTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecAudioShortlistTests.swift; sourceTree = "<group>"; };
 		8D3603260B7C084EE40DEA53 /* AppModelSourceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModelSourceTests.swift; sourceTree = "<group>"; };
 		8D589B67B24BB608496DCA73 /* PlayHistoryContextTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayHistoryContextTests.swift; sourceTree = "<group>"; };
 		8E3F04618F31392F949C4BC6 /* ForYouRecsOptOutTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForYouRecsOptOutTests.swift; sourceTree = "<group>"; };
@@ -1265,6 +1269,7 @@
 				4C32EE86465865DE9505E670 /* PuzzleSamplerTests.swift */,
 				41B85BBEB78B4699F0354C37 /* PuzzleSimilarityTests.swift */,
 				8ABF8191645BD48E1298D78D /* RealizeEngineTests.swift */,
+				8CE20A71D44E6464CCFCAC6F /* RecAudioShortlistTests.swift */,
 				6E5A19100207C85EBAE83A88 /* RecEngineClientTests.swift */,
 				2E4DA9B50BE58871B3BC7E75 /* RecFeedbackTests.swift */,
 				BA5B546E60F817BCE82369F4 /* RecMembershipTests.swift */,
@@ -1630,6 +1635,7 @@
 				5FA96085F1C8A41712C7ADB1 /* ForYouGrid.swift */,
 				F565A9615F9D6F6E967FBA2F /* ForYouRefreshSchedule.swift */,
 				F4D8CDDDB9F4AC700D6F394C /* ForYouTiles.swift */,
+				0561384CF1E17A9FA87F562E /* RecAudioShortlist.swift */,
 				A3EB16DAD35B2A3E85D17C01 /* RecEngineClient.swift */,
 				2AFB14E145EA6CF1C086296D /* RecMembership.swift */,
 				C4B9DD21D4B0D24B70300379 /* RecModels.swift */,
@@ -2240,6 +2246,7 @@
 				5897B6BEBBB3AB777321BC27 /* PuzzleSamplerTests.swift in Sources */,
 				60259F672469851D5D0ED87E /* PuzzleSimilarityTests.swift in Sources */,
 				07DC21DBB1D0E63D969865AD /* RealizeEngineTests.swift in Sources */,
+				5042D55C0512417B0AC52A06 /* RecAudioShortlistTests.swift in Sources */,
 				ABE011EB9EA8EABC9DC5E5EC /* RecEngineClientTests.swift in Sources */,
 				E111A77C5E2810717CBB7E70 /* RecFeedbackTests.swift in Sources */,
 				93058BBBCC91ED3813D35D20 /* RecMembershipTests.swift in Sources */,
@@ -2496,6 +2503,7 @@
 				5EC25B31E39A8A1BF851146E /* PuzzleSimilarity.swift in Sources */,
 				346413F3F2C99B2F0AABCF1F /* QueueMenu.swift in Sources */,
 				7E35B738A41A9B816A97D4D6 /* RealizeEngine.swift in Sources */,
+				C638EF2055B954FB412FD21A /* RecAudioShortlist.swift in Sources */,
 				84D057E284CC58FC36F91002 /* RecEngineClient.swift in Sources */,
 				EB6A2038309092CDC07DC8A5 /* RecFeedbackControls.swift in Sources */,
 				8AE65B8CB7A2A5B2C2A249F7 /* RecFeedbackStore.swift in Sources */,

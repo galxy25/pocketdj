@@ -225,6 +225,75 @@ enum ForYouFeedBuilder {
         next.zoneSourceRaw = ForYouTileSource.cloud.rawValue
         return next
     }
+
+    // ========================================================================
+    // MARK: - The audio-analysis shortlist
+    // ========================================================================
+
+    /// WHICH OF THIS REFRESH'S SUGGESTIONS ARE WORTH RUNNING AUDIO ANALYSIS OVER.
+    ///
+    /// Derived from the snapshot that was JUST BUILT rather than from a fresh sweep, which is what
+    /// makes "use v1 to get a list of candidates" literal: these ids are the recommender's own
+    /// answer — In Da Zone plus every crate's suggestions — and nothing else is eligible.
+    ///
+    /// It also settles the in-catalog rule structurally instead of by filter: those ids came out
+    /// of `inputs.tracks`, i.e. this device's catalog, so a song the owner does not own cannot
+    /// reach the shortlist even if the cloud ranker proposed it (`applyingCloudZone` already
+    /// shaped the cloud's ids against the local catalog before they got here).
+    ///
+    /// Pure, Sendable-in / Sendable-out, and cheap: one pass over the snapshot's ids, no catalog
+    /// sweep. Runs on the same detached hop as `build`.
+    static func audioShortlist(_ snapshot: ForYouFeedSnapshot,
+                               inputs: ForYouFeedInputs,
+                               analysed: Set<String> = [],
+                               pending: Set<String> = [],
+                               perNight: Int = RecAudioShortlist.defaultPerNight) -> [String] {
+        let trackById = Dictionary(inputs.tracks.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
+        guard !trackById.isEmpty else { return [] }
+
+        // v1's candidates, in v1's order: the zone first (the tile the engine ranks the whole
+        // library for), then each crate's suggestions. Deduped — a song can headline the zone and
+        // also be suggested for three crates, and it only needs analysing once.
+        var seen = Set<String>()
+        var candidates: [RecAudioShortlist.Candidate] = []
+        var capKeyByArtist: [String: String] = [:]
+        func capKey(_ t: ZoneEngine.Track) -> String {
+            if let k = capKeyByArtist[t.artistKey] { return k }
+            let k = RecNovelty.primaryArtistKey(t.artistName)
+            capKeyByArtist[t.artistKey] = k
+            return k
+        }
+        for id in snapshot.zoneIds + snapshot.crates.flatMap(\.songIds) {
+            guard !seen.contains(id), let t = trackById[id] else { continue }
+            seen.insert(id)
+            candidates.append(.init(songId: id, artistKey: capKey(t), genre: t.genre,
+                                    bpm: t.bpm, camelot: t.camelot))
+        }
+        guard !candidates.isEmpty else { return [] }
+
+        // The recent-listening profile, from the SAME play window the zone was ranked against
+        // (`ZoneEngine.Tuning.recentWindowDays`, already applied by `history.recentPlaysForZone`).
+        // Reusing it rather than defining a second "recent" is what keeps "similar to what I have
+        // recently listened to" meaning the same thing here as it does on the tile.
+        let recentTracks = inputs.plays.compactMap { trackById[$0.songId] }
+            .map { RecAudioShortlist.Candidate(songId: $0.songId, artistKey: $0.artistKey,
+                                               genre: $0.genre, bpm: $0.bpm, camelot: $0.camelot) }
+
+        var artistPlays: [String: Int] = [:]
+        for t in inputs.tracks {
+            let n = inputs.playCount[t.songId] ?? 0
+            if n > 0 { artistPlays[capKey(t), default: 0] += n }
+        }
+
+        var sel = RecAudioShortlist.Inputs()
+        sel.candidates = candidates
+        sel.analysedIds = analysed
+        sel.pendingIds = pending
+        sel.recent = RecAudioShortlist.RecentProfile(recent: recentTracks)
+        sel.familiarity = RecNovelty.ArtistFamiliarity(artistPlays: artistPlays)
+        sel.perNight = perNight
+        return RecAudioShortlist.select(sel)
+    }
 }
 
 // ============================================================================

@@ -12,23 +12,29 @@ import { homedir } from 'node:os';
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const ANALYZE_PY = join(REPO, '.claude/skills/analog-indexer/audio/analyze-one.py');
 const BEATGRID_PY = join(REPO, '.claude/skills/analog-indexer/audio/analyze-beatgrid.py');
+const TIMBRE_PY = join(REPO, '.claude/skills/analog-indexer/audio/analyze-timbre.py');
 // Bump when the beat-grid algorithm changes so /backfill-beatgrids re-runs stale entries.
 export const ANALYSIS_VERSION = 1;
+// Bump when analyze-timbre.py changes what its scalars MEAN (a new axis, a re-calibrated lo/hi).
+// The nightly rec-audio job re-analyzes anything stamped below this, which is what lets a
+// recalibration reach the corpus without a manual sweep. Held separately from ANALYSIS_VERSION
+// so a beat-grid change does not invalidate a timbre corpus that took weeks of nights to build.
+export const TIMBRE_VERSION = 1;
 
 /**
  * @param {{file:string, songId:string, bucket:string, region?:string, profile?:string,
  *          image?:string, tmp?:string, withKey?:boolean, withWaveform?:boolean,
- *          withBeatgrid?:boolean}} opts
+ *          withBeatgrid?:boolean, withTimbre?:boolean}} opts
  * @returns {Promise<{bpm:number|null, musicalKey:string|null, camelot:string|null,
  *          keyStrength:number|null, durationSec:number|null, waveform:string|null,
- *          beatgrid:object|null, beatgridKey:string|null}>}
+ *          beatgrid:object|null, beatgridKey:string|null, timbre:object|null}>}
  */
 export async function analyzeAudio(opts) {
   const {
     file, songId, bucket, region = 'us-west-2', profile = 'levi',
     image = process.env.AUDIO_IMAGE || 'pocketdj-audio:latest',
     tmp = join(homedir(), '.pocketdj', 'rips'),
-    withKey = true, withWaveform = true, withBeatgrid = false,
+    withKey = true, withWaveform = true, withBeatgrid = false, withTimbre = false,
   } = opts;
   const work = join(tmp, `ana-${songId}`);
   mkdirSync(work, { recursive: true });
@@ -37,7 +43,7 @@ export async function analyzeAudio(opts) {
 
   const out = {
     bpm: null, musicalKey: null, camelot: null, keyStrength: null, durationSec: null,
-    waveform: null, beatgrid: null, beatgridKey: null,
+    waveform: null, beatgrid: null, beatgridKey: null, timbre: null,
   };
 
   // --- BPM / key / Camelot (Docker librosa) ---
@@ -79,6 +85,23 @@ export async function analyzeAudio(opts) {
         out.beatgridKey = key;
       }
     } catch { /* beat grid is best-effort */ }
+  }
+
+  // --- TIMBRE vector (Docker librosa): the "musicality" features the recommendation engine
+  //     scores against — bright / punch / busy / dynamic / … See analyze-timbre.py. Off by
+  //     default: only the nightly rec-audio job asks for it, so no rip pays for it. ---
+  if (withTimbre && existsSync(TIMBRE_PY)) {
+    try {
+      copyFileSync(TIMBRE_PY, join(work, 'analyze-timbre.py'));
+      const res = execFileSync('docker',
+        ['run', '--rm', '--entrypoint', 'python', '-v', `${work}:/work`, image, '/work/analyze-timbre.py', '/work/song.mp3'],
+        { encoding: 'utf8', timeout: 180000 });
+      const j = JSON.parse(res.trim().split('\n').filter(Boolean).pop());
+      if (j.ok && j.f) {
+        out.timbre = { v: TIMBRE_VERSION, f: j.f };
+        if (out.durationSec == null && Number.isFinite(j.durationSec)) out.durationSec = j.durationSec;
+      }
+    } catch { /* timbre is best-effort, exactly like bpm/key above */ }
   }
 
   // --- waveform PNG (ffmpeg) → S3 rips/waveforms/<songId>.png ---
