@@ -355,6 +355,11 @@ struct ForYouSongListView: View {
     @Binding var path: NavigationPath
 
     @State private var songIds: [String] = []
+    /// songId → the one-line WHY the row earned its place, set ONCE in `build()` alongside
+    /// `songIds` — the reasons ride the already-computed suggestion model (frozen snapshot or the
+    /// engine's explained fallback), NEVER derived in the body (the repo's perf law). A missing
+    /// key means "no reason", and the row simply renders without a caption.
+    @State private var reasons: [String: String] = [:]
     /// Pool per song, for the zone route only — drives the "Buried" badge and the header's blend
     /// readout. Empty for collection routes, which have no pools.
     @State private var pools: [String: ZoneEngine.Pool] = [:]
@@ -540,6 +545,10 @@ struct ForYouSongListView: View {
         guard !didBuild else { return }
         didBuild = true
         if let frozen = feed?.songIds(forTileId: route.tileId) {
+            // The frozen reasons ride the same snapshot as the frozen ids — one read, no
+            // derivation. `[:]` (a pre-reasons cached document, or a device-ranked zone, which
+            // supplies none) simply means no captions.
+            reasons = feed?.reasons(forTileId: route.tileId) ?? [:]
             // ALREADY IN THE COLLECTION ⇒ not an offer, at READ time. The frozen list was filtered
             // when it was built, but membership has moved since — every add does that, the 👍 on
             // this very screen included — and a frozen filter goes stale the moment he acts on it.
@@ -603,11 +612,17 @@ struct ForYouSongListView: View {
                 return
             }
             let members = collections.playableIdsForAnyCollection(cid)
-            songIds = await Task.detached(priority: .userInitiated) {
-                ZoneEngine.suggestions(memberSongIds: members, tracks: tracks,
-                                       playCount: { counts[$0] ?? 0 }, feedback: fb,
-                                       timbre: timbre)
+            // `suggestionsExplained` — the SAME ranking as `suggestions` (it wraps it), with the
+            // engine's one-line why per row, so the on-demand fallback carries the same captions
+            // the frozen feed does. Still off the main actor: this sweeps the whole catalog.
+            let rows = await Task.detached(priority: .userInitiated) {
+                ZoneEngine.suggestionsExplained(memberSongIds: members, tracks: tracks,
+                                                playCount: { counts[$0] ?? 0 }, feedback: fb,
+                                                timbre: timbre)
             }.value
+            songIds = rows.map(\.songId)
+            reasons = Dictionary(rows.filter { !$0.why.isEmpty }.map { ($0.songId, $0.why) },
+                                 uniquingKeysWith: { a, _ in a })
         case .new:
             // New has its own screen (`NewReleasesView`) and is never routed here; the case exists
             // so adding a tile kind is a compile error rather than a silently empty list.
@@ -637,10 +652,23 @@ struct ForYouSongListView: View {
                             .accessibilityIdentifier("foryou-buried-\(id)")
                     }
                 }
+                // THE WHY, one line under the row — the engine's/Lambda's own string, rendered
+                // verbatim (precedence was decided where it was computed). Same secondary-caption
+                // dress as a History row's context line: caption2, dimmed, one truncating line.
+                // A missing reason renders NOTHING — no caption row, no blank gap.
+                if let why = reasons[id], !why.isEmpty {
+                    Text(why)
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                        .lineLimit(1).truncationMode(.tail)
+                }
             }
             // The identifier lives on the TEXT stack, never the row container — a container id
             // absorbs the nested buttons' identifiers (the propagation trap this project has
-            // already been bitten by).
+            // already been bitten by). `.combine` folds the stack's texts into ONE element so
+            // the reason caption JOINS the row's accessibility label (VoiceOver reads
+            // "title, artist, why" as one row) — safe here because this stack holds only Texts,
+            // never the feedback/transport buttons, which sit beside it.
+            .accessibilityElement(children: .combine)
             .accessibilityIdentifier("foryou-song-\(id)")
             Spacer()
             // TWO CONTROLS, NOT THREE. Owner, verbatim: the thumbs-up "should both send positive

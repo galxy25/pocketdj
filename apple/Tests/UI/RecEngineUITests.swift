@@ -134,8 +134,16 @@ final class RecEngineUITests: XCTestCase {
         // A row from the ENGINE's ranking, resolved against the catalog. `sng_5` is "Blue Note",
         // which the on-device ranking has no particular reason to lead with — what is being proven
         // is that the cloud list reached the tile at all.
-        XCTAssertTrue(app.any("foryou-song-sng_5").waitForExistence(timeout: 15),
+        let row = app.any("foryou-song-sng_5")
+        XCTAssertTrue(row.waitForExistence(timeout: 15),
                       "the engine's rows are what In Da Zone opens on")
+        // …AND THE WHY RENDERS WITH IT. The fixture attaches "Same genre as recent plays" to
+        // sng_5 (`RecommendationService.fixtureForYou`); the row's text stack is one combined
+        // a11y element, so the caption must appear in the row's own label — the exact owner
+        // report this fixes was "i dont see the why string in any tile list".
+        XCTAssertTrue(row.visibleText.contains("Same genre as recent plays"),
+                      "the Lambda's one-line why is rendered on the suggestion row and joins "
+                      + "its accessibility label — got: \(row.visibleText)")
     }
     #endif
 }

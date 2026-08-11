@@ -870,7 +870,9 @@ final class RecommendationService {
     /// headroom or a heavily-capped answer arrives short. 200 is the server's own clamp.
     static let forYouFetchLimit = 200
 
-    /// THE CLOUD RANKING FOR In Da Zone — ids only, best first.
+    /// THE CLOUD RANKING FOR In Da Zone — ids best-first, each carrying the Lambda's one-line
+    /// why (`reasons.first`, the server's own precedence — the device never re-derives it; an
+    /// empty reasons array arrives as `nil`, so "no reason" stays absence rather than "").
     ///
     /// Owner, verbatim: *"new and in da zone should use the recommendation engine if available,
     /// only doing on device when not enabled."* This is the "if available" half, and it answers it
@@ -883,10 +885,13 @@ final class RecommendationService {
     ///
     /// `force` is what a manual Refresh passes: the 15-minute TTL is right for an incidental read
     /// and wrong for the owner explicitly asking for new recommendations.
-    func cloudZoneRanking(force: Bool = true) async -> [String] {
+    func cloudZoneRanking(force: Bool = true) async -> [ForYouCloudZoneRow] {
         guard isEnabled else { return [] }
         await refreshForYou(force: force)
-        return forYou.map(\.songId)
+        return forYou.map {
+            ForYouCloudZoneRow(songId: $0.songId,
+                               why: $0.reasons.first(where: { !$0.isEmpty }))
+        }
     }
 
     func refreshForYou(force: Bool = false) async {

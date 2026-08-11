@@ -906,10 +906,17 @@ final class RecommendationServiceTests: XCTestCase {
     func testCloudZoneRankingReturnsTheServersOrderedIds() async {
         let env = makeEnv(enabled: true)
         env.spy.body = Data(#"""
-        {"songs":[{"songId":"sng_c"},{"songId":"sng_a"},{"songId":"sng_b"}]}
+        {"songs":[{"songId":"sng_c","reasons":["Often played together","BPM near 120"]},
+                  {"songId":"sng_a","reasons":[]},
+                  {"songId":"sng_b"}]}
         """#.utf8)
         let ids = await env.svc.cloudZoneRanking()
-        XCTAssertEqual(ids, ["sng_c", "sng_a", "sng_b"], "server order, untouched")
+        XCTAssertEqual(ids.map(\.songId), ["sng_c", "sng_a", "sng_b"], "server order, untouched")
+        // The Lambda's why rides each row VERBATIM — first reason wins (the server's own
+        // precedence), and a row it sent without one arrives as nil, never "".
+        XCTAssertEqual(ids[0].why, "Often played together")
+        XCTAssertNil(ids[1].why, "an empty reasons array is no reason")
+        XCTAssertNil(ids[2].why, "a missing reasons key is no reason")
         let get = env.spy.requests.last
         XCTAssertEqual(get?.httpMethod, "GET")
         XCTAssertTrue(get?.url?.path.hasSuffix("/recs/songs") ?? false)
