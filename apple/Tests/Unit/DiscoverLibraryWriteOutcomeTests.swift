@@ -386,3 +386,28 @@ final class DiscoverLibraryWriteOutcomeTests: XCTestCase {
                        "Apple Music write skipped: no Apple Music connection")
     }
 }
+
+// MARK: - Failure detail carries the NSError identity (fix/am-write-error-detail)
+
+extension DiscoverLibraryWriteOutcomeTests {
+    /// MusicKit's genericized "An unknown error occurred." must arrive with the
+    /// domain#code chain appended, or the surfaced reason cannot distinguish
+    /// Sync-Library-off from a token or storefront failure.
+    func testFailureDetailAppendsDomainCodeChain() {
+        let underlying = NSError(domain: "ICError", code: -7013)
+        let outer = NSError(domain: "MPErrorDomain", code: 4,
+                            userInfo: [NSUnderlyingErrorKey: underlying])
+        let detail = RipsStore.libraryWriteFailureDetail(outer)
+        XCTAssertTrue(detail.contains("MPErrorDomain#4"), detail)
+        XCTAssertTrue(detail.contains("ICError#-7013"), detail)
+        XCTAssertTrue(detail.contains("←"), detail)
+    }
+
+    func testFailureDetailSurvivesAPlainSwiftError() {
+        struct Bare: Error {}
+        let detail = RipsStore.libraryWriteFailureDetail(Bare())
+        // A bridged Swift error still yields a domain#code; the sentence stays first.
+        XCTAssertTrue(detail.contains("#"), detail)
+        XCTAssertFalse(detail.hasPrefix("["), detail)
+    }
+}
