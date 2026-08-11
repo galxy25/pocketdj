@@ -304,7 +304,9 @@ final class ForYouFeedCacheTests: XCTestCase {
 
     func testACloudAnswerReplacesTheZoneAndSaysSo() async {
         let store = ForYouFeedStore(fileURL: url())
-        await store.refresh(cloudInputs(), cloudZone: { ["s4", "s3", "s1"] })
+        await store.refresh(cloudInputs(), cloudZone: {
+            [.init(songId: "s4"), .init(songId: "s3"), .init(songId: "s1")]
+        })
         XCTAssertEqual(store.snapshot.zoneSource, .cloud)
         XCTAssertEqual(Set(store.snapshot.zoneIds), ["s4", "s3", "s1"],
                        "the tile is built from the SERVER's rows, not the local ranking's")
@@ -331,7 +333,7 @@ final class ForYouFeedCacheTests: XCTestCase {
         await store.refresh(cloudInputs(), cloudZone: {
             zoneWhenAsked = store.snapshot.zoneIds
             revisionWhenAsked = store.revision
-            return ["s4"]
+            return [.init(songId: "s4")]
         })
         XCTAssertFalse(zoneWhenAsked?.isEmpty ?? true,
                        "a complete on-device feed is already on screen when the request goes out")
@@ -343,8 +345,10 @@ final class ForYouFeedCacheTests: XCTestCase {
     /// Offline, 5xx, unenrolled, an empty list and a list of ids this catalog cannot resolve all
     /// arrive here as "nothing usable".
     func testEveryCloudFailureLeavesTheOnDeviceFeedExactlyAsItWas() async {
-        for (label, answer) in [("empty answer", [String]()),
-                                ("ids this catalog cannot resolve", ["nope_1", "nope_2"])] {
+        for (label, answer) in [("empty answer", [ForYouCloudZoneRow]()),
+                                ("ids this catalog cannot resolve",
+                                 [ForYouCloudZoneRow(songId: "nope_1"),
+                                  ForYouCloudZoneRow(songId: "nope_2")])] {
             let store = ForYouFeedStore(fileURL: url("fallback-\(label).json"))
             let inputs = cloudInputs()
             await store.refresh(inputs)                    // the reference: local only
@@ -385,7 +389,9 @@ final class ForYouFeedCacheTests: XCTestCase {
         // Four Aria rows offered; the cap is 3 per artist and it is not negotiable.
         let extra = [song("s5", artist: "Aria"), song("s6", artist: "Aria")]
         inputs.songs += extra
-        await store.refresh(inputs, cloudZone: { ["s1", "s2", "s5", "s6", "s3", "s4"] })
+        await store.refresh(inputs, cloudZone: {
+            ["s1", "s2", "s5", "s6", "s3", "s4"].map { ForYouCloudZoneRow(songId: $0) }
+        })
         XCTAssertFalse(store.snapshot.zoneIds.contains("s3"),
                        "a thumbed-down row stays down even when the server offers it")
         XCTAssertEqual(store.snapshot.zoneIds.filter { ["s1", "s2", "s5", "s6"].contains($0) }.count,
@@ -400,11 +406,102 @@ final class ForYouFeedCacheTests: XCTestCase {
     func testTheAttributionSurvivesRelaunchAlongsideTheIdsItDescribes() async {
         let file = url("attr.json")
         let store = ForYouFeedStore(fileURL: file)
-        await store.refresh(cloudInputs(), cloudZone: { ["s4", "s1"] })
+        await store.refresh(cloudInputs(), cloudZone: {
+            [.init(songId: "s4"), .init(songId: "s1")]
+        })
         XCTAssertEqual(ForYouFeedStore(fileURL: file).snapshot.zoneSource, .cloud)
 
         // …and a document written before the cloud path existed decodes as what produced it.
         try? Data(#"{"zoneIds":["a"],"refreshedAtMs":9}"#.utf8).write(to: url("old.json"))
         XCTAssertEqual(ForYouFeedStore(fileURL: url("old.json")).snapshot.zoneSource, .onDevice)
+    }
+
+    // ========================================================================
+    // MARK: - THE ONE-LINE WHY rides the frozen model
+    // ========================================================================
+    //
+    // Owner report: "i dont see the why string in any tile list" — the engine computed reasons
+    // (`ZoneEngine.suggestionsExplained`) and the Lambda sent them, but neither survived to a
+    // rendered row. These tests pin the PLUMBING: the reason rides the suggestion model itself,
+    // round-trips the disk cache, and is nil — never "" — when absent.
+
+    func testReasonSurvivesSnapshotRoundTrip() throws {
+        let crate = ForYouFeedSnapshot.Crate(id: "pkt_gym", kind: "pocket", name: "Gym",
+                                             songIds: ["a", "b"],
+                                             reasons: ["a": "Mostly house, like this collection"])
+        let snap = ForYouFeedSnapshot(refreshedAtMs: 9, zoneIds: ["z1"], zoneSource: .cloud,
+                                      zoneReasons: ["z1": "Same genre as recent plays"],
+                                      crates: [crate])
+        let reborn = try JSONDecoder().decode(ForYouFeedSnapshot.self,
+                                              from: JSONEncoder().encode(snap))
+        XCTAssertEqual(reborn, snap, "the reasons are part of the frozen answer, not a sidecar")
+        XCTAssertEqual(reborn.reasons(forTileId: "col-pkt_gym"),
+                       ["a": "Mostly house, like this collection"])
+        XCTAssertEqual(reborn.reasons(forTileId: "zone"), ["z1": "Same genre as recent plays"])
+        XCTAssertNil(reborn.crates[0].reasons?["b"],
+                     "a row the engine attached no reason to stays reason-less through the trip")
+    }
+
+    /// A cached snapshot written BEFORE reasons existed must decode with `nil` reasons — never
+    /// `[:]`-pretending-to-be-something, and never a failed decode (which would re-rank the grid).
+    func testAbsentReasonsDecodeAsNilNotEmpty() throws {
+        try Data(#"""
+        {"refreshedAtMs":9,"zoneIds":["z"],
+         "crates":[{"id":"c1","kind":"pocket","name":"C","songIds":["x"]}]}
+        """#.utf8).write(to: url("pre-reasons.json"))
+        let snap = ForYouFeedStore(fileURL: url("pre-reasons.json")).snapshot
+        XCTAssertEqual(snap.zoneIds, ["z"], "the pre-reasons document still decodes whole")
+        XCTAssertNil(snap.zoneReasons, "absent ⇒ nil, not empty")
+        XCTAssertNil(snap.crates.first?.reasons, "absent ⇒ nil, not empty")
+        XCTAssertEqual(snap.reasons(forTileId: "zone"), [:],
+                       "…and the accessor degrades to no-captions rather than trapping")
+        XCTAssertEqual(snap.reasons(forTileId: "col-c1"), [:])
+    }
+
+    /// The DEVICE-RANKED path: the builder now asks `suggestionsExplained`, so every crate row
+    /// arrives with the engine's why — same ids, same order as the unexplained ranking.
+    func testBuilderAttachesTheEnginesReasonToEveryCrateRow() {
+        let songs = (1...6).map { song("s\($0)", artist: "Artist \($0 % 3)") }
+        let tracks = songs.map { ZoneEngine.Track(songId: $0.id, artistKey: $0.artist,
+                                                  artistName: $0.artist, genre: "house") }
+        let now = 1_900_000_000_000.0
+        let inputs = ForYouFeedInputs(
+            songs: songs, tracks: tracks,
+            plays: [.init(songId: "s1", playedAtMs: now - 1_000)],
+            crates: [.init(id: "pkt_a", kind: "pocket", name: "A", songIds: ["s1", "s2"])],
+            nowMs: now)
+        let built = ForYouFeedBuilder.build(inputs)
+        let crate = built.crates[0]
+        XCTAssertFalse(crate.songIds.isEmpty, "the fixture must actually suggest something")
+        for id in crate.songIds {
+            let why = crate.reasons?[id]
+            XCTAssertNotNil(why, "\(id): every device-ranked row carries the engine's why")
+            XCTAssertFalse(why?.isEmpty ?? true, "\(id): and it is never the empty string")
+        }
+        XCTAssertNil(built.zoneReasons,
+                     "the on-device zone ranking supplies no reason strings — nil, not [:]")
+        // The explained ranking IS the ranking — ids and order byte-identical.
+        XCTAssertEqual(crate.songIds,
+                       ZoneEngine.suggestions(memberSongIds: ["s1", "s2"], tracks: tracks,
+                                              playCount: { _ in 0 },
+                                              versions: ZoneEngine.versionKeys(tracks)))
+    }
+
+    /// The CLOUD-RANKED path: the Lambda's why lands in `zoneReasons` for the rows that survive
+    /// the local shaping — and ONLY those. A reason for a dropped id would be an orphan; a row
+    /// the server sent without one stays caption-less rather than becoming "".
+    func testCloudReasonsRideOnlyTheSurvivingZoneRows() async {
+        let store = ForYouFeedStore(fileURL: url())
+        await store.refresh(cloudInputs(), cloudZone: {
+            [.init(songId: "s4", why: "Same genre as recent plays"),
+             .init(songId: "s3"),                                   // no reason from the server
+             .init(songId: "nope_1", why: "Orphan"),                // unresolvable — shaped away
+             .init(songId: "s1", why: "")]                          // "" arrives as absence
+        })
+        XCTAssertEqual(store.snapshot.zoneSource, .cloud)
+        XCTAssertEqual(store.snapshot.zoneReasons, ["s4": "Same genre as recent plays"])
+        XCTAssertEqual(store.snapshot.reasons(forTileId: "zone")["s4"],
+                       "Same genre as recent plays",
+                       "…readable through the same accessor the tile screen uses")
     }
 }

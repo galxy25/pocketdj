@@ -312,7 +312,7 @@ struct ForYouTilesView: View {
         // configuration (the engine ships off), and it means the store never awaits a network call
         // at all. `cloudZoneRanking` re-checks the same gate, so this is belt-and-braces rather
         // than the only guard.
-        let cloudZone: (() async -> [String])?
+        let cloudZone: (() async -> [ForYouCloudZoneRow])?
         if let recEngine, recEngine.isEnabled {
             cloudZone = { await recEngine.cloudZoneRanking() }
         } else {
@@ -331,9 +331,9 @@ struct ForYouTilesView: View {
             fallback = built
             deriveTiles()   // the local answer lands before the network is even asked
             if let cloudZone {
-                let ids = await cloudZone()
-                if !ids.isEmpty {
-                    built = ForYouFeedBuilder.applyingCloudZone(built, cloudZoneIds: ids,
+                let rows = await cloudZone()
+                if !rows.isEmpty {
+                    built = ForYouFeedBuilder.applyingCloudZone(built, cloudZone: rows,
                                                                 inputs: inputs)
                     fallback = built
                 }

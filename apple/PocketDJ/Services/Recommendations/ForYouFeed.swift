@@ -44,6 +44,13 @@ struct ForYouFeedSnapshot: Codable, Equatable, Sendable {
         var name: String
         /// The suggested songs (NOT the members).
         var songIds: [String]
+        /// songId → the one-line WHY the engine attached to that row
+        /// (`ZoneEngine.suggestionsExplained`). OPTIONAL AND DEFAULTED, deliberately: a snapshot
+        /// cached before this field existed decodes to `nil` (synthesized Codable uses
+        /// `decodeIfPresent` for optionals) and its rows simply render without a caption — never
+        /// a failed decode, never an empty-string caption. Precedence between reasons is the
+        /// ENGINE's decision; nothing downstream re-derives or re-ranks these strings.
+        var reasons: [String: String]? = nil
     }
 
     var schemaVersion: Int = forYouFeedSchemaVersion
@@ -60,6 +67,12 @@ struct ForYouFeedSnapshot: Codable, Equatable, Sendable {
     /// live state would then describe a list it did not produce. Stored as the raw string so an
     /// unknown future value degrades to `.onDevice` instead of failing the whole decode.
     var zoneSourceRaw: String = ForYouTileSource.onDevice.rawValue
+    /// songId → the one-line WHY, for In Da Zone — populated only when the CLOUD ranker produced
+    /// `zoneIds` (the Lambda's `reasons` reach the client and were dropped on the floor before
+    /// this field). The on-device zone ranking supplies no reason strings, so on that path this
+    /// stays `nil` and the rows render without captions. Same additive-optional doctrine as
+    /// `zoneSourceRaw`: absent in an older document ⇒ `nil`, never a failed decode.
+    var zoneReasons: [String: String]? = nil
     var crates: [Crate] = []
 
     /// The frozen attribution, decoded leniently.
@@ -79,19 +92,30 @@ struct ForYouFeedSnapshot: Codable, Equatable, Sendable {
         return crate.songIds
     }
 
+    /// The frozen one-line reasons for a tile id, keyed by song id. `[:]` — a pre-reasons cached
+    /// snapshot, the on-device zone ranking, an unknown tile — means "no captions", and the rows
+    /// render exactly as they did before this field existed.
+    func reasons(forTileId tileId: String) -> [String: String] {
+        if tileId == ForYouTileRoute.Kind.zone.rawValue { return zoneReasons ?? [:] }
+        return crates.first(where: { "col-\($0.id)" == tileId })?.reasons ?? [:]
+    }
+
     /// Codable is hand-rolled ONLY for leniency: a document written by a newer build (or a
     /// half-written one) must degrade to "no cache" rather than throwing away the decode and
     /// looking like a corrupt install.
     enum CodingKeys: String, CodingKey {
-        case schemaVersion, refreshedAtMs, zoneIds, zoneBuriedIds, zoneSourceRaw, crates
+        case schemaVersion, refreshedAtMs, zoneIds, zoneBuriedIds, zoneSourceRaw, zoneReasons,
+             crates
     }
 
     init(refreshedAtMs: Double = 0, zoneIds: [String] = [], zoneBuriedIds: [String] = [],
-         zoneSource: ForYouTileSource = .onDevice, crates: [Crate] = []) {
+         zoneSource: ForYouTileSource = .onDevice, zoneReasons: [String: String]? = nil,
+         crates: [Crate] = []) {
         self.refreshedAtMs = refreshedAtMs
         self.zoneIds = zoneIds
         self.zoneBuriedIds = zoneBuriedIds
         self.zoneSourceRaw = zoneSource.rawValue
+        self.zoneReasons = zoneReasons
         self.crates = crates
     }
 
@@ -105,7 +129,31 @@ struct ForYouFeedSnapshot: Codable, Equatable, Sendable {
         // decodes to the on-device answer, which is exactly what produced it.
         zoneSourceRaw = (try? c.decode(String.self, forKey: .zoneSourceRaw))
             ?? ForYouTileSource.onDevice.rawValue
+        // ADDITIVE-OPTIONAL, and deliberately nil — never [:] — when absent: "no reasons" and
+        // "written before reasons existed" must be the same rendered outcome (no caption row).
+        zoneReasons = try? c.decode([String: String].self, forKey: .zoneReasons)
         crates = (try? c.decode([Crate].self, forKey: .crates)) ?? []
+    }
+}
+
+// ============================================================================
+// MARK: - The cloud zone row
+// ============================================================================
+
+/// One CLOUD-ranked In Da Zone row: the id plus the one-line WHY the Lambda supplied, already
+/// reduced to a single string (`reasons.first` — the server's own precedence). `nil` when the
+/// server sent none, so "no reason" survives the trip as absence rather than as `""`.
+///
+/// This exists because `cloudZoneRanking` used to return bare `[String]` ids and the reasons the
+/// wire had carried all along (`RecSongSuggestionWire.reasons`) were dropped on the floor one hop
+/// before the snapshot. The device never re-derives these strings.
+struct ForYouCloudZoneRow: Equatable, Sendable {
+    var songId: String
+    var why: String?
+
+    init(songId: String, why: String? = nil) {
+        self.songId = songId
+        self.why = why
     }
 }
 
@@ -185,14 +233,27 @@ enum ForYouFeedBuilder {
         let versions = ZoneEngine.versionKeys(inputs.tracks)
         let crates = inputs.crates
             .filter { !inputs.recsOffCrateIds.contains($0.id) }
-            .map { c in
-                ForYouFeedSnapshot.Crate(
+            .map { c -> ForYouFeedSnapshot.Crate in
+                // `suggestionsExplained`, not `suggestions`: THE SAME RANKING (it calls
+                // `suggestions` internally, so ids and order are byte-identical) with the
+                // one-line WHY each row earned its place riding along. The reason string is the
+                // engine's verdict verbatim — precedence (timbre > genre when observed) is
+                // decided in `ZoneEngine`, and the view renders whatever lands here.
+                let rows = ZoneEngine.suggestionsExplained(
+                    memberSongIds: c.songIds, tracks: inputs.tracks,
+                    playCount: { counts[$0] ?? 0 },
+                    feedback: inputs.crateFeedback[c.id] ?? ZoneEngine.Feedback(),
+                    versions: versions,
+                    timbre: inputs.timbre)
+                // An empty why is stored as ABSENCE, never as "": the view's contract is
+                // "no reason ⇒ no caption row", and an empty string would render a blank gap.
+                let reasons = Dictionary(rows.filter { !$0.why.isEmpty }
+                                             .map { ($0.songId, $0.why) },
+                                         uniquingKeysWith: { a, _ in a })
+                return ForYouFeedSnapshot.Crate(
                     id: c.id, kind: c.kind, name: c.name,
-                    songIds: ZoneEngine.suggestions(memberSongIds: c.songIds, tracks: inputs.tracks,
-                                                    playCount: { counts[$0] ?? 0 },
-                                                    feedback: inputs.crateFeedback[c.id] ?? ZoneEngine.Feedback(),
-                                                    versions: versions,
-                                                    timbre: inputs.timbre))
+                    songIds: rows.map(\.songId),
+                    reasons: reasons.isEmpty ? nil : reasons)
             }
         return ForYouFeedSnapshot(
             refreshedAtMs: inputs.nowMs,
@@ -216,10 +277,11 @@ enum ForYouFeedBuilder {
     /// The collection tiles are deliberately NOT touched: `/recs/songs` ranks the whole library
     /// against the listener's taste, which is In Da Zone's question, not "what belongs in this
     /// crate" (that is `/recs/collections`, a different route with a different shape).
-    static func applyingCloudZone(_ snapshot: ForYouFeedSnapshot, cloudZoneIds: [String],
+    static func applyingCloudZone(_ snapshot: ForYouFeedSnapshot,
+                                  cloudZone rows: [ForYouCloudZoneRow],
                                   inputs: ForYouFeedInputs) -> ForYouFeedSnapshot {
-        guard !cloudZoneIds.isEmpty else { return snapshot }
-        let queue = ZoneEngine.shapeCloudRanking(songIds: cloudZoneIds,
+        guard !rows.isEmpty else { return snapshot }
+        let queue = ZoneEngine.shapeCloudRanking(songIds: rows.map(\.songId),
                                                  songs: inputs.songs,
                                                  plays: inputs.plays,
                                                  lastPlayedMs: inputs.lastPlayedMs,
@@ -230,6 +292,16 @@ enum ForYouFeedBuilder {
         next.zoneIds = queue.songIds
         next.zoneBuriedIds = queue.picks.filter { $0.pool == .rediscovery }.map(\.songId)
         next.zoneSourceRaw = ForYouTileSource.cloud.rawValue
+        // The Lambda's reasons, kept only for the rows that SURVIVED the local shaping — a reason
+        // for a dropped id would be an orphan the tile can never show. Empty/absent whys are
+        // stored as absence (no caption row), and a fully reason-less answer stores `nil` so the
+        // snapshot is indistinguishable from one written before this field existed.
+        let survivors = Set(queue.songIds)
+        let reasons = Dictionary(rows.compactMap { r -> (String, String)? in
+            guard survivors.contains(r.songId), let why = r.why, !why.isEmpty else { return nil }
+            return (r.songId, why)
+        }, uniquingKeysWith: { a, _ in a })
+        next.zoneReasons = reasons.isEmpty ? nil : reasons
         return next
     }
 
@@ -372,7 +444,7 @@ final class ForYouFeedStore {
     /// Doing it the other way — await the server, then decide — makes every refresh as slow as the
     /// slowest Lambda cold start, and makes a timeout look like a hung refresh.
     func refresh(_ inputs: ForYouFeedInputs,
-                 cloudZone: (() async -> [String])? = nil) async {
+                 cloudZone: (() async -> [ForYouCloudZoneRow])? = nil) async {
         guard !isRefreshing else { return }
         // NEVER overwrite a good cache with a ranking of nothing. An empty catalog is a transient
         // state (a reload, a source toggled off mid-refresh), and committing its empty result
@@ -387,10 +459,10 @@ final class ForYouFeedStore {
         commit(built)
 
         guard let cloudZone else { return }
-        let cloudIds = await cloudZone()
-        guard !cloudIds.isEmpty else { return }
+        let cloudRows = await cloudZone()
+        guard !cloudRows.isEmpty else { return }
         let shaped = await Task.detached(priority: .userInitiated) {
-            ForYouFeedBuilder.applyingCloudZone(built, cloudZoneIds: cloudIds, inputs: inputs)
+            ForYouFeedBuilder.applyingCloudZone(built, cloudZone: cloudRows, inputs: inputs)
         }.value
         // Identical ⇒ the cloud answer shaped away to nothing and `applyingCloudZone` handed the
         // input straight back. Committing it anyway would burn a revision and re-derive the grid
@@ -407,6 +479,12 @@ final class ForYouFeedStore {
     }
 
     func songIds(forTileId tileId: String) -> [String]? { snapshot.songIds(forTileId: tileId) }
+
+    /// The frozen per-row reasons for a tile — the caption source. `[:]` ⇒ no captions (a cached
+    /// pre-reasons snapshot, or the on-device zone ranking, which supplies none).
+    func reasons(forTileId tileId: String) -> [String: String] {
+        snapshot.reasons(forTileId: tileId)
+    }
 
     // ========================================================================
     // MARK: - CloudSync — the feed follows the Apple ID
