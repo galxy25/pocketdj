@@ -565,6 +565,245 @@ enum SimilarityFamilies {
     }
 
     // ========================================================================
+    // MARK: - Timbre (audio-similarity v2 — the 14-axis sound of a crate / seed set)
+    // ========================================================================
+    //
+    // The corpus: `public/timbre.json` (fold-timbre.mjs) — 14,916 songs, 12,049 with their own
+    // 14-axis vector and 2,867 explicit same-recording aliases — attached to rec-features rows as
+    // `t` and reaching the device through `TimbreCatalog`. Every value is already normalized to
+    // 0…1 at EXTRACTION time (analyze-timbre.py's measured p02/p98 table), which is the whole
+    // reason the distance below can be a plain RMS with no per-axis scaler: that decision lives in
+    // ONE place, the extractor, instead of being duplicated here and in the Lambda.
+    //
+    // ── THE DISTANCE IS F10's, NOT A NEW ONE ─────────────────────────────────────────────────
+    // RMS over the axes both vectors carry. Verified against F10's published discrimination
+    // measurement rather than assumed: recomputing within-artist+genre vs between-group pairwise
+    // distance over the full 2026-08-11 corpus (12 largest groups, 336/4,224 pairs) with this
+    // exact formula gives 0.163 / 0.233 — ratio 0.70, the same scale and the same ratio as F10's
+    // 0.205 / 0.288 = 0.71 on its original 96-song sample. Plain euclidean lands on 0.61 / 0.87
+    // (a different scale entirely), so RMS is what those published numbers meant.
+    //
+    // ── CENTROID, NOT kNN — MEASURED, AND THE NUMBER IS CLOSE ────────────────────────────────
+    // A collection's timbre is its member-vector CENTROID plus its own SPREAD (mean member→
+    // centroid distance). The alternative — mean distance to the k nearest members — was measured
+    // head-to-head on the owner's real pockets (60 pockets with ≥8 analysed members, each member
+    // held out and scored against the rest, contrast pool = 200 analysed songs of the pocket's
+    // own dominant genre, so the number is what timbre adds BEYOND genre):
+    //
+    //     held-out-member vs same-genre AUC:   centroid 0.557   kNN(k=5) 0.538
+    //     pockets where it wins:               centroid 38      kNN 22
+    //
+    // Centroid wins on both counts, is one vector instead of N per profile, and is the shape the
+    // seed-set (For You) case needs anyway — so one implementation serves both. The margin is
+    // honest: ~0.56 AUC against SAME-GENRE songs is a real but modest signal, which is exactly
+    // why this term enters the ranking as a bounded multiplier and not a gate.
+    //
+    // ── THE FIT SATURATES INSIDE THE PROFILE'S OWN SPREAD (the era-window shape) ─────────────
+    // fit = 1.0 for any candidate within the profile's own mean member distance — a crate's own
+    // sound is a REGION, and a song inside it is not "more the sound" for hugging the centroid —
+    // then exponential decay outside, e-fold `timbreDecay` (0.05). Reference points on the real
+    // corpus: a held-out member averages 0.73, a same-genre non-member 0.62, the whole analysed
+    // catalog 0.57, and a candidate at the corpus' between-group mean distance keeps ~28%.
+    //
+    // ── FAIL OPEN, BOTH DIRECTIONS — THE ROUND-LEVEL-NEVER-PER-SONG RULE ─────────────────────
+    // A profile with fewer than `timbreMinVectors` analysed members produces NO profile: the term
+    // is unearnable this round, drops entirely, and (being multiplicative) its absence is exactly
+    // ranking-neutral — nothing to renormalize. An UNANALYSED candidate against a live profile
+    // scores the ROUND NEUTRAL — the measured mean net fit of the round's analysed candidates —
+    // the `MusicalCalibration` / `EraCalibration` mechanism verbatim: never zero (which would
+    // bury 86% of the catalog for lacking a vector the indexer has not reached), never a per-song
+    // denominator (which would reward the missing vector).
+
+    /// One song's timbre: axis name → 0…1. A DICTIONARY rather than a fixed array so a vector
+    /// from a future extractor version with an added/removed axis degrades to "fewer shared
+    /// axes" instead of misaligning every component.
+    typealias TimbreVector = [String: Double]
+
+    /// The canonical axis list, in `analyze-timbre.py` order. Mirrored by the Lambda's
+    /// TIMBRE_AXES — the parity fixture pins the two.
+    static let timbreAxes: [String] = ["bright", "brightVar", "air", "width", "noisy", "fizz",
+                                       "punch", "busy", "dynamic", "loud", "m1", "m2", "m3", "m4"]
+    /// Below this many shared finite axes two vectors are not comparable — half a vector is a
+    /// different instrument, not a noisier reading of the same one.
+    static let timbreMinSharedAxes = 8
+    /// Minimum analysed members for a LIVE positive profile. A centroid of two songs is those two
+    /// songs, not a sound.
+    static let timbreMinVectors = 3
+    /// e-fold of the fit OUTSIDE the profile's own spread, in RMS distance. At 0.05, a candidate
+    /// at the typical same-genre non-member distance keeps ~79% of the term and one at the
+    /// corpus' between-group mean (~0.23 against a typical spread of ~0.17) keeps ~28% — graded,
+    /// never a cliff. Chosen against 0.08, which flattened the member/whole-catalog gap
+    /// (0.80 vs 0.65) enough to blunt the term.
+    static let timbreDecay = 0.05
+    /// Fallback neutral for a round with too few analysed candidates to measure one. MEASURED:
+    /// the mean fit of the full analysed corpus (1-in-7 sample, n=164,246 scorings) against the
+    /// owner's 78 live pocket profiles is **0.565**. Mirrors the Lambda's
+    /// TIMBRE_NEUTRAL_FALLBACK.
+    static let fallbackNeutralTimbreFit = 0.57
+    /// SHRINKAGE — the `musicalPrior` mechanism, and at 14% coverage the timbre term needs it for
+    /// the same reason family C does at 10.4%: even with a perfectly unbiased round-neutral
+    /// imputation, a partially-observed feature over-selects at the top of a ranking purely by
+    /// VARIANCE (the winner's curse — the analysed 14% can reach 1.0; the unanalysed 86% are
+    /// pinned at the mean). MEASURED on the owner's 78 live real pockets, counting unanalysed
+    /// candidates across all top-25s with the term off (1,213) and on:
+    ///
+    ///     prior 0 (no shrinkage)   467 kept   11 pockets lose EVERY unanalysed row
+    ///     prior 2 (shipped)        830 kept    2 pockets (both tie-heavy, low-coherence)
+    ///     prior 3                  871 kept    2 pockets — diminishing returns
+    ///
+    /// 2 mirrors `musicalPrior` (a vector is ONE observation, so the shrunk fit sits a third of
+    /// the way from the round mean to its own evidence). The residual displacement is the
+    /// FEATURE, not burial, and the bound is a theorem the real-data harness re-proved: because
+    /// the multiplier is monotone in the shrunk fit, an analysed candidate whose fit measured
+    /// BELOW the round neutral can never displace an unanalysed one — displacement only ever
+    /// happens TOWARD the crate's own sound. The era term skips shrinkage at 99.2% coverage;
+    /// this term must not. Scale it down as the corpus grows.
+    static let timbrePrior = 2.0
+
+    /// RMS distance over the axes BOTH vectors carry, or nil below `timbreMinSharedAxes`.
+    /// F10's distance — see the section doc for the verification that it is.
+    static func timbreDistance(_ a: TimbreVector, _ b: TimbreVector) -> Double? {
+        var sum = 0.0, n = 0
+        for k in timbreAxes {
+            guard let x = a[k], let y = b[k], x.isFinite, y.isFinite else { continue }
+            sum += (x - y) * (x - y)
+            n += 1
+        }
+        guard n >= timbreMinSharedAxes else { return nil }
+        return (sum / Double(n)).squareRoot()
+    }
+
+    /// A profile's timbre: the weighted member centroid and the profile's own weighted spread
+    /// (mean member→centroid distance) — the radius inside which the fit saturates.
+    struct TimbreProfile: Sendable, Equatable {
+        var centroid: TimbreVector
+        var spread: Double
+        /// How many member vectors built this (diagnostic; tests pin liveness through it).
+        var vectors: Int
+    }
+
+    /// Build a profile from weighted member vectors, or nil when fewer than `minVectors` usable
+    /// vectors exist — the term is then unearnable this round and DROPS (fail open at round
+    /// level). `minVectors` defaults to the positive-profile bar; the NEGATIVE profile passes 1,
+    /// because every 👎 is a deliberate act and one rejected sound is still a sound to drift from
+    /// — while a "taste" needs more than an anecdote.
+    static func timbreProfile(_ members: [(vector: TimbreVector, weight: Double)],
+                              minVectors: Int = timbreMinVectors) -> TimbreProfile? {
+        // Usability counts CANONICAL axes with finite values — not raw dictionary keys, which a
+        // future extractor could pad with fields this distance never reads (the Lambda counts the
+        // same way; the parity fixture would catch a drift here).
+        let usable = members.filter { m in
+            m.weight > 0
+                && timbreAxes.filter { m.vector[$0]?.isFinite ?? false }.count >= timbreMinSharedAxes
+        }
+        guard usable.count >= max(1, minVectors) else { return nil }
+        var centroid = TimbreVector()
+        for axis in timbreAxes {
+            var s = 0.0, w = 0.0
+            for m in usable {
+                guard let v = m.vector[axis], v.isFinite else { continue }
+                s += v * m.weight
+                w += m.weight
+            }
+            if w > 0 { centroid[axis] = s / w }
+        }
+        var dSum = 0.0, dW = 0.0
+        for m in usable {
+            guard let d = timbreDistance(m.vector, centroid) else { continue }
+            dSum += d * m.weight
+            dW += m.weight
+        }
+        guard dW > 0 else { return nil }
+        return TimbreProfile(centroid: centroid, spread: dSum / dW, vectors: usable.count)
+    }
+
+    /// 0…1 fit of one analysed song to a profile: 1.0 anywhere inside the profile's own spread,
+    /// decaying outside. nil when the vectors share too few axes to compare (the caller treats
+    /// that exactly like "no vector").
+    static func timbreFit(_ v: TimbreVector, profile p: TimbreProfile) -> Double? {
+        guard let d = timbreDistance(v, p.centroid) else { return nil }
+        if d <= p.spread { return 1 }
+        return exp(-(d - p.spread) / timbreDecay)
+    }
+
+    /// The NET fit — the positive fit minus `rejectionWeight ×` the fit to the rejected sound,
+    /// floored at 0. This is how a 👎 on an analysed song shifts the taste: the same
+    /// subtract-the-negative-profile shape `inDaZone`'s `distaste` uses, on the timbre axis.
+    static func timbreNetFit(_ v: TimbreVector, positive: TimbreProfile,
+                             negative: TimbreProfile?, rejectionWeight: Double) -> Double? {
+        guard let pos = timbreFit(v, profile: positive) else { return nil }
+        guard let negative, let neg = timbreFit(v, profile: negative) else { return pos }
+        return max(0, pos - rejectionWeight * neg)
+    }
+
+    /// The round's imputation constant for unanalysed candidates — same shape as
+    /// `MusicalCalibration` / `EraCalibration`, same round-level-never-per-song rule.
+    struct TimbreCalibration: Sendable, Equatable {
+        var neutral: Double = fallbackNeutralTimbreFit
+        var observations: Int = 0
+        var usedRoundMean: Bool { observations >= minObservationsForRoundNeutral }
+    }
+
+    /// Measure the round's timbre neutral from the candidate pool the ranking is about to read.
+    static func timbreCalibrate<S: Sequence>(_ candidates: S, positive: TimbreProfile,
+                                             negative: TimbreProfile?,
+                                             rejectionWeight: Double) -> TimbreCalibration
+        where S.Element == TimbreVector? {
+        var sum = 0.0, n = 0
+        for v in candidates {
+            guard let v, let fit = timbreNetFit(v, positive: positive, negative: negative,
+                                                rejectionWeight: rejectionWeight) else { continue }
+            sum += fit
+            n += 1
+        }
+        var cal = TimbreCalibration(neutral: fallbackNeutralTimbreFit, observations: n)
+        if n >= minObservationsForRoundNeutral { cal.neutral = sum / Double(n) }
+        return cal
+    }
+
+    /// The timbre sub-term as the scorer sees it: the observed net fit SHRUNK toward the round's
+    /// neutral (`timbrePrior` — the winner's-curse correction sparse coverage demands), or the
+    /// neutral itself when the candidate has no vector. FAIL OPEN — an unanalysed candidate is
+    /// scored at the mean of its analysed competitors, never at zero and never through a
+    /// per-song denominator.
+    static func timbreFit(_ v: TimbreVector?, positive: TimbreProfile, negative: TimbreProfile?,
+                          rejectionWeight: Double, calibration c: TimbreCalibration) -> Double {
+        guard let v, let fit = timbreNetFit(v, positive: positive, negative: negative,
+                                            rejectionWeight: rejectionWeight) else { return c.neutral }
+        return (timbrePrior * c.neutral + fit) / (timbrePrior + 1)
+    }
+
+    /// The words a profile's sound can honestly be described in — for the "why" strings
+    /// ("Sounds like this crate: punchy, dark, dynamic").
+    ///
+    /// NAMED axes only: `m1…m4` are the unnamed spectral-envelope residual and `brightVar`/`width`
+    /// have no adjective a listener would recognise, so they contribute to the DISTANCE but never
+    /// to the SENTENCE — a why-string must not say things the owner cannot hear. An axis speaks
+    /// only when the centroid sits well off the middle (≥ 0.15 from 0.5); the strongest
+    /// deviations win the (at most `max`) slots. Mirrored by the Lambda's `timbreAdjectives` —
+    /// the parity fixture pins the table.
+    static func timbreAdjectives(_ centroid: TimbreVector, max maxCount: Int = 3) -> [String] {
+        let table: [(axis: String, hi: String, lo: String)] = [
+            ("punch", "punchy", "smooth"),
+            ("bright", "bright", "dark"),
+            ("busy", "busy", "sparse"),
+            ("dynamic", "dynamic", "even"),
+            ("loud", "loud", "quiet"),
+            ("noisy", "gritty", "clean"),
+            ("air", "airy", "warm"),
+        ]
+        var picks: [(word: String, strength: Double)] = []
+        for row in table {
+            guard let v = centroid[row.axis], v.isFinite else { continue }
+            let dev = v - 0.5
+            guard abs(dev) >= 0.15 else { continue }
+            picks.append((dev > 0 ? row.hi : row.lo, abs(dev)))
+        }
+        return picks.sorted { $0.strength > $1.strength || ($0.strength == $1.strength && $0.word < $1.word) }
+            .prefix(max(0, maxCount)).map(\.word)
+    }
+
+    // ========================================================================
     // MARK: - Reporting the families back out (tests + the "why" strings)
     // ========================================================================
 

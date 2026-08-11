@@ -47,7 +47,8 @@ const { handler, camelotNeighbors, mergeBatch, scoreForYou, scoreCollections, sh
         scoreSimilarToCollections, playCountSignal, recencySignal,
         feedbackOf, feedbackMultiplier, identityKeys,
         primaryArtistKey, artistKey, artistFamiliarityOf, auxMix, mergeAudioFeatures,
-        eraWindow, eraFit } =
+        eraWindow, eraFit,
+        timbreDistance, timbreProfile, timbreFit, timbreNetFit, timbreAdjectives } =
   await import('./index.mjs');
 
 const PROFILE = 'profile-test-1234';
@@ -1942,4 +1943,236 @@ test('scoreCollections: an undated SONG renormalizes the round instead of quietl
             `an undated song still gets collection suggestions: ${JSON.stringify(out.suggestions)}`);
   const scores = new Set(out.suggestions.map((s) => s.score));
   assert.equal(scores.size, 1, 'with no era anywhere, the genre-identical crates tie exactly');
+});
+
+// ── TIMBRE (audio-similarity v2): the sound of a crate / seed set as a ranking signal ───────────
+//
+// One genre and one year across every fixture row, deliberately: genre and era cannot separate
+// the candidates, so the timbre term has to do the separating — or fail open trying. Sound A is
+// "punchy, busy, dark" (the new-jack shape F10's axes were picked for); the mismatched sound
+// flips every axis.
+
+const TAXES = ['bright', 'brightVar', 'air', 'width', 'noisy', 'fizz', 'punch', 'busy',
+               'dynamic', 'loud', 'm1', 'm2', 'm3', 'm4'];
+/// All 14 axes at `base`, with named overrides, then `shift` added everywhere (clamped 0…1).
+const tvec = (base, overrides = {}, shift = 0) => Object.fromEntries(TAXES.map((k) => {
+  const v = (overrides[k] ?? base) + shift;
+  return [k, Math.min(1, Math.max(0, Math.round(v * 10000) / 10000))];
+}));
+const SOUND_A = { punch: 0.9, busy: 0.8 };            // over base 0.2 → punchy/busy/dark/quiet…
+const soundA = (shift = 0) => tvec(0.2, SOUND_A, shift);
+const soundAFlipped = (shift = 0) => tvec(0.8, { punch: 0.1, busy: 0.2 }, shift);
+
+const timbreScoringFeatures = (opts = {}) => new Map([
+  // Five seeds, sound A ±0.01 — a tight, live profile (spread ≈ 0.01). `unanalysedSeeds`
+  // strips their vectors to drive the term-drop round.
+  ...['s1', 's2', 's3', 's4', 's5'].map((n, i) => [`sng_t${n}`, {
+    i: `sng_t${n}`, a: `Seed ${n}`, n: `Seed ${n}`, g: 'soul', y: 1990,
+    ...(opts.unanalysedSeeds ? {} : { t: soundA((i - 2) * 0.005) }),
+  }]),
+  ['sng_tzz_in', { i: 'sng_tzz_in', a: 'Guy', n: 'Sounds Like The Zone', g: 'soul', y: 1990, t: soundA(0.004) }],
+  ['sng_taa_out', { i: 'sng_taa_out', a: 'Sade', n: 'Sounds Nothing Like It', g: 'soul', y: 1990, t: soundAFlipped() }],
+  // Two more of the flipped sound so `col_off` below is a TIGHT crate of it — a crate of mixed
+  // opposite sounds has an honestly huge spread and accepts everything, which is the
+  // self-regulating behavior, not a test of discrimination.
+  ['sng_tout2', { i: 'sng_tout2', a: 'Ambre', n: 'Flipped Two', g: 'soul', y: 1990, t: soundAFlipped(0.01) }],
+  ['sng_tout3', { i: 'sng_tout3', a: 'Cleo', n: 'Flipped Three', g: 'soul', y: 1990, t: soundAFlipped(-0.01) }],
+  ['sng_tnv', { i: 'sng_tnv', a: 'Zhané', n: 'Never Analysed', g: 'soul', y: 1990 }],
+  // The rejected-sound trio: `sng_trej` is the 👎'd song; `sng_tb` sounds exactly like it,
+  // `sng_tc` sits the SAME distance from the seed centroid in the opposite direction.
+  ['sng_trej', { i: 'sng_trej', a: 'Reject', n: 'Thumbed Down', g: 'soul', y: 1990, t: soundA(0.06) }],
+  ['sng_tb', { i: 'sng_tb', a: 'NearRej', n: 'Near The Rejected Sound', g: 'soul', y: 1990, t: soundA(0.06) }],
+  ['sng_tc', { i: 'sng_tc', a: 'FarRej', n: 'Same Fit, Other Direction', g: 'soul', y: 1990, t: soundA(-0.06) }],
+]);
+
+const timbreSeedState = (extra = {}) => ({
+  v: 1,
+  plays: ['sng_ts1', 'sng_ts2', 'sng_ts3', 'sng_ts4', 'sng_ts5'].map((id) => play(id, NOW - 5 * DAY)),
+  favorites: {}, activity: [], puzzle: [], collections: { atMs: 0, list: [] },
+  ...extra,
+});
+
+test('timbreDistance: RMS over shared axes, null under the 8-axis bar', () => {
+  const a = soundA();
+  assert.equal(timbreDistance(a, a), 0);
+  // One axis moved by 0.14 → RMS = sqrt(0.14² / 14).
+  const b = { ...a, punch: a.punch - 0.14 };
+  assert.ok(Math.abs(timbreDistance(a, b) - Math.sqrt(0.14 ** 2 / 14)) < 1e-12);
+  // A 6-axis fragment is not comparable — half a vector is a different instrument.
+  const sparse = Object.fromEntries(TAXES.slice(0, 6).map((k) => [k, 0.5]));
+  assert.equal(timbreDistance(a, sparse), null);
+  assert.equal(timbreDistance(null, a), null);
+});
+
+test('timbreProfile: the liveness bar is 3 vectors (1 for the negative), spread is the members\' own', () => {
+  assert.equal(timbreProfile([{ f: soundA(), w: 1 }, { f: soundA(0.1), w: 1 }]), null,
+               'a centroid of two songs is those two songs, not a sound');
+  const neg = timbreProfile([{ f: soundA(), w: 1 }], 1);
+  assert.ok(neg, 'one 👎 is already a sound to drift from');
+  assert.equal(neg.spread, 0);
+  const p = timbreProfile([{ f: soundA(0.01), w: 1 }, { f: soundA(-0.01), w: 1 }, { f: soundA(), w: 1 }]);
+  assert.ok(p);
+  assert.equal(p.vectors, 3);
+  assert.ok(p.spread > 0 && p.spread < 0.02, `spread is the mean member distance, got ${p.spread}`);
+});
+
+test('timbreFit: saturates inside the profile\'s own spread (a sound is a REGION), decays outside', () => {
+  const p = timbreProfile([{ f: soundA(0.01), w: 1 }, { f: soundA(-0.01), w: 1 }, { f: soundA(), w: 1 }]);
+  assert.equal(timbreFit(soundA(), p), 1, 'the centroid itself');
+  assert.equal(timbreFit(soundA(0.005), p), 1, 'inside the spread is not "less the sound"');
+  const far = timbreFit(soundAFlipped(), p);
+  assert.ok(far < 0.01, `the flipped sound is buried on timbre (${far}) — and still free to win on genre/artist`);
+  const mid = timbreFit(soundA(0.06), p);
+  assert.ok(mid > 0.2 && mid < 0.6, `a nearby sound keeps a graded share, got ${mid}`);
+});
+
+test('timbreAdjectives: named axes only, ≥0.15 off the middle, strongest first', () => {
+  assert.deepEqual(timbreAdjectives({ punch: 0.9, bright: 0.2, m1: 0.99, brightVar: 0.99 }),
+                   ['punchy', 'dark'],
+                   'm1/brightVar never speak — a why-string must not say things the owner cannot hear');
+  assert.deepEqual(timbreAdjectives({ punch: 0.64, bright: 0.36 }), [],
+                   'inside the threshold nothing is claimed');
+  assert.deepEqual(timbreAdjectives(timbreProfile([{ f: soundA(), w: 1 }], 1).centroid),
+                   ['punchy', 'busy', 'clean'],
+                   'ties break on the word so the sentence is deterministic');
+});
+
+test('scoreForYou: the candidate that SOUNDS like the seeds outranks the same-genre one that does not', () => {
+  const out = scoreForYou(timbreSeedState(), timbreScoringFeatures(), { nowMs: NOW });
+  const rank = out.songs.map((s) => s.songId);
+  assert.ok(rank.indexOf('sng_tzz_in') < rank.indexOf('sng_taa_out'),
+            `same genre, same year — the sound is the only separator: ${JSON.stringify(rank)}`);
+  const tin = out.songs.find((s) => s.songId === 'sng_tzz_in');
+  assert.ok(tin.reasons.some((r) => r.startsWith('Sounds like your recent plays:')),
+            `the timbre reason names the sound: ${JSON.stringify(tin.reasons)}`);
+  const tout = out.songs.find((s) => s.songId === 'sng_taa_out');
+  assert.ok(!tout.reasons.some((r) => r.startsWith('Sounds like')),
+            'a mismatched sound must not carry the reason');
+});
+
+test('scoreForYou: an UNANALYSED candidate is NOT structurally buried (round-neutral multiplier)', () => {
+  const out = scoreForYou(timbreSeedState(), timbreScoringFeatures(), { nowMs: NOW });
+  const rank = out.songs.map((s) => s.songId);
+  // Fail open: the vectorless candidate rides the round-neutral multiplier — above the analysed
+  // candidate whose sound genuinely mismatches, below the one that genuinely fits. Zeroing it
+  // would have ranked 86% of the catalog below every analysed row, which is the incomparability
+  // that deferred this term at 1.75% coverage.
+  assert.ok(rank.indexOf('sng_tnv') < rank.indexOf('sng_taa_out'),
+            `no vector must not sink below a bad fit: ${JSON.stringify(rank)}`);
+  assert.ok(rank.indexOf('sng_tzz_in') < rank.indexOf('sng_tnv'),
+            'the neutral is a mean, not a reward — a real fit still wins');
+  assert.ok(!out.songs.find((s) => s.songId === 'sng_tnv').reasons.some((r) => r.startsWith('Sounds like')),
+            'an imputed fit never claims a sound nothing measured');
+});
+
+test('scoreForYou: fewer than 3 analysed seeds ⇒ the timbre term drops for the round (ranking-neutral)', () => {
+  const withT = scoreForYou(timbreSeedState(), timbreScoringFeatures({ unanalysedSeeds: true }), { nowMs: NOW });
+  const stripped = new Map([...timbreScoringFeatures({ unanalysedSeeds: true })]
+    .map(([id, row]) => { const { t, ...rest } = row; return [id, rest]; }));
+  const noT = scoreForYou(timbreSeedState(), stripped, { nowMs: NOW });
+  assert.deepEqual(withT.songs.map((s) => [s.songId, s.score]),
+                   noT.songs.map((s) => [s.songId, s.score]),
+                   'an unearnable term leaves the round entirely — candidate vectors alone change nothing');
+});
+
+test('scoreForYou: a 👎 on an analysed song pushes its SOUND away, not just its artist', () => {
+  const feats = timbreScoringFeatures();
+  const state = timbreSeedState({
+    feedback: [{ id: 'fb1', atMs: NOW - DAY, songId: 'sng_trej', action: 'rejected' }],
+  });
+  const out = scoreForYou(state, feats, { nowMs: NOW });
+  const rank = out.songs.map((s) => s.songId);
+  assert.ok(!rank.includes('sng_trej'), 'the rejected song itself is excluded outright');
+  // sng_tb and sng_tc sit at the SAME distance from the seed centroid (equal positive fit, same
+  // genre/year, both artists unknown to the profile) — only the rejected sound tells them apart.
+  assert.ok(rank.indexOf('sng_tc') < rank.indexOf('sng_tb'),
+            `the candidate that sounds like the 👎 must drop below its twin: ${JSON.stringify(rank)}`);
+  const clean = scoreForYou(timbreSeedState(), feats, { nowMs: NOW });
+  const scoreOf = (res, id) => res.songs.find((s) => s.songId === id)?.score;
+  assert.equal(scoreOf(clean, 'sng_tb'), scoreOf(clean, 'sng_tc'),
+               'without the verdict the twins tie exactly — the drop is the 👎 and nothing else');
+});
+
+// ── scoreCollections: the sound is the COLLECTION's, matched against the song ──────────────────
+
+const timbreColState = () => ({
+  v: 1, plays: [], favorites: {}, activity: [], puzzle: [],
+  collections: {
+    atMs: 0,
+    list: [
+      { id: 'col_snd', kind: 'pocket', name: 'Sound A', songIds: ['sng_ts1', 'sng_ts2', 'sng_ts3', 'sng_ts4', 'sng_ts5'] },
+      { id: 'col_off', kind: 'pocket', name: 'Other Sound', songIds: ['sng_taa_out', 'sng_tout2', 'sng_tout3'] },
+      { id: 'col_unk', kind: 'pocket', name: 'Unanalysed Crate', songIds: ['sng_tnv'] },
+    ],
+  },
+});
+
+test('scoreCollections: the crate that shares the song\'s SOUND outranks the one that does not', () => {
+  const feats = timbreScoringFeatures();
+  feats.set('sng_q', { i: 'sng_q', a: 'Query', n: 'Query', g: 'soul', y: 1990, t: soundA(0.004) });
+  const out = scoreCollections(timbreColState(), feats, 'sng_q', { nowMs: NOW, threshold: 0 });
+  const score = (id) => out.suggestions.find((s) => s.id === id)?.score;
+  assert.ok(score('col_snd') > score('col_off'),
+            `sound A belongs in the sound-A crate: ${JSON.stringify(out.suggestions)}`);
+  const snd = out.suggestions.find((s) => s.id === 'col_snd');
+  assert.ok(snd.reasons.some((r) => r.startsWith('Sounds like this crate:')),
+            `the reason names the crate's sound: ${JSON.stringify(snd.reasons)}`);
+});
+
+test('scoreCollections: a crate whose MEMBERS are unanalysed fails open at the round neutral', () => {
+  const feats = timbreScoringFeatures();
+  feats.set('sng_q', { i: 'sng_q', a: 'Query', n: 'Query', g: 'soul', y: 1990, t: soundA(0.004) });
+  const out = scoreCollections(timbreColState(), feats, 'sng_q', { nowMs: NOW, threshold: 0 });
+  const score = (id) => out.suggestions.find((s) => s.id === id)?.score;
+  // The neutral is the mean of the song's fit across the PROFILED crates (≈(1+0)/2), so the
+  // unanalysed crate lands between the matching and mismatched ones — visible, unbiased.
+  assert.ok(score('col_snd') > score('col_unk'), 'a real sound match still beats the imputation');
+  assert.ok(score('col_unk') > score('col_off'), 'unanalysed members ≠ a buried crate');
+});
+
+test('scoreCollections: an unanalysed SONG renormalizes the round instead of quietly raising the bar', () => {
+  const feats = timbreScoringFeatures();
+  feats.set('sng_q', { i: 'sng_q', a: 'Query', n: 'Query No Vector', g: 'soul', y: 1990 });
+  const out = scoreCollections(timbreColState(), feats, 'sng_q', { nowMs: NOW });
+  // Default threshold (0.8): the dead term's 0.5 redistributes (×8.0/7.5 here — era stays live)
+  // rather than sitting unearnable in front of a fixed bar.
+  const ids = out.suggestions.map((s) => s.id);
+  assert.ok(ids.includes('col_snd') && ids.includes('col_off') && ids.includes('col_unk'),
+            `an unanalysed song still gets collection suggestions: ${JSON.stringify(out.suggestions)}`);
+  const scores = new Set(out.suggestions.map((s) => s.score));
+  assert.equal(scores.size, 1, 'with no vector on the song, the sound-distinct crates tie exactly');
+});
+
+// ── The cloud/device parity fixture — one law, two implementations ──────────────────────────────
+
+test('timbre parity fixture: the Lambda reproduces every value the device is held to', async () => {
+  const { fileURLToPath } = await import('node:url');
+  const { dirname } = await import('node:path');
+  const fx = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)),
+                                          '..', '..', '..', 'apple', 'Tests', 'Fixtures',
+                                          'timbre-parity.json'), 'utf8'));
+  assert.ok(fx.distances.length >= 50 && fx.profiles.length >= 20, 'the fixture is not a stub');
+  for (const c of fx.distances) {
+    const d = timbreDistance(c.a, c.b);
+    if (c.d == null) assert.equal(d, null);
+    else assert.ok(Math.abs(d - c.d) < 1e-12, `distance drift: ${d} vs ${c.d}`);
+  }
+  for (const c of fx.profiles) {
+    const p = timbreProfile(c.members, c.minVectors);
+    if (!c.profile) { assert.equal(p, null); continue; }
+    assert.equal(p.vectors, c.profile.vectors);
+    assert.ok(Math.abs(p.spread - c.profile.spread) < 1e-12);
+    for (const [k, v] of Object.entries(c.profile.centroid)) {
+      assert.ok(Math.abs(p.centroid[k] - v) < 1e-12, `centroid drift on ${k}`);
+    }
+    const f = timbreFit(c.probe, p);
+    if (c.fit == null) assert.equal(f, null);
+    else assert.ok(Math.abs(f - c.fit) < 1e-12, `fit drift: ${f} vs ${c.fit}`);
+    if (c.negative?.profile && c.netFit != null) {
+      const nf = timbreNetFit(c.probe, p, timbreProfile(c.negative.members, 1));
+      assert.ok(Math.abs(nf - c.netFit) < 1e-12, `net-fit drift: ${nf} vs ${c.netFit}`);
+    }
+    assert.deepEqual(timbreAdjectives(p.centroid), c.adjectives);
+  }
+  for (const c of fx.adjectiveCases) assert.deepEqual(timbreAdjectives(c.centroid), c.words);
 });

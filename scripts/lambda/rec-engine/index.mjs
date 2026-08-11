@@ -172,9 +172,62 @@ const ERA_MIN_NEUTRAL_OBS = 25;
 //   scoreForYou:      genre 2.0 + bpm 1.0 + camelot 1.0 + year 0.5 + sentiment 1.0
 //                     + collection 1.5 + artist 0.75                            = 7.75
 //   scoreCollections: genre 2.0 + bpm 1.0 + camelot 0.75 + year 0.5 + sentiment 1.0
-//                     + coplay 1.25 + recency 0.5 + puzzle 0.5                  = 7.5
+//                     + coplay 1.25 + recency 0.5 + puzzle 0.5 + timbre 0.5     = 8.0
 const FORYOU_SIM_BUDGET = 7.75;
-const COLLECTIONS_SIM_BUDGET = 7.5;
+const COLLECTIONS_SIM_BUDGET = 8.0;
+// ── TIMBRE (audio-similarity v2 — the 14-axis sound of a crate / seed set) ──────────────────────
+// The corpus rides `rec-features.json` as `t` (build-rec-features.mjs attaches public/timbre.json,
+// aliases already resolved), so the Lambda pays NOTHING new for it — `loadFeatures` was already
+// fetching the whole file (17.4 MB parses in well under a second on a 1024 MB function, cached 15
+// minutes across warm invocations). ~14% of rows carry a vector, concentrated in the vinyl-heavy
+// pockets actually being scored — 78 of the owner's 87 collections clear the 3-vector liveness bar.
+//
+// MIRRORS `SimilarityFamilies`'s timbre section on the device — same axes, same RMS distance
+// (F10's: recomputing F10's within-artist+genre vs between-group measurement with this exact
+// formula over the full corpus gives 0.163/0.233, ratio 0.70, the published 0.205/0.288 = 0.71
+// scale), same centroid+spread profile (centroid beat kNN(k=5) head-to-head on the real pockets,
+// held-out-member-vs-same-genre AUC 0.557 vs 0.538 over 60 pockets), same saturating fit and the
+// same fail-open rules. The timbre-parity fixture pins the two implementations to 1e-9.
+const TIMBRE_AXES = ['bright', 'brightVar', 'air', 'width', 'noisy', 'fizz', 'punch', 'busy',
+                     'dynamic', 'loud', 'm1', 'm2', 'm3', 'm4'];
+/// Below this many shared finite axes two vectors are not comparable.
+const TIMBRE_MIN_AXES = 8;
+/// Minimum analysed members for a LIVE positive profile — a centroid of two songs is those two
+/// songs, not a sound. (The NEGATIVE profile passes 1: every 👎 is a deliberate act.)
+const TIMBRE_MIN_VECTORS = 3;
+/// e-fold of the fit OUTSIDE the profile's own spread. At 0.05 a candidate at the typical
+/// same-genre non-member distance keeps ~79% and one at the corpus between-group mean ~28%.
+const TIMBRE_DECAY = 0.05;
+/// How far the fit may lift a candidate in the MULTIPLIER surfaces (scoreForYou):
+/// `sim × (1 + TIMBRE_GAIN × fit)` — the NOVELTY_AUX_GAIN shape, deliberately under its 1.40×
+/// band because timbre's measured same-genre separation (AUC 0.56) is real but modest. Its
+/// maximum influence sits between the era sub-term and the genre term. Mirrors
+/// `ZoneEngine.Tuning.timbreGain`.
+const TIMBRE_GAIN = 0.35;
+/// The same signal inside `scoreCollections`, where the house style is a summed TERM (that route
+/// has no aux multiplier): exactly the era term's weight, so "comparable to genre/era" is a
+/// constant, not a claim.
+const TIMBRE_TERM_WEIGHT = 0.5;
+/// How much the fit to the REJECTED sound subtracts inside the net fit — mirrors
+/// `ZoneEngine.Tuning.rejectionWeight` (a 👎 reorders, never censors).
+const TIMBRE_REJECT_WEIGHT = 0.5;
+/// Fallback neutral for a round with too few analysed candidates to measure one. MEASURED: mean
+/// fit of the full analysed corpus (164,246 scorings) against the owner's 78 live pocket
+/// profiles = 0.565. Mirrors `SimilarityFamilies.fallbackNeutralTimbreFit`.
+const TIMBRE_NEUTRAL_FALLBACK = 0.57;
+/// Below this many analysed candidates the round mean is noise — same bar as the era term.
+const TIMBRE_MIN_NEUTRAL_OBS = 25;
+/// SHRINKAGE — the `musicalPrior` mechanism, needed here for the same reason family C needs it
+/// at 10.4% coverage: with 14% of rows analysed, an unshrunk term over-selects analysed rows at
+/// the top purely by variance even though the imputation is unbiased. Measured on the owner's 78
+/// live real pockets (unanalysed rows across all top-25s, term off = 1,213): prior 0 keeps 467
+/// and empties ELEVEN pockets entirely — structural burial; prior 2 keeps 830 with 2 tie-heavy
+/// residuals; prior 3 keeps 871 (diminishing returns). A vector is ONE observation, so at 2 the
+/// shrunk fit sits a third of the way from the round mean toward its own evidence — and because
+/// the multiplier is monotone, an analysed candidate whose fit measured BELOW the round neutral
+/// can never displace an unanalysed one: displacement only ever happens TOWARD the crate's
+/// sound. Mirrors `SimilarityFamilies.timbrePrior`; scale down as the corpus grows.
+const TIMBRE_PRIOR = 2;
 /// How many songs of the LIFETIME play-count snapshot are stored. The client sends its
 /// most-played rows first, so the truncation drops the tail — the rows that carry the least
 /// ranking signal anyway. A real library tops out around 56k songs with plays; 20k is where the
@@ -424,38 +477,37 @@ async function deleteState(profileHash) {
 // ONE writer exists (the nightly worker, serially, once a night), so the ETag-conditional dance
 // the state object needs would be ceremony without a race to prevent.
 //
-// ── THE RANKING CHANGE IS DEFERRED, DELIBERATELY, AND HERE IS THE TRIGGER ───────────────────────
-// Nothing in `scoreForYou` / `scoreCollections` reads this store yet. That is a decision, not an
-// omission, and the reason is arithmetic rather than taste.
+// ── THE RANKING CHANGE THIS STORE WAS BUILT TOWARD IS NOW WIRED (2026-08-11) ────────────────────
+// F10 deferred the timbre term at 1.75% coverage because a term defined for a handful of
+// candidates and none of the rest is not "a weak signal" — it is an INCOMPARABLE one: two songs
+// ranked by different formulas, the tile reordering for reasons no thumbs-up caused. Both
+// blockers are gone and the term is live in `scoreForYou` (bounded multiplier, TIMBRE_GAIN) and
+// `scoreCollections` (summed term, TIMBRE_TERM_WEIGHT — that route's house style, exactly the
+// era term's shape):
+//   1. COVERAGE — the warm-batch backfill (timbre-batch.mjs) swept every song with decodable
+//      audio: 14,916 corpus rows (~14% of catalog), CONCENTRATED in the pockets actually being
+//      scored — 78 of the owner's 87 collections clear the 3-vector liveness bar, vinyl-heavy
+//      pockets near-totally. F10's "~60% of the candidate pool" trigger was superseded by the
+//      RENORMALIZE-OVER-LIVE-AXES pattern the era term shipped: round-neutral imputation makes
+//      mixed coverage FAIR (an unanalysed candidate scores the measured mean of its analysed
+//      competitors), which was the actual requirement behind the coverage number.
+//   2. FEEDBACK — verdicts on analysed songs shift the taste: accepted songs SEED (so they move
+//      the positive centroid at seed weight) and rejected analysed songs build a negative
+//      centroid subtracted inside the net fit (timbreNetFit). Where no verdicts exist the term
+//      degrades to the play-derived centroid alone — gracefully, never structurally.
+//   3. BOUNDED — `sim × (1 + TIMBRE_GAIN × fit)`, the NOVELTY_AUX_GAIN shape, 1.35× band.
 //
-// The corpus starts EMPTY and fills at ~40 songs a night, and it can only analyse songs that have
-// LOCAL AUDIO — 1,939 of the owner's 107,757 catalog rows today (1.8%). So the first nights are
-// mostly the worker asking the rip server to capture things; a usable corpus is weeks away, not
-// hours. A timbre term switched on now would apply to a handful of candidates and to none of the
-// rest, which is not "a weak signal" — it is an INCOMPARABLE one: two songs would be ranked by
-// different formulas and the tile would reorder for reasons no thumbs-up caused. That is precisely
-// the "half-wired ranking change that silently degrades suggestions" this feature was told to
-// avoid, and it is much worse than an unfinished pipeline because it is invisible.
+// The vectors reach the scorer through `rec-features.json`'s `t` field (public corpus, folded
+// nightly), NOT through this per-profile store: `loadFeatures` already fetches that file, so the
+// term costs the request path nothing, while reading this store per-request would add an S3 GET
+// for vectors that reach the public corpus on the next fold anyway. This store remains the
+// nightly worker's landing zone.
 //
-// WHAT HAS TO BE TRUE BEFORE IT IS WIRED IN, measured rather than felt:
-//   1. COVERAGE — at least ~60% of a typical `/recs/songs` candidate pool carries a vector, so the
-//      term applies to a comparable set rather than a lucky subset. Below that the honest shape is
-//      a tiebreak among the covered rows, not a score term.
-//   2. FEEDBACK — enough 👍/👎 on ANALYSED songs to define a positive and a negative centroid.
-//      A verdict on a song with no vector teaches nothing about musicality, so the count that
-//      matters is verdicts∩corpus, not total verdicts.
-//   3. BOUNDED — it enters as a multiplier on the existing similarity (`sim × (1 + gain × aux)`),
-//      the same shape `NOVELTY_AUX_GAIN` uses and for the same reason: added on, a timbre term at
-//      the bottom of the admitted similarity range is a multi-fold swing, which turns "this kind
-//      of sound" into noise.
-//
-// The discrimination the whole idea rests on IS already measured, on the owner's real catalog:
-// 96 songs across 12 artist+genre groups, mean pairwise timbre distance 0.205 WITHIN one artist
-// and genre against 0.288 BETWEEN groups — a ratio of 0.71, with the widest same-artist pair at
-// 0.705 (nearly 3× the between-group median). Every one of the 14 axes separates same-artist
-// songs, led by `m2` (0.83 of its between-group spread), `brightVar` (0.80) and `punch` (0.79).
-// So a 👍 CAN carry "I like this kind of sound" rather than only "I like this artist". What is
-// missing is the corpus, not the signal.
+// The discrimination the term rests on, measured on the owner's real catalog: F10's original 96
+// songs across 12 artist+genre groups gave within/between pairwise distance 0.205/0.288 (ratio
+// 0.71); recomputed over the FULL 2026-08-11 corpus with the shipped `timbreDistance` the same
+// measurement gives 0.163/0.233 (ratio 0.70) — same scale, same conclusion, which is also the
+// verification that the shipped RMS formula IS F10's distance and not a reinvention.
 
 async function readAudio(profileHash) {
   if (LOCAL_DIR) {
@@ -1110,6 +1162,108 @@ export function eraFit(year, window) {
   return Math.exp(-gap / ERA_DECAY_YEARS);
 }
 
+/**
+ * RMS timbre distance over the axes BOTH vectors carry, or null below TIMBRE_MIN_AXES.
+ * F10's distance, not a new one — see the TIMBRE constants for the verification.
+ * Mirrors `SimilarityFamilies.timbreDistance`.
+ */
+export function timbreDistance(a, b) {
+  if (!a || !b) return null;
+  let sum = 0; let n = 0;
+  for (const k of TIMBRE_AXES) {
+    const x = a[k]; const y = b[k];
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    sum += (x - y) * (x - y);
+    n += 1;
+  }
+  return n >= TIMBRE_MIN_AXES ? Math.sqrt(sum / n) : null;
+}
+
+/**
+ * A profile's timbre — the weighted member CENTROID plus the profile's own weighted SPREAD (mean
+ * member→centroid distance), or null under `minVectors` usable vectors (the term is then
+ * unearnable this round and DROPS — fail open at round level, never per song).
+ * `members`: [{ f, w }]. Mirrors `SimilarityFamilies.timbreProfile`.
+ */
+export function timbreProfile(members, minVectors = TIMBRE_MIN_VECTORS) {
+  const usable = (members || []).filter((m) => m && m.f && typeof m.f === 'object'
+    && Number.isFinite(m.w) && m.w > 0
+    && TIMBRE_AXES.filter((k) => Number.isFinite(m.f[k])).length >= TIMBRE_MIN_AXES);
+  if (usable.length < Math.max(1, minVectors)) return null;
+  const centroid = {};
+  for (const k of TIMBRE_AXES) {
+    let s = 0; let w = 0;
+    for (const m of usable) {
+      if (!Number.isFinite(m.f[k])) continue;
+      s += m.f[k] * m.w;
+      w += m.w;
+    }
+    if (w > 0) centroid[k] = s / w;
+  }
+  let dSum = 0; let dW = 0;
+  for (const m of usable) {
+    const d = timbreDistance(m.f, centroid);
+    if (d == null) continue;
+    dSum += d * m.w;
+    dW += m.w;
+  }
+  if (!(dW > 0)) return null;
+  return { centroid, spread: dSum / dW, vectors: usable.length };
+}
+
+/**
+ * 0…1 fit of one analysed song to a profile: 1.0 anywhere inside the profile's own spread (a
+ * crate's sound is a REGION — a song inside it is not "more the sound" for hugging the
+ * centroid), exponential decay outside. null when the vectors share too few axes ("no vector").
+ * Mirrors `SimilarityFamilies.timbreFit(_:profile:)`.
+ */
+export function timbreFit(v, profile) {
+  if (!profile) return null;
+  const d = timbreDistance(v, profile.centroid);
+  if (d == null) return null;
+  return d <= profile.spread ? 1 : Math.exp(-(d - profile.spread) / TIMBRE_DECAY);
+}
+
+/**
+ * The NET fit — positive fit minus TIMBRE_REJECT_WEIGHT × the fit to the rejected sound, floored
+ * at 0. How a 👎 on an analysed song shifts the taste on the timbre axis.
+ * Mirrors `SimilarityFamilies.timbreNetFit`.
+ */
+export function timbreNetFit(v, positive, negative) {
+  const pos = timbreFit(v, positive);
+  if (pos == null) return null;
+  const neg = negative ? timbreFit(v, negative) : null;
+  return neg == null ? pos : Math.max(0, pos - TIMBRE_REJECT_WEIGHT * neg);
+}
+
+/**
+ * The words a profile's sound can honestly be described in — NAMED axes only (m1…m4 are the
+ * unnamed residual; brightVar/width have no adjective a listener would recognise). An axis
+ * speaks only ≥0.15 off the middle; strongest deviations win the (≤ max) slots.
+ * Mirrors `SimilarityFamilies.timbreAdjectives` — the parity fixture pins the table.
+ */
+export function timbreAdjectives(centroid, max = 3) {
+  const table = [
+    ['punch', 'punchy', 'smooth'],
+    ['bright', 'bright', 'dark'],
+    ['busy', 'busy', 'sparse'],
+    ['dynamic', 'dynamic', 'even'],
+    ['loud', 'loud', 'quiet'],
+    ['noisy', 'gritty', 'clean'],
+    ['air', 'airy', 'warm'],
+  ];
+  const picks = [];
+  for (const [axis, hi, lo] of table) {
+    const v = centroid?.[axis];
+    if (!Number.isFinite(v)) continue;
+    const dev = v - 0.5;
+    if (Math.abs(dev) < 0.15) continue;
+    picks.push([dev > 0 ? hi : lo, Math.abs(dev)]);
+  }
+  picks.sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+  return picks.slice(0, Math.max(0, max)).map(([w]) => w);
+}
+
 /** The stored lifetime counts as `{ counts, maxN }`, with `maxN` 0 when there is no signal. */
 function playCountsOf(state) {
   const counts = state.playCounts?.counts || {};
@@ -1332,6 +1486,39 @@ export function scoreForYou(state, featuresById,
   // …and when NO seed is dated the term is unearnable for every candidate: it drops and its
   // weight renormalizes over the live axes (see the SIM_BUDGET constants — the audio-term lesson).
   const eraRenorm = eraWin ? 1 : FORYOU_SIM_BUDGET / (FORYOU_SIM_BUDGET - ERA_TERM_WEIGHT);
+
+  // ── THE SEEDS' SOUND (audio-similarity v2) ──────────────────────────────────────────────────
+  // The weighted timbre centroid + spread of the seed set. The seeds already fold in the 👍'd
+  // songs (they SEED — stage 1) and exclude the 👎'd ones, so an accepted analysed song shifts
+  // this centroid exactly as F10 intended ("a 👍 can carry I like this kind of sound"); the
+  // rejected songs' vectors additionally form a NEGATIVE sound, subtracted inside the net fit —
+  // the same two-profile shape the device's inDaZone uses for taste/distaste. Fewer than
+  // TIMBRE_MIN_VECTORS analysed seeds ⇒ no profile ⇒ the multiplier below drops for the whole
+  // round (fail open, and being multiplicative its absence is exactly ranking-neutral).
+  const timbrePos = timbreProfile(seeds.map(([songId, w]) => {
+    const t = featuresById.get(songId)?.t;
+    return t ? { f: t, w } : null;
+  }).filter(Boolean));
+  const timbreNeg = timbrePos ? timbreProfile([...fb.rejected].map((songId) => {
+    const t = featuresById.get(songId)?.t;
+    return t ? { f: t, w: 1 } : null;
+  }).filter(Boolean), 1) : null;
+  // The round neutral an UNANALYSED candidate scores — the measured mean net fit of the analysed
+  // candidate pool (the EraCalibration mechanism). At ~14% coverage THIS constant is what keeps
+  // the analysed and unanalysed halves of the catalog comparable — the incomparability that
+  // deferred this term at 1.75% coverage. Round-level, one number, applied identically.
+  let timbreNeutral = TIMBRE_NEUTRAL_FALLBACK;
+  if (timbrePos) {
+    let s = 0; let n = 0;
+    for (const row of featuresById.values()) {
+      if (!row.t) continue;
+      const f = timbreNetFit(row.t, timbrePos, timbreNeg);
+      if (f == null) continue;
+      s += f; n += 1;
+    }
+    if (n >= TIMBRE_MIN_NEUTRAL_OBS) timbreNeutral = s / n;
+  }
+  const timbreWords = timbrePos ? timbreAdjectives(timbrePos.centroid).join(', ') : '';
   const maxGenre = Math.max(0, ...genreCount.values());
   const top20 = new Set([...kwCount.entries()]
     .sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1))
@@ -1421,9 +1608,25 @@ export function scoreForYou(state, featuresById,
       hasNovelty, hasPlays: maxLifetime > 0, hasRecency: hasRecencyDates,
     });
 
+    // ── THE TIMBRE MULTIPLIER (audio-similarity v2) ─────────────────────────────────────────
+    // Bounded exactly like the aux mix: similarity still gates, sound reorders inside a 1.35×
+    // band. An unanalysed candidate gets the ROUND-NEUTRAL multiplier and an analysed one is
+    // SHRUNK toward that neutral (TIMBRE_PRIOR — the winner's-curse correction), so no candidate
+    // is ever structurally buried for lacking a vector (the fairness rule the tests assert on
+    // the real catalog).
+    let rawTimbreF = null;
+    let timbreF = null;
+    if (timbrePos) {
+      rawTimbreF = row.t ? timbreNetFit(row.t, timbrePos, timbreNeg) : null;
+      timbreF = rawTimbreF == null
+        ? timbreNeutral
+        : (TIMBRE_PRIOR * timbreNeutral + rawTimbreF) / (TIMBRE_PRIOR + 1);
+    }
+    const timbreMult = timbrePos ? 1 + TIMBRE_GAIN * timbreF : 1;
+
     // The SOFT half of the feedback loop, applied to the whole score rather than as another term:
     // it must scale what the other signals concluded, never manufacture a rank of its own.
-    const score = sim * (1 + NOVELTY_AUX_GAIN * aux) * feedbackMultiplier(fb, row.a, row.g);
+    const score = sim * timbreMult * (1 + NOVELTY_AUX_GAIN * aux) * feedbackMultiplier(fb, row.a, row.g);
     if (score <= 0) continue;
 
     // EXPLAINABILITY. The aux components are reported alongside the similarity terms at the
@@ -1449,6 +1652,14 @@ export function scoreForYou(state, featuresById,
     }
     if (rec > 0) {
       why.push(['recency', share(RECENCY_CANDIDATE_WEIGHT, rec), 'You played this recently']);
+    }
+    // TIMBRE speaks only when it was OBSERVED (the row has a vector — never off the imputed
+    // neutral, which would claim a sound nothing measured), the RAW fit is real (≥0.8 — the gate
+    // is on the evidence, not the shrunk score), and the adjective table can honestly say
+    // something. Reported at the magnitude it actually contributed, like the aux components.
+    if (timbrePos && rawTimbreF != null && timbreWords && rawTimbreF >= 0.8) {
+      why.push(['timbre', sim * TIMBRE_GAIN * timbreF,
+                `Sounds like your recent plays: ${timbreWords}`]);
     }
     const reasons = why.sort((a, b) => b[1] - a[1]).slice(0, 3).map(([, , r]) => r);
     scored.push({ row, score, reasons });
@@ -1526,8 +1737,41 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
     for (const w of eraByCol.values()) s += eraFit(S.y, w);
     eraNeutralCol = s / eraByCol.size;
   }
-  const eraRenormCol = eraLive
-    ? 1 : COLLECTIONS_SIM_BUDGET / (COLLECTIONS_SIM_BUDGET - ERA_TERM_WEIGHT);
+
+  // EACH COLLECTION'S SOUND (audio-similarity v2): the centroid+spread profile of its members'
+  // timbre vectors (same 200-member sample as the era pass), matched against S's vector — "does
+  // this song SOUND like that crate", the term F10 built the corpus for. Same liveness shape as
+  // era: live iff S is analysed AND at least one collection clears the 3-vector bar; when live,
+  // an unprofiled collection scores the round neutral — the mean fit S earns across the profiled
+  // collections (≥1 observation usable, same reasoning as `eraNeutralCol`); when dead, the term
+  // drops for every collection and its weight renormalizes (`simRenormCol`).
+  const timbreByCol = new Map();
+  if (S.t) {
+    for (const col of state.collections?.list || []) {
+      if (!col.songIds?.length) continue;
+      const p = timbreProfile(col.songIds.slice(0, 200)
+        .map((id) => featuresById.get(id)?.t).filter(Boolean).map((f) => ({ f, w: 1 })));
+      if (p) timbreByCol.set(col.id, p);
+    }
+  }
+  const timbreLiveCol = timbreByCol.size > 0;
+  let timbreNeutralCol = TIMBRE_NEUTRAL_FALLBACK;
+  if (timbreLiveCol) {
+    let s = 0; let n = 0;
+    for (const p of timbreByCol.values()) {
+      const f = timbreFit(S.t, p);
+      if (f != null) { s += f; n += 1; }
+    }
+    if (n > 0) timbreNeutralCol = s / n;
+  }
+
+  // The COMBINED dead-term renormalization — era and timbre each drop independently, and with a
+  // fixed absolute `threshold` (0.8) a silently unearnable term makes the bar quietly stricter
+  // for the song that cannot earn it, which is the scoreForYou audio-term mistake neither term
+  // repeats.
+  const deadWeight = (eraLive ? 0 : ERA_TERM_WEIGHT) + (timbreLiveCol ? 0 : TIMBRE_TERM_WEIGHT);
+  const simRenormCol = deadWeight > 0
+    ? COLLECTIONS_SIM_BUDGET / (COLLECTIONS_SIM_BUDGET - deadWeight) : 1;
 
   const scored = [];
   for (const col of state.collections?.list || []) {
@@ -1565,6 +1809,25 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
         terms.push(['year', ERA_TERM_WEIGHT * eraNeutralCol, 'Era unknown — scored neutrally']);
       }
     }
+    if (timbreLiveCol) {
+      const p = timbreByCol.get(col.id);
+      const f = p ? timbreFit(S.t, p) : null;
+      if (f != null) {
+        // Shrunk toward the round neutral (TIMBRE_PRIOR), exactly like the For You multiplier —
+        // profiled and unprofiled crates face the same absolute threshold, so the same
+        // winner's-curse correction applies. The WORDY claim gates on the RAW fit.
+        const shrunk = (TIMBRE_PRIOR * timbreNeutralCol + f) / (TIMBRE_PRIOR + 1);
+        const words = f >= 0.8 ? timbreAdjectives(p.centroid).join(', ') : '';
+        terms.push(['timbre', TIMBRE_TERM_WEIGHT * shrunk,
+                    words ? `Sounds like this crate: ${words}`
+                          : (f >= 0.8 ? 'Sounds like this crate' : 'Sound weighed against this crate')]);
+      } else {
+        // Unprofiled collection, live round ⇒ the round neutral (fail open; see
+        // `timbreNeutralCol`) — a crate must not lose the song for ITS members being unanalysed.
+        terms.push(['timbre', TIMBRE_TERM_WEIGHT * timbreNeutralCol,
+                    'Sound unknown — scored neutrally']);
+      }
+    }
     const withKw = rows.filter((r) => r.s?.length);
     if (S.s?.length && withKw.length) {
       const sSet = new Set(S.s);
@@ -1597,8 +1860,8 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
       terms.push(['puzzle', 0.5, 'Matches your Gem Collector picks']);
     }
 
-    // `eraRenormCol` is 1 whenever the era term is live this round — see the pre-pass above.
-    const score = terms.reduce((s, [, v]) => s + v, 0) * eraRenormCol;
+    // `simRenormCol` is 1 whenever both round-level terms are live — see the pre-pass above.
+    const score = terms.reduce((s, [, v]) => s + v, 0) * simRenormCol;
     if (score <= 0) continue;
     const reasons = [...terms].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([, , r]) => r);
     scored.push({ id: col.id, kind: col.kind, name: col.name,

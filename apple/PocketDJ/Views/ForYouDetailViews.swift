@@ -572,13 +572,18 @@ struct ForYouSongListView: View {
         // global and rides along regardless.
         let fb = feedback?.zoneFeedback(scope: route.feedbackContext, nowMs: now)
             ?? ZoneEngine.Feedback()
+        // The timbre corpus, memoized after the first refresh — the actor decodes off-main and
+        // an unavailable corpus arrives as [:] (term dead, pre-v2 ranking). Same input the
+        // frozen-feed path feeds `ForYouFeedBuilder.build`.
+        let timbre = await TimbreCatalog.shared.vectors()
 
         switch route.kind {
         case .zone:
             let queue = await Task.detached(priority: .userInitiated) {
                 ZoneEngine.inDaZone(songs: songs, genreBySongId: genres, otherCollections: crates,
                                     plays: plays, playCount: { counts[$0] ?? 0 },
-                                    lastPlayedMs: lastPlayed, feedback: fb, nowMs: now)
+                                    lastPlayedMs: lastPlayed, feedback: fb, timbre: timbre,
+                                    nowMs: now)
             }.value
             songIds = queue.songIds
             pools = Dictionary(queue.picks.map { ($0.songId, $0.pool) },
@@ -600,7 +605,8 @@ struct ForYouSongListView: View {
             let members = collections.playableIdsForAnyCollection(cid)
             songIds = await Task.detached(priority: .userInitiated) {
                 ZoneEngine.suggestions(memberSongIds: members, tracks: tracks,
-                                       playCount: { counts[$0] ?? 0 }, feedback: fb)
+                                       playCount: { counts[$0] ?? 0 }, feedback: fb,
+                                       timbre: timbre)
             }.value
         case .new:
             // New has its own screen (`NewReleasesView`) and is never routed here; the case exists

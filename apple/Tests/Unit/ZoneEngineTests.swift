@@ -733,4 +733,170 @@ final class ZoneEngineTests: XCTestCase {
         XCTAssertEqual(out, ["c-1955", "c-2022"],
                        "score tie broken by id order — an undated crate has no era to score on")
     }
+
+    // ========================================================================
+    // MARK: - The collection's SOUND (audio-similarity v2)
+    // ========================================================================
+    //
+    // Same fixture doctrine as the era section: one genre, one year, distinct artists — so
+    // neither genre, era nor artist can separate the candidates, and the timbre term has to,
+    // or fail open trying. Sound A is "punchy, busy, dark"; the mismatch flips every axis.
+
+    private func tvec(_ base: Double, _ overrides: [String: Double] = [:],
+                      shift: Double = 0) -> SimilarityFamilies.TimbreVector {
+        Dictionary(uniqueKeysWithValues: SimilarityFamilies.timbreAxes.map { axis in
+            (axis, min(1, max(0, (overrides[axis] ?? base) + shift)))
+        })
+    }
+    private func soundA(_ shift: Double = 0) -> SimilarityFamilies.TimbreVector {
+        tvec(0.2, ["punch": 0.9, "busy": 0.8], shift: shift)
+    }
+    private func soundAFlipped() -> SimilarityFamilies.TimbreVector {
+        tvec(0.8, ["punch": 0.1, "busy": 0.2])
+    }
+
+    /// A same-genre, same-year crate whose five members carry tight sound-A vectors, plus three
+    /// candidates: one that sounds like the crate, one that sounds like its opposite, one never
+    /// analysed.
+    ///
+    /// THE IDS ARE ADVERSARIAL ON PURPOSE: ties break on the id, and the sound-alike candidate
+    /// carries the LAST id of the three ("c-z…"). If the timbre term silently dies, the id
+    /// tiebreak puts it LAST and every ordering assertion below fails loudly — a fixture whose
+    /// ids happen to sort the "right" way would let a sabotaged term pass.
+    private func timbreCrate() -> (members: [String], tracks: [ZoneEngine.Track],
+                                   timbre: [String: SimilarityFamilies.TimbreVector]) {
+        let names = ["Keith Sweat", "Luther Vandross", "Tony Toni Tone", "SWV", "Outkast"]
+        let members = names.enumerated().map { i, artist in
+            track("m-\(i)", artist: artist, genre: "soul", year: 1990)
+        }
+        let candidates = [track("c-z-alike", artist: "Guy", genre: "soul", year: 1990),
+                          track("c-u-unlike", artist: "Sade", genre: "soul", year: 1990),
+                          track("c-m-novector", artist: "Zhane", genre: "soul", year: 1990)]
+        var timbre: [String: SimilarityFamilies.TimbreVector] = [:]
+        for (i, m) in members.enumerated() { timbre[m.songId] = soundA(Double(i - 2) * 0.005) }
+        timbre["c-z-alike"] = soundA(0.004)
+        timbre["c-u-unlike"] = soundAFlipped()
+        return (members.map { $0.songId }, members + candidates, timbre)
+    }
+
+    func testSuggestionsPreferTheCollectionsSoundWithinTheSameGenre() {
+        let (members, tracks, timbre) = timbreCrate()
+        let out = ZoneEngine.suggestions(memberSongIds: members, tracks: tracks,
+                                         playCount: { _ in 0 }, timbre: timbre)
+        XCTAssertTrue(out.contains("c-z-alike") && out.contains("c-u-unlike"))
+        XCTAssertLessThan(out.firstIndex(of: "c-z-alike")!, out.firstIndex(of: "c-u-unlike")!,
+                          "same genre, same era, artists all foreign — the SOUND is the only "
+                          + "separator (and the id tiebreak points the other way)")
+    }
+
+    func testAnUnanalysedCandidateIsImputedNotBuriedBySuggestions() {
+        let (members, tracks, timbre) = timbreCrate()
+        let out = ZoneEngine.suggestions(memberSongIds: members, tracks: tracks,
+                                         playCount: { _ in 0 }, timbre: timbre)
+        // FAIL OPEN — the fairness rule this feature was deferred over: a candidate with no
+        // vector rides the round-neutral multiplier, between a true sound match and a true
+        // mismatch. Zeroing it would rank 86% of the real catalog below every analysed row.
+        XCTAssertLessThan(out.firstIndex(of: "c-m-novector")!, out.firstIndex(of: "c-u-unlike")!,
+                          "no vector must not sink below a genuinely bad fit")
+        XCTAssertLessThan(out.firstIndex(of: "c-z-alike")!, out.firstIndex(of: "c-m-novector")!,
+                          "the neutral is a mean, not a reward — a real fit still wins "
+                          + "(and the id tiebreak points the other way)")
+    }
+
+    func testAnUnanalysedCollectionDropsTheTimbreTermEntirely() {
+        // Members carry NO vectors ⇒ no profile ⇒ the multiplier never runs — even though two
+        // CANDIDATES are analysed. The ranking must be byte-identical to the pre-v2 call:
+        // candidate vectors alone must not smuggle the term in (that asymmetry would be the
+        // incomparable-ranking bug this term was deferred to avoid).
+        let (members, tracks, timbre) = timbreCrate()
+        let candidatesOnly = timbre.filter { $0.key.hasPrefix("c-") }
+        let with = ZoneEngine.suggestions(memberSongIds: members, tracks: tracks,
+                                          playCount: { _ in 0 }, timbre: candidatesOnly)
+        let without = ZoneEngine.suggestions(memberSongIds: members, tracks: tracks,
+                                             playCount: { _ in 0 })
+        XCTAssertEqual(with, without, "an unearnable term leaves the round entirely")
+    }
+
+    func testARejectedSoundSeparatesTwinsTheCrateOtherwiseCannot() {
+        // Two candidates the SAME distance from the crate's centroid, opposite directions; the
+        // owner 👎'd an analysed song that sounds exactly like one of them. Genre-level rejection
+        // penalties hit both twins identically (same genre), so any separation is the timbre
+        // negative profile — the "👎 can carry I don't like this kind of sound" half of F10.
+        // The twin NEAR the rejected sound carries the FIRST id, so the id tiebreak alone would
+        // keep it on top: only the negative profile can demote it.
+        let (members, tracks, timbre) = timbreCrate()
+        var allTracks = tracks
+        allTracks.append(track("c-a-nearRej", artist: "Jodeci", genre: "soul", year: 1990))
+        allTracks.append(track("c-b-farRej", artist: "Zapp", genre: "soul", year: 1990))
+        allTracks.append(track("rejected", artist: "H-Town", genre: "soul", year: 1990))
+        var allTimbre = timbre
+        allTimbre["c-a-nearRej"] = soundA(0.06)
+        allTimbre["c-b-farRej"] = soundA(-0.06)
+        allTimbre["rejected"] = soundA(0.06)
+
+        let clean = ZoneEngine.suggestions(memberSongIds: members, tracks: allTracks,
+                                           playCount: { _ in 0 }, timbre: allTimbre)
+        XCTAssertLessThan(clean.firstIndex(of: "c-a-nearRej")!, clean.firstIndex(of: "c-b-farRej")!,
+                          "without the verdict the twins tie exactly and the id tiebreak decides")
+
+        let feedback = ZoneEngine.Feedback(rejected: ["rejected": 1.0])
+        let out = ZoneEngine.suggestions(memberSongIds: members, tracks: allTracks,
+                                         playCount: { _ in 0 }, feedback: feedback,
+                                         timbre: allTimbre)
+        XCTAssertLessThan(out.firstIndex(of: "c-b-farRej")!, out.firstIndex(of: "c-a-nearRej")!,
+                          "the twin that sounds like the 👎 drops below the one that does not — "
+                          + "the verdict flips an order the tiebreak had the other way")
+    }
+
+    func testInDaZoneLiftsTheSoundAlikeRediscovery() {
+        // Recent plays are five sound-A songs; two dormant same-genre candidates by foreign
+        // artists differ only in sound. The sound-alike carries the LATER id ("cand-z…"), so the
+        // id tiebreak alone would rank it BELOW its twin: only a live timbre term can put it
+        // first — and stripping the corpus must restore the tiebreak order exactly (pre-v2).
+        var songs: [IndexSong] = []
+        var genres: [String: String] = [:]
+        var timbre: [String: SimilarityFamilies.TimbreVector] = [:]
+        for i in 0..<5 {
+            let s = song("seed-\(i)", artist: "Seed \(i)", year: 1990)
+            songs.append(s)
+            genres[s.id] = "soul"
+            timbre[s.id] = soundA(Double(i - 2) * 0.005)
+        }
+        let alike = song("cand-z-alike", artist: "Guy", year: 1990)
+        let unlike = song("cand-a-unlike", artist: "Sade", year: 1990)
+        songs.append(alike); songs.append(unlike)
+        genres[alike.id] = "soul"; genres[unlike.id] = "soul"
+        timbre[alike.id] = soundA(0.004)
+        timbre[unlike.id] = soundAFlipped()
+        let plays = (0..<5).map { ZoneEngine.Play(songId: "seed-\($0)", playedAtMs: now - 3 * day) }
+
+        let q = ZoneEngine.inDaZone(songs: songs, genreBySongId: genres, plays: plays,
+                                    playCount: { _ in 0 }, timbre: timbre, nowMs: now)
+        let ids = q.songIds
+        XCTAssertTrue(ids.contains("cand-z-alike") && ids.contains("cand-a-unlike"),
+                      "both admitted — the term reorders, it never filters")
+        XCTAssertLessThan(ids.firstIndex(of: "cand-z-alike")!, ids.firstIndex(of: "cand-a-unlike")!,
+                          "the rediscovery that SOUNDS like the zone comes first, against the tiebreak")
+
+        let flat = ZoneEngine.inDaZone(songs: songs, genreBySongId: genres, plays: plays,
+                                       playCount: { _ in 0 }, nowMs: now)
+        XCTAssertLessThan(flat.songIds.firstIndex(of: "cand-a-unlike")!,
+                          flat.songIds.firstIndex(of: "cand-z-alike")!,
+                          "with no corpus the queue is pre-v2: the twins tie and the id tiebreak decides")
+    }
+
+    func testSuggestionsExplainedNamesTheCrateSound() {
+        let (members, tracks, timbre) = timbreCrate()
+        let out = ZoneEngine.suggestionsExplained(memberSongIds: members, tracks: tracks,
+                                                  playCount: { _ in 0 }, timbre: timbre)
+        let alike = out.first { $0.songId == "c-z-alike" }
+        XCTAssertEqual(alike?.why, "Sounds like this crate: punchy, busy, clean",
+                       "the reason names the crate's sound in the adjective table's words")
+        let unlike = out.first { $0.songId == "c-u-unlike" }
+        XCTAssertNotEqual(unlike?.why.hasPrefix("Sounds like"), true,
+                          "a mismatched sound must not carry the reason")
+        let noVector = out.first { $0.songId == "c-m-novector" }
+        XCTAssertNotEqual(noVector?.why.hasPrefix("Sounds like"), true,
+                          "an imputed fit never claims a sound nothing measured")
+    }
 }
