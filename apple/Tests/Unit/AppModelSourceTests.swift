@@ -94,6 +94,73 @@ final class AppModelSourceTests: XCTestCase {
                        "owner: the shared catalog IS their library history, so it is kept")
     }
 
+    // MARK: - The add-time union behind Recently added AND the Collection timeline (F8)
+
+    /// `addedAtBySongId` is the WHOLE union "Recently added" takes its top-N from — and the axis the
+    /// Collection tab's One True Timeline orders on. One implementation, so the two surfaces can
+    /// never disagree about when something entered the library.
+    func testAddedAtBySongIdIsTheWholeUnionRecentlyAddedRanks() {
+        let app = AppModel()
+        app.injectDiscoverAdd(songWithDateAdded("s1", dateAdded: 1_000))
+        app.injectDiscoverAdd(songWithDateAdded("s2", dateAdded: 3_000))
+        app.injectDiscoverAdd(songWithDateAdded("s3", dateAdded: 2_000))
+
+        let union = app.addedAtBySongId()
+        XCTAssertEqual(union, ["s1": 1_000, "s2": 3_000, "s3": 2_000])
+        // …and the playlist is exactly its newest-first prefix.
+        XCTAssertEqual(app.recentlyAddedSongIds(limit: 10),
+                       union.sorted { $0.value > $1.value }.map(\.key))
+    }
+
+    /// A song with NO `dateAdded` is simply absent from the union — the timeline reports those as
+    /// "no add date" rather than placing them at the epoch.
+    func testAddedAtBySongIdOmitsUndatedSongs() {
+        let app = AppModel()
+        app.injectDiscoverAdd(songWithDateAdded("dated", dateAdded: 1_000))
+        app.injectDiscoverAdd(try! JSONDecoder().decode(IndexSong.self, from: try! JSONSerialization
+            .data(withJSONObject: ["id": "undated", "name": "u", "artist": "A"])))
+        XCTAssertEqual(Array(app.addedAtBySongId().keys), ["dated"])
+    }
+
+    /// The union honours the SAME non-owner scoping as Recently added (it is the same code path),
+    /// so a hybrid user's timeline can't be filled with the curator's library history.
+    func testAddedAtBySongIdHonoursOwnerScoping() {
+        let app = AppModel()
+        app.settings = SettingsStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        app.injectDiscoverAdd(songWithDateAdded("shared1", dateAdded: 1_000))
+
+        app.resolvedIsOwner = false
+        XCTAssertTrue(app.addedAtBySongId().isEmpty)
+        app.resolvedIsOwner = true
+        XCTAssertEqual(app.addedAtBySongId()["shared1"], 1_000)
+    }
+
+    /// The pure `nonisolated static` core is what the timeline runs OFF the main actor. An override
+    /// (an in-app ＋Add / import / custom-audio add-time) BEATS the catalog row's own date when it
+    /// is newer, and bypasses the own-library source filter — it IS the user's own add.
+    func testAddedAtStaticCoreAppliesOverridesAndScoping() {
+        let songs = ["s1": songWithDateAdded("s1", dateAdded: 1_000),
+                     "s2": songWithDateAdded("s2", dateAdded: 5_000)]
+        let sources = ["s1": "Shared Catalog", "s2": "Shared Catalog"]
+
+        let unfiltered = AppModel.addedAtBySongId(songsById: songs, songSourceById: sources,
+                                                  filterToOwnLibrary: false,
+                                                  overrides: ["s1": 9_000])
+        XCTAssertEqual(unfiltered["s1"], 9_000, "a newer own add-time wins")
+        XCTAssertEqual(unfiltered["s2"], 5_000)
+
+        let filtered = AppModel.addedAtBySongId(songsById: songs, songSourceById: sources,
+                                                filterToOwnLibrary: true,
+                                                overrides: ["s1": 9_000])
+        XCTAssertEqual(filtered, ["s1": 9_000],
+                       "scoped: only the user's own override survives a shared-catalog source")
+
+        // An OLDER override never overwrites a newer catalog date.
+        let stale = AppModel.addedAtBySongId(songsById: songs, songSourceById: sources,
+                                             filterToOwnLibrary: false, overrides: ["s2": 100])
+        XCTAssertEqual(stale["s2"], 5_000)
+    }
+
     /// Per-collection sort/filter: `sortedFilteredSongs` sorts a collection's songs by a BrowseState
     /// sort key (date added asc/desc) and preserves the stored order at default state.
     func testCollectionSortedFilteredSongsByDateAdded() {

@@ -306,7 +306,29 @@ final class AppModel {
     /// Test seam: a private suite keeps a unit test from reading/writing the real preference.
     @ObservationIgnored var defaults: UserDefaults = .standard
     /// Test seam for the owner gate (CloudKit is untouchable under a fixture run).
-    @ObservationIgnored var ownerResolver: () async -> Bool? = { await OwnerIdentity.resolveIsOwner() }
+    @ObservationIgnored var ownerResolver: () async -> Bool? = {
+        if let forced = AppModel.fixtureOwnerOverride { return forced }
+        return await OwnerIdentity.resolveIsOwner()
+    }
+
+    /// UI-TEST SEAM: declare the fixture run's owner answer (`PDJ_OWNER=1` / `=0`).
+    ///
+    /// Under `PDJ_USE_FIXTURE` the real gate CANNOT answer — `OwnerIdentity` refuses to touch
+    /// CloudKit there and returns `nil` ("undetermined"), which falls back to the remembered
+    /// answer, which on a freshly-cleared fixture install is `false`. That is correct for the
+    /// gate, but it makes every owner-scoped read (the add-date union behind Recently added AND
+    /// the Collection timeline) UNTESTABLE at the UI level: the fixture catalog's own source
+    /// isn't the on-device Apple Music library, so every `dateAdded` is scoped away and the
+    /// timeline renders empty for a reason that has nothing to do with the timeline.
+    ///
+    /// HARD-GATED on `PDJ_USE_FIXTURE` so it cannot exist in a shipping build's environment: a
+    /// forced `true` is exactly the "a stranger is mistaken for the owner" direction the gate is
+    /// there to prevent.
+    nonisolated static var fixtureOwnerOverride: Bool? {
+        let env = ProcessInfo.processInfo.environment
+        guard env["PDJ_USE_FIXTURE"] != nil, let raw = env["PDJ_OWNER"] else { return nil }
+        return raw == "1"
+    }
     /// What the seed ASSUMED, so the refresh can tell whether its real answer agrees.
     @ObservationIgnored private var seededSupersede: Bool?
 
@@ -864,9 +886,8 @@ final class AppModel {
             for x in xs { n += 1; newest = max(newest, at(x)) }
             return "\(n):\(newest)"
         }
-        let filterToOwnLibrary = settings != nil && !resolvedIsOwner
         return [
-            "\(catalogRevision)", "\(limit)", "\(filterToOwnLibrary)",
+            "\(catalogRevision)", "\(limit)", "\(addDatesScopedToOwnLibrary)",
             sig(appleMusicLibrary?.supersededAddedAt ?? [:]) { $0.value },
             sig(discoverAdds?.entries ?? []) { $0.addedAtMs },
             sig(importedSongs?.songs ?? []) { $0.addedAtMs },
@@ -908,30 +929,64 @@ final class AppModel {
     }
 
     private func computeRecentlyAddedSongIds(limit: Int) -> [String] {
+        Self.newestFirst(addedAtBySongId(), limit: limit) { songsById[$0] != nil }
+    }
+
+    /// Should this profile count ONLY its own on-device Apple Music library rows as "added"?
+    ///
+    /// NON-OWNER scope (integrity audit): catalog `dateAdded` rows from shared URL catalogs are the
+    /// CATALOG OWNER's library history, not this user's — so for a non-owner only rows from their
+    /// own on-device "Apple Music" source count. The OWNER (`resolvedIsOwner`) keeps everything (the
+    /// shared catalog IS their library history); a nil-settings host (tests/fixtures — identity
+    /// unknown) doesn't filter. Gated on resolved owner identity, NOT `appleMusicPrivateSync`: that
+    /// flag defaults TRUE for a hybrid user (curator's rip-server URL), which used to leak the
+    /// curator's recently-added songs into the user's own list.
+    var addDatesScopedToOwnLibrary: Bool { settings != nil && !resolvedIsOwner }
+
+    /// The user's OWN add-times that do NOT come off a catalog row: the superseded-twin stamps plus
+    /// the three in-app add stores (Discover ＋Add / imports / custom audio). Small — hundreds to a
+    /// few thousand entries — which is what makes it cheap enough to hand to an off-main build.
+    func addTimeOverrides() -> [String: Double] {
+        // Keyed to the SURVIVING twin id, these intentionally bypass the own-library source filter:
+        // it IS the user's own add, just re-homed onto the indexed row.
+        var out = appleMusicLibrary?.supersededAddedAt ?? [:]
+        for e in discoverAdds?.entries ?? [] where e.addedAtMs > (out[e.songId] ?? 0) { out[e.songId] = e.addedAtMs }
+        for e in importedSongs?.songs ?? [] where e.addedAtMs > (out[e.songId] ?? 0) { out[e.songId] = e.addedAtMs }
+        for e in profileSource?.songs ?? [] where e.addedAtMs > (out[e.songId] ?? 0) { out[e.songId] = e.addedAtMs }
+        return out
+    }
+
+    /// Every add-time this profile knows, by song id — the union the "Recently added" playlist
+    /// takes its top-N from, and the axis the Collection tab's ONE TRUE TIMELINE orders on.
+    ///
+    /// NOT memoized. The `recentlyAddedMemo` above caches the SELECTED ids (3,650 of them); holding
+    /// this ~93k-entry map alive for the whole session would cost several MB to serve a derivation
+    /// that already only runs when its inputs change. The timeline caches the ROWS it derives from
+    /// this instead, which it needs anyway.
+    func addedAtBySongId() -> [String: Double] {
+        Self.addedAtBySongId(songsById: songsById, songSourceById: songSourceById,
+                             filterToOwnLibrary: addDatesScopedToOwnLibrary,
+                             overrides: addTimeOverrides())
+    }
+
+    /// The pure core of `addedAtBySongId` — `nonisolated static` so the Collection timeline can run
+    /// this ~96k-row union OFF the main actor from its detached build task, while
+    /// `computeRecentlyAddedSongIds` keeps calling it on the main actor exactly as before. ONE
+    /// implementation, two callers: the timeline and the "Recently added" playlist can never
+    /// disagree about when something entered the library.
+    nonisolated static func addedAtBySongId(songsById: [String: IndexSong],
+                                            songSourceById: [String: String],
+                                            filterToOwnLibrary: Bool,
+                                            overrides: [String: Double]) -> [String: Double] {
         var addedAt: [String: Double] = [:]
-        // NON-OWNER scope (integrity audit): catalog `dateAdded` rows from shared URL catalogs are
-        // the CATALOG OWNER's library history, not this user's — for a non-owner count only rows
-        // from their own on-device "Apple Music" source. The OWNER (resolvedIsOwner) keeps
-        // everything (the shared catalog IS their library history); a nil-settings host
-        // (tests/fixtures — identity unknown) doesn't filter. Gated on resolved owner identity, NOT
-        // `appleMusicPrivateSync`: that flag defaults TRUE for a hybrid user (curator's rip-server
-        // URL), which used to leak the curator's recently-added songs into the user's own list.
-        let filterToOwnLibrary = settings != nil && !resolvedIsOwner
+        addedAt.reserveCapacity(songsById.count)
         for (id, song) in songsById {
             guard let d = song.dateAdded, d > 0, d > (addedAt[id] ?? 0) else { continue }
             if filterToOwnLibrary, songSourceById[id] != AppleMusicLibraryStore.sourceName { continue }
             addedAt[id] = d
         }
-        // The user's OWN add-times for library songs that SUPERSEDED onto a shared-catalog twin
-        // (review catch): keyed to the surviving twin id, they intentionally bypass the source
-        // filter above — it IS the user's own add, just re-homed onto the indexed row.
-        for (id, ms) in appleMusicLibrary?.supersededAddedAt ?? [:] where ms > (addedAt[id] ?? 0) {
-            addedAt[id] = ms
-        }
-        for e in discoverAdds?.entries ?? [] where e.addedAtMs > (addedAt[e.songId] ?? 0) { addedAt[e.songId] = e.addedAtMs }
-        for e in importedSongs?.songs ?? [] where e.addedAtMs > (addedAt[e.songId] ?? 0) { addedAt[e.songId] = e.addedAtMs }
-        for e in profileSource?.songs ?? [] where e.addedAtMs > (addedAt[e.songId] ?? 0) { addedAt[e.songId] = e.addedAtMs }
-        return Self.newestFirst(addedAt, limit: limit) { songsById[$0] != nil }
+        for (id, ms) in overrides where ms > (addedAt[id] ?? 0) { addedAt[id] = ms }
+        return addedAt
     }
 
     /// Is there ANYTHING in the "Recently added" list? The Collections tab's empty-state gate
@@ -944,7 +999,7 @@ final class AppModel {
         if let memo = recentlyAddedMemo, memo.key == recentlyAddedKey(limit: limit) {
             return !memo.ids.isEmpty
         }
-        let filterToOwnLibrary = settings != nil && !resolvedIsOwner
+        let filterToOwnLibrary = addDatesScopedToOwnLibrary
         for (id, song) in songsById {
             guard let d = song.dateAdded, d > 0 else { continue }
             if filterToOwnLibrary, songSourceById[id] != AppleMusicLibraryStore.sourceName { continue }
