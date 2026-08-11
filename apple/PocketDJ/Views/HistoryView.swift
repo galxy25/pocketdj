@@ -370,7 +370,10 @@ struct HistoryView: View {
         case .heart:         return "Hearted \(item)"
         case .unheart:       return "Removed heart from \(item)"
         case .remove:        return "Removed \(item) from \(coll)"
-        case .catalogAdd:    return "Added \(item) to your library"
+        // Truthful wording keyed on the recorded Apple Music write outcome — see
+        // `CollectionActivityStore.catalogAddHeadline` (the four-albums fix).
+        case .catalogAdd:    return CollectionActivityStore.catalogAddHeadline(
+                                        item: item, libraryWrite: e.libraryWrite)
         case .catalogRemove: return "Removed \(item) from your library"
         }
     }

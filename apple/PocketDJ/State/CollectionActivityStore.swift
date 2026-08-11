@@ -74,6 +74,14 @@ final class CollectionActivityStore {
         /// since the write-back queue that would dedup it is deliberately device-local. So the
         /// backfill only re-drives events this install originated (nil ⇒ legacy, treated as local).
         var originInstallId: String?
+        /// `.catalogAdd` ONLY: the Apple Music library write's recorded outcome
+        /// (`AppleMusicLibraryWriteOutcome.storageToken` — "confirmed", or a human-readable
+        /// annotation like "Apple Music write failed: …"). ADDITIVE-OPTIONAL: nil = a legacy
+        /// event or a kind that carries none. `catalogAddHeadline` keys the wording on it so
+        /// "Added … to your library" is only asserted for a CONFIRMED write (the four-albums
+        /// bug: History logged that wording for writes that never happened). `= nil` keeps
+        /// every existing memberwise construction (tests included) compiling.
+        var libraryWrite: String? = nil
     }
 
     /// The persisted, versioned document. LENIENT decode (like the collections document): a
@@ -163,12 +171,14 @@ final class CollectionActivityStore {
     @discardableResult
     func record(kind: ActivityKind, itemId: String, itemTitle: String? = nil, itemArtist: String? = nil,
                 collectionId: String? = nil, collectionKind: String? = nil, collectionName: String? = nil,
+                libraryWrite: String? = nil,
                 at nowMs: Double = Date().timeIntervalSince1970 * 1000) -> ActivityEvent? {
         guard !itemId.isEmpty else { return nil }
         let event = ActivityEvent(id: UUID(), at: nowMs, kind: kind, itemId: itemId, itemTitle: itemTitle,
                                   itemArtist: itemArtist,
                                   collectionId: collectionId, collectionKind: collectionKind,
-                                  collectionName: collectionName, originInstallId: installId)
+                                  collectionName: collectionName, originInstallId: installId,
+                                  libraryWrite: libraryWrite)
         events.append(event)
         if events.count > Self.maxEvents { trimToCap() }
         revision &+= 1
@@ -206,7 +216,8 @@ final class CollectionActivityStore {
             ActivityEvent(id: UUID(), at: nowMs, kind: e.kind, itemId: e.itemId,
                           itemTitle: e.itemTitle, itemArtist: e.itemArtist,
                           collectionId: e.collectionId, collectionKind: e.collectionKind,
-                          collectionName: e.collectionName, originInstallId: installId)
+                          collectionName: e.collectionName, originInstallId: installId,
+                          libraryWrite: nil)
         })
         if events.count > Self.maxEvents { trimToCap() }
         revision &+= 1
@@ -322,3 +333,21 @@ final class CollectionActivityStore {
 }
 
 let collectionActivitySchemaVersion = 1
+
+extension CollectionActivityStore {
+    /// The `.catalogAdd` timeline headline — the event vocabulary lives with the store so the
+    /// wording and the recorded outcome can't drift apart (HistoryView renders this verbatim).
+    ///
+    /// "Added … to your library" is asserted ONLY when the Apple Music write is nil-legacy
+    /// (recorded before outcomes existed — can't be re-judged) or CONFIRMED. Any other token
+    /// is the write's own annotation, shown as the qualifier: the add that really happened was
+    /// to PocketDJ. This is the History half of the four-albums fix — the event no longer
+    /// claims a library write the code never verified (or never attempted).
+    nonisolated static func catalogAddHeadline(item: String, libraryWrite: String?) -> String {
+        guard let annotation = libraryWrite,
+              !AppleMusicLibraryWriteOutcome.provenByToken(annotation) else {
+            return "Added \(item) to your library"
+        }
+        return "Added \(item) to PocketDJ (\(annotation))"
+    }
+}

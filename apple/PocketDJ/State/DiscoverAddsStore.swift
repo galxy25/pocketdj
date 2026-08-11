@@ -53,6 +53,14 @@ final class DiscoverAddsStore {
         var year: Int?
         var genre: String?
         var explicit: Bool?
+        /// The Apple Music LIBRARY WRITE's recorded outcome for this add —
+        /// `AppleMusicLibraryWriteOutcome.storageToken`: "confirmed" for a write the
+        /// membership probe verified, else the human-readable annotation. nil = LEGACY
+        /// (recorded before outcomes existed) — NOT proof of a write (the four-albums bug) —
+        /// or a track recorded by an ALBUM add, whose AlbumEntry carries the outcome for the
+        /// whole gesture. Optional-and-appended per the hard rule above; the `= nil` default
+        /// keeps every existing memberwise construction compiling.
+        var libraryWrite: String? = nil
         var id: String { songId }
     }
 
@@ -85,6 +93,11 @@ final class DiscoverAddsStore {
         /// capsule would spin forever on a library-only add: no rip ever lands, so no track ever
         /// becomes "ready" and the album never settles.
         var preparedCopies: Bool?
+        /// The Apple Music LIBRARY WRITE's recorded outcome (see `Entry.libraryWrite` —
+        /// same tokens, same nil-is-not-proof rule). Drives the album row's
+        /// "Add to Apple Music again" retry affordance. Optional-and-appended (`= nil`
+        /// for memberwise-init compatibility, like `Entry.libraryWrite`).
+        var libraryWrite: String? = nil
         var id: String { albumId }
     }
 
@@ -129,7 +142,11 @@ final class DiscoverAddsStore {
     /// to `CollectionActivityStore.record(kind: .catalogAdd)`. Kept separate from `onAdded`
     /// (which also fires on cloud pull) so a peer device's add — already union-synced into the
     /// activity log — is never re-logged here.
-    @ObservationIgnored var onUserCatalogAdd: (([(id: String, title: String)]) -> Void)?
+    ///
+    /// The second argument is the Apple Music library write's `storageToken` (nil for the
+    /// callers that don't perform one) — History wording keys on it, so "Added … to your
+    /// library" is only ever logged for a CONFIRMED write (the four-albums bug).
+    @ObservationIgnored var onUserCatalogAdd: (([(id: String, title: String)], _ libraryWrite: String?) -> Void)?
 
     init(fileURL: URL = DiscoverAddsStore.defaultURL()) {
         self.fileURL = fileURL
@@ -168,18 +185,20 @@ final class DiscoverAddsStore {
              album: String? = nil, artworkUrl: String? = nil, durationMs: Int? = nil,
              albumId: String? = nil, albumAppleMusicId: String? = nil,
              albumArtworkUrl: String? = nil, trackNumber: Int? = nil, discNumber: Int? = nil,
-             year: Int? = nil, genre: String? = nil, explicit: Bool? = nil) {
+             year: Int? = nil, genre: String? = nil, explicit: Bool? = nil,
+             libraryWrite: String? = nil) {
         guard !entries.contains(where: { $0.songId == songId }) else { return }
         let entry = Entry(songId: songId, appleMusicId: appleMusicId, title: title, artist: artist,
                           album: album, artworkUrl: artworkUrl, durationMs: durationMs,
                           addedAtMs: Date().timeIntervalSince1970 * 1000,
                           albumId: albumId, albumAppleMusicId: albumAppleMusicId,
                           albumArtworkUrl: albumArtworkUrl, trackNumber: trackNumber,
-                          discNumber: discNumber, year: year, genre: genre, explicit: explicit)
+                          discNumber: discNumber, year: year, genre: genre, explicit: explicit,
+                          libraryWrite: libraryWrite)
         entries.append(entry)
         save()
         onAdded?(Self.indexSong(entry))
-        onUserCatalogAdd?([(entry.songId, entry.title)])
+        onUserCatalogAdd?([(entry.songId, entry.title)], entry.libraryWrite)
     }
 
     /// Record an album add (idempotent per albumId) and hand the injected catalog album to
@@ -188,17 +207,17 @@ final class DiscoverAddsStore {
     func addAlbum(albumId: String, appleMusicId: String, title: String, artist: String,
                   trackIds: [String]? = nil, artworkUrl: String? = nil, year: Int? = nil,
                   trackCount: Int? = nil, genre: String? = nil, url: String? = nil,
-                  preparedCopies: Bool? = nil) {
+                  preparedCopies: Bool? = nil, libraryWrite: String? = nil) {
         guard !albums.contains(where: { $0.albumId == albumId }) else { return }
         let entry = AlbumEntry(albumId: albumId, appleMusicId: appleMusicId, title: title,
                                artist: artist, trackIds: trackIds, artworkUrl: artworkUrl,
                                year: year, addedAtMs: Date().timeIntervalSince1970 * 1000,
                                trackCount: trackCount, genre: genre, url: url,
-                               preparedCopies: preparedCopies)
+                               preparedCopies: preparedCopies, libraryWrite: libraryWrite)
         albums.append(entry)
         save()
         onAlbumAdded?(Self.indexAlbum(entry))
-        onUserCatalogAdd?([(entry.albumId, entry.title)])
+        onUserCatalogAdd?([(entry.albumId, entry.title)], entry.libraryWrite)
     }
 
     /// Batched ALBUM add (the perf path for a fan-out album — mirrors `ImportedSongsStore.add`):
@@ -210,7 +229,8 @@ final class DiscoverAddsStore {
     func addAlbumBatch(albumId: String, appleMusicId: String, title: String, artist: String,
                        trackIds: [String]? = nil, artworkUrl: String? = nil, year: Int? = nil,
                        trackCount: Int? = nil, genre: String? = nil, url: String? = nil,
-                       preparedCopies: Bool? = nil, songs newSongs: [Entry]) {
+                       preparedCopies: Bool? = nil, libraryWrite: String? = nil,
+                       songs newSongs: [Entry]) {
         let existing = Set(entries.map(\.songId))
         let freshSongs = newSongs.filter { !existing.contains($0.songId) }
         let albumIsNew = !albums.contains(where: { $0.albumId == albumId })
@@ -222,7 +242,7 @@ final class DiscoverAddsStore {
                                artist: artist, trackIds: trackIds, artworkUrl: artworkUrl,
                                year: year, addedAtMs: Date().timeIntervalSince1970 * 1000,
                                trackCount: trackCount, genre: genre, url: url,
-                               preparedCopies: preparedCopies)
+                               preparedCopies: preparedCopies, libraryWrite: libraryWrite)
             albums.append(e)
             albumEntry = e
         }
@@ -230,7 +250,24 @@ final class DiscoverAddsStore {
         onAlbumBatchAdded?(freshSongs.map(Self.indexSong), albumEntry.map(Self.indexAlbum))
         // One album-level catalog-add for the whole batch (the user's gesture was "add this
         // album"), not one per fanned-out track. Only when the album is genuinely new.
-        if let a = albumEntry { onUserCatalogAdd?([(a.albumId, a.title)]) }
+        if let a = albumEntry { onUserCatalogAdd?([(a.albumId, a.title)], a.libraryWrite) }
+    }
+
+    /// The RETRY heal's write-back: replace the stored Apple Music write outcome for a
+    /// provisional album. A token that newly PROVES the write ("confirmed") logs a truthful
+    /// "Added … to your library" History event via `onUserCatalogAdd` — the activity log is
+    /// append-only, so the original annotated event stays as the record of the failure and
+    /// this event is the record of the heal. Idempotent: re-confirming a confirmed entry
+    /// neither re-saves nor re-logs.
+    func recordAlbumLibraryWrite(albumId: String, token: String) {
+        guard let i = albums.firstIndex(where: { $0.albumId == albumId }),
+              albums[i].libraryWrite != token else { return }
+        let wasProven = AppleMusicLibraryWriteOutcome.provenByToken(albums[i].libraryWrite)
+        albums[i].libraryWrite = token
+        save()
+        if AppleMusicLibraryWriteOutcome.provenByToken(token) && !wasProven {
+            onUserCatalogAdd?([(albums[i].albumId, albums[i].title)], token)
+        }
     }
 
     /// Drop superseded entries (their indexed replacements own the ids now).

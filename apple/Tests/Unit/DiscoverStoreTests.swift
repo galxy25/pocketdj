@@ -178,8 +178,10 @@ final class DiscoverStoreTests: XCTestCase {
         var canContribute: Bool { true }
         var canAddToLibrary: Bool { canAdd }
         func resolveForLibrary(storeID: String?, title: String?, artist: String?) async -> AppleMusicResolution? { nil }
-        func addSongToLibrary(storeID: String) async throws { added.append(storeID) }
-        func addAlbumToLibrary(storeID: String) async throws {}
+        @discardableResult
+        func addSongToLibrary(storeID: String) async throws -> Bool { added.append(storeID); return true }
+        @discardableResult
+        func addAlbumToLibrary(storeID: String) async throws -> Bool { true }
         func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] { [] }
     }
 
@@ -401,6 +403,9 @@ final class DiscoverStoreTests: XCTestCase {
         // The library expands the tracklist (so descs is non-empty) even with no server.
         let lib = AlbumTracksStub()
         lib.tracks = [songRow("10", "A"), songRow("11", "B")]
+        // The write succeeds (confirmed) so the only variable under test stays SERVERLESSNESS —
+        // a skipped write now truthfully surfaces its own notice, which isn't this test's topic.
+        lib.canAddToLibrary = true
         let hit = RipsStore.DiscoverAlbumHit(appleMusicId: "111", albumId: "amrec_album_111",
                                              title: "RAM", artist: "Daft Punk")
         await rips.discoverAddAlbum(hit, library: lib, intent: .andPrepareCopies)
@@ -547,8 +552,10 @@ final class DiscoverStoreTests: XCTestCase {
         var canAddToLibrary: Bool = false
         private(set) var addedAlbumStoreIDs: [String] = []
         func resolveForLibrary(storeID: String?, title: String?, artist: String?) async -> AppleMusicResolution? { nil }
-        func addSongToLibrary(storeID: String) async throws {}
-        func addAlbumToLibrary(storeID: String) async throws { addedAlbumStoreIDs.append(storeID) }
+        @discardableResult
+        func addSongToLibrary(storeID: String) async throws -> Bool { true }
+        @discardableResult
+        func addAlbumToLibrary(storeID: String) async throws -> Bool { addedAlbumStoreIDs.append(storeID); return true }
         func albumTracks(albumStoreID: String) async -> [AppleMusicSongRow] { tracks }
     }
 

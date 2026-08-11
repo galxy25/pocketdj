@@ -988,8 +988,11 @@ struct PocketDJApp: App {
         // Catalog-ADD History events for user ＋Add gestures (song or album), recorded straight into
         // the collection-activity timeline. User-origin only (never cloud-pull) — see the store's
         // `onUserCatalogAdd` doc — so a peer device's add isn't double-logged after the union sync.
-        discoverAdds.onUserCatalogAdd = { [weak collectionActivity] items in
-            for it in items { collectionActivity?.record(kind: .catalogAdd, itemId: it.id, itemTitle: it.title) }
+        discoverAdds.onUserCatalogAdd = { [weak collectionActivity] items, libraryWrite in
+            for it in items {
+                collectionActivity?.record(kind: .catalogAdd, itemId: it.id, itemTitle: it.title,
+                                           libraryWrite: libraryWrite)
+            }
         }
         app.discoverAdds = discoverAdds
         // A superseded provisional id must be rewritten EVERYWHERE it is referenced — the

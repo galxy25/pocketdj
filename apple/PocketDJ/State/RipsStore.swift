@@ -956,9 +956,15 @@ final class RipsStore {
     /// real entry supersedes it later.
     @ObservationIgnored var discoverAdds: DiscoverAddsStore?
 
-    func discoverAdd(_ hit: DiscoverHit, library: (any MusicLibraryContributor)? = nil) async {
-        if let library, library.canAddToLibrary {
-            try? await library.addSongToLibrary(storeID: hit.appleMusicId)
+    /// The Apple Music write's outcome rides back to the caller (and onto the provisional
+    /// entry + History event) — the FOUR-ALBUMS bug was this method asserting a library
+    /// write it may never have made. Failure of the write must NOT abort the provisional
+    /// add (the in-app add stands on its own, offline included), but it must be truthful.
+    @discardableResult
+    func discoverAdd(_ hit: DiscoverHit,
+                     library: (any MusicLibraryContributor)? = nil) async -> AppleMusicLibraryWriteOutcome {
+        let write = await Self.attemptLibraryWrite(library) {
+            try await $0.addSongToLibrary(storeID: hit.appleMusicId)
         }
         await discoverAddRip(hit)
         // Eventual consistency: once the server has ACCEPTED the request (or already holds
@@ -966,8 +972,7 @@ final class RipsStore {
         // amrec_ id and retry safely against the queued job.
         // SERVERLESS (public-user audit fix): with NO import server configured the add is
         // STILL a catalog citizen — the entry carries its Apple Music catalog id, so it
-        // streams via the user's subscription (and was just added to their AM library);
-        // only the rip capture isn't owed. Previously the entry was silently dropped.
+        // streams via the user's subscription; only the rip capture isn't owed.
         if (jobs[hit.songId].map { $0.phase != .error } ?? false)
             || manifest[hit.songId] != nil
             || !hasServer {
@@ -982,8 +987,11 @@ final class RipsStore {
                               albumAppleMusicId: hit.albumAppleMusicId,
                               albumArtworkUrl: hit.albumArtworkUrl,
                               trackNumber: hit.trackNumber, discNumber: hit.discNumber,
-                              year: hit.year, explicit: hit.explicit)
+                              year: hit.year, explicit: hit.explicit,
+                              libraryWrite: write.storageToken)
         }
+        surfaceLibraryWriteOutcome(write, noun: "song", hadLibrary: library != nil)
+        return write
     }
 
     /// The import-request half of `discoverAdd` (split so tests can drive it without a
@@ -1166,12 +1174,19 @@ final class RipsStore {
     /// rip through the EXISTING single-flight `requestRip` queue. `.libraryOnly` captures NO
     /// audio — see `AlbumAddIntent`.
     /// Never throws; failures land in `discoverError`. Split out from the view like `discoverAdd`.
+    /// Returns the Apple Music library write's REAL outcome (the four-albums bug: this
+    /// method used to `try?` the write and then record History as if it had succeeded).
+    @discardableResult
     func discoverAddAlbum(_ hit: DiscoverAlbumHit,
                           library: (any MusicLibraryContributor)? = nil,
-                          intent: AlbumAddIntent) async {
-        // 1) Library write (non-macOS only — canAddToLibrary is false on macOS).
-        if let library, library.canAddToLibrary {
-            try? await library.addAlbumToLibrary(storeID: hit.appleMusicId)
+                          intent: AlbumAddIntent) async -> AppleMusicLibraryWriteOutcome {
+        // 1) Library write (non-macOS only — canAddToLibrary is false on macOS), with a
+        //    real outcome: skipped (no contributor / platform / unauthorized), failed
+        //    (the throw is no longer swallowed), unconfirmed (add returned but the
+        //    membership probe couldn't find it), or confirmed. Whatever it is, the
+        //    provisional add below still proceeds — the outcome just stops lying.
+        let write = await Self.attemptLibraryWrite(library) {
+            try await $0.addAlbumToLibrary(storeID: hit.appleMusicId)
         }
 
         // 2) Expand tracks — MusicKit first (needs auth), else the free proxy. `trackNumber`
@@ -1199,7 +1214,7 @@ final class RipsStore {
         }
         guard !descs.isEmpty else {
             discoverError = "Couldn’t read the album’s tracks — try again."
-            return
+            return write
         }
 
         // 3) `.andPrepareCopies` ONLY: fan out the per-track rips on the shared queue FIRST,
@@ -1254,7 +1269,7 @@ final class RipsStore {
             if discoverError == nil {
                 discoverError = "Add failed — the import server didn’t accept the request."
             }
-            return
+            return write
         }
 
         // 5) Record the provisional album + its ACCEPTED track songs in ONE batched inject so
@@ -1269,7 +1284,100 @@ final class RipsStore {
                                     // "In your library" at once instead of spinning on rips
                                     // that were never requested.
                                     preparedCopies: intent == .andPrepareCopies,
+                                    // The write outcome rides onto the AlbumEntry (retry gate)
+                                    // and the .catalogAdd History event (truthful wording).
+                                    libraryWrite: write.storageToken,
                                     songs: accepted)
+        surfaceLibraryWriteOutcome(write, noun: "album", hadLibrary: library != nil)
+        return write
+    }
+
+    // MARK: Discover — the Apple Music LIBRARY-WRITE half, with a REAL outcome
+
+    /// Run the library-write half of a Discover add and REPORT what actually happened.
+    /// No `try?` on this path — the four-albums bug was three silent failure modes
+    /// (skipped gate, swallowed throw, blind trust in a non-throwing `add`) all being
+    /// recorded as success. `attempt` returns the post-write membership confirmation.
+    static func attemptLibraryWrite(
+        _ library: (any MusicLibraryContributor)?,
+        attempt: (any MusicLibraryContributor) async throws -> Bool
+    ) async -> AppleMusicLibraryWriteOutcome {
+        guard let library else {
+            return .skipped(reason: "no Apple Music connection")
+        }
+        guard library.canAddToLibrary else {
+            #if os(macOS)
+            // Platform truth, not an error: the caller's open-in-Music fallback covers it.
+            return .skipped(reason: "adding isn’t available on Mac — opened in the Music app instead")
+            #else
+            // iOS/visionOS: canAddToLibrary == canContribute == an authorized MusicKit
+            // session. The reason names the heal (the app's existing auth vocabulary).
+            return .skipped(reason: "Apple Music access isn’t authorized — enable it in Settings")
+            #endif
+        }
+        do {
+            return try await attempt(library) ? .confirmed : .unconfirmed
+        } catch {
+            return .failed(reason: error.localizedDescription)
+        }
+    }
+
+    /// Surface a non-confirmed write in `discoverError` at the point of the tap — but only
+    /// where it is genuinely the user's problem to act on:
+    ///   • never override an earlier, more fundamental error from the same add;
+    ///   • a SKIP with no contributor passed is the caller opting out (tests, platforms
+    ///     with no Apple Music) — silent;
+    ///   • a SKIP on macOS is the designed open-in-Music fallback — silent.
+    private func surfaceLibraryWriteOutcome(_ outcome: AppleMusicLibraryWriteOutcome,
+                                            noun: String, hadLibrary: Bool) {
+        guard discoverError == nil else { return }
+        switch outcome {
+        case .confirmed:
+            return
+        case .skipped:
+            #if os(macOS)
+            return
+            #else
+            guard hadLibrary else { return }
+            #endif
+        case .failed, .unconfirmed:
+            break
+        }
+        discoverError = Self.libraryWriteNotice(outcome, noun: noun)
+    }
+
+    /// The user-facing message for a write that didn't land (pure → unit-testable).
+    static func libraryWriteNotice(_ outcome: AppleMusicLibraryWriteOutcome, noun: String) -> String? {
+        switch outcome {
+        case .confirmed:
+            return nil
+        case .unconfirmed:
+            return "Added to PocketDJ, but the \(noun) hasn’t appeared in your Apple Music library yet"
+                + " — use “Add to Apple Music again” if it doesn’t show up."
+        case let .failed(reason):
+            return "Added to PocketDJ, but the Apple Music library add failed: \(reason)"
+        case let .skipped(reason):
+            return "Added to PocketDJ only — \(reason)."
+        }
+    }
+
+    /// RETRY the Apple Music library write for an ALREADY-RECORDED provisional album —
+    /// the heal for adds whose write failed/was skipped (and for LEGACY entries recorded
+    /// before outcomes existed, which can't prove their write ever landed: Levi's four
+    /// albums). Re-adding an album already in the library is idempotent on Apple's side.
+    /// Updates the stored outcome; a newly CONFIRMED write logs a truthful
+    /// "Added … to your library" History event (the log is append-only — the original
+    /// annotated event stays as the record of the failure).
+    @discardableResult
+    func retryAlbumLibraryWrite(albumId: String, appleMusicId: String,
+                                library: (any MusicLibraryContributor)?) async -> AppleMusicLibraryWriteOutcome {
+        let outcome = await Self.attemptLibraryWrite(library) {
+            try await $0.addAlbumToLibrary(storeID: appleMusicId)
+        }
+        discoverAdds?.recordAlbumLibraryWrite(albumId: albumId, token: outcome.storageToken)
+        discoverError = nil
+        surfaceLibraryWriteOutcome(outcome, noun: "album", hadLibrary: library != nil)
+        return outcome
     }
 
     /// One expanded album track, from either expansion tier (MusicKit or the `/album-tracks`
