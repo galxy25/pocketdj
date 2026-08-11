@@ -73,7 +73,7 @@
 //   and commit/deploy via the normal catalog path (deploy.sh rebuilds rec-features itself).
 import { spawn, execFile as execFileCb } from 'node:child_process';
 import { readFileSync, writeFileSync, appendFileSync, mkdirSync, existsSync, rmSync, copyFileSync, readdirSync, statSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
@@ -206,9 +206,15 @@ async function stage(task, dest) {
     // Stream copy (no re-encode): frame-granular (~26 ms) which the 90 s window is indifferent
     // to, and ~100× faster than a libmp3lame pass — the difference between cutting 10k songs
     // in minutes and in hours.
+    // The COPY must land in a container that accepts the source codec: 416 raws are AIFF
+    // (pcm_s16be), and copying PCM into the .mp3-named dest fails ffmpeg outright
+    // ("Could not write header"). Match the source's own extension for non-mp3 raws —
+    // librosa reads aiff/wav fine, and the worker is handed the real staged path.
+    const srcExt = (task.file.match(/\.(aiff|aif|wav|flac|m4a)$/i) || [])[1];
+    const realDest = srcExt ? dest.replace(/\.mp3$/, `.${srcExt.toLowerCase()}`) : dest;
     await execFile('ffmpeg', ['-y', '-ss', String(startSec), '-t', String(durSec),
-      '-i', task.file, '-map', '0:a:0', '-c:a', 'copy', dest], { timeout: 120000 });
-    return;
+      '-i', task.file, '-map', '0:a:0', '-c:a', 'copy', realDest], { timeout: 120000 });
+    return realDest;
   }
   // s3-song / s3-cut: ranged GET of the analysis window (see header proof).
   await execFile('aws', ['s3api', 'get-object', '--bucket', CFG.bucket, '--key', task.key,
@@ -326,7 +332,9 @@ async function main() {
     };
     const stageOne = async (task) => {
       const p = join(workDir, 'stage', `${task.id}.mp3`);
-      try { await stage(task, p); return { task, path: p }; }
+      // stage() may retarget the extension to match the source codec (AIFF raws);
+      // whatever path it actually wrote is the one the worker must read.
+      try { const real = (await stage(task, p)) || p; return { task, path: real }; }
       catch (e) { return { task, err: e.message }; }
     };
     let next = pull();
@@ -342,7 +350,7 @@ async function main() {
       }
       const t0 = Date.now();
       try {
-        const r = await shard.analyze(cur.task, `/work/stage/${cur.task.id}.mp3`);
+        const r = await shard.analyze(cur.task, `/work/stage/${basename(cur.path)}`);
         const ms = Date.now() - t0;
         const row = { id: cur.task.id, v: TIMBRE_VERSION, src: cur.task.kind, atMs: Date.now(), ms };
         if (cur.task.kind === 'vinyl-cut') { row.startMs = cur.task.startMs; row.durMs = cur.task.durMs; }
@@ -363,7 +371,7 @@ async function main() {
         log(`  ✗ [${shard.i}] ${cur.task.id} worker error: ${e.message}`);
         if (shard.exited) break; // container died — this shard is over, others carry on
       } finally {
-        rmSync(join(workDir, 'stage', `${cur.task.id}.mp3`), { force: true });
+        rmSync(cur.path, { force: true });
       }
     }
     try { shard.child.stdin.end(); } catch { /* already gone */ }
