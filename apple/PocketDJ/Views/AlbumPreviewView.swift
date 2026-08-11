@@ -24,15 +24,24 @@ enum AlbumOwnership: Equatable {
     /// `amrec_<id>` (the convention `RipsStore` synthesizes). The release feed passes that prefix
     /// so "does he already have this album" is answered by THIS predicate — a second one would
     /// start identical and drift the first time either is fixed.
+    ///
+    /// `localRecordMatch` is the FOURTH route, and the only one that is not an id: the caller has
+    /// resolved the release to a record already in the library by artist + title (see
+    /// `AppModel.ownedAlbumRecordIndex(forArtistName:artistId:)`). It exists as a parameter rather
+    /// than the caller pre-deciding and passing a synthetic id, so this function stays the one
+    /// place ownership is decided and a future change here can still veto it. Defaults to `false`,
+    /// so the track-level callers are untouched — a TRACK has no such resolution.
     static func owns(storeID: String,
                      catalogSongIds: Set<String>,
                      catalogAppleMusicIds: Set<String>,
                      rippedSongIds: Set<String>,
-                     adHocPrefix: String = "amrec_") -> Bool {
+                     adHocPrefix: String = "amrec_",
+                     localRecordMatch: Bool = false) -> Bool {
         let adHoc = adHocPrefix + storeID
         return catalogSongIds.contains(adHoc)
             || catalogAppleMusicIds.contains(storeID)
             || rippedSongIds.contains(adHoc)
+            || localRecordMatch
     }
 
     /// Roll the per-track answer up. An album with NO known tracks is `.none(total: 0)` —

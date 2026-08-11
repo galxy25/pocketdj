@@ -510,7 +510,7 @@ final class ReleaseFeedServiceTests: XCTestCase {
                                releaseId: "2000", releaseName: "Don't Have It",
                                releaseAtMs: now - 2 * day),
         ])
-        svc.ownsRelease = { $0 == "1000" }
+        svc.ownsRelease = { $0.storeId == "1000" }
         XCTAssertEqual(svc.feed(nowMs: now).map(\.entry.artistId), [2])
     }
 
@@ -550,7 +550,7 @@ final class ReleaseFeedServiceTests: XCTestCase {
         let requestsBefore = stub.requestCount
 
         // Catalog arrives and now claims that album.
-        svc.ownsRelease = { $0 == "1000" }
+        svc.ownsRelease = { $0.storeId == "1000" }
         XCTAssertEqual(svc.feed(nowMs: now).count, 0, "the cached entry filters out immediately")
         XCTAssertEqual(stub.requestCount, requestsBefore,
                        "and it costs no request — ownership is a read-time filter, not a stored field")
@@ -888,5 +888,753 @@ final class ReleaseFeedServiceTests: XCTestCase {
         freshCache(svc)
         svc.recheckKnownArtists()
         XCTAssertEqual(svc.pendingCountForTesting, 0, "nothing done, and nothing pretended")
+    }
+}
+
+// ============================================================================
+// MARK: - Ownership under EVERY identity a release carries
+// ============================================================================
+
+/// **THE OWNER'S OWN BUG REPORT, AS FIXTURES.** Verbatim: *"either version dups or no already
+/// owned suggestions aren't working because for me it shows in New: Who Coppin by Larry June,
+/// Whatchu Bringing? by Dinner Party, other albums in OUT NOW that are already in my collection,
+/// and albums that I have PRE-ADDED to my collection in UPCOMING — Pop Star by Victoria Monet,
+/// Don't Look Down by Rod Wave etc."*
+///
+/// ── THE SCOPE CORRECTION THESE TESTS ENCODE ──────────────────────────────────────────────────
+/// Neither named suspect was the defect. Feature 3 is scoped to COLLECTION SUGGESTION tiles and
+/// never runs on this feed; feature 6 answers *"is this a DIFFERENT VERSION"*, and every one of
+/// these rows is the SAME version — same artist, same title, same (empty) version signature — so
+/// it correctly and uselessly answers no. `testFeature6AloneCatchesNoneOfThemAndIsRightNotTo`
+/// pins that down. The defect was in NEW's own ownership filter, which compared one Apple Music
+/// ALBUM store id by string equality and had no other route.
+///
+/// ── THE IDENTITIES ARE THE REAL ONES, FROM HIS INDEX ─────────────────────────────────────────
+/// Every album row below was read out of `public/apple-music-index.json`, ids and all, because
+/// the shapes ARE the bug: *Who Coppin* claims a store id that is not the one the feed returns
+/// (Apple ships three for that record), and the pre-orders — written into Library.xml with
+/// Apple's `Track N` placeholders, which the indexer's iTunes resolver cannot match — carry NO
+/// store id at all, on the album or on any song. *Whatchu Bringing?* is in the index on no row
+/// whatsoever: on release day it exists only in the live Apple Music library source, whose
+/// `AlbumEntry` has no `appleMusicId` field, so it is modelled here exactly that way.
+@MainActor
+final class ReleaseFeedOwnershipIdentityTests: XCTestCase {
+
+    private func tempURL() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-relown-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    private func service(_ entries: [ArtistReleaseEntry]) -> ReleaseFeedService {
+        let svc = ReleaseFeedService(transport: nil, fileURL: tempURL())
+        svc.seedForTesting(entries)
+        return svc
+    }
+
+    private func library() async -> AppModel {
+        let app = AppModel(loader: OwnerLibraryLoader())
+        await app.loadIfNeeded()
+        return app
+    }
+
+    private static let now: Double = 1_754_800_000_000   // the week he reported it
+    private static let day: Double = 86_400_000
+
+    // ── (a) OUT NOW: albums he already has ───────────────────────────────────────────────────
+
+    /// Larry June's *Who Coppin* is in his library under store id `6791849225`. Apple's
+    /// `latest-release` view returns `6786105209` for the SAME 16-track record (it also ships
+    /// `6788912749`, the clean edition). The old filter was literally
+    /// `"6786105209" != "6791849225"` ⇒ "not owned" ⇒ the row he complained about.
+    func testAnAlbumHeOwnsUnderADifferentAppleStoreIdIsNotOfferedAsOutNow() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 675_391_681, artistName: "Larry June",
+                               checkedAtMs: Self.now, releaseId: "6786105209",
+                               releaseName: "Who Coppin", releaseAtMs: Self.now - 3 * Self.day,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 16),
+        ])
+        // The id route on its own — the whole of the old filter — still cannot see it.
+        XCTAssertNil(app.albumId(forAppleMusicId: "6786105209"),
+                     "the feed's id is not the one his catalog claims; that is the bug")
+
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        XCTAssertTrue(svc.outNow(nowMs: Self.now).isEmpty,
+                      "an album he owns must not appear in Out Now under ANY identity")
+        withExtendedLifetime(app) {}
+    }
+
+    /// Dinner Party's *Whatchu Bringing?* dropped the morning he reported it, so it is in no
+    /// catalog snapshot — the only source that knows it is the live Apple Music library, and that
+    /// source emits albums with no `appleMusicId` whatsoever. There is no id to compare; the only
+    /// identity the two sides share is artist + title.
+    func testAnAlbumKnownOnlyToTheAppleMusicLibrarySourceIsNotOfferedAsOutNow() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 1_500_000_001, artistName: "Dinner Party",
+                               checkedAtMs: Self.now, releaseId: "6786482410",
+                               releaseName: "Whatchu Bringing?", releaseAtMs: Self.now - Self.day,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 9),
+        ])
+        XCTAssertNil(app.albumId(forAppleMusicId: "6786482410"), "no id exists on the owned side")
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        XCTAssertTrue(svc.outNow(nowMs: Self.now).isEmpty)
+        withExtendedLifetime(app) {}
+    }
+
+    // ── (b) COMING SOON: pre-orders he has already added ─────────────────────────────────────
+
+    /// The pre-orders he named (he attributed Tinashe's *Popstar* to Victoria Monét — both are in
+    /// his library, and both were showing, so both are fixtures). A pre-order is not released, so
+    /// its tracks are Apple's `Track N` placeholders, so the indexer resolves no store id for the
+    /// album OR for any song on it: the lookup key the old filter needed cannot exist.
+    func testPreOrdersHeHasAlreadyAddedAreNotOfferedInComingSoon() async {
+        let app = await library()
+        let cases: [(Int, String, String, String)] = [
+            (1_400_000_001, "Rod Wave", "6781873059", "Don't Look Down"),
+            (1_300_000_001, "Victoria Monét", "6791645195", "Frequency Of Love"),
+            // Reported as "Pop Star"; Library.xml spells it "Popstar" — one record, two of
+            // Apple's own spellings. See `RecVersionIdentity.spacelessKey`.
+            (1_200_000_001, "Tinashe", "6790000101", "Pop Star"),
+        ]
+        for (artistId, artist, releaseId, title) in cases {
+            // The OLD filter's only route, proven dead for each one: the pre-order's tracks are
+            // placeholders, so nothing on his side ever resolved a store id to compare against.
+            XCTAssertNil(app.albumId(forAppleMusicId: releaseId),
+                         "\(artist): an id probe cannot see a pre-order — that is the bug")
+            let svc = service([
+                ArtistReleaseEntry(artistId: artistId, artistName: artist, checkedAtMs: Self.now,
+                                   releaseId: releaseId, releaseName: title,
+                                   releaseAtMs: Self.now + 21 * Self.day,
+                                   releaseArtworkUrl: nil, releaseKind: "album", trackCount: 22),
+            ])
+            svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+            XCTAssertTrue(svc.comingSoon(nowMs: Self.now).isEmpty,
+                          "\(artist) — \(title) is already pre-added and must not be offered")
+        }
+        withExtendedLifetime(app) {}
+    }
+
+    /// Ravyn Lenae's *Blue Island* was pre-added and has since come out, so the SAME cached entry
+    /// crosses from Coming Soon into Out Now on its release date. The filter lives in `feed()`,
+    /// which both sections derive from, so one fix covers both sides of that line — a filter hung
+    /// off `comingSoon()` would have let it reappear the morning it dropped.
+    func testAPreAddedRecordStaysFilteredWhenItCrossesIntoOutNow() async {
+        let app = await library()
+        let releaseAt = Self.now
+        let svc = service([
+            ArtistReleaseEntry(artistId: 1_100_000_001, artistName: "Ravyn Lenae",
+                               checkedAtMs: Self.now, releaseId: "6790000102",
+                               releaseName: "Blue Island", releaseAtMs: releaseAt,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 14),
+        ])
+        XCTAssertNil(app.albumId(forAppleMusicId: "6790000102"), "pre-added ⇒ no store id resolved")
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        XCTAssertTrue(svc.feed(nowMs: releaseAt - 2 * Self.day).isEmpty, "before: Coming Soon")
+        XCTAssertTrue(svc.feed(nowMs: releaseAt + 2 * Self.day).isEmpty, "after: Out Now")
+        withExtendedLifetime(app) {}
+    }
+
+    // ── The scope correction: feature 6 was never going to catch these ───────────────────────
+
+    /// **WHY THE REPORT'S OWN DIAGNOSIS WAS WRONG.** The feature-6 join is not broken — it reaches
+    /// his rows and returns a non-empty index — it simply answers a different question. Its last
+    /// clause requires the two sides to DIFFER by version material, and here they are the same
+    /// version with the same empty signature, so it says "not a different version" and every one
+    /// of these rows sailed through. That guard is deliberate (see `RecVersionIdentity`'s "never
+    /// on artist + title alone" note) and is left exactly as it was.
+    func testFeature6AloneCatchesNoneOfThemAndIsRightNotTo() async {
+        let app = await library()
+        let index = app.ownedVersionIndex(forArtistId: 675_391_681)
+        XCTAssertFalse(index.isEmpty, "the artist-id join works — that was never the problem")
+        XCTAssertFalse(index.supersedes(title: "Who Coppin", artist: "Larry June"),
+                       "same version ⇒ not a DIFFERENT version; feature 6 is answering honestly")
+
+        let svc = service([
+            ArtistReleaseEntry(artistId: 675_391_681, artistName: "Larry June",
+                               checkedAtMs: Self.now, releaseId: "6786105209",
+                               releaseName: "Who Coppin", releaseAtMs: Self.now - 3 * Self.day),
+        ])
+        svc.ownsReleaseVersion = ReleaseFeedService.versionProbe(app: app)
+        XCTAssertEqual(svc.feed(nowMs: Self.now).count, 1, "reproduces his report exactly")
+
+        // …and it is the OWNERSHIP filter that closes it, with feature 6 still wired beside it.
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        XCTAssertTrue(svc.feed(nowMs: Self.now).isEmpty)
+        withExtendedLifetime(app) {}
+    }
+
+    /// Feature 6 must keep working with the widened ownership filter in place. A Deluxe reissue of
+    /// an owned album is now caught by EITHER route — they overlap by construction, since every
+    /// superseding pair shares a bucket — and the two must not fight.
+    func testTheDeluxeReissueCaseStillSuppresses() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 675_391_681, artistName: "Larry June",
+                               checkedAtMs: Self.now, releaseId: "6799999999",
+                               releaseName: "Who Coppin (Deluxe Edition)",
+                               releaseAtMs: Self.now - Self.day),
+        ])
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        svc.ownsReleaseVersion = ReleaseFeedService.versionProbe(app: app)
+        XCTAssertTrue(svc.feed(nowMs: Self.now).isEmpty)
+        withExtendedLifetime(app) {}
+    }
+
+    // ── THE LINE: what must still get through ────────────────────────────────────────────────
+
+    /// **NO OVER-SUPPRESSION.** The whole point of the feed is a new record by an artist he
+    /// listens to. He owns two Larry June albums; a third, genuinely new one has a DIFFERENT base
+    /// title, lands in no owned bucket, and is offered exactly as it was before this change.
+    /// Suppressing on artist alone would delete the feature and leave no trace.
+    func testAGenuinelyNewAlbumByAnArtistHeOwnsStillAppears() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 675_391_681, artistName: "Larry June",
+                               checkedAtMs: Self.now, releaseId: "6795000000",
+                               releaseName: "Doing It for Me", releaseAtMs: Self.now - Self.day),
+        ])
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        svc.ownsReleaseVersion = ReleaseFeedService.versionProbe(app: app)
+        XCTAssertEqual(svc.outNow(nowMs: Self.now).count, 1,
+                       "a new record by an owned artist is the feature, not the bug")
+        withExtendedLifetime(app) {}
+    }
+
+    /// A `.distinct` performance FAILS OPEN in both directions — a live album of a record he owns
+    /// is new music. The ownership route inherits that safety property rather than re-deciding it.
+    func testALivePerformanceOfAnOwnedRecordIsStillOffered() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 675_391_681, artistName: "Larry June",
+                               checkedAtMs: Self.now, releaseId: "6796000000",
+                               releaseName: "Who Coppin (Live)", releaseAtMs: Self.now - Self.day),
+        ])
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        svc.ownsReleaseVersion = ReleaseFeedService.versionProbe(app: app)
+        XCTAssertEqual(svc.outNow(nowMs: Self.now).count, 1)
+        withExtendedLifetime(app) {}
+    }
+
+    /// A new album whose title happens to match a SONG he owns by that artist is new music. This
+    /// is why the ownership index is built from ALBUM titles only, while feature 6 — a different
+    /// question — keeps indexing songs as well.
+    func testANewAlbumNamedAfterASongHeOwnsIsStillOffered() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 675_391_681, artistName: "Larry June",
+                               checkedAtMs: Self.now, releaseId: "6797000000",
+                               releaseName: "Turkish Cotton", releaseAtMs: Self.now - Self.day),
+        ])
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        XCTAssertEqual(svc.outNow(nowMs: Self.now).count, 1,
+                       "he owns the TRACK 'Turkish Cotton'; an album of that name is not that record")
+        withExtendedLifetime(app) {}
+    }
+
+    /// The cold-launch default is unchanged: an unset probe owns nothing, and the exclusion is
+    /// still applied on READ, so the catalog arriving fixes the feed with no refetch.
+    func testAnUnsetProbeStillOwnsNothingAndTheCatalogArrivingFixesIt() async {
+        let svc = service([
+            ArtistReleaseEntry(artistId: 675_391_681, artistName: "Larry June",
+                               checkedAtMs: Self.now, releaseId: "6786105209",
+                               releaseName: "Who Coppin", releaseAtMs: Self.now - Self.day),
+        ])
+        XCTAssertNil(svc.ownsRelease)
+        XCTAssertEqual(svc.feed(nowMs: Self.now).count, 1)
+
+        let app = await library()
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        XCTAssertEqual(svc.feed(nowMs: Self.now).count, 0, "read-time filter, no refetch")
+        withExtendedLifetime(app) {}
+    }
+
+    // ── The resolver itself ──────────────────────────────────────────────────────────────────
+
+    /// The record index is keyed on the artist NAME, not the artist id, precisely because the
+    /// synthetic Apple Music library source contributes no `artists` table — the Dinner Party
+    /// case. An id-keyed index would be empty for exactly the albums that need it most.
+    func testTheRecordIndexReachesAlbumsWithNoArtistTableEntry() async {
+        let app = await library()
+        XCTAssertNil(app.artistId(forArtistName: "Dinner Party"),
+                     "fixture models the library source: no artists-table row")
+        XCTAssertTrue(app.ownedAlbumRecordIndex(forArtistName: "Dinner Party")
+                        .hasRecord(title: "Whatchu Bringing?", artist: "Dinner Party"))
+        withExtendedLifetime(app) {}
+    }
+
+    /// "Popstar" and "Pop Star" are one record. Matched in BOTH directions, so it does not matter
+    /// which side of the join carries which of Apple's spellings.
+    func testSpacingDifferencesInATitleAreOneRecord() async {
+        let app = await library()
+        let owned = app.ownedAlbumRecordIndex(forArtistName: "Tinashe")
+        XCTAssertTrue(owned.hasRecord(title: "Pop Star", artist: "Tinashe"))
+        XCTAssertTrue(owned.hasRecord(title: "Popstar", artist: "Tinashe"))
+        XCTAssertFalse(owned.hasRecord(title: "Pop Life", artist: "Tinashe"),
+                       "letter-for-letter, or it is a different record")
+        withExtendedLifetime(app) {}
+    }
+
+    /// HIS ACTUAL ROWS — ids and spellings verbatim from `public/apple-music-index.json`, except
+    /// Dinner Party, which is in no snapshot and is modelled as the live-library album it is.
+    private struct OwnerLibraryLoader: CatalogLoading {
+        func loadIndex() async throws -> IndexJSON {
+            try JSONDecoder().decode(IndexJSON.self, from: Data(Self.json.utf8))
+        }
+
+        static let json = """
+        {
+          "manifest": { "sourceName": "Apple Music (Local)" },
+          "artists": [
+            { "key": "larry june", "name": "Larry June", "id": 675391681 },
+            { "key": "rod wave", "name": "Rod Wave", "id": 1400000001 },
+            { "key": "victoria monét", "name": "Victoria Monét", "id": 1300000001 },
+            { "key": "tinashe", "name": "Tinashe", "id": 1200000001 },
+            { "key": "ravyn lenae", "name": "Ravyn Lenae", "id": 1100000001 }
+          ],
+          "albums": [
+            { "id": "alb_1edd29e42371", "artist": "Larry June", "name": "Who Coppin",
+              "appleMusicId": "6791849225", "genre": "Hip-Hop/Rap", "year": 2026,
+              "country": "US", "trackList": ["sng_lj1"], "fileType": "m4a" },
+            { "id": "alb_lj_spaceships", "artist": "Larry June", "name": "Spaceships on the Blade",
+              "appleMusicId": "1630000001", "genre": "Hip-Hop/Rap", "year": 2022,
+              "country": "US", "trackList": ["sng_lj2"], "fileType": "m4a" },
+            { "id": "alb_amlib_dinnerparty", "artist": "Dinner Party", "name": "Whatchu Bringing?",
+              "genre": "Jazz", "year": 2026, "country": "US",
+              "trackList": ["amlib_dp1"], "fileType": "m4a" },
+            { "id": "alb_0fcafba5ee32", "artist": "Rod Wave", "name": "Don't Look Down",
+              "genre": "Hip-Hop/Rap", "year": 2026, "country": "US",
+              "trackList": ["sng_rw1"], "fileType": "m4a" },
+            { "id": "alb_148a87e14677", "artist": "Victoria Monét", "name": "Frequency Of Love",
+              "genre": "R&B/Soul", "year": 2026, "country": "US",
+              "trackList": ["sng_vm1"], "fileType": "m4a" },
+            { "id": "alb_398fd2fac360", "artist": "Tinashe", "name": "Popstar",
+              "genre": "R&B/Soul", "year": 2026, "country": "US",
+              "trackList": ["sng_tn1"], "fileType": "m4a" },
+            { "id": "alb_eb585e8d4829", "artist": "Ravyn Lenae", "name": "Blue Island",
+              "genre": "R&B/Soul", "year": 2026, "country": "US",
+              "trackList": ["sng_rl1"], "fileType": "m4a" }
+          ],
+          "songs": [
+            { "id": "sng_lj1", "albumId": "alb_1edd29e42371", "artist": "Larry June",
+              "name": "Who Coppin", "appleMusicId": "6791849226", "trackNumber": 1,
+              "year": 2026, "length": 180000 },
+            { "id": "sng_lj2", "albumId": "alb_lj_spaceships", "artist": "Larry June",
+              "name": "Turkish Cotton", "trackNumber": 1, "year": 2022, "length": 200000 },
+            { "id": "amlib_dp1", "albumId": "alb_amlib_dinnerparty", "artist": "Dinner Party",
+              "name": "Whatchu Bringing?", "trackNumber": 1, "year": 2026, "length": 210000 },
+            { "id": "sng_rw1", "albumId": "alb_0fcafba5ee32", "artist": "Rod Wave",
+              "name": "Track 1", "trackNumber": 1, "year": 2026, "length": 0 },
+            { "id": "sng_vm1", "albumId": "alb_148a87e14677", "artist": "Victoria Monét",
+              "name": "Track 1", "trackNumber": 1, "year": 2026, "length": 0 },
+            { "id": "sng_tn1", "albumId": "alb_398fd2fac360", "artist": "Tinashe",
+              "name": "Track 1", "trackNumber": 1, "year": 2026, "length": 0 },
+            { "id": "sng_rl1", "albumId": "alb_eb585e8d4829", "artist": "Ravyn Lenae",
+              "name": "Track 1", "trackNumber": 1, "year": 2026, "length": 0 }
+          ]
+        }
+        """
+    }
+}
+
+// ============================================================================
+// MARK: - Ownership, round 2: the identities the FIRST cut of this filter missed
+// ============================================================================
+
+/// The first pass at the New feed's ownership filter keyed the owned side on
+/// `RecVersionIdentity.artistKey(album.artist)` alone. Measured against the owner's real
+/// 12,642-album index, that reached only **349 of the 510** id-less 2026 albums it exists for
+/// once the feed names the artist the way APPLE does — because `ArtistReleaseEntry.artistName` is
+/// Apple's canonical name for ONE artist id (`artist.attributes.name`) while the owned side
+/// carries whatever Music.app wrote, which for a collaboration is the whole credit. Dinner Party
+/// — one of the two Out Now albums he named — was in the missing 161, and passed only under the
+/// plain spelling its fixture happened to use.
+///
+/// With the credit split, the artist-id route and the bracketed-name key, the same measurement
+/// reaches **510 of 510**, with 0 of 400 fabricated titles suppressed as a control.
+///
+/// Every owned row here is copied VERBATIM out of `public/apple-music-index.json`, credits
+/// included — that is the whole point of the class.
+@MainActor
+final class ReleaseFeedOwnershipCreditIdentityTests: XCTestCase {
+
+    private func tempURL() -> URL {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-relown2-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        return url
+    }
+
+    private func service(_ entries: [ArtistReleaseEntry]) -> ReleaseFeedService {
+        let svc = ReleaseFeedService(transport: nil, fileURL: tempURL())
+        svc.seedForTesting(entries)
+        return svc
+    }
+
+    private func library() async -> AppModel {
+        let app = AppModel(loader: RealCreditsLoader())
+        await app.loadIfNeeded()
+        return app
+    }
+
+    private static let now: Double = 1_754_800_000_000
+    private static let day: Double = 86_400_000
+
+    // ── (a) OUT NOW: the collaboration credit ────────────────────────────────────────────────
+
+    /// **THE ALBUM HE NAMED, UNDER THE CREDIT HIS INDEX ACTUALLY USES.** Both of his Dinner Party
+    /// albums are filed as *"Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi
+    /// Washington"*, and the artists table has no plain "Dinner Party" row — that long string is
+    /// what maps to Apple artist 1539968565, whose canonical name (verified against
+    /// `itunes.apple.com/lookup?id=1539968565`) is just "Dinner Party". So the feed says "dinner
+    /// party" and the library says the whole credit, and an `artistKey` equality never met.
+    func testAnAlbumOwnedUnderACollaborationCreditIsNotOfferedAsOutNow() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 1_539_968_565, artistName: "Dinner Party",
+                               checkedAtMs: Self.now, releaseId: "6786482410",
+                               releaseName: "Whatchu Bringing?", releaseAtMs: Self.now - Self.day,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 9),
+        ])
+        XCTAssertNil(app.albumId(forAppleMusicId: "6786482410"), "no id on the owned side either")
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        svc.ownsReleaseVersion = ReleaseFeedService.versionProbe(app: app)
+        XCTAssertTrue(svc.outNow(nowMs: Self.now).isEmpty,
+                      "owned under the long credit, offered under Apple's short one")
+        withExtendedLifetime(app) {}
+    }
+
+    /// The same shape on a different real row: `alb_fb9a8af9d735` is *"BigXthaPlug, MurdaGang PB,
+    /// Ro$ama & Yung Hood — 6WA"*, 2026, no `appleMusicId`, with a real on-disk pointer. Apple's
+    /// canonical name for the tracked artist 1482508209 is "BigXthaPlug".
+    func testACollabCreditedAlbumHeOwnsIsNotOfferedAsOutNow() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 1_482_508_209, artistName: "BigXthaPlug",
+                               checkedAtMs: Self.now, releaseId: "6798000001",
+                               releaseName: "6WA", releaseAtMs: Self.now - 2 * Self.day,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 14),
+        ])
+        XCTAssertNil(app.albumId(forAppleMusicId: "6798000001"))
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        svc.ownsReleaseVersion = ReleaseFeedService.versionProbe(app: app)
+        XCTAssertTrue(svc.outNow(nowMs: Self.now).isEmpty)
+        withExtendedLifetime(app) {}
+    }
+
+    /// The control that isolates the variable: the SAME record filed under the plain credit was
+    /// already suppressed before this change, and still is.
+    func testThePlainCreditCaseStillSuppresses() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 1_539_968_565, artistName: "Dinner Party",
+                               checkedAtMs: Self.now, releaseId: "6786482411",
+                               releaseName: "Dessert Two", releaseAtMs: Self.now - Self.day,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 9),
+        ])
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        XCTAssertTrue(svc.outNow(nowMs: Self.now).isEmpty)
+        withExtendedLifetime(app) {}
+    }
+
+    /// **THE ARTIST-ID ROUTE, ON A REAL ALIAS.** His artists table has
+    /// `{"key":"kanye west","name":"Kanye West","id":2715720,"alt":[1714710847]}`, and Apple's own
+    /// name for 1714710847 (verified by lookup) is **"Ye"**. So a release for that id arrives
+    /// naming an artist his catalog has never spelled — `artistKey("Ye")` is "ye", nothing in the
+    /// credit says "ye", and the credit split cannot help. Only the artists table knows they are
+    /// one artist, which is why the id route exists alongside the name route.
+    ///
+    /// The owned row is `alb_132e23a7ebf5` — *Yeezus [Explicit Version]*, no `appleMusicId`, so
+    /// the store-id route is dead here too.
+    func testTheArtistIdRouteReachesAnAlbumFiledUnderAnotherNameForTheSameArtist() async {
+        let app = await library()
+        XCTAssertNil(app.artistId(forArtistName: "Ye"), "his index has no row spelled 'Ye'")
+        let svc = service([
+            ArtistReleaseEntry(artistId: 1_714_710_847, artistName: "Ye",
+                               checkedAtMs: Self.now, releaseId: "6793000001",
+                               releaseName: "Yeezus", releaseAtMs: Self.now - Self.day,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 10),
+        ])
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        XCTAssertTrue(svc.outNow(nowMs: Self.now).isEmpty,
+                      "the alt id in the artists table is the only thing that joins these")
+        // …and the name route alone genuinely cannot: no artist id, no suppression.
+        XCTAssertFalse(app.ownedAlbumRecordIndex(forArtistName: "Ye")
+                        .hasRecord(title: "Yeezus", artist: "Ye"),
+                       "isolates the route — this is the id route's work, not the name route's")
+        withExtendedLifetime(app) {}
+    }
+
+    /// A name written ENTIRELY in brackets is not an artist-less row. `artistKey` strips bracketed
+    /// groups (right for "Sade (feat. Sweetback)"), which reduced `"[IVY]"` to the empty string —
+    /// an unusable key, so the row silently left the comparison. Real row: `alb_0127f123a18b`,
+    /// *"[IVY] & XIRA — Car Crash - Single"*. This was the last of the 510 still getting through.
+    func testABracketedArtistNameIsNotArtistLess() async {
+        let app = await library()
+        XCTAssertEqual(RecVersionIdentity.artistKey("[IVY]"), "",
+                       "the shared artist key really is empty — that is the mechanism")
+        XCTAssertEqual(RecVersionIdentity.ownershipArtistKey("[IVY]"), "ivy")
+        let svc = service([
+            ArtistReleaseEntry(artistId: 1_600_000_002, artistName: "[IVY]",
+                               checkedAtMs: Self.now, releaseId: "6794000001",
+                               releaseName: "Car Crash - Single", releaseAtMs: Self.now - Self.day,
+                               releaseArtworkUrl: nil, releaseKind: "single", trackCount: 1),
+        ])
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        XCTAssertTrue(svc.outNow(nowMs: Self.now).isEmpty)
+        withExtendedLifetime(app) {}
+    }
+
+    /// An UNRECOGNISED parenthetical makes a title `.distinct`, which fails open — correctly, for
+    /// "(Taylor's Version)". But "fails open" cannot mean "he does not own the record when the two
+    /// titles are letter-for-letter identical". Both of these are real 2026 rows in his library
+    /// with no store id, and both were still being offered.
+    func testAnUnrecognisedParentheticalIsStillTheSameRecord() async {
+        let app = await library()
+        let cases: [(Int, String, String, String)] = [
+            (1_601_000_001, "Sexyy Red", "6795000101",
+             "Yo Favorite Trappa Favorite Rappa (Hosted by DJ Holiday)"),
+            (1_601_000_002, "Too $hort", "6795000102", "SIR TOO $HORT, VOL. 2 (DRINK & SMOKE)"),
+        ]
+        for (artistId, artist, releaseId, title) in cases {
+            let svc = service([
+                ArtistReleaseEntry(artistId: artistId, artistName: artist, checkedAtMs: Self.now,
+                                   releaseId: releaseId, releaseName: title,
+                                   releaseAtMs: Self.now - Self.day, releaseArtworkUrl: nil,
+                                   releaseKind: "album", trackCount: 13),
+            ])
+            svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+            svc.ownsReleaseVersion = ReleaseFeedService.versionProbe(app: app)
+            XCTAssertTrue(svc.outNow(nowMs: Self.now).isEmpty, "\(artist) — \(title)")
+        }
+        withExtendedLifetime(app) {}
+    }
+
+    // ── THE LINE: what the widening must NOT delete ──────────────────────────────────────────
+
+    /// **THE COMING SOON SIDE OF "MUST STILL APPEAR"** — which the first cut never tested: every
+    /// one of its no-over-suppression tests was an Out Now test. An unadded pre-order by an artist
+    /// he owns is the entire point of that section, and over-suppressing it would silently empty
+    /// the list he complained about.
+    func testAPreOrderHeHasNotAddedIsStillOfferedInComingSoon() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 675_391_681, artistName: "Larry June",
+                               checkedAtMs: Self.now, releaseId: "6799000001",
+                               releaseName: "Midnight Orange", releaseAtMs: Self.now + 30 * Self.day,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 12),
+        ])
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        svc.ownsReleaseVersion = ReleaseFeedService.versionProbe(app: app)
+        XCTAssertEqual(svc.comingSoon(nowMs: Self.now).count, 1,
+                       "an unadded pre-order by an artist he owns is the FEATURE")
+        withExtendedLifetime(app) {}
+    }
+
+    /// A release by an artist he owns nothing by — the similar-artist seed path.
+    func testAReleaseByAnArtistHeOwnsNothingByIsStillOffered() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 999_000_001, artistName: "Some New Artist",
+                               checkedAtMs: Self.now, releaseId: "6799000002",
+                               releaseName: "Debut", releaseAtMs: Self.now - Self.day,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 10),
+        ])
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        XCTAssertEqual(svc.outNow(nowMs: Self.now).count, 1)
+        withExtendedLifetime(app) {}
+    }
+
+    /// **THE COST OF THE CREDIT SPLIT, BOUNDED.** Being named on a credit he owns is not ownership
+    /// of everything that artist releases: 9th Wonder is on the Dinner Party record, and a new
+    /// 9th Wonder album under a different title is still new music. Only the identical base title
+    /// suppresses.
+    func testACollaboratorsOwnNewRecordIsStillOffered() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 1_610_000_001, artistName: "9th Wonder",
+                               checkedAtMs: Self.now, releaseId: "6799000005",
+                               releaseName: "The Wonder Years II", releaseAtMs: Self.now - Self.day,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 12),
+        ])
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        svc.ownsReleaseVersion = ReleaseFeedService.versionProbe(app: app)
+        XCTAssertEqual(svc.outNow(nowMs: Self.now).count, 1,
+                       "credited on an owned record ≠ owning this one")
+        // …but the record he IS on, under his own name, is his.
+        XCTAssertTrue(app.ownedAlbumRecordIndex(forArtistName: "9th Wonder")
+                        .hasRecord(title: "Whatchu Bringing?", artist: "9th Wonder"))
+        withExtendedLifetime(app) {}
+    }
+
+    /// Owning a LIVE album is still not grounds to hide the studio record, and vice versa. The
+    /// exact-title route added for unrecognised parentheticals must not touch this — the two sides
+    /// there differ by version material, which is a different question.
+    func testTheLiveFailOpenSurvivesInBothDirections() async {
+        let app = await library()
+        // He owns "Who Coppin"; a live album of it is new music.
+        let live = service([
+            ArtistReleaseEntry(artistId: 675_391_681, artistName: "Larry June",
+                               checkedAtMs: Self.now, releaseId: "6796000000",
+                               releaseName: "Who Coppin (Live)", releaseAtMs: Self.now - Self.day),
+        ])
+        live.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        live.ownsReleaseVersion = ReleaseFeedService.versionProbe(app: app)
+        XCTAssertEqual(live.outNow(nowMs: Self.now).count, 1)
+
+        // And he owns "Car Crash - Single (Live)"; the studio cut is still new music.
+        let owned = RecVersionIndex(owned: [
+            RecVersionIdentity.key(title: "Some Record (Live)", artistKey: "an artist")!,
+        ])
+        XCTAssertFalse(owned.hasRecord(title: "Some Record", artist: "An Artist"),
+                       "owning the live take does not mean owning the record")
+        XCTAssertTrue(owned.hasRecord(title: "Some Record (Live)", artist: "An Artist"),
+                      "…but the live take itself is his")
+        withExtendedLifetime(app) {}
+    }
+
+    // ── The plumbing, asserted directly ──────────────────────────────────────────────────────
+
+    /// The credit split itself, and the `artistKey` behaviour that makes it necessary.
+    func testCreditArtistKeysNamesEveryArtistInACredit() {
+        let dp = RecVersionIdentity.creditArtistKeys(
+            "Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi Washington")
+        XCTAssertTrue(dp.contains("dinner party"))
+        XCTAssertTrue(dp.contains("terrace martin"))
+        XCTAssertTrue(dp.contains("kamasi washington"))
+        // The whole credit stays in the set — nothing that matched before stops matching.
+        XCTAssertTrue(dp.contains(RecVersionIdentity.artistKey(
+            "Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi Washington")))
+        // A single-name credit is exactly one key.
+        XCTAssertEqual(RecVersionIdentity.creditArtistKeys("BigXthaPlug"), ["bigxthaplug"])
+        // The shared key that feature 6 uses is UNCHANGED — this is additive, not a loosening.
+        XCTAssertNotEqual(RecVersionIdentity.artistKey("BigXthaPlug, MurdaGang PB, Ro$ama & Yung Hood"),
+                          RecVersionIdentity.artistKey("BigXthaPlug"))
+        XCTAssertFalse(RecVersionIdentity.isDifferentVersion(
+            candidateTitle: "6WA (Deluxe)", candidateArtist: "BigXthaPlug",
+            ownedTitle: "6WA", ownedArtist: "BigXthaPlug, MurdaGang PB, Ro$ama & Yung Hood"),
+            "feature 6's bucketing is not widened by any of this")
+    }
+
+    /// `AlbumOwnership.owns` is still the one predicate, and the record route reaches it as its own
+    /// argument rather than as a forged store id — so a future change here can still veto it.
+    func testOwnsDecidesTheRecordRouteItself() {
+        XCTAssertFalse(AlbumOwnership.owns(storeID: "1", catalogSongIds: [],
+                                           catalogAppleMusicIds: [], rippedSongIds: [],
+                                           adHocPrefix: "amrec_album_"))
+        XCTAssertTrue(AlbumOwnership.owns(storeID: "1", catalogSongIds: [],
+                                          catalogAppleMusicIds: [], rippedSongIds: [],
+                                          adHocPrefix: "amrec_album_", localRecordMatch: true))
+        // The track-level callers are untouched: the parameter defaults to false.
+        XCTAssertFalse(AlbumOwnership.owns(storeID: "1", catalogSongIds: [],
+                                           catalogAppleMusicIds: [], rippedSongIds: []))
+    }
+
+    /// A titleless release cannot use the record route and must not crash or over-match.
+    func testATitlelessReleaseFallsBackToTheIdRouteOnly() async {
+        let app = await library()
+        let probe = ReleaseFeedService.ownershipProbe(app: app)
+        XCTAssertFalse(probe(ReleaseIdentity(storeId: "6799000003", artistId: 675_391_681,
+                                             artistName: "Larry June", title: nil)))
+        XCTAssertTrue(probe(ReleaseIdentity(storeId: "6799000003", artistId: 675_391_681,
+                                            artistName: "Larry June", title: "Who Coppin")))
+        withExtendedLifetime(app) {}
+    }
+
+    /// **STILL FILTERED ON READ.** The album→artist grouping moved into the catalog build (off the
+    /// main actor) to get a 54 ms album-table walk off the render path — which is only safe if an
+    /// ADD still rebuilds it. It does: the add seam runs `applyEdits`, which bumps
+    /// `catalogRevision` and re-derives the grouping, so the row drops on the very next read with
+    /// no refetch and no stale memo.
+    func testAnAddTakesEffectOnTheNextReadWithNoRefetch() async {
+        let app = await library()
+        let svc = service([
+            ArtistReleaseEntry(artistId: 675_391_681, artistName: "Larry June",
+                               checkedAtMs: Self.now, releaseId: "6799000004",
+                               releaseName: "Midnight Orange", releaseAtMs: Self.now - Self.day,
+                               releaseArtworkUrl: nil, releaseKind: "album", trackCount: 12),
+        ])
+        svc.ownsRelease = ReleaseFeedService.ownershipProbe(app: app)
+        XCTAssertEqual(svc.outNow(nowMs: Self.now).count, 1, "not owned yet")
+        _ = app.ownedAlbumRecordIndex(forArtistName: "Larry June", artistId: 675_391_681)  // warm
+        let obj: [String: Any] = ["id": "alb_new_mo", "name": "Midnight Orange",
+                                  "artist": "Larry June", "trackList": [String]()]
+        let added = try! JSONDecoder().decode(
+            IndexAlbum.self, from: try! JSONSerialization.data(withJSONObject: obj))
+        app.injectDiscoverAlbumBatch(songs: [], album: added)
+        XCTAssertTrue(svc.outNow(nowMs: Self.now).isEmpty,
+                      "READ-time: the add drops the row with no refetch and no stale memo")
+        withExtendedLifetime(app) {}
+    }
+
+    /// HIS ACTUAL ROWS — album ids, credits and titles verbatim from
+    /// `public/apple-music-index.json`, plus the artists-table rows that carry the joins
+    /// (including Kanye West's real `alt` id, which Apple names "Ye"). Dinner Party's *Whatchu
+    /// Bringing?* is in no snapshot and is modelled as the live-library album it is, under the
+    /// long credit both of his other Dinner Party albums carry.
+    private struct RealCreditsLoader: CatalogLoading {
+        func loadIndex() async throws -> IndexJSON {
+            try JSONDecoder().decode(IndexJSON.self, from: Data(Self.json.utf8))
+        }
+        static let json = """
+        {
+          "manifest": { "sourceName": "Apple Music (Local)" },
+          "artists": [
+            { "key": "larry june", "name": "Larry June", "id": 675391681 },
+            { "key": "bigxthaplug", "name": "BigXthaPlug", "id": 1482508209 },
+            { "key": "kanye west", "name": "Kanye West", "id": 2715720, "alt": [1714710847] },
+            { "key": "sexyy red", "name": "Sexyy Red", "id": 1601000001 },
+            { "key": "too $hort", "name": "Too $hort", "id": 1601000002 },
+            { "key": "dinner party, terrace martin, robert glasper, 9th wonder & kamasi washington",
+              "name": "Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi Washington",
+              "id": 1539968565 }
+          ],
+          "albums": [
+            { "id": "alb_1edd29e42371", "artist": "Larry June", "name": "Who Coppin",
+              "appleMusicId": "6791849225", "genre": "Hip-Hop/Rap", "year": 2026,
+              "trackList": ["sng_lj1"], "fileType": "m4a" },
+            { "id": "alb_fb9a8af9d735", "artist": "BigXthaPlug, MurdaGang PB, Ro$ama & Yung Hood",
+              "name": "6WA", "genre": "Hip-Hop/Rap", "year": 2026,
+              "trackList": ["sng_bx1"], "fileType": "aac" },
+            { "id": "alb_dp_long", "artist": "Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi Washington",
+              "name": "Whatchu Bringing?", "genre": "Jazz", "year": 2026,
+              "trackList": ["sng_dp1"], "fileType": "m4a" },
+            { "id": "alb_dp_plain", "artist": "Dinner Party", "name": "Dessert Two",
+              "genre": "Jazz", "year": 2026, "trackList": ["sng_dp2"], "fileType": "m4a" },
+            { "id": "alb_132e23a7ebf5", "artist": "Kanye West", "name": "Yeezus [Explicit Version]",
+              "genre": "Hip-Hop/Rap", "year": 2013, "trackList": ["sng_kw1"], "fileType": "m4a" },
+            { "id": "alb_0127f123a18b", "artist": "[IVY] & XIRA", "name": "Car Crash - Single",
+              "genre": "Dance", "year": 2026, "trackList": ["sng_iv1"], "fileType": "m4a" },
+            { "id": "alb_a2a0b1d730c5", "artist": "Sexyy Red",
+              "name": "Yo Favorite Trappa Favorite Rappa (Hosted by DJ Holiday)",
+              "genre": "Hip-Hop/Rap", "year": 2026, "trackList": ["sng_sr1"], "fileType": "m4a" },
+            { "id": "alb_089ee7b43ab1", "artist": "Too $hort",
+              "name": "SIR TOO $HORT, VOL. 2 (DRINK & SMOKE)",
+              "genre": "Hip-Hop/Rap", "year": 2026, "trackList": ["sng_ts1"], "fileType": "m4a" }
+          ],
+          "songs": [
+            { "id": "sng_lj1", "albumId": "alb_1edd29e42371", "artist": "Larry June",
+              "name": "Who Coppin", "trackNumber": 1, "year": 2026, "length": 180000 },
+            { "id": "sng_bx1", "albumId": "alb_fb9a8af9d735",
+              "artist": "BigXthaPlug, Yung Hood, Ro$ama & MurdaGang PB",
+              "name": "6WA", "trackNumber": 1, "year": 2026, "length": 128493 },
+            { "id": "sng_dp1", "albumId": "alb_dp_long",
+              "artist": "Dinner Party, Terrace Martin, Robert Glasper, 9th Wonder & Kamasi Washington",
+              "name": "Whatchu Bringing?", "trackNumber": 1, "year": 2026, "length": 210000 },
+            { "id": "sng_dp2", "albumId": "alb_dp_plain", "artist": "Dinner Party",
+              "name": "Dessert Two", "trackNumber": 1, "year": 2026, "length": 210000 },
+            { "id": "sng_kw1", "albumId": "alb_132e23a7ebf5", "artist": "Kanye West",
+              "name": "On Sight", "trackNumber": 1, "year": 2013, "length": 156000 },
+            { "id": "sng_iv1", "albumId": "alb_0127f123a18b", "artist": "[IVY] & XIRA",
+              "name": "Car Crash", "trackNumber": 1, "year": 2026, "length": 168000 },
+            { "id": "sng_sr1", "albumId": "alb_a2a0b1d730c5", "artist": "Sexyy Red",
+              "name": "Track 1", "trackNumber": 1, "year": 2026, "length": 0 },
+            { "id": "sng_ts1", "albumId": "alb_089ee7b43ab1", "artist": "Too $hort",
+              "name": "Track 1", "trackNumber": 1, "year": 2026, "length": 0 }
+          ]
+        }
+        """
     }
 }

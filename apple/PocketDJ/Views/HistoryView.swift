@@ -42,8 +42,12 @@ struct HistoryView: View {
     /// Declaration order IS tab order: Playback, For You, Collection (the owner's own ordering).
     enum HistoryTab: String, CaseIterable {
         case playback = "Playback"
-        case forYou = "For You"
         case collection = "Collection"
+        // For You is deliberately LAST (owner): it is the forward-looking tab, and the two
+        // backward-looking ones read left-to-right before it. CaseIterable order is what the
+        // picker renders, so this declaration IS the tab order. Raw values are the persisted
+        // tokens — reordering cases is safe, renaming them is not.
+        case forYou = "For You"
         var symbol: String {
             switch self {
             case .playback:   return "play.circle.fill"
