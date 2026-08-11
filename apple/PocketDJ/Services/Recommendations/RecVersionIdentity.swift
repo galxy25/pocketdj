@@ -136,6 +136,26 @@ enum RecVersionIdentity {
         return supersedes(candidate: c, owned: o)
     }
 
+    /// The same identity with the base's WORD BOUNDARIES removed — `pop star` ⇒ `popstar`.
+    /// `nil` when the base has no spaces, so a caller can skip a lookup that would be identical.
+    ///
+    /// ── WHY THIS EXISTS (a real row, not a hypothetical) ─────────────────────────────────────
+    /// Tinashe's pre-order is written `Popstar` in the owner's Library.xml and was reported off
+    /// the New screen as "Pop Star". One of Apple's own two spellings of one record is what the
+    /// library stored and the other is what the feed showed, and `tokens` splits them into
+    /// different bases, so the record read as two.
+    ///
+    /// Used ONLY by the OWNERSHIP relation (`RecVersionIndex.hasRecord`), never by `supersedes`:
+    /// widening feature 6's bucket would change which rows it calls "a different version", which
+    /// is a separate question with its own settled answer. Safe to be this loose here because the
+    /// artist must already match and the letter sequence must be identical — two DIFFERENT albums
+    /// by one artist whose titles differ only in spacing is not a thing that happens.
+    static func spacelessKey(_ k: Key) -> Key? {
+        let squashed = k.base.replacingOccurrences(of: " ", with: "")
+        guard squashed != k.base, !squashed.isEmpty else { return nil }
+        return Key(artistKey: k.artistKey, base: squashed, signature: k.signature, klass: k.klass)
+    }
+
     // ========================================================================
     // MARK: - Normalization (ported from am-match.mjs)
     // ========================================================================
@@ -472,5 +492,40 @@ struct RecVersionIndex: Sendable, Equatable {
         guard !byBucket.isEmpty,
               let k = RecVersionIdentity.key(title: title, artist: artist) else { return false }
         return supersedes(k)
+    }
+
+    // ── The OWNERSHIP question (adjacent to `supersedes`, and not the same one) ───────────────
+
+    /// **DOES HE ALREADY HAVE THIS RECORD AT ALL?** — regardless of which edition either side is.
+    ///
+    /// `supersedes` asks whether the candidate is a DIFFERENT VERSION of something owned, and its
+    /// last clause (`signature != `) deliberately refuses to answer on artist + title alone. That
+    /// guard is right for feature 6 and stays exactly as it is — but it is also why an album the
+    /// owner literally has can march through the New feed: same artist, same title, same (empty)
+    /// signature, so "different version" is honestly *no*.
+    ///
+    /// This is the other half of that sentence, and it belongs to the OWNERSHIP path: the bucket
+    /// existing at all means he owns a record by this artist under this title. It is strictly
+    /// broader than `supersedes` (every superseding pair shares a bucket), so the two never
+    /// disagree — this one simply also covers the equal-signature case.
+    ///
+    /// The `.distinct` guards are unchanged in both directions: a live/acoustic/demo CANDIDATE is
+    /// new music and is never suppressed, and a `.distinct` owned entry was never indexed in the
+    /// first place, so owning a live album is not grounds to hide the studio record.
+    func hasRecord(_ candidate: RecVersionIdentity.Key) -> Bool {
+        guard candidate.isUsable, !candidate.isDistinct else { return false }
+        if byBucket[candidate.bucket] != nil { return true }
+        // "Pop Star" vs "Popstar" — one record, two of Apple's own spellings. See `spacelessKey`.
+        // Matching is only symmetric if the OWNED side was seeded with its spaceless keys too;
+        // `AppModel.ownedAlbumRecordIndex(forArtistName:)` — the one builder feeding this — does.
+        guard let squashed = RecVersionIdentity.spacelessKey(candidate) else { return false }
+        return byBucket[squashed.bucket] != nil
+    }
+
+    /// String convenience, for the release feed (which holds raw text, never a catalog row).
+    func hasRecord(title: String, artist: String) -> Bool {
+        guard !byBucket.isEmpty,
+              let k = RecVersionIdentity.key(title: title, artist: artist) else { return false }
+        return hasRecord(k)
     }
 }

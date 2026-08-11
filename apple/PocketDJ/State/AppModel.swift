@@ -119,6 +119,83 @@ final class AppModel {
         return index
     }
 
+    /// Memo for the ALBUM grouping `ownedAlbumRecordIndex(forArtistName:)` is built from:
+    /// `RecVersionIdentity.artistKey` ⇒ indices into `albums`. ONE pass over the album table per
+    /// catalog revision — an order of magnitude fewer rows than the 96k-song pass
+    /// `songIds(forArtistId:)` already makes on the same frame for feature 6.
+    @ObservationIgnored private var albumsByArtistKeyCache: (revision: Int, map: [String: [Int]])?
+    /// Memo for `ownedAlbumRecordIndex(forArtistName:)` — one entry per artist ASKED ABOUT.
+    @ObservationIgnored private var ownedAlbumRecordCache: (revision: Int, byArtistKey: [String: RecVersionIndex])?
+
+    /// **WHICH ALBUMS BY THIS ARTIST HE ALREADY HAS, IN VERSION SPACE** — the identity set the New
+    /// feed's ownership filter is decided on when the STORE ID cannot answer.
+    ///
+    /// ── WHY AN ID COMPARISON IS NOT ENOUGH (the reported bug, three ways) ────────────────────
+    /// `albumId(forAppleMusicId:)` is one string equality on an Apple Music ALBUM store id, and
+    /// each of these breaks it on the owner's real library:
+    ///  1. APPLE SHIPS SEVERAL IDS FOR ONE RECORD. Larry June's *Who Coppin* exists as 6786105209,
+    ///     6788912749 (clean) and 6791849225; the catalog row claims the last, `latest-release`
+    ///     returns the first, and `"6786105209" != "6791849225"` says "not owned".
+    ///  2. A PRE-ORDER HAS NO RESOLVABLE ID AT ALL. Music.app writes an unreleased album into
+    ///     Library.xml with Apple's placeholder tracks (`Track 1`…`Track N`), which the indexer's
+    ///     iTunes resolver cannot match — so the album row and every song on it carry NO
+    ///     `appleMusicId` and are absent from the id index under any key. 8 of the owner's 12
+    ///     pre-orders are in this state, which is why he saw records he had already pre-added
+    ///     sitting in COMING SOON.
+    ///  3. THE LIVE APPLE MUSIC LIBRARY SOURCE EMITS NO ALBUM ID. `AppleMusicLibraryStore.AlbumEntry`
+    ///     has no `appleMusicId` field, so an album known only through that source (anything added
+    ///     since the last catalog sync — Dinner Party's *Whatchu Bringing?* on the day it dropped)
+    ///     is permanently invisible to an id probe.
+    /// 26% of this library's albums carry no `appleMusicId`, so this is not a long tail.
+    ///
+    /// ── WHY ARTIST NAME AND NOT ARTIST ID ────────────────────────────────────────────────────
+    /// The id join runs through the index's `artists` table, which the synthetic Apple Music
+    /// library source does not contribute to — the exact case (3) above. `RecVersionIdentity`'s
+    /// own bucket key is the normalized credit anyway, so keying on it removes a dependency
+    /// instead of adding one.
+    ///
+    /// ── ALBUMS ONLY, WHICH IS HOW THE NO-OVER-SUPPRESSION LINE IS HELD ───────────────────────
+    /// `ownedVersionIndex(forArtistId:)` indexes songs AND albums, which is right for "is this a
+    /// different VERSION" but wrong here: a new album that happens to share its name with a track
+    /// he owns by that artist is new music, and matching it against song titles would delete it
+    /// from the feed with no trace. Only whole records answer the ownership question, so only
+    /// albums are indexed — and a genuinely new album has a different base title, lands in no
+    /// bucket, and is offered exactly as it is today.
+    ///
+    /// Both the plain and the spaceless key are seeded so the match is symmetric — see
+    /// `RecVersionIdentity.spacelessKey`.
+    func ownedAlbumRecordIndex(forArtistName raw: String) -> RecVersionIndex {
+        let artistKey = RecVersionIdentity.artistKey(raw)
+        guard !artistKey.isEmpty else { return .empty }
+        if let c = ownedAlbumRecordCache, c.revision == catalogRevision,
+           let hit = c.byArtistKey[artistKey] { return hit }
+
+        if albumsByArtistKeyCache?.revision != catalogRevision {
+            var map: [String: [Int]] = [:]
+            for (i, a) in albums.enumerated() {
+                let k = RecVersionIdentity.artistKey(a.artist)
+                guard !k.isEmpty else { continue }
+                map[k, default: []].append(i)
+            }
+            albumsByArtistKeyCache = (catalogRevision, map)
+        }
+
+        var keys: [RecVersionIdentity.Key] = []
+        for i in albumsByArtistKeyCache?.map[artistKey] ?? [] {
+            guard let k = RecVersionIdentity.key(title: albums[i].name, artistKey: artistKey) else {
+                continue
+            }
+            keys.append(k)
+            if let squashed = RecVersionIdentity.spacelessKey(k) { keys.append(squashed) }
+        }
+        let index = RecVersionIndex(owned: keys)
+        var byArtistKey = ownedAlbumRecordCache?.revision == catalogRevision
+            ? (ownedAlbumRecordCache?.byArtistKey ?? [:]) : [:]
+        byArtistKey[artistKey] = index
+        ownedAlbumRecordCache = (catalogRevision, byArtistKey)
+        return index
+    }
+
     /// Memo for `zoneTracks`, keyed on `catalogRevision` — the `membershipSnapshotCache`
     /// precedent. A stale memo can never survive a catalog change because the revision is part
     /// of the key.
