@@ -5,15 +5,21 @@ import SwiftUI
 /// a song, hearting/unhearting, removing), with the Browser's filter + sort controls on the plays.
 /// Opened from anywhere with ⌘H.
 ///
-/// Three views over two event streams:
-///  • **Playback** — song PLAYS from the append-only `PlayHistoryStore`, driven through the Browser's
-///    own filter/sort/paged machinery (see `BrowseState.refreshExternal`, which runs off the main actor).
+/// THREE tabs (Levi 2026-08-10 — "playback, for you, collection tabs only"):
+///  • **Playback** (default) — song PLAYS from the append-only `PlayHistoryStore`, driven through the
+///    Browser's own filter/sort/paged machinery (see `BrowseState.refreshExternal`, off the main actor).
+///  • **For You** — the cached recommendation tiles, only while the rec engine is on.
 ///  • **Collection** — collection ACTIVITY (add / heart / unheart / remove) from `CollectionActivityStore`.
-///  • **Unified** (default) — both streams interleaved newest-first.
 ///
-/// The tab control shows the TWO views you're NOT currently in — tap one to switch. So from Unified you
-/// see [Playback | Collection]; from either single view you see [the other | Unified] to cross over or
-/// return to the combined timeline.
+/// The tab control shows EVERY available tab with the current one filled in. It used to show only the
+/// views you were NOT in, which was a workable trick for a fixed trio but degenerates to a single
+/// full-width button once the fourth ("Unified") view is gone and the engine is off.
+///
+/// **Unified is REMOVED** (2026-08-10). It interleaved the two streams newest-first, filtered by the
+/// search query only. What that view — and only that view — could show is a play and a collection
+/// change ADJACENT IN TIME ("I hearted this right after playing it"); each stream on its own survives
+/// intact in Playback and Collection. Its one exclusive ACTION, the "Rewind to here" row menu, moved
+/// onto the Playback rows, which carry the same `PlayRef.eventId` it needs.
 struct HistoryView: View {
     @Environment(AppModel.self) private var app
     @Environment(PlayHistoryStore.self) private var history
@@ -33,22 +39,27 @@ struct HistoryView: View {
     @Environment(RowSelection.self) private var rowSelection
     @Binding var path: NavigationPath
 
+    /// Declaration order IS tab order: Playback, For You, Collection (the owner's own ordering).
     enum HistoryTab: String, CaseIterable {
-        case unified = "Unified", playback = "Playback", collection = "Collection"
+        case playback = "Playback"
         case forYou = "For You"
+        case collection = "Collection"
         var symbol: String {
             switch self {
-            case .unified:    return "square.stack.3d.up.fill"
             case .playback:   return "play.circle.fill"
             case .collection: return "rectangle.stack.fill"
             case .forYou:     return "sparkles"
             }
         }
-        /// Accessibility-id token: identical to the lowercased rawValue for the three
+        /// Accessibility-id token: identical to the lowercased rawValue for the two
         /// single-word tabs (no test churn); "For You" becomes "for-you".
         var a11y: String { rawValue.lowercased().replacingOccurrences(of: " ", with: "-") }
     }
-    @State private var tab: HistoryTab = .unified
+    /// Playback is the landing tab. Nothing persists this — History's tab is per-appearance
+    /// `@State`, so removing Unified strands no stored value and needs no migration. (The one
+    /// stored "where was I" seam in this app is `SettingsStore.lastSection`, which names the app
+    /// SECTION — "History" — never a tab inside it.)
+    @State private var tab: HistoryTab = .playback
     /// The History row a rewind is pending on — nil unless the confirmation is up.
     @State private var rewindTarget: PlayHistoryStore.PlayEvent?
     /// THE For You REFRESH. Bumped by the tab menu's Refresh and nothing else — For You is CACHED
@@ -80,13 +91,6 @@ struct HistoryView: View {
     @State private var visibleCount = BrowsePaging.pageSize
     @State private var visibleKey = ""
 
-    /// The merged Unified timeline (newest-first), rebuilt off `unifiedSignature`. Kept in state
-    /// (not a computed property) so the O(n) merge+sort runs only when its inputs change, and only
-    /// while the Unified tab is showing.
-    @State private var unified: [HistoryEntry] = []
-    @State private var uVisibleCount = BrowsePaging.pageSize
-    @State private var uVisibleKey = ""
-
     /// Recompute signature: the CATALOG revision (rows resolve title/album/artwork from the live
     /// catalog, so a load/edit while History is on screen must re-fire), the event-log revision,
     /// the mode toggle, and the filter/sort inputs. Any change re-runs `refreshExternal`
@@ -113,14 +117,6 @@ struct HistoryView: View {
     /// refers to the current paging key; otherwise one page. Derived (not reset in an onChange) so
     /// a filter/sort/mode switch never renders the previous set's large prefix.
     private var liveVisible: Int { visibleKey == pagingKey ? visibleCount : BrowsePaging.pageSize }
-
-    /// Unified rebuilds when the catalog, either event stream, the search query, or the tab changes
-    /// (the tab is included so switching TO Unified triggers a build; the build no-ops for other tabs).
-    private var unifiedSignature: String {
-        "\(tab)-\(app.catalogRevision)-\(history.revision)-\(activity.revision)-\(browse.query)"
-    }
-    private var unifiedPagingKey: String { "\(history.revision)-\(activity.revision)-\(browse.query)-\(unified.count)" }
-    private var liveUnifiedVisible: Int { uVisibleKey == unifiedPagingKey ? uVisibleCount : BrowsePaging.pageSize }
 
     var body: some View {
         content
@@ -161,10 +157,6 @@ struct HistoryView: View {
                 browse.externalBase = buildItems
                 await browse.refreshExternal(signature: recomputeSignature, baseKey: baseKey)
             }
-            .task(id: unifiedSignature) {
-                guard tab == .unified else { return }
-                unified = buildUnified()
-            }
             .modifier(HistorySelectionWiring(scope: Self.selectionScope,
                                              active: tab == .playback,
                                              pagingKey: pagingKey,
@@ -177,8 +169,6 @@ struct HistoryView: View {
         VStack(spacing: 0) {
             tabBar
             switch tab {
-            case .unified:
-                unifiedContent
             case .playback:
                 // The Timeline/By-song mode picker is GONE (Levi 2026-07-18: the two reads
                 // were indistinguishable in practice) — Playback is always the timeline. The
@@ -200,13 +190,15 @@ struct HistoryView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
         // Lives HERE (not on the body chain — that chain is at the type-checker's budget):
-        // the engine turned off while For You was showing → fall back to Unified.
+        // the engine turned off while For You was showing → fall back to Playback. Without this
+        // the tab bar would drop For You while the CONTENT stayed on it: a tab you cannot leave
+        // and cannot see selected.
         .onChange(of: settings.recEngineEnabled) {
-            if !settings.recEngineEnabled && tab == .forYou { tab = .unified }
+            if !settings.recEngineEnabled && tab == .forYou { tab = .playback }
         }
     }
 
-    // MARK: - Tab control (two destinations = the views you're NOT in)
+    // MARK: - Tab control (every available tab; the current one is filled)
 
     /// The recommendation-engine fixture seam — mirrors `RecommendationService.fixtureOn` so a
     /// UI test can light the For You tab without the Settings toggle.
@@ -215,22 +207,24 @@ struct HistoryView: View {
         return env["PDJ_REC_FIXTURE"] == "1" && env["PDJ_USE_FIXTURE"] != nil
     }
 
-    private var altTabs: [HistoryTab] {
-        // For You joins the destinations only while the recommendation engine is on (or its
-        // UI-test fixture seam); the control still shows every view you're NOT currently in.
-        let available: [HistoryTab] = (settings.recEngineEnabled || recFixtureOn)
+    /// The tabs on offer, in declaration order. For You joins only while the recommendation engine
+    /// is on (or its UI-test fixture seam) — with the engine off the pair is Playback | Collection.
+    private var visibleTabs: [HistoryTab] {
+        (settings.recEngineEnabled || recFixtureOn)
             ? HistoryTab.allCases
-            : [.unified, .playback, .collection]
-        return available.filter { $0 != tab }
+            : HistoryTab.allCases.filter { $0 != .forYou }
     }
 
-    /// Custom two-button control (not a segmented `Picker`) so it renders prominently and identically
-    /// on iOS, macOS, and visionOS. Each button is a destination; tapping switches the view and the
-    /// pair re-renders to the two views you can now reach.
+    /// Custom button row (not a segmented `Picker`) so it renders prominently and identically on
+    /// iOS, macOS, and visionOS. EVERY available tab is shown and the current one is filled —
+    /// the old control showed only the views you were NOT in, which with Unified gone and the
+    /// engine off would leave a lone full-width button standing in for a tab bar.
     private var tabBar: some View {
         HStack(spacing: 8) {
-            ForEach(altTabs, id: \.self) { t in
+            ForEach(visibleTabs, id: \.self) { t in
+                let isCurrent = t == tab
                 Button {
+                    guard t != tab else { return }
                     withAnimation(.easeInOut(duration: 0.15)) { tab = t }
                 } label: {
                     HStack(spacing: 6) {
@@ -243,93 +237,26 @@ struct HistoryView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(Theme.fg)
-                // bgOverlay (not bgRaised) + a stronger accent stroke so the toggle stands out
+                // bgOverlay (not bgRaised) + a stronger accent stroke so the control stands out
                 // against the dark-blue Theme.bg canvas (bgRaised is nearly bg — too low-contrast).
-                .background(Theme.bgOverlay, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                // The SELECTED tab fills with the accent instead, so which view you're in reads at
+                // a glance now that the current tab is on screen rather than hidden.
+                .background(isCurrent ? Theme.accent.opacity(0.30) : Theme.bgOverlay,
+                            in: RoundedRectangle(cornerRadius: 10, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Theme.accent.opacity(0.45), lineWidth: 1)
+                        .stroke(Theme.accent.opacity(isCurrent ? 0.95 : 0.45),
+                                lineWidth: isCurrent ? 2 : 1)
                 )
                 .accessibilityIdentifier("history-tab-\(t.a11y)")
+                // The one signal a test (or VoiceOver) can read for "which tab am I on" now that
+                // every tab is always present.
+                .accessibilityAddTraits(isCurrent ? [.isSelected] : [])
             }
         }
         .padding(.horizontal).padding(.vertical, 8)
         // NB: no container accessibilityIdentifier here — a parent id absorbs the child buttons'
         // identifiers and makes `history-tab-<mode>` unqueryable in XCUITest.
-    }
-
-    // MARK: - Unified timeline (plays + activity interleaved)
-
-    @ViewBuilder private var unifiedContent: some View {
-        if unified.isEmpty {
-            unifiedEmptyState
-        } else {
-            let page = Array(unified.prefix(liveUnifiedVisible))
-            List {
-                ForEach(page) { entry in
-                    unifiedRow(entry)
-                        .onAppear { onUnifiedRowAppear(entry, rendered: page) }
-                }
-            }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-        }
-    }
-
-    @ViewBuilder private func unifiedRow(_ entry: HistoryEntry) -> some View {
-        switch entry {
-        case .play(let eventId, let song, let play):
-            row(song: song, play: play)
-                .contentShape(Rectangle())
-                .onTapGesture { path.append(song) }
-                .contextMenu { rewindMenuItem(eventId: eventId) }
-        case .activity(let e):
-            activityRow(e)
-                .contentShape(Rectangle())
-                .onTapGesture { openActivityItem(e) }
-        }
-    }
-
-    /// Merge plays + activity into one newest-first timeline, filtered by the search query
-    /// (title/artist for plays; item title + collection name for activity). Runs on the main actor
-    /// (reads the catalog); paged on render, so only a prefix is ever materialized into rows.
-    private func buildUnified() -> [HistoryEntry] {
-        let q = browse.query.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-        var entries: [HistoryEntry] = []
-        entries.reserveCapacity(history.events.count + activity.events.count)
-        for e in history.events {
-            let (item, key) = makeRow(e, count: 1)
-            guard case .song(let song, _, _, _, let play) = item, let play else { continue }
-            if q.isEmpty || key.contains(q) {
-                entries.append(.play(eventId: e.id, song: song, play: play))
-            }
-        }
-        for ev in activity.events where q.isEmpty || activitySearchKey(ev).contains(q) {
-            entries.append(.activity(ev))
-        }
-        entries.sort { $0.at > $1.at }
-        return entries
-    }
-
-    private func onUnifiedRowAppear(_ entry: HistoryEntry, rendered: [HistoryEntry]) {
-        guard entry.id == rendered.last?.id, liveUnifiedVisible < unified.count else { return }
-        uVisibleCount = BrowsePaging.grow(liveUnifiedVisible, upTo: unified.count)
-        uVisibleKey = unifiedPagingKey
-    }
-
-    private var unifiedEmptyState: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.system(size: 40)).foregroundStyle(Theme.fgDim)
-            Text(history.events.isEmpty && activity.events.isEmpty ? "No history yet" : "Nothing matches your search")
-                .font(.headline).foregroundStyle(Theme.fg)
-            Text("Songs you play — and changes you make to your collections (adds, hearts, removals) — show up here together.")
-                .font(.caption).foregroundStyle(Theme.fgDim)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding()
-        .accessibilityIdentifier("history-unified-empty")
     }
 
     // MARK: - Collection activity timeline (F11)
@@ -406,8 +333,8 @@ struct HistoryView: View {
     /// used to be the visible title of such a row, so searching by it kept working by accident.
     /// Now that those rows read "an unknown item", the id has to be carried explicitly or id search
     /// silently breaks — but carrying it for EVERY row would let a namespace prefix ("sng", "am"
-    /// on the way to "Amy") match the whole log, and Unified filters plays on title/artist/album
-    /// only, so such a query would return every activity row and zero plays.
+    /// on the way to "Amy") match the whole log, which would turn any such query into a full
+    /// activity dump.
     private func activitySearchKey(_ e: CollectionActivityStore.ActivityEvent) -> String {
         [displayTitle(e), displayArtist(e) ?? "", e.collectionName ?? "",
          isUnresolved(e) ? e.itemId : ""]
@@ -488,7 +415,7 @@ struct HistoryView: View {
                                            payload: { dragPayload(for: song) },
                                            onOpen: { path.append(song) })
                         .onAppear { onRowAppear(item, rendered: page, fullCount: items.count) }
-                        .contextMenu { rowMenu(song) }
+                        .contextMenu { rowMenu(song, eventId: play.eventId) }
                         // `.contain` (never a bare identifier on a tap-gesture row — the
                         // Browse lesson): the row stays a CONTAINER so its own id is
                         // queryable AND the title/artist/context labels keep theirs.
@@ -504,9 +431,14 @@ struct HistoryView: View {
         .safeAreaInset(edge: .top, spacing: 0) { SelectionBar(scope: Self.selectionScope) }
     }
 
-    /// Row context menu: Select (the touch entry point into multi-select), Copy (whole
-    /// selection when the row is part of it), Share.
-    @ViewBuilder private func rowMenu(_ song: IndexSong) -> some View {
+    /// Row context menu: **Rewind to here**, Select (the touch entry point into multi-select),
+    /// Copy (whole selection when the row is part of it), Share.
+    ///
+    /// Rewind used to live ONLY on the Unified rows, so deleting that view would have deleted the
+    /// feature's only entry point. It belongs here anyway: a Playback row IS a play event, and
+    /// `PlayRef.eventId` is the very id `rewindSlice` keys on.
+    @ViewBuilder private func rowMenu(_ song: IndexSong, eventId: UUID) -> some View {
+        rewindMenuItem(eventId: eventId)
         Button {
             rowSelection.enterSelectMode(scope: Self.selectionScope, initial: song.id)
         } label: { Label("Select", systemImage: "checklist") }
@@ -587,6 +519,7 @@ struct HistoryView: View {
             } label: {
                 Label("Rewind to here", systemImage: "backward.end.fill")
             }
+            .accessibilityIdentifier("history-rewind-\(e.songId)")
         }
     }
 
@@ -650,7 +583,7 @@ struct HistoryView: View {
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
         ToolbarItemGroup(placement: .primaryAction) {
-            // Sort/filter drive the Playback timeline only — hidden on Unified and Collection.
+            // Sort/filter drive the Playback timeline only — hidden on For You and Collection.
             if tab == .playback {
                 if selecting {
                     // Select-all / deselect-all — the touch-reachable equivalent of ⌘A/⌃A. "Select
@@ -711,8 +644,8 @@ struct HistoryView: View {
                 .help("Recompute your For You tiles")
                 .accessibilityIdentifier("foryou-menu")
             } else if canBackfill {
-                // Collection + Unified show your ADDs — offer to (re)send the recent ones to the
-                // Apple Music playlists they came from, for adds that never made it upstream (added
+                // Collection shows your ADDs — offer to (re)send the recent ones to the Apple
+                // Music playlists they came from, for adds that never made it upstream (added
                 // before write-back shipped, or while offline / signed out). The look-back window
                 // is the one configured in Settings ▸ Apple Music (default 2 days).
                 Button { runBackfill() } label: { Image(systemName: "arrow.up.circle") }
@@ -887,7 +820,7 @@ struct HistoryView: View {
 ///
 /// A ViewModifier rather than four more chain entries on `HistoryView.body`: that chain is at
 /// the type-checker's budget (the file says so twice), and this is the same extraction
-/// `CollectionSelectionChrome` is for. `active` is "the Playback tab is showing" — Unified and
+/// `CollectionSelectionChrome` is for. `active` is "the Playback tab is showing" — For You and
 /// Collection have no selectable song rows, so registering there would point ⌘A at rows that
 /// aren't on screen.
 private struct HistorySelectionWiring: ViewModifier {
@@ -919,25 +852,5 @@ private struct HistorySelectionWiring: ViewModifier {
     private func sync() {
         guard active else { selection.unregisterActiveList(scope: scope); return }
         selection.registerActiveList(scope: scope, allIds: allIds, payload: payload)
-    }
-}
-
-/// A single row in the unified History timeline: either a song play (reusing the play row) or a
-/// collection-activity event, each carrying its own timestamp for the merge sort.
-private enum HistoryEntry: Identifiable {
-    case play(eventId: UUID, song: IndexSong, play: PlayRef)
-    case activity(CollectionActivityStore.ActivityEvent)
-
-    var id: String {
-        switch self {
-        case .play(let eid, _, _): return "p:\(eid.uuidString)"
-        case .activity(let e):     return "a:\(e.id.uuidString)"
-        }
-    }
-    var at: Double {
-        switch self {
-        case .play(_, _, let p): return p.playedAt
-        case .activity(let e):   return e.at
-        }
     }
 }
