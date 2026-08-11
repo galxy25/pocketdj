@@ -1318,8 +1318,26 @@ final class RipsStore {
         do {
             return try await attempt(library) ? .confirmed : .unconfirmed
         } catch {
-            return .failed(reason: error.localizedDescription)
+            return .failed(reason: Self.libraryWriteFailureDetail(error))
         }
+    }
+
+    /// MusicKit launders most library-write failures into "An unknown error occurred.",
+    /// which is useless for deciding between Sync-Library-off, a stale user token, and a
+    /// storefront mismatch. Keep the human sentence, but append the NSError identity —
+    /// domain, code, and the underlying chain — which DOES distinguish them
+    /// (e.g. ICError -7013 = iCloud Music Library disabled).
+    static func libraryWriteFailureDetail(_ error: Error) -> String {
+        let ns = error as NSError
+        var parts = ["\(ns.domain)#\(ns.code)"]
+        var underlying = ns.userInfo[NSUnderlyingErrorKey] as? NSError
+        var hops = 0
+        while let u = underlying, hops < 3 {
+            parts.append("\(u.domain)#\(u.code)")
+            underlying = u.userInfo[NSUnderlyingErrorKey] as? NSError
+            hops += 1
+        }
+        return "\(error.localizedDescription) [\(parts.joined(separator: " ← "))]"
     }
 
     /// Surface a non-confirmed write in `discoverError` at the point of the tap — but only
