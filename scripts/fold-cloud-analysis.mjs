@@ -16,11 +16,21 @@
 // non-null manifest value is stamped — a song the cloud hasn't analyzed yet is left untouched (its
 // null stays until the next run), and a manifest that lacks a field never NULLs a catalog value.
 //
-// SAFETY: digital-only by default (INDEXES = digital-index.json) and a per-entry source guard, so
-// this can never overwrite the analog catalog's curated per-song bpm/key (analog manifest entries
-// carry no per-song bpm). Side-output by default (index-out/analysis-cloud/<index-name>.json +
-// report). --apply rewrites the public/ index in place (commit + deploy.sh ships it). --upload
-// dev,prod republishes the changed index json to the web bucket(s) and invalidates it.
+// SCOPE: ALL catalog indexes by default — digital-index.json PLUS apple-music-index.json and
+// current-index.json. The old digital-only default silently DISCARDED every already-paid cloud
+// analysis of a song whose catalog row lives elsewhere: ~680 Apple-Music-library songs and ~88
+// analog-catalog songs have per-song cloud rips (manifest source 'digital', key rips/<id>.mp3)
+// with bpm/key the fold never stamped anywhere. Attribution stays safe BY CONSTRUCTION in all
+// three indexes: a value is only ever read from manifest[song.id] — the entry keyed by the
+// song's OWN id, produced by analysing that id's OWN captured file — and the source guard below
+// still skips analog manifest entries (album-level, no per-song bpm), so the analog catalog's
+// curated segment values can never be clobbered by a whole-album row. (Cloud values overwriting
+// an analog song's catalog bpm via its OWN per-song rip is intended — same cloud-precedence as
+// the rip server's in-process ITEM 10 fold.)
+//
+// Side-output by default (index-out/analysis-cloud/<index-name>.json + report). --apply
+// rewrites the public/ index in place (commit + deploy.sh ships it). --upload dev,prod
+// republishes the changed index json to the web bucket(s) and invalidates it.
 //
 // IDEMPOTENT: output is a deterministic function of (indexes, manifest); re-running after more
 // backfill results land picks up only the songs whose manifest analysis newly changed.
@@ -42,10 +52,18 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const RIP_BUCKET = process.env.RIP_BUCKET || 'pocketdj-rips-011183829623';
 const AWS_PROFILE = process.env.AWS_PROFILE || 'levi';
 // Test seams: POCKETDJ_FOLD_INDEXES (comma list, absolute or repo-relative) + POCKETDJ_FOLD_OUT.
-// Default DIGITAL-ONLY: the analog catalog folds cloud bpm/key in-process (rip-server ITEM 10).
+// Default = EVERY catalog index a per-song cloud analysis can belong to (see header — the old
+// digital-only default discarded ~768 already-paid analyses of AM-library and analog-catalog
+// songs). The rip server's in-process ITEM 10 fold covers current-index only for NEW analyses;
+// this tool is the out-of-band recovery/backfill for all three.
+export const DEFAULT_FOLD_INDEXES = [
+  'public/digital-index.json',
+  'public/apple-music-index.json',
+  'public/current-index.json',
+];
 const INDEXES = process.env.POCKETDJ_FOLD_INDEXES
   ? process.env.POCKETDJ_FOLD_INDEXES.split(',').map((s) => s.trim()).filter(Boolean)
-  : ['public/digital-index.json'];
+  : DEFAULT_FOLD_INDEXES;
 
 const arg = (f, d) => { const i = process.argv.indexOf(f); return i >= 0 ? process.argv[i + 1] : d; };
 const has = (f) => process.argv.includes(f);
@@ -54,7 +72,6 @@ const uploadEnvs = (arg('--upload', '') || '').split(',').map((s) => s.trim()).f
 const limit = arg('--limit') ? parseInt(arg('--limit'), 10) : Infinity;
 
 const outRoot = process.env.POCKETDJ_FOLD_OUT || join(REPO, 'index-out', 'analysis-cloud');
-mkdirSync(outRoot, { recursive: true });
 
 // ---- manifest (the durable cloud state the workers fold their analysis into) ----
 function loadManifest() {
@@ -67,13 +84,10 @@ function loadManifest() {
   return JSON.parse(raw);
 }
 
-const manifest = loadManifest();
-const report = { generatedAt: new Date().toISOString(), analysisVersion: ANALYSIS_VERSION, apply, indexes: {}, stamped: 0 };
-
-for (const rel of INDEXES) {
-  const path = rel.startsWith('/') ? rel : join(REPO, rel);
-  if (!existsSync(path)) continue;
-  const idx = JSON.parse(readFileSync(path, 'utf8'));
+/// Pure stamping rule, exported for tests. Mutates idx.songs in place; returns the per-index
+/// report row. Every value comes from manifest[s.id] — the song's OWN entry — never from a
+/// sibling, an album row, or a trackNumber lookup (attribution by segment identity only).
+export function stampSongs(idx, manifest, { limit = Infinity } = {}) {
   const r = { songs: idx.songs.length, candidates: 0, stamped: 0, unanalyzed: 0, nonDigitalSkipped: 0, noEntry: 0 };
   let n = 0;
   for (const s of idx.songs) {
@@ -89,8 +103,22 @@ for (const rel of INDEXES) {
     if (e.bpm != null && s.bpm !== e.bpm) { s.bpm = e.bpm; changed = true; }
     if (e.musicalKey != null && s.key !== e.musicalKey) { s.key = e.musicalKey; changed = true; }
     if (e.camelot != null && s.camelot !== e.camelot) { s.camelot = e.camelot; changed = true; }
-    if (changed) { r.stamped++; report.stamped++; }
+    if (changed) r.stamped++;
   }
+  return r;
+}
+
+function main() {
+mkdirSync(outRoot, { recursive: true });
+const manifest = loadManifest();
+const report = { generatedAt: new Date().toISOString(), analysisVersion: ANALYSIS_VERSION, apply, indexes: {}, stamped: 0 };
+
+for (const rel of INDEXES) {
+  const path = rel.startsWith('/') ? rel : join(REPO, rel);
+  if (!existsSync(path)) continue;
+  const idx = JSON.parse(readFileSync(path, 'utf8'));
+  const r = stampSongs(idx, manifest, { limit });
+  report.stamped += r.stamped;
   report.indexes[rel] = r;
   if (r.stamped > 0) {
     const dest = apply ? path : join(outRoot, basename(rel));
@@ -127,4 +155,10 @@ if (uploadEnvs.length && apply && report.stamped > 0) {
     }
     console.error(`✓ Cloud analysis folded into [${env}] catalog`);
   }
+}
+}
+
+// Import-safe (tests import DEFAULT_FOLD_INDEXES / stampSongs); run only as a CLI entry.
+if (process.argv[1] && process.argv[1].endsWith('fold-cloud-analysis.mjs')) {
+  main();
 }
