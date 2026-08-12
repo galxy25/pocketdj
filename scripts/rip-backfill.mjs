@@ -50,6 +50,21 @@
 // backfill jobs, and when this driver observes a job canceled (the Stop path) it BACKS OFF —
 // pauses refills for a cooldown and re-queues the row at the END — instead of fighting the user.
 //
+// ── WATCHING IT (heartbeat + the STALL token) ───────────────────────────────────────────────────
+// Every cycle emits one line: `HEARTBEAT {json}`. Counts alone are NOT enough to tell a working
+// pipeline from a dead one — on 2026-08-12 the heartbeat reported inflight 10 / pending 3125 /
+// etaHours 243.83 for 38 hours while `done` never moved off 166, because none of those numbers
+// measures throughput. The fields that do:
+//   lastSuccessAtMs / hoursSinceLastSuccess   when a capture last actually COMPLETED (persisted
+//                                             in the state file, so a launchd restart can't hide it)
+//   consecutiveFailures                       terminal per-song failures since the last completion
+//   stalled                                   true when work is available and nothing has completed
+//                                             for --stall-hours (default 2)
+//   etaHours                                  NULL while stalled — there is no honest finite
+//                                             estimate at zero throughput
+// While stalled, a second line is emitted every cycle: `STALL {json}`. Monitor that token: it
+// does not depend on anyone sampling completions.
+//
 // ── SKIP DISCIPLINE (visible, never silent) ─────────────────────────────────────────────────────
 //   has-audio        the id itself already has audio (S3 manifest / vinyl Raw via the analog
 //                    index / My Digital) — nothing to do.
@@ -132,6 +147,11 @@ const CFG = {
   // this long so Stop MEANS stop, then resume.
   cancelCooldownSec: Math.max(60, Number(a['cancel-cooldown-sec']) || 900),
   meanCaptureSec: Number(a['mean-capture-sec']) || 280, // measured corpus mean (challenge-corrected)
+  // Declare a STALL after this long with zero completions while work is available. 2h is ~26
+  // mean captures — comfortably longer than the server's full 32-minute retry ladder for one
+  // song (so an ordinary hard row never trips it) and ~19× shorter than the 38 hours the
+  // 2026-08-12 wedge went unnoticed.
+  stallHours: Math.max(0.05, Number(a['stall-hours']) || 2),
 };
 
 // ═════════════════════════════════════════ PURE PARTS ═══════════════════════════════════════════
@@ -307,8 +327,105 @@ export function resolutionReport(songIds, byId) {
 
 /// Remaining capture time. Real-time capture: mean measured 280 s/song; the pump feeds a serial
 /// worker, so ETA is linear in what's left (yield losses only shorten it).
+/// NOTE: this is a COUNT × CONSTANT, not a throughput measurement — see honestEtaHours below for
+/// why publishing it unconditionally is a lie when nothing is completing.
 export function etaHours(remaining, meanSec) {
   return Math.round((remaining * meanSec) / 36) / 100;
+}
+
+// ═════════════════════════════ STALL DETECTION (the D2 half of 2026-08-12) ══════════════════════
+// For 38 hours this driver emitted a heartbeat that looked BUSY: inflight 10, pending 3125, and a
+// confident `etaHours: 239.63`. Every one of those numbers was true and none of them was useful,
+// because none of them measured THROUGHPUT. `done` sat frozen at 166 the entire time and nothing
+// in the JSON said so. The external monitor only sampled every 50 completions, so a permanent
+// stall and ordinary silence were the same observation.
+//
+// The fix is two facts a watcher can act on — WHEN did something last actually complete, and how
+// many consecutive failures since — plus the discipline to publish NO ETA when throughput is zero.
+
+/// Per-run counters that must SURVIVE A RESTART.
+/// `completionsThisRun` / `firstRequestAt` in pump() are locals: launchd restarting the driver
+/// resets them, so a stall spanning a restart would be invisible to anything derived from them.
+/// These live in the state file instead. `watchSinceMs` is the fallback reference point for a
+/// driver that has not completed anything YET (fresh install, or the first run after this
+/// change) — without it the first heartbeat would either claim a stall or claim health, and both
+/// would be guesses.
+export function ensureStats(state, nowMs) {
+  const s = state.stats || (state.stats = {});
+  if (s.lastSuccessAtMs === undefined) s.lastSuccessAtMs = null;
+  if (!s.watchSinceMs) s.watchSinceMs = nowMs;
+  if (!Number.isFinite(s.consecutiveFailures)) s.consecutiveFailures = 0;
+  if (!Number.isFinite(s.successes)) s.successes = 0;
+  return s;
+}
+
+/// Record a REAL completion — audio that did not exist before now exists for a song we requested.
+/// Deliberately NOT called for skips (a pending row that already had audio, or POST /rip
+/// answering 'ready'): those write state.done too, so a naive max(done.atMs) would refresh on
+/// every skip and paper over a total capture outage with rows that never touched the capture rig.
+export function noteSuccess(state, nowMs) {
+  const s = ensureStats(state, nowMs);
+  s.lastSuccessAtMs = nowMs;
+  s.consecutiveFailures = 0;
+  s.successes += 1;
+  return s;
+}
+
+/// Record a terminal per-song failure. The counter is what distinguishes "quiet" from "broken":
+/// during the incident this would have climbed monotonically into the hundreds.
+export function noteFailure(state, nowMs) {
+  const s = ensureStats(state, nowMs);
+  s.consecutiveFailures += 1;
+  s.lastFailureAtMs = nowMs;
+  return s;
+}
+
+/// Is the pipeline STALLED? — no completion in stallMs while work was available to do.
+/// The `idle` guard matters: a driver with an empty queue has zero throughput too, and calling
+/// that a stall would cry wolf on every quiet period. Only "there is work AND nothing is
+/// completing" is a stall.
+export function stallState({ lastSuccessAtMs = null, watchSinceMs = null, now, stallMs, pending = 0, inflight = 0 }) {
+  const ref = lastSuccessAtMs ?? watchSinceMs ?? now;
+  const sinceMs = Math.max(0, now - ref);
+  const idle = pending + inflight === 0;
+  return {
+    sinceMs,
+    hoursSinceLastSuccess: Math.round((sinceMs / 3_600_000) * 100) / 100,
+    everSucceeded: lastSuccessAtMs != null,
+    stalled: !idle && sinceMs >= stallMs,
+  };
+}
+
+/// ETA that refuses to lie. `etaHours` is remaining × a CONSTANT, so it happily printed 239.63
+/// hours while true throughput was zero — a number that was not merely wrong but actively
+/// reassuring. When nothing is completing there is no honest finite estimate: return null.
+export function honestEtaHours({ remaining, meanSec, stalled }) {
+  if (remaining === 0) return 0;
+  if (stalled) return null;
+  return etaHours(remaining, meanSec);
+}
+
+/// Build the heartbeat object + decide whether to shout STALL. Pure so the stall signal itself is
+/// unit-testable — the thing that was missing is exactly the thing that must be pinned by a test.
+export function buildHeartbeat({ counts, stats = {}, now, stallMs, meanSec, external = 0 }) {
+  const { done, failed, skipped, inflight, pending, total } = counts;
+  const st = stallState({
+    lastSuccessAtMs: stats.lastSuccessAtMs ?? null, watchSinceMs: stats.watchSinceMs ?? null,
+    now, stallMs, pending, inflight,
+  });
+  const hb = {
+    hb: 1, t: new Date(now).toISOString(),
+    done, failed, skipped, inflight, pending, total,
+    externalQueue: external,
+    meanCaptureSec: meanSec,
+    etaHours: honestEtaHours({ remaining: pending + inflight, meanSec, stalled: st.stalled }),
+    // ── the stall signal ──
+    lastSuccessAtMs: stats.lastSuccessAtMs ?? null,
+    hoursSinceLastSuccess: st.hoursSinceLastSuccess,
+    consecutiveFailures: stats.consecutiveFailures ?? 0,
+    stalled: st.stalled,
+  };
+  return { hb, stalled: st.stalled, sinceMs: st.sinceMs, everSucceeded: st.everSucceeded };
 }
 
 // ═══════════════════════════════════════ IMPL (I/O) ═════════════════════════════════════════════
@@ -545,6 +662,10 @@ async function pump(state) {
   let cooldownUntil = 0;
   let completionsThisRun = 0;
   let firstRequestAt = 0;
+  // Seed the persisted stall clock BEFORE the first cycle. These counters must outlive a
+  // launchd restart — a stall that spans one is exactly the case the run-local counters above
+  // cannot see.
+  ensureStats(state, Date.now());
 
   for (;;) {
     if (stopRequested) break;
@@ -566,16 +687,21 @@ async function pump(state) {
       continue;
     }
 
-    // reconcile: anything with audio is DONE, whatever we thought of it before
+    // reconcile: anything with audio is DONE, whatever we thought of it before.
+    // THIS is the only place a real capture completes — the two `state.done[...]` writes in the
+    // refill loop below are SKIPS (the row already had audio), which is why the stall clock is
+    // reset here and nowhere else.
     for (const id of Object.keys(state.requested)) {
       if (manifest[id]) {
         state.done[id] = { atMs: Date.now(), via: 'manifest' };
         delete state.requested[id];
         completionsThisRun += 1;
+        noteSuccess(state, Date.now());
       }
     }
     for (const id of Object.keys(state.failed)) {
-      if (manifest[id]) { state.done[id] = { atMs: Date.now(), via: 'manifest-late' }; delete state.failed[id]; }
+      // audio appeared for a row we had written off: a real capture landed late — still throughput
+      if (manifest[id]) { state.done[id] = { atMs: Date.now(), via: 'manifest-late' }; delete state.failed[id]; noteSuccess(state, Date.now()); }
     }
 
     // poll in-flight jobs for terminal errors (the server self-heals transient errors with its
@@ -613,6 +739,7 @@ async function pump(state) {
           const attempts = (req.priorAttempts || 0) + 1;
           state.failed[id] = { reason, error: String(terminalError).slice(0, 300), attempts, atMs: Date.now() };
           delete state.requested[id];
+          noteFailure(state, Date.now());
           log(`  ✗ ${id}: ${reason} (attempt ${attempts}) — moving on`);
           continue;
         }
@@ -623,6 +750,7 @@ async function pump(state) {
           const attempts = (req.priorAttempts || 0) + 1;
           state.failed[id] = { reason: 'lost', attempts, atMs: Date.now() };
           delete state.requested[id];
+          noteFailure(state, Date.now());
           log(`  ✗ ${id}: no job and no audio after ${CFG.lostGraceSec}s — recorded lost (attempt ${attempts})`);
         }
       } catch (e) {
@@ -643,6 +771,7 @@ async function pump(state) {
         if (r.outcome === 'ready') { state.done[next.songId] = { atMs: Date.now(), via: 'ready' }; continue; }
         if (r.outcome === 'unknown') {
           state.failed[next.songId] = { reason: 'unknown-to-server', attempts: 99, atMs: Date.now() };
+          noteFailure(state, Date.now());
           log(`  ✗ ${next.songId}: server does not know this id (RIP_SOURCES stale?) — terminal`);
           continue;
         }
@@ -672,7 +801,7 @@ async function pump(state) {
         saveState(state);
         continue;
       }
-      heartbeat(state, { external: externalQueueDepth(state), etaSec: 0 });
+      heartbeat(state, { external: externalQueueDepth(state) }); // pending+inflight = 0 → etaHours 0, never stalled
       log('ALL DONE — nothing pending, nothing in flight. Exiting 0 (launchd will not respawn a clean exit).');
       break;
     }
@@ -698,21 +827,31 @@ function externalQueueDepth(state) {
   } catch { return 0; }
 }
 
-function heartbeat(state, { external = 0, meanSec = CFG.meanCaptureSec, etaSec = null } = {}) {
-  const done = Object.keys(state.done).length;
-  const failed = Object.keys(state.failed).length;
-  const skipped = Object.keys(state.plan.skips).length;
-  const inflight = Object.keys(state.requested).length;
-  const pending = pendingList(state).length;
-  const total = state.plan.entries;
-  const hb = {
-    hb: 1, t: new Date().toISOString(),
-    done, failed, skipped, inflight, pending, total,
-    externalQueue: external,
-    meanCaptureSec: meanSec,
-    etaHours: etaSec === 0 ? 0 : etaHours(pending + inflight, meanSec),
+function heartbeat(state, { external = 0, meanSec = CFG.meanCaptureSec } = {}) {
+  const now = Date.now();
+  const counts = {
+    done: Object.keys(state.done).length,
+    failed: Object.keys(state.failed).length,
+    skipped: Object.keys(state.plan.skips).length,
+    inflight: Object.keys(state.requested).length,
+    pending: pendingList(state).length,
+    total: state.plan.entries,
   };
+  const { hb, stalled, sinceMs, everSucceeded } = buildHeartbeat({
+    counts, stats: state.stats || {}, now, stallMs: CFG.stallHours * 3_600_000, meanSec, external,
+  });
   log(`HEARTBEAT ${JSON.stringify(hb)}`);
+  // A DISTINCT, GREPPABLE TOKEN. The external monitor only samples every 50 completions, so a
+  // permanent stall produced no monitor output at all for 38 hours — indistinguishable from a
+  // quiet, healthy night. This line is emitted on EVERY heartbeat while the stall persists, so
+  // `grep STALL` over the log answers "is the rip pipeline actually moving?" on its own.
+  if (stalled) {
+    log(`STALL ${JSON.stringify({
+      stall: 1, hours: hb.hoursSinceLastSuccess, everSucceeded,
+      consecutiveFailures: hb.consecutiveFailures, inflight: counts.inflight, pending: counts.pending,
+      hint: 'zero captures completing — check the rip server log for play-not-started / HEAL, and that Music.app plays',
+    })} (nothing has completed in ${Math.round(sinceMs / 60_000)} min)`);
+  }
 }
 
 // ---- main ----

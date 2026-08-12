@@ -35,6 +35,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { loadLibraryXML, loadLibraryTSV, indexLibrary, findInLibrary } from '../../../scripts/lib/am-match.mjs';
+import { waitUntilPlaying, parsePlayerProbe, PROBE_SCRIPT } from '../../../scripts/lib/music-health.mjs';
 
 // ---------------- args ----------------
 function parseArgs(argv) {
@@ -72,6 +73,15 @@ const SEARCH_FALLBACK = !!args['search-fallback'];
 const REQUIRE_EXPL = args['require-explicitness'] === 'clean' || args['require-explicitness'] === 'explicit'
   ? args['require-explicitness'] : null;
 const TAIL_MS = parseInt(args['tail-ms'] || '1200', 10);     // record a moment past track end
+// How long to wait for Music to actually REACH state=playing after `play` is accepted. A healthy
+// player starts in well under a second; anything past a few seconds is a wedged playback engine
+// (2026-08-12), not a slow one. Kept short so a wedge fails in ~20s instead of burning a whole
+// song length before reporting a file that never existed.
+const PLAY_START_TIMEOUT_MS = parseInt(args['play-start-timeout-ms'] || '20000', 10);
+// How long after playback is CONFIRMED to wait for Audio Hijack's recording file to appear.
+// AH creates the file when the session starts recording (which happened before `play`), so this
+// only has to cover filesystem latency. 0 disables the check.
+const AH_FILE_TIMEOUT_MS = parseInt(args['ah-file-timeout-ms'] || '15000', 10);
 const MAX_SECONDS = args['max-seconds'] ? parseInt(args['max-seconds'], 10) : 0; // cap per-song record (0 = full track; for quick test samples)
 const LIMIT = args.limit ? parseInt(args.limit, 10) : Infinity;
 const DRY = !!args['dry-run'];
@@ -273,8 +283,10 @@ end tell`;
   if (r.out === 'NONE') return { ok: false, durationSec: 0, err: 'no search match' };
   return { ok: r.ok, durationSec: parseFloat(r.out) || 0, err: r.err };
 }
-const playerState = () => osa('tell application "Music" to return (player state as text) & "|" & (player position as text)', 15000).out;
+const playerState = () => osa(PROBE_SCRIPT, 15000).out;
 const pauseMusic = () => osa('tell application "Music" to pause', 15000);
+// A new file in the AH recordings dir that wasn't there when this capture began.
+const newAhFile = (before) => fs.readdirSync(AH_REC_DIR).find((f) => !before.has(f) && !f.startsWith('.')) || null;
 
 // move + tag the AH recording into OUT_DIR as base.ext (ffmpeg copy adds tags; else rename)
 function finalize(srcPath, base, tags) {
@@ -308,17 +320,51 @@ async function ripOne(p) {
     if (alt.ok && alt.durationSec > 0) pr = alt;
     else { AH.stop(); return { ...p, status: 'play-failed', err: pr.err || 'could not play (UI-automation fallback would need Accessibility — not attempted)' }; }
   }
+  // 2b) PLAYBACK HEALTH — the check whose absence cost 38 hours on 2026-08-12.
+  // `play t` above was ACCEPTED and `duration of t` answered with a real number, yet the
+  // player never left state=stopped: Music's playback engine had wedged. Metadata proves
+  // nothing about playback, so REQUIRE the player to demonstrably reach state=playing
+  // before we believe a capture is happening. Failing here reports the wedge by name in
+  // ~20s instead of recording silence for a whole song and then blaming the missing file.
+  const health = await waitUntilPlaying({ osa, sleep, now: Date.now, timeoutMs: PLAY_START_TIMEOUT_MS, pollMs: 500 });
+  if (!health.started) {
+    AH.stop();
+    pauseMusic();
+    return { ...p, status: 'play-not-started', durationSec: pr.durationSec,
+      err: `play accepted but Music never reached state=playing within ${PLAY_START_TIMEOUT_MS}ms `
+        + `(last state=${health.lastState}, position=${health.lastPosition == null ? 'missing value' : health.lastPosition}, `
+        + `${health.samples} probes) — playback engine wedged; restart Music.app` };
+  }
+  // 2c) …and the mirror-image failure: playback is real but Audio Hijack never armed (the
+  // shortcut exits 0 whether or not the session actually records). Same symptom as the wedge
+  // — no file — opposite cause, so it gets its own name rather than the shared 'no-recording'.
+  if (AH_FILE_TIMEOUT_MS > 0) {
+    const tAh = Date.now();
+    while (!newAhFile(before) && Date.now() - tAh < AH_FILE_TIMEOUT_MS) await sleep(500);
+    if (!newAhFile(before)) {
+      AH.stop();
+      pauseMusic();
+      return { ...p, status: 'ah-not-recording', durationSec: pr.durationSec,
+        err: `Music is playing but Audio Hijack wrote no file within ${AH_FILE_TIMEOUT_MS}ms of playback `
+          + `(shortcut "${AH_START_SHORTCUT}" exited 0) — is the session running and its recorder pointed at ${AH_REC_DIR}?` };
+    }
+  }
   // 3) wait for the track to finish (cap = duration + tail + slack, or --max-seconds for samples)
   let capMs = pr.durationSec * 1000 + TAIL_MS + 8000;
   if (MAX_SECONDS) capMs = Math.min(capMs, MAX_SECONDS * 1000);
   const t0 = Date.now();
+  let sawPlaying = health.started; // proven above — a non-playing probe from here IS an ending
   while (Date.now() - t0 < capMs) {
     await sleep(2000);
     if (MAX_SECONDS && Date.now() - t0 >= MAX_SECONDS * 1000) break;
-    const [state, posStr] = playerState().split('|'); // "playing|123.4"
-    const pos = parseFloat(posStr) || 0;
-    if (state !== 'playing') break;                        // stopped/paused = ended
-    if (pr.durationSec && pos >= pr.durationSec - 0.4) break; // reached end
+    const probe = parsePlayerProbe(playerState()); // position is null (not 0!) when absent
+    if (probe.state === 'playing') sawPlaying = true;
+    // "not playing" means ENDED only because we PROVED it started. Without that proof this
+    // break is also how "never started" exits after one 2s tick, silently, as if it had
+    // finished — the exact ambiguity that hid the wedge.
+    else if (sawPlaying) break;                                  // stopped/paused = ended
+    else continue;                                               // never started: keep watching
+    if (pr.durationSec && probe.position != null && probe.position >= pr.durationSec - 0.4) break; // reached end
   }
   await sleep(TAIL_MS);
   // 4) stop recording + pause Music
@@ -355,3 +401,10 @@ fs.writeFileSync(path.join(OUT_DIR, 'rip-manifest.json'), JSON.stringify({
 const okN = results.filter(r => r.status === 'ok').length;
 console.log(`\nDone: ${okN}/${inLib.length} ripped → ${OUT_DIR}`);
 if (okN < inLib.length) console.log(`  ${inLib.length - okN} had issues (see rip-manifest.json).`);
+// EXIT CODE: capturing NOTHING is a failure, and for 38 hours this process reported it by
+// exiting 0 — so its caller concluded "the rip skill succeeded" and re-derived a generic
+// "no audio captured" verdict, throwing away the precise per-track diagnosis it had just
+// written. Partial success still exits 0 (a multi-track setlist that ripped most rows is a
+// usable result); zero-out-of-N is not. The manifest above is already on disk, so a caller
+// that wants the REASON reads rip-manifest.json rather than guessing from this code.
+if (inLib.length > 0 && okN === 0) process.exit(1);

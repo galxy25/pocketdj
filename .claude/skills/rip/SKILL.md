@@ -79,6 +79,8 @@ node .claude/skills/rip/rip.mjs --setlist "<csv>"
 | `--limit <n>` | all | rip only the first n matched songs (test runs) |
 | `--settle-ms <ms>` | `1500` | pause between start-record and play / after stop |
 | `--tail-ms <ms>` | `1200` | extra capture past the track's end |
+| `--play-start-timeout-ms <ms>` | `20000` | how long to wait for Music to actually reach `playing` |
+| `--ah-file-timeout-ms <ms>` | `15000` | how long to wait for AH's file to appear (`0` disables) |
 | `--dry-run` | off | resolve matches + write a planned manifest only |
 | `--probe` | off | check the control shortcuts + recordings dir |
 
@@ -89,9 +91,15 @@ Per song:
    Recorder's folder).
 2. **Play** — AppleScript: `play (first track of library playlist 1 whose persistent ID is …)`.
    Fallback: search Music by name+artist (`whose name contains … and artist contains …`).
-3. **Wait** — poll Music's `player state` / `player position` until the track ends (capped at
-   its duration + tail).
-4. **Stop** — `shortcuts run "Rip Stop"`, pause Music, then take the newest file from the
+3. **Confirm playback** — poll `player state` / `player position` until the player is
+   *demonstrably* playing (state `playing`, and the position advancing). `play` being accepted
+   proves nothing: on 2026-08-12 Music's playback engine wedged after ~25 days of uptime and
+   accepted every `play` without error while the player stayed `stopped` with a `missing value`
+   position — forever. `duration of t` still answered, because that is library metadata. If the
+   player never starts, the song fails as **`play-not-started`** in ~20s instead of recording
+   silence for its whole length.
+4. **Wait** — keep polling until the track ends (capped at its duration + tail).
+5. **Stop** — `shortcuts run "Rip Stop"`, pause Music, then take the newest file from the
    Recorder folder and move it into the output folder as `NN - Artist - Title.<ext>`,
    tagging it (artist/title/album/track) via an `ffmpeg -c copy` remux when ffmpeg is present.
 
@@ -107,3 +115,19 @@ A run is **real-time**: ripping N songs takes roughly the sum of their durations
 - Output audio is large/host-local; keep `*_ripped/` folders out of git.
 - If `--probe` shows a shortcut MISSING: create it in the Shortcuts app (see setup above).
   Test the shortcuts directly with `shortcuts run "Rip Start"` / `shortcuts run "Rip Stop"`.
+
+## Per-track failure statuses (in `rip-manifest.json`)
+
+"No file was produced" has several distinct causes that used to share one name. They are now
+separated, because the remedy differs and guessing cost 38 hours once:
+
+| status | what it means | remedy |
+| --- | --- | --- |
+| `play-not-started` | `play` accepted; the player never reached `playing` | **restart Music.app** (the rip server does this automatically, once, per `HEAL` in its log) |
+| `ah-not-recording` | Music is playing; Audio Hijack wrote no file | check the AH session is running and its Recorder points at `--ah-recordings-dir` |
+| `play-failed` | the track could not be played at all | not in the library / no search match |
+| `no-recording` | played and AH armed, yet no file at the end | check the Recorder folder + disk space |
+
+The skill **exits non-zero when it captured nothing** (partial success still exits 0), so a
+caller cannot read total failure as success. The precise per-track reason is always in
+`rip-manifest.json` — read that rather than inferring from the exit code.
