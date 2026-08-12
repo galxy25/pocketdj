@@ -189,9 +189,12 @@ describe('createHealGate — the bound that keeps a dead Mac from becoming a qui
     expect(gate.allow().ok).toBe(true);
   });
 
+  // maxIneffective:0 disables the CIRCUIT BREAKER so this test isolates the rate limiter. With
+  // the breaker armed (the shipped default) three fruitless heals in a row trip it FIRST — which
+  // is the point of the breaker and is pinned separately below.
   it('per-hour ceiling holds even when every cooldown has expired', () => {
     const clock = fakeClock();
-    const gate = createHealGate({ now: clock.now, cooldownMs: 10 * 60_000, maxPerHour: 3 });
+    const gate = createHealGate({ now: clock.now, cooldownMs: 10 * 60_000, maxPerHour: 3, maxIneffective: 0 });
     for (let i = 0; i < 3; i++) { expect(gate.allow().ok).toBe(true); gate.record(); clock.advance(15 * 60_000); }
     expect(gate.allow()).toMatchObject({ ok: false, reason: 'rate-limit' });
     clock.advance(60 * 60_000); // the rolling hour empties
@@ -312,5 +315,165 @@ describe('captureWithHeal — exactly one heal and one retry per capture', () =>
       gate: gateOf(clock), needsHeal: () => false, songId: 'sng_off',
     });
     expect(heals).toBe(0);
+  });
+});
+
+// ═══════════════ the BLAST RADIUS of a heal: it takes up to 75 SECONDS, and the world moves ═════
+// captureWithHeal used to read canceled() exactly once, BEFORE the heal, and then run the retry
+// unconditionally. In production the heal spans quitTimeoutMs (15s) + relaunchTimeoutMs (60s),
+// and both of the things that terminate a job asynchronously can land inside that window.
+describe('captureWithHeal — a job terminated INSIDE the heal window', () => {
+  const wedged = { phase: 'error', reason: WEDGED_REASON, error: 'play accepted but never started' };
+  const gateOf = (clock, over = {}) => createHealGate({ now: clock.now, cooldownMs: 20 * 60_000, maxPerHour: 3, ...over });
+
+  it('(a) a job canceled DURING the heal must not be captured afterwards', async () => {
+    const clock = fakeClock();
+    let canceled = false;
+    const calls = [];
+    const r = await captureWithHeal({
+      // Stop is pressed while Music is quitting/relaunching — the user's cancel lands in the
+      // one window where nothing used to be listening.
+      runCapture: async (n) => { calls.push(n); return wedged; },
+      heal: async () => { canceled = true; return { healed: true }; },
+      gate: gateOf(clock), canceled: () => canceled, songId: 'sng_stop',
+    });
+    expect(calls).toEqual([1]);        // ← the retry must NOT run
+    expect(r.attempts).toBe(1);
+    expect(r.retried).toBe(false);
+    expect(r.healSkipped).toBe('canceled-during-heal');
+  });
+
+  it('(b) a WATCHDOG timeout inside the heal window must not put a SECOND capture on the rig', async () => {
+    // The damaging variant. The watchdog rejected, pump()'s finally released the worker and
+    // started the NEXT song, and scheduleRetry re-queued this one. An orphaned continuation that
+    // finishes healing and captures anyway means two real-time captures share one Music.app and
+    // one Audio Hijack: two garbage recordings, one of which gets uploaded as the song's audio —
+    // and the second child overwrites the single activeChild slot, so the first is left
+    // unkillable by both the watchdog and Stop.
+    const clock = fakeClock();
+    const job = { phase: 'ripping', canceled: false };
+    const calls = [];
+    const logs = [];
+    const r = await captureWithHeal({
+      runCapture: async (n) => { calls.push(n); return wedged; },
+      heal: async () => { job.phase = 'error'; return { healed: true }; }, // watchdog fired mid-relaunch
+      gate: gateOf(clock),
+      canceled: () => !!job.canceled || job.phase === 'error', // the server's exact predicate
+      songId: 'sng_watchdog', log: (m) => logs.push(m),
+    });
+    expect(calls).toEqual([1]);
+    expect(r.retried).toBe(false);
+    // and it says so with its own token, so a log reader can tell "abandoned" from "never healed"
+    expect(logs.join('\n')).toMatch(/HEAL-ABANDONED sng_watchdog/);
+  });
+
+  it('an UNinterrupted heal still retries — the guard must not disable the remedy', async () => {
+    const clock = fakeClock();
+    const calls = [];
+    const r = await captureWithHeal({
+      runCapture: async (n) => { calls.push(n); return n === 1 ? wedged : { phase: 'uploaded', key: 'k' }; },
+      heal: async () => ({ healed: true }), gate: gateOf(clock), canceled: () => false, songId: 'sng_ok',
+    });
+    expect(calls).toEqual([1, 2]);
+    expect(r.retried).toBe(true);
+  });
+});
+
+// ═══════════════════ the CIRCUIT BREAKER: a rate limiter never says "stop trying" ════════════════
+describe('createHealGate — the terminal bound a rate limiter cannot provide', () => {
+  // The loop a permanently broken Mac actually produces: every capture fails, so every heal is
+  // followed by another failure and noteCaptureOk() is never called.
+  const restartsPerDay = (over = {}) => {
+    let t = 0, heals = 0;
+    const gate = createHealGate({ now: () => t, cooldownMs: 20 * 60_000, maxPerHour: 3, ...over });
+    for (let minute = 0; minute < 24 * 60; minute++) {
+      t = minute * 60_000;
+      if (gate.allow().ok) { gate.record(); heals += 1; } // …and the capture that follows fails
+    }
+    return heals;
+  };
+
+  it('a permanently broken Mac is restarted 3 times and then NEVER again', () => {
+    // Without this bound the answer is 72 Music.app restarts a day, forever. The trigger is not
+    // exotic: a Music.app sitting on a modal (expired Apple Music sign-in, an update prompt)
+    // refuses to play AND refuses to quit, so every capture reports play-not-started and every
+    // heal escalates to `pkill -x Music` — discarding whatever the user had open, all day.
+    expect(restartsPerDay({ maxIneffective: 0 })).toBe(72); // the old, unbounded behaviour
+    expect(restartsPerDay()).toBe(3);                       // the shipped default
+  });
+
+  it('refuses with a NAMED reason so the log distinguishes "gave up" from "too soon"', () => {
+    let t = 0;
+    const gate = createHealGate({ now: () => t, cooldownMs: 0, maxPerHour: 99, maxIneffective: 2 });
+    gate.record(); gate.record();
+    expect(gate.allow()).toMatchObject({ ok: false, reason: 'circuit-open', ineffective: 2 });
+    expect(gate.circuitOpen()).toBe(true);
+  });
+
+  it('counts a heal PESSIMISTICALLY — an outcome nobody reports must not buy another heal', () => {
+    // record() charges the breaker immediately rather than waiting for someone to call back with
+    // a verdict, so a code path that heals and then returns early (a cancel mid-heal, a thrown
+    // error) can never leave the breaker un-advanced and the loop unbounded.
+    let t = 0;
+    const gate = createHealGate({ now: () => t, cooldownMs: 0, maxIneffective: 1 });
+    gate.record();                       // nobody reports what happened next
+    expect(gate.allow().ok).toBe(false);
+  });
+
+  it('a capture that SUCCEEDS re-arms it — recovery needs no human and no timer', () => {
+    let t = 0;
+    const gate = createHealGate({ now: () => t, cooldownMs: 0, maxIneffective: 2 });
+    gate.record(); gate.record();
+    expect(gate.allow().ok).toBe(false);
+    gate.noteCaptureOk();                // the rig captured something: it demonstrably works
+    expect(gate.allow().ok).toBe(true);
+    expect(gate.ineffectiveHeals()).toBe(0);
+  });
+
+  it('captureWithHeal re-arms the breaker from a plain successful capture, with no heal involved', async () => {
+    const clock = fakeClock();
+    const gate = createHealGate({ now: clock.now, cooldownMs: 0, maxIneffective: 1 });
+    gate.record();
+    expect(gate.allow().ok).toBe(false);
+    await captureWithHeal({
+      runCapture: async () => ({ phase: 'uploaded', key: 'rips/x.mp3' }),
+      heal: async () => ({ healed: true }), gate, songId: 'sng_fine',
+    });
+    expect(gate.allow().ok).toBe(true); // the ordinary success path is the re-arm path
+  });
+
+  // Honesty about which bound actually binds — the header comment used to claim two independent
+  // rate bounds. Three heals spaced >= 20 min apart already span 40 min, and a fourth needs 60
+  // min from the first, by which point the first has left the rolling hour.
+  it('the per-hour ceiling is a BACKSTOP, not a second rate bound', () => {
+    expect(restartsPerDay({ maxIneffective: 0, maxPerHour: 3 }))
+      .toBe(restartsPerDay({ maxIneffective: 0, maxPerHour: 1000 }));
+  });
+
+  it('the cooldown AND the breaker survive a restart of the daemon', () => {
+    // launchd KeepAlive respawns rip-server on a crash. Module-level counters would hand every
+    // respawn a fresh cooldown and a fresh breaker — precisely the loop these bounds exist to
+    // prevent, reintroduced by the supervisor.
+    let t = 1_000_000;
+    let store = null;
+    const mk = () => createHealGate({
+      now: () => t, cooldownMs: 20 * 60_000, maxIneffective: 3,
+      load: () => store, save: (s) => { store = s; },
+    });
+    const before = mk();
+    expect(before.allow().ok).toBe(true);
+    before.record();
+    t += 60_000;
+    const afterRestart = mk();                                     // ← the process died here
+    expect(afterRestart.allow()).toMatchObject({ ok: false, reason: 'cooldown' });
+    expect(afterRestart.ineffectiveHeals()).toBe(1);
+    t += 20 * 60_000;
+    expect(afterRestart.allow().ok).toBe(true);
+  });
+
+  it('an absent or corrupt sidecar just starts clean — persistence must never break a capture', () => {
+    const boom = createHealGate({ load: () => { throw new Error('ENOENT'); }, save: () => { throw new Error('EROFS'); } });
+    expect(boom.allow().ok).toBe(true);
+    expect(() => boom.record()).not.toThrow();
   });
 });

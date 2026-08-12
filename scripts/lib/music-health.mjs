@@ -25,11 +25,14 @@
 //
 // ── THE BOUNDS THAT KEEP A DEAD MAC FROM BECOMING A QUIT/RELAUNCH LOOP ──────────────────────────
 // Healing quits the user's music player. That is disruptive and it must never happen on a
-// hair trigger, so it is bounded three ways, all structural rather than by convention:
+// hair trigger, so it is bounded four ways, all structural rather than by convention:
 //   1. captureWithHeal has NO LOOP — one heal, one retry, then it returns. Always.
-//   2. createHealGate enforces a cooldown between heals AND a per-hour ceiling.
-//   3. The caller supplies `canceled()` so a job killed mid-flight (or already failed by the
-//      watchdog) never triggers a heal, and must never call this while a capture is running.
+//   2. createHealGate's cooldown sets the RATE (see its header for which bound actually binds).
+//   3. createHealGate's CIRCUIT BREAKER sets the END: a machine that healing does not fix stops
+//      being restarted. A rate limiter alone never reaches that conclusion.
+//   4. The caller supplies `canceled()`, and captureWithHeal evaluates it BOTH before the heal
+//      and again after it — a heal takes up to 75 seconds and both asynchronous job terminators
+//      (POST /rip-cancel, the per-job watchdog) can land inside that window.
 
 // ---------------- the probe ----------------
 // One round trip answers both questions: is the player RUNNING, and is it MOVING. The `try`
@@ -176,24 +179,68 @@ export async function healMusic({
   return { healed: false, escalated, elapsedMs: ms, steps };
 }
 
-// Rate limiter for a DISRUPTIVE remedy. Two independent bounds: a cooldown (no two heals
-// closer together than cooldownMs) and a ceiling (no more than maxPerHour in any rolling
-// hour). A genuinely dead Mac fails every capture; without this the daemon would quit and
-// relaunch Music forever. allow() is a pure query — the caller must record() when it heals.
-export function createHealGate({ now = Date.now, cooldownMs = 20 * 60_000, maxPerHour = 3 } = {}) {
+// Rate limiter + CIRCUIT BREAKER for a DISRUPTIVE remedy — healing quits the user's music
+// player, so "how often, and for how long" needs a number rather than a vibe. Three knobs bound
+// it and they are NOT equally load-bearing; saying which is which is the point of this comment:
+//
+//   cooldownMs      THE RATE BOUND. No two heals closer together than this. At the shipped
+//                   20 minutes it is the ONLY thing setting the steady-state rate.
+//   maxPerHour      A BACKSTOP, not a second rate bound. Spacing heals >= 20 min apart already
+//                   means at most 3 land in any rolling hour, so at the shipped defaults this
+//                   ceiling changes the refusal MESSAGE and never the rate (a day-long
+//                   simulation gives the same heal count for maxPerHour 3 and 1000 — pinned by
+//                   a test). It earns its keep only if cooldownMs is ever lowered.
+//   maxIneffective  THE TERMINAL BOUND, and the one a rate limiter structurally cannot provide:
+//                   it never concludes "healing does not fix THIS machine, stop trying".
+//                   Without it, a Music.app sitting on a modal (expired Apple Music sign-in, an
+//                   update prompt) — which both refuses to play AND refuses to quit, so it fails
+//                   every capture with play-not-started and escalates to `pkill -x Music` — gets
+//                   force-quit 72 times a day, forever, discarding whatever the user had open.
+//
+// The breaker is deliberately PESSIMISTIC: a heal counts against it the moment it is record()ed,
+// not when someone gets around to reporting an outcome, so a heal whose result nobody reports
+// can never buy another heal. It is cleared by noteCaptureOk() — i.e. by a capture that actually
+// worked — so the breaker opens after N useless restarts and RE-ARMS BY ITSELF the moment the
+// rig proves it is capturing again. No timer, no manual reset.
+//
+// allow() is a pure query: the caller must record() when it heals and noteCaptureOk() when a
+// capture succeeds. `load`/`save` let a long-lived daemon carry the counters across its OWN
+// restarts — launchd KeepAlive would otherwise hand a crash-looping server a fresh cooldown and
+// a fresh breaker on every respawn, which is exactly the loop these bounds exist to prevent.
+export function createHealGate({
+  now = Date.now, cooldownMs = 20 * 60_000, maxPerHour = 3, maxIneffective = 3,
+  load = null, save = null,
+} = {}) {
   let times = [];
+  let ineffective = 0;
+  if (load) {
+    try {
+      const s = load() || {};
+      if (Array.isArray(s.times)) times = s.times.filter((x) => Number.isFinite(x));
+      if (Number.isFinite(s.ineffective)) ineffective = Math.max(0, s.ineffective);
+    } catch { /* absent or unreadable → start clean, never throw into the capture path */ }
+  }
   const prune = (t) => { times = times.filter((x) => t - x < 3_600_000); };
+  const persist = () => { if (save) { try { save({ times: [...times], ineffective }); } catch { /* best effort */ } } };
+  const open = () => maxIneffective > 0 && ineffective >= maxIneffective;
   return {
     allow() {
       const t = now();
       prune(t);
+      // TERMINAL bound first: a machine healing does not fix must stop being restarted no
+      // matter what the rate limiter would otherwise permit.
+      if (open()) return { ok: false, reason: 'circuit-open', ineffective };
       if (times.length >= maxPerHour) return { ok: false, reason: 'rate-limit', healsInLastHour: times.length };
       const last = times[times.length - 1];
       if (last != null && t - last < cooldownMs) return { ok: false, reason: 'cooldown', waitMs: cooldownMs - (t - last) };
       return { ok: true };
     },
-    record() { const t = now(); prune(t); times.push(t); },
+    record() { const t = now(); prune(t); times.push(t); ineffective += 1; persist(); },
+    /// A capture SUCCEEDED — with or without a heal. The rig demonstrably works, so re-arm.
+    noteCaptureOk() { if (ineffective !== 0) { ineffective = 0; persist(); } },
     healsInLastHour() { const t = now(); prune(t); return times.length; },
+    ineffectiveHeals() { return ineffective; },
+    circuitOpen() { return open(); },
   };
 }
 
@@ -209,28 +256,54 @@ export const defaultNeedsHeal = (st) => !!(st && st.reason === WEDGED_REASON);
 // ONCE. There is deliberately NO LOOP here — one heal and one retry per capture is a structural
 // property of this function, not a counter someone can get wrong. Everything past the retry is
 // the caller's existing backoff ladder, which is the right owner for "still broken".
+//
+// `canceled()` is evaluated TWICE, and the second read is the one that matters. See the comment
+// at the re-check below: the first read happens before a step that takes up to 75 seconds.
 export async function captureWithHeal({
   runCapture, heal, gate, log = () => {}, canceled = () => false,
   isOk = defaultIsOk, needsHeal = defaultNeedsHeal, songId = '',
 }) {
   const st = await runCapture(1);
-  if (isOk(st)) return { st, healed: false, attempts: 1, healSkipped: null };
-  if (canceled()) return { st, healed: false, attempts: 1, healSkipped: 'canceled' };
-  if (!needsHeal(st)) return { st, healed: false, attempts: 1, healSkipped: 'not-wedged' };
+  // A capture that works is the ONLY evidence that healing this machine is worth doing, so it
+  // re-arms the circuit breaker — including (indeed especially) when no heal was involved.
+  if (isOk(st)) { gate.noteCaptureOk?.(); return { st, healed: false, retried: false, attempts: 1, healSkipped: null }; }
+  if (canceled()) return { st, healed: false, retried: false, attempts: 1, healSkipped: 'canceled' };
+  if (!needsHeal(st)) return { st, healed: false, retried: false, attempts: 1, healSkipped: 'not-wedged' };
 
   const g = gate.allow();
   if (!g.ok) {
     log(`HEAL-SKIPPED ${songId} Music looks wedged (${WEDGED_REASON}) but heal is gated: ${g.reason}` +
       (g.waitMs ? ` (${Math.round(g.waitMs / 1000)}s left)` : '') +
-      (g.healsInLastHour ? ` (${g.healsInLastHour} heals in the last hour)` : ''));
-    return { st, healed: false, attempts: 1, healSkipped: g.reason };
+      (g.healsInLastHour ? ` (${g.healsInLastHour} heals in the last hour)` : '') +
+      (g.reason === 'circuit-open'
+        ? ` — ${g.ineffective} restarts in a row fixed nothing, so this Mac needs a human;`
+          + ' leaving it to the retry ladder until some capture succeeds'
+        : ''));
+    return { st, healed: false, retried: false, attempts: 1, healSkipped: g.reason };
   }
   gate.record();
   log(`HEAL ${songId} play was accepted but Music never reached state=playing — restarting Music.app`);
   const h = await heal();
-  if (!h || !h.healed) return { st, healed: false, attempts: 1, healSkipped: 'heal-failed' };
+  if (!h || !h.healed) return { st, healed: false, retried: false, attempts: 1, healSkipped: 'heal-failed' };
+
+  // ── RE-CHECK CANCELLATION. The load-bearing second read. ──────────────────────────────────────
+  // canceled() was false BEFORE the heal, and a heal is SLOW: quitTimeoutMs (15s) plus
+  // relaunchTimeoutMs (60s) in production. Both of the things that terminate a job
+  // asynchronously can land inside that window — POST /rip-cancel, and the per-job watchdog.
+  // The watchdog case is the damaging one: it already rejected the job, the pump released the
+  // worker and started the NEXT song, and the retry the ladder scheduled is pending. Running
+  // runCapture(2) here would put a SECOND real-time capture on top of a running one — two
+  // captures sharing one Music.app and one Audio Hijack make two garbage recordings, and the
+  // second child overwrites the single activeChild slot so the first becomes unkillable by both
+  // the watchdog and Stop. Reading canceled() once is what allowed that; reading it again is the
+  // whole fix.
+  if (canceled()) {
+    log(`HEAL-ABANDONED ${songId} the job was canceled or timed out while Music.app was restarting — not retrying`);
+    return { st, healed: true, retried: false, attempts: 1, healSkipped: 'canceled-during-heal' };
+  }
 
   log(`HEAL retrying capture of ${songId} once after restarting Music.app`);
   const st2 = await runCapture(2);
-  return { st: st2, healed: true, attempts: 2, healSkipped: null };
+  if (isOk(st2)) gate.noteCaptureOk?.();
+  return { st: st2, healed: true, retried: true, attempts: 2, healSkipped: null };
 }

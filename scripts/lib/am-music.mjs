@@ -9,7 +9,7 @@
 // mismatch") — it's carried forward from the committed index by am-merge-catalog-ids.mjs.
 
 import fs from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, execFile } from 'node:child_process';
 
 // Tab-separated column layout (v3) for the intermediate per-track rows. mediaKind is
 // appended LAST so a v2 TSV (13 cols) still parses — it just reads back as ''.
@@ -225,10 +225,33 @@ return pc`;
 }
 
 // Run an AppleScript; returns { ok, out, err }.
+//
+// spawnSync — this BLOCKS THE NODE EVENT LOOP for the full duration of the script. That is fine
+// for the batch exporters this was written for (they have nothing else to do), and NOT fine for
+// anything that is also serving requests. Use runOsascriptAsync there.
 export function runOsascript(script, timeoutMs) {
   const r = spawnSync('osascript', ['-e', script], { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 });
   if (r.error || r.status !== 0) return { ok: false, out: '', err: (r.stderr || r.error?.message || '').trim() };
   return { ok: true, out: (r.stdout || '').trim(), err: '' };
+}
+
+// Async twin of runOsascript — identical { ok, out, err } contract, but it does not block the
+// event loop.
+//
+// REQUIRED for rip-server, which heals a wedged Music.app from inside its live HTTP daemon. With
+// the sync form the whole server goes off the air for the entire quit+relaunch: measured at 4s
+// against a fake rig, and a production worst case around 160s (quit, the `is running` poll whose
+// deadline is only checked between 20s script timeouts, launch, then the library-liveness poll).
+// Status polling and HLS streaming merely stall — but /rip-cancel cannot even be RECEIVED, which
+// downgrades the Stop button from a decision to a race with the retry that follows the heal.
+export function runOsascriptAsync(script, timeoutMs) {
+  return new Promise((res) => {
+    execFile('osascript', ['-e', script], { encoding: 'utf8', timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (err) return res({ ok: false, out: '', err: String(stderr || err.message || '').trim() });
+        res({ ok: true, out: String(stdout || '').trim(), err: '' });
+      });
+  });
 }
 
 // Parse the enriched per-track raw TSV into row objects (missing-value guarded).

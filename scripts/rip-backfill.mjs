@@ -62,8 +62,22 @@
 //                                             for --stall-hours (default 2)
 //   etaHours                                  NULL while stalled — there is no honest finite
 //                                             estimate at zero throughput
+//   refillWindow                              how many rows the driver is willing to have in
+//                                             flight right now — drops to `stallWindow` while
+//                                             stalled (see BACKPRESSURE below)
 // While stalled, a second line is emitted every cycle: `STALL {json}`. Monitor that token: it
 // does not depend on anyone sampling completions.
+//
+// ── BACKPRESSURE (what the driver DOES about a stall) ───────────────────────────────────────────
+// Reporting a stall is not the same as surviving one. While `stalled` is true the driver
+//   · refills only `--stall-window` rows (default 1 — a canary) instead of `--window`, and
+//   · defers a terminal failure up to `--stall-defer-max` times (default 2) by re-queueing the
+//     row at the END with NO attempt consumed — the same move the Stop path already makes.
+// Both exist because a failure produced by a dead RIG is not evidence about the ROW: on
+// 2026-08-12 every row fed into the wedged rig came back failed with attempts=1, and the
+// end-of-pass retry pass then spent each row's one remaining attempt against the same dead rig,
+// making 212 rows PERMANENTLY failed. The deferral is bounded so a plan whose remaining rows are
+// genuinely unrippable still drains instead of churning forever.
 //
 // ── SKIP DISCIPLINE (visible, never silent) ─────────────────────────────────────────────────────
 //   has-audio        the id itself already has audio (S3 manifest / vinyl Raw via the analog
@@ -139,7 +153,9 @@ const CFG = {
   pid: (a.pid || join(HOME, '.pocketdj', 'backfill', 'rip-backfill.pid')).replace(/^~/, HOME),
   // Target queued+in-flight depth on the server. 8–12 per the sizing doctrine; 10 default.
   window: Math.max(1, Math.min(Number(a.window) || 10, 24)),
-  pollSec: Math.max(5, Number(a['poll-sec']) || 30),
+  // 5s floor so a mis-set flag can't hammer the rip server. RIP_TEST_MIN_POLL_SEC lowers the
+  // floor for e2e tests only (mirrors the rip server's RIP_TEST_* seams) — unset in production.
+  pollSec: Math.max(Number(process.env.RIP_TEST_MIN_POLL_SEC) || 5, Number(a['poll-sec']) || 30),
   // How long a requested song may be neither in the manifest NOR visible as a job before it is
   // recorded failed ('lost') — covers a server that gave up + restarted (in-memory jobs gone).
   lostGraceSec: Math.max(60, Number(a['lost-grace-sec']) || 900),
@@ -152,6 +168,15 @@ const CFG = {
   // song (so an ordinary hard row never trips it) and ~19× shorter than the 38 hours the
   // 2026-08-12 wedge went unnoticed.
   stallHours: Math.max(0.05, Number(a['stall-hours']) || 2),
+  // ── what the driver DOES about a stall (see BACKPRESSURE in pump) ──
+  // Refill depth while stalled. 1 = a single canary row: enough to notice the instant the rig
+  // comes back (a success clears the stall and the full window reopens), few enough that a dead
+  // rig is not being fed 10 songs at a time.
+  stallWindow: Math.max(1, Number(a['stall-window']) || 1),
+  // How many times ONE row may fail while the rig is stalled without spending its retry budget.
+  // Bounded (not infinite) so a plan whose remaining rows are genuinely unrippable still drains
+  // and the driver still reaches ALL DONE. 0 disables the deferral.
+  stallDeferMax: Math.max(0, Number.isFinite(Number(a['stall-defer-max'])) ? Number(a['stall-defer-max']) : 2),
 };
 
 // ═════════════════════════════════════════ PURE PARTS ═══════════════════════════════════════════
@@ -405,9 +430,33 @@ export function honestEtaHours({ remaining, meanSec, stalled }) {
   return etaHours(remaining, meanSec);
 }
 
+// ════════════════════════ BACKPRESSURE — what the driver DOES about a stall ═════════════════════
+// Making the stall visible is only half of it. During the incident this driver kept 10 rows in
+// flight against a rig that could not capture anything, at exactly the rate it uses when
+// everything is fine, and every one of those rows came back failed with attempts=1. The
+// end-of-pass retry pass then spent each row's ONE remaining attempt against the same dead rig,
+// which is how 212 rows became PERMANENT failures. Both halves of that are decisions, so both
+// are pure functions with a test.
+
+/// How many rows may be in flight this cycle. While stalled: one CANARY — enough to notice the
+/// instant the rig recovers (its success clears the stall and the full window reopens), and no
+/// longer feeding songs into something already known to be dead.
+export function refillWindowFor({ stalled, window, stallWindow = 1 }) {
+  return stalled ? Math.max(1, Math.min(stallWindow, window)) : window;
+}
+
+/// Should this terminal failure be DEFERRED (re-queued at the end, no attempt consumed) instead
+/// of recorded? Only while the rig is stalled — a failure produced by a dead rig is not evidence
+/// about the ROW, it is the same verdict every row gets. Bounded per row (and disabled at max 0)
+/// so a plan whose remaining rows are genuinely unrippable still drains and the driver still
+/// reaches ALL DONE instead of churning forever.
+export function shouldDeferFailure({ stalled, deferrals = 0, max = 2 }) {
+  return !!stalled && max > 0 && deferrals < max;
+}
+
 /// Build the heartbeat object + decide whether to shout STALL. Pure so the stall signal itself is
 /// unit-testable — the thing that was missing is exactly the thing that must be pinned by a test.
-export function buildHeartbeat({ counts, stats = {}, now, stallMs, meanSec, external = 0 }) {
+export function buildHeartbeat({ counts, stats = {}, now, stallMs, meanSec, external = 0, refillWindow = null }) {
   const { done, failed, skipped, inflight, pending, total } = counts;
   const st = stallState({
     lastSuccessAtMs: stats.lastSuccessAtMs ?? null, watchSinceMs: stats.watchSinceMs ?? null,
@@ -424,6 +473,10 @@ export function buildHeartbeat({ counts, stats = {}, now, stallMs, meanSec, exte
     hoursSinceLastSuccess: st.hoursSinceLastSuccess,
     consecutiveFailures: stats.consecutiveFailures ?? 0,
     stalled: st.stalled,
+    // How hard the driver is currently pushing. A watcher should see this DROP when `stalled`
+    // goes true — that is the difference between a driver that reports a stall and one that
+    // stops feeding a rig it already knows is dead.
+    refillWindow,
   };
   return { hb, stalled: st.stalled, sinceMs: st.sinceMs, everSucceeded: st.everSucceeded };
 }
@@ -439,7 +492,10 @@ const log = (...m) => {
 // ---- state (single source of truth; atomic writes; delete = full recompute) ----
 function loadState() {
   try { return JSON.parse(readFileSync(CFG.state, 'utf8')); } catch { /* fresh */ }
-  return { v: 1, plan: null, done: {}, failed: {}, requested: {}, aliases: {}, retryBudget: {} };
+  // stallDeferred: per-id count of failures forgiven because the RIG was stalled (see
+  // BACKPRESSURE). Persisted like everything else here so a launchd restart can't hand a dead
+  // rig a fresh deferral budget for every row.
+  return { v: 1, plan: null, done: {}, failed: {}, requested: {}, aliases: {}, retryBudget: {}, stallDeferred: {} };
 }
 function saveState(s) {
   mkdirSync(dirname(CFG.state), { recursive: true });
@@ -626,6 +682,17 @@ function pendingList(state) {
   return state.plan.rips.filter((r) => !done[r.songId] && !failed[r.songId] && !requested[r.songId]);
 }
 
+/// The stall verdict for the CURRENT cycle, computed from the same pure helper the heartbeat
+/// uses, so the number the log shouts and the number the pump ACTS on can never disagree.
+function currentStall(state) {
+  return stallState({
+    lastSuccessAtMs: state.stats?.lastSuccessAtMs ?? null,
+    watchSinceMs: state.stats?.watchSinceMs ?? null,
+    now: Date.now(), stallMs: CFG.stallHours * 3_600_000,
+    pending: pendingList(state).length, inflight: Object.keys(state.requested).length,
+  });
+}
+
 function classifyJobError(errText) {
   const e = String(errText || '');
   if (e === 'canceled') return 'canceled';
@@ -697,12 +764,23 @@ async function pump(state) {
         delete state.requested[id];
         completionsThisRun += 1;
         noteSuccess(state, Date.now());
+        state.stallDeferred = {}; // the rig works again → every row gets a fresh deferral budget
       }
     }
     for (const id of Object.keys(state.failed)) {
       // audio appeared for a row we had written off: a real capture landed late — still throughput
-      if (manifest[id]) { state.done[id] = { atMs: Date.now(), via: 'manifest-late' }; delete state.failed[id]; noteSuccess(state, Date.now()); }
+      if (manifest[id]) {
+        state.done[id] = { atMs: Date.now(), via: 'manifest-late' };
+        delete state.failed[id];
+        noteSuccess(state, Date.now());
+        state.stallDeferred = {};
+      }
     }
+
+    // Is the RIG stalled right now? Computed ONCE per cycle, before the poll loop, because the
+    // failures that loop records are the ones a stall must not be allowed to make permanent.
+    const rig = currentStall(state);
+    const deferred = (state.stallDeferred ||= {});
 
     // poll in-flight jobs for terminal errors (the server self-heals transient errors with its
     // own capped retries first; an 'error' here may still be superseded by a retry job — trust
@@ -736,6 +814,23 @@ async function pump(state) {
             if (row) state.plan.rips = [...state.plan.rips.filter((r) => r.songId !== id), row];
             continue;
           }
+          // ── BACKPRESSURE (deferral): while the RIG is stalled, this failure is not evidence
+          // about this ROW. Every row fed into the wedged rig on 2026-08-12 came back failed
+          // with attempts=1, and the end-of-pass pass then spent each row's ONE remaining retry
+          // against the same dead rig — that is how 212 rows became PERMANENT failures. So
+          // re-queue at the END with no attempt consumed, exactly like the Stop path. Bounded
+          // per id (stallDeferMax) so a plan whose remaining rows are genuinely unrippable still
+          // drains and the driver still exits; the failure is still COUNTED, so the stall signal
+          // stays honest.
+          if (shouldDeferFailure({ stalled: rig.stalled, deferrals: deferred[id] || 0, max: CFG.stallDeferMax })) {
+            deferred[id] = (deferred[id] || 0) + 1;
+            delete state.requested[id];
+            const row = state.plan.rips.find((r) => r.songId === id);
+            if (row) state.plan.rips = [...state.plan.rips.filter((r) => r.songId !== id), row];
+            noteFailure(state, Date.now());
+            log(`  ⏸ ${id}: ${reason} while the rig is STALLED (${rig.hoursSinceLastSuccess}h with no capture) — re-queued at the end, no attempt consumed (defer ${deferred[id]}/${CFG.stallDeferMax})`);
+            continue;
+          }
           const attempts = (req.priorAttempts || 0) + 1;
           state.failed[id] = { reason, error: String(terminalError).slice(0, 300), attempts, atMs: Date.now() };
           delete state.requested[id];
@@ -758,10 +853,19 @@ async function pump(state) {
       }
     }
 
-    // refill the shallow window
+    // Refill the shallow window — but NOT at full width while the rig is stalled.
+    //
+    // ── BACKPRESSURE (rate): the other half of "act on the stall, don't just print it". For 38
+    // hours this loop kept 10 rows in flight against a rig that could not capture anything, at
+    // exactly the rate it uses when everything is fine. While stalled the window drops to a
+    // single CANARY row: still enough to detect recovery the moment it happens (that capture
+    // succeeds → noteSuccess → not stalled → the full window reopens on the next cycle), but no
+    // longer feeding songs to a rig we already know is dead.
     const inCooldown = Date.now() < cooldownUntil;
+    const stallNow = currentStall(state); // re-read: the poll loop above may have cleared it
+    const window = refillWindowFor({ stalled: stallNow.stalled, window: CFG.window, stallWindow: CFG.stallWindow });
     let pending = pendingList(state);
-    while (!inCooldown && Object.keys(state.requested).length < CFG.window && pending.length) {
+    while (!inCooldown && Object.keys(state.requested).length < window && pending.length) {
       const next = pending[0];
       pending = pending.slice(1);
       if (manifest[next.songId]) { state.done[next.songId] = { atMs: Date.now(), via: 'manifest' }; continue; }
@@ -810,7 +914,7 @@ async function pump(state) {
     const meanSec = completionsThisRun >= 3 && firstRequestAt
       ? Math.max(60, Math.round((Date.now() - firstRequestAt) / 1000 / completionsThisRun))
       : CFG.meanCaptureSec;
-    heartbeat(state, { external: externalQueueDepth(state), meanSec });
+    heartbeat(state, { external: externalQueueDepth(state), meanSec, refillWindow: window });
 
     saveState(state);
     if (CFG.once) { log('--once: single cycle complete'); break; }
@@ -827,7 +931,7 @@ function externalQueueDepth(state) {
   } catch { return 0; }
 }
 
-function heartbeat(state, { external = 0, meanSec = CFG.meanCaptureSec } = {}) {
+function heartbeat(state, { external = 0, meanSec = CFG.meanCaptureSec, refillWindow = CFG.window } = {}) {
   const now = Date.now();
   const counts = {
     done: Object.keys(state.done).length,
@@ -838,7 +942,7 @@ function heartbeat(state, { external = 0, meanSec = CFG.meanCaptureSec } = {}) {
     total: state.plan.entries,
   };
   const { hb, stalled, sinceMs, everSucceeded } = buildHeartbeat({
-    counts, stats: state.stats || {}, now, stallMs: CFG.stallHours * 3_600_000, meanSec, external,
+    counts, stats: state.stats || {}, now, stallMs: CFG.stallHours * 3_600_000, meanSec, external, refillWindow,
   });
   log(`HEARTBEAT ${JSON.stringify(hb)}`);
   // A DISTINCT, GREPPABLE TOKEN. The external monitor only samples every 50 completions, so a
@@ -849,6 +953,7 @@ function heartbeat(state, { external = 0, meanSec = CFG.meanCaptureSec } = {}) {
     log(`STALL ${JSON.stringify({
       stall: 1, hours: hb.hoursSinceLastSuccess, everSucceeded,
       consecutiveFailures: hb.consecutiveFailures, inflight: counts.inflight, pending: counts.pending,
+      refillWindow: hb.refillWindow, // < window ⇒ the driver has throttled itself, not just noticed
       hint: 'zero captures completing — check the rip server log for play-not-started / HEAL, and that Music.app plays',
     })} (nothing has completed in ${Math.round(sinceMs / 60_000)} min)`);
   }

@@ -10,9 +10,13 @@
 //   1. an idle window with work available is reported as `stalled: true`,
 //   2. `etaHours` is NULL at zero throughput rather than a reassuring finite number,
 //   3. the clock that decides all this SURVIVES A RESTART and is moved only by real captures.
+// …plus a fourth the first three do not give you: the driver must ACT on the stall (throttle the
+// refill, stop spending retry budget on the rig's fault) rather than merely announce it — see
+// BACKPRESSURE at the bottom of this file.
 import { describe, it, expect } from 'vitest';
 import {
   ensureStats, noteSuccess, noteFailure, stallState, honestEtaHours, buildHeartbeat, etaHours,
+  refillWindowFor, shouldDeferFailure,
 } from '../../scripts/rip-backfill.mjs';
 
 const HOUR = 3_600_000;
@@ -144,5 +148,74 @@ describe('the stall clock survives a restart and moves only on real captures', (
     const { hb } = buildHeartbeat({ counts: incidentCounts, stats: reloaded.stats, now: NOW, stallMs: STALL_MS, meanSec: 280 });
     expect(hb.stalled).toBe(true);
     expect(hb.hoursSinceLastSuccess).toBe(38);
+  });
+});
+
+// ═══════════════════════════════ BACKPRESSURE — acting on the stall ══════════════════════════════
+// Reporting a stall is not the same as surviving one. During the incident this driver kept 10
+// rows in flight against a rig that could not capture anything, at exactly the rate it uses when
+// everything is fine, and every one came back failed with attempts=1 — after which the
+// end-of-pass pass spent each row's ONE remaining attempt against the same dead rig. That is the
+// mechanism that turned a temporary wedge into 212 PERMANENT failures.
+describe('refillWindowFor — the driver stops feeding a rig it knows is dead', () => {
+  it('a healthy rig gets the full window', () => {
+    expect(refillWindowFor({ stalled: false, window: 10, stallWindow: 1 })).toBe(10);
+  });
+
+  it('a STALLED rig gets a single canary row', () => {
+    expect(refillWindowFor({ stalled: true, window: 10, stallWindow: 1 })).toBe(1);
+  });
+
+  it('never throttles to zero — recovery has to be DETECTABLE', () => {
+    // A canary is not politeness, it is the sensor: its success is what moves lastSuccessAtMs,
+    // clears `stalled` and reopens the window. Refilling nothing would make the stall permanent
+    // by construction and the driver would never notice the rig coming back.
+    expect(refillWindowFor({ stalled: true, window: 10, stallWindow: 0 })).toBe(1);
+    expect(refillWindowFor({ stalled: true, window: 10, stallWindow: -5 })).toBe(1);
+  });
+
+  it('never widens the window — the stall setting is a cap, not a target', () => {
+    expect(refillWindowFor({ stalled: true, window: 1, stallWindow: 8 })).toBe(1);
+  });
+});
+
+describe('shouldDeferFailure — a dead rig must not burn the queue into permanent failure', () => {
+  it('defers while stalled: the failure is the RIG\'s verdict, not the ROW\'s', () => {
+    expect(shouldDeferFailure({ stalled: true, deferrals: 0, max: 2 })).toBe(true);
+    expect(shouldDeferFailure({ stalled: true, deferrals: 1, max: 2 })).toBe(true);
+  });
+
+  it('records normally when the rig is healthy — an ordinary bad row still fails', () => {
+    expect(shouldDeferFailure({ stalled: false, deferrals: 0, max: 2 })).toBe(false);
+  });
+
+  it('is BOUNDED per row, so a plan of genuinely unrippable rows still drains and exits', () => {
+    // Without this bound a stall that never clears (every remaining row unrippable) would churn
+    // the same rows forever and the driver would never reach ALL DONE.
+    expect(shouldDeferFailure({ stalled: true, deferrals: 2, max: 2 })).toBe(false);
+    expect(shouldDeferFailure({ stalled: true, deferrals: 9, max: 2 })).toBe(false);
+  });
+
+  it('max 0 disables deferral entirely', () => {
+    expect(shouldDeferFailure({ stalled: true, deferrals: 0, max: 0 })).toBe(false);
+  });
+});
+
+describe('the heartbeat publishes what the driver is DOING about the stall', () => {
+  it('refillWindow drops with `stalled`, so a watcher sees throttling and not just a complaint', () => {
+    const stalledHb = buildHeartbeat({
+      counts: incidentCounts, stats: { lastSuccessAtMs: NOW - 38 * HOUR }, now: NOW,
+      stallMs: STALL_MS, meanSec: 280, refillWindow: 1,
+    });
+    expect(stalledHb.hb.stalled).toBe(true);
+    expect(stalledHb.hb.refillWindow).toBe(1);
+    expect(stalledHb.hb.etaHours).toBeNull();
+
+    const healthyHb = buildHeartbeat({
+      counts: incidentCounts, stats: { lastSuccessAtMs: NOW - 60_000 }, now: NOW,
+      stallMs: STALL_MS, meanSec: 280, refillWindow: 10,
+    });
+    expect(healthyHb.hb.stalled).toBe(false);
+    expect(healthyHb.hb.refillWindow).toBe(10);
   });
 });

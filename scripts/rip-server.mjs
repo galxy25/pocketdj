@@ -26,7 +26,7 @@ import { fileURLToPath } from 'node:url';
 import { analyzeAudio, ANALYSIS_VERSION } from './lib/audio-analyze.mjs';
 import { separateStems, STEMS_VERSION, STEMS_MODEL, STEM_NAMES } from './lib/audio-stem.mjs';
 import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './lib/am-match.mjs';
-import { runOsascript } from './lib/am-music.mjs';
+import { runOsascriptAsync } from './lib/am-music.mjs';
 import { captureWithHeal, createHealGate, healMusic, WEDGED_REASON } from './lib/music-health.mjs';
 import { foldCloudReindex } from './lib/cloud-reindex-fold.mjs';
 import { artifactRoot as amArtifactRoot, snapshotDir as amSnapshotDir,
@@ -228,26 +228,46 @@ function isTransient(job, msg) {
 //
 // So exactly one reason code — the worker's 'play-not-started', i.e. play was ACCEPTED but
 // the player never reached state=playing — earns a quit/relaunch of Music.app and ONE retry.
-// Bounded by createHealGate (cooldown + per-hour ceiling) so a genuinely dead Mac degrades
-// into the ordinary retry ladder instead of a quit/relaunch loop.
+// Bounded by createHealGate: a cooldown sets the rate and a CIRCUIT BREAKER sets the end, so a
+// genuinely dead Mac degrades into the ordinary retry ladder instead of a quit/relaunch loop.
+//
+// TWO PROPERTIES THIS WIRING MUST PRESERVE, both easy to lose by accident:
+//   · the heal must not block the event loop. This is an HTTP daemon; runOsascript is spawnSync
+//     and would freeze status polling, HLS and — critically — /rip-cancel for the whole restart.
+//     Hence runOsascriptAsync and an async pkill.
+//   · the gate's counters must survive a RESTART of this process, or launchd's KeepAlive hands a
+//     crash-looping server a fresh cooldown (and a fresh breaker) every respawn.
 const HEAL = {
   enabled: process.env.RIP_MUSIC_HEAL !== '0',
   cooldownMs: numEnv('RIP_TEST_HEAL_COOLDOWN_MS', 20 * 60_000),
   maxPerHour: numEnv('RIP_TEST_HEAL_MAX_PER_HOUR', 3),
+  // Consecutive heals that produce no successful capture before we stop restarting Music and
+  // leave it to the retry ladder. 0 disables the breaker.
+  maxIneffective: numEnv('RIP_TEST_HEAL_MAX_INEFFECTIVE', 3),
   quitTimeoutMs: numEnv('RIP_TEST_HEAL_QUIT_MS', 15_000),
   relaunchTimeoutMs: numEnv('RIP_TEST_HEAL_RELAUNCH_MS', 60_000),
 };
-const healGate = createHealGate({ cooldownMs: HEAL.cooldownMs, maxPerHour: HEAL.maxPerHour });
-const forceKillMusic = () => { try { execFileSync('pkill', ['-x', 'Music']); } catch { /* not running */ } };
+// Small sidecar next to the durable queue; a torn/absent file just means "start clean".
+const HEAL_STATE_FILE = join(CFG.tmp, 'heal-gate.json');
+const healGate = createHealGate({
+  cooldownMs: HEAL.cooldownMs, maxPerHour: HEAL.maxPerHour, maxIneffective: HEAL.maxIneffective,
+  load: () => JSON.parse(readFileSync(HEAL_STATE_FILE, 'utf8')),
+  save: (s) => { try { mkdirSync(CFG.tmp, { recursive: true }); writeFileSync(HEAL_STATE_FILE, JSON.stringify(s)); } catch { /* best effort */ } },
+});
+// Async: pkill is quick, but this runs inside the request-serving process and there is no
+// reason for even a short synchronous stall in it.
+const forceKillMusic = () => new Promise((res) => { execFile('pkill', ['-x', 'Music'], () => res()); });
 async function healMusicApp() {
   // NEVER quit Music while audio is being captured. The queue is serial and this only runs
-  // after the worker child closed, so this is a belt-and-braces assertion, not a race fix.
+  // after the worker child closed, so this is a belt-and-braces assertion, not a race fix —
+  // the real protection against a second capture landing on top of a heal is captureWithHeal's
+  // canceled() re-check AFTER the heal returns.
   if (activeChild.p) {
     console.error('  HEAL-SKIPPED a capture child is still in flight — refusing to restart Music.app');
     return { healed: false, escalated: false, elapsedMs: 0, steps: ['refused-inflight'] };
   }
   return healMusic({
-    osa: runOsascript, sleep, log: (m) => console.error('  ' + m), forceKill: forceKillMusic,
+    osa: runOsascriptAsync, sleep, log: (m) => console.error('  ' + m), forceKill: forceKillMusic,
     quitTimeoutMs: HEAL.quitTimeoutMs, relaunchTimeoutMs: HEAL.relaunchTimeoutMs,
   });
 }
@@ -1225,7 +1245,10 @@ async function runDigitalJob(job, song) {
   if (job.phase === 'error') return;
   // the worker wrote phases to the status file; read its final state (post-heal if it healed)
   const st = cap.st || {};
-  if (cap.healed) console.error(`  HEAL-RESULT ${song.id} after Music.app restart: ${st.phase === 'uploaded' ? 'captured' : `still failing (${st.reason || st.error || 'unknown'})`}`);
+  // Only a heal that actually RETRIED has a result to report. A heal abandoned mid-way because
+  // the job was canceled/timed out has no second verdict, and printing attempt 1's as if it were
+  // the post-restart one would misreport the remedy as ineffective.
+  if (cap.retried) console.error(`  HEAL-RESULT ${song.id} after Music.app restart: ${st.phase === 'uploaded' ? 'captured' : `still failing (${st.reason || st.error || 'unknown'})`}`);
   // Terminal section with explicit PER-BRANCH inflight cleanup (NOT a trailing
   // unconditional delete) so Tier-2 fallback works: runAnalogJob owns the inflight.delete
   // when we fall back, and fail() already deletes inflight for a genuine failure.

@@ -18,6 +18,10 @@
 //   PDJ_FAKE_AH_DIR        recordings dir; "Rip Start" drops a file here unless PDJ_FAKE_AH_DEAD.
 //   PDJ_FAKE_AH_DEAD=1     the Audio Hijack shortcut exits 0 but records nothing (the innocent
 //                          twin of the wedge: identical symptom, opposite cause).
+//   PDJ_FAKE_LAUNCH_DELAY_MS   how long `launch` blocks before Music is back. The real relaunch
+//                          takes SECONDS, and a caller that runs it synchronously is off the air
+//                          for all of them — so a fake that returns instantly cannot expose the
+//                          bug. Blocking here (in this child process) is the point.
 import { appendFileSync, writeFileSync, existsSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -26,6 +30,7 @@ const MODE = process.env.PDJ_FAKE_MODE || 'wedged';
 const LOG = process.env.PDJ_FAKE_LOG || '';
 const AH_DIR = process.env.PDJ_FAKE_AH_DIR || '';
 const HEAL_FLAG = process.env.PDJ_FAKE_HEAL_FLAG || '';
+const LAUNCH_DELAY_MS = parseInt(process.env.PDJ_FAKE_LAUNCH_DELAY_MS || '0', 10);
 const COUNTER = process.env.PDJ_FAKE_COUNTER || join(process.env.TMPDIR || '/tmp', 'pdj-fake-counter');
 // The single track this fake library contains (drives the live-search fallback's NONE answer).
 const TITLE = process.env.PDJ_FAKE_TITLE || 'Fake Song';
@@ -43,6 +48,9 @@ if (argv[0] === '-e') {                          // ---- osascript ----
   if (/to quit/.test(script)) { note('music-quit', ''); process.exit(0); }
   if (/to launch/.test(script)) {                // the relaunch is what "fixes" the wedge
     note('music-launch', '');
+    // Note FIRST, then block: a watcher tailing the log can tell exactly when the relaunch is
+    // in flight, which is the window the blast-radius tests measure the server's health in.
+    if (LAUNCH_DELAY_MS > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, LAUNCH_DELAY_MS);
     if (HEAL_FLAG) writeFileSync(HEAL_FLAG, '1');
     process.exit(0);
   }
