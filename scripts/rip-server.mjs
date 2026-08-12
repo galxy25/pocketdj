@@ -26,6 +26,8 @@ import { fileURLToPath } from 'node:url';
 import { analyzeAudio, ANALYSIS_VERSION } from './lib/audio-analyze.mjs';
 import { separateStems, STEMS_VERSION, STEMS_MODEL, STEM_NAMES } from './lib/audio-stem.mjs';
 import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './lib/am-match.mjs';
+import { runOsascriptAsync } from './lib/am-music.mjs';
+import { captureWithHeal, createHealGate, healMusic, WEDGED_REASON } from './lib/music-health.mjs';
 import { foldCloudReindex } from './lib/cloud-reindex-fold.mjs';
 import { artifactRoot as amArtifactRoot, snapshotDir as amSnapshotDir,
          ensureDirs as ensureArtifactDirs, pruneArtifacts } from './lib/am-artifacts.mjs';
@@ -214,6 +216,60 @@ function isTransient(job, msg) {
   if (/unknown songId/.test(m)) return false;
   if (/no analog file reference/.test(m)) return false;
   return true; // analog source missing, s3/network, timeout, spawn/exit, generic capture failure
+}
+
+// ---------------- self-healing (2): a WEDGED Music.app playback engine ----------------
+// The backoff ladder above retries the SAME command after waiting, which fixes transient
+// EXTERNAL conditions (drive remount, iCloud sync latency, S3 blip). It cannot fix a
+// persistent LOCAL one: on 2026-08-12 Music.app's playback engine wedged after ~25 days of
+// uptime and every attempt failed identically for 38 hours — 6 attempts × 32 minutes of
+// waiting changed nothing, because waiting was never the remedy. Restarting Music.app was,
+// and no code path could reach it.
+//
+// So exactly one reason code — the worker's 'play-not-started', i.e. play was ACCEPTED but
+// the player never reached state=playing — earns a quit/relaunch of Music.app and ONE retry.
+// Bounded by createHealGate: a cooldown sets the rate and a CIRCUIT BREAKER sets the end, so a
+// genuinely dead Mac degrades into the ordinary retry ladder instead of a quit/relaunch loop.
+//
+// TWO PROPERTIES THIS WIRING MUST PRESERVE, both easy to lose by accident:
+//   · the heal must not block the event loop. This is an HTTP daemon; runOsascript is spawnSync
+//     and would freeze status polling, HLS and — critically — /rip-cancel for the whole restart.
+//     Hence runOsascriptAsync and an async pkill.
+//   · the gate's counters must survive a RESTART of this process, or launchd's KeepAlive hands a
+//     crash-looping server a fresh cooldown (and a fresh breaker) every respawn.
+const HEAL = {
+  enabled: process.env.RIP_MUSIC_HEAL !== '0',
+  cooldownMs: numEnv('RIP_TEST_HEAL_COOLDOWN_MS', 20 * 60_000),
+  maxPerHour: numEnv('RIP_TEST_HEAL_MAX_PER_HOUR', 3),
+  // Consecutive heals that produce no successful capture before we stop restarting Music and
+  // leave it to the retry ladder. 0 disables the breaker.
+  maxIneffective: numEnv('RIP_TEST_HEAL_MAX_INEFFECTIVE', 3),
+  quitTimeoutMs: numEnv('RIP_TEST_HEAL_QUIT_MS', 15_000),
+  relaunchTimeoutMs: numEnv('RIP_TEST_HEAL_RELAUNCH_MS', 60_000),
+};
+// Small sidecar next to the durable queue; a torn/absent file just means "start clean".
+const HEAL_STATE_FILE = join(CFG.tmp, 'heal-gate.json');
+const healGate = createHealGate({
+  cooldownMs: HEAL.cooldownMs, maxPerHour: HEAL.maxPerHour, maxIneffective: HEAL.maxIneffective,
+  load: () => JSON.parse(readFileSync(HEAL_STATE_FILE, 'utf8')),
+  save: (s) => { try { mkdirSync(CFG.tmp, { recursive: true }); writeFileSync(HEAL_STATE_FILE, JSON.stringify(s)); } catch { /* best effort */ } },
+});
+// Async: pkill is quick, but this runs inside the request-serving process and there is no
+// reason for even a short synchronous stall in it.
+const forceKillMusic = () => new Promise((res) => { execFile('pkill', ['-x', 'Music'], () => res()); });
+async function healMusicApp() {
+  // NEVER quit Music while audio is being captured. The queue is serial and this only runs
+  // after the worker child closed, so this is a belt-and-braces assertion, not a race fix —
+  // the real protection against a second capture landing on top of a heal is captureWithHeal's
+  // canceled() re-check AFTER the heal returns.
+  if (activeChild.p) {
+    console.error('  HEAL-SKIPPED a capture child is still in flight — refusing to restart Music.app');
+    return { healed: false, escalated: false, elapsedMs: 0, steps: ['refused-inflight'] };
+  }
+  return healMusic({
+    osa: runOsascriptAsync, sleep, log: (m) => console.error('  ' + m), forceKill: forceKillMusic,
+    quitTimeoutMs: HEAL.quitTimeoutMs, relaunchTimeoutMs: HEAL.relaunchTimeoutMs,
+  });
 }
 
 // Bump when the server gains capabilities the app must detect. The app warns (banner)
@@ -1132,30 +1188,53 @@ async function runDigitalJob(job, song) {
   // no-matching-edition rather than uploading wrong-edition audio under a variant key).
   if (song.variant) args.push('--explicitness', song.variant);
   if (job.canceled) return fail(job, 'canceled'); // pre-spawn guard
-  await new Promise((res) => {
-    let p;
-    // detached → own process group so /rip-cancel can group-kill the worker AND its
-    // grandchildren (rip skill, `tail -f`, the HLS ffmpeg). stdio stays inherited/piped
-    // (detached only makes the child a group leader) so the stderr surfacing below works.
-    if (CFG.useAgent) {
-      const cmd = 'node scripts/rip-one.mjs ' + args.map(shq).join(' ');
-      // Ad-hoc song fields can be client-supplied (recognizer path) — strip quotes /
-      // newlines / control chars and length-cap before embedding in the (permission-
-      // skipped) agent prompt so they can't inject instructions.
-      const safe = (s) => String(s || '').replace(/[`"'\n\r\x00-\x1f]/g, ' ').slice(0, 120);
-      const prompt =
-        `Rip one Apple Music song for PocketDJ. Run this command exactly:\n\n${cmd}\n\n` +
-        `When it prints a line starting with RESULT {"ok":true …} you are done — stop. ` +
-        `If it fails because the track isn't in the Apple Music library, add "${safe(song.artist)} — ${safe(song.name)}" ` +
-        `to the library (search Music.app), then re-run the command once. Do nothing else.`;
-      p = spawn('claude', ['-p', prompt, '--dangerously-skip-permissions'], { cwd: REPO, detached: true });
-    } else {
-      p = spawn('node', [CFG.worker, ...args], { cwd: REPO, detached: true });
-    }
-    activeChild.p = p;
-    p.stdout.on('data', (d) => process.stderr.write(d));
-    p.stderr.on('data', (d) => process.stderr.write(d));
-    p.on('close', () => { activeChild.p = null; res(); });
+  // ONE capture attempt: spawn the worker, wait for it to close, read the status file it
+  // wrote. Factored out so the wedged-Music heal below can run it a second time.
+  const runCapture = async (attempt) => {
+    // never re-read attempt 1's verdict: a stale status file would make a healed retry look
+    // like it failed the same way (or, worse, like it succeeded).
+    if (attempt > 1) { try { rmSync(sf, { force: true }); } catch { /* nothing to clear */ } }
+    await new Promise((res) => {
+      let p;
+      // detached → own process group so /rip-cancel can group-kill the worker AND its
+      // grandchildren (rip skill, `tail -f`, the HLS ffmpeg). stdio stays inherited/piped
+      // (detached only makes the child a group leader) so the stderr surfacing below works.
+      if (CFG.useAgent) {
+        const cmd = 'node scripts/rip-one.mjs ' + args.map(shq).join(' ');
+        // Ad-hoc song fields can be client-supplied (recognizer path) — strip quotes /
+        // newlines / control chars and length-cap before embedding in the (permission-
+        // skipped) agent prompt so they can't inject instructions.
+        const safe = (s) => String(s || '').replace(/[`"'\n\r\x00-\x1f]/g, ' ').slice(0, 120);
+        const prompt =
+          `Rip one Apple Music song for PocketDJ. Run this command exactly:\n\n${cmd}\n\n` +
+          `When it prints a line starting with RESULT {"ok":true …} you are done — stop. ` +
+          `If it fails because the track isn't in the Apple Music library, add "${safe(song.artist)} — ${safe(song.name)}" ` +
+          `to the library (search Music.app), then re-run the command once. Do nothing else.`;
+        p = spawn('claude', ['-p', prompt, '--dangerously-skip-permissions'], { cwd: REPO, detached: true });
+      } else {
+        p = spawn('node', [CFG.worker, ...args], { cwd: REPO, detached: true });
+      }
+      activeChild.p = p;
+      p.stdout.on('data', (d) => process.stderr.write(d));
+      p.stderr.on('data', (d) => process.stderr.write(d));
+      p.on('close', () => { activeChild.p = null; res(); });
+    });
+    let stA = {};
+    try { stA = JSON.parse(readFileSync(sf, 'utf8')); } catch { /* ignore */ }
+    return stA;
+  };
+
+  // AUTO-HEAL a wedged Music.app: 'play-not-started' (play accepted, player never started)
+  // → quit + relaunch Music, then retry this capture exactly ONCE. Any other failure falls
+  // through untouched to the existing backoff ladder in pump().
+  const cap = await captureWithHeal({
+    runCapture,
+    gate: healGate,
+    heal: healMusicApp,
+    log: (m) => console.error('  ' + m),
+    songId: song.id,
+    canceled: () => !!job.canceled || job.phase === 'error',
+    needsHeal: (s) => HEAL.enabled && !!(s && s.reason === WEDGED_REASON),
   });
   // Orphaned-continuation guard (mirrors the job.canceled guard below): on a WATCHDOG
   // TIMEOUT the race already rejected, pump() called fail(job, TIMEOUT) and scheduleRetry()
@@ -1164,9 +1243,12 @@ async function runDigitalJob(job, song) {
   // second time (it would wipe the retry's inflight.set and silently drop the retry). The
   // job has already terminated (phase 'error'), so bail without touching inflight.
   if (job.phase === 'error') return;
-  // the worker wrote phases to the status file; read its final state
-  let st = {};
-  try { st = JSON.parse(readFileSync(sf, 'utf8')); } catch { /* ignore */ }
+  // the worker wrote phases to the status file; read its final state (post-heal if it healed)
+  const st = cap.st || {};
+  // Only a heal that actually RETRIED has a result to report. A heal abandoned mid-way because
+  // the job was canceled/timed out has no second verdict, and printing attempt 1's as if it were
+  // the post-restart one would misreport the remedy as ineffective.
+  if (cap.retried) console.error(`  HEAL-RESULT ${song.id} after Music.app restart: ${st.phase === 'uploaded' ? 'captured' : `still failing (${st.reason || st.error || 'unknown'})`}`);
   // Terminal section with explicit PER-BRANCH inflight cleanup (NOT a trailing
   // unconditional delete) so Tier-2 fallback works: runAnalogJob owns the inflight.delete
   // when we fall back, and fail() already deletes inflight for a genuine failure.

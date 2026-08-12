@@ -33,6 +33,12 @@ const TMP = (a.tmp || join(homedir(), '.pocketdj', 'rips')).replace(/^~/, homedi
 const AH_REC_DIR = (a['ah-recordings-dir'] || join(homedir(), 'Music', 'Audio Hijack')).replace(/^~/, homedir());
 const PREROLL = parseInt(process.env.RIP_STREAM_PREROLL_BYTES || '65536', 10); // bytes before live play (the rip server tails this file)
 if (!SONG) { console.error('--song-id required'); process.exit(2); }
+// Optional per-knob timing overrides passed through to the rip skill (tests only).
+const RIP_TEST_TIMINGS = [
+  ['RIP_TEST_SETTLE_MS', '--settle-ms'], ['RIP_TEST_TAIL_MS', '--tail-ms'],
+  ['RIP_TEST_PLAY_START_MS', '--play-start-timeout-ms'], ['RIP_TEST_AH_FILE_MS', '--ah-file-timeout-ms'],
+  ['RIP_TEST_MAX_SECONDS', '--max-seconds'],
+].flatMap(([env, flag]) => (process.env[env] ? [flag, process.env[env]] : []));
 mkdirSync(TMP, { recursive: true });
 
 function status(phase, extra = {}) {
@@ -114,7 +120,9 @@ async function main() {
     } catch { /* dir/file not ready yet */ }
   }, 300);
 
-  await new Promise((res, rej) => {
+  let ripExit = 0;
+  let ripErr = '';
+  await new Promise((res) => {
     const p = spawn('node', [
       join(REPO, '.claude/skills/rip/rip.mjs'),
       '--setlist', csvFile, '--index', idxFile, '--library-xml', LIBRARY_XML,
@@ -125,28 +133,51 @@ async function main() {
       // constrained capture must never live-search-play an unverifiable edition.)
       '--search-fallback',
       ...(EXPL ? ['--require-explicitness', EXPL] : []),
+      // Test seam (mirrors the rip server's RIP_TEST_* overrides): shrink the capture timings
+      // so an e2e can drive the wedge/heal path in seconds against a fake rig. Unset in
+      // production, where the skill's own safe defaults apply.
+      ...RIP_TEST_TIMINGS,
     ], { cwd: REPO });
-    let err = '';
-    p.stderr.on('data', (d) => { err += d; });
+    p.stderr.on('data', (d) => { ripErr += d; });
     p.stdout.on('data', (d) => process.stderr.write(d)); // surface rip log to our stderr
-    p.on('close', (code) => (code === 0 ? res() : rej(new Error('rip skill failed: ' + err.slice(-300)))));
-  }).catch(async (e) => { clearInterval(watch); await stopHls(); fail(e.message, 'system'); });
+    // A non-zero exit is NOT handled here any more. The rip skill writes a precise per-track
+    // diagnosis (play-not-started / ah-not-recording / no-recording / play-failed) into
+    // rip-manifest.json before it exits; rejecting on the exit code discarded that and
+    // reported a generic 'system' failure instead. Read the manifest first, THEN decide.
+    p.on('error', (e) => { ripErr += `spawn failed: ${e.message}\n`; });
+    // null code = killed by a signal / never spawned → -1, NEVER 0: a signal death must not
+    // read as a clean exit (that would demote a killed capture to a plain 'no-match').
+    p.on('close', (code) => { ripExit = code == null ? -1 : code; res(); });
+  });
   clearInterval(watch);
   await stopHls(); // capture done → stop tail so ffmpeg finalizes the HLS playlist
 
-  // find the captured audio file in the newest *_ripped folder
+  // find the captured audio file — and the skill's own verdict — in the newest *_ripped folder
   let ripped = null;
+  let ripTrack = null;
   try {
     const dirs = readdirSync(outBase).map((d) => join(outBase, d)).filter((d) => statSync(d).isDirectory() && d.endsWith('_ripped'));
     dirs.sort((x, y) => statSync(y).mtimeMs - statSync(x).mtimeMs);
     const files = dirs.length ? readdirSync(dirs[0]).filter((f) => /\.(m4a|aac|aiff|wav|mp3|caf|alac)$/i.test(f)) : [];
     if (files.length) ripped = join(dirs[0], files.sort()[0]);
-  } catch { /* ignore */ }
+    if (dirs.length) {
+      const mf = JSON.parse(readFileSync(join(dirs[0], 'rip-manifest.json'), 'utf8'));
+      ripTrack = (mf.tracks || [])[0] || null;
+    }
+  } catch { /* no manifest (skill crashed before writing one) — handled below */ }
   if (!ripped) {
     // Edition-required capture with nothing produced ⇒ the required edition isn't
     // (verifiably) in the library — a TERMINAL, expected outcome for a variant rip
     // (deliberately no automatic library-adds; see the rip-server variant docs).
     if (EXPL) fail(`required ${EXPL} edition not in the library — nothing captured`, 'no-matching-edition');
+    // PROPAGATE THE SKILL'S DIAGNOSIS. 'play-not-started' is the wedged-Music.app signature
+    // (2026-08-12): the rip server heals on exactly this reason, so collapsing it into the
+    // generic 'no-match' below would leave the remedy unreachable — which is what it did for
+    // 38 hours. 'ah-not-recording' is the opposite cause with the identical symptom.
+    if (ripTrack?.status === 'play-not-started') fail(ripTrack.err || 'Music never started playing', 'play-not-started');
+    if (ripTrack?.status === 'ah-not-recording') fail(ripTrack.err || 'Audio Hijack recorded nothing', 'ah-not-recording');
+    // Skill died before it could judge anything (crash/spawn failure) → a rig problem.
+    if (ripExit !== 0 && !ripTrack) fail('rip skill failed: ' + (ripErr.slice(-300) || `exit ${ripExit}`), 'system');
     fail('no audio captured — is the track in the library and audio routed to system output?', 'no-match');
   }
 
