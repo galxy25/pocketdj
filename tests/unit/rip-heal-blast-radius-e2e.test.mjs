@@ -170,6 +170,18 @@ describe('healing a wedged Music.app must not take the rip server down with it',
     expect(st.ready).toBeFalsy();
   }, 90_000);
 
+  it('the heal gate persists its counters to disk, so a launchd respawn cannot reset them', () => {
+    // The gate used to live in a module-level array. rip-server is a KeepAlive job: a crash, a
+    // deploy or an OOM respawn would hand the new process a fresh cooldown and a fresh circuit
+    // breaker — reintroducing the quit/relaunch loop via the supervisor. (That the sidecar is
+    // READ back correctly is pinned in music-health.test.mjs; this asserts the server wires it.)
+    const sidecar = join(work, 'home', '.pocketdj', 'rips', 'heal-gate.json');
+    expect(existsSync(sidecar)).toBe(true);
+    const s = JSON.parse(readFileSync(sidecar, 'utf8'));
+    expect(Array.isArray(s.times)).toBe(true);
+    expect(s.times.length).toBeGreaterThanOrEqual(2); // both heals above
+  });
+
   it('the PATH shims were really used — this test never drove the live rig', () => {
     // If PATH interception had failed, everything above would have quietly driven the user's
     // Music.app (and `pkill -x Music` would have hit the live daemon's capture). Assert the fake
