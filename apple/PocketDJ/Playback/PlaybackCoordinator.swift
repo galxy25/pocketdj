@@ -107,6 +107,13 @@ final class PlaybackCoordinator {
         self.appleMusic = appleMusic
     }
 
+    /// TEST SEAM — force the Apple Music readiness predicate; nil (production) asks the
+    /// provider. `AppleMusicPlaybackProvider.isReady` reads the live `MusicAuthorization`
+    /// state, which a unit test cannot set: without this an ordering assertion silently
+    /// degrades to the not-ready branch and proves nothing about the ordering it names.
+    var appleMusicReadyOverrideForTests: Bool?
+    private var appleMusicReady: Bool { appleMusicReadyOverrideForTests ?? appleMusic.isReady }
+
     /// All providers, in the SOURCE-AWARE order to try for `song`:
     ///   • Apple Music FIRST when the song came from the Apple Music (Local) source AND
     ///     the Apple Music provider is ready (enabled + authorized),
@@ -125,18 +132,30 @@ final class PlaybackCoordinator {
         let source = sourceOfSong(SongVariant.baseId(song.id))
         let appleMusicSourced = source == Config.appleMusicSourceName
             || source == AppleMusicLibraryStore.sourceName
-        if appleMusicSourced || amNamespaced, appleMusic.isReady {
-            ordered.append(appleMusic)
-        }
-        ordered.append(ripProvider)
+        let amBySource = (appleMusicSourced || amNamespaced) && appleMusicReady
         // STREAMING FALLBACK for every OTHER row carrying a catalog id (Discover adds,
-        // imports, vinyl/digital with a matched id): AFTER the rip provider on purpose — a
-        // rip is the user's OWN recording and must always win when it exists (the
-        // prefer-the-user's-cut doctrine); streaming only rescues the row when the rip path
-        // can't deliver at all (the public no-server case).
-        if !(appleMusicSourced || amNamespaced), song.appleMusicId != nil, appleMusic.isReady {
-            ordered.append(appleMusic)
-        }
+        // imports, vinyl/digital with a matched id): normally AFTER the rip provider on
+        // purpose — a rip is the user's OWN recording and must always win when it exists
+        // (the prefer-the-user's-cut doctrine); streaming only rescues the row when the rip
+        // path can't deliver (the public no-server case).
+        let amAsFallback = !(appleMusicSourced || amNamespaced)
+            && song.appleMusicId != nil && appleMusicReady
+
+        // …and "can't deliver" has to include "can't deliver YET". `tryPlay` on a rip that is
+        // merely QUEUED (or in flight) does not fail — it PARKS inside `ensureURL(allowLive:)`
+        // waiting for the capture to go live, which is minutes while the rip server drains a
+        // backfill queue. The cycle is sequential, so a fallback behind it never gets its turn:
+        // the deck advances to a row that never starts, the previous track keeps sounding under
+        // the new title, and ▶ resumes THAT (Levi, 2026-08-17 — "queued shouldn't block me from
+        // streaming via the cloud"). So when the rip can't start instantly and Apple Music can,
+        // stream now. The doctrine is intact: a DURABLE rip still wins outright, and the pending
+        // rip still lands for next time.
+        let ripStartsNow = ripProvider.canPlayImmediately(song.id)
+        let amFirst = amBySource || (amAsFallback && !ripStartsNow)
+
+        if amFirst { ordered.append(appleMusic) }
+        ordered.append(ripProvider)
+        if amAsFallback, !amFirst { ordered.append(appleMusic) }
         return ordered
     }
 

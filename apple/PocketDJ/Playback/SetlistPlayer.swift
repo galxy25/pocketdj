@@ -1118,6 +1118,17 @@ final class SetlistPlayer {
                           endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: start),
                           atMs: resumeAtMs, release: res.release)
         } else {
+            // SILENCE THE OUTGOING TRACK FIRST. Resolving a cloud row is an async round-trip
+            // (an Apple Music lookup, or a rip that may still be queued), and until it lands
+            // the engine still holds the PREVIOUS row's item. Left running, it keeps sounding
+            // under the new row's title — and then swallows the next ▶, because
+            // `PlayerEngine.toggle()` resumes whatever it holds, not what the deck shows
+            // (Levi, 2026-08-17: the deck read "Waiting" while "FR FR" played on). A skip that
+            // goes briefly silent while the next source resolves is the honest behaviour.
+            // Apple Music is left alone deliberately: when IT is the active backend the
+            // provider cycle in `coordinator.play` stops it only if the backend actually
+            // changes, which keeps an AM→AM advance gapless.
+            if coordinator.activeBackend != .appleMusic { player.stop() }
             await coordinator.play(id: it.id, title: it.title, artist: it.artist,
                                    atMs: resumeAtMs, variant: it.variant)
             // Dead source (no server / rip error) → no end event will fire; advance now.
@@ -1256,6 +1267,20 @@ final class SetlistPlayer {
         persistSession(positionMs: at)
         // fresh: false — restore() already armed the current row's repeat counter.
         Task { await playCurrent(fresh: false, resumeAtMs: at) }
+    }
+
+    /// ▶ on a deck whose CURRENT row never actually started sounding — the cloud resolve
+    /// produced no audio (a rip still queued, a stream that missed), so the engine is idle
+    /// and a plain `toggle()` is simply REFUSED, leaving ▶ dead until the row is skipped
+    /// past. Re-resolve and start the displayed row instead, so ▶ always means "play what
+    /// the deck is showing". `fresh: false` on purpose — this is a RETRY of the current row,
+    /// so its repeat counter must not be re-armed. Returns false when there is nothing to
+    /// start (no run, or a held deck, which routes to `resumeFromHold` instead).
+    @discardableResult
+    func startCurrent() -> Bool {
+        guard isRunning, index < queue.count, !isHeldForResume else { return false }
+        Task { await playCurrent(fresh: false) }
+        return true
     }
 
     /// A held deck acted on by anything OTHER than ▶ (skip / jump / a manual member play):

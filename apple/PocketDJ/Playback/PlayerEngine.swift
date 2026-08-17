@@ -280,6 +280,12 @@ final class PlayerEngine {
         guard player.currentItem != nil else { NPLog.trace("engine.pause REFUSED (idle)"); return }
         player.pause(); isPlaying = false; updateNowPlayingInfo()
     }
+    /// Does this engine actually hold audio to act on? Exactly the condition the play /
+    /// pause / toggle idle guards above refuse on — surfaced so a ▶ SURFACE can route to
+    /// "start the deck's current row" instead of firing a toggle that is silently refused
+    /// (or, worse, resumes a stale item from the previous row).
+    var hasLoadedItem: Bool { externalActive || player.currentItem != nil }
+
     /// Toggle off the player's REAL `timeControlStatus` — NOT the async rate-KVO-observed
     /// `isPlaying`, which lags a tap and made rapid back-to-back play/pause unreliable.
     func toggle() {

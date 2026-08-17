@@ -77,6 +77,16 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
     /// `PlaybackCoordinator.cueSeekSupported(for:)`).
     func canCueSeek(_ songId: String) -> Bool { rips.cachedURL(songId) != nil }
 
+    /// Can this backend start `songId` WITHOUT WAITING? Only a durable cached mp3 can:
+    /// anything else makes `tryPlay` park inside `ensureURL(allowLive:)` until the capture
+    /// goes live, which is minutes when the rip server is draining a backfill queue — and
+    /// because the provider cycle is sequential, a streaming provider sitting BEHIND this
+    /// one never gets its turn. The coordinator reads this to let a streamable row stream
+    /// now instead of waiting on a rip that is merely queued (see `providers(for:)`).
+    /// Same predicate as `canCueSeek`, kept separate because the two questions are
+    /// independent — this one is about LATENCY, that one about SEEKABILITY.
+    func canPlayImmediately(_ songId: String) -> Bool { rips.cachedURL(songId) != nil }
+
     /// Set when `tryPlay` hit a real rip failure (no server / rip error). The coordinator
     /// reads + clears it to surface the message after the cycle ends with no winner.
     private(set) var lastError: Error?
