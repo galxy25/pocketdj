@@ -462,8 +462,21 @@ final class RipsStore {
     /// Ensure a song is ripped + return a playable URL. With `allowLive`, resolves as
     /// soon as the live HLS stream is available and keeps polling in the background to
     /// swap the manifest to the durable S3 mp3; without it, waits for the finished mp3.
+    /// How long the INTERACTIVE play path waits for a rip to become playable before giving
+    /// up. A queued job clears none of `ensureURL`'s early returns, so without a bound it
+    /// falls into the 1800-iteration poll below and parks for THIRTY MINUTES — mid-`await`
+    /// inside `PlaybackCoordinator.play`, which means the cycle never finishes, no error is
+    /// ever surfaced, `SetlistPlayer`'s `lastErrorMessage` escape hatch never fires, and the
+    /// deck sits on a row that never starts while ▶ acts on whatever transport still holds
+    /// audio (Levi, 2026-08-17). A user pressing ▶ needs an answer in seconds: bounded here,
+    /// a queued rip THROWS, `tryPlay` returns false, and the coordinator can fall through to
+    /// a streaming provider or surface an honest error. The rip keeps running server-side and
+    /// lands for next time. Background/download callers keep the long wait.
+    static let interactivePlayWaitSeconds = 20
+
     @discardableResult
-    func ensureURL(_ songId: String, allowLive: Bool) async throws -> URL {
+    func ensureURL(_ songId: String, allowLive: Bool,
+                   maxWaitSeconds: Int = 1800) async throws -> URL {
         if let cached = cachedURL(songId) { return cached }
         // Spec §8: the play/download choke point that POSTs `/rip` — a studio id here
         // (a stale collection row, an old caller) must fail loudly, not live-search rip.
@@ -499,7 +512,7 @@ final class RipsStore {
         }
 
         // Poll /jobs/<id> until ready (or the live stream appears).
-        for _ in 0..<1800 {
+        for _ in 0..<max(1, maxWaitSeconds) {
             try await Self.sleep1s()
             guard let v = try? await fetchJob(jobId, base: base, token: tok) else { continue }
             view = v
@@ -566,7 +579,10 @@ final class RipsStore {
     @discardableResult
     func play(_ song: (id: String, title: String, artist: String), startMs: Int? = nil,
               atMs: Int? = nil) async throws -> NowPlaying {
-        let url = try await ensureURL(song.id, allowLive: true)
+        // BOUNDED: this is the interactive ▶ path. A queued rip must fail fast so the caller
+        // can stream instead / advance honestly, never park mid-await (see the constant).
+        let url = try await ensureURL(song.id, allowLive: true,
+                                      maxWaitSeconds: Self.interactivePlayWaitSeconds)
         let live = url.absoluteString.contains("/hls/")
         let entry = manifest[song.id]
         let resolvedStart = live ? nil : (startMs ?? entry?.startMs)

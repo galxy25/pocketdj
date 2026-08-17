@@ -13,13 +13,59 @@ import XCTest
 @MainActor
 final class PlaybackCoordinatorTests: XCTestCase {
 
-    private func makeCoordinator() -> PlaybackCoordinator {
-        let rips = RipsStore()
+    // NOT a defaulted parameter: `RipsStore()` is @MainActor-isolated, and a default argument
+    // expression is evaluated in a nonisolated context.
+    private func makeCoordinator() -> PlaybackCoordinator { makeCoordinator(rips: RipsStore()) }
+
+    private func makeCoordinator(rips: RipsStore) -> PlaybackCoordinator {
         let player = PlayerEngine()
         let am = AppleMusicPlaybackProvider(provider: AppleMusicProvider())
         return PlaybackCoordinator(
             ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
             appleMusic: am)
+    }
+
+    /// A streamable row whose rip is merely QUEUED must not sit behind that rip.
+    /// `RipServerPlaybackProvider.tryPlay` does not FAIL on a queued rip — it PARKS inside
+    /// `ensureURL(allowLive:)` waiting for the capture to go live, which is minutes while the
+    /// rip server drains a backfill queue. The provider cycle is sequential, so a streaming
+    /// provider placed behind it never gets its turn: the deck advances onto a row that never
+    /// starts and the PREVIOUS track keeps sounding under the new title, and ▶ then resumes
+    /// THAT (Levi, 2026-08-17 — "queued shouldn't block me from streaming via the cloud").
+    func testQueuedRipDoesNotBlockTheStreamingFallback() {
+        let c = makeCoordinator()                     // empty manifest ⇒ nothing durable
+        c.appleMusicReadyOverrideForTests = true      // else this degrades to the [.ripServer] branch
+        c.sourceOfSong = { _ in "My Vinyl" }
+        let song = IndexSong.minimal(id: "sng_q", name: "Waiting", artist: "Test",
+                                     appleMusicId: "1799999999")
+        XCTAssertEqual(c.providers(for: song).map(\.backend), [.appleMusic, .ripServer],
+                       "a rip that cannot start NOW must not be tried ahead of the stream")
+    }
+
+    /// Streaming rescues the row only when it actually CAN: with Apple Music unavailable the
+    /// row still belongs to the rip server, queued or not (the public no-subscription case).
+    func testQueuedRipStillUsesRipServerWhenAppleMusicIsNotReady() {
+        let c = makeCoordinator()
+        c.appleMusicReadyOverrideForTests = false
+        c.sourceOfSong = { _ in "My Vinyl" }
+        let song = IndexSong.minimal(id: "sng_q", name: "Waiting", artist: "Test",
+                                     appleMusicId: "1799999999")
+        XCTAssertEqual(c.providers(for: song).map(\.backend), [.ripServer])
+    }
+
+    /// The other half of the doctrine, and the guard against over-correcting: a DURABLE rip is
+    /// the user's OWN cut and must still win outright over streaming. Only "can't deliver YET"
+    /// reorders — "delivers instantly" keeps prefer-the-user's-cut exactly as it was.
+    func testDurableRipStillBeatsStreaming() {
+        let rips = RipsStore()
+        rips.setManifest(["sng_q": RipsStore.ManifestEntry(key: "rips/sng_q.mp3")])
+        let c = makeCoordinator(rips: rips)
+        c.appleMusicReadyOverrideForTests = true   // AM available and STILL must not win
+        c.sourceOfSong = { _ in "My Vinyl" }
+        let song = IndexSong.minimal(id: "sng_q", name: "Waiting", artist: "Test",
+                                     appleMusicId: "1799999999")
+        XCTAssertEqual(c.providers(for: song).map(\.backend), [.ripServer, .appleMusic],
+                       "a rip that already exists must still win — prefer-the-user's-cut")
     }
 
     func testRipServerIsAlwaysTheTerminalFallback() {

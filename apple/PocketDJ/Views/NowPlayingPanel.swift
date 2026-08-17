@@ -423,8 +423,13 @@ struct NowPlayingPanel: View {
         // A RESTORED (held) deck has no audio loaded yet — the first ▶ resumes real playback
         // at the saved position (blindly toggling would hit the idle engine and be refused).
         if sequencer.isHeldForResume { sequencer.resumeFromHold(); return }
-        if coordinator.activeBackend == .appleMusic { coordinator.togglePlayPause() }
-        else { player.toggle() }
+        if coordinator.activeBackend == .appleMusic { coordinator.togglePlayPause(); return }
+        // The deck's current row never started sounding (its cloud resolve produced no audio
+        // — a rip still queued, a stream that missed), so the engine holds NOTHING and
+        // `toggle()` would be refused outright: ▶ appears dead. Start the displayed row
+        // instead, so ▶ always plays what the deck is showing.
+        if !player.hasLoadedItem, sequencer.startCurrent() { return }
+        player.toggle()
     }
 
     private func togglePlayPause() {
