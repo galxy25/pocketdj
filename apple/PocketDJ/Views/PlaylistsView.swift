@@ -910,18 +910,31 @@ struct IndexPlaylistDetailView: View {
                                             payload: { selectionPayload() },
                                             acceptDrop: nil))
         // Resolves AFTER the first frame, so the push animation is never blocked. `.task(id:)`
-        // also auto-cancels a stale run when the sort/filter changes mid-resolve.
+        // also auto-cancels a stale run when the sort/filter changes mid-resolve. The resolve
+        // itself runs OFF the main actor (`sortedFilteredSongsAsync`) — for a 26k-song source
+        // playlist the row construction + filter/sort pipeline is hundreds of ms, and running it
+        // main-actor inside this .task stalled every interaction right after the push (the
+        // windowed placeholder painted, then the UI froze while the "background" resolve ran on
+        // the very thread it was deferred to protect).
         .task(id: resolveKey) {
-            let full = app.sortedFilteredSongs(ids: source.songIds, browse: browse,
-                                               collections: collections, favorites: favorites)
+            let full = await app.sortedFilteredSongsAsync(ids: source.songIds, browse: browse,
+                                                          collections: collections, favorites: favorites)
             guard !Task.isCancelled else { return }
             resolved = full
             isResolving = false
         }
     }
 
+    /// ▶ Play this read-only source playlist IN PLACE, literal order, via the same reserved
+    /// Now-Playing setlist Shuffle uses. This used to go through `realize(songIds:)`, which
+    /// (a) ran the whole realize engine over the list and (b) APPENDED a full persisted "take"
+    /// setlist to the collections document — for "Favorite Songs" that meant a 26,821-track
+    /// setlist written to disk on every ▶, which was most of the multi-second stall (and
+    /// permanent document bloat). `playNow` upserts the one reserved setlist instead.
     private func play() {
-        if let sl = collections.realize(songIds: source.songIds, name: source.name) { path.append(sl) }
+        collections.playNow(songIds: source.songIds, name: source.name, shuffle: false, source: .playlist,
+                            originId: source.id)
+        path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
     }
     /// Shuffle-play this read-only source playlist (e.g. an Apple Music user playlist) IN PLACE —
     /// no longer requires duplicating it into an editable playlist first. Reuses the same

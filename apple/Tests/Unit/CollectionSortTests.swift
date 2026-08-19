@@ -108,6 +108,7 @@ final class CollectionsMarkPlayedTests: XCTestCase {
         s1.markPlayed(playlistId: pl.id)
         let stamped = s1.playlist(pl.id)?.lastPlayedAt
         XCTAssertNotNil(stamped)
+        s1.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
 
         let s2 = store(url)   // re-decode from disk (v7)
         XCTAssertEqual(s2.playlist(pl.id)?.lastPlayedAt, stamped)

@@ -179,6 +179,21 @@ final class PlayerEngine {
                 // position passes the armed boundary, signal end ONCE. While paused the position
                 // doesn't advance, so this can't fire early. (Extracted for unit-testability.)
                 self.checkEndBoundary(atSeconds: self.clock.currentTime)
+                // ~1 Hz LOCAL-path card refresh: the card's elapsed used to be written only at
+                // discrete events (load/ready/play/pause/art) — all near 0 — leaving the
+                // CarPlay/lock-screen bar entirely dependent on the OS extrapolating from
+                // PlaybackRate, and a head unit that doesn't extrapolate showed 0:00 for the
+                // whole song. Rewrite the dict once a second while PLAYING (never while paused —
+                // that would fight card scrubbing; `updateNowPlayingInfo` is arbiter- and
+                // idle-guarded, so a Mix/AM owner is never stomped). Mirrors the external
+                // (Apple Music impersonation) ticker, which never had this bug.
+                if self.isPlaying {
+                    self.cardRefreshAccumulator += 1
+                    if self.cardRefreshAccumulator >= 4 {   // 4 ticks × 0.25 s = 1 s
+                        self.cardRefreshAccumulator = 0
+                        self.updateNowPlayingInfo()
+                    }
+                }
             }
         }
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
@@ -402,7 +417,7 @@ final class PlayerEngine {
         // card — the macOS "ghost second card frozen on the first song" bug. With empty
         // title/artist, `updateNowPlayingInfo` clears instead of writing.
         nowPlayingTitle = ""; nowPlayingArtist = ""; nowPlayingSongId = nil
-        artworkToken += 1; nowPlayingArtwork = nil
+        artworkToken += 1; nowPlayingArtwork = nil; artworkSongId = nil
         // If WE still own the card from a prior local track, clear it so MusicKit's AM card
         // isn't shadowed by our now-stale one (and resign so nothing double-writes).
         if NowPlayingArbiter.shared.isActive(self) { clearNowPlayingInfo() }
@@ -439,6 +454,7 @@ final class PlayerEngine {
         endBoundarySec = nil; trackEndSignaled = false
         scopeRelease?(); scopeRelease = nil   // release the user-folder file's security scope
         artworkToken += 1; nowPlayingSongId = nil; nowPlayingArtwork = nil   // drop any in-flight art fetch
+        artworkSongId = nil   // …and the same-song memo, so the next load re-fetches
         clearNowPlayingInfo()
     }
 
@@ -669,21 +685,70 @@ final class PlayerEngine {
         rc.changeShuffleModeCommand.currentShuffleType = remoteShuffleType
     }
 
+    /// The song id the current `artworkToken` fetch (or landed art) belongs to — lets a
+    /// `load()` that follows an `announceUpcoming` for the SAME song keep the in-flight (or
+    /// already-landed) fetch instead of cancelling and re-firing it.
+    private var artworkSongId: String?
+
+    /// Counts periodic-observer ticks toward the ~1 Hz local-path card refresh (4 × 0.25 s).
+    @ObservationIgnored private var cardRefreshAccumulator = 0
+
     /// Resolve + fetch the current track's cover art and attach it to the Now Playing card.
     /// Fire-and-forget: `artworkToken` supersedes an in-flight fetch when the track changes, so a
     /// slow image never lands on the wrong song. No provider / no candidates / no decodable image
     /// ⇒ the card simply keeps title + artist (art shown only "if available").
     private func refreshArtwork(for songId: String?) {
+        // Same song as the fetch already in flight (announce → load for one skip): keep it.
+        if let songId, songId == artworkSongId { return }
         artworkToken += 1
         nowPlayingArtwork = nil
+        artworkSongId = songId
         let token = artworkToken
         guard let songId, let urls = artworkURLsProvider?(songId), !urls.isEmpty else { return }
         Task { @MainActor [weak self] in
-            guard let image = await PlayerEngine.loadFirstImage(urls) else { return }
+            guard let image = await PlayerEngine.loadFirstImage(urls) else {
+                // Failed fetch: clear the same-song memo so a LATER call for this song can
+                // retry, instead of memoizing the failure for the rest of the track.
+                if let self, self.artworkToken == token { self.artworkSongId = nil }
+                return
+            }
             guard let self, self.artworkToken == token else { return }   // track changed → drop
             self.nowPlayingArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
             self.updateNowPlayingInfo()
         }
+    }
+
+    /// INSTANT metadata for the track the sequencer just moved to, written BEFORE its audio
+    /// resolves — so a listener skipping through a set (lock screen, CarPlay, the watch) sees
+    /// each row's title/artist the moment ⏭ lands and can seek straight to the song they want,
+    /// instead of staring at the previous track's card for the seconds a cloud resolve takes.
+    ///
+    /// This deliberately bypasses `updateNowPlayingInfo`'s idle guard (the engine may hold no
+    /// item right now — the outgoing track was just stopped), which is safe ONLY because of the
+    /// arbiter guard: a blind write from a NON-owner is exactly the "ghost second card" bug, so
+    /// a caller that doesn't currently own the card is refused. Elapsed 0 / rate 0 — honest
+    /// "cueing up" state; the real load()/play() re-writes with live position within seconds.
+    /// The art fetch starts here too, in parallel with the audio resolve, so the cover is often
+    /// already on the card when audio starts (and `refreshArtwork`'s same-song memo keeps
+    /// load() from cancelling this fetch).
+    func announceUpcoming(title: String, artist: String, songId: String?) {
+        guard NowPlayingArbiter.shared.isActive(self) else {
+            NPLog.trace("engine card ANNOUNCE refused (arbiter owned elsewhere)")
+            return
+        }
+        nowPlayingTitle = title
+        nowPlayingArtist = artist
+        nowPlayingSongId = songId
+        var info: [String: Any] = [
+            MPMediaItemPropertyTitle: title,
+            MPMediaItemPropertyArtist: artist,
+            MPNowPlayingInfoPropertyElapsedPlaybackTime: 0.0,
+            MPNowPlayingInfoPropertyPlaybackRate: 0.0,
+        ]
+        refreshArtwork(for: songId)
+        if let nowPlayingArtwork { info[MPMediaItemPropertyArtwork] = nowPlayingArtwork }
+        NPLog.trace("engine card ANNOUNCE title=\(title)")
+        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
     /// Try each candidate URL in order; return the first that decodes to an image (mirrors

@@ -161,6 +161,10 @@ final class SetlistPlayer {
     /// the index moves onto a new track; decremented on each natural end until it hits 1, at which
     /// point `advance()` moves on. Always ≥ 1 (`normalizedRepeat`).
     private var currentPlaysRemaining = 1
+    /// Monotonic claim ticket for `playCurrent`'s async cloud resolve — a newer skip/jump bumps
+    /// it, and an older resolve returning late checks it and stands down (see the SUPERSEDE
+    /// GUARD comment at the await). Local-file branches are synchronous and never race.
+    private var playGeneration = 0
 
     /// Whole-session repeat mode (off / all / one) — see `RepeatMode`. Sticky across `play()`
     /// calls (a system-player convention) and restored from the durable session. `.all` wraps the
@@ -281,7 +285,7 @@ final class SetlistPlayer {
         sessionId = "pses_" + UUID().uuidString
         persistSession(positionMs: 0)
         startPositionTicker()
-        Task { await playCurrent() }
+        startPlayCurrent()
     }
 
     // MARK: Edition selection (the ONE place the preference is applied to a queue)
@@ -382,7 +386,7 @@ final class SetlistPlayer {
         // Apple Music STREAMS through MusicKit's own player, which the PlayerEngine end hook
         // above never sees — so wire its end-of-track straight into the sequencer's advance,
         // else the set freezes after the first streamed song.
-        coordinator.appleMusic.onTrackEnded = { [weak self] in self?.handleAppleMusicEnded() }
+        coordinator.appleMusic.onTrackEnded = { [weak self] reason in self?.handleAppleMusicEnded(reason: reason) }
         // The system remote ⏮ during a stream also lands in MusicKit (it rewinds its one-song
         // queue to 0:00); the provider detects the rewind and fires this so ⏮ steps the SET back.
         coordinator.appleMusic.onTrackRestarted = { [weak self] in self?.handleAppleMusicRestarted() }
@@ -390,6 +394,8 @@ final class SetlistPlayer {
 
     /// Stop the sequence + clear now-playing; resets so the toolbar flips back to Play.
     func stop() {
+        playTask?.cancel(); playTask = nil // a resolve still in flight must not load into a stopped deck
+        playGeneration &+= 1               // …and its post-await bookkeeping must stand down
         endMixEngagement()                 // F4: drop any DSP hand-off before tearing the run down
         isRunning = false
         waitingForLive = false
@@ -445,7 +451,7 @@ final class SetlistPlayer {
             index -= 1
         }
         persistSession(positionMs: 0)
-        Task { await playCurrent() }
+        startPlayCurrent()
     }
 
     // MARK: - Repeat & shuffle (Now Playing deck / widget / lock-screen)
@@ -624,7 +630,7 @@ final class SetlistPlayer {
         waitingForLive = false
         index = pos
         persistSession(positionMs: 0)
-        Task { await playCurrent() }
+        startPlayCurrent()
     }
 
     /// "PLAY NOW" — start `item` immediately, interrupting whatever is playing, and let the queue
@@ -657,7 +663,7 @@ final class SetlistPlayer {
         // (The other `fresh: false` callers all stay on the SAME row, which is why they're safe.)
         // fresh also arms the repeat counter from `queue[index]` — which IS this item, so nothing
         // needs arming by hand.
-        Task { await playCurrent() }
+        startPlayCurrent()
     }
 
     /// Shift playback BACK onto a played row (by identity) — "Rewind to here".
@@ -672,7 +678,7 @@ final class SetlistPlayer {
         waitingForLive = false
         index = pos
         persistSession(positionMs: 0)
-        Task { await playCurrent() }
+        startPlayCurrent()
     }
 
     // MARK: - F4 Mix mini-panel (AVPlayer ↔ NowPlayingDSP hand-off)
@@ -742,12 +748,12 @@ final class SetlistPlayer {
         // Repeat-ONE: replay the current track from the top (through the AVPlayer) instead of
         // advancing. Only on a NATURAL end — an explicit ⏭ goes through `advanceToNext`.
         if repeatMode == .one {
-            Task { await playCurrent(fresh: true) }
+            startPlayCurrent(fresh: true)
             return
         }
         if currentPlaysRemaining > 1 {
             currentPlaysRemaining -= 1
-            Task { await playCurrent(fresh: false) }   // reloads the AVPlayer for the repeat
+            startPlayCurrent(fresh: false)   // reloads the AVPlayer for the repeat
             return
         }
         advanceToNext()
@@ -918,7 +924,7 @@ final class SetlistPlayer {
         // Repeat-ONE (whole-session mode) takes precedence: replay the current track from the top.
         // Only on a NATURAL end — an explicit ⏭ / dead source goes through `advanceToNext`.
         if repeatMode == .one {
-            Task { await playCurrent(fresh: true) }
+            startPlayCurrent(fresh: true)
             return
         }
         // REPEAT only on a NATURAL end: a track that played through loops in place while it has
@@ -927,29 +933,40 @@ final class SetlistPlayer {
         // An explicit skip or a dead source does NOT go through here — it calls `advanceToNext`.
         if currentPlaysRemaining > 1 {
             currentPlaysRemaining -= 1
-            Task { await playCurrent(fresh: false) }
+            startPlayCurrent(fresh: false)
             return
         }
         advanceToNext()
     }
 
-    /// Natural end of an Apple Music STREAMING track (MusicKit's player finished the song).
-    /// Mirrors `handleEnded` but guards on the Apple Music now-playing id (the streaming path
-    /// keys off `coordinator.appleMusic.nowPlaying`, never `rips.nowPlaying`, so the local
-    /// ownership guard wouldn't match). Honors the per-track repeat count, then advances.
-    private func handleAppleMusicEnded() {
+    /// End of an Apple Music STREAMING track (MusicKit's player finished — or was system-⏭'d
+    /// past — the song). Mirrors `handleEnded` but guards on the Apple Music now-playing id
+    /// (the streaming path keys off `coordinator.appleMusic.nowPlaying`, never
+    /// `rips.nowPlaying`, so the local ownership guard wouldn't match).
+    ///
+    /// `reason` decides the repeat semantics: only a `.natural` end honors repeat-one and the
+    /// per-track repeat count. A `.systemSkip` (lock-screen/CarPlay ⏭ — iOS delivers it to
+    /// MusicKit itself, which parks its one-song queue; the end-monitor detects the park) must
+    /// advance exactly like the in-app ⏭. Without the discriminator, repeat-one replayed the
+    /// same track on every car ⏭ — the set could never advance from the wheel.
+    private func handleAppleMusicEnded(reason: AppleMusicPlaybackProvider.EndReason) {
         guard isRunning, index < queue.count,
               coordinator.activeBackend == .appleMusic,
               let npId = coordinator.appleMusic.nowPlaying?.songId,
               queue[index].matches(npId) else { return }
+        if reason == .systemSkip {
+            NPLog.trace("setlist AM system-skip → advance from index \(index)")
+            advanceToNext()
+            return
+        }
         // Repeat-ONE (whole-session mode): replay the current AM track from the top.
         if repeatMode == .one {
-            Task { await playCurrent(fresh: true) }
+            startPlayCurrent(fresh: true)
             return
         }
         if currentPlaysRemaining > 1 {
             currentPlaysRemaining -= 1
-            Task { await playCurrent(fresh: false) }
+            startPlayCurrent(fresh: false)
             return
         }
         advanceToNext()
@@ -983,7 +1000,7 @@ final class SetlistPlayer {
                 // player behaviour); `canonicalOrder` is untouched so shuffle-OFF still restores.
                 if shuffleEnabled { reshuffleEntireQueue() }
                 persistSession(positionMs: 0)
-                Task { await playCurrent(fresh: true) }
+                startPlayCurrent(fresh: true)
                 return
             }
             // CRITIC-D — a DEVICE-mode set that reached the end having never loaded a single
@@ -1000,8 +1017,23 @@ final class SetlistPlayer {
             }
         } else {
             persistSession(positionMs: 0)
-            Task { await playCurrent(fresh: true) }
+            startPlayCurrent(fresh: true)
         }
+    }
+
+    /// The one in-flight `playCurrent` task. Every start CANCELS the previous one — a skip
+    /// storm must land on the LAST pressed row, and cancellation is what stops a superseded
+    /// row's still-resolving cloud fetch from loading its (now unwanted) audio over the newer
+    /// row: the URLSession awaits inside the resolve throw on cancel, so the stale path dies
+    /// before it reaches `player.load`. The `playGeneration` guard inside `playCurrent` is the
+    /// backstop for a resolve already past its last cancellation point.
+    @ObservationIgnored private var playTask: Task<Void, Never>?
+
+    /// THE way to invoke `playCurrent` — every call site funnels through here so the
+    /// cancel-the-previous rule can't be forgotten at one of them.
+    private func startPlayCurrent(fresh: Bool = true, resumeAtMs: Int? = nil) {
+        playTask?.cancel()
+        playTask = Task { await playCurrent(fresh: fresh, resumeAtMs: resumeAtMs) }
     }
 
     /// Resolve the SOURCE fresh each track (a burnt file may have been purged since the
@@ -1024,6 +1056,17 @@ final class SetlistPlayer {
         // surfaces (the Now Playing panel). Holding here freezes queue/index exactly as
         // `play(...)` left them. No-op in normal use.
         if ProcessInfo.processInfo.environment["PDJ_HOLD_PLAYBACK"] != nil { return }
+        // A task that was cancelled BEFORE it got to run (a skip storm enqueues many) must do
+        // nothing at all — above all it must NOT claim a generation below: a dead straggler
+        // bumping the counter would rob the one LIVE task of its claim, and its dead-source
+        // advance/stop would then never run (a foreign single that failed to resolve kept its
+        // run "running" forever — the puzzle takeover test caught exactly that).
+        if Task.isCancelled { return }
+        // Claim the generation for THIS start attempt — every branch, including the synchronous
+        // local-file ones, so an older cloud resolve still in flight is superseded no matter
+        // what kind of row the newer skip landed on (see the SUPERSEDE GUARD at the await).
+        playGeneration &+= 1
+        let playGen = playGeneration
         let it = queue[index]
 
         // STUDIO rows (sample/loop/pattern — spec §8): resolved via the StudioStore seam
@@ -1129,8 +1172,25 @@ final class SetlistPlayer {
             // provider cycle in `coordinator.play` stops it only if the backend actually
             // changes, which keeps an AM→AM advance gapless.
             if coordinator.activeBackend != .appleMusic { player.stop() }
+            // INSTANT metadata: the lock-screen/CarPlay card shows THIS row's title/artist now,
+            // while the audio resolves — so skipping through a set reads like seeking, not like
+            // seconds of the previous song's card per press (Levi, 2026-08-19). Arbiter-guarded
+            // inside; a resolve that lands on Apple Music replaces it (iOS impersonation writes
+            // the real card; macOS `idleForExternalPlayback` scrubs ours for MusicKit's own).
+            player.announceUpcoming(title: it.title, artist: it.artist, songId: it.id)
+            // SUPERSEDE GUARD for rapid skips: this playCurrent claimed `playGen` at entry; a
+            // newer skip/jump claims a newer one (every branch bumps it, including the
+            // synchronous local ones). If, by the time OUR slow resolve returns, someone newer
+            // has claimed the deck, this run must do NOTHING — neither advance, nor arm
+            // boundaries for, nor hand the card to, a track the listener already skipped past
+            // (the stems-toggle generation discipline: commit only at your own generation).
             await coordinator.play(id: it.id, title: it.title, artist: it.artist,
                                    atMs: resumeAtMs, variant: it.variant)
+            // `Task.isCancelled` first: a superseding skip cancels this task, which makes the
+            // resolve throw into `lastErrorMessage` — without this check the error branch below
+            // would read that CANCELLATION as a dead source and spuriously advance the deck a
+            // second row (the canceller may not have bumped the generation yet when we resume).
+            guard !Task.isCancelled, playGen == playGeneration else { return }   // superseded
             // Dead source (no server / rip error) → no end event will fire; advance now.
             if coordinator.lastErrorMessage != nil { advanceToNext(); return }
             // Apple Music STREAM: MusicKit owns the audio. On iOS/CarPlay it writes NOTHING to
@@ -1266,7 +1326,7 @@ final class SetlistPlayer {
         // kill immediately after ▶ resuming where the user actually was, not at 0:00.
         persistSession(positionMs: at)
         // fresh: false — restore() already armed the current row's repeat counter.
-        Task { await playCurrent(fresh: false, resumeAtMs: at) }
+        startPlayCurrent(fresh: false, resumeAtMs: at)
     }
 
     /// ▶ on a deck whose CURRENT row never actually started sounding — the cloud resolve
@@ -1279,7 +1339,7 @@ final class SetlistPlayer {
     @discardableResult
     func startCurrent() -> Bool {
         guard isRunning, index < queue.count, !isHeldForResume else { return false }
-        Task { await playCurrent(fresh: false) }
+        startPlayCurrent(fresh: false)
         return true
     }
 

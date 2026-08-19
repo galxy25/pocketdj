@@ -223,7 +223,8 @@ final class DiscoverAddsStoreTests: XCTestCase {
         XCTAssertEqual(c.pocket(pk.id)!.songRepeats["am_real9"], 3)
         XCTAssertNil(c.pocket(pk.id)!.songRepeats["amrec_9"])
         XCTAssertEqual(c.setlist(sl!.id)!.tracks.map(\.songId), ["am_real9"])
-        // And it persisted.
+        // And it persisted. (Flush first: save() encodes+writes async now.)
+        c.flushDocumentNow()
         let reloaded = CollectionsStore(fileURL: url)
         XCTAssertEqual(reloaded.pocket(pk.id)?.songIds.first, "am_real9")
     }

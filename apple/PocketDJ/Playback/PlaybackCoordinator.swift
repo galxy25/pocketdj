@@ -326,8 +326,17 @@ final class PlaybackCoordinator {
     /// Is `songId` the Apple Music now-playing song? (The rip path keeps keying off
     /// `RipsStore.nowPlaying` directly — the coordinator doesn't duplicate that state — so
     /// this only answers the Apple Music branch. The row ▶ ORs the two together.)
+    ///
+    /// BASE-ID TOLERANT, deliberately: an edition-substituted row streams under its VARIANT
+    /// id ("sng_…_clean"/"_explicit") while every caller asks with the BASE id the row
+    /// displays. Exact `==` left the gate closed for the whole track, so the deck's tonearm
+    /// read the idle local engine's 0:00 all song and the artwork URL was never consulted —
+    /// the "progress stuck at 0:00 / no art" pair on substituted streams. Same dual-id
+    /// tolerance as `SetlistPlayer.Item.matches`; the base-id derivation can never match a
+    /// DIFFERENT song.
     func isAppleMusicNowPlaying(_ songId: String) -> Bool {
-        activeBackend == .appleMusic && appleMusic.nowPlaying?.songId == songId
+        guard activeBackend == .appleMusic, let np = appleMusic.nowPlaying?.songId else { return false }
+        return SongVariant.baseId(np) == SongVariant.baseId(songId)
     }
 
     // MARK: Provider lookup

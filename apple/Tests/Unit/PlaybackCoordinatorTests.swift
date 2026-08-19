@@ -114,4 +114,28 @@ final class PlaybackCoordinatorTests: XCTestCase {
         XCTAssertEqual(PlaybackBackend.appleMusic.viaLabel, "via Apple Music")
         XCTAssertEqual(PlaybackBackend.ripServer.viaLabel, "via rip")
     }
+
+    /// REGRESSION (deck stuck at 0:00 / no art on substituted streams): an edition-substituted
+    /// row streams under its VARIANT id while every surface asks with the BASE id. The gate
+    /// must be base-id tolerant — and must still never match a DIFFERENT song (or another
+    /// song's variant).
+    func testIsAppleMusicNowPlayingIsVariantTolerant() {
+        let c = makeCoordinator()
+        c.setActiveBackendForTests(.appleMusic)
+        c.appleMusic.setNowPlayingForTests(.init(songId: SongVariant.variantId("sng_0123456789ab", .explicit),
+                                                 title: "X", artist: "A"))
+        XCTAssertTrue(c.isAppleMusicNowPlaying("sng_0123456789ab"), "base id matches its own streaming variant")
+        XCTAssertTrue(c.isAppleMusicNowPlaying(SongVariant.variantId("sng_0123456789ab", .explicit)))
+        XCTAssertTrue(c.isAppleMusicNowPlaying(SongVariant.variantId("sng_0123456789ab", .clean)),
+                      "sibling edition of the same base song still IS that song")
+        XCTAssertFalse(c.isAppleMusicNowPlaying("sng_ba9876543210"), "a different song never matches")
+        XCTAssertFalse(c.isAppleMusicNowPlaying(SongVariant.variantId("sng_ba9876543210", .explicit)))
+        // And the plain (un-substituted) case is unchanged.
+        c.appleMusic.setNowPlayingForTests(.init(songId: "sng_plain", title: "P", artist: "A"))
+        XCTAssertTrue(c.isAppleMusicNowPlaying("sng_plain"))
+        XCTAssertFalse(c.isAppleMusicNowPlaying("sng_0123456789ab"))
+        // Idle / non-AM backend: never claims.
+        c.setActiveBackendForTests(nil)
+        XCTAssertFalse(c.isAppleMusicNowPlaying("sng_plain"))
+    }
 }

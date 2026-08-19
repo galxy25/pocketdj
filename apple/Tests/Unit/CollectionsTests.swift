@@ -214,6 +214,7 @@ final class CollectionsStoreTests: XCTestCase {
         let s1 = CollectionsStore(fileURL: url)
         let p = s1.createPocket("Soul")
         s1.addSong("sng_1", to: AddTarget(kind: .pocket, id: p.id))
+        s1.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
         let s2 = CollectionsStore(fileURL: url)
         XCTAssertEqual(s2.lastAddTarget?.kind, .pocket)
         XCTAssertEqual(s2.lastAddTarget?.id, p.id)
@@ -287,7 +288,8 @@ final class CollectionsStoreTests: XCTestCase {
         let p = try! XCTUnwrap(s1.convertToPocket(playlistId: pl.id))
         XCTAssertEqual(p.songIds, ["sng_1", "sng_9"])      // recursed into the sub-sequence
 
-        // Reload from disk → the converted pocket survived.
+        // Reload from disk → the converted pocket survived. (Flush first: save() is async now.)
+        s1.flushDocumentNow()
         let s2 = CollectionsStore(fileURL: url)
         XCTAssertEqual(s2.pocket(p.id)?.songIds, ["sng_1", "sng_9"])
     }
@@ -385,6 +387,7 @@ final class CollectionsStoreTests: XCTestCase {
         let s1 = CollectionsStore(fileURL: url)
         let p = s1.convertToPocket(source: sourcePL("pl_1", "AM Mix", ["sng_1"]))
         s1.syncConvertedCollections(with: [sourcePL("pl_1", "AM Mix", ["sng_1", "sng_2"])])
+        s1.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
         let s2 = CollectionsStore(fileURL: url)
         let back = s2.pocket(p.id)!
         XCTAssertEqual(back.songIds, ["sng_1", "sng_2"])
@@ -525,6 +528,7 @@ final class CollectionsStoreTests: XCTestCase {
         let s1 = CollectionsStore(fileURL: url)
         let p = s1.createPocket("Poetry")
         s1.addNote("A poem", toPocket: p.id)
+        s1.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
         // Reloads from disk with notes intact.
         let s2 = CollectionsStore(fileURL: url)
         XCTAssertEqual(s2.pocket(p.id)?.notes.first?.text, "A poem")
@@ -594,6 +598,7 @@ final class CollectionsStoreTests: XCTestCase {
         let s1 = CollectionsStore(fileURL: url)
         let p = s1.createPocket("Soul"); s1.addSong("sng_1", toPocket: p.id)
         _ = s1.createPlaylist("Set")
+        s1.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
         let s2 = CollectionsStore(fileURL: url)
         XCTAssertEqual(s2.pockets.first?.name, "Soul")
         XCTAssertEqual(s2.pockets.first?.songIds, ["sng_1"])
@@ -661,6 +666,7 @@ final class CollectionsStoreTests: XCTestCase {
         s1.addSong("lp_a", to: AddTarget(kind: .playlist, id: pl.id, sequenceId: pl.sequences[0].nodeId), repeatCount: 6)
         let p = s1.createPocket("Pkt")
         s1.addSong("smp_a", to: AddTarget(kind: .pocket, id: p.id), repeatCount: 3)
+        s1.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
         let s2 = CollectionsStore(fileURL: url)
         XCTAssertEqual(s2.playlist(pl.id)?.sequences[0].children?.first?.repeatCount, 6)
         XCTAssertEqual(s2.pocket(p.id)?.songRepeats["smp_a"], 3)
@@ -740,6 +746,7 @@ final class CollectionsStoreTests: XCTestCase {
         let a = s1.createPocket("A"), b = s1.createPocket("B")
         s1.addSong("sng_1", to: AddTarget(kind: .pocket, id: a.id))
         s1.addSong("sng_2", to: AddTarget(kind: .pocket, id: b.id))
+        s1.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
         let s2 = CollectionsStore(fileURL: url)
         XCTAssertEqual(s2.recentAddTargets.map(\.id), [b.id, a.id])
     }

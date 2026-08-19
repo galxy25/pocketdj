@@ -773,7 +773,7 @@ final class SetlistPlayerTests: XCTestCase {
         XCTAssertTrue(seq.isRunning)
 
         // B's stream ending advances to C (burned → local) — the set did NOT stop.
-        coord.appleMusic.onTrackEnded?()
+        coord.appleMusic.onTrackEnded?(.natural)
         await waitUntil("advanced past the adopted AM track to C") { rips.nowPlaying?.songId == "sng_c" }
         XCTAssertEqual(seq.index, 2)
         XCTAssertTrue(seq.isRunning)
@@ -781,6 +781,84 @@ final class SetlistPlayerTests: XCTestCase {
 
         seq.stop()
         cleanBurnedFiles(["sng_a.mp3","sng_a.txt","sng_c.mp3","sng_c.txt"])
+    }
+
+    // MARK: Repeat-one vs. the system remote ⏭ during an Apple Music stream
+
+    /// REGRESSION (CarPlay repeat-one deadlock): iOS delivers the lock-screen/CarPlay ⏭ to
+    /// MusicKit itself; the end monitor detects the skip-park and reports the end with reason
+    /// `.systemSkip`. With repeat-one ON, that reason must advance the set exactly like the
+    /// in-app ⏭ — the pre-fix code treated every AM end as natural, so repeat-one replayed
+    /// the same song on every car ⏭ and the set could never advance from the wheel. A
+    /// `.natural` end under repeat-one still replays. Queue edits (remove/reorder of the
+    /// upcoming rows) beforehand must not change either behavior.
+    func testRepeatOneAdvancesOnSystemSkipButReplaysOnNaturalEnd() async {
+        cleanBurnedFiles(["sng_b.mp3","sng_b.txt","sng_c.mp3","sng_c.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_b")
+        await burn(rips, burns, songId: "sng_c")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "sng_a", title: "A", artist: "A"),   // the AM-streamed row (not burned)
+            .init(id: "sng_b", title: "B", artist: "A"),
+            .init(id: "sng_c", title: "C", artist: "A"),
+            .init(id: "sng_d", title: "D", artist: "A"),
+        ])
+        seq.setRepeatMode(.one)
+        // Put the deck in the "streaming A via Apple Music" state (the unit-test seam — the
+        // real provider chain can't run MusicKit headless).
+        coord.appleMusic.setNowPlayingForTests(.init(songId: "sng_a", title: "A", artist: "A"))
+        coord.setActiveBackendForTests(.appleMusic)
+        await waitUntil("deck settled on A") { seq.index == 0 }
+
+        // The user re-arranges what plays next from the phone — remove one upcoming row,
+        // reorder the rest — the reported repro's preconditions.
+        let upcoming = seq.upcoming
+        if let d = upcoming.first(where: { $0.title == "D" }) { seq.removeUpcoming(uids: [d.uid]) }
+        seq.moveUpcoming(fromOffsets: IndexSet(integer: 1), toOffset: 0)
+
+        // CarPlay ⏭ (system skip): repeat-one must NOT swallow it — the set advances.
+        coord.appleMusic.onTrackEnded?(.systemSkip)
+        await waitUntil("system skip advanced the set") { seq.index == 1 }
+        XCTAssertTrue(seq.isRunning)
+
+        seq.stop()
+        cleanBurnedFiles(["sng_b.mp3","sng_b.txt","sng_c.mp3","sng_c.txt"])
+    }
+
+    /// The natural-end half: repeat-one replays the SAME AM row (index stays put), proving
+    /// the discriminator didn't break repeat-one itself. The row is BURNED so the
+    /// fire-and-forget replay actually resolves in this harness (an unresolvable replay
+    /// would advance as a dead source and fail the assertion for the wrong reason).
+    func testRepeatOneStillReplaysOnNaturalAppleMusicEnd() async {
+        cleanBurnedFiles(["sng_a.mp3","sng_a.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_a")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        seq.play([
+            .init(id: "sng_a", title: "A", artist: "A"),
+            .init(id: "sng_b", title: "B", artist: "A"),
+        ])
+        seq.setRepeatMode(.one)
+        coord.appleMusic.setNowPlayingForTests(.init(songId: "sng_a", title: "A", artist: "A"))
+        coord.setActiveBackendForTests(.appleMusic)
+        await waitUntil("deck settled on A") { seq.index == 0 }
+
+        coord.appleMusic.onTrackEnded?(.natural)
+        // Give the fire-and-forget replay a beat, then assert the deck did NOT advance.
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        XCTAssertEqual(seq.index, 0, "natural end under repeat-one replays the same row")
+        XCTAssertTrue(seq.isRunning)
+        seq.stop()
+        cleanBurnedFiles(["sng_a.mp3","sng_a.txt"])
     }
 
     /// A manual play of a song that is NOT in the running set must NOT reposition the
