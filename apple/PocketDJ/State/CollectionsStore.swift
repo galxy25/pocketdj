@@ -37,6 +37,11 @@ final class CollectionsStore {
     /// re-opens. nil for browser singles / direct songIds plays with no origin threaded.
     private(set) var nowPlayingOriginId: String?
     private let fileURL: URL
+    /// The off-main encode+write pipeline behind `save()` — see `CollectionsDocumentWriter`.
+    @ObservationIgnored private let writer = CollectionsDocumentWriter()
+    /// Monotonic version stamped on every writer operation so writes land in mutation order
+    /// even when their tasks are scheduled out of order.
+    @ObservationIgnored private var saveVersion = 0
     /// Last-known "N songs · runtime" per collection, so the list never regresses to "0 songs"
     /// while the catalog is still decoding. @ObservationIgnored: recording into it happens while
     /// a view body READS the stats, and invalidating that body from inside itself would loop.
@@ -2827,12 +2832,51 @@ final class CollectionsStore {
     private func save() {
         // Every mutator funnels through here, so this is the one honest memo key.
         membershipRevision &+= 1
+        // ENCODE + WRITE OFF THE MAIN THREAD. This used to JSONEncode the whole document and
+        // write it synchronously right here — O(document) on the main actor for EVERY mutation.
+        // Play/Shuffle on a large source playlist upserts a Now Playing setlist holding the
+        // entire list (26,821 tracks for "Favorite Songs"), so that single line was the visible
+        // multi-second stall behind the ▶. The document is snapshotted here (cheap COW copies of
+        // value types), then encoded and written inside a version-ordered actor: writes land in
+        // version order regardless of task scheduling, and a newer version already on disk drops
+        // a stale straggler. Durability at suspension is covered by `flushDocumentNow()` on the
+        // scenePhase-background seam, same doctrine as PlaybackSessionStore.flush().
         let doc = CollectionsDocument(schemaVersion: collectionsSchemaVersion, pockets: pockets,
                                       playlists: playlists, setlists: setlists,
                                       folders: folders, lastAddTarget: lastAddTarget,
                                       recentAddTargets: recentAddTargets.isEmpty ? nil : recentAddTargets)
-        if let data = try? CollectionsCodec.encode(doc) { try? data.write(to: fileURL, options: .atomic) }
+        saveVersion &+= 1
+        let v = saveVersion, url = fileURL, w = writer
+        Task.detached(priority: .userInitiated) { await w.write(doc, version: v, to: url) }
         onChange?()
+    }
+
+    /// Synchronous last-chance write for the suspension seam (scenePhase `.background`) and the
+    /// tests' reload round-trips: the async writer's in-flight encode dies with the process, so
+    /// the freshest document must be on disk BEFORE iOS may kill us.
+    ///
+    /// ORDER MATTERS: the version mark must land in the actor BEFORE the inline write, and the
+    /// wait guarantees it. The actor serializes, so by the time `invalidate(through: v)` has
+    /// executed, every straggler save that arrived earlier has already written (and our inline
+    /// write below then supersedes it on disk), and every straggler that arrives later is
+    /// version-dropped. Writing first and marking after left a window where an older queued
+    /// save landed on top of the flushed file — the reload tests caught exactly that.
+    func flushDocumentNow() {
+        let doc = CollectionsDocument(schemaVersion: collectionsSchemaVersion, pockets: pockets,
+                                      playlists: playlists, setlists: setlists,
+                                      folders: folders, lastAddTarget: lastAddTarget,
+                                      recentAddTargets: recentAddTargets.isEmpty ? nil : recentAddTargets)
+        saveVersion &+= 1
+        let v = saveVersion, url = fileURL, w = writer
+        let barrier = DispatchSemaphore(value: 0)
+        Task.detached(priority: .userInitiated) {
+            await w.invalidate(through: v)
+            barrier.signal()
+        }
+        // Bounded block of the caller (the actor runs on the cooperative pool, never on this
+        // thread, so this cannot deadlock; the timeout is a belt against a wedged executor).
+        _ = barrier.wait(timeout: .now() + 5)
+        if let data = try? CollectionsCodec.encode(doc) { try? data.write(to: url, options: .atomic) }
     }
 
     /// Re-decode the on-disk document after CloudSyncService pulled a newer cloud copy
@@ -2849,6 +2893,11 @@ final class CollectionsStore {
         recentAddTargets = doc.recentAddTargets ?? []
         setlists.removeAll { $0.id == nowPlayingSetlistId || $0.playlistId == nowPlayingPlaylistId }
         membershipRevision &+= 1
+        // The file now holds cloud-pulled content newer than anything the async writer may still
+        // have queued — invalidate those stragglers so a pre-pull save can't overwrite the pull.
+        saveVersion &+= 1
+        let v = saveVersion, w = writer
+        Task.detached { await w.invalidate(through: v) }
         onChange?()
     }
 
@@ -2865,7 +2914,46 @@ final class CollectionsStore {
         lastAddTarget = nil
         recentAddTargets = []
         membershipRevision &+= 1
-        try? FileManager.default.removeItem(at: fileURL)
+        // Version-ordered like save(): a queued async write of the PRE-wipe document must not
+        // resurrect the file after this delete, so the delete goes through the same writer.
+        saveVersion &+= 1
+        let v = saveVersion, url = fileURL, w = writer
+        Task.detached(priority: .userInitiated) { await w.delete(version: v, at: url) }
         onChange?()
+    }
+}
+
+// ============================================================================
+// MARK: - Background document writer (encode + write off the main actor)
+// ============================================================================
+
+/// Serialized, VERSION-ORDERED writer for the collections document. Both the JSON encode and
+/// the disk write happen inside the actor — off the main actor — because the encode is the
+/// expensive half: a document holding a large Now Playing setlist encodes megabytes of track
+/// snapshots, which used to run synchronously inside every `save()`.
+///
+/// Version ordering (not arrival ordering) is the correctness rule: unstructured Tasks may reach
+/// the actor out of submission order, so each operation carries the store's monotonic
+/// `saveVersion` and anything at-or-below the high-water mark is dropped. `invalidate(through:)`
+/// raises the mark without touching the file — used after a synchronous flush or a cloud pull
+/// made the on-disk content newer than every queued write.
+actor CollectionsDocumentWriter {
+    private var latest = 0
+
+    func write(_ doc: CollectionsDocument, version: Int, to url: URL) {
+        guard version > latest else { return }
+        latest = version
+        guard let data = try? CollectionsCodec.encode(doc) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+
+    func delete(version: Int, at url: URL) {
+        guard version > latest else { return }
+        latest = version
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    func invalidate(through version: Int) {
+        latest = max(latest, version)
     }
 }

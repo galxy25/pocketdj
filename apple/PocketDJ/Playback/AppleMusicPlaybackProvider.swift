@@ -58,7 +58,7 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// sequencer doesn't observe, so WITHOUT this the set freezes after one Apple Music song
     /// (the "plays one song then stops" bug). Owned by `SetlistPlayer` across its play()/stop()
     /// lifecycle (mirroring `PlayerEngine.onTrackEnded`); nil ⇒ no consumer.
-    var onTrackEnded: (() -> Void)?
+    var onTrackEnded: ((EndReason) -> Void)?
 
     /// Fired when the streaming track was RESTARTED from outside (the system remote ⏮, which
     /// iOS delivers to MusicKit itself — it rewinds its one-song queue to 0:00 and tells nobody).
@@ -74,6 +74,10 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// The polling task that watches `ApplicationMusicPlayer` for end-of-track. Cancelled on
     /// stop / superseded on each new `tryPlay`.
     @ObservationIgnored private var stateMonitor: Task<Void, Never>?
+
+    /// Monotonic ticket for `tryPlay`'s supersede guard — a newer call invalidates an older
+    /// one still parked at a network await (see the guard comment in `tryPlay`).
+    @ObservationIgnored private var tryPlayGeneration = 0
 
     /// Wall-clock position smoothing. MusicKit's `playbackTime` is laggy/stale DURING playback
     /// (it advances mainly on state changes), which froze the CarPlay/lock-screen progress bar
@@ -104,13 +108,32 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// track — the "system ⏭ stops the song but never advances" bug.
     nonisolated static func trackEnded(stopped: Bool, paused: Bool,
                                        playbackTime: Double, expectedDuration: Double) -> Bool {
-        if stopped { return true }
+        endReason(stopped: stopped, paused: paused,
+                  playbackTime: playbackTime, expectedDuration: expectedDuration) != nil
+    }
+
+    /// WHY the track ended. The set's reaction differs: a `.natural` end honors repeat-one /
+    /// per-track repeat counts (replay the song), while a `.systemSkip` — the listener pressed
+    /// ⏭ on the lock screen / CarPlay, which iOS delivers to MusicKit itself, never to our
+    /// remote handler — must advance EXACTLY like the in-app ⏭ does. Before the reason was
+    /// plumbed through, repeat-one swallowed the skip-park as a natural end and REPLAYED the
+    /// same song: with repeat-one on, the car's ⏭ could never leave the track (Levi,
+    /// 2026-08-19). nil ⇒ not ended.
+    enum EndReason { case natural, systemSkip }
+    nonisolated static func endReason(stopped: Bool, paused: Bool,
+                                      playbackTime: Double, expectedDuration: Double) -> EndReason? {
+        if stopped { return .natural }
         let atEnd = expectedDuration > 0 && playbackTime >= expectedDuration - 0.5
         // Paused parked at the very top (≤1 s) = the system-skip artifact, not a listener
         // pause — a pause in the first second of a track is the one (vanishingly rare)
-        // false positive, and its cost is only an early advance.
-        if paused { return playbackTime <= 1.0 || atEnd }
-        return atEnd
+        // false positive, and its cost is only an early advance (now: an advance rather
+        // than a repeat-one replay, which is also what a listener pausing at 0:00 after
+        // pressing ⏭ actually wanted).
+        if paused {
+            if playbackTime <= 1.0 && !atEnd { return .systemSkip }
+            return atEnd ? .natural : nil
+        }
+        return atEnd ? .natural : nil
     }
 
     /// Whether a still-PLAYING track was restarted from outside — the system remote ⏮,
@@ -170,9 +193,18 @@ extension AppleMusicPlaybackProvider {
     /// (vs. sample-exact for burned/ripped local files) — acceptable per spec §9.
     func tryPlay(_ song: IndexSong, atMs: Int?) async -> Bool {
         guard isReady else { return false }
+        // SUPERSEDE GUARD (provider-level): a skip storm can leave an OLDER tryPlay parked at
+        // one of the two network awaits below while a NEWER one already queued its song — the
+        // stale one resuming would re-queue the OLD song over the new audio and stamp
+        // `nowPlaying` with it. Claim a ticket at entry; after each await, a stale ticket
+        // stands down (mirrors SetlistPlayer's playGeneration; both layers are needed because
+        // the sequencer's cancel can land between this provider's suspension points).
+        tryPlayGeneration &+= 1
+        let ticket = tryPlayGeneration
         // 1) Resolve the song to a catalog track (namespaced `am:<id>` → direct fetch,
         //    else a title/artist search). A miss → false → the engine falls back to rips.
         guard let track = await provider.resolve(song) else { return false }
+        guard ticket == tryPlayGeneration else { return false }   // superseded mid-resolve
         // 2) Enqueue the resolved catalog song by its store id + play.
         do {
             let player = ApplicationMusicPlayer.shared
@@ -181,6 +213,7 @@ extension AppleMusicPlaybackProvider {
             req.limit = 1
             let resp = try await req.response()
             guard let catalogSong = resp.items.first else { return false }
+            guard ticket == tryPlayGeneration else { return false }   // superseded mid-fetch
             player.queue = [catalogSong]
             try await player.play()
             // 3) Cue: `play()` has returned (playback started), so the position write
@@ -304,13 +337,13 @@ extension AppleMusicPlaybackProvider {
                 // `trackEnded` covers .stopped, played-past-duration, AND the system-skip
                 // artifact (lock-screen/CarPlay ⏭ goes to MusicKit, which exhausts its
                 // one-song queue and parks PAUSED at ~0 / the end — see the func doc).
-                if Self.trackEnded(stopped: status == .stopped, paused: status == .paused,
-                                   playbackTime: t, expectedDuration: expected) {
-                    NPLog.trace("AM monitor: track ENDED (status=\(status) t=\(Int(t)) expected=\(Int(expected)))")
+                if let reason = Self.endReason(stopped: status == .stopped, paused: status == .paused,
+                                               playbackTime: t, expectedDuration: expected) {
+                    NPLog.trace("AM monitor: track ENDED reason=\(reason) (status=\(status) t=\(Int(t)) expected=\(Int(expected)))")
                     self.isPlaying = false
                     self.freezePositionClock()
                     self.stateMonitor = nil
-                    self.onTrackEnded?()
+                    self.onTrackEnded?(reason)
                     return
                 }
             }

@@ -313,9 +313,11 @@ final class WidgetSync {
 
     /// The MusicKit catalog artwork URL for `songId`, when it IS the Apple Music now-playing
     /// track. nil otherwise (idle, local playback, or the async resolve hasn't landed yet).
+    /// Base-id tolerant via `isAppleMusicNowPlaying` — a substituted row streams under its
+    /// VARIANT id while the widget asks with the BASE id, and exact `==` here left the widget
+    /// cover-less for the whole track (same gate bug as the deck's tonearm).
     private func amArtworkURL(for songId: String?) -> URL? {
-        guard let songId, coordinator.activeBackend == .appleMusic,
-              coordinator.appleMusic.nowPlaying?.songId == songId else { return nil }
+        guard let songId, coordinator.isAppleMusicNowPlaying(songId) else { return nil }
         return coordinator.appleMusic.nowPlaying?.artworkURL
     }
 

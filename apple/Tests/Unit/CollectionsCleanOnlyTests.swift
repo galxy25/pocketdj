@@ -45,6 +45,7 @@ final class CollectionsCleanOnlyTests: XCTestCase {
         XCTAssertNil(s1.playlist(pl.id)?.cleanOnly)          // untouched ⇒ nil (bytes unchanged)
         s1.setCleanOnly(true, forPlaylist: pl.id)
         s1.setCleanOnly(true, forPocket: pk.id)
+        s1.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
         // Reload from disk — the toggle round-trips.
         let s2 = CollectionsStore(fileURL: url)
         XCTAssertEqual(s2.playlist(pl.id)?.cleanOnly, true)

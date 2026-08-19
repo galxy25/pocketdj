@@ -20,6 +20,18 @@ private actor PlaybackSessionWriter {
             try? FileManager.default.removeItem(at: url)
         }
     }
+    /// ENCODE-inside-the-actor variant: for a large queue (a 26k-song source playlist) the
+    /// JSONEncode itself is the expensive half — encoding it on the main actor made every
+    /// skip/play snapshot a main-thread stall. The snapshot value rides over (cheap COW copy);
+    /// the version guard is checked again AFTER the encode so a newer write that landed while
+    /// this one was encoding still wins.
+    func write(snapshot: PlaybackSessionStore.Snapshot, version: Int, to url: URL) {
+        guard version > written else { return }
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        guard version > written else { return }
+        written = version
+        try? data.write(to: url, options: .atomic)
+    }
     func markWritten(_ version: Int) { written = max(written, version) }
 }
 
@@ -230,15 +242,17 @@ final class PlaybackSessionStore {
 
     // MARK: - Internals
 
-    /// Immediate, versioned write of the in-memory snapshot; the actual I/O is off-main.
+    /// Immediate, versioned write of the in-memory snapshot; BOTH the encode and the I/O are
+    /// off-main (see the writer's `write(snapshot:)` doc — encoding a huge queue inline here
+    /// was a per-skip main-thread stall).
     private func writeNow(at now: TimeInterval) {
         guard let current else { return }
         version += 1
         let v = version
         lastWriteAt = now
-        guard let data = try? JSONEncoder().encode(current) else { return }
         let url = fileURL
         let w = writer
-        Task { await w.write(data, version: v, to: url) }
+        let snap = current
+        Task { await w.write(snapshot: snap, version: v, to: url) }
     }
 }

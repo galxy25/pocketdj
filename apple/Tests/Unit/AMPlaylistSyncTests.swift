@@ -321,6 +321,7 @@ final class AMPlaylistSyncTests: XCTestCase {
         let collections = CollectionsStore(fileURL: url)
         let pl = collections.createPlaylist("comfort zone", songIds: [])
         collections.setAMSyncDirection(.pull, forPlaylist: pl.id)
+        collections.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
         let reloaded = CollectionsStore(fileURL: url)
         XCTAssertEqual(reloaded.playlist(pl.id)?.amSyncDir, .pull)
     }

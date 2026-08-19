@@ -166,7 +166,8 @@ final class PocketBuilderTests: XCTestCase {
         XCTAssertEqual(pocket?.songIds, ["sng_2", "sng_1"])     // model's order, bogus id dropped
         XCTAssertEqual(pocket?.description, "Created by Siri from: “test vibes”")
 
-        // Persisted: a fresh store from the same file sees the pocket.
+        // Persisted: a fresh store from the same file sees the pocket. (Flush: save() is async now.)
+        collections.flushDocumentNow()
         let reloaded = CollectionsStore(fileURL: url)
         XCTAssertEqual(reloaded.pocket(pocketId)?.songIds, ["sng_2", "sng_1"])
     }

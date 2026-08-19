@@ -138,6 +138,7 @@ final class ForYouRecsOptOutTests: XCTestCase {
         let playlist = seed.createPlaylist("OTG")
         seed.setRecommendationsEnabled(false, forPocket: pocket.id)
         seed.setRecommendationsEnabled(false, forPlaylist: playlist.id)
+        seed.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
 
         let reborn = CollectionsStore(fileURL: url)
         XCTAssertFalse(reborn.recommendationsEnabled(forCollection: pocket.id))

@@ -113,4 +113,47 @@ final class AppleMusicMonitorTests: XCTestCase {
         XCTAssertFalse(AppleMusicPlaybackProvider.trackRestarted(
             playbackTime: 1.9, maxObserved: 10.0))   // baseline too shallow → no fire
     }
+
+    // MARK: - endReason: WHY it ended (repeat-one must not swallow a system ⏭)
+
+    /// The skip-park shape (paused, position reset to ~0, not at the end) is a `.systemSkip`
+    /// — the set must ADVANCE even under repeat-one. Every other ended shape is `.natural`
+    /// (stopped, played past the duration, parked pinned AT the end), which repeat-one may
+    /// replay. Before the discriminator existed, repeat-one replayed the same song on every
+    /// CarPlay/lock-screen ⏭ and the set could never advance from the car.
+    func testSkipParkAtZeroIsSystemSkip() {
+        XCTAssertEqual(AppleMusicPlaybackProvider.endReason(
+            stopped: false, paused: true, playbackTime: 0.3, expectedDuration: 200), .systemSkip)
+    }
+
+    func testSkipParkWithUnknownDurationIsSystemSkip() {
+        XCTAssertEqual(AppleMusicPlaybackProvider.endReason(
+            stopped: false, paused: true, playbackTime: 0, expectedDuration: 0), .systemSkip)
+    }
+
+    func testParkedPinnedAtTheEndIsNatural() {
+        XCTAssertEqual(AppleMusicPlaybackProvider.endReason(
+            stopped: false, paused: true, playbackTime: 199.8, expectedDuration: 200), .natural)
+    }
+
+    func testStoppedIsNatural() {
+        XCTAssertEqual(AppleMusicPlaybackProvider.endReason(
+            stopped: true, paused: false, playbackTime: 42, expectedDuration: 180), .natural)
+    }
+
+    func testPlayedPastDurationIsNatural() {
+        XCTAssertEqual(AppleMusicPlaybackProvider.endReason(
+            stopped: false, paused: false, playbackTime: 179.6, expectedDuration: 180), .natural)
+    }
+
+    func testListenerPauseMidSongHasNoEndReason() {
+        XCTAssertNil(AppleMusicPlaybackProvider.endReason(
+            stopped: false, paused: true, playbackTime: 90, expectedDuration: 180))
+    }
+
+    /// A ≤1 s track (jingle) parked at its end is BOTH ≤1.0 and atEnd — atEnd wins: natural.
+    func testTinyTrackParkedAtItsEndIsNatural() {
+        XCTAssertEqual(AppleMusicPlaybackProvider.endReason(
+            stopped: false, paused: true, playbackTime: 0.8, expectedDuration: 1.0), .natural)
+    }
 }

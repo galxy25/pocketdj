@@ -253,12 +253,18 @@ final class CollectorsPuzzleEngineTests: XCTestCase {
         s.sequencer.play([SetlistPlayer.Item(id: "other_1", title: "Theirs", artist: "Someone")],
                          sourceSetlistId: "set_other")
         try await Task.sleep(for: .milliseconds(400))
-        // The continuation DID run (the round's own queue grew — a silent or taken-over
-        // round still tops up)…
-        XCTAssertGreaterThan(s.engine.queue.count, 60)
-        // …but nothing puzzle-shaped was pushed into the foreign playback. (The audio queue
-        // itself is not asserted directly: this stack's items are unplayable, so the
-        // sequencer tears any queue down on the next runloop turn — an `await` sees [].)
+        // The ticker DETECTS the takeover and ends the round — the designed ownership-lost
+        // path (`tickOnce` → `endRound(stopAudio: false)`). Historically this test saw the
+        // round survive instead: the sequencer's then-unguarded stale tasks (spawned by the
+        // 51 skips, superseded but never cancelled) ran against the FOREIGN queue and tore
+        // the unplayable foreign run down before any tick could see it running — a cross-run
+        // pollution bug this test was accidentally leaning on. With superseded starts now
+        // cancelled, only the foreign run's own task touches the foreign queue, the takeover
+        // is visible to the very next tick, and the round ends as designed.
+        XCTAssertEqual(s.engine.phase, .finished, "a detected takeover ends the round")
+        // A FINISHED round's airborne top-up continuation mutates nothing…
+        XCTAssertEqual(s.engine.queue.count, 60, "no append into a finished round")
+        // …and above all, nothing puzzle-shaped was pushed into the foreign playback.
         XCTAssertTrue(Set(s.sequencer.queue.map(\.id)).isDisjoint(with: Set(s.engine.queue.map(\.id))),
                       "no puzzle song was smuggled into their playback")
     }

@@ -167,6 +167,7 @@ final class CollectionsBatchAddTests: XCTestCase {
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
         let seed = CollectionsStore(fileURL: url)
         let pl = seed.createPlaylist("Set")
+        seed.flushDocumentNow()   // save() encodes+writes async now; land it before doctoring the file
         // Doctor the on-disk document into the representable-but-never-UI-minted state.
         var doc = try CollectionsCodec.decode(Data(contentsOf: url))
         doc.playlists[0].sequences = []

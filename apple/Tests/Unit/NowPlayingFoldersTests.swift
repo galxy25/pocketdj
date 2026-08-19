@@ -65,6 +65,7 @@ final class NowPlayingFoldersTests: XCTestCase {
         _ = s1.playNow(songIds: ["sng_1"], name: "NP")
         // Never surfaced as a member of its synthetic parent (or any list helper).
         XCTAssertTrue(s1.setlists(forPlaylist: nowPlayingPlaylistId).isEmpty)
+        s1.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
         // Reload: the stale reserved setlist is dropped on launch.
         let s2 = CollectionsStore(fileURL: url); s2.app = app
         XCTAssertNil(s2.nowPlayingSetlist())
@@ -130,6 +131,7 @@ final class NowPlayingFoldersTests: XCTestCase {
         let pl = s1.createPlaylist("Mix")
         let f = s1.createFolder("F")
         s1.setPlaylistFolder(pl.id, folderId: f.id)
+        s1.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
         // Reloads with folder + membership intact.
         let s2 = CollectionsStore(fileURL: url)
         XCTAssertEqual(s2.folder(f.id)?.name, "F")
@@ -210,6 +212,7 @@ final class NowPlayingFoldersTests: XCTestCase {
         XCTAssertNil(s1.pocket(pk.id)?.folderId)          // starts top-level
         s1.setPocketFolder(pk.id, folderId: f.id)
         XCTAssertEqual(s1.pocket(pk.id)?.folderId, f.id)
+        s1.flushDocumentNow()   // save() encodes+writes async now; land it before re-reading
         // Reloads from disk with folderId intact.
         let s2 = CollectionsStore(fileURL: url)
         XCTAssertEqual(s2.pocket(pk.id)?.folderId, f.id)
