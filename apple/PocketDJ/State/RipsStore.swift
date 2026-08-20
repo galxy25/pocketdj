@@ -274,6 +274,14 @@ final class RipsStore {
 
     // MARK: Lifecycle
 
+    /// Monotonic stamp of the LAST manifest response to arrive — the detached-decode adoption
+    /// guard. The decode suspends between response arrival and `manifest = decoded`, so two
+    /// overlapping refreshes (rip completion, the burn loops, the UI Refresh button) could land
+    /// in DECODE-completion order and let an older response clobber a newer one (a just-ready
+    /// rip flipping back to "not ripped" until the next poll). Adoption now requires being the
+    /// newest arrival; a superseded decode is discarded.
+    @ObservationIgnored private var manifestResponseGen = 0
+
     /// Load the public manifest (cached songs). Safe to call repeatedly.
     func refreshManifest() async {
         var request = URLRequest(url: manifestURL)
@@ -281,6 +289,10 @@ final class RipsStore {
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
+            // Stamp at RESPONSE arrival (still on the main actor, pre-suspension): responses
+            // are ordered here, decodes may finish in any order.
+            manifestResponseGen &+= 1
+            let gen = manifestResponseGen
             // Decode + diff DETACHED: the manifest is the whole rip corpus (tens of thousands
             // of entries) and this refires per rip/stem completion — decoding it on the main
             // actor was a steady idle-stall source. Publishing only on a real change keeps an
@@ -290,6 +302,7 @@ final class RipsStore {
                 let m = try JSONDecoder().decode([String: ManifestEntry].self, from: data)
                 return m == old ? nil : m
             }.value
+            guard manifestResponseGen == gen else { return }   // a newer response arrived — defer to it
             if let decoded { manifest = decoded }
             pruneFinishedStemJobs()
         } catch { /* offline — keep whatever we have */ }

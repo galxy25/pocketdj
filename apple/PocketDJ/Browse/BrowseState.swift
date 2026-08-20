@@ -210,6 +210,30 @@ final class BrowseState {
         return String(decoding: data, as: UTF8.self)
     }
 
+    /// Signature of the READ-TIME filter layer's INPUTS — for the collection-detail resolve
+    /// keys (`.task(id:)` snapshots). Those views resolve once and render the snapshot, so
+    /// unlike Browse (which re-applies membership/favorites per body pass against the live
+    /// stores) they must re-resolve when any read-time input moves. Folding just the
+    /// `membershipActive`/`favoriteActive` BOOLEANS was not enough: it missed a ♥ toggle
+    /// while the favorite filter was on, a selected collection's edit, a selection change
+    /// (playlist X → playlist Y), and a favorite-filter MODE flip (only → exclude) — every
+    /// one left the snapshot stale indefinitely. Empty ("") whenever no read-time filter is
+    /// active, so the common default state pays nothing and the key stays byte-stable.
+    func readTimeKey(collections: CollectionsStore?, favorites: FavoritesStore?) -> String {
+        guard kind == .song else { return "" }
+        var parts: [String] = []
+        if favoriteActive {
+            parts.append("fav=\(favoriteFilter.rawValue):\(favorites?.revision ?? -1)")
+        }
+        if membershipActive {
+            let inSel = includeAny ? "*" : includeIds.sorted().joined(separator: ",")
+            let exSel = excludeAny ? "*" : excludeIds.sorted().joined(separator: ",")
+            let stamp = collections?.membershipContentStamp ?? 0
+            parts.append("mem=\(inSel)/\(exSel):\(stamp)")
+        }
+        return parts.joined(separator: "|")
+    }
+
     /// Query → filter clauses → multi-key sort → collection membership. The pipeline
     /// the PWA browser uses (membership applied last, song mode only).
     ///

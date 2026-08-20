@@ -51,6 +51,9 @@ struct PocketDetailView: View {
     @State private var ripBurn = CollectionRipBurnController()
     /// CRITIC-B: don't stack a duplicate Now Playing SetlistDetailView (see PlaylistDetailView).
     @State private var nowPlayingPushed = false
+    /// The deferred (post-await) push must not fire from a screen the user already popped —
+    /// see IndexPlaylistDetailView.isOnScreen.
+    @State private var isOnScreen = false
     /// Feedback for the manual "Sync from source now" action (nil = no alert showing).
     @State private var syncResult: String?
     /// "Link to Apple Music playlist…" picker + its confirmation (rescues an unlinked pocket).
@@ -130,7 +133,7 @@ struct PocketDetailView: View {
     /// `mutatePocket`). Drives the `.task` resolve + the selection prune key.
     private var songsResolveKey: String {
         "\(pocketId)|\(pocket?.updatedAt ?? 0)|\(app.catalogRevision)|\(browse.resultsKey(app))"
-            + "|\(browse.membershipActive)|\(browse.favoriteActive)"
+            + "|\(browse.readTimeKey(collections: collections, favorites: favorites))"
     }
     private func selectionPayload() -> SongTransfer? {
         let ids = rowSelection.orderedSelection(in: displayedSongIds())
@@ -265,9 +268,13 @@ struct PocketDetailView: View {
         .collectionRipBurn(ripBurn)
         .onAppear {
             nowPlayingPushed = false
+            isOnScreen = true
             MainThreadStallWatchdog.shared.marker("collection-open-start PocketDetailView \(pocketId)")
         }
-        .onDisappear { MainThreadStallWatchdog.shared.marker("back-nav PocketDetailView") }
+        .onDisappear {
+            isOnScreen = false
+            MainThreadStallWatchdog.shared.marker("back-nav PocketDetailView")
+        }
         // OFF-main sort/filter resolve (auto-cancelling); the default stored-order state
         // clears it and resolves nothing.
         .task(id: songsResolveKey) {
@@ -541,7 +548,7 @@ struct PocketDetailView: View {
             await collections.playNowAsync(pocketId: pocketId, shuffle: shuffle)
             // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
             IntentDonations.playedPocket(collections.pocket(pocketId), shuffle: shuffle)
-            if !nowPlayingPushed {
+            if isOnScreen, !nowPlayingPushed {
                 nowPlayingPushed = true
                 path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
             }

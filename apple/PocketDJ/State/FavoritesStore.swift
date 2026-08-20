@@ -71,6 +71,13 @@ final class FavoritesStore {
     /// Seed generation already applied (0 = none). Surfaced for the owner's seed export.
     private(set) var seedVersion: Int = 0
 
+    /// Bumped on EVERY ♥-set mutation (user toggle, cloud reload, seed, remap). The
+    /// collection-detail resolve keys fold this in while a favorite filter is active, so a
+    /// snapshot-resolved list re-resolves when the underlying set moves — the live-read
+    /// surfaces (row hearts, Browse's read-time layer) don't need it, but a `.task(id:)`
+    /// keyed snapshot has no other way to hear about the change.
+    private(set) var revision: Int = 0
+
     @ObservationIgnored private let fileURL: URL
     /// The on-disk document CloudSyncService syncs (same-URL doctrine as the other stores).
     var syncFileURL: URL { fileURL }
@@ -268,12 +275,14 @@ final class FavoritesStore {
     private func apply(_ entry: Entry) {
         byId[entry.songId] = entry
         if entry.favorited { favoriteIds.insert(entry.songId) } else { favoriteIds.remove(entry.songId) }
+        revision &+= 1
     }
 
     private func adopt(_ doc: Document) {
         byId = Dictionary(uniqueKeysWithValues: doc.entries.map { ($0.songId, $0) })
         favoriteIds = Set(doc.entries.filter(\.favorited).map(\.songId))
         seedVersion = doc.seedVersion ?? 0
+        revision &+= 1
     }
 
     private nonisolated static func decode(_ url: URL) -> Document {
@@ -319,6 +328,7 @@ final class FavoritesStore {
         for (from, to) in pairs {
             guard var e = byId.removeValue(forKey: from) else { continue }
             favoriteIds.remove(from)
+            revision &+= 1   // the ♥ set moved even when the destination entry already exists
             e.songId = to
             // A destination the user already touched explicitly wins over the remapped one.
             if byId[to] == nil { apply(e) }

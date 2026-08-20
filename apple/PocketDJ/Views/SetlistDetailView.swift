@@ -9,6 +9,10 @@ struct SetlistLaunch: Hashable, Codable {
     let autoplay: Bool
 }
 
+/// See `SetlistDetailView.startToken` — a main-actor box the detached start chain can
+/// consult at its commit hop without touching view state off-actor.
+@MainActor final class StartToken { var value = 0 }
+
 /// The FROZEN, read-only performance produced by ▶ Play. "Spin these tracks, in this
 /// order." Each track carries its own snapshot (artist/name/bpm/camelot/length) so it
 /// reads standalone even if the catalog or pockets change. Mirrors the PWA's
@@ -30,6 +34,13 @@ struct SetlistDetailView: View {
     @Binding var path: NavigationPath
     /// One-shot guard so the autostart fires exactly once per view lifetime.
     @State private var didAutostart = false
+    /// Monotonic start token — REFERENCE-typed so the detached start chain can re-check it at
+    /// its commit hop. Two overlapping `startThisSet` chains (a revision restart + a fresh
+    /// tap, or a rapid re-tap while the 26k build runs) each go detached build →
+    /// `prepareStamped` → `play`, and nothing orders their landings: the OLDER chain could
+    /// finish its stamp last and silently win the deck with the superseded set. Only the
+    /// newest token may claim the queue ("cancelled tasks must never claim generations").
+    @State private var startToken = StartToken()
 
     @State private var nameDraft = ""
     @State private var renaming = false
@@ -80,6 +91,9 @@ struct SetlistDetailView: View {
         // (no-ops for the reserved Now-Playing set and transient source-playlist realizations,
         // whose playlistId isn't a user playlist).
         collections.markPlayed(playlistId: setlist.playlistId)
+        startToken.value &+= 1
+        let token = startToken.value
+        let tokenBox = startToken
         let tracks = setlist.tracks
         let sid = setlistId
         let sequencer = self.sequencer
@@ -89,7 +103,10 @@ struct SetlistDetailView: View {
             // main actor — precompute it here (prepareStamped detaches the map itself) so
             // the hop back is just the queue assignment.
             let stamped = await sequencer.prepareStamped(items, sourceSetlistId: sid)
-            await MainActor.run { sequencer.play(stamped, sourceSetlistId: sid, preStamped: true) }
+            await MainActor.run {
+                guard tokenBox.value == token else { return }   // superseded by a newer start
+                sequencer.play(stamped, sourceSetlistId: sid, preStamped: true)
+            }
         }
     }
 

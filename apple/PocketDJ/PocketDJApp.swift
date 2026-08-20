@@ -1645,8 +1645,13 @@ struct PocketDJApp: App {
                         // …and the Shared tab's rows, so it shows the user's source playlists
                         // rather than "No source playlists" for that same window.
                         app.sourcePlaylistsCache.flushIfNeeded()
-                        // Playback session: land the freshest position synchronously before a
-                        // possible suspension→kill (the same race the two flushes above close).
+                        // Playback session: if the post-play snapshot is still waiting on its
+                        // DETACHED 26k row projection, project + persist it inline NOW — a
+                        // suspension→kill inside that window otherwise loses the new queue
+                        // entirely (the relaunch would restore the previous session).
+                        setlistPlayer.flushSessionSnapshotNow()
+                        // …then land the freshest position synchronously before a possible
+                        // suspension→kill (the same race the flushes above close).
                         playbackSession.flush()
                         // Mix-deck session: same doctrine — the decks' latest playheads (and any
                         // debounced slider value still in memory) land before a suspension→kill.

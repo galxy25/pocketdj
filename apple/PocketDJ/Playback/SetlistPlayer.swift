@@ -93,6 +93,10 @@ final class SetlistPlayer {
     /// The `positionMs` intent of the call that kicked the cold build (play/index moves pass
     /// an explicit 0 so a kill mid-advance never resumes the new track at the old offset).
     @ObservationIgnored private var pendingColdPositionMs: Int?
+    /// The queue generation `pendingColdPositionMs` was stamped AGAINST. A superseded
+    /// generation's explicit stamp (an index-move 0, a resume offset) must never be persisted
+    /// against a NEWER queue — a mid-build queue edit otherwise restored at the wrong offset.
+    @ObservationIgnored private var pendingColdPositionGen = 0
     /// Memoized `PlaybackSessionStore.Row` projection of `queue` — `persistSession` fires on
     /// every index move (every skip), and re-mapping a 26k-track queue each time was most of
     /// the skip's main-thread cost on huge sets.
@@ -1365,7 +1369,12 @@ final class SetlistPlayer {
                  editionLocked: $0.editionLocked ?? false)
         }
         index = min(max(0, snap.index), queue.count - 1)
-        // A Collectors Puzzle run tags the sequencer with `puzzle_<roundId>` — but the round
+        // The snapshot's rows ARE the session projection — warm the memo with them (the queue
+        // didSet above just cleared it) so the first persist after ▶ (`resumeFromHold`'s
+        // adoption) stays SYNCHRONOUS instead of deferring to the detached cold build. Without
+        // this, a kill right after ▶ lost the adoption entirely and the restored set never
+        // persisted its position (`updatePosition` no-ops while no session is current).
+        sessionRowsMemo = snap.queue
         // engine does NOT survive a relaunch, so a restored run-tag is a ghost: it would make
         // every surface that treats the tag as "a live round owns the sequencer" (the MwF
         // queue-accepted append, for one) silently refuse forever. The QUEUE restores fine;
@@ -1482,7 +1491,10 @@ final class SetlistPlayer {
             // runs DETACHED and its landing persists with the then-current state. The explicit
             // `positionMs` intent (play/index moves pass 0) is carried across the hop; a queue
             // that moved on invalidates the build via `queueGeneration` and re-kicks.
-            if positionMs != nil { pendingColdPositionMs = positionMs }
+            if positionMs != nil {
+                pendingColdPositionMs = positionMs
+                pendingColdPositionGen = queueGeneration
+            }
             guard !sessionRowsBuildInFlight else { return }
             sessionRowsBuildInFlight = true
             let gen = queueGeneration
@@ -1494,7 +1506,14 @@ final class SetlistPlayer {
                     self.sessionRowsBuildInFlight = false
                     guard self.isRunning else { self.pendingColdPositionMs = nil; return }
                     guard self.queueGeneration == gen else {
-                        self.persistSession(positionMs: self.pendingColdPositionMs)   // re-kick for the new queue
+                        // Re-kick for the new queue — carrying the explicit position intent
+                        // ONLY if it was stamped against that queue. A stamp from the
+                        // superseded generation (the old play's 0, a pre-edit resume offset)
+                        // must not ride onto the new queue's snapshot.
+                        let carried = self.pendingColdPositionGen == self.queueGeneration
+                            ? self.pendingColdPositionMs : nil
+                        self.pendingColdPositionMs = nil
+                        self.persistSession(positionMs: carried)
                         return
                     }
                     self.sessionRowsMemo = rows
@@ -1506,6 +1525,23 @@ final class SetlistPlayer {
             return
         }
         persistSnapshot(rows: rows, positionMs: positionMs)
+    }
+
+    /// Land the freshest session snapshot SYNCHRONOUSLY — the scenePhase `.background` flush.
+    /// The first snapshot after a queue commit is normally deferred behind the detached 26k
+    /// projection above; a suspension→kill inside that window (tap ▶ then immediately swipe
+    /// home) would persist NOTHING for the new queue, so the relaunch restored the PREVIOUS
+    /// session — losing durability at the exact moment durable sessions exist for. Suspension
+    /// is imminent and no UI is on screen here, so paying the projection inline is correct.
+    func flushSessionSnapshotNow() {
+        guard sessionStore != nil, isRunning else { return }
+        if sessionRowsMemo == nil { sessionRowsMemo = Self.projectSessionRows(queue) }
+        // Consume the pending explicit intent (only if stamped against THIS queue); the
+        // still-in-flight detached build's landing then persists a harmless live-position
+        // duplicate of the same rows.
+        let pos = pendingColdPositionGen == queueGeneration ? pendingColdPositionMs : nil
+        pendingColdPositionMs = nil
+        persistSession(positionMs: pos)
     }
 
     /// The pure `queue` → session-row projection (shared by the warm sync path's memo fill —

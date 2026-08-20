@@ -55,6 +55,12 @@ final class PlayStatsStore {
     }
 
     private(set) var stats: [String: Stat] = [:]
+    /// Bumped on EVERY `stats` mutation — including the ones that DON'T route through
+    /// `PlayCountService.notePlayed` (a CloudSync `reloadFromDisk` pull, `clear`, the tagging
+    /// migration). `PlayCountService.revision` folds this in, so its snapshot memo (and every
+    /// revision-keyed badge/memo above it) invalidates when a cross-device play-stats pull
+    /// replaces the map — without this, badges served pre-pull counts until the next local play.
+    private(set) var revision: Int = 0
     /// Epoch ms the source-tagging migration ran — see `Document.appleTaggingMigratedAtMs`.
     private(set) var appleTaggingMigratedAtMs: Double?
     @ObservationIgnored private let fileURL: URL
@@ -92,7 +98,7 @@ final class PlayStatsStore {
             changed = true
         }
         if appleTaggingMigratedAtMs == nil { appleTaggingMigratedAtMs = now; changed = true }
-        if changed { save() }
+        if changed { revision &+= 1; save() }
     }
 
     nonisolated static func defaultURL() -> URL {
@@ -138,6 +144,7 @@ final class PlayStatsStore {
             stats[songId] = Stat(playCount: 1, lastPlayedAt: nowMs,
                                  appleCount: appleCounted ? 1 : nil, preTagPlayCount: 0)
         }
+        revision &+= 1
         save()
     }
 
@@ -220,6 +227,7 @@ final class PlayStatsStore {
         guard let data = try? Data(contentsOf: fileURL),
               let doc = try? JSONDecoder().decode(Document.self, from: data) else { return }
         stats = doc.stats
+        revision &+= 1
         // A cloud copy from a device that never ran the migration must not un-set the flag here —
         // take the OLDER of the two marks so the legacy era stays covered on both sides.
         appleTaggingMigratedAtMs = [appleTaggingMigratedAtMs, doc.appleTaggingMigratedAtMs]
@@ -231,6 +239,7 @@ final class PlayStatsStore {
     /// remove the persisted document. `try?` swallows a missing file, mirroring `save()`.
     func clear() {
         stats = [:]
+        revision &+= 1
         try? FileManager.default.removeItem(at: fileURL)
     }
 

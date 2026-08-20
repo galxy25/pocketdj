@@ -230,6 +230,133 @@ final class CollectionStallFixTests: XCTestCase {
                        "the badge's snapshot read must agree with combinedPlayCount")
     }
 
+    // MARK: async play twins (playlist/pocket) — full off-main resolve parity
+
+    /// The playlist twin now detaches the WHOLE resolve (DAG walk + CleanOnly + repeat map +
+    /// build), not just the track build — it must still produce the sync funnel's exact
+    /// document (order, drops, name, totalMs, source tagging).
+    func testPlayNowAsyncPlaylistTwinMatchesSyncFunnel() async throws {
+        let app = await loadedApp()
+        let collections = wiredStore(app)
+        let pl = collections.createPlaylist("Twin", songIds: ["sng_3", "sng_1", "sng_404", "sng_6", "sng_2"])
+
+        let sync = try XCTUnwrap(collections.playNow(playlistId: pl.id))
+        let syncIds = sync.tracks.map(\.songId)
+        let syncMs = sync.totalMs
+        let syncName = sync.name
+
+        let asyncResult = await collections.playNowAsync(playlistId: pl.id)
+        let viaAsync = try XCTUnwrap(asyncResult)
+        XCTAssertEqual(viaAsync.tracks.map(\.songId), syncIds)
+        XCTAssertEqual(viaAsync.totalMs, syncMs)
+        XCTAssertEqual(viaAsync.name, syncName)
+        XCTAssertEqual(viaAsync.id, nowPlayingSetlistId)
+        XCTAssertEqual(collections.nowPlayingSource, .playlist)
+        XCTAssertEqual(collections.setlists.filter { $0.id == nowPlayingSetlistId }.count, 1)
+    }
+
+    /// Same parity for the pocket twin (DAG-resolved order, dedupe, repeats snapshot).
+    func testPlayNowAsyncPocketTwinMatchesSyncFunnel() async throws {
+        let app = await loadedApp()
+        let collections = wiredStore(app)
+        let pk = collections.createPocket("TwinPocket", songIds: ["sng_6", "sng_2", "sng_2", "sng_1"])
+
+        let sync = try XCTUnwrap(collections.playNow(pocketId: pk.id))
+        let syncIds = sync.tracks.map(\.songId)
+        let syncMs = sync.totalMs
+
+        let asyncResult = await collections.playNowAsync(pocketId: pk.id)
+        let viaAsync = try XCTUnwrap(asyncResult)
+        XCTAssertEqual(viaAsync.tracks.map(\.songId), syncIds)
+        XCTAssertEqual(viaAsync.totalMs, syncMs)
+        XCTAssertEqual(viaAsync.name, sync.name)
+        XCTAssertEqual(collections.nowPlayingSource, .pocket)
+    }
+
+    // MARK: read-time filter resolve keys
+
+    /// The collection-detail resolve keys fold `readTimeKey` — it must move whenever a
+    /// read-time INPUT moves (♥ set while a favorite filter is on, the filter MODE, the
+    /// membership selection, a selected collection's contents) and stay byte-stable when
+    /// nothing relevant changes (the folded booleans it replaced missed all four).
+    func testReadTimeKeyTracksReadTimeInputs() async throws {
+        let app = await loadedApp()
+        let collections = wiredStore(app)
+        let favURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-rtk-fav-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: favURL) }
+        let favorites = FavoritesStore(fileURL: favURL)
+        let b = freshBrowse()
+
+        // No read-time filter: empty and unaffected by ♥ churn.
+        XCTAssertEqual(b.readTimeKey(collections: collections, favorites: favorites), "")
+        _ = favorites.toggle("sng_1", appleMusicId: nil)
+        XCTAssertEqual(b.readTimeKey(collections: collections, favorites: favorites), "")
+
+        // Favorite filter on: a ♥ toggle must re-key; a mode flip (only→exclude) must too.
+        b.favoriteFilter = .only
+        let k1 = b.readTimeKey(collections: collections, favorites: favorites)
+        XCTAssertFalse(k1.isEmpty)
+        _ = favorites.toggle("sng_2", appleMusicId: nil)
+        let k2 = b.readTimeKey(collections: collections, favorites: favorites)
+        XCTAssertNotEqual(k2, k1, "a ♥ change while the filter is on must move the key")
+        b.favoriteFilter = .exclude
+        let k3 = b.readTimeKey(collections: collections, favorites: favorites)
+        XCTAssertNotEqual(k3, k2, "a favorite-filter MODE flip must move the key")
+        b.favoriteFilter = .any
+
+        // Membership filter on: selection identity and selected-collection CONTENTS both count.
+        let target = collections.createPlaylist("Y", songIds: ["sng_1"])
+        b.includeIds = [target.id]
+        let m1 = b.readTimeKey(collections: collections, favorites: favorites)
+        XCTAssertFalse(m1.isEmpty)
+        XCTAssertEqual(b.readTimeKey(collections: collections, favorites: favorites), m1,
+                       "stable inputs ⇒ stable key")
+        try await Task.sleep(nanoseconds: 5_000_000)   // updatedAt is epoch-ms; outrun the clock
+        collections.addSong("sng_2", toPlaylist: target.id)
+        XCTAssertNotEqual(b.readTimeKey(collections: collections, favorites: favorites), m1,
+                          "editing a collection while a membership filter is on must move the key")
+        let m2 = b.readTimeKey(collections: collections, favorites: favorites)
+        b.includeIds = []
+        b.excludeIds = [target.id]
+        XCTAssertNotEqual(b.readTimeKey(collections: collections, favorites: favorites), m2,
+                          "flipping the SELECTION (in → not-in) must move the key")
+    }
+
+    // MARK: play-count revision ↔ stats store bypass paths
+
+    /// `PlayStatsStore.reloadFromDisk` (the CloudSync pull hook) and `clear()` (account
+    /// deletion) replace the stats wholesale WITHOUT passing through `PlayCountService` —
+    /// the service revision must still move, or the memoized snapshot (which the badges and
+    /// the "Plays" sort read) serves pre-pull counts until the next local play.
+    func testPlayCountRevisionTracksStatsReloadAndClear() {
+        let baseURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-rev-base-\(UUID().uuidString).json")
+        let statsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-rev-stats-\(UUID().uuidString).json")
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: baseURL)
+            try? FileManager.default.removeItem(at: statsURL)
+            try? FileManager.default.removeItem(at: AMPlayBaselineStore.provisionalURL(for: baseURL))
+        }
+        let stats = PlayStatsStore(fileURL: statsURL)
+        let svc = PlayCountService(baseline: AMPlayBaselineStore(fileURL: baseURL), stats: stats)
+        svc.notePlayed("sng_a", backend: .ripServer)
+        XCTAssertEqual(svc.snapshot()["sng_a"], 1)
+
+        let r1 = svc.revision
+        stats.reloadFromDisk()                       // cloud pull (same bytes — still a new map)
+        XCTAssertNotEqual(svc.revision, r1, "a cloud-pull reload must move the revision")
+        XCTAssertEqual(svc.snapshot()["sng_a"], svc.combinedPlayCount("sng_a"),
+                       "snapshot and combinedPlayCount must agree after a reload")
+
+        let r2 = svc.revision
+        stats.clear()                                // AccountDeletionService path
+        XCTAssertNotEqual(svc.revision, r2, "clear() must move the revision")
+        XCTAssertNil(svc.snapshot()["sng_a"], "the memoized snapshot must drop cleared counts")
+        XCTAssertEqual(svc.combinedPlayCount("sng_a"), 0)
+    }
+
     // MARK: rip-poll republish guard
 
     /// Adopting an IDENTICAL job value must not republish `jobs` (every mounted row

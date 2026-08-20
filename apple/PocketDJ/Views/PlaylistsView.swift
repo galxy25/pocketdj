@@ -802,6 +802,15 @@ struct IndexPlaylistDetailView: View {
     @State private var isResolving = true
     /// How many rows are currently rendered. See `RowWindow`.
     @State private var shown = RowWindow.page
+    /// CRITIC-B guard (the PlaylistDetailView/PocketDetailView pattern): ▶/🔀 now awaits the
+    /// detached 26k build before pushing, so the button stays live for hundreds of ms — a
+    /// double-tap used to land TWO `path.append`s (a double-pushed Now Playing needing two
+    /// back-pops). Reset in `onAppear` so popping back re-arms the next Play.
+    @State private var nowPlayingPushed = false
+    /// Whether this view is actually on screen. The deferred push must not fire from a screen
+    /// the user already left: pop this detail mid-build and the stale `path.append` teleported
+    /// the user into Now Playing from the home list ~1s later.
+    @State private var isOnScreen = false
 
     init(source: SourcePlaylist, path: Binding<NavigationPath>) {
         self.source = source
@@ -826,7 +835,7 @@ struct IndexPlaylistDetailView: View {
     /// Re-resolve whenever the membership, the catalog, or the sort/filter state changes.
     private var resolveKey: String {
         "\(source.id)|\(source.songIds.count)|\(app.catalogRevision)|\(browse.resultsKey(app))"
-            + "|\(browse.membershipActive)|\(browse.favoriteActive)"
+            + "|\(browse.readTimeKey(collections: collections, favorites: favorites))"
     }
 
     /// An on-device duplicate of THIS source already exists (see `duplicate()`).
@@ -949,9 +958,14 @@ struct IndexPlaylistDetailView: View {
         // Stall-watchdog attribution (+ settles WHICH surface the user is actually on —
         // this read-only source detail vs. the editable duplicate of the same name).
         .onAppear {
+            nowPlayingPushed = false
+            isOnScreen = true
             MainThreadStallWatchdog.shared.marker("collection-open-start IndexPlaylistDetailView \(source.id)")
         }
-        .onDisappear { MainThreadStallWatchdog.shared.marker("back-nav IndexPlaylistDetailView") }
+        .onDisappear {
+            isOnScreen = false
+            MainThreadStallWatchdog.shared.marker("back-nav IndexPlaylistDetailView")
+        }
     }
 
     /// ▶ Play this read-only source playlist IN PLACE, literal order, via the same reserved
@@ -968,7 +982,7 @@ struct IndexPlaylistDetailView: View {
             // commit so the setlist exists when SetlistDetailView asks for it.
             await collections.playNowAsync(songIds: ids, name: name, shuffle: false,
                                            source: .playlist, originId: originId)
-            path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
+            pushNowPlayingIfAppropriate()
         }
     }
     /// Shuffle-play this read-only source playlist (e.g. an Apple Music user playlist) IN PLACE —
@@ -980,8 +994,19 @@ struct IndexPlaylistDetailView: View {
         Task {
             await collections.playNowAsync(songIds: ids, name: name, shuffle: true,
                                            source: .playlist, originId: originId)
-            path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
+            pushNowPlayingIfAppropriate()
         }
+    }
+
+    /// The guarded Now-Playing push shared by ▶/🔀: at most one push per screen visit
+    /// (double-tapping during the detached build must not stack two setlist screens — the
+    /// second commit already restarted playback via the revision bump), and never from a
+    /// screen the user has popped (a stale deferred push teleported them into Now Playing
+    /// from wherever they'd navigated to).
+    private func pushNowPlayingIfAppropriate() {
+        guard isOnScreen, !nowPlayingPushed else { return }
+        nowPlayingPushed = true
+        path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
     }
     private func duplicate() {
         // Provenance-stamped: the duplicate follows this source playlist as the catalog
@@ -1040,6 +1065,9 @@ struct PlaylistDetailView: View {
     /// live SetlistDetailView for the same reserved id. Cleared when this view reappears
     /// (the user popped back) so a fresh Play pushes again.
     @State private var nowPlayingPushed = false
+    /// The deferred (post-await) push must not fire from a screen the user already popped —
+    /// see IndexPlaylistDetailView.isOnScreen.
+    @State private var isOnScreen = false
     /// Feedback for the manual "Sync from source now" action (nil = no alert showing).
     @State private var syncResult: String?
     /// How many nodes are rendered across ALL chapters — the `RowWindow` window over the
@@ -1092,7 +1120,7 @@ struct PlaylistDetailView: View {
     /// is stamped by every `mutatePlaylist`), the catalog, and the sort/filter state.
     private var chapterResolveKey: String {
         "\(playlistId)|\(playlist?.updatedAt ?? 0)|\(app.catalogRevision)|\(browse.resultsKey(app))"
-            + "|\(browse.membershipActive)|\(browse.favoriteActive)"
+            + "|\(browse.readTimeKey(collections: collections, favorites: favorites))"
     }
     /// Node ids → their song ids (payload translation), order-preserving.
     private func nodeSongIds(_ nodeIds: [String]) -> [String] {
@@ -1160,9 +1188,13 @@ struct PlaylistDetailView: View {
         // Reappears when the user pops back from Now Playing — allow the next Play to push.
         .onAppear {
             nowPlayingPushed = false
+            isOnScreen = true
             MainThreadStallWatchdog.shared.marker("collection-open-start PlaylistDetailView \(playlistId)")
         }
-        .onDisappear { MainThreadStallWatchdog.shared.marker("back-nav PlaylistDetailView") }
+        .onDisappear {
+            isOnScreen = false
+            MainThreadStallWatchdog.shared.marker("back-nav PlaylistDetailView")
+        }
         // OFF-main per-chapter sort/filter resolve. `.task(id:)` auto-cancels a stale run;
         // the default (stored-order) state clears the map and never resolves anything.
         .task(id: chapterResolveKey) {
@@ -1402,7 +1434,7 @@ struct PlaylistDetailView: View {
             await collections.playNowAsync(playlistId: playlistId, shuffle: shuffle)
             // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
             IntentDonations.playedPlaylist(collections.playlist(playlistId), shuffle: shuffle)
-            if !nowPlayingPushed {
+            if isOnScreen, !nowPlayingPushed {
                 nowPlayingPushed = true
                 path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
             }
@@ -1477,17 +1509,23 @@ struct PlaylistDetailView: View {
         let seq: PlaylistNode
         let displayed: [PlaylistNode]
         let start: Int
+        /// Where this chapter's SKELETON rows start in a flattened list of every chapter's
+        /// stored children — the in-flight-resolve stand-in for `start` (during a resolve all
+        /// `displayed` are empty, so `start` is 0 for every chapter and can't budget anything).
+        let skeletonStart: Int
         var id: String { seq.nodeId }
     }
 
     private func chapterSlices(_ playlist: Playlist) -> [ChapterSlice] {
         let isDefaultOrder = browse.sortKeys.isEmpty && browse.activeFilterCount == 0
         var start = 0
+        var skeletonStart = 0
         return playlist.sequences.map { seq in
             let children = seq.children ?? []
             let displayed = isDefaultOrder ? children : (resolvedChapters[seq.nodeId] ?? [])
-            defer { start += displayed.count }
-            return ChapterSlice(seq: seq, displayed: displayed, start: start)
+            defer { start += displayed.count; skeletonStart += children.count }
+            return ChapterSlice(seq: seq, displayed: displayed, start: start,
+                                skeletonStart: skeletonStart)
         }
     }
 
@@ -1515,8 +1553,13 @@ struct PlaylistDetailView: View {
             }
             // Sort/filter active but the off-main resolve hasn't landed: skeleton rows keep
             // the push instant instead of a blank section (same as the source-playlist detail).
+            // BUDGETED out of the SHARED flattened window (`skeletonStart`), not per-section:
+            // `RowWindow.page` per chapter let a 20-chapter playlist paint ~3,000 skeleton
+            // rows in one List pass — reinstating the very open-stall the windowing kills.
             if !isDefaultOrder, isResolvingChapters, displayed.isEmpty, !children.isEmpty {
-                ForEach(0..<min(children.count, RowWindow.page), id: \.self) { _ in
+                let skeletons = RowWindow.localShown(start: slice.skeletonStart,
+                                                     count: children.count, shown: shownNodes)
+                ForEach(0..<skeletons, id: \.self) { _ in
                     SkeletonSongRow()
                 }
             }

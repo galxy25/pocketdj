@@ -19,9 +19,17 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
     /// far below it; the user-visible hangs this exists for are 1000 ms+.
     private let threshold: TimeInterval = 0.3
     private let interval: DispatchTimeInterval = .milliseconds(100)
+    /// SUSPENSION GUARD: a gap in the watchdog's OWN utility timer this large means the
+    /// PROCESS was suspended (backgrounded / locked), not that the main thread hung — a
+    /// genuine main-thread stall never stops a utility-queue timer, while suspension stops
+    /// everything. Any measurement spanning such a gap is discarded and the beat clock
+    /// re-based, so a lock/app-switch during a repro session no longer writes phantom
+    /// multi-hundred-second STALLs into the very capture used to diagnose the real ones.
+    private let suspensionGuard: TimeInterval = 2.0
 
     private let lock = NSLock()   // guards every var below
     private var lastBeat: TimeInterval = 0
+    private var lastTick: TimeInterval = 0
     private var beatInFlight = false
     private var stallStart: TimeInterval?
     private var markerName = "capture-start"
@@ -56,6 +64,7 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
         defer { lock.unlock() }
         guard timer == nil else { return }
         lastBeat = Self.now()
+        lastTick = lastBeat
         beatInFlight = false
         stallStart = nil
         markerName = "capture-start"
@@ -80,6 +89,13 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
         let t = Self.now()
         var enqueueBeat = false
         lock.lock()
+        // Suspension guard (see `suspensionGuard`): the timer itself went quiet, so the
+        // process was suspended — discard any open window and re-base the beat clock.
+        if lastTick > 0, t - lastTick > suspensionGuard {
+            lastBeat = t
+            stallStart = nil
+        }
+        lastTick = t
         // At most ONE beat in flight: piling main.async blocks onto a stalled queue would
         // make the watchdog itself part of the recovery cost.
         if !beatInFlight { beatInFlight = true; enqueueBeat = true }
@@ -97,7 +113,10 @@ final class MainThreadStallWatchdog: @unchecked Sendable {
     private func beatLanded() {
         let t = Self.now()
         lock.lock()
-        let started = stallStart
+        // A beat can be the first thing to run after a resume (enqueued pre-suspension,
+        // landing before the timer's next tick) — same discard as `tick()`'s guard.
+        let spansSuspension = lastTick > 0 && t - lastTick > suspensionGuard
+        let started = spansSuspension ? nil : stallStart
         let (name, at) = (markerName, markerAt)
         let capturing = timer != nil
         lastBeat = t

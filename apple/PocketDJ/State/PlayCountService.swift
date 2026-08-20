@@ -31,10 +31,12 @@ final class PlayCountService {
     /// Bumped whenever any bucket changes. Memo keys (the Browse results cache, the row badges)
     /// fold this in — the maps themselves are far too big to diff per render.
     ///
-    /// COMPUTED over the baseline's own revision, not mirrored: the baseline can change without
-    /// going through this service (an async disk load at launch, a direct import), and a mirrored
-    /// counter would leave the Browser sorted by numbers that no longer exist.
-    var revision: Int { baseline.revision &+ ownRevision }
+    /// COMPUTED over the CONSTITUENT stores' own revisions, not mirrored: both the baseline and
+    /// the play-stats store can change without going through this service (an async disk load at
+    /// launch, a direct import, a CloudSync `reloadFromDisk` pull, `AccountDeletionService`'s
+    /// `clear()`), and a mirrored counter would leave the Browser — and the snapshot memo the
+    /// badges read — serving numbers that no longer exist.
+    var revision: Int { baseline.revision &+ stats.revision &+ ownRevision }
     private var ownRevision: Int = 0
 
     init(baseline: AMPlayBaselineStore, stats: PlayStatsStore,
