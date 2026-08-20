@@ -148,3 +148,38 @@ final class HistoryRewindSliceTests: XCTestCase {
         XCTAssertTrue(HistoryView.distinctSongs([]).isEmpty)
     }
 }
+
+// MARK: - Hide skips (the History-only timeline filter)
+
+@MainActor
+final class HistoryHideSkipsTests: XCTestCase {
+
+    private func ev(_ song: String, wasSkipped: Bool?) -> PlayHistoryStore.PlayEvent {
+        PlayHistoryStore.PlayEvent(id: UUID(), songId: song, playedAt: 1_000, source: .browser,
+                                   contextId: nil, contextName: nil, title: song, artist: "A",
+                                   originInstallId: nil, wasSkipped: wasSkipped)
+    }
+
+    /// ON hides exactly the events classified `wasSkipped == true`; false AND nil (legacy docs,
+    /// peer docs, and the LIVE track whose verdict hasn't happened yet) stay visible. OFF is
+    /// the identity — order preserved either way.
+    func testHideSkipsFiltersSkippedRows() {
+        let events = [ev("skipped", wasSkipped: true), ev("played", wasSkipped: false),
+                      ev("legacy", wasSkipped: nil)]
+        XCTAssertEqual(HistoryView.visibleEvents(events, hideSkips: true).map(\.songId),
+                       ["played", "legacy"])
+        XCTAssertEqual(HistoryView.visibleEvents(events, hideSkips: false).map(\.songId),
+                       ["skipped", "played", "legacy"])
+    }
+
+    /// `PlayRef.wasSkipped` defaults false — every pre-existing constructor (Browser rows, older
+    /// tests) compiles and behaves unchanged — and carries an explicit true through to the row's
+    /// "skipped" badge. The History mapping is `e.wasSkipped ?? false` (nil reads not-skipped).
+    func testPlayRefCarriesWasSkipped() {
+        let plain = PlayRef(eventId: UUID(), playedAt: 0, source: .browser, contextName: nil)
+        XCTAssertFalse(plain.wasSkipped)
+        let skipped = PlayRef(eventId: UUID(), playedAt: 0, source: .browser, contextName: nil,
+                              wasSkipped: true)
+        XCTAssertTrue(skipped.wasSkipped)
+    }
+}

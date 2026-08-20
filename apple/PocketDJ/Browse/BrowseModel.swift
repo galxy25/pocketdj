@@ -24,6 +24,10 @@ struct PlayRef: Hashable {
     /// True when this play came from ANOTHER device (the merged history). Drives the "on another
     /// device" hint, so a row you don't remember playing here is explained rather than confusing.
     var fromAnotherDevice: Bool = false
+    /// True when this playback was classified a SKIP (advanced away from with <50% played —
+    /// the `SkipTracker` verdict, read off `PlayEvent.wasSkipped ?? false` at row build).
+    /// Drives the row's "skipped" badge; the Hide-skips filter runs upstream on the events.
+    var wasSkipped: Bool = false
 }
 
 enum BrowseItem: Identifiable, Hashable {

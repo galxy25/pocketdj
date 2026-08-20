@@ -87,6 +87,12 @@ final class PlayHistoryStore {
         /// where a play happened, and `rebuildIndexes` can keep the 30-second re-count window
         /// LOCAL — a play that arrived from another device must never suppress a genuine play here.
         var originInstallId: String?
+        /// True when this playback was ADVANCED AWAY FROM with less than half the song played
+        /// (the SkipTracker verdict). ADDITIVE-OPTIONAL, no schema bump (precedent:
+        /// `originInstallId`): older/peer documents decode to nil, which reads as "not skipped".
+        /// Stamped by `markSkipped(eventId:)` after the fact — the event is appended at track
+        /// START (the live History row) and only later classified.
+        var wasSkipped: Bool? = nil
     }
 
     /// The persisted, versioned document.
@@ -137,6 +143,12 @@ final class PlayHistoryStore {
     ///
     /// Keep handlers CHEAP and non-blocking: this runs inline with starting a song.
     @ObservationIgnored var onRecord: ((PlayEvent) -> Void)?
+    /// Fired when a play was COLLAPSED by the 30 s re-count window into an event already in the
+    /// log — the same listen, one timeline row, but the live playback has moved onto that row:
+    /// the SkipTracker re-arms on it so History's "playing now" indicator follows the audio
+    /// instead of staying stuck on whatever recorded last. Payload: the existing LOCAL event
+    /// the play collapsed into. Same cheapness contract as `onRecord`.
+    @ObservationIgnored var onResume: ((PlayEvent) -> Void)?
 
     @ObservationIgnored private let fileURL: URL
     /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
@@ -212,6 +224,14 @@ final class PlayHistoryStore {
         // clock-skewed play) is a genuinely distinct play and IS recorded — `nowMs >= last`
         // guards that so a negative delta never reads as "within the window".
         if let last = lastPlayedIndex[songId], nowMs >= last, nowMs - last < Self.recountWindowMs {
+            // Collapsed, but the audio really did move onto this song — hand the surviving row
+            // to `onResume` so the live-playback tracking follows it. LOCAL events only (the
+            // tail search mirrors `lastPlayedIndex`'s locality): a peer's newer row for the
+            // same song must not become this device's "playing now".
+            if let i = events.lastIndex(where: { $0.songId == songId
+                    && ($0.originInstallId == nil || $0.originInstallId == installId) }) {
+                onResume?(events[i])
+            }
             return nil
         }
         let event = PlayEvent(id: UUID(), songId: songId, playedAt: nowMs,
@@ -226,6 +246,20 @@ final class PlayHistoryStore {
         save()
         onRecord?(event)
         return event
+    }
+
+    /// Mark an already-recorded event as a SKIP (advanced away from under 50% played) — the
+    /// update-on-end half of the live-row lifecycle (`record` appended it at track start).
+    /// In-place edit + revision bump + save; deliberately NO `onRecord` fire (it is not a new
+    /// play — firing would re-trigger the release feed). Unknown id / already-true = no-op, so
+    /// a double classification can't dirty the file or re-render History for nothing.
+    /// Searches from the tail: the live event is always at/near the end of the log.
+    func markSkipped(eventId: UUID) {
+        guard let i = events.lastIndex(where: { $0.id == eventId }),
+              events[i].wasSkipped != true else { return }
+        events[i].wasSkipped = true
+        revision &+= 1
+        save()
     }
 
     /// Recent plays projected for the For You ranking (`ZoneEngine`).
@@ -414,14 +448,34 @@ final class PlayHistoryStore {
               let doc = try? JSONDecoder().decode(Document.self, from: data) else { return false }
         var byId = Dictionary(events.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var addedFromDisk = 0
-        for e in doc.events where byId[e.id] == nil { byId[e.id] = e; addedFromDisk += 1 }
-        // A superset worth publishing exists only if WE hold rows the pulled document lacks.
+        var absorbedSkipFlags = false
+        for e in doc.events {
+            guard let mine = byId[e.id] else { byId[e.id] = e; addedFromDisk += 1; continue }
+            // Shared row: keep OUR copy, but OR the skip flag in — the verdict is monotone
+            // (false→true only, `markSkipped` never clears it), so the union converges instead
+            // of ping-ponging, and the device that classified the play doesn't lose to one
+            // that merely synced it.
+            if e.wasSkipped == true, mine.wasSkipped != true {
+                byId[e.id]?.wasSkipped = true
+                absorbedSkipFlags = true
+            }
+        }
+        // A superset worth publishing exists if WE hold ROWS the pulled document lacks — or
+        // per-row SKIP FLAGS it lacks. The flag check closes the relaunch hole: a peer doc
+        // with identical row COUNT but no flags used to skip the save, leaving flagless bytes
+        // on disk for the next launch to decode (the flags silently evaporated).
+        let docSkippedIds = Set(doc.events.lazy.filter { $0.wasSkipped == true }.map(\.id))
+        let weHoldFlagsTheDocLacks = byId.values.contains {
+            $0.wasSkipped == true && !docSkippedIds.contains($0.id)
+        }
         let weHoldRowsTheDocLacks = byId.count > doc.events.count
         events = byId.values.sorted { $0.playedAt < $1.playedAt }
         if events.count > Self.maxEvents { trimToCap() }
         rebuildIndexes()
-        if addedFromDisk > 0 || weHoldRowsTheDocLacks { revision &+= 1 }
-        guard weHoldRowsTheDocLacks else { return false }
+        if addedFromDisk > 0 || absorbedSkipFlags || weHoldRowsTheDocLacks || weHoldFlagsTheDocLacks {
+            revision &+= 1
+        }
+        guard weHoldRowsTheDocLacks || weHoldFlagsTheDocLacks else { return false }
         save()
         return true
     }

@@ -241,6 +241,9 @@ struct PocketDJApp: App {
     /// funnels in; the storage manager's soft-cap prune orders by least-recently-played.
     @State private var playStats: PlayStatsStore
     @State private var playHistory: PlayHistoryStore
+    /// Classifies each playback as skipped-or-not (the <50%-played advance-away rule) and
+    /// exposes the CURRENTLY-PLAYING history event id (History's live "playing now" row key).
+    @State private var skipTracker: SkipTracker
     /// Apple Music's LIFETIME play counters (the ~144k-play baseline this app could never have
     /// accumulated on its own) plus the combined read every surface uses. DEVICE-LOCAL and
     /// deliberately NOT cloud-synced: every device re-derives it from the same Apple ID, and a
@@ -496,6 +499,32 @@ struct PocketDJApp: App {
         playStats.peerLastPlayedAt = { [weak playHistory] songId in
             playHistory?.lastPlayedAtAnyDevice(songId)
         }
+        // ── Skip tracking ────────────────────────────────────────────────────────────────────
+        // The <50%-played advance-away rule lives in SkipTracker; the SetlistPlayer only
+        // REPORTS transports (onAdvanceAway) + ~1 Hz positions (onPositionSample). A verdict
+        // marks the history event (the per-entry flag) AND bumps the cumulative per-song total.
+        let skipTracker = SkipTracker()
+        _skipTracker = State(initialValue: skipTracker)
+        skipTracker.history = playHistory
+        skipTracker.noteSkip = { [weak playCounts] id in playCounts?.noteSkipped(id) }
+        setlistPlayer.onAdvanceAway = { [weak skipTracker] id, pos, dur in
+            skipTracker?.noteAdvanceAway(songId: id, positionMs: pos, durationMs: dur)
+        }
+        setlistPlayer.onPositionSample = { [weak skipTracker] id, pos, dur in
+            skipTracker?.samplePosition(songId: id, positionMs: pos, durationMs: dur)
+        }
+        // Replays that record NOTHING (repeat-one, per-track repeat, duplicate row, same-song
+        // play-now — the rip path's same-id dedupe fires no onPlay) still restart from 0:00:
+        // re-zero the tracker's high-water mark or pass 1's peak shields every ⏭ in pass 2.
+        setlistPlayer.onTrackRestart = { [weak skipTracker] id in
+            skipTracker?.noteTrackRestarted(songId: id)
+        }
+        // A play the 30 s window COLLAPSED into an existing row is still the live playback —
+        // re-point the tracker (History's live indicator) at that row, else it sits on
+        // whatever recorded last while a different song is audibly playing.
+        playHistory.onResume = { [weak skipTracker] event in
+            skipTracker?.noteTrackResumed(event)
+        }
         // ── Release feed (For You ▸ New) ─────────────────────────────────────────────────────
         // LAZY, ON-PLAY, NEVER SCHEDULED. The ONLY thing that starts a catalog request is a
         // recorded play, hooked here off `PlayHistoryStore.onRecord` — the one choke point every
@@ -521,7 +550,11 @@ struct PocketDJApp: App {
         if ReleaseFeedService.wantsUIFixture {
             releaseFeed.seedForTesting(ReleaseFeedService.uiFixtureEntries())
         }
-        playHistory.onRecord = { [weak app, weak releaseFeed] event in
+        playHistory.onRecord = { [weak app, weak releaseFeed, weak skipTracker] event in
+            // Skip tracking: this event IS the live "playing now" row — arm the tracker first.
+            // (`onRecord` deliberately does not fire for 30 s-window collapsed re-notes; those
+            // re-point the tracker at their existing row via `onResume` above instead.)
+            skipTracker?.noteTrackStarted(event)
             // The play event carries an artist NAME; the catalog endpoint needs an artist ID.
             // That join is exactly what the index's `artists` table exists for — and a name it
             // cannot place simply doesn't trigger a check.
@@ -1462,6 +1495,7 @@ struct PocketDJApp: App {
                 .environment(releaseFeed)
                 .environment(forYouFeed)
                 .environment(playHistory)
+                .environment(skipTracker)
                 .environment(collectionActivity)
                 .environment(timelineCues)
                 .environment(storage)

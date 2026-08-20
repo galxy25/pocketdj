@@ -20,6 +20,9 @@ struct FilterSheet: View {
     /// bypass the read-time layer). Unlike membership it has NO "do you own any?" gate: an empty
     /// ♥ set is a legitimate thing to filter on ("show me what I haven't favorited yet").
     private var showFavorite: Bool { browse.kind == .song && !browse.historyMode }
+    /// Hide-skips is HISTORY-only, the mirror image of the two gates above: skip-ness lives on
+    /// play EVENTS, and only History rows carry one (`PlayRef`) — Browse has nothing to hide by.
+    private var showHideSkips: Bool { browse.historyMode }
 
     var body: some View {
         NavigationStack {
@@ -58,6 +61,10 @@ struct FilterSheet: View {
                     FavoriteSection(browse: browse)
                 }
 
+                if showHideSkips {
+                    PlaybackSection(browse: browse)
+                }
+
                 if showMembership {
                     MembershipSection(browse: browse, collections: collections)
                 }
@@ -72,7 +79,7 @@ struct FilterSheet: View {
                 }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Clear All") { browse.clearAllFilters() }
-                        .disabled(browse.clauses.isEmpty && !browse.favoriteActive)
+                        .disabled(browse.clauses.isEmpty && !browse.favoriteActive && !browse.hideSkips)
                         .accessibilityIdentifier("filter-clear-all")
                 }
             }
@@ -208,6 +215,20 @@ private struct ClauseEditor: View {
                     ms.wrappedValue = start.timeIntervalSince1970 * 1000
                 }
             })
+    }
+}
+
+/// History-only playback section: the "Hide skips" lens on the timeline (a skip = advanced
+/// away from with <50% played, the SkipTracker verdict). A Toggle, not a tri-state picker —
+/// "skips ONLY" has no read the timeline's sort doesn't already give.
+private struct PlaybackSection: View {
+    @Bindable var browse: BrowseState
+
+    var body: some View {
+        Section("Playback") {
+            Toggle("Hide skips", isOn: $browse.hideSkips)
+                .accessibilityIdentifier("filter-hide-skips")
+        }
     }
 }
 

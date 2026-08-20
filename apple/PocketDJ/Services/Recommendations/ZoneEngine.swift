@@ -232,6 +232,13 @@ enum ZoneEngine {
         /// still scores half, so a rejection reorders the queue rather than censoring it, and it
         /// takes a consistent pattern of rejections to actually remove a region of the library.
         var rejectionWeight: Double = 0.5
+
+        /// How hard a fully-saturated skip signal can demote a candidate, as a bounded
+        /// multiplier: `score × (1 − skipPenaltyWeight × penalty)` with penalty ∈ 0…1 (the
+        /// dampened plays-vs-skips ratio — `Feedback.skipPenalties`). 0.35 for the
+        /// `rejectionWeight` reason: one signal must never cancel a song. Even a song skipped
+        /// EVERY time keeps 65% of its score — skips reorder, they never censor.
+        var skipPenaltyWeight: Double = 0.35
         /// How many rejections of one artist (or genre) make the collection-tile penalty FULL
         /// strength. Applies to `suggestions()`, which tallies rejections per artist/genre;
         /// `inDaZone` instead scores similarity to the rejected SET through the same profile
@@ -411,13 +418,45 @@ enum ZoneEngine {
         var rejected: [String: Double] = [:]
         /// Songs tombstoned in THIS list right now. The only thing here that removes a row.
         var suppressed: Set<String> = []
-        var isEmpty: Bool { accepted.isEmpty && rejected.isEmpty && suppressed.isEmpty }
+        /// songId → PRE-DAMPENED skip pressure in 0…1 (see `skipPenalties`). Applied as a
+        /// bounded DEMOTION multiplier (`× (1 − skipPenaltyWeight × penalty)`) — never a
+        /// filter: a heavily-skipped song ranks lower, it is never removed. Empty ⇒ every
+        /// ranking is byte-identical to pre-skip-tracking (the struct's standing contract).
+        var skipPenalty: [String: Double] = [:]
+        var isEmpty: Bool {
+            accepted.isEmpty && rejected.isEmpty && suppressed.isEmpty && skipPenalty.isEmpty
+        }
 
         public init(accepted: [String: Double] = [:], rejected: [String: Double] = [:],
-                    suppressed: Set<String> = []) {
+                    suppressed: Set<String> = [], skipPenalty: [String: Double] = [:]) {
             self.accepted = accepted
             self.rejected = rejected
             self.suppressed = suppressed
+            self.skipPenalty = skipPenalty
+        }
+
+        /// The DAMPENED plays-vs-skips ratio — the one formula behind the skip signal.
+        ///
+        /// `plays` = lifetime playback STARTS (skipped ones included — `notePlayed` fires at
+        /// track start), so skips ≤ plays in practice. The `k`-count Laplace prior is the
+        /// dampener the owner asked for: ONE skip must never bury a song.
+        ///   1 skip / 1 play   → 1/4  = 0.25
+        ///   1 skip / 20 plays → 1/23 ≈ 0.043
+        ///   10 skips / 10 plays → 10/13 ≈ 0.77
+        /// Max demotion = `skipPenaltyWeight` × penalty ≤ 0.35 — a song is NEVER zeroed or
+        /// removed, it reorders within its band. Songs with zero skips get no entry at all
+        /// (the empty-map ⇒ identical-ranking contract stays cheap to honor).
+        static func skipPenalties(plays: [String: Int], skips: [String: Int],
+                                  k: Double = 3) -> [String: Double] {
+            var out: [String: Double] = [:]
+            out.reserveCapacity(skips.count)
+            for (id, s) in skips where s > 0 {
+                // A skip implies a play start, so the denominator never trusts a plays map
+                // that lags the skip count (a fresh device before its baseline lands).
+                let p = max(Double(plays[id] ?? 0), Double(s))
+                out[id] = min(1, Double(s) / (p + k))
+            }
+            return out
         }
     }
 
@@ -647,6 +686,12 @@ enum ZoneEngine {
             guard n > 0, famDenom > 0, maxPlays > 0 else { return 0 }
             return log2(1 + Double(n)) / famDenom
         }
+        // The skip signal's bounded demotion multiplier (1.0 for a never-skipped song — the
+        // empty-map contract). Clamped so a malformed penalty can neither zero a song nor lift it.
+        func skipFactor(_ id: String) -> Double {
+            guard let p = feedback.skipPenalty[id] else { return 1 }
+            return 1 - tuning.skipPenaltyWeight * min(1, max(0, p))
+        }
 
         // Which auxiliary signals this run can speak at all — renormalized over exactly those,
         // so a device with no last-played data does not silently deflate every score.
@@ -722,8 +767,11 @@ enum ZoneEngine {
 
             if let w = seedWeight[id] {
                 // FAMILIAR — how hard he has been leaning on this exact song lately, with
-                // lifetime plays as the tiebreak between two equally-hot ones.
-                familiarPool.append((id, cap, w + familiarity(id) * tuning.familiarityWeight))
+                // lifetime plays as the tiebreak between two equally-hot ones. The skip
+                // penalty applies HERE too (a recently-skipped song is by definition recent,
+                // so this is the pool it lands in): bounded demotion, never removal.
+                familiarPool.append((id, cap, (w + familiarity(id) * tuning.familiarityWeight)
+                    * skipFactor(id)))
                 continue
             }
             // A song played recently OUTSIDE this app (Apple's baseline knows, the event log does
@@ -840,6 +888,9 @@ enum ZoneEngine {
                                                        calibration: timbreCal)
                 lifted *= 1 + tuning.timbreGain * fit
             }
+            // Skip demotion — same bounded-multiplier doctrine as every aux signal above:
+            // similarity gates, skips reorder within the band, nothing is removed.
+            lifted *= skipFactor(id)
             rediscoveryPool.append((id, c.capKey, lifted))
         }
 
@@ -1367,6 +1418,11 @@ enum ZoneEngine {
                                                        rejectionWeight: tuning.rejectionWeight,
                                                        calibration: timbreCal)
                 net *= 1 + tuning.timbreGain * fit
+            }
+            // Skip demotion — the same bounded multiplier the zone pools apply (see
+            // `Tuning.skipPenaltyWeight`): a skipped song ranks lower, it is never removed.
+            if let p = feedback.skipPenalty[t.songId] {
+                net *= 1 - tuning.skipPenaltyWeight * min(1, max(0, p))
             }
             guard net > 0 else { continue }
             scored.append((t.songId, t.artistKey, capKey, net, isIncumbent(t)))
