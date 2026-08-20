@@ -140,6 +140,18 @@ final class PlayCountService {
         ownRevision &+= 1
     }
 
+    /// Record a SKIP (the SkipTracker verdict). Skips are device-local negative signal — no
+    /// Apple bucket exists for them, so this is a plain pass-through to the aggregate store.
+    func noteSkipped(_ songId: String, at nowMs: Double = Date().timeIntervalSince1970 * 1000) {
+        guard !songId.isEmpty else { return }
+        stats.noteSkipped(songId, at: nowMs)
+        ownRevision &+= 1
+    }
+
+    /// Every song with a non-zero lifetime skip count — the map the rec ranking's dampened
+    /// skip penalty is computed from (pair of `snapshot()`).
+    func skipCounts() -> [String: Int] { stats.skipCountsSnapshot() }
+
     /// Adopt a fresh Apple snapshot (SET semantics — see `AMPlayBaselineStore.replaceAll`).
     /// Returns `false` when the capture was rejected; `baseline.lastOutcome` says why.
     @discardableResult

@@ -579,8 +579,17 @@ struct ForYouSongListView: View {
         // engine a value type — the same hop every other input here makes. The SCOPE is this
         // route's, so only rejects given in THIS list suppress rows in it; the taste half is
         // global and rides along regardless.
-        let fb = feedback?.zoneFeedback(scope: route.feedbackContext, nowMs: now)
-            ?? ZoneEngine.Feedback()
+        // The skip signal rides along here exactly as it does in `ForYouView.refresh` — global
+        // (a skip is about the song, not the tile), dampened, injected at snapshot time.
+        // (`let` via an immediately-run closure: `fb` crosses into detached tasks below, and a
+        // captured `var` would trip the sendability check.)
+        let fb: ZoneEngine.Feedback = {
+            var f = feedback?.zoneFeedback(scope: route.feedbackContext, nowMs: now)
+                ?? ZoneEngine.Feedback()
+            f.skipPenalty = ZoneEngine.Feedback.skipPenalties(plays: counts,
+                                                              skips: playCounts.skipCounts())
+            return f
+        }()
         // The timbre corpus, memoized after the first refresh — the actor decodes off-main and
         // an unavailable corpus arrives as [:] (term dead, pre-v2 ranking). Same input the
         // frozen-feed path feeds `ForYouFeedBuilder.build`.

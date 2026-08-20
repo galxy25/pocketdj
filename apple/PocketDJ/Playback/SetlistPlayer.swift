@@ -109,6 +109,17 @@ final class SetlistPlayer {
     @ObservationIgnored var originProvider: ((String?) -> (kind: PlayHistoryStore.PlaySource, id: String)?)?
     private(set) var capturedOrigin: (kind: PlayHistoryStore.PlaySource, id: String)?
 
+    /// Fired when the user ADVANCES AWAY from the current track — in-app/remote ⏭, the AM
+    /// `systemSkip` end reason, a jump to another row, a play-now, or a fresh play replacing a
+    /// running set. NEVER on a natural end / repeat / length-boundary or dead-source
+    /// auto-advance / ⏮ / stop. Payload: (songId, song-relative positionMs — nil when the old
+    /// track's clock is already gone (the adopt path), durationMs or nil when unknown).
+    /// Skip CLASSIFICATION lives in `SkipTracker`, not here — this only reports what happened.
+    @ObservationIgnored var onAdvanceAway: ((String, Int?, Int?) -> Void)?
+    /// ~1 Hz position sample for the current track (rides the existing session ticker) —
+    /// feeds `SkipTracker`'s high-water mark. Payload mirrors `onAdvanceAway`.
+    @ObservationIgnored var onPositionSample: ((String, Int, Int?) -> Void)?
+
     // MARK: Durable playback session (force-quit → relaunch restore)
 
     /// The durable-session store (injected at app init, like `historyContextProvider`; nil in
@@ -261,6 +272,9 @@ final class SetlistPlayer {
     /// fresh `play` replaces whatever was running — that's the ONLY thing that stops a set.
     func play(_ items: [Item], sourceSetlistId: String? = nil) {
         guard !items.isEmpty else { return }
+        // A fresh play over a RUNNING set is "advancing away" from its current track (the
+        // replace is user-initiated); starting from idle advances away from nothing.
+        if isRunning { noteAdvanceAway() }
         self.sourceSetlistId = sourceSetlistId
         // Snapshot THIS run's history origin now (before any later playNow can mutate the shared
         // now-playing source), so every play in this run is attributed to the right set.
@@ -433,6 +447,7 @@ final class SetlistPlayer {
 
     /// Manually advance (used by the live-track "Next" affordance + lock-screen NEXT).
     func skipNext() {
+        noteAdvanceAway()
         exitHoldIfNeeded()
         advanceToNext()
     }
@@ -626,6 +641,7 @@ final class SetlistPlayer {
     func jumpToUpcoming(uid: UUID) {
         guard isRunning, index + 1 < queue.count,
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
+        noteAdvanceAway()
         exitHoldIfNeeded()
         waitingForLive = false
         index = pos
@@ -647,6 +663,7 @@ final class SetlistPlayer {
     /// per-instance identity in the queue, which the uid-keyed live-queue edits rely on being unique.
     func playNow(_ item: Item) {
         guard isRunning else { return }
+        noteAdvanceAway()
         exitHoldIfNeeded()
         waitingForLive = false
         let at = min(index + 1, queue.count)
@@ -674,6 +691,7 @@ final class SetlistPlayer {
     func jumpToPlayed(uid: UUID) {
         guard isRunning, index > 0,
               let pos = queue[..<min(index, queue.count)].firstIndex(where: { $0.uid == uid }) else { return }
+        noteAdvanceAway()
         exitHoldIfNeeded()
         waitingForLive = false
         index = pos
@@ -860,6 +878,13 @@ final class SetlistPlayer {
         // jump would run `endMixEngagement` against our own track.
         guard let npId = am ? coordinator.appleMusic.nowPlaying?.songId : rips.nowPlaying?.songId,
               !queue[index].matches(npId) else { return }
+        // A CONFIRMED foreign jump — the user played another row over the current track. This
+        // sits BEFORE the not-in-set early return on purpose: a NON-member single taking over
+        // is also "jumping to another row". The old track's clock is already gone (now-playing
+        // was re-stamped by the new play), so `liveClock: false` → the tracker's samples decide.
+        // No double-fire with `playNow(_:)`: that path moves `index` first, so this guard makes
+        // its adopt a no-op.
+        noteAdvanceAway(liveClock: false)
         // F4 (double-audio guard): ANY nowPlaying change to a DIFFERENT track means the AVPlayer / AM
         // now owns that track's audio (its play path already reclaimed the card) — so tear down any
         // orphaned DSP engagement here, BEFORE the not-in-set early return below. Otherwise a NON-member
@@ -956,6 +981,8 @@ final class SetlistPlayer {
               queue[index].matches(npId) else { return }
         if reason == .systemSkip {
             NPLog.trace("setlist AM system-skip → advance from index \(index)")
+            noteAdvanceAway()   // the live AM position reads ~0 here (the detection tick clobbers
+                                // the clock) — SkipTracker's high-water samples carry the truth.
             advanceToNext()
             return
         }
@@ -1409,6 +1436,31 @@ final class SetlistPlayer {
         return max(0, Int(player.currentTime * 1000) - start)
     }
 
+    /// The current track's duration in ms, best-effort (nil = unknown, which the SkipTracker
+    /// treats as "never a skip"). Prefers the catalog length stamped on the queue row; falls
+    /// back to the owning backend's clock.
+    private func currentDurationMs() -> Int? {
+        guard isRunning, index < queue.count else { return nil }
+        if let ms = queue[index].lengthMs, ms > 0 { return ms }
+        if coordinator.activeBackend == .appleMusic {
+            let d = coordinator.appleMusic.durationSeconds
+            return d > 0 ? Int(d * 1000) : nil
+        }
+        // `player.duration` is the WHOLE FILE — only trust it when this row is not a slice of
+        // a shared album rip (startMs 0 ⇒ the file IS the song).
+        if (rips.nowPlaying?.startMs ?? 0) == 0, player.duration > 0 { return Int(player.duration * 1000) }
+        return nil
+    }
+
+    /// Report an advance-away to the skip hook — called by the user-initiated transports
+    /// BEFORE the index moves / a hold exits, so `sessionPositionMs()` still reads the OLD
+    /// track. `liveClock: false` = the old track's clock is already gone (the adopt path);
+    /// the tracker falls back to its sampled high-water mark.
+    private func noteAdvanceAway(liveClock: Bool = true) {
+        guard isRunning, index < queue.count else { return }
+        onAdvanceAway?(queue[index].id, liveClock ? sessionPositionMs() : nil, currentDurationMs())
+    }
+
     /// ~1 Hz sampler feeding the store's position refresh while the set runs. The store
     /// throttles playing-state writes (~5 s) and passes pause/resume transitions through
     /// immediately, so this stays cheap (reads two clocks, usually writes nothing).
@@ -1421,6 +1473,10 @@ final class SetlistPlayer {
                 guard self.isRunning, !self.isHeldForResume else { continue }
                 self.sessionStore?.updatePosition(ms: self.sessionPositionMs(),
                                                   isPlaying: self.sessionIsPlaying())
+                if self.index < self.queue.count {
+                    self.onPositionSample?(self.queue[self.index].id, self.sessionPositionMs(),
+                                           self.currentDurationMs())
+                }
             }
         }
     }

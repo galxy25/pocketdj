@@ -1135,6 +1135,259 @@ final class SetlistPlayerTests: XCTestCase {
         seq.stop()
         cleanBurnedFiles(["sh_0.mp3","sh_0.txt"])
     }
+
+    // MARK: - Skip tracking: `onAdvanceAway` fires ONLY for user-initiated advances
+
+    /// The advance-away payloads recorded by the hook (skip CLASSIFICATION lives in
+    /// SkipTracker; the player's contract is only WHEN the hook fires and with WHAT).
+    private var advanceAways: [(id: String, pos: Int?, dur: Int?)] = []
+
+    private func armAdvanceAway(_ seq: SetlistPlayer) {
+        advanceAways = []
+        seq.onAdvanceAway = { [weak self] id, pos, dur in
+            self?.advanceAways.append((id: id, pos: pos, dur: dur))
+        }
+    }
+
+    /// In-app / lock-screen / CarPlay ⏭: fires ONCE, with the PRE-advance song + its catalog
+    /// length (the row's `lengthMs`), before the index moves.
+    func testSkipNextFiresAdvanceAwayWithCurrentSong() async {
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_b.mp3", "sng_b.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_a")
+        await burn(rips, burns, songId: "sng_b")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        armAdvanceAway(seq)
+        seq.play([
+            .init(id: "sng_a", title: "A", artist: "A", lengthMs: 200_000),
+            .init(id: "sng_b", title: "B", artist: "A"),
+        ])
+        XCTAssertTrue(advanceAways.isEmpty, "a fresh play from IDLE advances away from nothing")
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "sng_a" }
+
+        seq.skipNext()
+        XCTAssertEqual(advanceAways.map { $0.id }, ["sng_a"], "the OLD current song, exactly once")
+        XCTAssertEqual(advanceAways.first?.dur, 200_000, "the row's catalog length")
+        XCTAssertNotNil(advanceAways.first?.pos, "the live clock was still readable")
+        seq.stop()
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_b.mp3", "sng_b.txt"])
+    }
+
+    /// A NATURAL end must stay silent — and the setlist length-boundary auto-advance arrives
+    /// through the SAME `signalTrackEnded` funnel (`player.onTrackEnded`), so this one test
+    /// pins both not-skip paths.
+    func testNaturalEndAndBoundaryAdvanceDoNotFireAdvanceAway() async {
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_b.mp3", "sng_b.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_a")
+        await burn(rips, burns, songId: "sng_b")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        armAdvanceAway(seq)
+        seq.play([.init(id: "sng_a", title: "A", artist: "A"),
+                  .init(id: "sng_b", title: "B", artist: "A")])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "sng_a" }
+
+        player.onTrackEnded?()   // natural end → auto-advance
+        await waitUntil("advanced to track 1") { seq.index == 1 }
+        XCTAssertTrue(advanceAways.isEmpty, "playing a song to its end is never a skip")
+        seq.stop()
+        XCTAssertTrue(advanceAways.isEmpty, "stop() is never a skip either")
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_b.mp3", "sng_b.txt"])
+    }
+
+    /// Repeat-one's replay and a row's per-track repeat both loop on NATURAL ends — silent.
+    func testRepeatReplaysDoNotFireAdvanceAway() async {
+        cleanBurnedFiles(["rp_1.mp3", "rp_1.txt", "rp_2.mp3", "rp_2.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "rp_1")
+        await burn(rips, burns, songId: "rp_2")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        armAdvanceAway(seq)
+        seq.play([.init(id: "rp_1", title: "One", artist: "A", repeatCount: 2),
+                  .init(id: "rp_2", title: "Two", artist: "A")])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "rp_1" }
+
+        player.onTrackEnded?()   // per-track repeat: replay, stays on the row
+        XCTAssertEqual(seq.index, 0)
+        XCTAssertTrue(advanceAways.isEmpty, "a per-track repeat replay is not an advance")
+
+        seq.setRepeatMode(.one)
+        player.onTrackEnded?()   // repeat-one replay
+        XCTAssertEqual(seq.index, 0)
+        XCTAssertTrue(advanceAways.isEmpty, "a repeat-one replay is not an advance")
+        seq.stop()
+        cleanBurnedFiles(["rp_1.mp3", "rp_1.txt", "rp_2.mp3", "rp_2.txt"])
+    }
+
+    /// The Apple-Music remote ⏭ (`systemSkip` end reason) IS an advance-away; a `.natural`
+    /// AM end is not. (The AM position clock reads ~0 at systemSkip time — the SkipTracker's
+    /// high-water samples absorb that; here only the firing contract is pinned.)
+    func testAMSystemSkipFiresAdvanceAwayButNaturalEndDoesNot() async {
+        cleanBurnedFiles(["sng_b.mp3", "sng_b.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_b")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        armAdvanceAway(seq)
+        seq.play([.init(id: "sng_a", title: "A", artist: "A", lengthMs: 180_000),
+                  .init(id: "sng_b", title: "B", artist: "A")])
+        // The unit-test seam: put the deck in the "streaming A via Apple Music" state.
+        coord.appleMusic.setNowPlayingForTests(.init(songId: "sng_a", title: "A", artist: "A"))
+        coord.setActiveBackendForTests(.appleMusic)
+        await waitUntil("deck settled on A") { seq.index == 0 }
+
+        coord.appleMusic.onTrackEnded?(.systemSkip)
+        XCTAssertEqual(advanceAways.map { $0.id }, ["sng_a"], "CarPlay/lock-screen ⏭ advances away")
+        XCTAssertEqual(advanceAways.first?.dur, 180_000)
+
+        // Track 1 (burned local) — a NATURAL AM end on a re-adopted stream stays silent. Wait
+        // for the fire-and-forget playCurrent to settle on B FIRST (it clears the AM backend),
+        // then rebuild the AM state on the new row and end it naturally: no new advance-away.
+        await waitUntil("advanced to B") { seq.index == 1 && rips.nowPlaying?.songId == "sng_b" }
+        advanceAways = []
+        coord.appleMusic.setNowPlayingForTests(.init(songId: "sng_b", title: "B", artist: "A"))
+        coord.setActiveBackendForTests(.appleMusic)
+        coord.appleMusic.onTrackEnded?(.natural)
+        XCTAssertTrue(advanceAways.isEmpty, "a natural AM end is never a skip")
+        seq.stop()
+        cleanBurnedFiles(["sng_b.mp3", "sng_b.txt"])
+    }
+
+    /// Jumping to an UPCOMING row fires with the OLD current song (before the index moves).
+    func testJumpToUpcomingFiresBeforeIndexMoves() async {
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_c.mp3", "sng_c.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_a")
+        await burn(rips, burns, songId: "sng_c")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        armAdvanceAway(seq)
+        seq.play([.init(id: "sng_a", title: "A", artist: "A", lengthMs: 240_000),
+                  .init(id: "sng_b", title: "B", artist: "A"),
+                  .init(id: "sng_c", title: "C", artist: "A")])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "sng_a" }
+
+        let target = seq.upcoming.first { $0.id == "sng_c" }!
+        seq.jumpToUpcoming(uid: target.uid)
+        XCTAssertEqual(advanceAways.map { $0.id }, ["sng_a"], "the song jumped AWAY FROM")
+        XCTAssertEqual(seq.index, 2)
+        seq.stop()
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_c.mp3", "sng_c.txt"])
+    }
+
+    /// Rewinding to a PLAYED row is also an advance-away from the current track.
+    func testJumpToPlayedFires() async {
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_b.mp3", "sng_b.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_a")
+        await burn(rips, burns, songId: "sng_b")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        armAdvanceAway(seq)
+        seq.play([.init(id: "sng_a", title: "A", artist: "A"),
+                  .init(id: "sng_b", title: "B", artist: "A")])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "sng_a" }
+        seq.skipNext()
+        await waitUntil("track 1 playing") { rips.nowPlaying?.songId == "sng_b" }
+        advanceAways = []
+
+        let target = seq.played.first { $0.id == "sng_a" }!
+        seq.jumpToPlayed(uid: target.uid)
+        XCTAssertEqual(advanceAways.map { $0.id }, ["sng_b"], "rewinding advances away from B")
+        seq.stop()
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_b.mp3", "sng_b.txt"])
+    }
+
+    /// Play-now (splice + step) and a FRESH play over a running set both advance away from
+    /// the interrupted track; skipPrevious and a dead-source auto-advance never do.
+    func testPlayNowAndFreshPlayFireButSkipPreviousAndDeadSourceDoNot() async {
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_b.mp3", "sng_b.txt"])
+        // No rip server: `sng_dead` (un-burned, un-cached) is genuinely unresolvable, so the
+        // play-now of it is followed by a real dead-source auto-advance (the silent path).
+        let rips = makeRips(serverURL: "")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_a")
+        await burn(rips, burns, songId: "sng_b")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        armAdvanceAway(seq)
+        seq.play([.init(id: "sng_a", title: "A", artist: "A"),
+                  .init(id: "sng_b", title: "B", artist: "A")])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "sng_a" }
+
+        // skipPrevious on the first row restarts it — going BACK is never an advance-away.
+        seq.skipPrevious()
+        XCTAssertTrue(advanceAways.isEmpty, "⏮ is not a skip")
+
+        // Play-now interrupts A → fires for A. (`sng_dead` is unresolvable, so the follow-up
+        // dead-source advance back onto the queue also proves ITS silence right after.)
+        seq.playNow(.init(id: "sng_dead", title: "Dead", artist: "A"))
+        XCTAssertEqual(advanceAways.map { $0.id }, ["sng_a"], "play-now advances away from A")
+        advanceAways = []
+        await waitUntil("dead source auto-advanced onto B") { rips.nowPlaying?.songId == "sng_b" }
+        XCTAssertTrue(advanceAways.isEmpty, "a dead-source auto-advance is not a user skip")
+
+        // A fresh play() over the RUNNING set advances away from its current track (B).
+        seq.play([.init(id: "sng_a", title: "A", artist: "A")], sourceSetlistId: "set_2")
+        XCTAssertEqual(advanceAways.map { $0.id }, ["sng_b"], "replacing the set advances away")
+        seq.stop()
+        XCTAssertEqual(advanceAways.count, 1, "stop() adds nothing")
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_b.mp3", "sng_b.txt"])
+    }
+
+    /// The ADOPT path (a manual row ▶ over a running set): fires for the interrupted track
+    /// with a NIL position — the old clock is already gone, so the SkipTracker's sampled
+    /// high-water mark must decide.
+    func testAdoptForeignJumpFiresAdvanceAwayWithNilPosition() async {
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_c.mp3", "sng_c.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_a")
+        await burn(rips, burns, songId: "sng_c")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        armAdvanceAway(seq)
+        seq.play([.init(id: "sng_a", title: "A", artist: "A", lengthMs: 200_000),
+                  .init(id: "sng_b", title: "B", artist: "A"),
+                  .init(id: "sng_c", title: "C", artist: "A")])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "sng_a" }
+
+        // A manual row ▶ on B wins via Apple Music (the adopt seam from the AM-adopt test).
+        coord.appleMusic.setNowPlayingForTests(.init(songId: "sng_b", title: "B", artist: "A"))
+        coord.setActiveBackendForTests(.appleMusic)
+        await waitUntil("sequencer adopted the jump to B") { seq.index == 1 }
+
+        XCTAssertEqual(advanceAways.map { $0.id }, ["sng_a"], "the interrupted track")
+        XCTAssertNil(advanceAways.first?.pos, "old clock gone → nil, the tracker's samples decide")
+        XCTAssertEqual(advanceAways.first?.dur, 200_000, "the row's catalog length still known")
+        seq.stop()
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_c.mp3", "sng_c.txt"])
+    }
 }
 
 /// The position-based END BOUNDARY (tweak 1): a track inside a shared album-rip mp3 must

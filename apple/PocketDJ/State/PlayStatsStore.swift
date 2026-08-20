@@ -41,6 +41,14 @@ final class PlayStatsStore {
         /// which already contains the Apple share of it. Every legacy row would read too high,
         /// permanently.
         var preTagPlayCount: Int?
+        /// Lifetime count of SKIPPED playbacks (advanced away from under 50% played — the
+        /// SkipTracker verdict). ADDITIVE-OPTIONAL, no schema bump (precedent: `appleCount`,
+        /// `preTagPlayCount` — a bump has previously discarded user data here). nil = 0.
+        ///
+        /// Cumulative HERE, not derived from the history log: the log is capped at
+        /// `PlayHistoryStore.maxEvents` and trims its oldest events, so a per-song total that
+        /// must survive relaunch (and years of listening) has to live in the aggregate store.
+        var skipCount: Int? = nil
     }
 
     /// The persisted, versioned document.
@@ -140,6 +148,35 @@ final class PlayStatsStore {
         }
         save()
     }
+
+    /// Record a SKIP (the SkipTracker verdict: advanced away with <50% played). Increments the
+    /// lifetime `skipCount` and saves — the same persistence discipline as `notePlayed`, so the
+    /// total survives relaunch. No re-count window: the tracker classifies each playback at most
+    /// once, so every call here is a distinct verdict.
+    func noteSkipped(_ songId: String, at nowMs: Double = Date().timeIntervalSince1970 * 1000) {
+        guard !songId.isEmpty else { return }
+        if var s = stats[songId] {
+            s.skipCount = (s.skipCount ?? 0) + 1
+            stats[songId] = s
+        } else {
+            // Every real playback path already notePlayed()'d at track start, so this row should
+            // exist — belt-and-braces for a skip arriving first. `playCount: 0` (not 1): a skip
+            // is not a play, and `preTagPlayCount: 0` keeps the legacy-migration invariant (see
+            // `notePlayed`).
+            stats[songId] = Stat(playCount: 0, lastPlayedAt: nowMs, appleCount: nil,
+                                 preTagPlayCount: 0, skipCount: 1)
+        }
+        save()
+    }
+
+    /// Every song with a non-zero lifetime skip count, as a plain value map — the snapshot the
+    /// rec ranking's skip penalty is built from (same shape as `PlayCountService.snapshot()`).
+    func skipCountsSnapshot() -> [String: Int] {
+        stats.compactMapValues { s in (s.skipCount ?? 0) > 0 ? s.skipCount : nil }
+    }
+
+    /// Lifetime skip count for one song (0 if never skipped) — the per-song read History uses.
+    func skipCount(_ songId: String) -> Int { stats[songId]?.skipCount ?? 0 }
 
     /// PEER-PLAY SEAM: when this song was last played on ANOTHER device. Wired at app init to
     /// `PlayHistoryStore.lastPlayedAtAnyDevice` once history merges across devices; nil in tests.

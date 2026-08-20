@@ -287,22 +287,33 @@ struct ForYouTilesView: View {
         let timbre = await TimbreCatalog.shared.vectors(nowMs: now)
         // ONE feedback projection PER TILE, because suppression is SCOPED: a song thumbed down in
         // one crate must not vanish from another tile's list.
+        let counts = playCounts.snapshot()
+        // The SKIP signal, dampened (plays-vs-skips with a Laplace prior — see
+        // `ZoneEngine.Feedback.skipPenalties`) and injected into every tile's feedback at
+        // snapshot time, the same main-actor hop every other input makes. GLOBAL, not scoped:
+        // a skip is evidence about the song, not about one tile.
+        let skipPenalty = ZoneEngine.Feedback.skipPenalties(plays: counts,
+                                                            skips: playCounts.skipCounts())
+        func withSkips(_ fb: ZoneEngine.Feedback) -> ZoneEngine.Feedback {
+            var fb = fb; fb.skipPenalty = skipPenalty; return fb
+        }
         let inputs = ForYouFeedInputs(
             songs: app.songs,
             tracks: app.zoneTracks,
             genreBySongId: app.zoneGenreBySongId,
             plays: history.recentPlaysForZone(),
-            playCount: playCounts.snapshot(),
+            playCount: counts,
             // Combined Apple + local last-played. Without it a song he plays daily in Music.app but
             // never through PocketDJ looks dormant, and the rediscovery pool offers it back.
             lastPlayedMs: playCounts.lastPlayedSnapshot(),
             crates: members.map { .init(id: $0.id, kind: $0.kind, name: $0.name, songIds: $0.songIds) },
-            zoneFeedback: feedback?.zoneFeedback(scope: ForYouTileRoute.Kind.zone.rawValue, nowMs: now)
-                ?? ZoneEngine.Feedback(),
+            zoneFeedback: withSkips(feedback?.zoneFeedback(scope: ForYouTileRoute.Kind.zone.rawValue,
+                                                           nowMs: now) ?? ZoneEngine.Feedback()),
             crateFeedback: Dictionary(uniqueKeysWithValues: members
                 .filter { !recsOff.contains($0.id) }
                 .map {
-                    ($0.id, feedback?.zoneFeedback(scope: $0.id, nowMs: now) ?? ZoneEngine.Feedback())
+                    ($0.id, withSkips(feedback?.zoneFeedback(scope: $0.id, nowMs: now)
+                        ?? ZoneEngine.Feedback()))
                 }),
             recsOffCrateIds: recsOff,
             timbre: timbre,

@@ -1014,4 +1014,105 @@ final class ZoneEngineTests: XCTestCase {
         XCTAssertNotEqual(noVector?.why.hasPrefix("Sounds like"), true,
                           "an imputed fit never claims a sound nothing measured")
     }
+
+    // ========================================================================
+    // MARK: - The skip penalty (dampened plays-vs-skips, bounded demotion)
+    // ========================================================================
+
+    /// The formula's edges: the k=3 Laplace prior dampens a lone skip, a heavy pattern
+    /// saturates toward (but never past) 1, zero skips contribute no entry at all, and a
+    /// missing plays row trusts the skip count as its own denominator.
+    func testSkipPenaltiesDampening() {
+        let p = ZoneEngine.Feedback.skipPenalties(
+            plays: ["one": 1, "twenty": 20, "ten": 10],
+            skips: ["one": 1, "twenty": 1, "ten": 10, "zero": 0])
+        XCTAssertEqual(p["one"]!, 0.25, accuracy: 1e-9, "1 skip / 1 play → 1/(1+3)")
+        XCTAssertEqual(p["twenty"]!, 1.0 / 23.0, accuracy: 1e-9, "1 skip / 20 plays ≈ 0.043")
+        XCTAssertEqual(p["ten"]!, 10.0 / 13.0, accuracy: 1e-9, "10/10 ≈ 0.77 — patterns bite")
+        XCTAssertNil(p["zero"], "no entry for zero skips (the empty-map contract stays cheap)")
+
+        let q = ZoneEngine.Feedback.skipPenalties(plays: [:], skips: ["s": 5])
+        XCTAssertEqual(q["s"]!, 5.0 / 8.0, accuracy: 1e-9,
+                       "no plays row → the skip count is its own floor (skips imply play starts)")
+        XCTAssertTrue(q.values.allSatisfy { $0 > 0 && $0 <= 1 }, "always in (0, 1]")
+    }
+
+    /// The Feedback contract extends to the new field: an EMPTY skip-penalty map produces a
+    /// queue identical to one ranked before skip tracking existed.
+    func testEmptySkipPenaltyIsByteIdenticalRanking() {
+        let songs = catalog(artists: 8, perArtist: 4)
+        let plays = (0..<8).map { ZoneEngine.Play(songId: "a\($0)-t0", playedAtMs: now - 2 * day) }
+        let base = ZoneEngine.inDaZone(songs: songs, genreBySongId: genrePerArtist(songs),
+                                       plays: plays, playCount: { _ in 3 }, nowMs: now)
+        let withEmpty = ZoneEngine.inDaZone(songs: songs, genreBySongId: genrePerArtist(songs),
+                                            plays: plays, playCount: { _ in 3 },
+                                            feedback: ZoneEngine.Feedback(skipPenalty: [:]),
+                                            nowMs: now)
+        XCTAssertEqual(base.picks, withEmpty.picks, "empty map ⇒ the pre-skip ranking, exactly")
+    }
+
+    /// A FULL penalty (skipped every time) demotes below an otherwise-equal peer but NEVER
+    /// removes the song — skips reorder, they never censor (the rejectionWeight doctrine).
+    func testSkipPenaltyDemotesButNeverRemoves() {
+        let songs = catalog(artists: 3, perArtist: 2)
+        // Two equal familiar songs by DIFFERENT artists (no cap interference): same play
+        // moment, same lifetime count → identical scores, id tiebreak puts a0-t0 first.
+        let plays = [ZoneEngine.Play(songId: "a0-t0", playedAtMs: now - 2 * day),
+                     ZoneEngine.Play(songId: "a1-t0", playedAtMs: now - 2 * day)]
+        let counts = ["a0-t0": 4, "a1-t0": 4]
+        let genres = genrePerArtist(songs)
+
+        let base = ZoneEngine.inDaZone(songs: songs, genreBySongId: genres, plays: plays,
+                                       playCount: { counts[$0] ?? 0 }, nowMs: now)
+        XCTAssertLessThan(base.songIds.firstIndex(of: "a0-t0")!,
+                          base.songIds.firstIndex(of: "a1-t0")!, "baseline: the id tiebreak")
+
+        let fb = ZoneEngine.Feedback(skipPenalty: ["a0-t0": 1.0])
+        let q = ZoneEngine.inDaZone(songs: songs, genreBySongId: genres, plays: plays,
+                                    playCount: { counts[$0] ?? 0 }, feedback: fb, nowMs: now)
+        XCTAssertTrue(q.songIds.contains("a0-t0"),
+                      "even a song skipped EVERY time keeps 65% of its score — never removed")
+        XCTAssertLessThan(q.songIds.firstIndex(of: "a1-t0")!,
+                          q.songIds.firstIndex(of: "a0-t0")!,
+                          "…but it now ranks below its equal-scored peer")
+    }
+
+    /// ONE skip must not bury a song: penalty 0.25 × weight 0.35 ⇒ ≤ 8.75% demotion, which a
+    /// genuinely wider similarity margin (artist+genre vs genre-only) rides out untouched.
+    func testSingleSkipCannotBury() {
+        let single = ZoneEngine.Feedback.skipPenalties(plays: ["s": 1], skips: ["s": 1])["s"]!
+        XCTAssertEqual(single, 0.25, accuracy: 1e-9)
+        XCTAssertLessThanOrEqual(ZoneEngine.Tuning().skipPenaltyWeight * single, 0.0875 + 1e-9,
+                                 "the worst single-skip demotion is 8.75%")
+
+        let tracks = [
+            ZoneEngine.Track(songId: "m0", artistKey: "artist0", artistName: "A0", genre: "rock"),
+            ZoneEngine.Track(songId: "s-hit", artistKey: "artist0", artistName: "A0", genre: "rock"),
+            ZoneEngine.Track(songId: "s-meh", artistKey: "artist7", artistName: "A7", genre: "rock"),
+        ]
+        let fb = ZoneEngine.Feedback(skipPenalty: ["s-hit": single])
+        let out = ZoneEngine.suggestions(memberSongIds: ["m0"], tracks: tracks,
+                                         playCount: { _ in 0 }, feedback: fb)
+        XCTAssertEqual(out.first, "s-hit",
+                       "an artist+genre match keeps its rank over genre-only through one skip")
+    }
+
+    /// The suggestions path applies the same bounded multiplier: a saturated penalty flips
+    /// the order of two otherwise-identical candidates without dropping either.
+    func testSuggestionsApplySkipPenalty() {
+        let tracks = [
+            ZoneEngine.Track(songId: "m0", artistKey: "artist0", artistName: "A0", genre: "rock"),
+            ZoneEngine.Track(songId: "s1", artistKey: "artist0", artistName: "A0", genre: "rock"),
+            ZoneEngine.Track(songId: "s2", artistKey: "artist0", artistName: "A0", genre: "rock"),
+        ]
+        let base = ZoneEngine.suggestions(memberSongIds: ["m0"], tracks: tracks,
+                                          playCount: { _ in 0 })
+        XCTAssertEqual(base, ["s1", "s2"], "identical twins — the id tiebreak decides")
+
+        let fb = ZoneEngine.Feedback(skipPenalty: ["s1": 1.0])
+        let out = ZoneEngine.suggestions(memberSongIds: ["m0"], tracks: tracks,
+                                         playCount: { _ in 0 }, feedback: fb)
+        XCTAssertEqual(out, ["s2", "s1"],
+                       "the skipped twin drops below its peer — demoted, still offered")
+    }
 }

@@ -87,6 +87,12 @@ final class PlayHistoryStore {
         /// where a play happened, and `rebuildIndexes` can keep the 30-second re-count window
         /// LOCAL — a play that arrived from another device must never suppress a genuine play here.
         var originInstallId: String?
+        /// True when this playback was ADVANCED AWAY FROM with less than half the song played
+        /// (the SkipTracker verdict). ADDITIVE-OPTIONAL, no schema bump (precedent:
+        /// `originInstallId`): older/peer documents decode to nil, which reads as "not skipped".
+        /// Stamped by `markSkipped(eventId:)` after the fact — the event is appended at track
+        /// START (the live History row) and only later classified.
+        var wasSkipped: Bool? = nil
     }
 
     /// The persisted, versioned document.
@@ -226,6 +232,20 @@ final class PlayHistoryStore {
         save()
         onRecord?(event)
         return event
+    }
+
+    /// Mark an already-recorded event as a SKIP (advanced away from under 50% played) — the
+    /// update-on-end half of the live-row lifecycle (`record` appended it at track start).
+    /// In-place edit + revision bump + save; deliberately NO `onRecord` fire (it is not a new
+    /// play — firing would re-trigger the release feed). Unknown id / already-true = no-op, so
+    /// a double classification can't dirty the file or re-render History for nothing.
+    /// Searches from the tail: the live event is always at/near the end of the log.
+    func markSkipped(eventId: UUID) {
+        guard let i = events.lastIndex(where: { $0.id == eventId }),
+              events[i].wasSkipped != true else { return }
+        events[i].wasSkipped = true
+        revision &+= 1
+        save()
     }
 
     /// Recent plays projected for the For You ranking (`ZoneEngine`).

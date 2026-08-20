@@ -160,6 +160,89 @@ final class PlayHistoryStoreTests: XCTestCase {
         XCTAssertEqual(plays.map(\.songId), ["recent"],
                        "a year-old play is outside the window and stays out")
     }
+
+    // ── Skip tracking: the live-append + update-on-end lifecycle ─────────────────────────────
+
+    /// The live-History guarantee: `record` appends at track START, returns the event, bumps
+    /// `revision` (the History view's recompute key) and fires `onRecord` (the SkipTracker's
+    /// arm signal) — all before any classification exists.
+    func testRecordAppendsAtStartAndBumpsRevision() {
+        let (store, _) = makeStore()
+        var recorded: [PlayHistoryStore.PlayEvent] = []
+        store.onRecord = { recorded.append($0) }
+        let r0 = store.revision
+        let ev = store.record(songId: "s1", context: ctx(.browser), at: 1_000)
+        XCTAssertNotNil(ev)
+        XCTAssertTrue(store.events.contains { $0.id == ev?.id }, "the live row IS a normal event")
+        XCTAssertNotEqual(store.revision, r0, "History re-renders the moment playback starts")
+        XCTAssertEqual(recorded.map(\.id), [ev?.id], "onRecord fired with the appended event")
+        XCTAssertNil(ev?.wasSkipped, "unclassified at start")
+    }
+
+    /// The update-on-end half: `markSkipped` flips the flag in place, bumps revision, saves —
+    /// a fresh store from the same file decodes the flag (relaunch survival).
+    func testMarkSkippedSetsFlagBumpsRevisionAndPersists() {
+        let (store, url) = makeStore()
+        let ev = store.record(songId: "s1", context: ctx(.browser), at: 1_000)!
+        var onRecordFires = 0
+        store.onRecord = { _ in onRecordFires += 1 }
+        let r0 = store.revision
+        store.markSkipped(eventId: ev.id)
+        XCTAssertEqual(store.events.first { $0.id == ev.id }?.wasSkipped, true)
+        XCTAssertNotEqual(store.revision, r0, "the flag is a real mutation — History recomputes")
+        XCTAssertEqual(onRecordFires, 0, "marking is NOT a new play — no onRecord")
+        let reloaded = PlayHistoryStore(fileURL: url)
+        XCTAssertEqual(reloaded.events.first { $0.id == ev.id }?.wasSkipped, true,
+                       "the per-playback flag survives relaunch")
+    }
+
+    func testMarkSkippedUnknownOrAlreadySkippedIsNoOp() {
+        let (store, _) = makeStore()
+        let ev = store.record(songId: "s1", context: ctx(.browser), at: 1_000)!
+        store.markSkipped(eventId: ev.id)
+        let r0 = store.revision
+        store.markSkipped(eventId: ev.id)          // already true
+        XCTAssertEqual(store.revision, r0, "double classification cannot dirty the file")
+        store.markSkipped(eventId: UUID())          // unknown id
+        XCTAssertEqual(store.revision, r0)
+    }
+
+    /// ADDITIVE-OPTIONAL compat, both directions: a legacy document without the key decodes
+    /// with every event intact and `wasSkipped == nil`; a document WITH the key survives the
+    /// `LenientEvent` per-element path with the flag intact.
+    func testLegacyDocumentDecodesWithNilWasSkipped() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-hist-legacy-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let legacy = """
+        {"schemaVersion":1,"installId":"old-install","events":[
+          {"id":"\(UUID().uuidString)","songId":"s_old","playedAt":1000,"source":"browser"},
+          {"id":"\(UUID().uuidString)","songId":"s_new","playedAt":2000,"source":"browser","wasSkipped":true}
+        ]}
+        """
+        try Data(legacy.utf8).write(to: url, options: .atomic)
+        let store = PlayHistoryStore(fileURL: url)
+        XCTAssertEqual(store.events.map(\.songId), ["s_old", "s_new"],
+                       "no event was dropped or the log discarded")
+        XCTAssertNil(store.events[0].wasSkipped, "legacy = unclassified = not skipped")
+        XCTAssertEqual(store.events[1].wasSkipped, true, "a stamped flag round-trips")
+    }
+
+    /// The union merge keeps the IN-MEMORY copy on an event-id conflict, so a cloud pull that
+    /// lands an older (unstamped) copy of the same event cannot wipe a local skip verdict.
+    func testMarkSkippedSurvivesReloadFromDisk() throws {
+        let (store, url) = makeStore()
+        let ev = store.record(songId: "s1", context: ctx(.browser), at: 1_000)!
+        store.markSkipped(eventId: ev.id)
+        // A peer's pull writes the SAME event, without the flag (the peer never saw the skip).
+        var unstamped = ev
+        unstamped.wasSkipped = nil
+        let doc = PlayHistoryStore.Document(installId: "peer", events: [unstamped])
+        try JSONEncoder().encode(doc).write(to: url, options: .atomic)
+        store.reloadFromDisk()
+        XCTAssertEqual(store.events.first { $0.id == ev.id }?.wasSkipped, true,
+                       "the local verdict wins the union")
+    }
 }
 
 // MARK: - Universal history: union merge across devices (R8)
