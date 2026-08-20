@@ -27,6 +27,12 @@ struct HistoryView: View {
     @Environment(CollectionsStore.self) private var collections
     @Environment(SettingsStore.self) private var settings
     @Environment(SetlistPlayer.self) private var sequencer
+    /// Live "playing now" indicator inputs: the SkipTracker's `currentEventId` names the history
+    /// event recorded at track START (every backend funnels through `PlayHistoryStore.onRecord`),
+    /// and the rip / coordinator / setlist surfaces say whether anything is actually live now.
+    @Environment(SkipTracker.self) private var skips
+    @Environment(RipsStore.self) private var rips
+    @Environment(PlaybackCoordinator.self) private var coordinator
     @Environment(IntentServices.self) private var intents
     /// Optional like `AddToCollectionView`/`AppleMusicSettingsView`: always injected by the app, but a
     /// preview/test host that renders History standalone should degrade to "no backfill", not trap.
@@ -112,8 +118,13 @@ struct HistoryView: View {
 
     /// Identifies the BASE rows (catalog + event log + mode) independent of the filter/sort/query,
     /// so `refreshExternal` rebuilds the expensive per-event base only when it actually changes and
-    /// reuses it across query/filter/sort edits.
-    private var baseKey: String { "\(app.catalogRevision)-\(history.revision)-\(groupBySong)" }
+    /// reuses it across query/filter/sort edits. `hideSkips` is the ONE filter that lives here:
+    /// it's applied while BUILDING the base (skip-ness is on the play event, which the filter
+    /// engine's rows don't carry), so the cached base must rebuild when it flips — a signature-only
+    /// recompute would serve the stale pre-toggle rows out of `externalBaseCache`.
+    private var baseKey: String {
+        "\(app.catalogRevision)-\(history.revision)-\(groupBySong)-\(browse.hideSkips)"
+    }
 
     /// Paging key = what makes the RESULT SET different (mode, filters/sort, event log, and the
     /// row count). Deliberately EXCLUDES app.catalogRevision: a catalog load bumps the recompute
@@ -535,11 +546,28 @@ struct HistoryView: View {
         return VStack(alignment: .leading, spacing: 3) {
             SongRowView(data: SongRowData(song: song, album: album))
             HStack(spacing: 5) {
+                if isLiveRow(play) {
+                    // Subtle "playing now": an accent speaker at the head of the context line.
+                    // The row stays a NORMAL history row — select / Add to… / drag / context
+                    // menu all keep working on it; this is presentation only.
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 9)).foregroundStyle(Theme.accent)
+                        .accessibilityIdentifier("history-live-indicator")
+                }
                 Image(systemName: play.source.symbol).font(.system(size: 9))
                 Text(contextLabel(play)).lineLimit(1)
                 Text("·")
                 Text(Self.relative(play.playedAt))
                 Spacer()
+                if play.wasSkipped {
+                    // Quiet skip marker (dim caption, like everything on this line); the
+                    // actionable half is the Filter sheet's "Hide skips" toggle.
+                    HStack(spacing: 3) {
+                        Image(systemName: "forward.end").font(.system(size: 8))
+                        Text("skipped")
+                    }
+                    .accessibilityIdentifier("history-skipped-badge")
+                }
                 if play.count > 1 {
                     Text("\(play.count) plays")
                         .accessibilityIdentifier("history-count-\(song.id)")
@@ -549,6 +577,16 @@ struct HistoryView: View {
             .padding(.leading, 52)   // align under the row's text, past the thumbnail
         }
         .padding(.vertical, 2)
+    }
+
+    /// True when this row IS the current playback. The SkipTracker's `currentEventId` names the
+    /// event armed at track start; nothing clears it on stop, so the playback surfaces are what
+    /// say "now": the setlist deck running, a rip playing, or an active coordinator backend.
+    /// All observable — the indicator appears the moment `record` fires and follows play/stop
+    /// with no extra plumbing.
+    private func isLiveRow(_ play: PlayRef) -> Bool {
+        guard play.eventId == skips.currentEventId else { return false }
+        return sequencer.isRunning || rips.nowPlaying != nil || coordinator.activeBackend != nil
     }
 
     // MARK: - Rewind playback to a point in History (R5b)
@@ -769,6 +807,16 @@ struct HistoryView: View {
         return out
     }
 
+    /// The events the Playback timeline builds rows from under the current Hide-skips setting.
+    /// Pure + static (the `distinctSongs`/`rewindSlice` precedent) so it's unit-testable without
+    /// a view host. `wasSkipped == nil` — legacy docs, peer docs, and the LIVE track whose
+    /// verdict hasn't happened yet — reads as NOT skipped and stays visible.
+    static func visibleEvents(_ events: [PlayHistoryStore.PlayEvent],
+                              hideSkips: Bool) -> [PlayHistoryStore.PlayEvent] {
+        guard hideSkips else { return events }
+        return events.filter { $0.wasSkipped != true }
+    }
+
     /// The selected songs in displayed order (deduped — History rows are one-per-event).
     private var selectedSongs: [IndexSong] {
         displayedSongs.filter { rowSelection.isSelected($0.id, scope: Self.selectionScope) }
@@ -804,11 +852,14 @@ struct HistoryView: View {
     private func buildItems() -> (base: [BrowseItem], keys: [String]) {
         var items: [BrowseItem] = []
         var keys: [String] = []
+        // Hide-skips runs on the EVENTS, before any row exists — both modes, so group-by counts
+        // stay honest too (a hidden skip must not inflate a song's play total there).
+        let events = Self.visibleEvents(history.events, hideSkips: browse.hideSkips)
         if groupBySong {
             var latest: [String: PlayHistoryStore.PlayEvent] = [:]
             var counts: [String: Int] = [:]
             var order: [String] = []
-            for e in history.events {
+            for e in events {
                 counts[e.songId, default: 0] += 1
                 if let cur = latest[e.songId] {
                     if e.playedAt >= cur.playedAt { latest[e.songId] = e }
@@ -823,9 +874,9 @@ struct HistoryView: View {
                 items.append(item); keys.append(key)
             }
         } else {
-            items.reserveCapacity(history.events.count)
-            keys.reserveCapacity(history.events.count)
-            for e in history.events {
+            items.reserveCapacity(events.count)
+            keys.reserveCapacity(events.count)
+            for e in events {
                 let (item, key) = makeRow(e, count: 1)
                 items.append(item); keys.append(key)
             }
@@ -842,7 +893,8 @@ struct HistoryView: View {
         let albumName = album?.name ?? ""
         let play = PlayRef(eventId: e.id, playedAt: e.playedAt, source: e.source,
                            contextName: e.contextName, count: count,
-                           fromAnotherDevice: history.isFromAnotherDevice(e))
+                           fromAnotherDevice: history.isFromAnotherDevice(e),
+                           wasSkipped: e.wasSkipped ?? false)
         let item = BrowseItem.song(song, albumName: albumName, source: app.source(ofSong: e.songId),
                                    genre: Genre.category(album?.genre), play: play)
         let key = (song.name + "\n" + song.artist + "\n" + albumName)

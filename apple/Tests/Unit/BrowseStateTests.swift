@@ -325,4 +325,52 @@ final class BrowseStateTests: XCTestCase {
         XCTAssertFalse(restored.includeAny)   // transient, like the PWA's useState
         XCTAssertTrue(restored.excludeIds.isEmpty)
     }
+
+    // MARK: Hide skips (History mode) — transient, signature-driving, Clear-All-owned
+
+    private func historyState(defaults: UserDefaults? = nil) -> BrowseState {
+        BrowseState(defaults: defaults ?? UserDefaults(suiteName: "test.\(UUID().uuidString)")!,
+                    persistenceKey: "pdj.history.test", historyMode: true)
+    }
+
+    func testHideSkipsCountsAsActiveFilterOnlyInHistoryMode() {
+        let h = historyState()
+        XCTAssertEqual(h.activeFilterCount, 0)
+        h.hideSkips = true
+        XCTAssertEqual(h.activeFilterCount, 1)   // lights the toolbar's filled filter glyph
+
+        // Unreachable from the Browser UI, but even if set it must never light Browse's glyph.
+        let b = BrowseState(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        b.kind = .song
+        b.hideSkips = true
+        XCTAssertEqual(b.activeFilterCount, 0)
+    }
+
+    func testHideSkipsChangesFilterSortSignature() {
+        let h = historyState()
+        let before = h.filterSortSignature()
+        h.hideSkips = true
+        XCTAssertNotEqual(h.filterSortSignature(), before)   // the .task(id:) recompute driver
+        h.hideSkips = false
+        XCTAssertEqual(h.filterSortSignature(), before)
+    }
+
+    func testClearAllFiltersResetsHideSkips() {
+        let h = historyState()
+        h.hideSkips = true
+        h.clauses = [Clause(field: "explicit", op: .eq, value: "true")]
+        h.clearAllFilters()
+        XCTAssertTrue(h.clauses.isEmpty)
+        XCTAssertFalse(h.hideSkips)
+    }
+
+    func testHideSkipsNotPersistedAcrossSnapshotRestore() {
+        let defaults = UserDefaults(suiteName: "test.\(UUID().uuidString)")!
+        let h = historyState(defaults: defaults)
+        h.hideSkips = true
+        h.persist()
+        let restored = BrowseState(defaults: defaults, persistenceKey: "pdj.history.test",
+                                   historyMode: true)
+        XCTAssertFalse(restored.hideSkips)   // transient, like membership + favorite
+    }
 }

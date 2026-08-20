@@ -67,6 +67,14 @@ final class BrowseState {
     /// True when the favorite filter constrains anything (`.any` = no constraint).
     var favoriteActive: Bool { favoriteFilter != .any }
 
+    // MARK: Hide-skips filter (HISTORY mode only) — TRANSIENT for the favorite-filter reason:
+    // it's a session lens on the timeline, not a saved preference, and it must never quietly
+    // join `Snapshot` (a relaunch that silently hides plays would read as data loss). Unlike
+    // the read-time layer, it's applied while BUILDING the History base rows
+    // (`HistoryView.visibleEvents`) because skip-ness lives on the play EVENT — so it is part
+    // of `filterSortSignature()` (the recompute driver) rather than a read-time predicate.
+    var hideSkips: Bool = false
+
     // MARK: Lifetime play counts (the "Plays" sort/filter field + the `#NN` row badge)
     //
     // Unlike every other field, this one isn't on the row: it lives in `PlayCountService` (an
@@ -148,6 +156,7 @@ final class BrowseState {
     /// the constraint is song-mode-only, so it must not light up in album/artist mode.
     var activeFilterCount: Int {
         clauses.filter { !$0.isIncomplete }.count + (kind == .song && favoriteActive ? 1 : 0)
+            + (historyMode && hideSkips ? 1 : 0)   // History's clause-less filter, same honesty rule
     }
 
     /// All rows for the current kind (unfiltered), with album names / source / genre
@@ -345,7 +354,7 @@ final class BrowseState {
     func filterSortSignature() -> String {
         struct ClauseSig: Encodable { let f: String; let o: String; let v: String; let vs: [String]; let mn: Double?; let mx: Double? }
         struct SortSig: Encodable { let f: String; let d: String }
-        struct Sig: Encodable { let q: String; let c: [ClauseSig]; let s: [SortSig]; let pc: Int }
+        struct Sig: Encodable { let q: String; let c: [ClauseSig]; let s: [SortSig]; let pc: Int; let hs: Bool }
         let sig = Sig(
             q: query,
             c: clauses.filter { !$0.isIncomplete }.map {
@@ -353,11 +362,14 @@ final class BrowseState {
             },
             s: sortKeys.map { SortSig(f: $0.field, d: $0.dir.rawValue) },
             // Same reason as `resultsKey`: play counts are an input that lives outside this state.
-            pc: playCountsRevision)
+            pc: playCountsRevision,
+            // Hide-skips changes which HISTORY rows exist (it's applied at base-build time), so
+            // the signature must move when it flips or the `.task(id:)` recompute never re-fires.
+            hs: hideSkips)
         let enc = JSONEncoder()
         enc.outputFormatting = .sortedKeys
         guard let data = try? enc.encode(sig) else {
-            return "\(query)-\(clauses.count)-\(sortKeys.count)-\(playCountsRevision)"
+            return "\(query)-\(clauses.count)-\(sortKeys.count)-\(playCountsRevision)-\(hideSkips)"
         }
         return String(decoding: data, as: UTF8.self)
     }
@@ -437,6 +449,7 @@ final class BrowseState {
     func clearAllFilters() {
         clauses.removeAll()
         favoriteFilter = .any
+        hideSkips = false   // same ownership rule: no other "reset everything" control has it
     }
 
     /// The pure filter+sort core, `nonisolated` so it runs on a background executor (called from
