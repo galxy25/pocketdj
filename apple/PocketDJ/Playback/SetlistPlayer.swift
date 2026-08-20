@@ -119,6 +119,14 @@ final class SetlistPlayer {
     /// ~1 Hz position sample for the current track (rides the existing session ticker) —
     /// feeds `SkipTracker`'s high-water mark. Payload mirrors `onAdvanceAway`.
     @ObservationIgnored var onPositionSample: ((String, Int, Int?) -> Void)?
+    /// Fired when the row at `index` starts FROM 0:00 — every sequencer-initiated start except
+    /// a restore-resume (which re-enters mid-song). For a track change the payload is redundant
+    /// (the play hooks record and re-arm the tracker); it is LOAD-BEARING for the replays that
+    /// record NOTHING — repeat-one, a per-track repeat pass, a duplicate consecutive row, a
+    /// same-song play-now — where the rip path's same-id dedupe means no `onPlay` ever fires:
+    /// without this signal the SkipTracker's high-water mark kept pass 1's peak and shielded a
+    /// genuine ⏭ during the replay from ever counting as a skip.
+    @ObservationIgnored var onTrackRestart: ((String) -> Void)?
 
     // MARK: Durable playback session (force-quit → relaunch restore)
 
@@ -273,8 +281,11 @@ final class SetlistPlayer {
     func play(_ items: [Item], sourceSetlistId: String? = nil) {
         guard !items.isEmpty else { return }
         // A fresh play over a RUNNING set is "advancing away" from its current track (the
-        // replace is user-initiated); starting from idle advances away from nothing.
-        if isRunning { noteAdvanceAway() }
+        // replace is user-initiated); starting from idle advances away from nothing — and
+        // neither does replacing the set with one that OPENS ON THE SAME SONG (replaying the
+        // current set from its collection to hear this song from the top is a restart, not a
+        // skip of the song the user actively chose again).
+        if isRunning, let first = items.first, !isRestartOfCurrent(first.id) { noteAdvanceAway() }
         self.sourceSetlistId = sourceSetlistId
         // Snapshot THIS run's history origin now (before any later playNow can mutate the shared
         // now-playing source), so every play in this run is attributed to the right set.
@@ -641,7 +652,8 @@ final class SetlistPlayer {
     func jumpToUpcoming(uid: UUID) {
         guard isRunning, index + 1 < queue.count,
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
-        noteAdvanceAway()
+        // Jumping onto ANOTHER OCCURRENCE of the same song is a restart, not a skip of it.
+        if !isRestartOfCurrent(queue[pos].id) { noteAdvanceAway() }
         exitHoldIfNeeded()
         waitingForLive = false
         index = pos
@@ -663,7 +675,9 @@ final class SetlistPlayer {
     /// per-instance identity in the queue, which the uid-keyed live-queue edits rely on being unique.
     func playNow(_ item: Item) {
         guard isRunning else { return }
-        noteAdvanceAway()
+        // Play-now of the SONG ALREADY PLAYING = "hear it from the top" — a restart the user
+        // actively chose, never a skip verdict against the exact song they asked for again.
+        if !isRestartOfCurrent(item.id) { noteAdvanceAway() }
         exitHoldIfNeeded()
         waitingForLive = false
         let at = min(index + 1, queue.count)
@@ -691,7 +705,8 @@ final class SetlistPlayer {
     func jumpToPlayed(uid: UUID) {
         guard isRunning, index > 0,
               let pos = queue[..<min(index, queue.count)].firstIndex(where: { $0.uid == uid }) else { return }
-        noteAdvanceAway()
+        // Rewinding onto an EARLIER OCCURRENCE of the same song is a restart, not a skip of it.
+        if !isRestartOfCurrent(queue[pos].id) { noteAdvanceAway() }
         exitHoldIfNeeded()
         waitingForLive = false
         index = pos
@@ -1059,6 +1074,12 @@ final class SetlistPlayer {
     /// THE way to invoke `playCurrent` — every call site funnels through here so the
     /// cancel-the-previous rule can't be forgotten at one of them.
     private func startPlayCurrent(fresh: Bool = true, resumeAtMs: Int? = nil) {
+        // Every from-0:00 start announces itself to the skip tracker (a restore-resume
+        // re-enters MID-song, so it must not re-zero the high-water mark). For a track change
+        // this is redundant (the play hooks re-arm the tracker via `record`); for the replay
+        // paths that record nothing — repeat-one / per-track repeat / duplicate row /
+        // same-song play-now — it is the ONLY reset the high-water mark gets.
+        if resumeAtMs == nil, isRunning, index < queue.count { onTrackRestart?(queue[index].id) }
         playTask?.cancel()
         playTask = Task { await playCurrent(fresh: fresh, resumeAtMs: resumeAtMs) }
     }
@@ -1452,12 +1473,25 @@ final class SetlistPlayer {
         return nil
     }
 
+    /// True when `destinationId` IS the song the deck is currently on — the transport is a
+    /// RESTART ("play it from the top"), not an advance-away, so the skip hook stays silent.
+    /// Base-id comparison: a substituted row plays under its variant id while the incoming
+    /// destination carries the base one.
+    private func isRestartOfCurrent(_ destinationId: String) -> Bool {
+        guard isRunning, index < queue.count else { return false }
+        return SongVariant.baseId(destinationId) == SongVariant.baseId(queue[index].id)
+    }
+
     /// Report an advance-away to the skip hook — called by the user-initiated transports
     /// BEFORE the index moves / a hold exits, so `sessionPositionMs()` still reads the OLD
     /// track. `liveClock: false` = the old track's clock is already gone (the adopt path);
     /// the tracker falls back to its sampled high-water mark.
     private func noteAdvanceAway(liveClock: Bool = true) {
         guard isRunning, index < queue.count else { return }
+        // A LIVE HLS capture has no natural end — its "Next" affordance is the ONLY way
+        // forward, and the listener has heard 100% of the audio that exists so far. Advancing
+        // off it sits with the length-boundary advance on the not-a-skip list.
+        guard !waitingForLive else { return }
         onAdvanceAway?(queue[index].id, liveClock ? sessionPositionMs() : nil, currentDurationMs())
     }
 

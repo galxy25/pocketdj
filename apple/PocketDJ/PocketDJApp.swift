@@ -513,6 +513,18 @@ struct PocketDJApp: App {
         setlistPlayer.onPositionSample = { [weak skipTracker] id, pos, dur in
             skipTracker?.samplePosition(songId: id, positionMs: pos, durationMs: dur)
         }
+        // Replays that record NOTHING (repeat-one, per-track repeat, duplicate row, same-song
+        // play-now — the rip path's same-id dedupe fires no onPlay) still restart from 0:00:
+        // re-zero the tracker's high-water mark or pass 1's peak shields every ⏭ in pass 2.
+        setlistPlayer.onTrackRestart = { [weak skipTracker] id in
+            skipTracker?.noteTrackRestarted(songId: id)
+        }
+        // A play the 30 s window COLLAPSED into an existing row is still the live playback —
+        // re-point the tracker (History's live indicator) at that row, else it sits on
+        // whatever recorded last while a different song is audibly playing.
+        playHistory.onResume = { [weak skipTracker] event in
+            skipTracker?.noteTrackResumed(event)
+        }
         // ── Release feed (For You ▸ New) ─────────────────────────────────────────────────────
         // LAZY, ON-PLAY, NEVER SCHEDULED. The ONLY thing that starts a catalog request is a
         // recorded play, hooked here off `PlayHistoryStore.onRecord` — the one choke point every
@@ -540,8 +552,8 @@ struct PocketDJApp: App {
         }
         playHistory.onRecord = { [weak app, weak releaseFeed, weak skipTracker] event in
             // Skip tracking: this event IS the live "playing now" row — arm the tracker first.
-            // (`onRecord` deliberately does not fire for 30 s-window collapsed re-notes, so a
-            // repeat-one replay keeps the same live event id — correct, keep it.)
+            // (`onRecord` deliberately does not fire for 30 s-window collapsed re-notes; those
+            // re-point the tracker at their existing row via `onResume` above instead.)
             skipTracker?.noteTrackStarted(event)
             // The play event carries an artist NAME; the catalog endpoint needs an artist ID.
             // That join is exactly what the index's `artists` table exists for — and a name it

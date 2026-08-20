@@ -33,6 +33,12 @@ struct HistoryView: View {
     @Environment(SkipTracker.self) private var skips
     @Environment(RipsStore.self) private var rips
     @Environment(PlaybackCoordinator.self) private var coordinator
+    /// The live indicator's "is anything actually SOUNDING" inputs (see `isLiveRow`): the
+    /// AVPlayer engine for local/rip singles, the Mix decks for mix plays. `rips.nowPlaying`
+    /// deliberately does NOT qualify — the mini-player keeps it forever after a standalone
+    /// play ends, which left the speaker icon lit hours into silence.
+    @Environment(PlayerEngine.self) private var player
+    @Environment(MixEngine.self) private var mix
     @Environment(IntentServices.self) private var intents
     /// Optional like `AddToCollectionView`/`AppleMusicSettingsView`: always injected by the app, but a
     /// preview/test host that renders History standalone should degrade to "no backfill", not trap.
@@ -581,12 +587,21 @@ struct HistoryView: View {
 
     /// True when this row IS the current playback. The SkipTracker's `currentEventId` names the
     /// event armed at track start; nothing clears it on stop, so the playback surfaces are what
-    /// say "now": the setlist deck running, a rip playing, or an active coordinator backend.
+    /// say "now" — and they must say it HONESTLY:
+    ///  • A RUNNING set deck counts even while paused (the deck still owns the row — same story
+    ///    the Now Playing screen tells).
+    ///  • Otherwise something must actually be SOUNDING: the AVPlayer engine (local/rip
+    ///    singles), the Apple Music stream, or a Mix deck. `rips.nowPlaying != nil` was the old
+    ///    gate and it lies — the mini-player keeps it (deliberately) after a standalone play
+    ///    ends naturally, which left the speaker icon on that row hours into silence, pause
+    ///    included.
     /// All observable — the indicator appears the moment `record` fires and follows play/stop
     /// with no extra plumbing.
     private func isLiveRow(_ play: PlayRef) -> Bool {
         guard play.eventId == skips.currentEventId else { return false }
-        return sequencer.isRunning || rips.nowPlaying != nil || coordinator.activeBackend != nil
+        if sequencer.isRunning { return true }
+        return player.isPlaying || coordinator.appleMusic.isPlaying
+            || mix.isPlaying(.a) || mix.isPlaying(.b)
     }
 
     // MARK: - Rewind playback to a point in History (R5b)

@@ -243,6 +243,81 @@ final class PlayHistoryStoreTests: XCTestCase {
         XCTAssertEqual(store.events.first { $0.id == ev.id }?.wasSkipped, true,
                        "the local verdict wins the union")
     }
+
+    /// …and survives it ON DISK, not just in memory: a peer doc with the SAME row count but no
+    /// flags used to skip the conditional save (count-based), so the flagless peer bytes sat on
+    /// disk and the next launch decoded them — the verdicts silently evaporated. Holding a flag
+    /// the pulled document lacks is a superset worth publishing.
+    func testLocalSkipFlagIsRepublishedOverAFlaglessPeerDoc() throws {
+        let (store, url) = makeStore()
+        let ev = store.record(songId: "s1", context: ctx(.browser), at: 1_000)!
+        store.markSkipped(eventId: ev.id)
+        var unstamped = ev
+        unstamped.wasSkipped = nil
+        let doc = PlayHistoryStore.Document(installId: "peer", events: [unstamped])
+        try JSONEncoder().encode(doc).write(to: url, options: .atomic)
+
+        XCTAssertTrue(store.reloadFromDisk(), "a flag the doc lacks IS a superset — publish it")
+
+        let relaunched = PlayHistoryStore(fileURL: url)
+        XCTAssertEqual(relaunched.events.first { $0.id == ev.id }?.wasSkipped, true,
+                       "the verdict survives a relaunch — the flagged log reached the disk")
+    }
+
+    /// The flag is monotone the OTHER way too: a peer that classified a shared play pushes its
+    /// verdict into our union (no publish needed — the pulled doc already carries the flag, so
+    /// there is nothing it lacks; a save here would ping-pong the file between devices).
+    func testPeerSkipFlagIsAbsorbedIntoTheUnion() throws {
+        let (store, url) = makeStore()
+        let ev = store.record(songId: "s1", context: ctx(.browser), at: 1_000)!
+        var flagged = ev
+        flagged.wasSkipped = true
+        let doc = PlayHistoryStore.Document(installId: "peer", events: [flagged])
+        try JSONEncoder().encode(doc).write(to: url, options: .atomic)
+
+        XCTAssertFalse(store.reloadFromDisk(), "the doc holds everything we do — no publish")
+        XCTAssertEqual(store.events.first { $0.id == ev.id }?.wasSkipped, true,
+                       "the peer's verdict was absorbed")
+    }
+
+    // MARK: The collapse-resume hook (live-row tracking through the 30 s window)
+
+    /// A play the window collapses is still the LIVE playback — `onResume` hands the surviving
+    /// row over (the SkipTracker re-arms on it), while `onRecord` stays silent (not a new play).
+    func testCollapsedReplayFiresOnResumeWithTheExistingEvent() {
+        let (store, _) = makeStore()
+        var resumed: [UUID] = []
+        var recorded: [UUID] = []
+        store.onResume = { resumed.append($0.id) }
+        let first = store.record(songId: "s1", context: ctx(.browser), at: 1_000)!
+        store.onRecord = { recorded.append($0.id) }
+        let collapsed = store.record(songId: "s1", context: ctx(.browser), at: 20_000)
+        XCTAssertNil(collapsed)
+        XCTAssertEqual(resumed, [first.id], "the collapse re-points the live row at its event")
+        XCTAssertTrue(recorded.isEmpty, "a collapsed re-note is never a new record")
+    }
+
+    /// The resume hook is LOCAL-only, like the window it rides: a peer's newer row for the same
+    /// song must not become this device's "playing now".
+    func testOnResumePicksTheLocalEventOverANewerPeerRow() throws {
+        let (store, url) = makeStore()
+        let local = store.record(songId: "s1", context: ctx(.browser), at: 10_000)!
+        // A peer row for the SAME song, newer than ours, merges in underneath.
+        let peer = PlayHistoryStore.PlayEvent(
+            id: UUID(), songId: "s1", playedAt: 15_000, source: .browser,
+            contextId: nil, contextName: nil, title: nil, artist: nil,
+            originInstallId: "peer-install")
+        var mine = store.events
+        mine.append(peer)
+        let doc = PlayHistoryStore.Document(installId: "peer-install", events: mine)
+        try JSONEncoder().encode(doc).write(to: url, options: .atomic)
+        store.reloadFromDisk()
+
+        var resumed: [UUID] = []
+        store.onResume = { resumed.append($0.id) }
+        XCTAssertNil(store.record(songId: "s1", context: ctx(.browser), at: 20_000))
+        XCTAssertEqual(resumed, [local.id], "the LOCAL row resumes, not the peer's newer one")
+    }
 }
 
 // MARK: - Universal history: union merge across devices (R8)

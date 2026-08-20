@@ -1388,6 +1388,98 @@ final class SetlistPlayerTests: XCTestCase {
         seq.stop()
         cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_c.mp3", "sng_c.txt"])
     }
+
+    /// Restart gestures — play-now of the SONG ALREADY PLAYING and a fresh play() whose first
+    /// row is that song — are "hear it from the top", never an advance-away (never a skip
+    /// verdict against the exact song the user actively chose again).
+    func testSameSongRestartsDoNotFireAdvanceAway() async {
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_b.mp3", "sng_b.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_a")
+        await burn(rips, burns, songId: "sng_b")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        armAdvanceAway(seq)
+        seq.play([.init(id: "sng_a", title: "A", artist: "A"),
+                  .init(id: "sng_b", title: "B", artist: "A")])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "sng_a" }
+
+        // Play-now of the current song = restart from the top.
+        seq.playNow(.init(id: "sng_a", title: "A", artist: "A"))
+        XCTAssertTrue(advanceAways.isEmpty, "restarting the current song is not a skip")
+
+        // A fresh play() OPENING ON the current song (replaying the set) = restart too.
+        seq.play([.init(id: "sng_a", title: "A", artist: "A"),
+                  .init(id: "sng_b", title: "B", artist: "A")], sourceSetlistId: "set_2")
+        XCTAssertTrue(advanceAways.isEmpty, "replaying the set from its current song is not a skip")
+
+        // …but a fresh play() opening on a DIFFERENT song still fires (the guard is narrow).
+        seq.play([.init(id: "sng_b", title: "B", artist: "A")], sourceSetlistId: "set_3")
+        XCTAssertEqual(advanceAways.map { $0.id }, ["sng_a"], "a real replace still advances away")
+        seq.stop()
+        cleanBurnedFiles(["sng_a.mp3", "sng_a.txt", "sng_b.mp3", "sng_b.txt"])
+    }
+
+    /// The replays that record NOTHING (per-track repeat / repeat-one) announce themselves via
+    /// `onTrackRestart` so the SkipTracker can re-zero its high-water mark — without it, pass
+    /// 1's peak shielded every genuine ⏭ during pass 2 from counting.
+    func testRepeatReplaysFireTrackRestart() async {
+        cleanBurnedFiles(["rp_1.mp3", "rp_1.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "rp_1")
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        var restarts: [String] = []
+        seq.onTrackRestart = { restarts.append($0) }
+        seq.play([.init(id: "rp_1", title: "One", artist: "A", repeatCount: 2)])
+        await waitUntil("track 0 playing") { rips.nowPlaying?.songId == "rp_1" }
+        restarts = []   // the initial play() start also announces — only the replays are under test
+
+        player.onTrackEnded?()   // per-track repeat: replay, stays on the row
+        XCTAssertEqual(restarts, ["rp_1"], "the repeat pass restarts from 0:00")
+
+        seq.setRepeatMode(.one)
+        player.onTrackEnded?()   // repeat-one replay
+        XCTAssertEqual(restarts, ["rp_1", "rp_1"], "the repeat-one replay restarts from 0:00")
+        seq.stop()
+        cleanBurnedFiles(["rp_1.mp3", "rp_1.txt"])
+    }
+
+    /// A LIVE HLS capture has no natural end — its "Next" affordance is the only way forward,
+    /// and the listener has heard 100% of the audio that exists. Advancing off it must stay
+    /// silent (it sits with the length-boundary advance on the not-a-skip list).
+    func testNextOffLiveCaptureDoesNotFireAdvanceAway() async {
+        cleanBurnedFiles(["sng_after.mp3", "sng_after.txt"])
+        let rips = makeRips(serverURL: "https://imac.test")
+        let burns = makeBurns(rips)
+        let player = PlayerEngine()
+        let coord = makeCoordinator(rips: rips, player: player)
+        await burn(rips, burns, songId: "sng_after")
+        // An HLS manifest key resolves under /hls/ → `NowPlaying.live` → `waitingForLive`.
+        rips.setManifest(["sng_live": .init(key: "hls/sng_live/stream.m3u8", source: "digital"),
+                          "sng_after": rips.manifest["sng_after"]!])
+
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        armAdvanceAway(seq)
+        seq.play([.init(id: "sng_live", title: "Live", artist: "A", lengthMs: 300_000),
+                  .init(id: "sng_after", title: "After", artist: "A")])
+        await waitUntil("live capture playing") { seq.waitingForLive }
+
+        seq.skipNext()   // the "Next" affordance — the ONLY advance a live row offers
+        XCTAssertTrue(advanceAways.isEmpty, "advancing off a live capture is never a skip")
+        await waitUntil("advanced onto the burned row") { rips.nowPlaying?.songId == "sng_after" }
+
+        seq.skipNext()   // …while a normal row's ⏭ right after still fires as usual
+        XCTAssertEqual(advanceAways.map { $0.id }, ["sng_after"])
+        seq.stop()
+        cleanBurnedFiles(["sng_after.mp3", "sng_after.txt"])
+    }
 }
 
 /// The position-based END BOUNDARY (tweak 1): a track inside a shared album-rip mp3 must
