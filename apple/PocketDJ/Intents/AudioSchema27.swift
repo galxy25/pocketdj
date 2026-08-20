@@ -159,6 +159,18 @@ struct AudioAlbumEntity: IndexedEntity {
             }
             : []
     }
+
+    /// Relation-free construction from a VALUE snapshot — the bulk reindex builds ~13k of
+    /// these, and it must be able to do so on a detached task (an `IndexAlbum` array is a
+    /// cheap CoW grab on the main actor; the per-entity string work is what stalled it).
+    nonisolated init(albumSnapshot album: IndexAlbum) {
+        id = album.id
+        title = album.name
+        artistName = album.artist
+        artists = [AudioArtistEntity(name: album.artist)]
+        universalProductCode = nil
+        songs = []
+    }
 }
 
 @available(iOS 27.0, macOS 27.0, *)
@@ -281,7 +293,11 @@ struct AudioPlaylistEntity: IndexedEntity {
 
     @MainActor
     init(playlist: Playlist, collections: CollectionsStore) {
-        let stats = collections.catalog().stats(forPlaylist: playlist.id)
+        // The MEMOIZED stats front (`resolvedStats`), never a raw `catalog().stats(...)`:
+        // the raw walk is a full fold over every member id — 26,821 nodes for the largest
+        // duplicated playlist — and this init runs on the main actor inside the debounced
+        // schema reindex after EVERY collections save.
+        let stats = collections.stats(forPlaylist: playlist)
         id = playlist.id
         title = playlist.name
         trackCount = stats.count
@@ -293,7 +309,8 @@ struct AudioPlaylistEntity: IndexedEntity {
 
     @MainActor
     init(pocket: Pocket, collections: CollectionsStore) {
-        let stats = collections.catalog().stats(forPocket: pocket.id)
+        // Same memoized front as the playlist init above.
+        let stats = collections.stats(forPocket: pocket.id)
         id = pocket.id
         title = pocket.name
         trackCount = stats.count
@@ -568,10 +585,12 @@ enum AudioSchemaSearch {
 @MainActor
 enum AudioSchemaIndexer {
     static func reindexAll(_ services: IntentServices) async {
+        MainThreadStallWatchdog.shared.marker("schema-reindex-start")
         await services.ensureReady()
         try? await CSSearchableIndex(name: audioSchemaIndexName).deleteAllSearchableItems()
         try? await indexPlaylists(services)
         try? await indexAlbums(services)
+        MainThreadStallWatchdog.shared.marker("schema-reindex-end")
     }
 
     static func indexPlaylists(_ services: IntentServices) async throws {
@@ -581,11 +600,16 @@ enum AudioSchemaIndexer {
     }
 
     static func indexAlbums(_ services: IntentServices) async throws {
-        // Relation-free album entities in batches (the album set is ~13k — fine).
+        // Relation-free album entities in batches (the album set is ~13k). The array grab is an
+        // O(1) CoW snapshot on the main actor; the ~13k-entity map runs DETACHED — built inline
+        // it was a main-thread burn landing ~2s after every collections save (i.e. exactly
+        // under a back-nav from the collection whose Shuffle triggered the save).
         let albums = services.app.albums
-            .map { AudioAlbumEntity(album: $0, app: services.app, loadRelations: false) }
-        for batch in stride(from: 0, to: albums.count, by: 1000)
-            .map({ Array(albums[$0..<min($0 + 1000, albums.count)]) }) {
+        let entities = await Task.detached(priority: .utility) {
+            albums.map { AudioAlbumEntity(albumSnapshot: $0) }
+        }.value
+        for batch in stride(from: 0, to: entities.count, by: 1000)
+            .map({ Array(entities[$0..<min($0 + 1000, entities.count)]) }) {
             try await CSSearchableIndex(name: audioSchemaIndexName).indexAppEntities(batch)
         }
     }

@@ -59,11 +59,15 @@ final class MixDiag {
         endedAt = nil
         isCapturing = true
         append("mixdiag session START — \(Self.buildIdentity())")
+        // Main-thread stall attribution rides every capture (see MainThreadStallWatchdog):
+        // its STALL/marker lines land in this same buffer, so the exported session carries them.
+        MainThreadStallWatchdog.shared.start()
     }
 
     /// End the session; the buffer stays for export until the next `start()`.
     func stop() {
         guard isCapturing else { return }
+        MainThreadStallWatchdog.shared.stop()
         append("mixdiag session END")
         isCapturing = false
         endedAt = Date()

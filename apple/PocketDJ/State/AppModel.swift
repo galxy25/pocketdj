@@ -1544,26 +1544,43 @@ final class AppModel {
         let unwrap: ([BrowseItem]) -> [IndexSong] = { items in
             items.compactMap { if case .song(let s, _, _, _, _) = $0 { return s } else { return nil } }
         }
+        // `Task.detached` does NOT inherit the caller's cancellation, so a superseded
+        // `.task(id:)` resolve kept burning the whole 26k row build + sort to completion.
+        // The handler forwards the cancel, and the builder checks between its stages.
         if !needsReadTime {
-            return await Task.detached(priority: .userInitiated) {
-                let (items, keys) = Self.buildBrowseItems(forSongIds: ids, songsById: songsById,
-                                                          albumsById: albumsById,
-                                                          songSourceById: songSourceById)
-                return unwrap(BrowseState.filterSort(base: items, searchKeys: keys, query: query,
-                                                     clauses: clauses, sortKeys: sortKeys,
-                                                     playCounts: playCounts))
-            }.value
+            let work = Task.detached(priority: .userInitiated) {
+                Self.resolvePipeline(ids: ids, songsById: songsById, albumsById: albumsById,
+                                     songSourceById: songSourceById, query: query,
+                                     clauses: clauses, sortKeys: sortKeys, playCounts: playCounts)
+                    .map(unwrap) ?? []
+            }
+            return await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
         }
-        let filtered = await Task.detached(priority: .userInitiated) {
-            let (items, keys) = Self.buildBrowseItems(forSongIds: ids, songsById: songsById,
-                                                      albumsById: albumsById,
-                                                      songSourceById: songSourceById)
-            return BrowseState.filterSort(base: items, searchKeys: keys, query: query,
-                                          clauses: clauses, sortKeys: sortKeys,
-                                          playCounts: playCounts)
-        }.value
+        let work = Task.detached(priority: .userInitiated) {
+            Self.resolvePipeline(ids: ids, songsById: songsById, albumsById: albumsById,
+                                 songSourceById: songSourceById, query: query,
+                                 clauses: clauses, sortKeys: sortKeys, playCounts: playCounts) ?? []
+        }
+        let filtered = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
         let visible = browse.applyReadTimeFilters(to: filtered, collections: collections, favorites: favorites)
         return unwrap(visible)
+    }
+
+    /// The detached body of `sortedFilteredSongsAsync`, with cancellation checks BETWEEN its
+    /// O(n) stages (row build, then filter/sort) — nil means "cancelled, answer discarded".
+    private nonisolated static func resolvePipeline(
+        ids: [String], songsById: [String: IndexSong], albumsById: [String: IndexAlbum],
+        songSourceById: [String: String], query: String, clauses: [Clause],
+        sortKeys: [SortKey], playCounts: [String: Int]
+    ) -> [BrowseItem]? {
+        guard !Task.isCancelled else { return nil }
+        let (items, keys) = Self.buildBrowseItems(forSongIds: ids, songsById: songsById,
+                                                  albumsById: albumsById,
+                                                  songSourceById: songSourceById)
+        guard !Task.isCancelled else { return nil }
+        return BrowseState.filterSort(base: items, searchKeys: keys, query: query,
+                                      clauses: clauses, sortKeys: sortKeys,
+                                      playCounts: playCounts)
     }
 
     /// Pure row construction for `sortedFilteredSongsAsync` — the body of

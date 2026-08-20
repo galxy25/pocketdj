@@ -72,6 +72,16 @@ struct IndexPlaylist: Decodable, Identifiable, Hashable {
     let id: String
     let name: String
     let songIds: [String]
+
+    /// Equality stays synthesized (full contents — two snapshots of the same playlist with
+    /// different membership must differ), but HASHING must not fold 26,821 member-id strings:
+    /// `SourcePlaylist` is a `navigationDestination` value, so every NavigationPath diff
+    /// re-hashed the whole membership. id + count discriminates as well as a hash needs to,
+    /// and equal values still hash equal (they share both).
+    func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(songIds.count)
+    }
 }
 
 /// An `IndexPlaylist` tagged with the name of the source it came from (for the

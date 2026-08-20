@@ -80,8 +80,23 @@ final class SetlistPlayer {
         // Any queue mutation (fresh play, live edits, shuffle wrap, edition re-stamps)
         // invalidates the O(n) projections memoized below — both exist because rebuilding
         // them per call was an O(26k) main-thread cost on every skip / track start.
-        didSet { sessionRowsMemo = nil; queueIdsMemo = nil }
+        // `queueGeneration` is what lets the DEFERRED cold rebuild (see `persistSession`)
+        // recognize it is stale: a snapshot built for generation N must never be memoized
+        // or persisted once the queue has moved to N+1.
+        didSet { sessionRowsMemo = nil; queueIdsMemo = nil; queueGeneration &+= 1 }
     }
+    /// Monotonic queue identity for the off-main session-row projection (see above).
+    @ObservationIgnored private var queueGeneration = 0
+    /// A cold session-row projection is being built off-main; further snapshots wait for it
+    /// (its landing persists with the then-current position, so nothing is lost).
+    @ObservationIgnored private var sessionRowsBuildInFlight = false
+    /// The `positionMs` intent of the call that kicked the cold build (play/index moves pass
+    /// an explicit 0 so a kill mid-advance never resumes the new track at the old offset).
+    @ObservationIgnored private var pendingColdPositionMs: Int?
+    /// The queue generation `pendingColdPositionMs` was stamped AGAINST. A superseded
+    /// generation's explicit stamp (an index-move 0, a resume offset) must never be persisted
+    /// against a NEWER queue — a mid-build queue edit otherwise restored at the wrong offset.
+    @ObservationIgnored private var pendingColdPositionGen = 0
     /// Memoized `PlaybackSessionStore.Row` projection of `queue` — `persistSession` fires on
     /// every index move (every skip), and re-mapping a 26k-track queue each time was most of
     /// the skip's main-thread cost on huge sets.
@@ -296,7 +311,10 @@ final class SetlistPlayer {
     /// Start playing `items` from the top, tagged with the source collection's id (so a
     /// detail screen can tell whether IT is the one playing). No-op for an empty list. A
     /// fresh `play` replaces whatever was running — that's the ONLY thing that stops a set.
-    func play(_ items: [Item], sourceSetlistId: String? = nil) {
+    /// `preStamped: true` ⇒ `items` already went through `prepareStamped` (the off-main
+    /// edition stamp) — skip the synchronous 26k-row re-stamp. Every other caller keeps the
+    /// exact sync behavior.
+    func play(_ items: [Item], sourceSetlistId: String? = nil, preStamped: Bool = false) {
         guard !items.isEmpty else { return }
         // A fresh play over a RUNNING set is "advancing away" from its current track (the
         // replace is user-initiated); starting from idle advances away from nothing — and
@@ -309,7 +327,7 @@ final class SetlistPlayer {
         // now-playing source), so every play in this run is attributed to the right set.
         capturedHistoryContext = historyContextProvider?(sourceSetlistId)
         capturedOrigin = originProvider?(sourceSetlistId)
-        queue = stampEditions(items, sourceSetlistId: sourceSetlistId)
+        queue = preStamped ? items : stampEditions(items, sourceSetlistId: sourceSetlistId)
         index = 0
         // Live shuffle is per-run (repeat mode is sticky). The one-shot `playNow(shuffle:)` already
         // randomized the incoming order when requested; the live toggle starts OFF for the new queue.
@@ -342,6 +360,60 @@ final class SetlistPlayer {
     /// global "Prefer explicit versions" preference is unset.) Lets `stampEditions` skip
     /// its full-queue map in the common no-preference case; nil ⇒ assume active.
     @ObservationIgnored var editionDeciderActive: (() -> Bool)?
+    /// VALUE inputs for the OFF-MAIN edition stamp (`prepareStamped`): the catalog dictionary
+    /// (O(1) CoW grab) + the raw tri-state preference. Wired in PocketDJApp next to
+    /// `editionDecider`; nil (tests/previews) falls back to the sync in-place stamp.
+    @ObservationIgnored var editionStampInputs: (() -> (songsById: [String: IndexSong],
+                                                        preferExplicitRaw: Bool?))?
+
+    /// Stamp `items` OFF the main actor: same precedence, same output as `stampEditions`
+    /// (production wires `editionDecider` to exactly `EditionPolicy.decide`, which is what the
+    /// pure twin calls) — but the 26k-row map runs detached, so a huge set's ▶ no longer pays
+    /// it on the main thread. Callers pass the result to `play(_:sourceSetlistId:preStamped: true)`.
+    func prepareStamped(_ items: [Item], sourceSetlistId: String?) async -> [Item] {
+        let cleanOnly = cleanOnlyOrigin?(sourceSetlistId) ?? false
+        guard editionDecider != nil || cleanOnly else { return items }
+        guard let inputs = editionStampInputs?() else {
+            // No value seam wired (tests with a custom decider): keep the sync path's answer.
+            return stampEditions(items, sourceSetlistId: sourceSetlistId)
+        }
+        if !cleanOnly, editionDeciderActive?() == false,
+           !items.contains(where: { $0.variant != nil }) { return items }
+        let (songsById, raw) = inputs
+        return await Task.detached(priority: .userInitiated) {
+            Self.stampEditionsPure(items, cleanOnly: cleanOnly, songsById: songsById,
+                                   preferExplicitRaw: raw)
+        }.value
+    }
+
+    /// The pure per-row stamp — `stampEditions`' map body with `EditionPolicy.decide` inlined
+    /// over a value snapshot (which is precisely what the app wires `editionDecider` to), so
+    /// the detached path and the sync path produce identical rows. Keep in lockstep.
+    nonisolated static func stampEditionsPure(_ items: [Item], cleanOnly: Bool,
+                                              songsById: [String: IndexSong],
+                                              preferExplicitRaw: Bool?) -> [Item] {
+        items.map { it in
+            var out = it
+            if it.variant != nil {
+                // Frozen wins, always, and is a restriction. Re-resolve only its catalog id.
+                out.editionLocked = true
+                out.editionCatalogId = EditionPolicy.decide(song: songsById[it.id],
+                                                            collectionCleanOnly: true,
+                                                            preferExplicitRaw: preferExplicitRaw).catalogId
+                return out
+            }
+            if cleanOnly {
+                out.editionLocked = true          // no preference substitution inside a clean-only run
+                return out
+            }
+            let d = EditionPolicy.decide(song: songsById[it.id], collectionCleanOnly: false,
+                                         preferExplicitRaw: preferExplicitRaw)
+            out.variant = d.edition
+            out.editionLocked = d.reason == .collectionCleanOnly
+            out.editionCatalogId = d.catalogId
+            return out
+        }
+    }
 
     /// Does the collection this run came from carry the clean-only flag? Wired to
     /// `CollectionsStore`; defaults false. Read ONCE per run — it is what makes the collection
@@ -1345,7 +1417,12 @@ final class SetlistPlayer {
                  editionLocked: $0.editionLocked ?? false)
         }
         index = min(max(0, snap.index), queue.count - 1)
-        // A Collectors Puzzle run tags the sequencer with `puzzle_<roundId>` — but the round
+        // The snapshot's rows ARE the session projection — warm the memo with them (the queue
+        // didSet above just cleared it) so the first persist after ▶ (`resumeFromHold`'s
+        // adoption) stays SYNCHRONOUS instead of deferring to the detached cold build. Without
+        // this, a kill right after ▶ lost the adoption entirely and the restored set never
+        // persisted its position (`updatePosition` no-ops while no session is current).
+        sessionRowsMemo = snap.queue
         // engine does NOT survive a relaunch, so a restored run-tag is a ghost: it would make
         // every surface that treats the tag as "a live round owns the sequencer" (the MwF
         // queue-accepted append, for one) silently refuse forever. The QUEUE restores fine;
@@ -1455,19 +1532,81 @@ final class SetlistPlayer {
     /// force-quit). `positionMs` nil ⇒ read the live position; index moves pass 0 so a kill
     /// right after an advance never resumes the NEW track at the OLD track's offset.
     private func persistSession(positionMs: Int? = nil) {
-        guard let sessionStore, isRunning else { return }
-        let rows: [PlaybackSessionStore.Row]
-        if let memo = sessionRowsMemo {
-            rows = memo                       // queue unchanged since the last snapshot
-        } else {
-            rows = queue.map {
-                PlaybackSessionStore.Row(songId: $0.id, title: $0.title, artist: $0.artist,
-                                         lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
-                                         variant: $0.variant?.rawValue,
-                                         editionLocked: $0.editionLocked ? true : nil)
+        guard sessionStore != nil, isRunning else { return }
+        guard let rows = sessionRowsMemo else {
+            // COLD memo — the first snapshot right after a queue commit. Projecting a 26k-track
+            // queue inline was a main-actor stall landing exactly on the ▶/🔀 tap, so the map
+            // runs DETACHED and its landing persists with the then-current state. The explicit
+            // `positionMs` intent (play/index moves pass 0) is carried across the hop; a queue
+            // that moved on invalidates the build via `queueGeneration` and re-kicks.
+            if positionMs != nil {
+                pendingColdPositionMs = positionMs
+                pendingColdPositionGen = queueGeneration
             }
-            sessionRowsMemo = rows
+            guard !sessionRowsBuildInFlight else { return }
+            sessionRowsBuildInFlight = true
+            let gen = queueGeneration
+            let q = queue
+            Task.detached(priority: .userInitiated) { [weak self] in
+                let rows = Self.projectSessionRows(q)
+                await MainActor.run {
+                    guard let self else { return }
+                    self.sessionRowsBuildInFlight = false
+                    guard self.isRunning else { self.pendingColdPositionMs = nil; return }
+                    guard self.queueGeneration == gen else {
+                        // Re-kick for the new queue — carrying the explicit position intent
+                        // ONLY if it was stamped against that queue. A stamp from the
+                        // superseded generation (the old play's 0, a pre-edit resume offset)
+                        // must not ride onto the new queue's snapshot.
+                        let carried = self.pendingColdPositionGen == self.queueGeneration
+                            ? self.pendingColdPositionMs : nil
+                        self.pendingColdPositionMs = nil
+                        self.persistSession(positionMs: carried)
+                        return
+                    }
+                    self.sessionRowsMemo = rows
+                    let pos = self.pendingColdPositionMs
+                    self.pendingColdPositionMs = nil
+                    self.persistSnapshot(rows: rows, positionMs: pos)
+                }
+            }
+            return
         }
+        persistSnapshot(rows: rows, positionMs: positionMs)
+    }
+
+    /// Land the freshest session snapshot SYNCHRONOUSLY — the scenePhase `.background` flush.
+    /// The first snapshot after a queue commit is normally deferred behind the detached 26k
+    /// projection above; a suspension→kill inside that window (tap ▶ then immediately swipe
+    /// home) would persist NOTHING for the new queue, so the relaunch restored the PREVIOUS
+    /// session — losing durability at the exact moment durable sessions exist for. Suspension
+    /// is imminent and no UI is on screen here, so paying the projection inline is correct.
+    func flushSessionSnapshotNow() {
+        guard sessionStore != nil, isRunning else { return }
+        if sessionRowsMemo == nil { sessionRowsMemo = Self.projectSessionRows(queue) }
+        // Consume the pending explicit intent (only if stamped against THIS queue); the
+        // still-in-flight detached build's landing then persists a harmless live-position
+        // duplicate of the same rows.
+        let pos = pendingColdPositionGen == queueGeneration ? pendingColdPositionMs : nil
+        pendingColdPositionMs = nil
+        persistSession(positionMs: pos)
+    }
+
+    /// The pure `queue` → session-row projection (shared by the warm sync path's memo fill —
+    /// historically inline — and the detached cold build above).
+    private nonisolated static func projectSessionRows(_ queue: [Item]) -> [PlaybackSessionStore.Row] {
+        queue.map {
+            PlaybackSessionStore.Row(songId: $0.id, title: $0.title, artist: $0.artist,
+                                     lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
+                                     variant: $0.variant?.rawValue,
+                                     editionLocked: $0.editionLocked ? true : nil)
+        }
+    }
+
+    /// Assemble + save the snapshot from an already-projected row array (memo-warm callers
+    /// come straight here; the cold build lands here after its detached projection).
+    private func persistSnapshot(rows: [PlaybackSessionStore.Row], positionMs: Int?) {
+        guard let sessionStore, isRunning else { return }
         let ctx = capturedHistoryContext
         let snap = PlaybackSessionStore.Snapshot(
             sessionId: sessionId,

@@ -31,10 +31,12 @@ final class PlayCountService {
     /// Bumped whenever any bucket changes. Memo keys (the Browse results cache, the row badges)
     /// fold this in — the maps themselves are far too big to diff per render.
     ///
-    /// COMPUTED over the baseline's own revision, not mirrored: the baseline can change without
-    /// going through this service (an async disk load at launch, a direct import), and a mirrored
-    /// counter would leave the Browser sorted by numbers that no longer exist.
-    var revision: Int { baseline.revision &+ ownRevision }
+    /// COMPUTED over the CONSTITUENT stores' own revisions, not mirrored: both the baseline and
+    /// the play-stats store can change without going through this service (an async disk load at
+    /// launch, a direct import, a CloudSync `reloadFromDisk` pull, `AccountDeletionService`'s
+    /// `clear()`), and a mirrored counter would leave the Browser — and the snapshot memo the
+    /// badges read — serving numbers that no longer exist.
+    var revision: Int { baseline.revision &+ stats.revision &+ ownRevision }
     private var ownRevision: Int = 0
 
     init(baseline: AMPlayBaselineStore, stats: PlayStatsStore,
@@ -113,6 +115,10 @@ final class PlayCountService {
     /// Browse filter/sort and the Gem Collector sampler take on the main actor and then read from
     /// a detached task.
     func snapshot() -> [String: Int] {
+        // MEMOIZED per revision: the ~56k-entry build ran up to 3× per bump (one per mounted
+        // `PlayCountsFeed` — History + Browser + a collection detail), all on the main actor.
+        // One build per revision; every other caller gets the cached map (CoW — no copy).
+        if let memo = snapshotMemo, memo.revision == revision { return memo.counts }
         var out = baseline.countsSnapshot()
         // The same legacy join `combinedPlayCount` makes, in bulk — the two must never disagree,
         // or the badge and the "Plays" sort show different numbers for the same row.
@@ -122,8 +128,17 @@ final class PlayCountService {
         for (id, stamps) in baseline.provisional where !stamps.isEmpty {
             out[id, default: 0] += stamps.count
         }
+        snapshotMemo = (revision, out)
+        snapshotBuilds &+= 1
+        MainThreadStallWatchdog.shared.marker("playcounts-snapshot \(out.count)")
         return out
     }
+
+    /// (revision, counts) of the last `snapshot()` build. @ObservationIgnored on both: filled
+    /// while a body-driven feed reads it — invalidating that body from inside itself would loop.
+    @ObservationIgnored private var snapshotMemo: (revision: Int, counts: [String: Int])?
+    /// Diagnostic/test probe: how many times the full snapshot has actually been BUILT.
+    @ObservationIgnored private(set) var snapshotBuilds = 0
 
     // MARK: - Writes (the ONE funnel every play surface goes through)
 

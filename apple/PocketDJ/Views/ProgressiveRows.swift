@@ -30,6 +30,25 @@ extension BrowseState {
 /// would grow the window repeatedly within one frame).
 enum RowWindow {
     static let page = 150
+
+    // MARK: Flattened multi-section windows (the chaptered playlist detail)
+    //
+    // A chaptered playlist windows across the FLATTENED node list — page 1 is the first 150
+    // nodes regardless of chapter boundaries — so each chapter section renders its slice of
+    // one shared budget and exactly one section hosts the grow sentinel. Pure so the
+    // partition arithmetic is unit-tested (order preservation + the one-sentinel invariant).
+
+    /// How many of a chapter's `count` rows are visible when the chapter's first row sits at
+    /// flattened index `start` and the shared window shows `shown` rows total.
+    static func localShown(start: Int, count: Int, shown: Int) -> Int {
+        max(0, min(count, shown - start))
+    }
+
+    /// Whether THIS chapter hosts the sentinel: the window's edge falls inside it (or exactly
+    /// at its start, for a window landing on a chapter boundary). False once everything shows.
+    static func hostsSentinel(start: Int, count: Int, shown: Int, total: Int) -> Bool {
+        shown < total && start <= shown && shown < start + count
+    }
 }
 
 /// A content-free placeholder row painted while a collection's sort/filter resolve is still

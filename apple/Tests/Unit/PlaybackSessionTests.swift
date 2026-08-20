@@ -241,6 +241,29 @@ final class SetlistPlayerSessionTests: XCTestCase {
         cleanBurnedFiles(["ps_1.mp3", "ps_1.txt"])
     }
 
+    // MARK: background flush lands a COLD (still-deferred) snapshot synchronously
+
+    /// The first snapshot after a queue commit is deferred behind a DETACHED row projection;
+    /// a suspension→kill inside that window (tap ▶ then immediately swipe home) must not lose
+    /// the new queue. The scenePhase `.background` hook calls `flushSessionSnapshotNow()`,
+    /// which projects + persists INLINE — this test never yields to the detached build (no
+    /// awaits between play and flush), so a pass proves the synchronous path alone suffices.
+    func testFlushSessionSnapshotNowLandsColdQueueSynchronously() {
+        let rips = makeRips(); let burns = makeBurns(rips)
+        let player = PlayerEngine(); let store = makeStore()
+        let (seq, _) = makeSequencer(rips: rips, burns: burns, player: player, store: store)
+
+        seq.play([.init(id: "ps_c1", title: "One", artist: "A"),
+                  .init(id: "ps_c2", title: "Two", artist: "B")], sourceSetlistId: "set_C")
+        seq.flushSessionSnapshotNow()   // the .background hook
+        store.flush()                   // land the store's own async write, as the app does next
+        let snap = store.load()
+        XCTAssertEqual(snap?.queue.map(\.songId), ["ps_c1", "ps_c2"],
+                       "the new queue must be on disk without waiting for the detached build")
+        XCTAssertEqual(snap?.index, 0)
+        seq.stop()
+    }
+
     // MARK: every index-move trigger persists
 
     func testIndexMovesPersist_SkipAutoAdvanceJumpAndPrevious() async {

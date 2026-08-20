@@ -40,7 +40,11 @@ enum CollectionsSpotlight {
         let gen = generation
         pending?.cancel()
         pending = Task {
-            try? await Task.sleep(for: .seconds(2))
+            // 15s, not 2s: saves come in bursts, and the burst that matters most is a
+            // play/shuffle save whose 2s-deferred reindex landed EXACTLY under the user's
+            // back-navigation out of the collection. Spotlight/Siri freshness is not a
+            // seconds-scale contract; the index content is unchanged.
+            try? await Task.sleep(for: .seconds(15))
             guard gen == generation else { return }
             PocketDJShortcuts.updateAppShortcutParameters()
             await reindex(collections, generation: gen)

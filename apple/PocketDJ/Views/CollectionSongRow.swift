@@ -199,7 +199,12 @@ struct PlayCountBadge: View {
     private var count: Int {
         guard let playCounts else { return 0 }
         _ = playCounts.revision
-        return playCounts.combinedPlayCount(songId)
+        // The memoized snapshot, not `combinedPlayCount`: the latter reaches into the raw
+        // observed dictionaries, so 150 mounted badges each re-rendered per DICTIONARY
+        // mutation (twice per play). The snapshot is revision-keyed — one invalidation per
+        // revision bump, O(1) per badge after the shared build — and is defined to agree
+        // with `combinedPlayCount` (see `PlayCountService.snapshot`).
+        return playCounts.snapshot()[songId] ?? 0
     }
 
     @ViewBuilder var body: some View {

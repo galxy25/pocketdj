@@ -795,15 +795,30 @@ struct IndexPlaylistDetailView: View {
     /// collection before the view settled. Now it resolves once per input change, in a `.task`
     /// that runs AFTER the first frame, so navigating in is immediate.
     @State private var resolved: [IndexSong] = []
+    /// The resolved rows' ids, cached alongside `resolved`: `songs.map(\.id)` per tap /
+    /// per drag was an O(26k) rebuild at each interaction on the huge collections.
+    @State private var resolvedIds: [String] = []
     /// Nothing has resolved yet — the window is showing stored-order placeholders (or nothing).
     @State private var isResolving = true
     /// How many rows are currently rendered. See `RowWindow`.
     @State private var shown = RowWindow.page
+    /// CRITIC-B guard (the PlaylistDetailView/PocketDetailView pattern): ▶/🔀 now awaits the
+    /// detached 26k build before pushing, so the button stays live for hundreds of ms — a
+    /// double-tap used to land TWO `path.append`s (a double-pushed Now Playing needing two
+    /// back-pops). Reset in `onAppear` so popping back re-arms the next Play.
+    @State private var nowPlayingPushed = false
+    /// Whether this view is actually on screen. The deferred push must not fire from a screen
+    /// the user already left: pop this detail mid-build and the stale `path.append` teleported
+    /// the user into Now Playing from the home list ~1s later.
+    @State private var isOnScreen = false
 
     init(source: SourcePlaylist, path: Binding<NavigationPath>) {
         self.source = source
         self._path = path
-        self._browse = State(initialValue: BrowseState(persistenceKey: "pdj.collection.\(source.id)"))
+        // defaultKind .song: without it a first-ever open resolved once in the `.album`
+        // default and again after the sheets' onAppear flipped the kind (see BrowseState.init).
+        self._browse = State(initialValue: BrowseState(persistenceKey: "pdj.collection.\(source.id)",
+                                                       defaultKind: .song))
     }
 
     /// The rows to render right now. Once `.task` has resolved, that is the answer. Before then
@@ -820,7 +835,7 @@ struct IndexPlaylistDetailView: View {
     /// Re-resolve whenever the membership, the catalog, or the sort/filter state changes.
     private var resolveKey: String {
         "\(source.id)|\(source.songIds.count)|\(app.catalogRevision)|\(browse.resultsKey(app))"
-            + "|\(browse.membershipActive)|\(browse.favoriteActive)"
+            + "|\(browse.readTimeKey(collections: collections, favorites: favorites))"
     }
 
     /// An on-device duplicate of THIS source already exists (see `duplicate()`).
@@ -830,8 +845,13 @@ struct IndexPlaylistDetailView: View {
 
     private var selectionScope: String { "source-\(source.id)" }
 
+    /// The display-ordered id universe: the cached resolved ids once the resolve landed,
+    /// else the stored-order prefix the placeholder rows show.
+    private func orderedIds() -> [String] {
+        isResolving ? songs.map(\.id) : resolvedIds
+    }
     private func selectionPayload() -> SongTransfer? {
-        let ids = rowSelection.orderedSelection(in: songs.map(\.id))
+        let ids = rowSelection.orderedSelection(in: orderedIds())
         guard !ids.isEmpty else { return nil }
         return SongTransfer.make(ids: ids, songsById: app.songsById)
     }
@@ -887,7 +907,7 @@ struct IndexPlaylistDetailView: View {
                     VStack(spacing: 0) {
                         CollectionSongRow(song: song)
                             .selectableSongRow(id: song.id, scope: selectionScope,
-                                               orderedIds: { songs.map(\.id) },
+                                               orderedIds: { orderedIds() },
                                                payload: { dragPayload(for: song) },
                                                onOpen: { path.append(song) })
                             .contextMenu {           // rows had no menu before — no fold conflict
@@ -915,7 +935,8 @@ struct IndexPlaylistDetailView: View {
                                      app: app, collections: collections)
         // Copy/drag SOURCE only — no drop target, no paste (write-back semantics deferred).
         .modifier(CollectionSelectionChrome(scope: selectionScope,
-                                            allIds: { songs.map(\.id) },
+                                            pruneKey: "\(resolved.count)|\(resolveKey)",
+                                            allIds: { orderedIds() },
                                             payload: { selectionPayload() },
                                             acceptDrop: nil))
         // Resolves AFTER the first frame, so the push animation is never blocked. `.task(id:)`
@@ -930,7 +951,20 @@ struct IndexPlaylistDetailView: View {
                                                           collections: collections, favorites: favorites)
             guard !Task.isCancelled else { return }
             resolved = full
+            resolvedIds = full.map(\.id)
             isResolving = false
+            MainThreadStallWatchdog.shared.marker("collection-open-resolved \(full.count)")
+        }
+        // Stall-watchdog attribution (+ settles WHICH surface the user is actually on —
+        // this read-only source detail vs. the editable duplicate of the same name).
+        .onAppear {
+            nowPlayingPushed = false
+            isOnScreen = true
+            MainThreadStallWatchdog.shared.marker("collection-open-start IndexPlaylistDetailView \(source.id)")
+        }
+        .onDisappear {
+            isOnScreen = false
+            MainThreadStallWatchdog.shared.marker("back-nav IndexPlaylistDetailView")
         }
     }
 
@@ -941,16 +975,37 @@ struct IndexPlaylistDetailView: View {
     /// setlist written to disk on every ▶, which was most of the multi-second stall (and
     /// permanent document bloat). `playNow` upserts the one reserved setlist instead.
     private func play() {
-        collections.playNow(songIds: source.songIds, name: source.name, shuffle: false, source: .playlist,
-                            originId: source.id)
-        path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
+        MainThreadStallWatchdog.shared.marker("play-tapped IndexPlaylistDetailView")
+        let ids = source.songIds, name = source.name, originId = source.id
+        Task {
+            // The 26k-track build runs detached (see `playNowAsync`); the push waits for the
+            // commit so the setlist exists when SetlistDetailView asks for it.
+            await collections.playNowAsync(songIds: ids, name: name, shuffle: false,
+                                           source: .playlist, originId: originId)
+            pushNowPlayingIfAppropriate()
+        }
     }
     /// Shuffle-play this read-only source playlist (e.g. an Apple Music user playlist) IN PLACE —
     /// no longer requires duplicating it into an editable playlist first. Reuses the same
     /// reserved Now-Playing setlist + autoplay path the editable playlist's Shuffle button uses.
     private func shufflePlay() {
-        collections.playNow(songIds: source.songIds, name: source.name, shuffle: true, source: .playlist,
-                            originId: source.id)
+        MainThreadStallWatchdog.shared.marker("shuffle-tapped IndexPlaylistDetailView")
+        let ids = source.songIds, name = source.name, originId = source.id
+        Task {
+            await collections.playNowAsync(songIds: ids, name: name, shuffle: true,
+                                           source: .playlist, originId: originId)
+            pushNowPlayingIfAppropriate()
+        }
+    }
+
+    /// The guarded Now-Playing push shared by ▶/🔀: at most one push per screen visit
+    /// (double-tapping during the detached build must not stack two setlist screens — the
+    /// second commit already restarted playback via the revision bump), and never from a
+    /// screen the user has popped (a stale deferred push teleported them into Now Playing
+    /// from wherever they'd navigated to).
+    private func pushNowPlayingIfAppropriate() {
+        guard isOnScreen, !nowPlayingPushed else { return }
+        nowPlayingPushed = true
         path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
     }
     private func duplicate() {
@@ -1010,13 +1065,31 @@ struct PlaylistDetailView: View {
     /// live SetlistDetailView for the same reserved id. Cleared when this view reappears
     /// (the user popped back) so a fresh Play pushes again.
     @State private var nowPlayingPushed = false
+    /// The deferred (post-await) push must not fire from a screen the user already popped —
+    /// see IndexPlaylistDetailView.isOnScreen.
+    @State private var isOnScreen = false
     /// Feedback for the manual "Sync from source now" action (nil = no alert showing).
     @State private var syncResult: String?
+    /// How many nodes are rendered across ALL chapters — the `RowWindow` window over the
+    /// FLATTENED node list (page 1 = the first 150 nodes regardless of chapter boundaries).
+    /// Handing every node of a 26k-row duplicated playlist to the List made SwiftUI build
+    /// identity + row chrome for all of them at open, and tear it all down on pop.
+    @State private var shownNodes = RowWindow.page
+    /// Per-chapter display order under an ACTIVE sort/filter, resolved OFF-main by
+    /// `.task(id: chapterResolveKey)` (the sync `displayChildren` pipeline ran the whole
+    /// Browser sort per chapter per body pass). Keyed by the chapter's nodeId; empty while
+    /// the stored order is displayed (no sort/filter) or a resolve is in flight.
+    @State private var resolvedChapters: [String: [PlaylistNode]] = [:]
+    @State private var isResolvingChapters = false
+    /// Total nodes in `resolvedChapters` — a cheap resolve-landed signal for the prune key.
+    @State private var resolvedNodeCount = 0
 
     init(playlistId: String, path: Binding<NavigationPath>) {
         self.playlistId = playlistId
         self._path = path
-        self._browse = State(initialValue: BrowseState(persistenceKey: "pdj.collection.\(playlistId)"))
+        // defaultKind .song: same first-open double-resolve fix as IndexPlaylistDetailView.
+        self._browse = State(initialValue: BrowseState(persistenceKey: "pdj.collection.\(playlistId)",
+                                                       defaultKind: .song))
     }
 
     private var playlist: Playlist? { collections.playlist(playlistId) }
@@ -1028,17 +1101,26 @@ struct PlaylistDetailView: View {
     private var selectionScope: String { "playlist-\(playlistId)" }
 
     /// Display-ordered selectable node ids across ALL chapters (range-select universe).
+    /// Reads the RESOLVED per-chapter order (never re-running the sort pipeline inline —
+    /// that made every ⌘A/range tap O(n log n) while a sort was active).
     private func displayedSongNodeIds() -> [String] {
         guard let playlist else { return [] }
         let isDefaultOrder = browse.sortKeys.isEmpty && browse.activeFilterCount == 0
         return playlist.sequences.flatMap { seq -> [String] in
             let children = seq.children ?? []
-            let displayed = isDefaultOrder ? children : displayChildren(children)
+            let displayed = isDefaultOrder ? children : (resolvedChapters[seq.nodeId] ?? [])
             return displayed.compactMap { n in
                 guard n.kind == .song, let sid = n.songId, app.songsById[sid] != nil else { return nil }
                 return n.nodeId
             }
         }
+    }
+
+    /// Everything the per-chapter display order depends on: membership + names (`updatedAt`
+    /// is stamped by every `mutatePlaylist`), the catalog, and the sort/filter state.
+    private var chapterResolveKey: String {
+        "\(playlistId)|\(playlist?.updatedAt ?? 0)|\(app.catalogRevision)|\(browse.resultsKey(app))"
+            + "|\(browse.readTimeKey(collections: collections, favorites: favorites))"
     }
     /// Node ids → their song ids (payload translation), order-preserving.
     private func nodeSongIds(_ nodeIds: [String]) -> [String] {
@@ -1077,8 +1159,10 @@ struct PlaylistDetailView: View {
                     }
                     .accessibilityIdentifier("playlist-stats")
                 }
-                ForEach(playlist.sequences) { seq in
-                    chapterSection(seq, chapterCount: playlist.sequences.count)
+                let slices = chapterSlices(playlist)
+                let totalNodes = slices.last.map { $0.start + $0.displayed.count } ?? 0
+                ForEach(slices) { slice in
+                    chapterSection(slice, chapterCount: playlist.sequences.count, totalNodes: totalNodes)
                 }
                 .onMove { from, to in collections.moveSequences(inPlaylist: playlistId, from: from, to: to) }
 
@@ -1096,12 +1180,39 @@ struct PlaylistDetailView: View {
         .accessibilityIdentifier("playlist-detail")
         // Selection bar + whole-list drop target (→ default chapter) + paste registration.
         .modifier(CollectionSelectionChrome(scope: selectionScope,
+                                            pruneKey: "\(itemCount)|\(resolvedNodeCount)|\(chapterResolveKey)",
                                             allIds: { displayedSongNodeIds() },
                                             payload: { selectionPayload() },
                                             acceptDrop: { acceptDrop($0) }))
         .scrollContentBackground(.hidden).background(Theme.bg)
         // Reappears when the user pops back from Now Playing — allow the next Play to push.
-        .onAppear { nowPlayingPushed = false }
+        .onAppear {
+            nowPlayingPushed = false
+            isOnScreen = true
+            MainThreadStallWatchdog.shared.marker("collection-open-start PlaylistDetailView \(playlistId)")
+        }
+        .onDisappear {
+            isOnScreen = false
+            MainThreadStallWatchdog.shared.marker("back-nav PlaylistDetailView")
+        }
+        // OFF-main per-chapter sort/filter resolve. `.task(id:)` auto-cancels a stale run;
+        // the default (stored-order) state clears the map and never resolves anything.
+        .task(id: chapterResolveKey) {
+            guard let playlist, !(browse.sortKeys.isEmpty && browse.activeFilterCount == 0) else {
+                resolvedChapters = [:]; resolvedNodeCount = 0; isResolvingChapters = false
+                return
+            }
+            isResolvingChapters = true
+            var out: [String: [PlaylistNode]] = [:]
+            for seq in playlist.sequences {
+                out[seq.nodeId] = await displayChildrenAsync(seq.children ?? [])
+                if Task.isCancelled { return }
+            }
+            resolvedChapters = out
+            resolvedNodeCount = out.values.reduce(0) { $0 + $1.count }
+            isResolvingChapters = false
+            MainThreadStallWatchdog.shared.marker("collection-open-resolved \(resolvedNodeCount)")
+        }
         // 📱/☁️ · ▶ · 🔀 · ⋯ — the SHARED `CollectionToolbar`. This screen is the one the owner
         // points at ("like in a playlist"), and it is now the same FOUR items the pocket screen and
         // the For You tile screens wear, from one definition. (It briefly carried a fifth, ▶▶ Play
@@ -1315,15 +1426,21 @@ struct PlaylistDetailView: View {
     /// stack ALREADY ends at the Now Playing setlist, don't push a second copy — just call
     /// playNow and let the on-screen restart (CRITIC-I) fire.
     private func play(shuffle: Bool) {
-        collections.playNow(playlistId: playlistId, shuffle: shuffle)
-        // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
-        IntentDonations.playedPlaylist(collections.playlist(playlistId), shuffle: shuffle)
-        if !nowPlayingPushed {
-            nowPlayingPushed = true
-            path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
+        MainThreadStallWatchdog.shared.marker(shuffle ? "shuffle-tapped PlaylistDetailView"
+                                                      : "play-tapped PlaylistDetailView")
+        Task {
+            // The 26k-track build runs detached (see `playNowAsync`); everything after it
+            // needs the committed setlist, so it stays in this task, in order.
+            await collections.playNowAsync(playlistId: playlistId, shuffle: shuffle)
+            // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
+            IntentDonations.playedPlaylist(collections.playlist(playlistId), shuffle: shuffle)
+            if isOnScreen, !nowPlayingPushed {
+                nowPlayingPushed = true
+                path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
+            }
+            // else: already on screen — playNow bumped the revision; the open SetlistDetailView
+            // re-snapshots + restarts (CRITIC-I). No second push.
         }
-        // else: already on screen — playNow bumped the revision; the open SetlistDetailView
-        // re-snapshots + restarts (CRITIC-I). No second push.
     }
 
     /// 📋 Realize: the OLD ▶ behaviour — realize the template into a fresh frozen Setlist
@@ -1361,15 +1478,19 @@ struct PlaylistDetailView: View {
     }
 
     /// A chapter's children reordered by the per-collection sort/filter: SONG leaves ordered by the
-    /// Browser pipeline (`AppModel.sortedFilteredSongs`, no-dateAdded songs last), then the non-song
-    /// nodes (album/pocket/text/studio) appended — hidden while a FILTER is active (they carry no
-    /// song fields to match). Dup-safe: several nodes for the same songId each consume one slot.
-    private func displayChildren(_ children: [PlaylistNode]) -> [PlaylistNode] {
+    /// Browser pipeline (no-dateAdded songs last), then the non-song nodes (album/pocket/text/
+    /// studio) appended — hidden while a FILTER is active (they carry no song fields to match).
+    /// Dup-safe: several nodes for the same songId each consume one slot. The HEAVY half (row
+    /// build + filter + sort) runs OFF-main via `sortedFilteredSongsAsync`; only the node
+    /// re-mapping (O(chapter) dictionary hops) touches the main actor.
+    private func displayChildrenAsync(_ children: [PlaylistNode]) async -> [PlaylistNode] {
         let songNodes = children.filter { $0.kind == .song }
         var nodesBySongId: [String: [PlaylistNode]] = [:]
         for n in songNodes { if let sid = n.songId { nodesBySongId[sid, default: []].append(n) } }
-        let orderedSongs = app.sortedFilteredSongs(ids: songNodes.compactMap(\.songId), browse: browse,
-                                                   collections: collections, favorites: favorites)
+        let orderedSongs = await app.sortedFilteredSongsAsync(ids: songNodes.compactMap(\.songId),
+                                                              browse: browse,
+                                                              collections: collections,
+                                                              favorites: favorites)
         var orderedSongNodes: [PlaylistNode] = []
         for song in orderedSongs {
             if var q = nodesBySongId[song.id], !q.isEmpty {
@@ -1381,20 +1502,68 @@ struct PlaylistDetailView: View {
         return orderedSongNodes + tail
     }
 
-    @ViewBuilder private func chapterSection(_ seq: PlaylistNode, chapterCount: Int) -> some View {
+    /// One chapter's slice of the FLATTENED node window: its display order (stored children,
+    /// or the resolved sorted order) + where it starts in the flattened list. O(chapters) per
+    /// body pass — the arrays are CoW references, never copies.
+    private struct ChapterSlice: Identifiable {
+        let seq: PlaylistNode
+        let displayed: [PlaylistNode]
+        let start: Int
+        /// Where this chapter's SKELETON rows start in a flattened list of every chapter's
+        /// stored children — the in-flight-resolve stand-in for `start` (during a resolve all
+        /// `displayed` are empty, so `start` is 0 for every chapter and can't budget anything).
+        let skeletonStart: Int
+        var id: String { seq.nodeId }
+    }
+
+    private func chapterSlices(_ playlist: Playlist) -> [ChapterSlice] {
+        let isDefaultOrder = browse.sortKeys.isEmpty && browse.activeFilterCount == 0
+        var start = 0
+        var skeletonStart = 0
+        return playlist.sequences.map { seq in
+            let children = seq.children ?? []
+            let displayed = isDefaultOrder ? children : (resolvedChapters[seq.nodeId] ?? [])
+            defer { start += displayed.count; skeletonStart += children.count }
+            return ChapterSlice(seq: seq, displayed: displayed, start: start,
+                                skeletonStart: skeletonStart)
+        }
+    }
+
+    @ViewBuilder private func chapterSection(_ slice: ChapterSlice, chapterCount: Int,
+                                             totalNodes: Int) -> some View {
+        let seq = slice.seq
         let children = seq.children ?? []
         // DEFAULT (no sort/filter): stored node order, with drag-reorder + up/down. SORTED/FILTERED:
         // the chapter's SONG leaves ordered by the Browser pipeline (no-dateAdded songs sort to the
         // END), with non-song nodes (album/pocket/text/studio) pinned last; reorder is disabled while
         // the display order ≠ the stored order. The stored order is never mutated.
+        //
+        // WINDOWED (`RowWindow` + sentinel — the IndexPlaylistDetailView pattern): the window is a
+        // prefix of the FLATTENED node list, so this chapter renders `shownNodes - start` of its
+        // rows and the sentinel lives in whichever chapter the window's edge falls in. A prefix
+        // window keeps `.onMove`/`.onDelete` offsets identical to the stored child indices.
         let isDefaultOrder = browse.sortKeys.isEmpty && browse.activeFilterCount == 0
-        let displayed = isDefaultOrder ? children : displayChildren(children)
+        let displayed = slice.displayed
+        let localShown = RowWindow.localShown(start: slice.start, count: displayed.count,
+                                              shown: shownNodes)
         Section {
             if children.isEmpty {
                 Text("Empty chapter — add items from a song/album ▸ Add to…")
                     .font(.caption).foregroundStyle(Theme.fgDim)
             }
-            ForEach(Array(displayed.enumerated()), id: \.element.nodeId) { idx, node in
+            // Sort/filter active but the off-main resolve hasn't landed: skeleton rows keep
+            // the push instant instead of a blank section (same as the source-playlist detail).
+            // BUDGETED out of the SHARED flattened window (`skeletonStart`), not per-section:
+            // `RowWindow.page` per chapter let a 20-chapter playlist paint ~3,000 skeleton
+            // rows in one List pass — reinstating the very open-stall the windowing kills.
+            if !isDefaultOrder, isResolvingChapters, displayed.isEmpty, !children.isEmpty {
+                let skeletons = RowWindow.localShown(start: slice.skeletonStart,
+                                                     count: children.count, shown: shownNodes)
+                ForEach(0..<skeletons, id: \.self) { _ in
+                    SkeletonSongRow()
+                }
+            }
+            ForEach(Array(displayed.prefix(localShown).enumerated()), id: \.element.nodeId) { idx, node in
                 nodeRowWithMenu(node, idx: idx, count: displayed.count)
                     .swipeActions(edge: .trailing) {
                         Button("Remove", role: .destructive) { collections.removeNode(node.nodeId, fromPlaylist: playlistId) }
@@ -1416,6 +1585,10 @@ struct PlaylistDetailView: View {
             }
             .onDelete { offsets in
                 offsets.map { displayed[$0].nodeId }.forEach { collections.removeNode($0, fromPlaylist: playlistId) }
+            }
+            if RowWindow.hostsSentinel(start: slice.start, count: displayed.count,
+                                       shown: shownNodes, total: totalNodes) {
+                RowWindowSentinel(total: totalNodes, shown: $shownNodes)
             }
             chapterActions(seq, chapterCount: chapterCount)
         } header: {

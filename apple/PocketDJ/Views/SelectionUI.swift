@@ -196,6 +196,12 @@ struct SelectionBar: View {
 struct CollectionSelectionChrome: ViewModifier {
     @Environment(RowSelection.self) private var selection
     let scope: String
+    /// Cheap stand-in for "the rendered id set changed" (the HistorySelectionWiring
+    /// `pagingKey` pattern): the old `.onChange(of: allIds())` MATERIALIZED and compared the
+    /// full id array on every body eval — O(26k) per pass on the huge collections, paid even
+    /// with no selection active. `allIds()` is now only evaluated inside the prune, which is
+    /// gated on an actual selection existing.
+    let pruneKey: String
     let allIds: () -> [String]
     let payload: () -> SongTransfer?
     /// nil ⇒ this list is a copy/drag SOURCE only (no drop target, no paste registration).
@@ -229,9 +235,9 @@ struct CollectionSelectionChrome: ViewModifier {
             // sync, sort/filter): drop ids that left the list so the bar's count and every
             // batch action agree with what's on screen. Gated so the id-set is only built
             // while a selection in THIS scope actually exists.
-            .onChange(of: allIds()) { _, ids in
+            .onChange(of: pruneKey) {
                 guard selection.scopeId == scope, selection.hasSelection else { return }
-                selection.prune(validIds: Set(ids))
+                selection.prune(validIds: Set(allIds()))
             }
             .onAppear {
                 selection.registerActiveList(scope: scope, allIds: allIds, payload: payload)
