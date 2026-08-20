@@ -44,6 +44,11 @@ struct SetlistDetailView: View {
     /// 3,650-item collection landed here with every row built up front — each carrying a
     /// context menu — on top of the Now Playing panel's queue. Windowed, the push is immediate.
     @State private var shown = RowWindow.page
+    /// `.task`-cached chapter names for the section header — computed off-main because the
+    /// walk is O(track count) and the header re-renders on every body pass of a running set.
+    /// Names only change when tracks are added/removed (no in-place chapter rename exists
+    /// for a frozen setlist), so the cache keys on the track count.
+    @State private var chapterNames: [String] = []
 
     private var setlist: Setlist? { collections.setlist(setlistId) }
 
@@ -67,12 +72,27 @@ struct SetlistDetailView: View {
     private var isPlaying: Bool { sequencer.isRunning && sequencer.sourceSetlistId == setlistId }
 
     /// Start (or restart) THIS set on the shared sequencer, tagged with its id.
+    /// The 26k-row `Item` build runs OFF the main actor — inline it stalled the push
+    /// animation for the huge collections ("Favorite Songs" is 26,821 tracks); the actual
+    /// `play()` hop back is O(queue assignment).
     private func startThisSet(_ setlist: Setlist) {
         // Playing a saved setlist also stamps its PARENT playlist's "recently played"
         // (no-ops for the reserved Now-Playing set and transient source-playlist realizations,
         // whose playlistId isn't a user playlist).
         collections.markPlayed(playlistId: setlist.playlistId)
-        sequencer.play(playableItems(setlist), sourceSetlistId: setlistId)
+        let tracks = setlist.tracks
+        let sid = setlistId
+        let sequencer = self.sequencer
+        Task.detached(priority: .userInitiated) {
+            let items = Self.playableItems(tracks)
+            await MainActor.run { sequencer.play(items, sourceSetlistId: sid) }
+        }
+    }
+
+    /// O(first hit) stand-in for `playableItems(…).isEmpty` — the toolbar's disabled state
+    /// used to build (and discard) the full 26k Item array per body pass just to answer this.
+    private func hasPlayableTrack(_ setlist: Setlist) -> Bool {
+        setlist.tracks.contains { $0.isText != true && !$0.songId.isEmpty }
     }
 
     /// The ordered, playable tracks (cue/empty rows stripped), carrying title + artist so
@@ -81,8 +101,9 @@ struct SetlistDetailView: View {
     /// (isText nil, non-empty songId) and SetlistPlayer resolves them via its
     /// `studioResolve` seam; their `shownMs` is the REAL snapshot length (playNow/
     /// realize freeze it from the studio lookup), so lengths display correctly too.
-    private func playableItems(_ setlist: Setlist) -> [SetlistPlayer.Item] {
-        setlist.tracks
+    /// `nonisolated static` so `startThisSet` can run it on a detached task.
+    private nonisolated static func playableItems(_ tracks: [SetlistTrack]) -> [SetlistPlayer.Item] {
+        tracks
             .filter { $0.isText != true && !$0.songId.isEmpty }
             // `perPlayMs` (NOT `shownMs`) is the per-track boundary — the player loops the row
             // `repeatCount` times, ending at each SINGLE play's end. `variant` carries a
@@ -139,7 +160,7 @@ struct SetlistDetailView: View {
                         }
                         RowWindowSentinel(total: setlist.tracks.count, shown: $shown)
                     } header: {
-                        chapterLegend(setlist.tracks)
+                        chapterLegend(setlist)
                     }
                 }
                 .navigationTitle(setlist.name ?? "Set list")
@@ -151,6 +172,15 @@ struct SetlistDetailView: View {
         .accessibilityIdentifier("setlist-detail")
         .scrollContentBackground(.hidden).background(Theme.bg)
         .collectionRipBurn(ripBurn)
+        // Chapter-legend cache — recompute (off-main) only when the track list changes size.
+        .task(id: "\(setlistId)|\(setlist?.tracks.count ?? 0)") {
+            guard let tracks = setlist?.tracks else { chapterNames = []; return }
+            let names = await Task.detached(priority: .utility) {
+                Self.orderedChapterNames(tracks)
+            }.value
+            guard !Task.isCancelled else { return }
+            chapterNames = names
+        }
         // NO teardown on navigation: the sequencer is app-scoped now, so leaving this screen
         // (or switching to another setlist's detail) NEVER stops playback — only starting a
         // different collection does. That's how a set keeps playing while you build others.
@@ -307,7 +337,7 @@ struct SetlistDetailView: View {
             Image(systemName: isPlaying && transportIsPlaying ? "pause.fill" : "play.fill")
         }
         .help(isPlaying ? (transportIsPlaying ? "Pause" : "Resume") : "Play the set list in order")
-        .disabled(!isPlaying && playableItems(setlist).isEmpty)
+        .disabled(!isPlaying && !hasPlayableTrack(setlist))
         .accessibilityIdentifier("setlist-play")
     }
 
@@ -465,23 +495,28 @@ struct SetlistDetailView: View {
     /// A single flat, reorderable track list (so `.onMove`/`.onDelete` indices map
     /// straight to `setlist.tracks`). The per-row `sequenceName` badge still names each
     /// track's chapter; this header summarizes which chapters are present + the total.
+    /// O(1) per body pass: the duration is the STORED `totalMs` (playNow computes it,
+    /// every setlist edit recomputes it — see `CollectionsStore.refreshTotalMs`) and the
+    /// chapter names come from the `.task`-cached `chapterNames` (this header used to walk
+    /// all 26k tracks twice on every body evaluation of a running set).
     @ViewBuilder
-    private func chapterLegend(_ tracks: [SetlistTrack]) -> some View {
-        let names = orderedChapterNames(tracks)
+    private func chapterLegend(_ setlist: Setlist) -> some View {
+        let names = chapterNames
         HStack {
             Text(names.count <= 1 ? (names.first ?? "Set") : names.joined(separator: " · "))
             Spacer()
-            Text("\(tracks.count) · \(Fmt.longDuration(tracks.reduce(0) { $0 + $1.shownMs }))")
+            Text("\(setlist.tracks.count) · \(Fmt.longDuration(setlist.totalMs))")
                 .foregroundStyle(Theme.fgDim)
         }
         .accessibilityIdentifier("setlist-chapter-legend")
     }
 
-    private func orderedChapterNames(_ tracks: [SetlistTrack]) -> [String] {
+    nonisolated static func orderedChapterNames(_ tracks: [SetlistTrack]) -> [String] {
         var out: [String] = []
+        var seen = Set<String>()
         for t in tracks {
             let name = t.sequenceName?.isEmpty == false ? t.sequenceName! : "Set"
-            if out.last != name && !out.contains(name) { out.append(name) }
+            if seen.insert(name).inserted { out.append(name) }
         }
         return out
     }

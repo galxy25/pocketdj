@@ -641,8 +641,11 @@ struct NowPlayingPanel: View {
             }
             .onMove { from, to in sequencer.moveUpcoming(fromOffsets: from, toOffset: to) }
             .onDelete { offsets in
+                // Offset→uid via the sequencer's bridge — `upcoming` is a parent-indexed
+                // slice now, so subscripting it with these 0-based row offsets would read
+                // the wrong element (or trap).
                 sequencer.removeUpcoming(uids: Set(offsets.compactMap {
-                    upcoming.indices.contains($0) ? upcoming[$0].uid : nil
+                    sequencer.upcomingUid(atOffset: $0)
                 }))
             }
             RowWindowSentinel(total: upcoming.count, shown: $upNextShown)

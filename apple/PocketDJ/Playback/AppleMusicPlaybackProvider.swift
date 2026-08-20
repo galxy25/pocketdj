@@ -71,6 +71,15 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// our own `seek(to:)` so an in-app scrub can never read as a restart.
     @ObservationIgnored private var monitorMaxPlaybackTime: Double = 0
 
+    /// True while the CURRENT paused state was requested through OUR OWN pause paths
+    /// (`pausePlayback` / `togglePlayPause` — which is where every in-app and
+    /// impersonated-card pause lands). The end-monitor needs it because a pause in the first
+    /// second of a track is state-identical to the system-⏭ park (paused, position ≈ 0): with
+    /// skip-then-pause — the position is near the top precisely BECAUSE the user just
+    /// skipped — the park heuristic read every such pause as another skip and advanced the
+    /// set ("pausing skips to a random song", Levi 2026-08-20). Cleared on resume/tryPlay/stop.
+    @ObservationIgnored private var pauseWasIntentional = false
+
     /// The polling task that watches `ApplicationMusicPlayer` for end-of-track. Cancelled on
     /// stop / superseded on each new `tryPlay`.
     @ObservationIgnored private var stateMonitor: Task<Void, Never>?
@@ -107,9 +116,11 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// Those parked-paused shapes must count as ended, else the set freezes on the old
     /// track — the "system ⏭ stops the song but never advances" bug.
     nonisolated static func trackEnded(stopped: Bool, paused: Bool,
-                                       playbackTime: Double, expectedDuration: Double) -> Bool {
+                                       playbackTime: Double, expectedDuration: Double,
+                                       maxObserved: Double, intentionalPause: Bool) -> Bool {
         endReason(stopped: stopped, paused: paused,
-                  playbackTime: playbackTime, expectedDuration: expectedDuration) != nil
+                  playbackTime: playbackTime, expectedDuration: expectedDuration,
+                  maxObserved: maxObserved, intentionalPause: intentionalPause) != nil
     }
 
     /// WHY the track ended. The set's reaction differs: a `.natural` end honors repeat-one /
@@ -121,17 +132,32 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// 2026-08-19). nil ⇒ not ended.
     enum EndReason { case natural, systemSkip }
     nonisolated static func endReason(stopped: Bool, paused: Bool,
-                                      playbackTime: Double, expectedDuration: Double) -> EndReason? {
+                                      playbackTime: Double, expectedDuration: Double,
+                                      maxObserved: Double, intentionalPause: Bool) -> EndReason? {
         if stopped { return .natural }
         let atEnd = expectedDuration > 0 && playbackTime >= expectedDuration - 0.5
-        // Paused parked at the very top (≤1 s) = the system-skip artifact, not a listener
-        // pause — a pause in the first second of a track is the one (vanishingly rare)
-        // false positive, and its cost is only an early advance (now: an advance rather
-        // than a repeat-one replay, which is also what a listener pausing at 0:00 after
-        // pressing ⏭ actually wanted).
         if paused {
-            if playbackTime <= 1.0 && !atEnd { return .systemSkip }
-            return atEnd ? .natural : nil
+            if atEnd { return .natural }
+            // Paused parked at the very top (≤1 s). Three ways to land here, discriminated
+            // in order — a pause in the first second is NOT rare in practice: after a skip
+            // the position is near the top by construction, so skip-then-pause used to read
+            // as ANOTHER skip and advanced the set ("pausing skips to a random song").
+            if playbackTime <= 1.0 {
+                // 1. The position made a hard BACKWARD RESET to the top after real progress.
+                //    A listener pause anchors AT the pause point (playbackTime is exact on
+                //    state changes), so a reset can only be the system remote ⏭ exhausting
+                //    MusicKit's one-song queue — even if a pause was requested moments
+                //    earlier (pause at 0:30 → car ⏭ → park at 0 with maxObserved 30).
+                if maxObserved >= 2.0 { return .systemSkip }
+                // 2. OUR OWN pause landed while the track was still near the top — the
+                //    skip-storm-then-pause case. Sticky until resume/tryPlay clears it:
+                //    a time-window here would just delay the phantom advance.
+                if intentionalPause { return nil }
+                // 3. Parked at the top from OUTSIDE with no progress to reset from — the
+                //    car ⏭ pressed within the first seconds of the new track (rapid storm).
+                return .systemSkip
+            }
+            return nil
         }
         return atEnd ? .natural : nil
     }
@@ -201,6 +227,13 @@ extension AppleMusicPlaybackProvider {
         // the sequencer's cancel can land between this provider's suspension points).
         tryPlayGeneration &+= 1
         let ticket = tryPlayGeneration
+        // The OLD track's end-monitor dies the moment a new play intent exists — NOT when the
+        // new monitor arms after play() returns. In that gap our own `player.queue = [...]`
+        // swap parks the player (transiently paused at 0), which a still-armed stale monitor
+        // read as the system-skip artifact and double-advanced the set during skip storms
+        // (debug capture 2026-08-20 12:13:42: "external PAUSE at 0s" mid-tryPlay).
+        stateMonitor?.cancel(); stateMonitor = nil
+        pauseWasIntentional = false
         // 1) Resolve the song to a catalog track (namespaced `am:<id>` → direct fetch,
         //    else a title/artist search). A miss → false → the engine falls back to rips.
         guard let track = await provider.resolve(song) else { return false }
@@ -214,8 +247,25 @@ extension AppleMusicPlaybackProvider {
             let resp = try await req.response()
             guard let catalogSong = resp.items.first else { return false }
             guard ticket == tryPlayGeneration else { return false }   // superseded mid-fetch
-            player.queue = [catalogSong]
-            try await player.play()
+            do {
+                player.queue = [catalogSong]
+                try await player.play()
+            } catch {
+                // A skip storm's overlapping queue-swaps can make the NEWEST intent's play()
+                // throw the transient MPMusicPlayerController queue-race (domain error 2) —
+                // observed 2026-08-20 when the newest skip failed and let a stale one keep
+                // the audio. One short retry keeps the stream on Apple Music instead of
+                // dropping to the rip fallback; a superseded ticket stands down instead.
+                guard ticket == tryPlayGeneration else { return false }
+                try await Task.sleep(nanoseconds: 250_000_000)
+                guard ticket == tryPlayGeneration else { return false }
+                player.queue = [catalogSong]
+                try await player.play()
+            }
+            // A stale tryPlay must not claim the win AFTER play() either: its play() can
+            // succeed just before a newer call's queue-swap, and claiming nowPlaying/monitor
+            // here resurrected the OLDER skip target over the newer one (Go Gina, 2026-08-20).
+            guard ticket == tryPlayGeneration else { return false }
             // 3) Cue: `play()` has returned (playback started), so the position write
             //    sticks — a write before the queue item is ready would be ignored.
             if let atMs, atMs > 0 { seek(to: Double(atMs) / 1000) }
@@ -245,10 +295,12 @@ extension AppleMusicPlaybackProvider {
     func togglePlayPause() {
         let player = ApplicationMusicPlayer.shared
         if player.state.playbackStatus == .playing {
+            pauseWasIntentional = true
             player.pause()
             isPlaying = false
             freezePositionClock()
         } else {
+            pauseWasIntentional = false
             isPlaying = true
             startPositionClock(from: positionSeconds)
             Task { try? await player.play() }
@@ -258,11 +310,13 @@ extension AppleMusicPlaybackProvider {
     /// Explicit resume/pause — used by the lock-screen / CarPlay remote play/pause commands,
     /// which must land in a KNOWN state (not toggle blindly off a possibly-stale status).
     func resume() {
+        pauseWasIntentional = false
         isPlaying = true
         startPositionClock(from: positionSeconds)
         Task { try? await ApplicationMusicPlayer.shared.play() }
     }
     func pausePlayback() {
+        pauseWasIntentional = true
         ApplicationMusicPlayer.shared.pause()
         isPlaying = false
         freezePositionClock()
@@ -280,6 +334,7 @@ extension AppleMusicPlaybackProvider {
 
     func stop() {
         stateMonitor?.cancel(); stateMonitor = nil
+        pauseWasIntentional = false
         ApplicationMusicPlayer.shared.stop()
         isPlaying = false
         positionBase = 0; positionStartWall = nil
@@ -311,6 +366,7 @@ extension AppleMusicPlaybackProvider {
                     if !self.isPlaying {              // resumed from OUTSIDE (MusicKit's card)
                         NPLog.trace("AM monitor: external RESUME at \(Int(player.playbackTime))s")
                         self.isPlaying = true
+                        self.pauseWasIntentional = false   // the pause it marked is over
                         self.startPositionClock(from: player.playbackTime)
                     }
                 } else if everPlayed, status == .paused, self.isPlaying {
@@ -338,7 +394,9 @@ extension AppleMusicPlaybackProvider {
                 // artifact (lock-screen/CarPlay ⏭ goes to MusicKit, which exhausts its
                 // one-song queue and parks PAUSED at ~0 / the end — see the func doc).
                 if let reason = Self.endReason(stopped: status == .stopped, paused: status == .paused,
-                                               playbackTime: t, expectedDuration: expected) {
+                                               playbackTime: t, expectedDuration: expected,
+                                               maxObserved: self.monitorMaxPlaybackTime,
+                                               intentionalPause: self.pauseWasIntentional) {
                     NPLog.trace("AM monitor: track ENDED reason=\(reason) (status=\(status) t=\(Int(t)) expected=\(Int(expected)))")
                     self.isPlaying = false
                     self.freezePositionClock()

@@ -384,7 +384,9 @@ final class JukeboxStore {
                 nowPlaying: .init(title: it.title, artist: it.artist,
                                   lengthMs: it.lengthMs, positionMs: Int(seconds * 1000),
                                   streamUrl: hearStreamURL(forSong: it.id)),
-                upNext: sequencer.upcoming.map { .init(title: $0.title, artist: $0.artist) })
+                // WINDOWED: the guest page shows a short queue; serializing all 26k rows of
+                // a huge set into every state broadcast stalled the host per track change.
+                upNext: sequencer.upcoming.prefix(50).map { .init(title: $0.title, artist: $0.artist) })
         }
         if let np = rips.nowPlaying {
             return JukeboxStatePayload(

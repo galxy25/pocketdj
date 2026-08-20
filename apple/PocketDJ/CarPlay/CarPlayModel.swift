@@ -167,8 +167,11 @@ final class CarPlayModel {
     }
 
     /// The tracks after the current one in the running set (empty when nothing/queue-less is playing).
+    /// WINDOWED to 200: CPListTemplate truncates around its own item cap anyway, and building
+    /// a CPListItem (plus an album-art lookup) for all 26k rows of a huge set would stall the
+    /// head-unit push. 200 covers hours of listening; the list refreshes as the set advances.
     func upNext() -> [UpNextItem] {
-        services.setlistPlayer.upcoming.map {
+        services.setlistPlayer.upcoming.prefix(200).map {
             UpNextItem(uid: $0.uid, title: $0.title, artist: $0.artist, albumId: app.songsById[$0.id]?.albumId)
         }
     }

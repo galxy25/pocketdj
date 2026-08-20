@@ -57,7 +57,7 @@ final class NowPlayingQueueTests: XCTestCase {
         let seq = makeSequencer()
         seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: "set_1")
         seq.skipNext()                                           // current = "b", history = ["a"]
-        seq.removeUpcoming(uids: [seq.upcoming[0].uid])          // removes "c"
+        seq.removeUpcoming(uids: [seq.upcomingUid(atOffset: 0)!])   // removes "c"
         XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "d"])
         XCTAssertEqual(seq.index, 1)
         XCTAssertEqual(seq.queue[seq.index].id, "b")             // still the same current
@@ -70,12 +70,12 @@ final class NowPlayingQueueTests: XCTestCase {
     func testRemoveByUidSurvivesQueueAdvancingUnderTheTap() {
         let seq = makeSequencer()
         seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: "set_1")
-        let cUid = seq.upcoming[1].uid                           // "c" rendered at offset 1
+        let cUid = seq.upcomingUid(atOffset: 1)!                 // "c" rendered at offset 1
         seq.skipNext()                                           // queue shifts under the tap
         seq.removeUpcoming(uids: [cUid])                         // stale render, right song
         XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "d"])
 
-        let dUid = seq.upcoming[0].uid                           // "d"
+        let dUid = seq.upcomingUid(atOffset: 0)!                 // "d"
         seq.skipNext()                                           // "d" becomes the CURRENT track
         seq.removeUpcoming(uids: [dUid])                         // must not touch the needle
         XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "d"])
@@ -116,7 +116,7 @@ final class NowPlayingQueueTests: XCTestCase {
     func testMoveUpcomingNextAndToEnd() {
         let seq = makeSequencer()
         seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: "set_1")
-        let dUid = seq.upcoming[2].uid                           // "d"
+        let dUid = seq.upcomingUid(atOffset: 2)!                 // "d"
         seq.moveUpcomingNext(uid: dUid)                          // → right after current
         XCTAssertEqual(seq.queue.map(\.id), ["a", "d", "b", "c"])
         XCTAssertEqual(seq.queue[seq.index].id, "a")
@@ -242,7 +242,7 @@ final class NowPlayingQueueTests: XCTestCase {
         // short-circuits and the head-only uid SCAN is never exercised (a regression
         // widening the scan to the whole queue would slip through).
         seq.skipNext()                                           // current = "b", played = [a]
-        seq.jumpToPlayed(uid: seq.upcoming[0].uid)               // an UPCOMING uid ("c"): no-op
+        seq.jumpToPlayed(uid: seq.upcomingUid(atOffset: 0)!)     // an UPCOMING uid ("c"): no-op
         XCTAssertEqual(seq.queue[seq.index].id, "b")
         seq.jumpToPlayed(uid: seq.queue[seq.index].uid)          // the CURRENT row: no-op
         XCTAssertEqual(seq.queue[seq.index].id, "b")
