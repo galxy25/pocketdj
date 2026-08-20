@@ -1536,6 +1536,24 @@ final class AppModel {
         let songSourceById = self.songSourceById
         let (query, clauses, sortKeys) = (browse.query, browse.clauses, browse.sortKeys)
         let playCounts = browse.playCounts
+        // Read-time filters must see the LIVE stores, so they (and only they) pull the
+        // pipeline back to the main actor. When neither is active — the common case — the
+        // final enum-unwrap stays off-main too: compactMapping 26k BrowseItems back into
+        // [IndexSong] on the main actor was a visible stall landing right after the push.
+        let needsReadTime = browse.membershipActive || browse.favoriteActive
+        let unwrap: ([BrowseItem]) -> [IndexSong] = { items in
+            items.compactMap { if case .song(let s, _, _, _, _) = $0 { return s } else { return nil } }
+        }
+        if !needsReadTime {
+            return await Task.detached(priority: .userInitiated) {
+                let (items, keys) = Self.buildBrowseItems(forSongIds: ids, songsById: songsById,
+                                                          albumsById: albumsById,
+                                                          songSourceById: songSourceById)
+                return unwrap(BrowseState.filterSort(base: items, searchKeys: keys, query: query,
+                                                     clauses: clauses, sortKeys: sortKeys,
+                                                     playCounts: playCounts))
+            }.value
+        }
         let filtered = await Task.detached(priority: .userInitiated) {
             let (items, keys) = Self.buildBrowseItems(forSongIds: ids, songsById: songsById,
                                                       albumsById: albumsById,
@@ -1545,7 +1563,7 @@ final class AppModel {
                                           playCounts: playCounts)
         }.value
         let visible = browse.applyReadTimeFilters(to: filtered, collections: collections, favorites: favorites)
-        return visible.compactMap { if case .song(let s, _, _, _, _) = $0 { return s } else { return nil } }
+        return unwrap(visible)
     }
 
     /// Pure row construction for `sortedFilteredSongsAsync` — the body of

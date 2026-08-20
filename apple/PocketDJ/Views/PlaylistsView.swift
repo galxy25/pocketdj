@@ -873,6 +873,15 @@ struct IndexPlaylistDetailView: View {
             }
 
             Section("Songs") {
+                // With a sort/filter active the display order is unknowable before the
+                // off-main resolve lands — paint skeleton rows instead of a blank section
+                // so the push is instant for a 26k-song source (the footer narrates the
+                // resolve). The stored-order fast path below is untouched.
+                if isResolving && !browse.isStoredOrder {
+                    ForEach(0..<min(source.songIds.count, RowWindow.page), id: \.self) { _ in
+                        SkeletonSongRow()
+                    }
+                }
                 let rows = songs
                 ForEach(rows.prefix(shown)) { song in
                     VStack(spacing: 0) {

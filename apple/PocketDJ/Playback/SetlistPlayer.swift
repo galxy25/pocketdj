@@ -76,7 +76,19 @@ final class SetlistPlayer {
         }
     }
 
-    private(set) var queue: [Item] = []
+    private(set) var queue: [Item] = [] {
+        // Any queue mutation (fresh play, live edits, shuffle wrap, edition re-stamps)
+        // invalidates the O(n) projections memoized below — both exist because rebuilding
+        // them per call was an O(26k) main-thread cost on every skip / track start.
+        didSet { sessionRowsMemo = nil; queueIdsMemo = nil }
+    }
+    /// Memoized `PlaybackSessionStore.Row` projection of `queue` — `persistSession` fires on
+    /// every index move (every skip), and re-mapping a 26k-track queue each time was most of
+    /// the skip's main-thread cost on huge sets.
+    @ObservationIgnored private var sessionRowsMemo: [PlaybackSessionStore.Row]?
+    /// Memoized song-id set of `queue` for `inRunningQueue` (the play-history attribution
+    /// hook calls it on every track start; a linear scan of 26k rows per start adds up).
+    @ObservationIgnored private var queueIdsMemo: Set<String>?
     /// Index into `queue` (NOT track.id — a song can repeat in a setlist).
     private(set) var index = 0
     private(set) var isRunning = false
@@ -92,7 +104,13 @@ final class SetlistPlayer {
     /// `currentSongId ==`) to attribute a play to the set: tapping a member row to jump ahead
     /// fires the play BEFORE the deferred `adoptNowPlayingIfJumped` moves the index, so a
     /// current-track equality check would mislabel that member play as a Browser single.
-    func inRunningQueue(_ songId: String) -> Bool { isRunning && queue.contains { $0.id == songId } }
+    func inRunningQueue(_ songId: String) -> Bool {
+        guard isRunning else { return false }
+        let ids: Set<String>
+        if let memo = queueIdsMemo { ids = memo }
+        else { ids = Set(queue.map(\.id)); queueIdsMemo = ids }
+        return ids.contains(songId)
+    }
 
     /// Resolves the Play-History (source-kind, set name) for a run's `sourceSetlistId`. Wired at
     /// app init to read `CollectionsStore.historyContext`. CAPTURED at `play()` time into
@@ -295,6 +313,10 @@ final class SetlistPlayer {
     /// base song id and whether the run's origin collection carries the clean-only flag.
     /// Unwired (tests, previews) ⇒ every row is `.unchanged`, i.e. today's behaviour exactly.
     @ObservationIgnored var editionDecider: ((String, Bool) -> EditionPolicy.Decision)?
+    /// O(1) probe: would `editionDecider` substitute ANYTHING right now? (False when the
+    /// global "Prefer explicit versions" preference is unset.) Lets `stampEditions` skip
+    /// its full-queue map in the common no-preference case; nil ⇒ assume active.
+    @ObservationIgnored var editionDeciderActive: (() -> Bool)?
 
     /// Does the collection this run came from carry the clean-only flag? Wired to
     /// `CollectionsStore`; defaults false. Read ONCE per run — it is what makes the collection
@@ -315,6 +337,12 @@ final class SetlistPlayer {
         // Nothing to stamp only when BOTH inputs are absent — a clean-only run still has to
         // lock its rows even with no decider wired, or the restriction would be lost.
         guard editionDecider != nil || cleanOnly else { return items }
+        // Prefer-explicit OFF and not clean-only: the decider returns `.unchanged` for every
+        // row, so the whole 26k-row map is a no-op — skip it (it ran on every play of a huge
+        // set). Any row already carrying a frozen variant still needs its catalog-id
+        // re-resolve, so a single stamped row disables the shortcut.
+        if !cleanOnly, editionDeciderActive?() == false,
+           !items.contains(where: { $0.variant != nil }) { return items }
         return items.map { it in
             var out = it
             if let frozen = it.variant {
@@ -525,9 +553,15 @@ final class SetlistPlayer {
     // the current track or bump `CollectionsStore.nowPlayingRevision`.
 
     /// The not-yet-played tail of the queue (empty when idle or on the last track).
-    var upcoming: [Item] {
+    /// An `ArraySlice` VIEW, not a copy: consumers window it (`prefix`) or read
+    /// `count`/`isEmpty`, and materializing a 26k-track tail per read was the dominant
+    /// main-thread cost after starting a huge set (the Now Playing panel alone read this
+    /// three times per body pass — ~12 MB of array copies behind the push animation).
+    /// NOTE for subscripters: a slice keeps the parent's indices — iterate/prefix it,
+    /// never index it from 0.
+    var upcoming: ArraySlice<Item> {
         guard isRunning, index + 1 < queue.count else { return [] }
-        return Array(queue[(index + 1)...])
+        return queue[(index + 1)...]
     }
 
     /// The already-played head of the queue (`queue[0..<index]`, oldest first) — the
@@ -537,6 +571,18 @@ final class SetlistPlayer {
     var played: [Item] {
         guard isRunning, index > 0 else { return [] }
         return Array(queue[..<min(index, queue.count)])
+    }
+
+    /// The uid of the upcoming row at 0-based OFFSET (0 = the track right after the current
+    /// one) — the positional→identity bridge for the panel's `.onDelete`. Exists because
+    /// `upcoming` is a parent-indexed slice: subscripting it with a row offset reads the
+    /// wrong element (or traps below `startIndex`), which is exactly how the full-suite
+    /// crash after the slice change surfaced. nil for out-of-tail offsets (a stale render).
+    func upcomingUid(atOffset offset: Int) -> UUID? {
+        guard isRunning, offset >= 0 else { return nil }
+        let i = index + 1 + offset
+        guard i < queue.count else { return nil }
+        return queue[i].uid
     }
 
     /// Reorder within the upcoming tail (`.onMove` shape; offsets are relative to
@@ -1362,11 +1408,17 @@ final class SetlistPlayer {
     /// right after an advance never resumes the NEW track at the OLD track's offset.
     private func persistSession(positionMs: Int? = nil) {
         guard let sessionStore, isRunning else { return }
-        let rows = queue.map {
-            PlaybackSessionStore.Row(songId: $0.id, title: $0.title, artist: $0.artist,
-                                     lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
-                                     variant: $0.variant?.rawValue,
-                                     editionLocked: $0.editionLocked ? true : nil)
+        let rows: [PlaybackSessionStore.Row]
+        if let memo = sessionRowsMemo {
+            rows = memo                       // queue unchanged since the last snapshot
+        } else {
+            rows = queue.map {
+                PlaybackSessionStore.Row(songId: $0.id, title: $0.title, artist: $0.artist,
+                                         lengthMs: $0.lengthMs, repeatCount: $0.repeatCount,
+                                         variant: $0.variant?.rawValue,
+                                         editionLocked: $0.editionLocked ? true : nil)
+            }
+            sessionRowsMemo = rows
         }
         let ctx = capturedHistoryContext
         let snap = PlaybackSessionStore.Snapshot(

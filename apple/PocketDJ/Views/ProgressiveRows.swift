@@ -32,6 +32,26 @@ enum RowWindow {
     static let page = 150
 }
 
+/// A content-free placeholder row painted while a collection's sort/filter resolve is still
+/// in flight. With a sort or filter active there is no honest prefix of the stored order to
+/// paint, and rendering NOTHING made the push feel stalled for the huge collections — the
+/// skeleton keeps the navigation instant and visibly "loading" without asserting anything
+/// about which rows will land or in what order (the section footer narrates the resolve).
+struct SkeletonSongRow: View {
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Theme.fgDim.opacity(0.22))
+                .frame(width: 180, height: 13)
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Theme.fgDim.opacity(0.12))
+                .frame(width: 110, height: 10)
+        }
+        .padding(.vertical, 5)
+        .accessibilityHidden(true)
+    }
+}
+
 /// The row that grows a windowed list. It sits after the last rendered row; when it scrolls into
 /// view there is more to show, so it extends the window by one page. It renders as a slim
 /// progress indicator, which doubles as the "still loading" affordance the user sees while

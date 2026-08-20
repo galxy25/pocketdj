@@ -616,6 +616,11 @@ struct PocketDJApp: App {
                                  collectionCleanOnly: cleanOnly,
                                  preferExplicitRaw: settings?.preferExplicitVersionsRaw)
         }
+        // O(1) probe for stampEditions' no-preference shortcut: with the tri-state unset the
+        // decider is a guaranteed per-row no-op, so the full-queue stamp map can be skipped.
+        setlistPlayer.editionDeciderActive = { [weak settings] in
+            settings?.preferExplicitVersionsRaw != nil
+        }
         rips.settings = settings       // rip server URL + token come from settings
         musicSync.settings = settings  // AM-sync uses the SAME rip server URL + token
         // Give the BURN sidecar builder the catalog to resolve IndexSong/IndexAlbum.
