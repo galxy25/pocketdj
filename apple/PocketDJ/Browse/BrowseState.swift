@@ -112,8 +112,12 @@ final class BrowseState {
 
     /// Restores the last-used item kind, filters, sort, layout, and search mode so
     /// the user doesn't have to re-set them every launch (cleared only via "Clear All").
+    /// `defaultKind`: the kind a FRESH instance (no persisted snapshot) starts in. Collection
+    /// detail views pass `.song` — without it the first-ever open ran a full resolve in the
+    /// `.album` default, then `CollectionSortFilterSheets.onAppear` flipped to `.song` and the
+    /// whole 26k resolve ran a second time. A persisted snapshot always wins.
     init(defaults: UserDefaults = .standard, persistenceKey: String = "pdj.browse.v1",
-         historyMode: Bool = false) {
+         historyMode: Bool = false, defaultKind: ItemKind? = nil) {
         self.defaults = defaults
         self.persistenceKey = persistenceKey
         self.historyMode = historyMode
@@ -123,6 +127,8 @@ final class BrowseState {
             layout = s.layout
             // Prefer the tri-state mode; fall back to the legacy boolean snapshot.
             searchMode = s.searchMode ?? ((s.searchOnline ?? false) ? .online : .device)
+        } else if let defaultKind {
+            kind = defaultKind
         }
         if historyMode { kind = .song }   // History is inherently song-mode.
     }
@@ -155,6 +161,17 @@ final class BrowseState {
     /// this is an O(1) array hand-off rather than a per-render map over the whole catalog.
     func baseItems(_ app: AppModel) -> [BrowseItem] { app.browseItems(kind) }
 
+    /// Does the CURRENT sort/filter state actually read play counts? Play counts are the one
+    /// input living outside the catalog, so they only belong in the memo/`.task` keys when a
+    /// complete clause or a sort key references the `playCount` field. When nothing does — the
+    /// default state of every collection — a play-count revision bump (every capture checkpoint,
+    /// every play) must NOT move the key: folding it in unconditionally re-resolved a 26k-song
+    /// collection once per bump, including the guaranteed first-open -1 → N seed.
+    var usesPlayCounts: Bool {
+        sortKeys.contains { $0.field == "playCount" }
+            || clauses.contains { !$0.isIncomplete && $0.field == "playCount" }
+    }
+
     /// A stable signature of everything `results` depends on EXCEPT membership and the
     /// favorite filter — the browse results memo key. Built from field VALUES (never a
     /// Clause's UUID `id`), so two logically-identical filter sets share a cache entry; includes the catalog
@@ -180,8 +197,9 @@ final class BrowseState {
             s: sortKeys.map { SortSig(f: $0.field, d: $0.dir.rawValue) },
             // Play counts are an INPUT to the sort/filter but live outside the catalog, so the
             // memo must move when they do — otherwise a capture leaves "Plays" sorted by the
-            // pre-capture numbers until something else invalidates the key.
-            pc: playCountsRevision)
+            // pre-capture numbers until something else invalidates the key. Folded in ONLY
+            // while a clause/sort actually reads them (see `usesPlayCounts`).
+            pc: usesPlayCounts ? playCountsRevision : -1)
         let enc = JSONEncoder()
         enc.outputFormatting = .sortedKeys
         // Encoding a plain Encodable of scalars/arrays cannot fail; fall back to a coarse
@@ -352,8 +370,9 @@ final class BrowseState {
                 ClauseSig(f: $0.field, o: $0.op.rawValue, v: $0.value, vs: $0.values.sorted(), mn: $0.min, mx: $0.max)
             },
             s: sortKeys.map { SortSig(f: $0.field, d: $0.dir.rawValue) },
-            // Same reason as `resultsKey`: play counts are an input that lives outside this state.
-            pc: playCountsRevision)
+            // Same reason as `resultsKey`: play counts are an input that lives outside this
+            // state — and same gate: only a key that reads them may move with them.
+            pc: usesPlayCounts ? playCountsRevision : -1)
         let enc = JSONEncoder()
         enc.outputFormatting = .sortedKeys
         guard let data = try? enc.encode(sig) else {

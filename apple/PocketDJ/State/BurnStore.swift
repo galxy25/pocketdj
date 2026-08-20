@@ -113,7 +113,18 @@ final class BurnStore {
 
     // MARK: Observed state
 
-    private(set) var items: [String: BurnItem] = [:]
+    private(set) var items: [String: BurnItem] = [:] {
+        // Any items change invalidates the resolved-URL memo below (a burn landing, a delete,
+        // a relaunch load) — the memo must never outlive the record set it was built against.
+        didSet { localURLMemo = [:] }
+    }
+    /// Per-song memo of `localURL(forSong:)` — that resolver does a security-scoped bookmark
+    /// resolution + `fileExists` PER CALL, and every rendered row's `hasBurnedFile` calls it
+    /// per render: 150 windowed rows × 3+ syscalls on every rips-store tick was a steady
+    /// idle-stall amplifier. `nil` values are cached too (the common no-burn case). Staleness
+    /// bound: an EXTERNAL purge of a cached-present file isn't seen until the next items
+    /// change — the moment of use re-resolves via `localURLForPlayback`, which stays uncached.
+    @ObservationIgnored private var localURLMemo: [String: URL?] = [:]
     /// Drives the collection screen's progress UI; nil when no burn is running.
     private(set) var progress: Progress?
     /// Live BACKGROUND-burn progress (enqueued, finished) for the current run, MIRRORED from the
@@ -387,11 +398,17 @@ final class BurnStore {
     /// on disk (nil if iOS purged it). A future offline player feeds this (+ `startMs`
     /// for analog) into `PlayerEngine.load`; this store does NOT play anything.
     func localURL(forSong songId: String) -> URL? {
-        guard let item = items[songId], item.state == .ready,
-              let (dir, scoped) = itemDir(item) else { return nil }
-        defer { if scoped { dir.stopAccessingSecurityScopedResource() } }
-        let url = dir.appendingPathComponent(item.audioFileName)
-        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        if let memo = localURLMemo[songId] { return memo }
+        let resolved: URL?
+        if let item = items[songId], item.state == .ready, let (dir, scoped) = itemDir(item) {
+            defer { if scoped { dir.stopAccessingSecurityScopedResource() } }
+            let url = dir.appendingPathComponent(item.audioFileName)
+            resolved = FileManager.default.fileExists(atPath: url.path) ? url : nil
+        } else {
+            resolved = nil
+        }
+        localURLMemo[songId] = resolved
+        return resolved
     }
 
     /// Like `localURL`, but for PLAYBACK: when the burned file lives in a USER-PICKED

@@ -169,7 +169,12 @@ final class PlaylistWriteBack {
 
     // MARK: - State
 
-    private(set) var jobs: [Job] = []
+    private(set) var jobs: [Job] = [] {
+        didSet { unsyncableMemo = nil }   // any queue mutation re-derives the badge set
+    }
+    /// Memoized "can't back up" song-id set (see `isUnsyncable`): the per-row filter over the
+    /// whole queue allocated per rendered row per render — O(rows × jobs) on every pass.
+    @ObservationIgnored private var unsyncableMemo: Set<String>?
     /// True while `run()` is draining (a second call is a no-op, so the UI can call it freely).
     private(set) var isRunning = false
     /// Most recent delivery failure, for a Settings/debug surface. Cleared on a clean drain.
@@ -377,9 +382,25 @@ final class PlaylistWriteBack {
     /// `.queued` (a fresh attempt is in flight), the old verdict no longer holds and the badge
     /// clears. Without this the badge could linger forever on a song that IS now backed up.
     func isUnsyncable(_ songId: String) -> Bool {
-        let mine = jobs.filter { $0.songId == songId }
-        guard mine.contains(where: { $0.state == .unresolvable }) else { return false }
-        return !mine.contains { $0.state == .delivered || $0.state == .queued }
+        unsyncableSet().contains(songId)
+    }
+
+    /// One O(jobs) pass instead of a per-row filter — same semantics: a song is unsyncable
+    /// when SOME job for it is `.unresolvable` and NO job for it is `.delivered`/`.queued`.
+    private func unsyncableSet() -> Set<String> {
+        if let memo = unsyncableMemo { return memo }
+        var unresolvable = Set<String>()
+        var superseded = Set<String>()
+        for j in jobs {
+            switch j.state {
+            case .unresolvable: unresolvable.insert(j.songId)
+            case .delivered, .queued: superseded.insert(j.songId)
+            default: break
+            }
+        }
+        let set = unresolvable.subtracting(superseded)
+        unsyncableMemo = set
+        return set
     }
 
     // MARK: - Drain

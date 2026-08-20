@@ -621,6 +621,11 @@ struct PocketDJApp: App {
         setlistPlayer.editionDeciderActive = { [weak settings] in
             settings?.preferExplicitVersionsRaw != nil
         }
+        // Value inputs for the OFF-MAIN stamp (`prepareStamped`) — the same catalog + raw
+        // tri-state the decider above reads, as snapshots a detached task can carry.
+        setlistPlayer.editionStampInputs = { [weak app, weak settings] in
+            (app?.songsById ?? [:], settings?.preferExplicitVersionsRaw)
+        }
         rips.settings = settings       // rip server URL + token come from settings
         musicSync.settings = settings  // AM-sync uses the SAME rip server URL + token
         // Give the BURN sidecar builder the catalog to resolve IndexSong/IndexAlbum.

@@ -2062,8 +2062,92 @@ final class CollectionsStore {
         // else has already invalidated the old scope by the time we find out we cannot serve it.
         onPlaybackReplaced?()
         guard let app else { return nil }
-        nowPlayingSource = source
-        nowPlayingOriginId = originId
+        let (tracks, totalMs) = Self.buildNowPlayingTracks(
+            songIds: songIds, songsById: app.songsById, repeats: repeats, variants: variants,
+            studioInfo: studioInfoSnapshot(for: songIds), studioArtist: studioArtist,
+            shuffle: shuffle)
+        return playNowPrepared(tracks, totalMs: totalMs, name: name, source: source,
+                               originId: originId)
+    }
+
+    /// ASYNC twin of `playNow(songIds:…)` for the interactive detail-view ▶/🔀 taps: the 26,821-
+    /// track build + shuffle + runtime reduce runs on a DETACHED task (inline it was most of the
+    /// Shuffle tap's main-thread stall on "Favorite Songs"); only the snapshot grabs and the
+    /// `playNowPrepared` commit touch the main actor. Same inputs → same document as the sync
+    /// path (the sync funnel stays for CarPlay/Siri/tests, built by the same pure builder).
+    @discardableResult
+    func playNowAsync(songIds: [String], name: String = "Now Playing", shuffle: Bool = false,
+                      source: PlayHistoryStore.PlaySource? = nil, repeats: [String: Int] = [:],
+                      originId: String? = nil,
+                      variants: [String: SongVariant] = [:]) async -> Setlist? {
+        onPlaybackReplaced?()
+        guard let app else { return nil }
+        let songsById = app.songsById               // O(1) CoW value grabs
+        let studioInfo = studioInfoSnapshot(for: songIds)
+        let artist = studioArtist
+        let (tracks, totalMs) = await Task.detached(priority: .userInitiated) {
+            Self.buildNowPlayingTracks(songIds: songIds, songsById: songsById, repeats: repeats,
+                                       variants: variants, studioInfo: studioInfo,
+                                       studioArtist: artist, shuffle: shuffle)
+        }.value
+        return playNowPrepared(tracks, totalMs: totalMs, name: name, source: source,
+                               originId: originId)
+    }
+
+    /// ASYNC twin of `playNow(playlistId:)` — same funnel semantics (markPlayed + CleanOnly at
+    /// this single choke point), with the track build detached via `playNowAsync(songIds:…)`.
+    @discardableResult
+    func playNowAsync(playlistId: String, shuffle: Bool = false) async -> Setlist? {
+        markPlayed(playlistId: playlistId)
+        var ids = playableIds(forPlaylist: playlistId)
+        var variants: [String: SongVariant] = [:]
+        if playlist(playlistId)?.cleanOnly == true, let app {
+            let r = CleanOnly.resolve(ids: ids, songsById: app.songsById)
+            ids = r.ids; variants = r.variants
+        }
+        return await playNowAsync(songIds: ids,
+                name: playlist(playlistId)?.name ?? "Now Playing", shuffle: shuffle, source: .playlist,
+                repeats: playlistRepeatMap(playlistId), originId: playlistId, variants: variants)
+    }
+
+    /// ASYNC twin of `playNow(pocketId:)`.
+    @discardableResult
+    func playNowAsync(pocketId: String, shuffle: Bool = false) async -> Setlist? {
+        markPlayed(pocketId: pocketId)
+        var ids = playableIds(forPocket: pocketId)
+        var variants: [String: SongVariant] = [:]
+        if pocket(pocketId)?.cleanOnly == true, let app {
+            let r = CleanOnly.resolve(ids: ids, songsById: app.songsById)
+            ids = r.ids; variants = r.variants
+        }
+        return await playNowAsync(songIds: ids,
+                name: pocket(pocketId)?.name ?? "Now Playing", shuffle: shuffle, source: .pocket,
+                repeats: pocket(pocketId)?.songRepeats ?? [:], originId: pocketId, variants: variants)
+    }
+
+    /// The studio rows `buildNowPlayingTracks` may need, resolved ON the main actor (the
+    /// `studioLookup` seam is main-actor state) into plain values the detached builder can
+    /// carry. O(ids) prefix checks; empty for the normal all-catalog case.
+    private func studioInfoSnapshot(for songIds: [String])
+        -> [String: (title: String, lengthMs: Int, bpm: Double?, camelot: String?)] {
+        guard let lookup = studioLookup else { return [:] }
+        var out: [String: (title: String, lengthMs: Int, bpm: Double?, camelot: String?)] = [:]
+        for id in songIds where StudioFactory.isStudioId(id) {
+            if out[id] == nil, let info = lookup(id) { out[id] = info }
+        }
+        return out
+    }
+
+    /// The PURE Now-Playing track build — `nonisolated static` so the async play path can run
+    /// it detached. Order, drops, repeat clamping, variants and the `shownMs` runtime reduce are
+    /// EXACTLY the old inline `playNow` body; the sync funnel calls this too, so the two paths
+    /// cannot drift.
+    nonisolated static func buildNowPlayingTracks(
+        songIds: [String], songsById: [String: IndexSong],
+        repeats: [String: Int], variants: [String: SongVariant],
+        studioInfo: [String: (title: String, lengthMs: Int, bpm: Double?, camelot: String?)],
+        studioArtist: String, shuffle: Bool
+    ) -> (tracks: [SetlistTrack], totalMs: Int) {
         var tracks: [SetlistTrack] = songIds.compactMap { id in
             // Per-item repeat (loop) count from the source collection — snapshotted so the
             // player loops the row that many times before advancing.
@@ -2075,12 +2159,12 @@ final class CollectionsStore {
             // (seam unwired / item deleted) drops the row, exactly like an unknown
             // catalog id on the line below. (Variants never apply to studio rows.)
             if StudioFactory.isStudioId(id) {
-                guard let info = studioLookup?(id) else { return nil }
+                guard let info = studioInfo[id] else { return nil }
                 return SetlistTrack(songId: id, artist: studioArtist, name: info.title,
                                     bpm: info.bpm, camelot: info.camelot, lengthMs: info.lengthMs,
                                     source: .explicit, repeatCount: rep)
             }
-            guard let s = app.songsById[id] else { return nil }   // drop unresolvable ids
+            guard let s = songsById[id] else { return nil }   // drop unresolvable ids
             return SetlistTrack(songId: s.id, artist: s.artist, name: s.name,
                                 bpm: s.bpm, camelot: s.camelot, lengthMs: s.length,
                                 source: .explicit, repeatCount: rep,
@@ -2088,15 +2172,30 @@ final class CollectionsStore {
         }
         if shuffle { tracks.shuffle() }
         let totalMs = tracks.reduce(0) { $0 + $1.shownMs }
+        return (tracks, totalMs)
+    }
+
+    /// The main-actor COMMIT half shared by the sync and async play paths: upsert the reserved
+    /// setlist, bump the restart token, save. The replaced setlist's 26k-track array is handed
+    /// to a detached task so its ARC teardown leaves the main thread too.
+    @discardableResult
+    func playNowPrepared(_ tracks: [SetlistTrack], totalMs: Int, name: String,
+                         source: PlayHistoryStore.PlaySource? = nil,
+                         originId: String? = nil) -> Setlist {
+        nowPlayingSource = source
+        nowPlayingOriginId = originId
         nowPlayingRevision &+= 1   // monotonic; survives rapid taps (never epoch-ms collision)
         let set = Setlist(id: nowPlayingSetlistId, playlistId: nowPlayingPlaylistId, name: name,
                           seed: "now-playing", generatedAt: now, totalMs: totalMs, tracks: tracks)
         if let i = setlists.firstIndex(where: { $0.id == nowPlayingSetlistId }) {
+            let old = setlists[i]
             setlists[i] = set                  // replace in place (reuse)
+            Task.detached(priority: .utility) { _ = old }   // release the prior queue off-main
         } else {
             setlists.append(set)
         }
         save()
+        MainThreadStallWatchdog.shared.marker("playNow-done \(tracks.count)")
         return set
     }
 

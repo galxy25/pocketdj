@@ -113,6 +113,10 @@ final class PlayCountService {
     /// Browse filter/sort and the Gem Collector sampler take on the main actor and then read from
     /// a detached task.
     func snapshot() -> [String: Int] {
+        // MEMOIZED per revision: the ~56k-entry build ran up to 3× per bump (one per mounted
+        // `PlayCountsFeed` — History + Browser + a collection detail), all on the main actor.
+        // One build per revision; every other caller gets the cached map (CoW — no copy).
+        if let memo = snapshotMemo, memo.revision == revision { return memo.counts }
         var out = baseline.countsSnapshot()
         // The same legacy join `combinedPlayCount` makes, in bulk — the two must never disagree,
         // or the badge and the "Plays" sort show different numbers for the same row.
@@ -122,8 +126,17 @@ final class PlayCountService {
         for (id, stamps) in baseline.provisional where !stamps.isEmpty {
             out[id, default: 0] += stamps.count
         }
+        snapshotMemo = (revision, out)
+        snapshotBuilds &+= 1
+        MainThreadStallWatchdog.shared.marker("playcounts-snapshot \(out.count)")
         return out
     }
+
+    /// (revision, counts) of the last `snapshot()` build. @ObservationIgnored on both: filled
+    /// while a body-driven feed reads it — invalidating that body from inside itself would loop.
+    @ObservationIgnored private var snapshotMemo: (revision: Int, counts: [String: Int])?
+    /// Diagnostic/test probe: how many times the full snapshot has actually been BUILT.
+    @ObservationIgnored private(set) var snapshotBuilds = 0
 
     // MARK: - Writes (the ONE funnel every play surface goes through)
 

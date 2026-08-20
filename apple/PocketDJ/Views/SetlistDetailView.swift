@@ -85,7 +85,11 @@ struct SetlistDetailView: View {
         let sequencer = self.sequencer
         Task.detached(priority: .userInitiated) {
             let items = Self.playableItems(tracks)
-            await MainActor.run { sequencer.play(items, sourceSetlistId: sid) }
+            // Edition stamping is the other 26k-row map `play()` used to run inline on the
+            // main actor — precompute it here (prepareStamped detaches the map itself) so
+            // the hop back is just the queue assignment.
+            let stamped = await sequencer.prepareStamped(items, sourceSetlistId: sid)
+            await MainActor.run { sequencer.play(stamped, sourceSetlistId: sid, preStamped: true) }
         }
     }
 

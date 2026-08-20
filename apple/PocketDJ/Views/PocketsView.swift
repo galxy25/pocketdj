@@ -25,8 +25,18 @@ struct PocketDetailView: View {
     init(pocketId: String, path: Binding<NavigationPath>) {
         self.pocketId = pocketId
         self._path = path
-        self._browse = State(initialValue: BrowseState(persistenceKey: "pdj.collection.\(pocketId)"))
+        // defaultKind .song: same first-open double-resolve fix as the playlist details.
+        self._browse = State(initialValue: BrowseState(persistenceKey: "pdj.collection.\(pocketId)",
+                                                       defaultKind: .song))
     }
+    /// How many song rows are rendered (the `RowWindow` window — the IndexPlaylistDetailView
+    /// pattern; an unwindowed pocket paid O(members) List identity at open and pop).
+    @State private var shownSongs = RowWindow.page
+    /// The sorted/filtered song order, resolved OFF-main (`sortedFilteredSongsAsync`) — the
+    /// inline `sortedFilteredSongs` call ran the whole Browser pipeline per body pass.
+    @State private var resolvedSongs: [IndexSong] = []
+    @State private var resolvedSongIds: [String] = []
+    @State private var isResolvingSongs = false
     @State private var renaming = false
     @State private var nameDraft = ""
     @State private var confirmingDelete = false
@@ -112,8 +122,15 @@ struct PocketDetailView: View {
         if browse.sortKeys.isEmpty && browse.activeFilterCount == 0 {
             return pocket.songIds.filter { app.songsById[$0] != nil }
         }
-        return app.sortedFilteredSongs(ids: pocket.songIds, browse: browse,
-                                       collections: collections, favorites: favorites).map(\.id)
+        // The resolved (off-main) order — never the inline sync pipeline (O(n log n) per call).
+        return resolvedSongIds
+    }
+
+    /// Everything the sorted song order depends on (`updatedAt` is stamped by every
+    /// `mutatePocket`). Drives the `.task` resolve + the selection prune key.
+    private var songsResolveKey: String {
+        "\(pocketId)|\(pocket?.updatedAt ?? 0)|\(app.catalogRevision)|\(browse.resultsKey(app))"
+            + "|\(browse.membershipActive)|\(browse.favoriteActive)"
     }
     private func selectionPayload() -> SongTransfer? {
         let ids = rowSelection.orderedSelection(in: displayedSongIds())
@@ -178,25 +195,34 @@ struct PocketDetailView: View {
                 }
                 Section("Songs (\(pocket.songIds.count))") {
                     // DEFAULT order (no sort/filter): the stored order as-is, with drag-reorder.
-                    // SORTED/FILTERED: catalog songs via the Browser pipeline (no-dateAdded songs sort
-                    // to the END), then studio items pinned at the very end (studio items carry no
-                    // song fields, so a FILTER hides them; a plain sort keeps them, last).
+                    // SORTED/FILTERED: catalog songs via the OFF-main-resolved Browser pipeline
+                    // (no-dateAdded songs sort to the END), then studio items pinned at the very
+                    // end (studio items carry no song fields, so a FILTER hides them; a plain
+                    // sort keeps them, last). Both branches render a `RowWindow` prefix + a
+                    // sentinel, so a huge pocket never hands its whole membership to the List
+                    // (a prefix window keeps `.onMove` offsets identical to stored indices).
                     if browse.sortKeys.isEmpty && browse.activeFilterCount == 0 {
-                        ForEach(pocket.songIds, id: \.self) { sid in
+                        ForEach(pocket.songIds.prefix(shownSongs), id: \.self) { sid in
                             if let song = app.songsById[sid] { pocketSongRow(song) }
                             else if StudioFactory.isStudioId(sid) { pocketStudioRow(sid) }
                         }
                         .onMove { from, to in collections.movePocketSongs(inPocket: pocketId, from: from, to: to) }
+                        RowWindowSentinel(total: pocket.songIds.count, shown: $shownSongs)
                     } else {
-                        ForEach(app.sortedFilteredSongs(ids: pocket.songIds, browse: browse,
-                                                        collections: collections, favorites: favorites)) { song in
+                        if isResolvingSongs, resolvedSongs.isEmpty {
+                            ForEach(0..<min(pocket.songIds.count, RowWindow.page), id: \.self) { _ in
+                                SkeletonSongRow()
+                            }
+                        }
+                        ForEach(resolvedSongs.prefix(shownSongs)) { song in
                             pocketSongRow(song)
                         }
-                        if browse.activeFilterCount == 0 {
+                        if browse.activeFilterCount == 0, resolvedSongs.count <= shownSongs {
                             ForEach(pocket.songIds.filter { StudioFactory.isStudioId($0) }, id: \.self) { sid in
                                 pocketStudioRow(sid)
                             }
                         }
+                        RowWindowSentinel(total: resolvedSongs.count, shown: $shownSongs)
                     }
                 }
                 if !pocket.notes.isEmpty {
@@ -231,12 +257,33 @@ struct PocketDetailView: View {
         .accessibilityIdentifier("pocket-detail")
         // Selection bar + whole-list drop target + paste registration (song-id keys).
         .modifier(CollectionSelectionChrome(scope: selectionScope,
+                                            pruneKey: "\(pocket?.songIds.count ?? 0)|\(resolvedSongs.count)|\(songsResolveKey)",
                                             allIds: { displayedSongIds() },
                                             payload: { selectionPayload() },
                                             acceptDrop: { acceptDrop($0) }))
         .scrollContentBackground(.hidden).background(Theme.bg)
         .collectionRipBurn(ripBurn)
-        .onAppear { nowPlayingPushed = false }
+        .onAppear {
+            nowPlayingPushed = false
+            MainThreadStallWatchdog.shared.marker("collection-open-start PocketDetailView \(pocketId)")
+        }
+        .onDisappear { MainThreadStallWatchdog.shared.marker("back-nav PocketDetailView") }
+        // OFF-main sort/filter resolve (auto-cancelling); the default stored-order state
+        // clears it and resolves nothing.
+        .task(id: songsResolveKey) {
+            guard let pocket, !(browse.sortKeys.isEmpty && browse.activeFilterCount == 0) else {
+                resolvedSongs = []; resolvedSongIds = []; isResolvingSongs = false
+                return
+            }
+            isResolvingSongs = true
+            let full = await app.sortedFilteredSongsAsync(ids: pocket.songIds, browse: browse,
+                                                          collections: collections, favorites: favorites)
+            guard !Task.isCancelled else { return }
+            resolvedSongs = full
+            resolvedSongIds = full.map(\.id)
+            isResolvingSongs = false
+            MainThreadStallWatchdog.shared.marker("collection-open-resolved \(full.count)")
+        }
         // The SHARED `CollectionToolbar` — identical furniture to the playlist screen. Adopting it
         // also fixed a real drift: this screen's ▶/🔀 were bare `Image`s where the playlist's were
         // `Label`s, so VoiceOver read them as unnamed buttons here and named ones there.
@@ -487,12 +534,17 @@ struct PocketDetailView: View {
     /// ▶ Play / 🔀 Shuffle: snapshot the pocket's resolved (DAG) songs into the reusable
     /// "Now Playing" setlist and open it autostarting. CRITIC-B no-duplicate-push guard.
     private func play(shuffle: Bool) {
-        collections.playNow(pocketId: pocketId, shuffle: shuffle)
-        // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
-        IntentDonations.playedPocket(collections.pocket(pocketId), shuffle: shuffle)
-        if !nowPlayingPushed {
-            nowPlayingPushed = true
-            path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
+        MainThreadStallWatchdog.shared.marker(shuffle ? "shuffle-tapped PocketDetailView"
+                                                      : "play-tapped PocketDetailView")
+        Task {
+            // The track build runs detached (see `playNowAsync`); the push waits for the commit.
+            await collections.playNowAsync(pocketId: pocketId, shuffle: shuffle)
+            // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
+            IntentDonations.playedPocket(collections.pocket(pocketId), shuffle: shuffle)
+            if !nowPlayingPushed {
+                nowPlayingPushed = true
+                path.append(SetlistLaunch(setlistId: nowPlayingSetlistId, autoplay: true))
+            }
         }
     }
 }

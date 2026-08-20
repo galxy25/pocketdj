@@ -281,7 +281,16 @@ final class RipsStore {
         do {
             let (data, response) = try await session.data(for: request)
             guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
-            manifest = try JSONDecoder().decode([String: ManifestEntry].self, from: data)
+            // Decode + diff DETACHED: the manifest is the whole rip corpus (tens of thousands
+            // of entries) and this refires per rip/stem completion — decoding it on the main
+            // actor was a steady idle-stall source. Publishing only on a real change keeps an
+            // unchanged manifest from invalidating every mounted row.
+            let old = manifest
+            let decoded = try await Task.detached(priority: .utility) { () -> [String: ManifestEntry]? in
+                let m = try JSONDecoder().decode([String: ManifestEntry].self, from: data)
+                return m == old ? nil : m
+            }.value
+            if let decoded { manifest = decoded }
             pruneFinishedStemJobs()
         } catch { /* offline — keep whatever we have */ }
     }
@@ -294,6 +303,17 @@ final class RipsStore {
     }
 
     func setManifest(_ m: [String: ManifestEntry]) { manifest = m }   // test seam
+
+    /// Adopt a polled job view ONLY when it actually changed. The 2s `pollToReady` loop (and
+    /// the 3s stem poll) re-published an IDENTICAL value each tick per in-flight rip — and the
+    /// rip daemon runs for days — so every mounted `RowTransport` re-rendered (3+ `BurnStore`
+    /// disk probes each) on a flat 2s cadence, playing or idle.
+    func adoptJob(_ v: Job, for songId: String) {
+        if jobs[songId] != v { jobs[songId] = v }
+    }
+    func adoptStemJob(_ v: StemJob, for songId: String) {
+        if stemJobs[songId] != v { stemJobs[songId] = v }
+    }
 
     // MARK: Public-URL helpers (pure)
 
@@ -536,7 +556,7 @@ final class RipsStore {
                 try? await Self.sleep(ms: 2000)
                 guard let self else { return }
                 guard let v = try? await self.fetchJob(jobId, base: base, token: tok) else { continue }
-                self.jobs[songId] = v
+                self.adoptJob(v, for: songId)
                 if v.phase == .ready, v.url != nil {
                     await self.refreshManifest()
                     self.onRipReady?(songId)
@@ -1687,7 +1707,7 @@ final class RipsStore {
             guard let (data, response) = try? await session.data(for: req),
                   let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
                   let view = try? JSONDecoder().decode(StemJob.self, from: data) else { continue }
-            stemJobs[songId] = view
+            adoptStemJob(view, for: songId)
             switch view.phase {
             case .ready: await refreshManifest(); return
             case .error, .ineligible: return
