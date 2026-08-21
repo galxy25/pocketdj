@@ -1,0 +1,519 @@
+{
+  "generatedAt": "2026-08-21T10:21:28-0700",
+  "sourceState": "/Users/deepspacenine/.pocketdj/backfill/rip-backfill-state.json",
+  "captured": 3250,
+  "planTargets": 3301,
+  "needRetry": 51,
+  "songs": [
+    {
+      "songId": "sng_1250bf1443bc",
+      "artist": "Alien Ant Farm",
+      "title": "Smooth Criminal",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "failed-permanently",
+      "lastError": "play accepted but Music never reached state=playing within 20000ms (last state=paused, position=232.449996948242, 32 probes) \u2014 playback engine wedged; restart M",
+      "alias": null
+    },
+    {
+      "songId": "sng_c8446ffc13fa",
+      "artist": "BSN Posse",
+      "title": "Light Warrior",
+      "collection": "Sweet Dreams",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_dba721d3fb7b",
+      "artist": "Colbie Caillat",
+      "title": "Try (feat. Hillary Scott)",
+      "collection": "Breezy",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_62fa39fe46c5",
+      "artist": "Cuban Link",
+      "title": "Flowers For the Dead (feat. D'Mingo)",
+      "collection": "Parting Thoughts",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_bb3342355b83",
+      "artist": "D'Angelo",
+      "title": "Playa Playa",
+      "collection": "G-Riding",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_d1070da987bc",
+      "artist": "Demi Lovato & The Maine",
+      "title": "Neon Lights (Rock Version)",
+      "collection": "City Walk",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_af23413e5938",
+      "artist": "Dounia",
+      "title": "Empty",
+      "collection": "Hopeless ",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_20686d48ea89",
+      "artist": "Dounia",
+      "title": "Simplify",
+      "collection": "Cloud City",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_5785ebe6aeb4",
+      "artist": "Drake",
+      "title": "9AM In Dallas",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_17c2e7658905",
+      "artist": "Eric Lau",
+      "title": "Begin (feat. Sarina Leah, Rahel & Annabel)",
+      "collection": "We The People",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_4728f42971e6",
+      "artist": "Evanescence",
+      "title": "All That I\u2019m Living For",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_840989f50fd1",
+      "artist": "Far East Movement, The Cataracs & Dev",
+      "title": "Like a G6",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "failed-permanently",
+      "lastError": "play accepted but Music never reached state=playing within 20000ms (last state=paused, position=232.449996948242, 31 probes) \u2014 playback engine wedged; restart M",
+      "alias": null
+    },
+    {
+      "songId": "sng_7daf9438bac0",
+      "artist": "Grupo Kual Dinastia Pedraza",
+      "title": "Kumbia Majestuosa",
+      "collection": "Sabor",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_72da7e3c8080",
+      "artist": "J.Robb",
+      "title": "FREE_UZI",
+      "collection": "Wave Riders",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_6e1341603f98",
+      "artist": "Jessie Ware",
+      "title": "All On You",
+      "collection": "Bump",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_31c144c2ee9a",
+      "artist": "Jessie Ware",
+      "title": "Champagne Kisses",
+      "collection": "Sap ",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_3a28e091d1c6",
+      "artist": "Jessie Ware",
+      "title": "Cruel",
+      "collection": "Hopeless ",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_5b1828f3df58",
+      "artist": "Jessie Ware",
+      "title": "Desire",
+      "collection": "Bed Rock",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_1f9246d359ea",
+      "artist": "Jessie Ware",
+      "title": "If You're Never Gonna Move",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "failed-permanently",
+      "lastError": "play accepted but Music never reached state=playing within 20000ms (last state=stopped, position=missing value, 32 probes) \u2014 playback engine wedged; restart Mus",
+      "alias": null
+    },
+    {
+      "songId": "sng_9064993796d2",
+      "artist": "Jessie Ware",
+      "title": "Imagine It Was Us",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "failed-permanently",
+      "lastError": "play accepted but Music never reached state=playing within 20000ms (last state=stopped, position=missing value, 32 probes) \u2014 playback engine wedged; restart Mus",
+      "alias": null
+    },
+    {
+      "songId": "sng_e93c2c796947",
+      "artist": "Jessie Ware",
+      "title": "Keep On Lying",
+      "collection": "Tropical ",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_f5e5304636c2",
+      "artist": "Jessie Ware",
+      "title": "Kind of...Sometimes...Maybe",
+      "collection": "Drowning",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_e48e95517aa2",
+      "artist": "Jessie Ware",
+      "title": "Midnight Caller",
+      "collection": "After Midnight",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_cfe9e06c3e01",
+      "artist": "Jessie Ware",
+      "title": "Night Light",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "failed-permanently",
+      "lastError": "play accepted but Music never reached state=playing within 20000ms (last state=stopped, position=missing value, 32 probes) \u2014 playback engine wedged; restart Mus",
+      "alias": null
+    },
+    {
+      "songId": "sng_f7bd2f0ed1e3",
+      "artist": "Jessie Ware",
+      "title": "Pieces",
+      "collection": "Hopeless ",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_1d15024044fd",
+      "artist": "Jessie Ware",
+      "title": "Share It All",
+      "collection": "Cozy",
+      "attemptsUsed": 1,
+      "state": "failed-permanently",
+      "lastError": "play accepted but Music never reached state=playing within 20000ms (last state=stopped, position=missing value, 32 probes) \u2014 playback engine wedged; restart Mus",
+      "alias": null
+    },
+    {
+      "songId": "sng_d773158730af",
+      "artist": "Jessie Ware",
+      "title": "Sweetest Song",
+      "collection": "Sap ",
+      "attemptsUsed": 1,
+      "state": "in-flight-at-stop",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_cba5af7254eb",
+      "artist": "Jessie Ware",
+      "title": "The Way We Are",
+      "collection": "Sap ",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_88522d73293c",
+      "artist": "Jessie Ware",
+      "title": "Tough Love",
+      "collection": "Sweet Dreams",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_c15dc2acd521",
+      "artist": "Jessie Ware",
+      "title": "Want Your Feeling",
+      "collection": "After Midnight",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_3818b3a2fe34",
+      "artist": "Jessie Ware",
+      "title": "You & I (Forever)",
+      "collection": "Sap ",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_21b2ec3f0d55",
+      "artist": "Joan Jett & The Blackhearts",
+      "title": "Whiskey Goes Good",
+      "collection": "Twang",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_33d20480a178",
+      "artist": "Keri Hilson",
+      "title": "Knock You Down (feat. Kanye West & Ne-Yo) [Mixed]",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_1a7ac81391b3",
+      "artist": "Macklemore",
+      "title": "Can't Hold Us (feat. Ray Dalton)",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "failed-permanently",
+      "lastError": "play accepted but Music never reached state=playing within 20000ms (last state=stopped, position=missing value, 32 probes) \u2014 playback engine wedged; restart Mus",
+      "alias": null
+    },
+    {
+      "songId": "sng_11b22ba9f541",
+      "artist": "Macklemore & Ryan Lewis",
+      "title": "Can't Hold Us (feat. Ray Dalton)",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_9733625c3b10",
+      "artist": "MADE IN HEIGHTS",
+      "title": "All the Places",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "failed-permanently",
+      "lastError": "play accepted but Music never reached state=playing within 20000ms (last state=stopped, position=missing value, 32 probes) \u2014 playback engine wedged; restart Mus",
+      "alias": null
+    },
+    {
+      "songId": "sng_e5258f9074fd",
+      "artist": "Nicki Minaj",
+      "title": "Truffle Butter (feat. Drake & Lil Wayne)",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_f70542edb091",
+      "artist": "Queen",
+      "title": "We Will Rock You",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "failed-permanently",
+      "lastError": "play accepted but Music never reached state=playing within 20000ms (last state=stopped, position=missing value, 32 probes) \u2014 playback engine wedged; restart Mus",
+      "alias": null
+    },
+    {
+      "songId": "sng_71e1d6ca07a9",
+      "artist": "Robyn",
+      "title": "Be Mine!",
+      "collection": "Tension",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_74bce035684f",
+      "artist": "Robyn",
+      "title": "Bum Like You",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "failed-permanently",
+      "lastError": "play accepted but Music never reached state=playing within 20000ms (last state=paused, position=232.449996948242, 32 probes) \u2014 playback engine wedged; restart M",
+      "alias": null
+    },
+    {
+      "songId": "sng_fe47e55f85a2",
+      "artist": "Robyn",
+      "title": "Cobrastyle",
+      "collection": "2 Left Feet",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_09ce306df618",
+      "artist": "Robyn",
+      "title": "Handle Me",
+      "collection": "Siren",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_340c892704b2",
+      "artist": "Smash Mouth",
+      "title": "All Star",
+      "collection": "\ud83c\udfcb\ud83c\udffe\u200d\u2640\ufe0f",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_1073e0d4e6ce",
+      "artist": "soaspy",
+      "title": "Go White Girl Go",
+      "collection": "Tech Pop",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_847ddbe5c0ca",
+      "artist": "soaspy",
+      "title": "Outside",
+      "collection": "Arcade Flow",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_05fcd2eb4e5b",
+      "artist": "soaspy",
+      "title": "Ricky Bobby",
+      "collection": "Bouncy",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_24352547b444",
+      "artist": "soaspy",
+      "title": "Theyfriend",
+      "collection": "Arcade Flow",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_d19ad83164e9",
+      "artist": "soaspy",
+      "title": "Will Work For Food",
+      "collection": "Busy Bees",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_bb3436f7cfe6",
+      "artist": "Solange",
+      "title": "Don't Touch My Hair (feat. Sampha) [Steve oh Traxxx Remix] [Mixed]",
+      "collection": "We The People",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_68ab8efecc72",
+      "artist": "The Weeknd",
+      "title": "What You Need",
+      "collection": "After Midnight",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    },
+    {
+      "songId": "sng_b8dc455fcae5",
+      "artist": "Vanessa Carlton",
+      "title": "I Don't Want to Be a Bride",
+      "collection": "Sap ",
+      "attemptsUsed": 1,
+      "state": "pending",
+      "lastError": null,
+      "alias": null
+    }
+  ]
+}
