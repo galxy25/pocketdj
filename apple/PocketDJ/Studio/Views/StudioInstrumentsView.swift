@@ -33,6 +33,9 @@ struct StudioInstrumentsView: View {
     @State private var notice: String?
     /// The live staff is in edit mode (tap-to-place/select on the free-play score).
     @State private var liveEditing = false
+    /// The LIVE score's overdub pass is armed (view-side flag beside the engine's global
+    /// `overdubActive`, so a saved-score overdub can never be mistaken for ours).
+    @State private var liveOverdubbing = false
     /// Cross-platform Bluetooth-MIDI (I3): the scanner sheet + its CoreBluetooth manager (works on
     /// iPhone, iPad, Mac, and Vision Pro — CoreBluetooth is universal).
     @State private var showBTMIDIPicker = false
@@ -44,6 +47,7 @@ struct StudioInstrumentsView: View {
             VStack(alignment: .leading, spacing: 18) {
                 instrumentGrid
                 recordBar
+                arpSection
                 // PLAY area: ~200 pt tall keys, horizontally scrollable — the iPhone-portrait
                 // contract (2 octaves don't fit a 390 pt screen at playable key widths).
                 PianoKeysView()
@@ -59,11 +63,17 @@ struct StudioInstrumentsView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Theme.bg)
+        // The backing's natural end does NOT end the live overdub pass — the user may still
+        // be playing past the last existing note; ending it there would truncate held notes
+        // and drop the tail. The pass ends explicitly (End overdub, a re-anchoring tap, Clear,
+        // Save) — and a navigation away never leaves the engine armed with no UI owning it.
+        .onDisappear { if liveOverdubbing { finishLiveOverdub() } }
         .task {
             // Push the live settings into the store (the MixRecorder "views push settings in"
             // pattern — idempotent, no app-init wiring required for bookmark lookups), then
             // refresh the pack index (offline-first: the cached copy already listed instantly).
             studio.settings = settings
+            syncArpSettings()
             await packs.refreshIndex()
         }
         // Name-the-take prompt. EVERY dismissal path files the take (Save with the draft,
@@ -287,77 +297,469 @@ struct StudioInstrumentsView: View {
 
     private func defaultTakeName() -> String { "Take \(studio.takes.count + 1)" }
 
+    // MARK: Arpeggiator (record a note set on the keys, play it as a pattern — spec addition)
+
+    /// The arp panel: master toggle, RECORD (keys toggle pattern membership — each sounds once,
+    /// stays highlighted, writes NOTHING to any score), PLAY (loops the pattern through the
+    /// instrument's own voice), and the knobs (order / length / octaves / swing / latch). Knob
+    /// state persists in SettingsStore (every write persists — the click/count-in doctrine) and
+    /// mirrors into `InstrumentEngine.arpSettings`; edits land at the next cycle boundary.
+    private var arpSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Toggle("Arp", isOn: arpEnabledBinding)
+                    .toggleStyle(.button)
+                    .accessibilityIdentifier("arp-toggle")
+                if instruments.arpEnabled {
+                    Toggle("Record", isOn: arpRecordBinding)
+                        .toggleStyle(.button)
+                        .tint(instruments.arpRecording ? Theme.danger : nil)
+                        .accessibilityIdentifier("arp-record")
+                    Toggle("Play", isOn: arpPlayBinding)
+                        .toggleStyle(.button)
+                        .disabled(!instruments.arpPlaying
+                                  && (instruments.arpSelectedNotes.isEmpty
+                                      || instruments.currentInstrument == nil))
+                        .accessibilityIdentifier("arp-play")
+                    Spacer(minLength: 0)
+                    Button("Clear") { instruments.arpClearSelection() }
+                        .buttonStyle(.bordered).tint(Theme.fgDim)
+                        .disabled(instruments.arpSelectedNotes.isEmpty)
+                        .accessibilityIdentifier("arp-clear")
+                } else {
+                    Spacer(minLength: 0)
+                }
+            }
+            if instruments.arpEnabled {
+                arpKnobRows
+                Text(arpCaption)
+                    .font(.caption2).foregroundStyle(instruments.arpRecording ? Theme.accent2 : Theme.fgDim)
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous).fill(Theme.bgRaised))
+        .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+            .strokeBorder(Theme.border, lineWidth: 1))
+        .accessibilityIdentifier("arp-panel")
+    }
+
+    /// The knob rows: order chips, length + octave chips, swing slider + latch. Each chip row
+    /// scrolls horizontally (iPhone portrait can’t fit six order chips inline — the keys’ own
+    /// scroll precedent), and the swing slider is the width-adaptive `StudioEditSlider` (inline
+    /// on regular widths, value-chip → fixed-width popover on iPhone portrait).
+    @ViewBuilder private var arpKnobRows: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                Text("Order").font(.caption).foregroundStyle(Theme.fgDim)
+                ForEach(ArpOrder.allCases, id: \.rawValue) { order in
+                    arpChip(Self.orderLabel(order), on: currentArpSettings.order == order,
+                            id: "arp-order-\(order.rawValue)") {
+                        settings.studioArpOrder = order.rawValue
+                        persistArpKnobs()
+                    }
+                }
+            }
+        }
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                Text("Length").font(.caption).foregroundStyle(Theme.fgDim)
+                ForEach(ArpStepLength.allCases, id: \.rawValue) { len in
+                    arpChip("1/\(len.rawValue)", on: currentArpSettings.length == len,
+                            id: "arp-len-\(len.rawValue)") {
+                        settings.studioArpLength = len.rawValue
+                        persistArpKnobs()
+                    }
+                }
+                Text("Octaves").font(.caption).foregroundStyle(Theme.fgDim).padding(.leading, 8)
+                ForEach(1...4, id: \.self) { oct in
+                    arpChip("\(oct)", on: currentArpSettings.octaves == oct,
+                            id: "arp-oct-\(oct)") {
+                        settings.studioArpOctaves = oct
+                        persistArpKnobs()
+                    }
+                }
+            }
+        }
+        HStack(spacing: 10) {
+            StudioEditSlider(title: "Swing", systemImage: "metronome",
+                             range: 50...75, step: 1,
+                             value: currentArpSettings.swingPct,
+                             format: { "\(Int($0.rounded()))%" },
+                             a11y: "arp-swing",
+                             onChange: {
+                                 settings.studioArpSwing = $0
+                                 persistArpKnobs()
+                             })
+            Toggle("Latch", isOn: arpLatchBinding)
+                .toggleStyle(.button)
+                .accessibilityIdentifier("arp-latch")
+        }
+    }
+
+    /// The order/length/octave capsule chip (the ScoreEditorView chip idiom).
+    private func arpChip(_ text: String, on: Bool, id: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(text)
+                .font(.callout.weight(.semibold))
+                .frame(minWidth: 34)
+                .padding(.horizontal, 8).padding(.vertical, 5)
+                .background((on ? Theme.accent : Theme.fgDim).opacity(on ? 0.22 : 0.10), in: Capsule())
+                .foregroundStyle(on ? Theme.accent : Theme.fg)
+                .overlay(Capsule().stroke(on ? Theme.accent.opacity(0.5) : .clear, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(id)
+    }
+
+    private static func orderLabel(_ order: ArpOrder) -> String {
+        switch order {
+        case .up: return "Up"
+        case .down: return "Down"
+        case .exclusive: return "Excl"
+        case .inclusive: return "Incl"
+        case .order: return "Order"
+        case .random: return "Rand"
+        }
+    }
+
+    /// The knobs as the engine reads them (persisted raw values, clamped/coalesced).
+    private var currentArpSettings: ArpSettings {
+        ArpSettings.fromPersisted(order: settings.studioArpOrder,
+                                  length: settings.studioArpLength,
+                                  octaves: settings.studioArpOctaves,
+                                  swing: settings.studioArpSwing,
+                                  latch: settings.studioArpLatch)
+    }
+
+    /// Persist the knob write (every write persists — the record bar’s WHY-comment) and mirror
+    /// into the engine so the running pattern picks it up at the next cycle boundary.
+    private func persistArpKnobs() {
+        settings.persist()
+        syncArpSettings()
+    }
+
+    private func syncArpSettings() {
+        instruments.arpSettings = currentArpSettings
+    }
+
+    private var arpEnabledBinding: Binding<Bool> {
+        Binding(get: { instruments.arpEnabled },
+                set: { on in
+                    if on { syncArpSettings() }
+                    instruments.arpEnabled = on   // turning off stops play + record, KEEPS the set
+                })
+    }
+
+    private var arpRecordBinding: Binding<Bool> {
+        Binding(get: { instruments.arpRecording },
+                set: { instruments.arpRecording = $0 })
+    }
+
+    private var arpPlayBinding: Binding<Bool> {
+        Binding(get: { instruments.arpPlaying },
+                set: { on in
+                    if on {
+                        syncArpSettings()
+                        // The record bar’s BPM drives the arp clock (comma-decimal tolerant,
+                        // engine-side degradation for wild values — the recordButton parse).
+                        let bpm = Double(bpmText.replacingOccurrences(of: ",", with: ".")) ?? 120
+                        if !instruments.startArpPlayback(bpm: bpm) {
+                            notice = "Load an instrument and record some arp notes first."
+                        }
+                    } else {
+                        instruments.stopArpPlayback()
+                    }
+                })
+    }
+
+    private var arpLatchBinding: Binding<Bool> {
+        Binding(get: { currentArpSettings.latch },
+                set: { settings.studioArpLatch = $0; persistArpKnobs() })
+    }
+
+    private var arpCaption: String {
+        let n = instruments.arpSelectedNotes.count
+        if instruments.arpRecording {
+            return "Record: keys toggle notes in the pattern — each sounds once and stays "
+                + "highlighted; nothing is written to the score. \(n) selected."
+        }
+        let latch = currentArpSettings.latch
+            ? "Latch loops the pattern until Play is turned off."
+            : "Latch off: Play runs exactly one cycle."
+        return n == 0 ? "Turn on Record and press keys to pick the pattern’s notes. " + latch
+                      : "\(n) note\(n == 1 ? "" : "s") in the pattern. " + latch
+    }
+
     // MARK: Live editable staff (spec §7 "one editable staff")
 
-    /// A single staff that fills in as you play (the always-on `InstrumentEngine.liveEvents`) and is
-    /// tap-editable in place — the SAME `ScoreEditorView` a saved take uses. "Save" files it as a
-    /// take; "Clear" resets it. Free-play has no click, so it renders at 120 BPM.
+    /// The engine’s ONE replay clock is claimed under this sentinel while it describes the LIVE
+    /// score (overdub backing / parked tap-cursor) — the take-owner gating idiom, with an id no
+    /// `StudioFactory.newTakeId()` ("tk_…") can ever collide with.
+    static let liveReplayOwner = "live-score"
+
+    /// The live score: staff 1 fills in as you play (the always-on `InstrumentEngine.liveEvents`);
+    /// staffs 2…4 are OVERDUB passes (`liveExtraStaffs`, in-memory like the live staff itself).
+    /// Every staff is tap-editable in place — the SAME `ScoreEditorView` a saved take uses.
+    /// "Save" files it all as one take; "Clear" resets everything. Free-play has no click, so it
+    /// renders at 120 BPM. Tap a position, hit Overdub, and played notes (keys or the arp’s Play)
+    /// record a NEW staff from there while the existing staffs play back mixed.
     @ViewBuilder
     private var liveStaffSection: some View {
         let live = instruments.liveEvents
+        let extras = instruments.liveExtraStaffs
+        let hasAny = !live.isEmpty || !extras.isEmpty
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Label("Live score", systemImage: "music.quarternote.3")
                     .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
                 Spacer(minLength: 0)
-                if !live.isEmpty {
+                if hasAny {
+                    liveOverdubButton
                     Button { liveEditing.toggle() } label: {
                         Label(liveEditing ? "Done" : "Edit", systemImage: liveEditing ? "checkmark" : "pencil")
                             .font(.caption.weight(.semibold))
                     }
                     .buttonStyle(.bordered).tint(liveEditing ? Theme.accent2 : Theme.accent)
+                    .disabled(liveOverdubbing)
                     .accessibilityIdentifier("live-edit")
                     Button { saveLiveAsTake() } label: {
                         Label("Save", systemImage: "square.and.arrow.down").font(.caption.weight(.semibold))
                     }
                     .buttonStyle(.bordered).tint(Theme.accent)
                     .accessibilityIdentifier("live-save")
-                    Button(role: .destructive) {
-                        instruments.clearLiveEvents(); liveEditing = false
-                    } label: {
+                    Button(role: .destructive) { clearLiveScore() } label: {
                         Label("Clear", systemImage: "trash").font(.caption.weight(.semibold)).labelStyle(.iconOnly)
                     }
                     .buttonStyle(.bordered).tint(Theme.danger)
                     .accessibilityIdentifier("live-clear")
                 }
             }
-            if live.isEmpty && !liveEditing {
+            if !hasAny && !liveEditing {
                 Text("Play the keys (or a connected MIDI keyboard) — your notes appear here as a "
                      + "score you can edit and save as a take.")
                     .font(.caption2).foregroundStyle(Theme.fgDim)
             } else {
                 ScoreEditorView(events: live, bpm: 120,
                                 instrument: instruments.currentInstrument ?? .piano,
-                                title: "Live", editing: liveEditing,
-                                onEdit: { instruments.setLiveEvents($0) })
+                                title: extras.isEmpty ? "Live" : "Live · Staff 1",
+                                editing: liveEditing,
+                                onEdit: { instruments.setLiveEvents($0) },
+                                playback: livePlaybackClock)
+                ForEach(Array(extras.enumerated()), id: \.element.id) { i, staff in
+                    liveStaffHeader(staff, index: i)
+                    ScoreEditorView(events: staff.events, bpm: 120,
+                                    instrument: staff.instrument,
+                                    title: "Staff \(i + 2) · \(staff.instrument.displayName)",
+                                    editing: liveEditing,
+                                    onEdit: { instruments.setLiveExtraStaffEvents(id: staff.id, events: $0) },
+                                    playback: livePlaybackClock)
+                }
             }
+            if hasAny { liveStaffFooter(extras: extras) }
         }
         .padding(12)
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
         .accessibilityIdentifier("live-staff")
     }
 
-    /// File the live staff as a take. Replay plays the EVENTS (audible via the sampler), so the take
-    /// is fully playable; the audio file is a silent placeholder (kept so launch reconcile doesn't
-    /// prune the record) — synthesizing real note audio offline is a follow-up. Clears the staff.
+    /// One shared clock across every live staff section (events are absolute on one clock, so
+    /// the cursor paints correctly in each). Captures the ENGINE (a class), not this view struct
+    /// — the saved-score screen’s no-Observation-dependency pattern.
+    private var livePlaybackClock: ScorePlaybackClock {
+        let engine = instruments
+        return ScorePlaybackClock(
+            positionMs: { engine.replayPositionMs(forTake: Self.liveReplayOwner) },
+            seek: { seekLive(toMs: $0) })
+    }
+
+    /// Overdub toggle for the live score (the saved score’s `score-overdub` sibling). Label
+    /// carries the recording voice — the new staff plays through the CURRENT instrument.
+    private var liveOverdubButton: some View {
+        Button {
+            if liveOverdubbing { finishLiveOverdub() } else { beginLiveOverdub() }
+        } label: {
+            Label(liveOverdubbing ? "End overdub" : "Overdub",
+                  systemImage: liveOverdubbing ? "stop.circle" : "plus.square.on.square")
+                .font(.caption.weight(.semibold))
+        }
+        .buttonStyle(.bordered)
+        .tint(liveOverdubbing ? Theme.danger : Theme.accent2)
+        .disabled(!liveOverdubbing
+                  && (liveEditing || instruments.currentInstrument == nil
+                      || 1 + instruments.liveExtraStaffs.count >= StudioTake.maxStaffs))
+        .accessibilityIdentifier("live-overdub")
+    }
+
+    /// Per-staff header for a live overdub staff: instrument picker + delete (the saved score’s
+    /// staff-header idiom, against the engine’s in-memory staffs).
+    private func liveStaffHeader(_ staff: InstrumentEngine.LiveStaff, index: Int) -> some View {
+        HStack(spacing: 8) {
+            Text("Staff \(index + 2)")
+                .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
+            Menu {
+                ForEach(InstrumentKey.allCases, id: \.rawValue) { key in
+                    Button {
+                        instruments.setLiveExtraStaffInstrument(id: staff.id, key)
+                    } label: {
+                        if key == staff.instrument {
+                            Label(key.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(key.displayName)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Text(staff.instrument.displayName)
+                    Image(systemName: "chevron.up.chevron.down")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(Theme.accent)
+            }
+            .accessibilityIdentifier("live-staff-instrument-\(index)")
+            Spacer(minLength: 0)
+            Button(role: .destructive) {
+                instruments.deleteLiveExtraStaff(id: staff.id)
+            } label: {
+                Image(systemName: "trash").font(.caption)
+            }
+            .buttonStyle(.borderless).tint(Theme.danger)
+            .accessibilityIdentifier("live-staff-delete-\(index)")
+        }
+    }
+
+    /// Status line under the live staffs: overdub-armed notice, or the staff-cap message.
+    @ViewBuilder private func liveStaffFooter(extras: [InstrumentEngine.LiveStaff]) -> some View {
+        if liveOverdubbing {
+            Text("Overdubbing staff \(2 + extras.count) from \(Self.clock(Double(instruments.overdubBaseMs) / 1000))"
+                 + " — play the keys (or the arp’s Play); tap End overdub to finish.")
+                .font(.caption2).foregroundStyle(Theme.accent2)
+        } else if 1 + extras.count >= StudioTake.maxStaffs {
+            Text("4 staffs — the maximum for one instrumental.")
+                .font(.caption2).foregroundStyle(Theme.fgDim)
+        } else {
+            Text("Tap a position on the score, then Overdub to record a new staff from there.")
+                .font(.caption2).foregroundStyle(Theme.fgDim)
+        }
+    }
+
+    // MARK: Live overdub flow (the saved-score flow’s in-memory twin)
+
+    /// A tap on a live staff parks the cursor (where the next Overdub starts). While an overdub
+    /// is armed and NOTHING is captured yet, a tap RE-ANCHORS the pass; once notes exist the
+    /// anchor is fixed (re-basing captured notes would corrupt them).
+    private func seekLive(toMs ms: Int) {
+        let target = max(0, min(ms, InstrumentEngine.maxReplayMs))
+        if liveOverdubbing {
+            guard instruments.overdubCapturedCount == 0 else { return }
+            _ = instruments.stopOverdub()
+            if instruments.isReplaying { instruments.stopReplay() }
+            liveOverdubbing = false
+            instruments.parkReplayPosition(atMs: target, forTake: Self.liveReplayOwner)
+            beginLiveOverdub()
+            return
+        }
+        instruments.parkReplayPosition(atMs: target, forTake: Self.liveReplayOwner)
+    }
+
+    /// Arm a live overdub pass at the parked cursor and start the existing staffs playing back
+    /// MIXED from there (through the multitimbral synth — the SAMPLER stays free: it is the
+    /// user’s overdub voice). The overdub log anchors at the same instant the backing anchors
+    /// its clock, so played notes land at the true score position.
+    private func beginLiveOverdub() {
+        guard instruments.currentInstrument != nil else {
+            notice = "Pick an instrument first — the overdub records through it."
+            return
+        }
+        guard 1 + instruments.liveExtraStaffs.count < StudioTake.maxStaffs else { return }
+        if instruments.isReplaying { instruments.stopReplay() }
+        let p = max(0, instruments.replayPositionMs(forTake: Self.liveReplayOwner) ?? 0)
+        guard instruments.startOverdub(fromMs: p, anchorHostTime: mach_absolute_time()) else { return }
+        liveOverdubbing = true
+        var staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)] = []
+        if !instruments.liveEvents.isEmpty {
+            staffs.append((instruments.liveEvents, instruments.currentInstrument ?? .piano))
+        }
+        for st in instruments.liveExtraStaffs where !st.events.isEmpty {
+            staffs.append((st.events, st.instrument))
+        }
+        guard !staffs.isEmpty else { return }   // overdubbing from silence — nothing to back
+        guard let bank = StudioTakeReplay.bankURL(forInstruments: staffs.map(\.instrument),
+                                                  packs: packs) else {
+            notice = "Backing playback needs the sound bank — overdubbing without it."
+            return
+        }
+        instruments.replayTakePolyphonic(staffs: staffs, bankURL: bank, fromMs: p,
+                                         forTake: Self.liveReplayOwner, forceSynth: true)
+    }
+
+    /// End the live overdub pass: file the capture as a new in-memory staff (empty capture ⇒ no
+    /// staff — no junk), and stop the backing if it is still ours.
+    private func finishLiveOverdub() {
+        guard liveOverdubbing else { return }
+        liveOverdubbing = false
+        let events = instruments.stopOverdub()
+        if instruments.isReplaying, instruments.replayClockBelongs(to: Self.liveReplayOwner) {
+            instruments.stopReplay()
+        }
+        guard !events.isEmpty else {
+            notice = "Overdub ended — nothing was played, so no staff was added."
+            return
+        }
+        if instruments.appendLiveExtraStaff(instrument: instruments.currentInstrument ?? .piano,
+                                            events: events) != nil {
+            notice = "Overdub added as staff \(1 + instruments.liveExtraStaffs.count)."
+        } else {
+            notice = "4 staffs is the maximum — the overdub wasn’t added."
+        }
+    }
+
+    /// Clear EVERYTHING on the live score (staff 1 + overdub staffs), ending an armed overdub
+    /// pass without filing it (Clear is the explicit discard).
+    private func clearLiveScore() {
+        if liveOverdubbing {
+            liveOverdubbing = false
+            _ = instruments.stopOverdub()
+            if instruments.isReplaying, instruments.replayClockBelongs(to: Self.liveReplayOwner) {
+                instruments.stopReplay()
+            }
+        }
+        instruments.clearLiveEvents()
+        instruments.clearLiveExtraStaffs()
+        liveEditing = false
+    }
+
+    /// File the live score as ONE take: staff 1 becomes the take's own events, the overdub
+    /// staffs file as `extraStaffs` (each keeping its instrument). Replay plays the EVENTS
+    /// (audible via the sampler/synth), so the take is fully playable; the audio file is a
+    /// silent placeholder (kept so launch reconcile doesn't prune the record) — the background
+    /// render synthesizes the real (polyphonic) audio. Clears every staff.
     private func saveLiveAsTake() {
+        if liveOverdubbing { finishLiveOverdub() }   // an armed pass files before the save
         let live = instruments.liveEvents
-        guard !live.isEmpty, let takesDir = try? StudioFolders.appRoot(.takes) else {
+        let extras = instruments.liveExtraStaffs
+        guard !live.isEmpty || !extras.isEmpty, let takesDir = try? StudioFolders.appRoot(.takes) else {
             notice = "Couldn't save — the takes folder isn't reachable."
             return
         }
         let takeId = StudioFactory.newTakeId()
         let fileName = StudioFolders.fileName(.takes, id: takeId)
-        let dur = max(500, live.map(\.offMs).max() ?? 500)
+        let allOffs = live.map(\.offMs) + extras.flatMap { $0.events.map(\.offMs) }
+        let dur = max(500, allOffs.max() ?? 500)
         writePlaceholderTakeAudio(to: takesDir.appendingPathComponent(fileName), durationMs: dur)
+        let now = Date().timeIntervalSince1970
+        let staffs = extras.map { st in
+            StudioTakeStaff(id: st.id, instrument: st.instrument, events: st.events, createdAt: now)
+        }
         studio.addTakeRelocating(StudioTake(id: takeId, name: defaultTakeName(),
                                             instrument: instruments.currentInstrument ?? .piano,
                                             fileName: fileName, bpm: 120, events: live, durationMs: dur,
-                                            createdAt: Date().timeIntervalSince1970 * 1000))
+                                            createdAt: now * 1000,
+                                            extraStaffs: staffs.isEmpty ? nil : staffs))
         // The saved file is a SILENT placeholder — render the real audio in the background so the
         // instrumental is audible wherever it plays (collections / Mix), not just on Replay.
         Task { await StudioTakeRenderer.ensureRendered(takeId: takeId, studio: studio, packs: packs) }
         instruments.clearLiveEvents()
+        instruments.clearLiveExtraStaffs()
         liveEditing = false
         notice = "Saved to Takes."
     }
@@ -759,8 +1161,11 @@ private struct PianoKey: View {
 
     var body: some View {
         let lit = down || instruments.pressedNotes.contains(note)
+        // Steady arp-set highlight (record mode's "stays highlighted"): distinct from the
+        // momentary press color, and never fighting it — a lit key always wins.
+        let arpSel = instruments.arpEnabled && instruments.arpSelectedNotes.contains(note)
         RoundedRectangle(cornerRadius: 5, style: .continuous)
-            .fill(lit ? Theme.accent : (isBlack ? Theme.bgOverlay : Theme.fg))
+            .fill(lit ? Theme.accent : (arpSel ? Theme.accent2 : (isBlack ? Theme.bgOverlay : Theme.fg)))
             .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
                 .strokeBorder(Theme.border, lineWidth: 1))
             .overlay(alignment: .bottom) {

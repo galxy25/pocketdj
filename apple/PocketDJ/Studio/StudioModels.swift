@@ -703,6 +703,43 @@ struct StudioNoteEvent: Codable, Hashable, Sendable {
     }
 }
 
+/// One OVERDUB staff (staffs 2…4 of an instrumental — staff 1 stays the take's own
+/// `instrument`/`events`/`editedEvents`, so every legacy consumer is untouched). Events are
+/// ABSOLUTE on the take's one score clock (ms from beat 1) — an overdub recorded from position P
+/// simply starts at `onMs ≥ P`. ADDITIVE-OPTIONAL (the `editedEvents`/`folderId` doctrine): old
+/// documents lack `extraStaffs` ⇒ single-staff; an old build re-saving drops it (the accepted
+/// lossy doctrine).
+struct StudioTakeStaff: Codable, Identifiable, Hashable, Sendable {
+    var id: String                       // "stf_…" (StudioFactory.newStaffId)
+    /// Each staff may voice a DIFFERENT instrument (polyphonic playback mixes them).
+    var instrument: InstrumentKey = .piano
+    /// Raw overdub capture (ms from beat 1 — the take's one clock; never re-based).
+    var events: [StudioNoteEvent] = []
+    /// User-EDITED stream — same nil ⇒ derive-from-raw contract as `StudioTake.editedEvents`.
+    var editedEvents: [StudioNoteEvent]?
+    var createdAt: Double = 0
+
+    /// The events the score/replay/render read for THIS staff (edited once touched, else raw).
+    var scoreEvents: [StudioNoteEvent] { editedEvents ?? events }
+
+    enum CodingKeys: String, CodingKey { case id, instrument, events, editedEvents, createdAt }
+    init(id: String, instrument: InstrumentKey = .piano, events: [StudioNoteEvent] = [],
+         editedEvents: [StudioNoteEvent]? = nil, createdAt: Double = 0) {
+        self.id = id; self.instrument = instrument; self.events = events
+        self.editedEvents = editedEvents; self.createdAt = createdAt
+    }
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = (try? c.decode(String.self, forKey: .id)) ?? StudioFactory.newStaffId()
+        instrument = (try? c.decode(InstrumentKey.self, forKey: .instrument)) ?? .piano
+        events = ((try? c.decode([StudioLossyBox<StudioNoteEvent>].self, forKey: .events)) ?? [])
+            .compactMap(\.value)
+        editedEvents = (try? c.decode([StudioLossyBox<StudioNoteEvent>].self, forKey: .editedEvents))?
+            .compactMap(\.value)
+        createdAt = (try? c.decode(Double.self, forKey: .createdAt)) ?? 0
+    }
+}
+
 /// A recorded instrument performance ("instrumental"): the captured audio (`take-<id>.m4a`) plus
 /// the raw note-event log the score is quantized from and the replay/MIDI/audio export read. The
 /// file is recorded into app storage and relocated into the user's instrumentals folder on clean
@@ -735,6 +772,13 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     /// the score, else the raw performance.
     var scoreEvents: [StudioNoteEvent] { editedEvents ?? events }
 
+    /// EVERY staff's score events merged onto the one score clock, onset-sorted — what duration,
+    /// resume, and the polyphonic render/replay derive from. Single-staff takes: == `scoreEvents`.
+    var allScoreEvents: [StudioNoteEvent] {
+        guard let extras = extraStaffs, !extras.isEmpty else { return scoreEvents }
+        return (scoreEvents + extras.flatMap(\.scoreEvents)).sorted { $0.onMs < $1.onMs }
+    }
+
     /// Rendered-audio cache: the take's `scoreEvents` synthesized through its instrument into a real
     /// `.m4a` (`take-<id>-r0.m4a`), so a live-saved take — whose raw `fileName` is a SILENT
     /// placeholder — is audible in collection playback + Mix. Populated lazily by
@@ -754,22 +798,35 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     /// ADDITIVE + OPTIONAL (the `StudioSample.folderId`/`editedEvents` doctrine): absent ⇒ nil; a
     /// dangling id reads as Unfiled at the view layer — never a decode failure, never a wipe.
     var folderId: String?
+    /// Overdub staffs 2…4 (staff 1 is the take's own `instrument`/`events`/`editedEvents` — see
+    /// `StudioTakeStaff`). ADDITIVE + OPTIONAL, NO schema bump: an old document decodes nil ⇒
+    /// single-staff, exactly today's behavior; a malformed element drops per-element (LossyBox).
+    var extraStaffs: [StudioTakeStaff]?
+
+    /// 1 primary + ≤3 overdub staffs per instrumental — STORE-enforced
+    /// (`StudioStore.addOverdubStaff` refuses past the cap; the `StudioCue.maxSlots` precedent).
+    static let maxStaffs = 4
+
+    /// Staff count including the primary (legacy single-staff takes read 1).
+    var staffCount: Int { 1 + (extraStaffs?.count ?? 0) }
 
     enum CodingKeys: String, CodingKey {
         case id, name, instrument, fileName, wasUserFolder, bpm, events, durationMs, createdAt, editedEvents
-        case renderedFileName, renderedWasUserFolder, demuxSourceKey, demuxMode, folderId
+        case renderedFileName, renderedWasUserFolder, demuxSourceKey, demuxMode, folderId, extraStaffs
     }
     init(id: String, name: String, instrument: InstrumentKey = .piano, fileName: String,
          wasUserFolder: Bool = false, bpm: Double = 120, events: [StudioNoteEvent] = [],
          durationMs: Int = 0, createdAt: Double = 0, editedEvents: [StudioNoteEvent]? = nil,
          renderedFileName: String? = nil, renderedWasUserFolder: Bool? = nil,
-         demuxSourceKey: String? = nil, demuxMode: String? = nil, folderId: String? = nil) {
+         demuxSourceKey: String? = nil, demuxMode: String? = nil, folderId: String? = nil,
+         extraStaffs: [StudioTakeStaff]? = nil) {
         self.id = id; self.name = name; self.instrument = instrument; self.fileName = fileName
         self.wasUserFolder = wasUserFolder; self.bpm = bpm; self.events = events
         self.durationMs = durationMs; self.createdAt = createdAt; self.editedEvents = editedEvents
         self.renderedFileName = renderedFileName; self.renderedWasUserFolder = renderedWasUserFolder
         self.demuxSourceKey = demuxSourceKey; self.demuxMode = demuxMode
         self.folderId = folderId
+        self.extraStaffs = extraStaffs
     }
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -790,6 +847,8 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
         demuxSourceKey = try? c.decode(String.self, forKey: .demuxSourceKey)
         demuxMode = try? c.decode(String.self, forKey: .demuxMode)
         folderId = try? c.decode(String.self, forKey: .folderId)
+        extraStaffs = (try? c.decode([StudioLossyBox<StudioTakeStaff>].self, forKey: .extraStaffs))?
+            .compactMap(\.value)
     }
 }
 
@@ -1353,6 +1412,10 @@ enum StudioFactory {
     static func newLoopFolderId() -> String { "lpfld_" + uid() }
     static func newPatternFolderId() -> String { "ptnfld_" + uid() }
     static func newTakeFolderId() -> String { "tkfld_" + uid() }
+    /// Overdub staffs (staffs 2…4 of an instrumental). Like `cue_`/`slc_`, a staff id NEVER
+    /// rides a collection's string array — staffs are not independently playable — so `stf_` is
+    /// deliberately NOT in `studioPrefixes`.
+    static func newStaffId() -> String { "stf_" + uid() }
 
     /// The id namespaces that ride collections' string arrays (spec §8) — the SINGLE source of
     /// truth for every guard that must fence studio ids out of money/infra paths (RipsStore

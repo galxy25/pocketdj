@@ -226,6 +226,18 @@ final class SettingsStore {
     /// Studio ▸ Instruments: 1-bar COUNT-IN before take recording starts (beat 1 = end of
     /// count-in = the score quantizer's anchor). ON by default.
     var studioCountInEnabled: Bool
+    /// Studio ▸ Instruments arpeggiator knobs — persisted like the click/count-in toggles
+    /// (every write persists immediately; the panel mirrors them into `InstrumentEngine.arpSettings`).
+    /// `studioArpOrder` is an `ArpOrder` rawValue; unknown strings degrade to "up" at the read site.
+    var studioArpOrder: String
+    /// `ArpStepLength` rawValue (the note DENOMINATOR: 4/8/16/32); unknown values degrade to 16.
+    var studioArpLength: Int
+    /// Octave replication 1…4 (clamped at the read site — the `ArpPattern.pool` clamp's twin).
+    var studioArpOctaves: Int
+    /// Swing 50…75 % (clamped at the read site — the `ArpPattern.onsetMs` clamp's twin).
+    var studioArpSwing: Double
+    /// Latch ON ⇒ arp play loops until toggled off; OFF ⇒ exactly one cycle.
+    var studioArpLatch: Bool
     /// GLOBAL gate for converted-collection source sync (ON by default): when on, every
     /// catalog refresh reconciles each source-converted pocket AND source-duplicated
     /// playlist with its source playlist (adds/removals propagate; the user's own edits
@@ -425,6 +437,11 @@ final class SettingsStore {
         self.studioTab = data.studioTab
         self.studioClickEnabled = data.studioClickEnabled ?? true
         self.studioCountInEnabled = data.studioCountInEnabled ?? true
+        self.studioArpOrder = data.studioArpOrder ?? "up"
+        self.studioArpLength = data.studioArpLength ?? 16
+        self.studioArpOctaves = data.studioArpOctaves ?? 1
+        self.studioArpSwing = data.studioArpSwing ?? 50
+        self.studioArpLatch = data.studioArpLatch ?? true
         self.syncConvertedPockets = data.syncConvertedPockets ?? true
         self.cloudSyncEnabled = data.cloudSyncEnabled ?? true
         // Legacy migration: pre-rename check builds persisted "local"/"remote" — map to the Bool.
@@ -592,6 +609,11 @@ final class SettingsStore {
             studioTab: studioTab,
             studioClickEnabled: studioClickEnabled,
             studioCountInEnabled: studioCountInEnabled,
+            studioArpOrder: studioArpOrder,
+            studioArpLength: studioArpLength,
+            studioArpOctaves: studioArpOctaves,
+            studioArpSwing: studioArpSwing,
+            studioArpLatch: studioArpLatch,
             syncConvertedPockets: syncConvertedPockets,
             cloudSyncEnabled: cloudSyncEnabled,
             writeBackBackfillDays: writeBackBackfillDays,
@@ -660,6 +682,11 @@ final class SettingsStore {
         studioTab = d.studioTab
         studioClickEnabled = d.studioClickEnabled ?? true
         studioCountInEnabled = d.studioCountInEnabled ?? true
+        studioArpOrder = d.studioArpOrder ?? "up"
+        studioArpLength = d.studioArpLength ?? 16
+        studioArpOctaves = d.studioArpOctaves ?? 1
+        studioArpSwing = d.studioArpSwing ?? 50
+        studioArpLatch = d.studioArpLatch ?? true
         syncConvertedPockets = d.syncConvertedPockets ?? true
         cloudSyncEnabled = d.cloudSyncEnabled ?? true
         // Mirror init's capture (reset clears ripServerURL, so the derived default is public) —
@@ -765,6 +792,16 @@ struct SettingsData: Codable {
     var studioClickEnabled: Bool?
     /// Optional so older blobs still decode (coalesced to true at the read sites).
     var studioCountInEnabled: Bool?
+    /// Optional so older blobs still decode — arp order rawValue (nil = "up").
+    var studioArpOrder: String?
+    /// Optional so older blobs still decode — arp step length denominator (nil = 16).
+    var studioArpLength: Int?
+    /// Optional so older blobs still decode — arp octave count (nil = 1).
+    var studioArpOctaves: Int?
+    /// Optional so older blobs still decode — arp swing percent (nil = 50).
+    var studioArpSwing: Double?
+    /// Optional so older blobs still decode — arp latch (nil = true).
+    var studioArpLatch: Bool?
     /// Optional so older blobs still decode (coalesced to TRUE at the read sites — converted
     /// pockets sync with their source unless turned off).
     var syncConvertedPockets: Bool?
@@ -856,6 +893,11 @@ struct SettingsData: Codable {
         studioTab: nil,
         studioClickEnabled: nil,
         studioCountInEnabled: nil,
+        studioArpOrder: nil,
+        studioArpLength: nil,
+        studioArpOctaves: nil,
+        studioArpSwing: nil,
+        studioArpLatch: nil,
         syncConvertedPockets: nil,
         cloudSyncEnabled: nil,
         writeBackBackfillDays: nil,
