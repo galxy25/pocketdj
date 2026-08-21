@@ -818,3 +818,28 @@ struct ScorePlaybackCanvas: View {
         }
     }
 }
+
+// MARK: - The IN-PROGRESS overdub staff (published live, kept OUT of its host's body)
+
+/// The armed overdub pass's capture, rendered as a staff that fills WHILE you play (req: the
+/// notation appears during the pass, not at "End overdub"). Read-only until the pass is filed.
+///
+/// Deliberately its OWN view: the engine publishes the capture ~30× a second, and reading
+/// `overdubEvents` in the host score's body would re-run that body — re-quantizing and
+/// re-paginating EVERY staff — on each publish. Owning the read here confines the invalidation
+/// to this one small staff (the score's non-observable-playhead discipline, applied to capture).
+struct OverdubProgressStaffView: View {
+    @Environment(InstrumentEngine.self) private var instruments
+
+    var bpm: Double
+    var instrument: InstrumentKey
+    var title: String
+    var playback: ScorePlaybackClock?
+    var a11y: String
+
+    var body: some View {
+        ScoreEditorView(events: instruments.overdubEvents, bpm: bpm, instrument: instrument,
+                        title: title, editing: false, onEdit: { _ in }, playback: playback)
+            .accessibilityIdentifier(a11y)
+    }
+}

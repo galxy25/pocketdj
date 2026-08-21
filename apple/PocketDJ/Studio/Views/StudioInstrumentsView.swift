@@ -63,11 +63,19 @@ struct StudioInstrumentsView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Theme.bg)
-        // The backing's natural end does NOT end the live overdub pass — the user may still
-        // be playing past the last existing note; ending it there would truncate held notes
-        // and drop the tail. The pass ends explicitly (End overdub, a re-anchoring tap, Clear,
-        // Save) — and a navigation away never leaves the engine armed with no UI owning it.
+        // The BACKING's natural end still doesn't end the pass — what ends a non-looping pass is
+        // the REGION running out, which the engine publishes separately (`overdubReachedEnd`,
+        // below): a backing that merely stopped early (bank missing, a staff shorter than the
+        // score) must not truncate the take. Otherwise the pass ends explicitly — End overdub, a
+        // re-anchoring tap, Clear, Save — and navigating away never leaves the engine armed with
+        // no UI owning it.
         .onDisappear { if liveOverdubbing { finishLiveOverdub() } }
+        // Loop OFF: the pass is confined to [anchor → the score's end] and stops accepting notes
+        // there. The engine publishes that instant; the pass finalizes cleanly right here (held
+        // notes were already closed AT the boundary by the capture).
+        .onChange(of: instruments.overdubReachedEnd) { _, ended in
+            if ended, liveOverdubbing { finishLiveOverdub() }
+        }
         .task {
             // Push the live settings into the store (the MixRecorder "views push settings in"
             // pattern — idempotent, no app-init wiring required for bookmark lookups), then
@@ -203,7 +211,16 @@ struct StudioInstrumentsView: View {
                 // Click + count-in bind straight to SettingsStore and persist IMMEDIATELY —
                 // a toggle is a deliberate preference, and no later persist() is guaranteed
                 // to run before quit (the SessionFolders stale-bookmark lesson).
-                Toggle("Click", isOn: settingBinding(\.studioClickEnabled))
+                // The click is flippable LIVE: mid-take it starts/stops on the NEXT BEAT of the
+                // take's own grid — the take keeps rolling, the graph isn't reconfigured, and
+                // (the click joining downstream of the take tap) nothing is written anywhere.
+                Toggle("Click", isOn: Binding(
+                    get: { settings.studioClickEnabled },
+                    set: { on in
+                        settings.studioClickEnabled = on
+                        settings.persist()
+                        if instruments.isRecordingTake { instruments.setClickEnabled(on) }
+                    }))
                     .toggleStyle(.button)
                     .accessibilityIdentifier("take-click-toggle")
                 Toggle("Count-in", isOn: settingBinding(\.studioCountInEnabled))
@@ -311,16 +328,11 @@ struct StudioInstrumentsView: View {
                     .toggleStyle(.button)
                     .accessibilityIdentifier("arp-toggle")
                 if instruments.arpEnabled {
-                    Toggle("Record", isOn: arpRecordBinding)
+                    Toggle("Program", isOn: arpProgramBinding)
                         .toggleStyle(.button)
-                        .tint(instruments.arpRecording ? Theme.danger : nil)
-                        .accessibilityIdentifier("arp-record")
-                    Toggle("Play", isOn: arpPlayBinding)
-                        .toggleStyle(.button)
-                        .disabled(!instruments.arpPlaying
-                                  && (instruments.arpSelectedNotes.isEmpty
-                                      || instruments.currentInstrument == nil))
-                        .accessibilityIdentifier("arp-play")
+                        .tint(instruments.arpProgramming ? Theme.danger : nil)
+                        .accessibilityIdentifier("arp-program")
+                    arpTransportButton
                     Spacer(minLength: 0)
                     Button("Clear") { instruments.arpClearSelection() }
                         .buttonStyle(.bordered).tint(Theme.fgDim)
@@ -333,7 +345,7 @@ struct StudioInstrumentsView: View {
             if instruments.arpEnabled {
                 arpKnobRows
                 Text(arpCaption)
-                    .font(.caption2).foregroundStyle(instruments.arpRecording ? Theme.accent2 : Theme.fgDim)
+                    .font(.caption2).foregroundStyle(instruments.arpProgramming ? Theme.accent2 : Theme.fgDim)
             }
         }
         .padding(12)
@@ -341,6 +353,26 @@ struct StudioInstrumentsView: View {
         .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
             .strokeBorder(Theme.border, lineWidth: 1))
         .accessibilityIdentifier("arp-panel")
+    }
+
+    /// The arp TRANSPORT: a dedicated play/pause button governing whether the pattern is
+    /// AUDIBLE — including while Program is on, so you hear the pattern evolve as you add and
+    /// remove notes (edits land at the next cycle boundary). It reflects reality rather than a
+    /// user intent: latch OFF plays exactly one cycle and the engine drops `arpPlaying`, so the
+    /// button falls back to ▶ on its own.
+    private var arpTransportButton: some View {
+        Button {
+            if instruments.arpPlaying { instruments.stopArpPlayback() } else { startArp() }
+        } label: {
+            Label(instruments.arpPlaying ? "Pause" : "Play",
+                  systemImage: instruments.arpPlaying ? "pause.fill" : "play.fill")
+        }
+        .buttonStyle(.bordered)
+        .tint(instruments.arpPlaying ? Theme.accent2 : Theme.accent)
+        .disabled(!instruments.arpPlaying
+                  && (instruments.arpSelectedNotes.isEmpty
+                      || instruments.currentInstrument == nil))
+        .accessibilityIdentifier("arp-transport")
     }
 
     /// The knob rows: order chips, length + octave chips, swing slider + latch. Each chip row
@@ -450,26 +482,19 @@ struct StudioInstrumentsView: View {
                 })
     }
 
-    private var arpRecordBinding: Binding<Bool> {
-        Binding(get: { instruments.arpRecording },
-                set: { instruments.arpRecording = $0 })
+    private var arpProgramBinding: Binding<Bool> {
+        Binding(get: { instruments.arpProgramming },
+                set: { instruments.arpProgramming = $0 })
     }
 
-    private var arpPlayBinding: Binding<Bool> {
-        Binding(get: { instruments.arpPlaying },
-                set: { on in
-                    if on {
-                        syncArpSettings()
-                        // The record bar’s BPM drives the arp clock (comma-decimal tolerant,
-                        // engine-side degradation for wild values — the recordButton parse).
-                        let bpm = Double(bpmText.replacingOccurrences(of: ",", with: ".")) ?? 120
-                        if !instruments.startArpPlayback(bpm: bpm) {
-                            notice = "Load an instrument and record some arp notes first."
-                        }
-                    } else {
-                        instruments.stopArpPlayback()
-                    }
-                })
+    /// Start the transport. The record bar’s BPM drives the arp clock (comma-decimal tolerant,
+    /// engine-side degradation for wild values — the recordButton parse).
+    private func startArp() {
+        syncArpSettings()
+        let bpm = Double(bpmText.replacingOccurrences(of: ",", with: ".")) ?? 120
+        if !instruments.startArpPlayback(bpm: bpm) {
+            notice = "Load an instrument and program some arp notes first."
+        }
     }
 
     private var arpLatchBinding: Binding<Bool> {
@@ -479,15 +504,18 @@ struct StudioInstrumentsView: View {
 
     private var arpCaption: String {
         let n = instruments.arpSelectedNotes.count
-        if instruments.arpRecording {
-            return "Record: keys toggle notes in the pattern — each sounds once and stays "
-                + "highlighted; nothing is written to the score. \(n) selected."
+        if instruments.arpProgramming {
+            return "Program: keys toggle notes in the pattern — each sounds once and stays "
+                + "highlighted; nothing is written to the score. Play stays live, so you hear "
+                + "the pattern change at the next cycle. \(n) selected."
         }
         let latch = currentArpSettings.latch
-            ? "Latch loops the pattern until Play is turned off."
-            : "Latch off: Play runs exactly one cycle."
-        return n == 0 ? "Turn on Record and press keys to pick the pattern’s notes. " + latch
-                      : "\(n) note\(n == 1 ? "" : "s") in the pattern. " + latch
+            ? "Latch loops the pattern until you pause."
+            : "Latch off: Play runs exactly one cycle, then pauses itself."
+        let capture = "While the arp plays, its notes are written to the score like hand-played "
+            + "keys (to the overdub staff during a pass)."
+        return n == 0 ? "Turn on Program and press keys to pick the pattern’s notes. " + latch
+                      : "\(n) note\(n == 1 ? "" : "s") in the pattern. " + latch + " " + capture
     }
 
     // MARK: Live editable staff (spec §7 "one editable staff")
@@ -507,7 +535,7 @@ struct StudioInstrumentsView: View {
     private var liveStaffSection: some View {
         let live = instruments.liveEvents
         let extras = instruments.liveExtraStaffs
-        let hasAny = !live.isEmpty || !extras.isEmpty
+        let hasAny = !live.isEmpty || !extras.isEmpty || liveOverdubbing
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Label("Live score", systemImage: "music.quarternote.3")
@@ -553,6 +581,16 @@ struct StudioInstrumentsView: View {
                                     editing: liveEditing,
                                     onEdit: { instruments.setLiveExtraStaffEvents(id: staff.id, events: $0) },
                                     playback: livePlaybackClock)
+                }
+                // The pass IN PROGRESS: the staff fills as you play (engine-published, coalesced
+                // at ~30 Hz — never per-note), so you watch the notation appear instead of
+                // waiting for End overdub. Not editable until the pass is filed.
+                if liveOverdubbing {
+                    OverdubProgressStaffView(bpm: 120,
+                                             instrument: instruments.currentInstrument ?? .piano,
+                                             title: "Staff \(2 + extras.count) · recording…",
+                                             playback: livePlaybackClock,
+                                             a11y: "live-overdub-staff")
                 }
             }
             if hasAny { liveStaffFooter(extras: extras) }
@@ -627,11 +665,50 @@ struct StudioInstrumentsView: View {
         }
     }
 
+    /// Overdub transport options: LOOP the pass over its confined region, and the MONITORING
+    /// metronome (flippable live, mid-pass). Both persist like the arp knobs; Loop is fixed for
+    /// the duration of a pass because the region + wrap are anchored when the pass arms.
+    private var overdubOptionsRow: some View {
+        HStack(spacing: 8) {
+            Toggle(isOn: Binding(get: { settings.studioOverdubLoop },
+                                 set: { settings.studioOverdubLoop = $0; settings.persist() })) {
+                Label("Loop", systemImage: "repeat").font(.caption.weight(.semibold))
+            }
+            .toggleStyle(.button)
+            .tint(settings.studioOverdubLoop ? Theme.accent2 : Theme.fgDim)
+            .disabled(liveOverdubbing)
+            .accessibilityIdentifier("live-overdub-loop")
+            Toggle(isOn: Binding(get: { settings.studioOverdubClickEnabled },
+                                 set: { on in
+                                     settings.studioOverdubClickEnabled = on
+                                     settings.persist()
+                                     instruments.setClickEnabled(on, bpm: 120)
+                                 })) {
+                Label("Click", systemImage: "metronome").font(.caption.weight(.semibold))
+            }
+            .toggleStyle(.button)
+            .tint(instruments.clickEnabled ? Theme.accent2 : Theme.fgDim)
+            .accessibilityIdentifier("overdub-click-toggle")
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// How the armed pass will end: looping over its region, auto-finalizing at the score's end,
+    /// or (an EMPTY score — no region to confine to) only when the user says so.
+    private var liveOverdubEndingCaption: String {
+        guard instruments.overdubRegionEndMs < .max else { return "Tap End overdub to finish." }
+        let end = Self.clock(Double(instruments.overdubRegionEndMs) / 1000)
+        return instruments.overdubLoop
+            ? "Looping to \(end) — keep layering; End overdub finishes."
+            : "The pass ends by itself at \(end), or tap End overdub."
+    }
+
     /// Status line under the live staffs: overdub-armed notice, or the staff-cap message.
     @ViewBuilder private func liveStaffFooter(extras: [InstrumentEngine.LiveStaff]) -> some View {
+        overdubOptionsRow
         if liveOverdubbing {
             Text("Overdubbing staff \(2 + extras.count) from \(Self.clock(Double(instruments.overdubBaseMs) / 1000))"
-                 + " — play the keys (or the arp’s Play); tap End overdub to finish.")
+                 + " — play the keys (or the arp’s Play). " + liveOverdubEndingCaption)
                 .font(.caption2).foregroundStyle(Theme.accent2)
         } else if 1 + extras.count >= StudioTake.maxStaffs {
             Text("4 staffs — the maximum for one instrumental.")
@@ -673,8 +750,16 @@ struct StudioInstrumentsView: View {
         guard 1 + instruments.liveExtraStaffs.count < StudioTake.maxStaffs else { return }
         if instruments.isReplaying { instruments.stopReplay() }
         let p = max(0, instruments.replayPositionMs(forTake: Self.liveReplayOwner) ?? 0)
-        guard instruments.startOverdub(fromMs: p, anchorHostTime: mach_absolute_time()) else { return }
+        // The pass is CONFINED to [anchor → the live score's own end]: an overdub can never make
+        // the score longer. An EMPTY score has no end to confine to (`scoreEndMs` = 0), which the
+        // engine reads as unbounded — that is "overdub from silence", the first take.
+        let end = InstrumentEngine.scoreEndMs(
+            staffs: [instruments.liveEvents] + instruments.liveExtraStaffs.map(\.events))
+        let loop = settings.studioOverdubLoop
+        guard instruments.startOverdub(fromMs: p, anchorHostTime: mach_absolute_time(),
+                                       scoreEndMs: end > 0 ? end : .max, loop: loop) else { return }
         liveOverdubbing = true
+        instruments.setClickEnabled(settings.studioOverdubClickEnabled, bpm: 120)
         var staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)] = []
         if !instruments.liveEvents.isEmpty {
             staffs.append((instruments.liveEvents, instruments.currentInstrument ?? .piano))
@@ -689,7 +774,10 @@ struct StudioInstrumentsView: View {
             return
         }
         instruments.replayTakePolyphonic(staffs: staffs, bankURL: bank, fromMs: p,
-                                         forTake: Self.liveReplayOwner, forceSynth: true)
+                                         forTake: Self.liveReplayOwner, forceSynth: true,
+                                         loopRegion: instruments.overdubLoop
+                                             ? (startMs: p, endMs: instruments.overdubRegionEndMs)
+                                             : nil)
     }
 
     /// End the live overdub pass: file the capture as a new in-memory staff (empty capture ⇒ no
@@ -697,6 +785,7 @@ struct StudioInstrumentsView: View {
     private func finishLiveOverdub() {
         guard liveOverdubbing else { return }
         liveOverdubbing = false
+        instruments.setClickEnabled(false)
         let events = instruments.stopOverdub()
         if instruments.isReplaying, instruments.replayClockBelongs(to: Self.liveReplayOwner) {
             instruments.stopReplay()
@@ -718,6 +807,7 @@ struct StudioInstrumentsView: View {
     private func clearLiveScore() {
         if liveOverdubbing {
             liveOverdubbing = false
+            instruments.setClickEnabled(false)
             _ = instruments.stopOverdub()
             if instruments.isReplaying, instruments.replayClockBelongs(to: Self.liveReplayOwner) {
                 instruments.stopReplay()

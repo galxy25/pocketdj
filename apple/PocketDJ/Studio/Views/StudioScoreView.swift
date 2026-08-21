@@ -15,6 +15,8 @@ struct StudioScoreView: View {
     @Environment(StudioStore.self) private var studio
     @Environment(InstrumentEngine.self) private var instruments
     @Environment(InstrumentPackStore.self) private var packs
+    /// Overdub options (loop + monitoring click) persist here, like the arp knobs.
+    @Environment(SettingsStore.self) private var settings
 
     /// Looked up live from the store (not a snapshot) so a rename elsewhere reflects here.
     let takeId: String
@@ -95,11 +97,18 @@ struct StudioScoreView: View {
         // just ended was ANOTHER instrumental's (started from the takes list, then navigated here),
         // there is nothing of ours to remember: take the freed clock and put OUR cursor back on it.
         .onChange(of: instruments.isReplaying) { _, replaying in
-            // The backing's natural end does NOT end the overdub pass — the user may still be
-            // playing (extending the composition past the last existing note), and ending here
-            // would truncate held notes and drop everything after. The pass ends explicitly:
-            // End overdub, a re-anchoring tap, or leaving the screen.
+            // The BACKING's natural end does NOT end the overdub pass — a backing can stop early
+            // (a missing bank, a staff shorter than the score) and ending here would truncate the
+            // pass. What ends a non-looping pass is its REGION running out, which the engine
+            // publishes separately (`overdubReachedEnd`, below); otherwise the pass ends
+            // explicitly: End overdub, a re-anchoring tap, or leaving the screen.
             if !replaying, persistsCursor { cursor.replayEnded() }
+        }
+        // Loop OFF: the pass is confined to [anchor → this score's end] and stops accepting
+        // notes there. The engine publishes that instant; the pass finalizes cleanly right here
+        // (held notes were already closed AT the boundary by the capture).
+        .onChange(of: instruments.overdubReachedEnd) { _, ended in
+            if ended, overdubbing, let take { finishOverdub(take) }
         }
         .onDisappear {
             // Leaving the screen never abandons an armed overdub (the capture files or drops
@@ -213,6 +222,16 @@ struct StudioScoreView: View {
                                     editing: editing,
                                     onEdit: { studio.setStaffEvents(takeId, staffId: staff.id, events: $0) },
                                     playback: clock)
+                }
+                // The pass IN PROGRESS: the new staff fills as you play (engine-published,
+                // coalesced at ~30 Hz — never per-note), so the notation appears live instead of
+                // only at End overdub. Not editable until the pass is filed.
+                if overdubbing {
+                    OverdubProgressStaffView(bpm: take.bpm,
+                                             instrument: instruments.currentInstrument ?? take.instrument,
+                                             title: "Staff \(take.staffCount + 1) · recording…",
+                                             playback: clock,
+                                             a11y: "score-overdub-staff")
                 }
                 Text("\(take.instrument.displayName) · \(Fmt.bpm(take.bpm)) BPM")
                     .font(.caption2.monospacedDigit()).foregroundStyle(Theme.fgDim)
@@ -387,6 +406,25 @@ struct StudioScoreView: View {
                           && (editing || instruments.currentInstrument == nil
                               || take.staffCount >= StudioTake.maxStaffs))
                 .accessibilityIdentifier("score-overdub")
+                Toggle(isOn: Binding(get: { settings.studioOverdubLoop },
+                                     set: { settings.studioOverdubLoop = $0; settings.persist() })) {
+                    Label("Loop", systemImage: "repeat").font(.caption.weight(.semibold))
+                }
+                .toggleStyle(.button)
+                .tint(settings.studioOverdubLoop ? Theme.accent2 : Theme.fgDim)
+                .disabled(overdubbing)
+                .accessibilityIdentifier("score-overdub-loop")
+                Toggle(isOn: Binding(get: { settings.studioOverdubClickEnabled },
+                                     set: { on in
+                                         settings.studioOverdubClickEnabled = on
+                                         settings.persist()
+                                         instruments.setClickEnabled(on, bpm: take.bpm)
+                                     })) {
+                    Label("Click", systemImage: "metronome").font(.caption.weight(.semibold))
+                }
+                .toggleStyle(.button)
+                .tint(instruments.clickEnabled ? Theme.accent2 : Theme.fgDim)
+                .accessibilityIdentifier("score-click-toggle")
                 Spacer(minLength: 0)
                 Text("\(take.staffCount)/\(StudioTake.maxStaffs) staffs")
                     .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
@@ -407,8 +445,20 @@ struct StudioScoreView: View {
     private func overdubCaption(_ take: StudioTake) -> String {
         if overdubbing {
             let at = Self.mmss(instruments.overdubBaseMs)
+            // An UNBOUNDED region (`.max`) is the empty-score/at-the-end case — there is no
+            // boundary to name, so the caption doesn't invent one.
+            let bounded = instruments.overdubRegionEndMs < .max
+            let end = bounded ? Self.mmss(instruments.overdubRegionEndMs) : ""
+            let ending: String
+            if instruments.overdubLoop {
+                ending = "Looping \(at)–\(end): keep layering, End overdub finishes."
+            } else if bounded {
+                ending = "The pass ends by itself at \(end), or tap End overdub."
+            } else {
+                ending = "Tap End overdub to finish."
+            }
             return "Overdubbing staff \(take.staffCount + 1) from \(at) — play the keys, a MIDI "
-                + "keyboard, or a latched arp; tap End overdub to finish."
+                + "keyboard, or a latched arp. " + ending
         }
         if take.staffCount >= StudioTake.maxStaffs {
             return "4 staffs — the maximum for one instrumental."
@@ -438,8 +488,16 @@ struct StudioScoreView: View {
         if instruments.isReplaying { instruments.stopReplay() }
         let parked = instruments.replayPositionMs(forTake: takeId) ?? studio.scoreCursorMs(takeId)
         let p = max(0, min(parked ?? 0, InstrumentEngine.maxReplayMs))
-        guard instruments.startOverdub(fromMs: p, anchorHostTime: mach_absolute_time()) else { return }
+        // CONFINED to [anchor → this score's end]: an overdub can never make the instrumental
+        // longer. A score with nothing past the anchor degrades to unbounded (the engine's rule),
+        // which is the only way to overdub onto an empty instrumental at all.
+        let end = InstrumentEngine.scoreEndMs(
+            staffs: [take.scoreEvents] + (take.extraStaffs ?? []).map(\.scoreEvents))
+        guard instruments.startOverdub(fromMs: p, anchorHostTime: mach_absolute_time(),
+                                       scoreEndMs: end > 0 ? end : .max,
+                                       loop: settings.studioOverdubLoop) else { return }
         overdubbing = true
+        instruments.setClickEnabled(settings.studioOverdubClickEnabled, bpm: take.bpm)
         // Backing: every non-empty staff, mixed. A missing bank degrades to a silent backing
         // (the overdub still records) rather than blocking the pass — same shared font today,
         // so this is a nearly-impossible path, surfaced honestly when it happens.
@@ -454,7 +512,10 @@ struct StudioScoreView: View {
             return
         }
         instruments.replayTakePolyphonic(staffs: staffs, bankURL: bank, fromMs: p,
-                                         forTake: takeId, forceSynth: true)
+                                         forTake: takeId, forceSynth: true,
+                                         loopRegion: instruments.overdubLoop
+                                             ? (startMs: p, endMs: instruments.overdubRegionEndMs)
+                                             : nil)
     }
 
     /// End the overdub pass: file the capture as a new staff through the store (empty capture ⇒
@@ -462,6 +523,7 @@ struct StudioScoreView: View {
     private func finishOverdub(_ take: StudioTake) {
         guard overdubbing else { return }
         overdubbing = false
+        instruments.setClickEnabled(false)
         let events = instruments.stopOverdub()
         if instruments.isReplaying, instruments.replayClockBelongs(to: takeId) {
             instruments.stopReplay()
