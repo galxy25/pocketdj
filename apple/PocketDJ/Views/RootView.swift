@@ -47,7 +47,33 @@ struct RootView: View {
     /// Now Playing collapsed to the thin bottom strip (Levi 2026-07-18). Persisted so the
     /// home screen comes back in the shape it was left in.
     @AppStorage("nowPlayingCollapsed") private var npCollapsed = false
+    /// iPhone-portrait detection for the resizable panel's drag axis (vertical sheet in
+    /// portrait, horizontal expansion everywhere else). iOS-fenced like the panel's read.
+    @Environment(\.verticalSizeClass) private var vSize
     #endif
+    /// Sidebar collapsed to detail-only (iPad + macOS; req 6). The Bool is the persisted
+    /// truth — NavigationSplitViewVisibility is not RawRepresentable — so `columnVisibility`
+    /// is seeded from it on appear and mirrored back on change. iPhone's collapsed split
+    /// ignores the binding entirely (exempt by design).
+    @AppStorage("sidebarCollapsed") private var sidebarCollapsed = false
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// The queue-builder sheet (the panel's top-left ＋). Owned HERE — one presentation
+    /// source usable at any panel size, over the expanded overlay, and from the idle row.
+    @State private var builderPresented = false
+    /// The builder's controller — outlives sheet presentations so mode/draft survive a
+    /// dismiss-and-reopen within the session.
+    @State private var builder = QueueBuilderState()
+    /// Resizable Now Playing (req 7): the two persisted size fractions (0 = docked) and
+    /// the transient drag-tracked size in points (nil = not dragging).
+    @AppStorage(NowPlayingResize.wideFractionKey) private var wideFraction: Double = 0
+    @AppStorage(NowPlayingResize.portraitFractionKey) private var portraitFraction: Double = 0
+    @State private var dragSize: CGFloat?
+    /// The docked panel's measured size (width for the horizontal lane, height for the
+    /// portrait sheet) — the drag's origin and the spring-back target.
+    @State private var dockSize: CGFloat = 0
+    /// The window's size, mirrored out of the body GeometryReader so the drag
+    /// gestures (which live on subviews) can clamp against the window edge.
+    @State private var windowSize: CGSize = .zero
 
     enum Section: String, CaseIterable, Identifiable, Hashable {
         case browse = "Browser"
@@ -111,7 +137,27 @@ struct RootView: View {
     }
 
     var body: some View {
-        NavigationSplitView {
+        GeometryReader { geo in
+            splitView
+                // Req 7 — the resizable Now Playing overlay rides the WHOLE window (it can
+                // cover the full app even with the sidebar collapsed) and is gated on the
+                // same visibility as the docked panel, so it yields to Mix identically.
+                .overlay(alignment: expandedAlignment) { expandedOverlay(window: geo.size) }
+                .onAppear { windowSize = geo.size }
+                .onChange(of: geo.size) { _, size in windowSize = size }
+        }
+        // The queue-builder sheet (req 2) — ONE owner for every entry point (the panel's
+        // ＋, the idle sidebar row, the expanded overlay's ＋), so it presents at any
+        // panel size and over the expanded overlay.
+        .sheet(isPresented: $builderPresented) { QueueBuilderView(builder: builder) }
+        // Req 6 — the persisted Bool is the truth; the visibility enum is seeded from it
+        // and mirrored back (the enum is not RawRepresentable).
+        .onAppear { columnVisibility = sidebarCollapsed ? .detailOnly : .all }
+        .onChange(of: columnVisibility) { _, v in sidebarCollapsed = v == .detailOnly }
+    }
+
+    private var splitView: some View {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             // Sidebar = the iPhone HOME menu screen / the iPad+macOS left column.
             // The Now Playing element rides UNDER the menu items in both shapes;
             // while it's up, the menu list keeps just its rows' height and the
@@ -127,25 +173,16 @@ struct RootView: View {
                     if npCollapsed {
                         NowPlayingMiniBar { npCollapsed = false }
                     } else {
-                        // Collapse chevron rides the panel's upper right (Levi): down to
-                        // the thin strip; the strip's chevron-up brings the deck back.
-                        NowPlayingPanel()
-                            .overlay(alignment: .topTrailing) {
-                                Button { npCollapsed = true } label: {
-                                    Image(systemName: "chevron.down")
-                                        .font(.footnote.weight(.semibold))
-                                        .foregroundStyle(Theme.fgDim)
-                                        .padding(8)
-                                        .background(Theme.bgRaised.opacity(0.85), in: Circle())
-                                }
-                                .buttonStyle(.plain)
-                                .padding(.top, 6).padding(.trailing, 10)
-                                .accessibilityIdentifier("np-collapse")
-                            }
+                        dockedPanel
                     }
                     #else
-                    NowPlayingPanel()
+                    dockedPanel
                     #endif
+                } else {
+                    // With nothing playing there is no panel — but the queue builder's
+                    // DRAFT mode must still be reachable, so a slim row holds its slot.
+                    Divider().overlay(Theme.border)
+                    idleBuilderRow
                 }
             }
             // Plain "PocketDJ" home title on every platform — the old ✦ AI sparkle is gone.
@@ -161,7 +198,13 @@ struct RootView: View {
                 // ONE registry, shared with every other stack in the app — see
                 // NavigationDestinations.swift for why an unregistered push renders blank.
                 detail.pocketDJDestinations(path: $path)
+                    // Req 6 — our own sidebar toggle (the system one is removed above). It
+                    // lives in the DETAIL column so it stays reachable while collapsed.
+                    .toolbar { sidebarToggleToolbar }
             }
+            // Collapsed sidebar hides the docked panel — keep the Now Playing mini
+            // affordance reachable (its expand restores the sidebar).
+            .safeAreaInset(edge: .bottom) { collapsedSidebarMiniBar }
         }
         .environment(rowSelection)
         // macOS Edit ▸ Copy Songs / Paste Songs target the FOCUSED window through this
@@ -328,6 +371,284 @@ struct RootView: View {
         .onChange(of: section) {
             settings.lastSection = section?.rawValue ?? ""
             settings.persist()
+        }
+    }
+
+    // MARK: - Docked panel dress (collapse chevron · builder ＋ · resize handle)
+
+    /// The docked panel + its overlaid controls: the iOS collapse chevron, the queue-
+    /// builder ＋ top-left (req 2 — the chevron's mirror), and the req-7 resize handle
+    /// (trailing edge in the horizontal lane; top edge on iPhone portrait). The
+    /// background reader measures the dock size the drags spring back to.
+    ///
+    /// The handle stays an `.overlay` (reserving layout space would cost the queue
+    /// a visible row), so its HIT RECT is deliberately kept clear of the panel's
+    /// list — see `ResizeGrabber`, whose grab band is sized to fit inside the
+    /// panel's top/trailing chrome margin. An overlay is hit-testable and paints
+    /// above the list, so a 44pt-square rect silently ate every tap beneath it:
+    /// the Albums/Songs headers begin ~22pt under the panel's top edge, so their
+    /// tap point landed inside the portrait handle and the sections could not be
+    /// collapsed at all.
+    private var dockedPanel: some View {
+        NowPlayingPanel()
+            #if os(iOS)
+            .overlay(alignment: .topTrailing) { collapseChevron }
+            #endif
+            .overlay(alignment: .topLeading) { builderOpenButton }
+            .overlay(alignment: isPortraitPhone ? .top : .trailing) { dockResizeHandle }
+            .background { dockSizeReader }
+    }
+
+    #if os(iOS)
+    /// Collapse chevron rides the panel's upper right (Levi): down to the thin strip;
+    /// the strip's chevron-up brings the deck back.
+    private var collapseChevron: some View {
+        Button { npCollapsed = true } label: {
+            Image(systemName: "chevron.down")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Theme.fgDim)
+                .padding(8)
+                .background(Theme.bgRaised.opacity(0.85), in: Circle())
+                // ≥44pt hit area, glyph + circle unchanged — inside the label so the
+                // widened area belongs to the button.
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 6).padding(.trailing, 10)
+        .accessibilityIdentifier("np-collapse")
+    }
+    #endif
+
+    /// The queue-builder entry (req 2): ＋ in the panel's TOP-LEFT, opposite the
+    /// collapse chevron and dressed identically (44pt hit area included).
+    private var builderOpenButton: some View {
+        Button { builderPresented = true } label: {
+            Image(systemName: "plus")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(Theme.fgDim)
+                .padding(8)
+                .background(Theme.bgRaised.opacity(0.85), in: Circle())
+                .frame(minWidth: 44, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 6).padding(.leading, 10)
+        .help("Build a queue")
+        .accessibilityLabel("Build a queue")
+        .accessibilityIdentifier("np-builder-open")
+    }
+
+    /// The idle entry: with no set running the panel is absent, so this row keeps the
+    /// builder (draft mode) one tap away. Same a11y id as the panel ＋ — only one of
+    /// the two exists at a time.
+    private var idleBuilderRow: some View {
+        Button { builderPresented = true } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "plus.circle.fill").foregroundStyle(Theme.accent)
+                Text("Build a queue")
+                    .font(.subheadline.weight(.medium)).foregroundStyle(Theme.fg)
+                Spacer()
+            }
+            .padding(.horizontal, 14)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(Theme.bgRaised)
+        .accessibilityIdentifier("np-builder-open")
+    }
+
+    /// Mirrors the docked panel's size (drag-axis length) into `dockSize`.
+    private var dockSizeReader: some View {
+        GeometryReader { g in
+            Color.clear
+                .onAppear { dockSize = isPortraitPhone ? g.size.height : g.size.width }
+                .onChange(of: g.size) { _, size in
+                    dockSize = isPortraitPhone ? size.height : size.width
+                }
+        }
+    }
+
+    // MARK: - Sidebar collapse (req 6)
+
+    /// The toggle exists where a sidebar can actually collapse: iPad, macOS, visionOS.
+    /// iPhone's split view is a stack — exempt by design.
+    private var showsSidebarToggle: Bool {
+        #if os(macOS) || os(visionOS)
+        return true
+        #elseif os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .pad
+        #else
+        return false
+        #endif
+    }
+
+    @ToolbarContentBuilder private var sidebarToggleToolbar: some ToolbarContent {
+        if showsSidebarToggle {
+            ToolbarItem(placement: .navigation) {
+                Button {
+                    withAnimation {
+                        columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+                    }
+                } label: {
+                    Image(systemName: "sidebar.leading")
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .help("Show or hide the sidebar")
+                .keyboardShortcut("s", modifiers: [.command, .option])
+                .accessibilityIdentifier("sidebar-toggle")
+            }
+        }
+    }
+
+    /// While the sidebar (and with it the docked panel) is collapsed, the mini bar
+    /// pins to the detail column's bottom; its chevron restores the sidebar.
+    @ViewBuilder private var collapsedSidebarMiniBar: some View {
+        if showsSidebarToggle && columnVisibility == .detailOnly && nowPlayingVisible {
+            NowPlayingMiniBar { withAnimation { columnVisibility = .all } }
+        }
+    }
+
+    // MARK: - Resizable Now Playing overlay (req 7)
+
+    /// iPhone held upright: the panel grows as a bottom sheet. Everywhere else
+    /// (iPhone landscape, iPad, macOS, visionOS) it expands from the left edge
+    /// toward the window's right edge.
+    private var isPortraitPhone: Bool {
+        #if os(iOS)
+        return UIDevice.current.userInterfaceIdiom == .phone && vSize != .compact
+        #else
+        return false
+        #endif
+    }
+
+    private var expandedAlignment: Alignment { isPortraitPhone ? .bottom : .leading }
+
+    /// The overlay's current size along the drag axis; 0 ⇒ hidden (docked). A live
+    /// drag tracks the finger (the clamp floors it at the dock size, so the overlay
+    /// never unmounts MID-gesture — removal would drop the gesture's onEnded and
+    /// strand `dragSize`); otherwise the persisted per-platform fraction rules.
+    private func overlaySize(window: CGSize) -> CGFloat {
+        if let dragSize { return dragSize }
+        let axis = isPortraitPhone ? window.height : window.width
+        let fraction = isPortraitPhone ? portraitFraction : wideFraction
+        return fraction > 0 ? CGFloat(fraction) * axis : 0
+    }
+
+    @ViewBuilder private func expandedOverlay(window: CGSize) -> some View {
+        let size = overlaySize(window: window)
+        if nowPlayingVisible && size > 0 {
+            NowPlayingExpandedView(openBuilder: { builderPresented = true },
+                                   collapse: { collapseExpanded() })
+                .frame(width: isPortraitPhone ? nil : size,
+                       height: isPortraitPhone ? size : nil)
+                .frame(maxWidth: isPortraitPhone ? .infinity : nil,
+                       maxHeight: isPortraitPhone ? nil : .infinity)
+                .overlay(alignment: isPortraitPhone ? .top : .trailing) {
+                    ResizeGrabber(axis: isPortraitPhone ? .horizontal : .vertical)
+                        .gesture(expandedDrag(window: window))
+                }
+                // Visibility can flip mid-drag (Mix takes the audio, the set ends) —
+                // never leave a stale drag size behind an unmounted gesture.
+                .onDisappear { dragSize = nil }
+        }
+    }
+
+    /// The docked panel's drag handle — dragging past the dock threshold raises the
+    /// overlay, which then tracks the finger continuously.
+    @ViewBuilder private var dockResizeHandle: some View {
+        #if os(iOS)
+        if isPortraitPhone {
+            ResizeGrabber(axis: .horizontal).gesture(portraitDockDrag)
+        } else {
+            ResizeGrabber(axis: .vertical).gesture(wideDockDrag)
+        }
+        #else
+        ResizeGrabber(axis: .vertical).gesture(wideDockDrag)
+        #endif
+    }
+
+    private var wideDockDrag: some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { v in
+                dragSize = NowPlayingResize.clampedSize(dockSize + v.translation.width,
+                                                        window: windowSize.width, dock: dockSize)
+            }
+            .onEnded { v in
+                let final = NowPlayingResize.clampedSize(dockSize + v.translation.width,
+                                                         window: windowSize.width, dock: dockSize)
+                commitDrag(final: final, axisLength: windowSize.width,
+                           velocity: v.velocity.width)
+            }
+    }
+
+    #if os(iOS)
+    private var portraitDockDrag: some Gesture {
+        DragGesture(minimumDistance: 4)
+            .onChanged { v in
+                dragSize = NowPlayingResize.clampedSize(dockSize - v.translation.height,
+                                                        window: windowSize.height, dock: dockSize)
+            }
+            .onEnded { v in
+                let final = NowPlayingResize.clampedSize(dockSize - v.translation.height,
+                                                         window: windowSize.height, dock: dockSize)
+                commitDrag(final: final, axisLength: windowSize.height,
+                           velocity: -v.velocity.height)
+                // A decisive drag DOWN from the docked panel collapses to the strip —
+                // the collapse chevron's gesture twin.
+                if v.translation.height > NowPlayingResize.dockThreshold, portraitFraction == 0 {
+                    npCollapsed = true
+                }
+            }
+    }
+    #endif
+
+    /// The expanded overlay's own handle: same clamp, base = the persisted size, so
+    /// resizing and returning to docked are one continuous affordance.
+    private func expandedDrag(window: CGSize) -> some Gesture {
+        let axis = isPortraitPhone ? window.height : window.width
+        let base = CGFloat(isPortraitPhone ? portraitFraction : wideFraction) * axis
+        return DragGesture(minimumDistance: 4)
+            .onChanged { v in
+                let delta = isPortraitPhone ? -v.translation.height : v.translation.width
+                dragSize = NowPlayingResize.clampedSize(base + delta, window: axis, dock: dockSize)
+            }
+            .onEnded { v in
+                let delta = isPortraitPhone ? -v.translation.height : v.translation.width
+                let velocity = isPortraitPhone ? -v.velocity.height : v.velocity.width
+                let final = NowPlayingResize.clampedSize(base + delta, window: axis, dock: dockSize)
+                commitDrag(final: final, axisLength: axis, velocity: velocity)
+            }
+    }
+
+    /// Land a released drag: portrait snaps (compact/half/full, fling-biased); the
+    /// horizontal lane persists the exact fraction. Anything short of the dock
+    /// threshold springs back to docked (fraction 0). Only the ACTIVE lane's
+    /// fraction is written — the other platform-lane's preference survives.
+    private func commitDrag(final: CGFloat, axisLength: CGFloat, velocity: CGFloat) {
+        withAnimation(.snappy) {
+            if isPortraitPhone {
+                let snapped = NowPlayingResize.snappedPortraitFraction(
+                    final / max(axisLength, 1), velocity: velocity)
+                portraitFraction = NowPlayingResize.isExpanded(size: snapped * axisLength,
+                                                               dock: dockSize)
+                    ? Double(snapped) : 0
+            } else {
+                wideFraction = NowPlayingResize.isExpanded(size: final, dock: dockSize)
+                    ? Double(final / max(axisLength, 1)) : 0
+            }
+            dragSize = nil
+        }
+    }
+
+    /// The expanded overlay's ⌄ — animate back to the docked panel and clear the
+    /// active lane's persisted size.
+    private func collapseExpanded() {
+        withAnimation(.snappy) {
+            if isPortraitPhone { portraitFraction = 0 } else { wideFraction = 0 }
+            dragSize = nil
         }
     }
 

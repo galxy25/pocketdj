@@ -118,7 +118,13 @@ final class NowPlayingUITests: XCTestCase {
         field.typeText("night\n")   // Search key dismisses the keyboard, keeps the query
         XCTAssertTrue(app.el("np-add-album-alb_1").waitForExistence(timeout: 8))
         app.el("np-albums-header").tap()             // collapse
-        XCTAssertFalse(app.el("np-add-album-alb_1").exists)
+        // The header toggles inside `withAnimation`, so give the removal
+        // transition a settle window rather than checking `.exists` on the very
+        // next runloop turn. Still a real assertion: it fails if the section
+        // never collapses (which is how the resize grabber swallowing this tap
+        // was caught — the grabber's 44pt rect covered the header's tap point).
+        XCTAssertTrue(app.el("np-add-album-alb_1").waitForNonExistence(timeout: 5),
+                      "tapping the Albums header should collapse the album rows")
         app.el("np-albums-header").tap()             // expand again
         XCTAssertTrue(app.el("np-add-album-alb_1").waitForExistence(timeout: 4))
         attach("add-search-results")
@@ -391,6 +397,77 @@ final class NowPlayingUITests: XCTestCase {
         // Clean up: un-favorite so a re-run starts from the base state.
         app.el("favorite-toggle-sng_2").tap()
         XCTAssertEqual(app.el("favorite-toggle-sng_2").label, "Favorite")
+        #endif
+    }
+
+    /// Req 1 — the minimize/expand chevrons carry a ≥44pt hit area (the glyphs are
+    /// unchanged; the FRAME is what a thumb hits). Asserted on the accessibility
+    /// frames of both directions of the toggle.
+    func testCollapseExpandChevronsHaveGenerousHitTargets() throws {
+        #if os(macOS)
+        throw XCTSkip("the collapse strip is iOS-only")
+        #else
+        try XCTSkipUnless(UIDevice.current.userInterfaceIdiom == .phone,
+                          "the collapse chevron/strip pair is iPhone-only")
+        app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
+        app.launch()
+        XCTAssertTrue(app.revealNowPlayingHome().waitForExistence(timeout: 15))
+
+        // The a11y frame of a `.frame(minWidth: 44, minHeight: 44)` view can come
+        // back as 43.99999999999994 (pixel-grid float noise, ~6e-14 pt) — compare
+        // with an epsilon so the assertion tests the DESIGN, not the FP rounding.
+        let eps = 0.001
+        let collapse = app.el("np-collapse")
+        XCTAssertTrue(collapse.waitForExistence(timeout: 8))
+        XCTAssertGreaterThanOrEqual(collapse.frame.width + eps, 44, "np-collapse hit width")
+        XCTAssertGreaterThanOrEqual(collapse.frame.height + eps, 44, "np-collapse hit height")
+        collapse.tap()
+
+        let expand = app.el("np-expand")
+        XCTAssertTrue(expand.waitForExistence(timeout: 8), "strip should offer the expand chevron")
+        XCTAssertGreaterThanOrEqual(expand.frame.width + eps, 44, "np-expand hit width")
+        XCTAssertGreaterThanOrEqual(expand.frame.height + eps, 44, "np-expand hit height")
+        expand.tap()
+        XCTAssertTrue(app.el("np-collapse").waitForExistence(timeout: 8), "panel restored")
+        #endif
+    }
+
+    /// Req 2/3/4 smoke — the panel's top-left ＋ presents the queue builder with its
+    /// bottom omni bars (song + artist fields, the device⇄cloud mode toggle) and
+    /// device results that add to the live queue.
+    func testBuilderOpensFromPanelPlusAndAddsToQueue() throws {
+        #if os(macOS)
+        throw XCTSkip("builder smoke exercised on iOS (macOS UI automation unavailable headless)")
+        #else
+        app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
+        app.launch()
+        XCTAssertTrue(app.revealNowPlayingHome().waitForExistence(timeout: 15))
+
+        let plus = app.el("np-builder-open")
+        XCTAssertTrue(plus.waitForExistence(timeout: 8), "the ＋ rides the panel's top-left")
+        XCTAssertGreaterThanOrEqual(plus.frame.width, 44, "np-builder-open hit width")
+        plus.tap()
+
+        XCTAssertTrue(app.any("np-builder").waitForExistence(timeout: 8), "builder sheet presents")
+        XCTAssertTrue(app.any("np-builder-song-field").exists, "bottom song omni bar")
+        XCTAssertTrue(app.any("np-builder-artist-field").exists, "bottom artist omni bar")
+        XCTAssertTrue(app.el("np-builder-mode").exists, "one-click device⇄cloud toggle")
+        XCTAssertTrue(app.el("np-builder-filters").exists, "device mode offers filters")
+
+        // Type a device query and one-click add the first result to the live queue.
+        let field = app.textFields["np-builder-song-field"]
+        field.tap()
+        field.typeText("neon")
+        let add = app.el("np-builder-add-0")
+        XCTAssertTrue(add.waitForExistence(timeout: 8), "windowed device results render an ＋")
+        add.tap()
+        attach("queue-builder")
+
+        app.el("np-builder-close").tap()
+        XCTAssertFalse(app.any("np-builder").waitForExistence(timeout: 2))
+        // The add landed at the queue's END (default position).
+        XCTAssertTrue(app.any("np-queue-1").waitForExistence(timeout: 8),
+                      "builder add joins Up next behind the restored row")
         #endif
     }
 

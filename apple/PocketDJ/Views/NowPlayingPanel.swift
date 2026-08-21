@@ -195,29 +195,6 @@ struct NowPlayingPanel: View {
         }
     }
 
-    // MARK: - Current track
-
-    private var currentItem: SetlistPlayer.Item? {
-        guard sequencer.isRunning, sequencer.index < sequencer.queue.count else { return nil }
-        return sequencer.queue[sequencer.index]
-    }
-    private var currentAlbum: IndexAlbum? {
-        currentItem.flatMap { app.album(forSongId: $0.id) }
-    }
-    /// F3 share-text block for the current now-playing track — the catalog song when indexed, else a
-    /// bare title/artist (search links). nil when the deck is idle.
-    private var currentShareText: String? {
-        guard let item = currentItem else { return nil }
-        if let song = app.songsById[item.id] { return ShareText.forSong(song) }
-        return ShareText.forTitleArtist(title: item.title, artist: item.artist)
-    }
-    /// Spin rate source: the measured beat grid (preferred — the rip manifest's
-    /// `beatGridBpm`), else the catalog BPM; nil ⇒ the view's 33⅓ RPM fallback.
-    private var currentBpm: Double? {
-        guard let id = currentItem?.id else { return nil }
-        return burns.beatGrid(forSong: id)?.bpm ?? app.songsById[id]?.bpm
-    }
-
     /// Unified play/pause across backends, routed by which engine OWNS the audio
     /// (`activeBackend`) — NOT by whether the deck's current item matches it. Keying off the
     /// item id let a stale deck (an unadopted manual jump) route the toggle to the idle
@@ -230,190 +207,12 @@ struct NowPlayingPanel: View {
         coordinator.activeBackend == .appleMusic ? coordinator.isPlaying : player.isPlaying
     }
 
-    private var isPlayingNow: Bool {
-        Self.isPlayingNow(coordinator: coordinator, player: player)
-    }
-
-    /// The record spins only when the AUDIO is the deck's current track — a Discover/
-    /// browser SINGLE playing through the shared engine must not spin the platter under
-    /// a paused set (display/audio mismatch; Levi 2026-07-18). Apple Music playback is
-    /// always deck-owned; a nil engine songId (burned-local loads) is deck-owned too —
-    /// only a KNOWN different song blocks the spin.
-    private var currentItemAudible: Bool {
-        guard isPlayingNow else { return false }
-        if coordinator.activeBackend == .appleMusic { return true }
-        guard let playing = player.nowPlayingSongId, let current = currentItem else { return true }
-        return playing == current.id
-    }
-
-    /// Play-position fraction (0…1) for the tonearm sweep — sampled by the record
-    /// view on its own throttled timeline (the clocks are deliberately
-    /// non-observable; see PlayerClock). Elapsed comes from whichever engine owns
-    /// the track; length prefers the catalog snapshot (Apple Music publishes no
-    /// duration), falling back to PlayerEngine's decoded duration.
-    private func playProgress() -> Double {
-        guard let item = currentItem else { return 0 }
-        let am = coordinator.isAppleMusicNowPlaying(item.id)
-        let elapsed = am ? coordinator.appleMusic.positionSeconds : player.currentTime
-        // Length prefers the catalog snapshot; but an Apple Music (Local) track often has NO
-        // `lengthMs` AND the streaming player publishes no duration — so also fall back to the
-        // resolved MusicKit catalog duration, else the fraction stays 0 and the tonearm freezes.
-        let length = max(item.lengthMs.map { Double($0) / 1000 } ?? 0,
-                         player.duration,
-                         am ? coordinator.appleMusic.durationSeconds : 0)
-        guard length > 0 else { return 0 }
-        return min(1, max(0, elapsed / length))
-    }
-
-    /// The current track's cover URL when it's an Apple Music stream — our AM-Local catalog has
-    /// no `artCandidates`, so the deck falls back to the MusicKit artwork captured at play time.
-    private var currentArtworkURL: URL? {
-        guard let item = currentItem, coordinator.isAppleMusicNowPlaying(item.id) else { return nil }
-        return coordinator.appleMusic.nowPlaying?.artworkURL
-    }
-
     private var recordSize: CGFloat {
         #if os(macOS)
         return 150
         #else
         return UIDevice.current.userInterfaceIdiom == .pad ? 170 : 210
         #endif
-    }
-
-    // MARK: - Header (title + artist ABOVE the record player)
-
-    @ViewBuilder private var header: some View {
-        VStack(spacing: 2) {
-            Text(currentItem?.title ?? "—")
-                .font(.headline).foregroundStyle(Theme.fg).lineLimit(1)
-                .accessibilityIdentifier("np-title")
-            Text(currentItem?.artist ?? "")
-                .font(.subheadline).foregroundStyle(Theme.fgDim).lineLimit(1)
-                .accessibilityIdentifier("np-artist")
-        }
-        .padding(.horizontal, 12)
-    }
-
-    // MARK: - Transport
-
-    private var transport: some View {
-        HStack(spacing: 28) {
-            Button { sequencer.skipPrevious() } label: {
-                Image(systemName: "backward.fill").font(.title3)
-            }
-            .accessibilityIdentifier("np-previous")
-            Button { togglePlayPause() } label: {
-                Image(systemName: isPlayingNow ? "pause.circle.fill" : "play.circle.fill")
-                    .font(.system(size: 34))
-            }
-            .accessibilityIdentifier("np-playpause")
-            Button { sequencer.skipNext() } label: {
-                Image(systemName: "forward.fill").font(.title3)
-            }
-            .accessibilityIdentifier("np-next")
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Theme.accent)
-        // History toggle on the leading edge, the ♥ on the trailing edge, so the ⏮⏯⏭ trio
-        // stays centered between them.
-        .frame(maxWidth: .infinity)
-        .overlay(alignment: .leading) { historyToggle }
-        .overlay(alignment: .trailing) { favoriteToggle }
-    }
-
-    /// 👍 / 👎 on WHAT IS PLAYING — the SYNC half of the tuning loop, and the reason this feature
-    /// is not "a list with buttons on it": the listener hears a suggestion, judges it in the
-    /// moment, and the next queue is better. Its own row under the transport rather than crowded
-    /// beside the ♥, because the two mean different things (a ♥ is a permanent library act that
-    /// can reach Apple Music; a 👎 is an instruction to the ranking) and a mis-tap between them
-    /// would be silently expensive.
-    ///
-    /// Neither control touches the transport. Accepting keeps playing; rejecting keeps playing.
-    @ViewBuilder private var feedbackRow: some View {
-        if currentItem != nil {
-            NowPlayingFeedbackButtons(font: .subheadline)
-                .padding(.top, 2)
-                .accessibilityIdentifier("np-feedback")
-        }
-    }
-
-    /// ♥ — the current track's favorite, the SAME reusable control every song row uses (reads
-    /// FavoritesStore, keyed on songId + appleMusicId, `.borderless` for macOS). Hidden when the
-    /// deck is idle (no current item to favorite). A track with no Apple Music id (vinyl / My
-    /// Digital / Studio) still favorites — local-only — exactly like its Browse row.
-    @ViewBuilder private var favoriteToggle: some View {
-        if let item = currentItem {
-            FavoriteToggle(songId: item.id,
-                           appleMusicId: app.songsById[item.id]?.appleMusicId,
-                           font: .subheadline)
-                .padding(.trailing, 12)
-        }
-    }
-
-    /// ⟲ — reveals the durable session's already-played tracks between the deck and Up Next.
-    private var historyToggle: some View {
-        Button { withAnimation { showPlayed.toggle() } } label: {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.subheadline)
-                .foregroundStyle(showPlayed ? Theme.accent : Theme.fgDim)
-        }
-        .buttonStyle(.plain)
-        .padding(.leading, 12)
-        .help("Previously played")
-        .accessibilityLabel("Previously played")
-        .accessibilityIdentifier("np-history")
-    }
-
-    // MARK: Shuffle / repeat (whole-session modes)
-
-    /// Shuffle (left) + repeat (right) below the transport — set-level modes styled like
-    /// `historyToggle` (accent when active, `fgDim` when off). Shown only while a set is running
-    /// (a single-track play has no queue to shuffle/repeat).
-    @ViewBuilder private var shuffleRepeatRow: some View {
-        if sequencer.isRunning {
-            HStack {
-                shuffleToggle
-                Spacer()
-                repeatToggle
-            }
-            .padding(.horizontal, 44)
-        }
-    }
-
-    private var shuffleToggle: some View {
-        Button { sequencer.toggleShuffle() } label: {
-            Image(systemName: "shuffle")
-                .font(.subheadline)
-                .foregroundStyle(sequencer.shuffleEnabled ? Theme.accent : Theme.fgDim)
-        }
-        .buttonStyle(.plain)
-        .help("Shuffle")
-        .accessibilityLabel("Shuffle")
-        .accessibilityValue(sequencer.shuffleEnabled ? "On" : "Off")
-        .accessibilityIdentifier("np-shuffle")
-    }
-
-    private var repeatToggle: some View {
-        Button { sequencer.cycleRepeatMode() } label: {
-            Image(systemName: sequencer.repeatMode == .one ? "repeat.1" : "repeat")
-                .font(.subheadline)
-                .foregroundStyle(sequencer.repeatMode == .off ? Theme.fgDim : Theme.accent)
-        }
-        .buttonStyle(.plain)
-        .help(repeatHelp)
-        .accessibilityLabel("Repeat")
-        .accessibilityValue(repeatHelp)
-        .accessibilityIdentifier("np-repeat")
-    }
-
-    /// off → "Repeat off"; all → "Repeat session"; one → "Repeat song" (matches the user's ask:
-    /// toggle between repeat-song and repeat-session).
-    private var repeatHelp: String {
-        switch sequencer.repeatMode {
-        case .off: return "Repeat off"
-        case .all: return "Repeat session"
-        case .one: return "Repeat song"
-        }
     }
 
     /// Static so the collapsed `NowPlayingMiniBar` shares the exact routing.
@@ -432,46 +231,19 @@ struct NowPlayingPanel: View {
         player.toggle()
     }
 
-    private func togglePlayPause() {
-        Self.togglePlayPause(sequencer: sequencer, coordinator: coordinator, player: player)
-    }
-
     // MARK: - The deck row (scrolls away so Up Next can take the whole panel)
 
     @ViewBuilder private var deckSection: some View {
         Section {
-            VStack(spacing: 8) {
-                header
-                if !compactHeight {
-                    RecordPlayerView(album: currentAlbum, artworkURL: currentArtworkURL,
-                                     studioId: currentItem?.id, bpm: currentBpm,
-                                     spinning: currentItemAudible, progress: playProgress)
-                        .frame(width: recordSize, height: recordSize * 0.82)
-                        // The record is the door to the current track's metadata:
-                        // long-press on iOS opens the detail DIRECTLY; macOS gets
-                        // the natural right-click menu.
-                        // Right-click (macOS) / long-press (iOS) → Song details + Share (F3).
-                        .contextMenu {
-                            Button { openCurrentSongDetail() } label: {
-                                Label("Song details", systemImage: "info.circle")
-                            }
-                            if let share = currentShareText {
-                                ShareLink(item: share) { Label("Share", systemImage: "square.and.arrow.up") }
-                            }
-                        }
-                }
-                transport
-                shuffleRepeatRow
-                feedbackRow
-                // F4 — the collapsible Mix mini-panel. Self-gates on `SetlistPlayer.mixAvailable`
-                // (hidden entirely for a non-mixable current track or while a Mix session plays),
-                // collapsed by default.
-                NowPlayingMixPanel()
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 6)
-            .listRowBackground(Theme.bg)
-            .listRowSeparator(.hidden)
+            // The deck itself lives in `NowPlayingDeckCluster` (shared with the req-7
+            // expanded surface); the docked panel keeps its fixed record size and the
+            // iPhone-landscape art drop.
+            NowPlayingDeckCluster(recordSize: recordSize, hideRecord: compactHeight,
+                                  openDetail: { openSongDetail(for: $0) })
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .listRowBackground(Theme.bg)
+                .listRowSeparator(.hidden)
         }
     }
 
@@ -493,11 +265,6 @@ struct NowPlayingPanel: View {
             name: sequencer.capturedHistoryContext?.name, queue: rows) {
             intents.pendingRoute = .setlist(set.id)
         }
-    }
-
-    private func openCurrentSongDetail() {
-        guard let item = currentItem else { return }
-        openSongDetail(for: item)
     }
 
     /// Open the full Song Detail sheet for ANY queue row (current, up-next, or previously
@@ -797,6 +564,269 @@ struct NowPlayingPanel: View {
     }
 }
 
+
+// MARK: - The deck cluster (header · record · transport · modes · mix panel)
+
+/// The deck itself — title/artist header, the spinning record, transport,
+/// shuffle/repeat, the 👍/👎 row, and the collapsible Mix mini-panel — extracted
+/// from the docked panel so the RESIZABLE expanded surface (req 7) renders the
+/// same cluster at any size. `recordSize` is the one geometry input (the platter
+/// scales with it); `openDetail` keeps the song-detail sheet with the OWNER.
+/// Behavior-neutral extraction: every a11y id and interaction is unchanged.
+struct NowPlayingDeckCluster: View {
+    @Environment(AppModel.self) private var app
+    @Environment(SetlistPlayer.self) private var sequencer
+    @Environment(PlayerEngine.self) private var player
+    @Environment(PlaybackCoordinator.self) private var coordinator
+    @Environment(BurnStore.self) private var burns
+    /// The ⟲ played-section preference — same key as the panel's, so the toggle
+    /// reads/writes ONE truth from either surface.
+    @AppStorage("nowPlayingShowPlayed") private var showPlayed = false
+
+    let recordSize: CGFloat
+    /// The docked iPhone-landscape panel drops the deck art (too short); the
+    /// expanded surface never does — the platter is its centerpiece.
+    var hideRecord: Bool = false
+    var openDetail: (SetlistPlayer.Item) -> Void = { _ in }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            header
+            if !hideRecord {
+                RecordPlayerView(album: currentAlbum, artworkURL: currentArtworkURL,
+                                 studioId: currentItem?.id, bpm: currentBpm,
+                                 spinning: currentItemAudible, progress: playProgress)
+                    .frame(width: recordSize, height: recordSize * 0.82)
+                    // The record is the door to the current track's metadata:
+                    // long-press on iOS opens the detail DIRECTLY; macOS gets
+                    // the natural right-click menu.
+                    // Right-click (macOS) / long-press (iOS) → Song details + Share (F3).
+                    .contextMenu {
+                        Button { if let item = currentItem { openDetail(item) } } label: {
+                            Label("Song details", systemImage: "info.circle")
+                        }
+                        if let share = currentShareText {
+                            ShareLink(item: share) { Label("Share", systemImage: "square.and.arrow.up") }
+                        }
+                    }
+            }
+            transport
+            shuffleRepeatRow
+            feedbackRow
+            // F4 — the collapsible Mix mini-panel. Self-gates on `SetlistPlayer.mixAvailable`
+            // (hidden entirely for a non-mixable current track or while a Mix session plays),
+            // collapsed by default.
+            NowPlayingMixPanel()
+        }
+    }
+
+    // MARK: - Current track
+
+    private var currentItem: SetlistPlayer.Item? {
+        guard sequencer.isRunning, sequencer.index < sequencer.queue.count else { return nil }
+        return sequencer.queue[sequencer.index]
+    }
+    private var currentAlbum: IndexAlbum? {
+        currentItem.flatMap { app.album(forSongId: $0.id) }
+    }
+    /// F3 share-text block for the current now-playing track — the catalog song when indexed, else a
+    /// bare title/artist (search links). nil when the deck is idle.
+    private var currentShareText: String? {
+        guard let item = currentItem else { return nil }
+        if let song = app.songsById[item.id] { return ShareText.forSong(song) }
+        return ShareText.forTitleArtist(title: item.title, artist: item.artist)
+    }
+    /// Spin rate source: the measured beat grid (preferred — the rip manifest's
+    /// `beatGridBpm`), else the catalog BPM; nil ⇒ the view's 33⅓ RPM fallback.
+    private var currentBpm: Double? {
+        guard let id = currentItem?.id else { return nil }
+        return burns.beatGrid(forSong: id)?.bpm ?? app.songsById[id]?.bpm
+    }
+
+    private var isPlayingNow: Bool {
+        NowPlayingPanel.isPlayingNow(coordinator: coordinator, player: player)
+    }
+
+    /// The record spins only when the AUDIO is the deck's current track — a Discover/
+    /// browser SINGLE playing through the shared engine must not spin the platter under
+    /// a paused set (display/audio mismatch; Levi 2026-07-18). Apple Music playback is
+    /// always deck-owned; a nil engine songId (burned-local loads) is deck-owned too —
+    /// only a KNOWN different song blocks the spin.
+    private var currentItemAudible: Bool {
+        guard isPlayingNow else { return false }
+        if coordinator.activeBackend == .appleMusic { return true }
+        guard let playing = player.nowPlayingSongId, let current = currentItem else { return true }
+        return playing == current.id
+    }
+
+    /// Play-position fraction (0…1) for the tonearm sweep — sampled by the record
+    /// view on its own throttled timeline (the clocks are deliberately
+    /// non-observable; see PlayerClock). Elapsed comes from whichever engine owns
+    /// the track; length prefers the catalog snapshot (Apple Music publishes no
+    /// duration), falling back to PlayerEngine's decoded duration.
+    private func playProgress() -> Double {
+        guard let item = currentItem else { return 0 }
+        let am = coordinator.isAppleMusicNowPlaying(item.id)
+        let elapsed = am ? coordinator.appleMusic.positionSeconds : player.currentTime
+        // Length prefers the catalog snapshot; but an Apple Music (Local) track often has NO
+        // `lengthMs` AND the streaming player publishes no duration — so also fall back to the
+        // resolved MusicKit catalog duration, else the fraction stays 0 and the tonearm freezes.
+        let length = max(item.lengthMs.map { Double($0) / 1000 } ?? 0,
+                         player.duration,
+                         am ? coordinator.appleMusic.durationSeconds : 0)
+        guard length > 0 else { return 0 }
+        return min(1, max(0, elapsed / length))
+    }
+
+    /// The current track's cover URL when it's an Apple Music stream — our AM-Local catalog has
+    /// no `artCandidates`, so the deck falls back to the MusicKit artwork captured at play time.
+    private var currentArtworkURL: URL? {
+        guard let item = currentItem, coordinator.isAppleMusicNowPlaying(item.id) else { return nil }
+        return coordinator.appleMusic.nowPlaying?.artworkURL
+    }
+
+    // MARK: - Header (title + artist ABOVE the record player)
+
+    @ViewBuilder private var header: some View {
+        VStack(spacing: 2) {
+            Text(currentItem?.title ?? "—")
+                .font(.headline).foregroundStyle(Theme.fg).lineLimit(1)
+                .accessibilityIdentifier("np-title")
+            Text(currentItem?.artist ?? "")
+                .font(.subheadline).foregroundStyle(Theme.fgDim).lineLimit(1)
+                .accessibilityIdentifier("np-artist")
+        }
+        .padding(.horizontal, 12)
+    }
+
+    // MARK: - Transport
+
+    private var transport: some View {
+        HStack(spacing: 28) {
+            Button { sequencer.skipPrevious() } label: {
+                Image(systemName: "backward.fill").font(.title3)
+            }
+            .accessibilityIdentifier("np-previous")
+            Button { togglePlayPause() } label: {
+                Image(systemName: isPlayingNow ? "pause.circle.fill" : "play.circle.fill")
+                    .font(.system(size: 34))
+            }
+            .accessibilityIdentifier("np-playpause")
+            Button { sequencer.skipNext() } label: {
+                Image(systemName: "forward.fill").font(.title3)
+            }
+            .accessibilityIdentifier("np-next")
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Theme.accent)
+        // History toggle on the leading edge, the ♥ on the trailing edge, so the ⏮⏯⏭ trio
+        // stays centered between them.
+        .frame(maxWidth: .infinity)
+        .overlay(alignment: .leading) { historyToggle }
+        .overlay(alignment: .trailing) { favoriteToggle }
+    }
+
+    /// 👍 / 👎 on WHAT IS PLAYING — the SYNC half of the tuning loop, and the reason this feature
+    /// is not "a list with buttons on it": the listener hears a suggestion, judges it in the
+    /// moment, and the next queue is better. Its own row under the transport rather than crowded
+    /// beside the ♥, because the two mean different things (a ♥ is a permanent library act that
+    /// can reach Apple Music; a 👎 is an instruction to the ranking) and a mis-tap between them
+    /// would be silently expensive.
+    ///
+    /// Neither control touches the transport. Accepting keeps playing; rejecting keeps playing.
+    @ViewBuilder private var feedbackRow: some View {
+        if currentItem != nil {
+            NowPlayingFeedbackButtons(font: .subheadline)
+                .padding(.top, 2)
+                .accessibilityIdentifier("np-feedback")
+        }
+    }
+
+    /// ♥ — the current track's favorite, the SAME reusable control every song row uses (reads
+    /// FavoritesStore, keyed on songId + appleMusicId, `.borderless` for macOS). Hidden when the
+    /// deck is idle (no current item to favorite). A track with no Apple Music id (vinyl / My
+    /// Digital / Studio) still favorites — local-only — exactly like its Browse row.
+    @ViewBuilder private var favoriteToggle: some View {
+        if let item = currentItem {
+            FavoriteToggle(songId: item.id,
+                           appleMusicId: app.songsById[item.id]?.appleMusicId,
+                           font: .subheadline)
+                .padding(.trailing, 12)
+        }
+    }
+
+    /// ⟲ — reveals the durable session's already-played tracks between the deck and Up Next.
+    private var historyToggle: some View {
+        Button { withAnimation { showPlayed.toggle() } } label: {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.subheadline)
+                .foregroundStyle(showPlayed ? Theme.accent : Theme.fgDim)
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 12)
+        .help("Previously played")
+        .accessibilityLabel("Previously played")
+        .accessibilityIdentifier("np-history")
+    }
+
+    // MARK: Shuffle / repeat (whole-session modes)
+
+    /// Shuffle (left) + repeat (right) below the transport — set-level modes styled like
+    /// `historyToggle` (accent when active, `fgDim` when off). Shown only while a set is running
+    /// (a single-track play has no queue to shuffle/repeat).
+    @ViewBuilder private var shuffleRepeatRow: some View {
+        if sequencer.isRunning {
+            HStack {
+                shuffleToggle
+                Spacer()
+                repeatToggle
+            }
+            .padding(.horizontal, 44)
+        }
+    }
+
+    private var shuffleToggle: some View {
+        Button { sequencer.toggleShuffle() } label: {
+            Image(systemName: "shuffle")
+                .font(.subheadline)
+                .foregroundStyle(sequencer.shuffleEnabled ? Theme.accent : Theme.fgDim)
+        }
+        .buttonStyle(.plain)
+        .help("Shuffle")
+        .accessibilityLabel("Shuffle")
+        .accessibilityValue(sequencer.shuffleEnabled ? "On" : "Off")
+        .accessibilityIdentifier("np-shuffle")
+    }
+
+    private var repeatToggle: some View {
+        Button { sequencer.cycleRepeatMode() } label: {
+            Image(systemName: sequencer.repeatMode == .one ? "repeat.1" : "repeat")
+                .font(.subheadline)
+                .foregroundStyle(sequencer.repeatMode == .off ? Theme.fgDim : Theme.accent)
+        }
+        .buttonStyle(.plain)
+        .help(repeatHelp)
+        .accessibilityLabel("Repeat")
+        .accessibilityValue(repeatHelp)
+        .accessibilityIdentifier("np-repeat")
+    }
+
+    /// off → "Repeat off"; all → "Repeat session"; one → "Repeat song" (matches the user's ask:
+    /// toggle between repeat-song and repeat-session).
+    private var repeatHelp: String {
+        switch sequencer.repeatMode {
+        case .off: return "Repeat off"
+        case .all: return "Repeat session"
+        case .one: return "Repeat song"
+        }
+    }
+
+    private func togglePlayPause() {
+        NowPlayingPanel.togglePlayPause(sequencer: sequencer, coordinator: coordinator, player: player)
+    }
+
+}
+
 // MARK: - The collapsed strip (iOS)
 
 /// The COLLAPSED Now Playing element (iOS, Levi 2026-07-18): a thin strip pinned at the
@@ -858,6 +888,11 @@ struct NowPlayingMiniBar: View {
                 Image(systemName: "chevron.up")
                     .font(.footnote.weight(.semibold)).foregroundStyle(Theme.fgDim)
                     .padding(.leading, 2)
+                    // ≥44pt hit area (glyph unchanged) — a thumb-sized target on the
+                    // strip's most-used control. Inside the label so the widened area
+                    // belongs to the BUTTON, not the row.
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
             }
             .accessibilityIdentifier("np-expand")
         }
