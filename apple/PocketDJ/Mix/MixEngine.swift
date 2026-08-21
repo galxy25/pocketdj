@@ -871,6 +871,12 @@ final class MixEngine {
     func autoDeckDurationMsForTesting(_ deck: Deck) -> Int? { autoDeckDurationMs[deck] }
     /// Drive one tick's park-heal pass directly (the watchdog path a test can't wait for).
     func healParkedPlayersForTesting() { healParkedPlayers() }
+    /// The next-unplayed loader with its drop-the-unloadable behaviour — the resume-handoff and
+    /// re-establish paths run it where a wall-clock deck end can't be waited out.
+    @discardableResult
+    func loadNextUnplayedForTesting(onto deck: Deck, excludingDeck exclude: Deck? = nil) -> Int? {
+        loadNextUnplayed(onto: deck, excludingDeck: exclude)
+    }
 
     func teardown() {
         endAutoLoop()
@@ -2042,13 +2048,12 @@ final class MixEngine {
         // One (or zero) deck playing → establish a single live deck + preload the next unplayed track.
         let live: Deck = aOn ? .a : (bOn ? .b : autoLiveDeck)
         if !aOn && !bOn {                                          // nothing playing — get the live deck going again
-            if state(live).loaded == nil, let k0 = nextUnplayedQueueIndex() { loadAuto(autoQueue[k0], onto: live) }
+            if state(live).loaded == nil { loadNextUnplayed(onto: live) }
             if state(live).loaded != nil { play(live) }
         }
         autoLiveDeck = live
         autoResumeEndDeck = nil
-        if let k = nextUnplayedQueueIndex(excludingDeck: live) {
-            loadAuto(autoQueue[k], onto: other(live))              // preload the on-deck next track
+        if let k = loadNextUnplayed(onto: other(live), excludingDeck: live) {   // preload the on-deck next
             autoLivePos = max(0, k - 1)
             autoNextToLoad = k + 1
         } else {
@@ -2064,16 +2069,33 @@ final class MixEngine {
     /// nothing is left to play.
     private func beginResumeHandoff(now: Date, freed: Deck) {
         silence(freed)                                            // the ended deck is done — retire it cleanly
-        guard let k = nextUnplayedQueueIndex(excludingDeck: autoLiveDeck) else {
+        // freed == other(autoLiveDeck). A vanished burn here must not crossfade into the deck's
+        // RETIRED track (the defect class the auto-queue append fix closed elsewhere).
+        guard let k = loadNextUnplayed(onto: freed, excludingDeck: autoLiveDeck) else {
             stopAutoMix()
-            autoEndedExhausted = true   // resume-handoff with nothing unplayed = exhausted too
+            autoEndedExhausted = true   // resume-handoff with nothing loadable = exhausted too
             return
         }
-        loadAuto(autoQueue[k], onto: freed)                       // freed == other(autoLiveDeck)
         autoLivePos = max(0, k - 1)
         autoNextToLoad = k + 1
         if anyGlide { beginGlideTransition(now: now, preroll: 0) }  // no preroll — the first track already ended
         else { beginAutoCrossfade(now: now) }
+    }
+
+    /// Load the next unplayed queue item onto `deck`, DROPPING entries whose audio has vanished
+    /// (a burn deleted or storage-pruned mid-mix) rather than leaving the deck empty. The auto
+    /// machine transitions on a clock, so an unloaded deck is not a no-op: the crossfade either
+    /// fades into silence or REPLAYS whatever retired track the deck still holds. Returns the
+    /// loaded item's queue index, or nil when nothing unplayed can be loaded at all.
+    @discardableResult
+    private func loadNextUnplayed(onto deck: Deck, excludingDeck exclude: Deck? = nil) -> Int? {
+        while let k = nextUnplayedQueueIndex(excludingDeck: exclude) {
+            if loadAuto(autoQueue[k], onto: deck) { return k }
+            autoQueue.remove(at: k)                  // unloadable — it can never play; drop it
+            if autoNextToLoad > k { autoNextToLoad -= 1 }
+            if autoLivePos > k { autoLivePos -= 1 }
+        }
+        return nil
     }
 
     /// First index in the auto queue whose song hasn't started playing this session (nil ⇒ all played).

@@ -166,6 +166,54 @@ final class MixAutoResetTests: XCTestCase {
         e.teardown()
     }
 
+    /// The RESUME-handoff / re-establish twin of `testLoadAutoFailureSkipsItemWithoutStampingDuration`:
+    /// those paths used to call `loadAuto` and DISCARD its result, then crossfade on the clock
+    /// regardless — so a burn that vanished mid-mix left the incoming deck holding its RETIRED
+    /// track, which the transition then replayed (double-play with a lying Now Playing). The
+    /// loader now drops unloadable entries and reports the index it actually loaded.
+    func testNextUnplayedLoaderDropsVanishedTracksInsteadOfKeepingRetiredOne() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        // ONE queued track, so deck B is never preloaded and deck A is the live deck.
+        e.startAutoMix([item("x")], shuffled: false, lead: 15, fade: 3)
+        XCTAssertEqual(e.loaded(.a)?.songId, "x")
+
+        // Two download-backed appends: the first's burn is gone by the time the handoff
+        // reaches it (the shape a storage prune leaves mid-mix), the second is real.
+        e.autoQueueInsert(item("ghost-no-burn"), placement: .end)
+        e.autoQueueInsert(item("z", durationMs: 222_000), placement: .end)
+        let before = e.autoQueueCountForTesting
+
+        // The resume-handoff shape: the freed deck (B) takes the next unplayed track while
+        // A stays live. The ghost is FIRST in line — it must be dropped, not armed.
+        let k = e.loadNextUnplayedForTesting(onto: .b, excludingDeck: .a)
+
+        XCTAssertNotNil(k, "a loadable track remains, so the handoff must find one")
+        XCTAssertEqual(e.loaded(.b)?.songId, "z", "the freed deck holds the REAL next track")
+        XCTAssertEqual(e.autoDeckDurationMsForTesting(.b), 222_000,
+                       "…and its clock is that track's duration, never the ghost's")
+        XCTAssertEqual(e.autoQueueCountForTesting, before - 1, "the unloadable entry left the queue")
+        e.teardown()
+    }
+
+    /// Nothing loadable left ⇒ the loader reports nil (the caller ends the mix) rather than
+    /// leaving a deck armed with whatever it still held.
+    func testNextUnplayedLoaderReturnsNilWhenEverythingRemainingIsUnloadable() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        e.startAutoMix([item("x")], shuffled: false, lead: 15, fade: 3)
+        e.autoQueueInsert(item("ghost-no-burn"), placement: .end)
+
+        XCTAssertNil(e.loadNextUnplayedForTesting(onto: .b, excludingDeck: .a),
+                     "every remaining entry is unloadable")
+        XCTAssertNil(e.loaded(.b), "the incoming deck was not armed with a phantom")
+        e.teardown()
+    }
+
     // MARK: - Late-append transition safety (progressive downloads / jukebox inserts)
 
     /// A progressive append that arrives while the LAST queued track is live (single-item mix —
