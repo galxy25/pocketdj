@@ -694,6 +694,20 @@ final class InstrumentEngine {
         // first multi-staff play: reconfiguring a LIVE graph is the class of risk this whole fix
         // exists to remove.
         engine.connect(backing, to: mix, format: canonical)
+        // The per-staff sampler POOL, attached + connected here for exactly the same reason. The
+        // real-time multi-staff fallback (`replayStaffsLive`) used to attach and connect its AUs
+        // to a RUNNING engine, at play time — the precise shape of live-graph reconfiguration this
+        // fix exists to remove, and the one property the original silence was never cleared of on
+        // iOS. An `AVAudioUnitSampler` with no bank loaded holds no samples, so the whole pool
+        // costs ~nothing until a staff actually needs it.
+        if backingSamplers.isEmpty {
+            backingSamplers = (0..<StudioTake.maxStaffs).map { _ in AVAudioUnitSampler() }
+            backingLoaded = Array(repeating: nil, count: backingSamplers.count)
+        }
+        for pooled in backingSamplers {
+            engine.attach(pooled)
+            engine.connect(pooled, to: mix, format: canonical)
+        }
         engine.prepare()
         do { try engine.start() } catch {
             dlog("instr: engine.start failed at build — degraded (no audio device?)")
@@ -756,6 +770,14 @@ final class InstrumentEngine {
     // system stops the engine out from under the app; tests reproduce that state here.
     func stopEngineForTesting() { engine.stop() }
     var engineIsRunningForTesting: Bool { engine.isRunning }
+    /// How many pool samplers are ATTACHED. The contract this pins: the pool is built with the
+    /// GRAPH, so the real-time fallback never attaches an AU to a running engine.
+    var backingSamplerCountForTesting: Int { backingSamplers.count }
+    /// The loop region the backing is really playing (`loopRegion`) — what the cursor and the
+    /// overdub capture both wrap on.
+    var backingLoopRegionForTesting: (startMs: Int, endMs: Int)? { replayLoopRegion }
+    /// The overdub capture's own region end, which must equal the AUDIO's after a clamp.
+    var overdubRegionEndMsForTesting: Int { overdubRegionEndMs }
     /// Drive the route/config-change observer path directly (tests can't post as the session).
     func simulateEngineRecoveryForTesting() { recoverFromEngineStop() }
     var clickNodeIsPlayingForTesting: Bool { clickPlayer?.isPlaying ?? false }
@@ -1163,6 +1185,22 @@ final class InstrumentEngine {
         return backingPreparing || (isReplaying && !backingReady)
     }
 
+    /// Re-anchor an EMPTY overdub capture to NOW. The pass arms at the button press, but its
+    /// backing only becomes audible later (an on-demand mixdown render, a preset parse) — and the
+    /// backing paths re-anchor an empty capture at exactly that instant. When the backing REFUSES
+    /// after burning that time, nothing re-anchors it, so a confined region is measured from a
+    /// press that is now seconds in the past and the pass auto-finalizes before the user plays a
+    /// note. The score screens call this on any non-playing outcome. A capture with notes in it
+    /// keeps its anchor — re-basing captured events corrupts them.
+    @discardableResult
+    func reanchorOverdubIfEmpty() -> Bool {
+        guard overdubActive, eventLog.overdubCount == 0 else { return false }
+        eventLog.overdubArm(anchorHostTime: mach_absolute_time(), baseMs: overdubBaseMs,
+                            regionEndMs: overdubRegionEndMs, loop: overdubLoop)
+        plog("overdub RE-ANCHORED at \(overdubBaseMs) ms — the backing never started")
+        return true
+    }
+
     /// Notes the armed overdub has captured so far (completed + still-sounding). The score
     /// screen's re-anchor rule reads this: a tap while overdubbing moves the anchor only while
     /// NOTHING has been captured — once notes exist the anchor is fixed for this pass.
@@ -1313,15 +1351,27 @@ final class InstrumentEngine {
     /// `forTake` names WHOSE clock this replay is, so another instrumental's open score neither
     /// shows nor persists this one's position (see `replayOwner`). nil = an anonymous replay, which
     /// no score screen will claim.
+    ///
+    /// Returns WHY it did or did not start. The behaviour is bit-for-bit what it always was — the
+    /// return value and the logs are additive — but a bare `return` on the most-used ▶ in the app
+    /// is undiagnosable from a user capture, which is exactly how the multi-staff silence shipped.
+    @discardableResult
     func replayTake(events: [StudioNoteEvent], instrument: InstrumentKey, fromMs: Int = 0,
-                    forTake takeId: String? = nil) {
+                    forTake takeId: String? = nil) -> BackingStart {
         ensureEngine()
-        guard built, rt.engineReady, !isLoadingInstrument, sampler != nil else { return }
+        guard built, rt.engineReady, !isLoadingInstrument, sampler != nil else {
+            plog("replay REFUSED samplerNotReady — built=\(built) bankLoaded=\(rt.engineReady)"
+                 + " loading=\(isLoadingInstrument) sampler=\(sampler != nil ? 1 : 0)")
+            return .samplerNotReady
+        }
         if let cur = currentInstrument, cur != instrument {
             dlog("instr: replay wants \(instrument.rawValue) but \(cur.rawValue) is loaded")
         }
         stopReplay()
-        guard startEngineIfNeeded() else { return }
+        guard startEngineIfNeeded() else {
+            plog("replay REFUSED engineStopped — startEngineIfNeeded failed")
+            return .engineStopped
+        }
         // Clamp before any clock math: a seek derived from a wild layout must degrade, never trap.
         let from = max(0, min(fromMs, Self.maxReplayMs))
         let actions = Self.replayActions(events: events, from: from)
@@ -1329,7 +1379,8 @@ final class InstrumentEngine {
             // Seeked past the last note: nothing left to play, so just park the cursor there (the
             // "last played" emphasis holds) instead of silently doing nothing.
             if from > 0 { parkReplayPosition(atMs: from, forTake: takeId) } else { replayOwner = takeId }
-            return
+            plog("replay nothing to play from \(from) ms (\(events.count) events) — cursor parked")
+            return .nothingToPlay
         }
         replayOwner = takeId
         isReplaying = true
@@ -1368,6 +1419,7 @@ final class InstrumentEngine {
             NowPlayingArbiter.shared.resign(self)
             self.dlog("instr: replay END")
         }
+        return .started
     }
 
     /// Cancel a replay: bump the generation (the loop exits at its next wake) and silence
@@ -1613,9 +1665,21 @@ final class InstrumentEngine {
         case emptyFile
         case zeroFrameWindow
         case seekPastEnd
+        // The REAL-TIME sampler paths (`replayStaffsLive`, `replayTake`) report through the same
+        // vocabulary — a fallback that refuses must be as nameable as a mixdown that refuses,
+        // or the ▶ reports success and the capture carries no reason line.
+        case noStaffs
+        case nothingToPlay
+        case samplersUnavailable
+        case samplerNotReady
 
         /// Did audio actually start? (Both start cases sound; everything else is a refusal.)
         var isAudible: Bool { self == .started || self == .startedOnePassFallback }
+
+        /// Is this refusal a legitimate CURSOR PARK rather than a failure? Seeking past the last
+        /// note parks the cursor and plays nothing — the shipped single-staff behaviour, and NOT
+        /// something to raise an alert about on any other path either.
+        var isCursorPark: Bool { self == .seekPastEnd || self == .nothingToPlay }
     }
 
     /// Mark a backing as being prepared (an on-demand render) — see `backingPreparing`.
@@ -1638,6 +1702,21 @@ final class InstrumentEngine {
         let count = end - start
         guard count > 0, count <= AVAudioFramePosition(AVAudioFrameCount.max) else { return nil }
         return (start, AVAudioFrameCount(count), loops)
+    }
+
+    /// The region a scheduled loop REALLY plays. Derived from the frames the read ACTUALLY
+    /// returned, never from the frames requested: `AVAudioFile.read(into:frameCount:)` returns UP
+    /// TO `frameCount`, and short reads are routine near EOF and on packet-granular compressed
+    /// audio (the mixdown is AAC). The node loops what is IN the buffer, so a cursor — and the
+    /// overdub capture, which wraps on the same numbers — that used the requested length would
+    /// drift a little further from the audio on every single iteration. nil ⇒ nothing to loop.
+    /// Pure + testable.
+    nonisolated static func loopRegion(startMs: Int, framesRead: AVAudioFrameCount,
+                                       sampleRate: Double) -> (startMs: Int, endMs: Int)? {
+        guard framesRead > 0, sampleRate.isFinite, sampleRate > 0 else { return nil }
+        let playedMs = Int((Double(framesRead) / sampleRate * 1000).rounded())
+        guard playedMs > 0 else { return nil }
+        return (startMs: startMs, endMs: startMs + playedMs)
     }
 
     /// Play a take's RENDERED mixdown as the backing, from `fromMs` on the score clock — the
@@ -1715,13 +1794,18 @@ final class InstrumentEngine {
             if let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
                                           frameCapacity: win.frameCount) {
                 file.framePosition = win.startFrame
-                if (try? file.read(into: buf, frameCount: win.frameCount)) != nil, buf.frameLength > 0 {
+                if (try? file.read(into: buf, frameCount: win.frameCount)) != nil,
+                   let r = Self.loopRegion(startMs: loop.startMs, framesRead: buf.frameLength,
+                                           sampleRate: sr) {
                     player.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
                     scheduledLoop = true
-                    let playedMs = Int((Double(win.frameCount) / sr * 1000).rounded())
-                    region = (startMs: loop.startMs, endMs: loop.startMs + playedMs)
-                    if region!.endMs != loop.endMs {
-                        plog("backing loop CLAMPED to the render — \(loop.startMs)…\(region!.endMs)"
+                    region = r
+                    if buf.frameLength != win.frameCount {
+                        plog("backing loop SHORT READ — \(buf.frameLength)f of \(win.frameCount)f"
+                             + " asked (\(name))")
+                    }
+                    if r.endMs != loop.endMs {
+                        plog("backing loop CLAMPED to the render — \(loop.startMs)…\(r.endMs)"
                              + " (asked \(loop.endMs))")
                     }
                 }
@@ -1759,6 +1843,14 @@ final class InstrumentEngine {
         // to this instant, so notes played in time with the backing land at the true score
         // position. A capture with notes keeps its anchor (re-basing captured events corrupts them).
         if overdubActive, eventLog.overdubCount == 0 {
+            // The CAPTURE's loop period must be the SAME number as the AUDIO's. A region the
+            // render could only partly satisfy (a short read, an end past the mixdown) shortens
+            // the audio loop; a capture still wrapping at the ASKED end would put every note an
+            // iteration's worth of drift away from what the user is playing along to.
+            if overdubLoop, let r = region, r.endMs != overdubRegionEndMs {
+                plog("overdub region FOLLOWS the backing — \(overdubRegionEndMs) → \(r.endMs) ms")
+                overdubRegionEndMs = r.endMs
+            }
             eventLog.overdubArm(anchorHostTime: mach_absolute_time(), baseMs: overdubBaseMs,
                                 regionEndMs: overdubRegionEndMs, loop: overdubLoop)
         }
@@ -1825,32 +1917,41 @@ final class InstrumentEngine {
     /// shared SoundFont (nil at the caller is the "download the pack first" prompt).
     /// `loopRegion` turns it into a looper over `[startMs, endMs)`: every iteration re-strikes from
     /// `startMs` and ALL notes are silenced at the wrap, so nothing hangs across the boundary.
+    ///
+    /// ASYNC, and it reports WHY. The pool's preset parse must finish before a note can sound, so
+    /// a `Void` return handed the caller a "success" it could not possibly know yet: a pool that
+    /// fails to load, a graph that never built, a delegated single-staff replay that refused —
+    /// all of them read as "playing" at the ▶, with nothing in the capture to say otherwise. That
+    /// is the reported bug's exact signature, and this path was the last place it still lived.
+    @discardableResult
     func replayStaffsLive(staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)],
                           bankURL: URL, fromMs: Int = 0, forTake takeId: String? = nil,
-                          loopRegion: (startMs: Int, endMs: Int)? = nil) {
+                          loopRegion: (startMs: Int, endMs: Int)? = nil) async -> BackingStart {
         guard !staffs.isEmpty else {
             plog("live-staffs REFUSED noStaffs")
-            return
+            return .noStaffs
         }
         guard staffs.count > 1 || overdubActive else {
-            // One staff, no overdub: the shipped single-staff path, untouched.
-            if let only = staffs.first {
-                replayTake(events: only.events, instrument: only.instrument,
-                           fromMs: fromMs, forTake: takeId)
+            // One staff, no overdub: the shipped single-staff path, untouched — but its outcome
+            // is now PASSED THROUGH rather than swallowed.
+            guard let only = staffs.first else {
+                plog("live-staffs REFUSED noStaffs")
+                return .noStaffs
             }
-            return
+            return replayTake(events: only.events, instrument: only.instrument,
+                              fromMs: fromMs, forTake: takeId)
         }
         ensureEngine()
         guard built else {
             plog("live-staffs REFUSED noEngine — graph not built (no audio device?)")
-            return
+            return .noEngine
         }
         stopReplay()
         // A latched arp SURVIVES the overdub backing starting (see `replayRenderedAudio`).
         if !overdubActive { stopArpPlayback() }
         guard startEngineIfNeeded() else {
             plog("live-staffs REFUSED engineStopped — startEngineIfNeeded failed")
-            return
+            return .engineStopped
         }
         let from = max(0, min(fromMs, Self.maxReplayMs))
         let programs = staffs.enumerated().map { (channel: $0.offset,
@@ -1869,7 +1970,7 @@ final class InstrumentEngine {
         guard !actions.isEmpty else {
             if from > 0 { parkReplayPosition(atMs: from, forTake: takeId) } else { replayOwner = takeId }
             plog("live-staffs nothing to play from \(from) ms — cursor parked")
-            return
+            return .nothingToPlay
         }
         replayOwner = takeId
         isReplaying = true
@@ -1883,39 +1984,45 @@ final class InstrumentEngine {
         replayAnchor = ContinuousClock.now - .milliseconds(from)
         replayFrozenMs = from
         replayLoopRegion = loop
+        let ok = await ensureBackingSamplers(bankURL: bankURL, programs: programs)
+        guard replayGeneration == gen else {
+            // Stopped, or replaced by a newer transport, while the presets parsed. NOT a failure —
+            // whoever superseded us owns the clock and reports its own outcome.
+            plog("live-staffs superseded during the pool load — a newer transport owns the clock")
+            return .started
+        }
+        guard ok else {
+            plog("live-staffs ABORT — samplers unavailable")
+            isReplaying = false
+            freezeReplayPosition()
+            NowPlayingArbiter.shared.resign(self)
+            return .samplersUnavailable
+        }
+        // Real anchor: back-dated by `from` so the loop's absolute sleeps and the score's
+        // playhead agree (the `replayTake` anchor contract).
+        let start = ContinuousClock.now - .milliseconds(from)
+        replayAnchor = start
+        // The overdub capture armed at button-press but the backing only starts NOW — re-anchor
+        // an empty capture to this instant (a capture with notes keeps its anchor).
+        if overdubActive, eventLog.overdubCount == 0 {
+            eventLog.overdubArm(anchorHostTime: mach_absolute_time(), baseMs: overdubBaseMs,
+                                regionEndMs: overdubRegionEndMs, loop: overdubLoop)
+        }
         Task { @MainActor [weak self] in
-            guard let eng0 = self else { return }
-            let ok = await eng0.ensureBackingSamplers(bankURL: bankURL, programs: programs)
-            guard let eng1 = self, eng1.replayGeneration == gen else { return }
-            guard ok else {
-                eng1.plog("live-staffs ABORT — samplers unavailable")
-                eng1.isReplaying = false
-                eng1.freezeReplayPosition()
-                NowPlayingArbiter.shared.resign(eng1)
-                return
-            }
-            // Real anchor: back-dated by `from` so the loop's absolute sleeps and the score's
-            // playhead agree (the `replayTake` anchor contract).
-            let start = ContinuousClock.now - .milliseconds(from)
-            eng1.replayAnchor = start
-            // The overdub capture armed at button-press but the backing only starts NOW — re-anchor
-            // an empty capture to this instant (a capture with notes keeps its anchor).
-            if eng1.overdubActive, eng1.eventLog.overdubCount == 0 {
-                eng1.eventLog.overdubArm(anchorHostTime: mach_absolute_time(),
-                                         baseMs: eng1.overdubBaseMs,
-                                         regionEndMs: eng1.overdubRegionEndMs,
-                                         loop: eng1.overdubLoop)
-            }
             // One pass per iteration; a non-looping backing runs the body exactly once (`break`
             // at the bottom), so the legacy path is bit-for-bit what it was.
             var iteration = 0
+            var dropped = 0
             while true {
                 let offset = (loop.map { $0.endMs - $0.startMs } ?? 0) * iteration
                 for a in actions {
                     try? await Task.sleep(until: start + .milliseconds(a.ms + offset),
                                           clock: .continuous)
                     guard let eng = self, eng.replayGeneration == gen else { return }
-                    guard eng.backingReady, a.channel < eng.backingSamplers.count else { continue }
+                    guard eng.backingReady, a.channel < eng.backingSamplers.count else {
+                        dropped += 1
+                        continue
+                    }
                     let smp = eng.backingSamplers[a.channel]
                     let n = UInt8(clamping: max(0, min(127, a.note)))
                     if a.on {
@@ -1950,8 +2057,12 @@ final class InstrumentEngine {
             eng.silenceBackingSamplers()
             eng.backingReady = false
             NowPlayingArbiter.shared.resign(eng)
-            eng.plog("live-staffs END")
+            // A pass that dropped actions made LESS sound than the score says — name it, or the
+            // capture reads exactly like a clean play-through.
+            eng.plog("live-staffs END"
+                     + (dropped > 0 ? " — \(dropped) note actions DROPPED (pool went unready)" : ""))
         }
+        return .started
     }
 
     /// CC 123 all-notes-off across the pool — belt-and-braces silence at a loop wrap and on stop.
@@ -1969,7 +2080,13 @@ final class InstrumentEngine {
             plog("live-staffs REFUSED noEngine — pool has no mixer")
             return false
         }
+        // The pool is built with the GRAPH (`ensureEngine`), so this loop is a SAFETY NET that
+        // should never run — it attaches to a live engine, which is the risk the eager build
+        // removes. If it ever fires, say so loudly: it means a caller asked for more staffs than
+        // `StudioTake.maxStaffs`, and the capture must name that.
         while backingSamplers.count < programs.count {
+            plog("live-staffs POOL GROWN on a live graph — \(backingSamplers.count) → "
+                 + "\(backingSamplers.count + 1) (asked \(programs.count), cap \(StudioTake.maxStaffs))")
             let s = AVAudioUnitSampler()
             engine.attach(s)
             engine.connect(s, to: mix, format: Self.canonicalFormat)
@@ -1982,6 +2099,7 @@ final class InstrumentEngine {
             .filter { backingLoaded[$0.offset] != key($0.element.program) }
             .map { BackingLoadItem(index: $0.offset, sampler: backingSamplers[$0.offset],
                                    program: $0.element.program) }
+        let pendingCount = pending.count
         if !pending.isEmpty {
             let failed: [Int] = await withCheckedContinuation { cont in
                 DispatchQueue.global(qos: .userInitiated).async {
@@ -2008,6 +2126,12 @@ final class InstrumentEngine {
             guard failed.isEmpty else { return false }
         }
         backingReady = true
+        // A SUCCESS line, not only failures: a capture showing `live-staffs START` → `live-staffs
+        // END` with nothing in between is the original bug's signature, and "the pool loaded fine"
+        // has to be distinguishable from "the pool was never asked".
+        plog("live-staffs pool READY — \(programs.count) samplers, programs "
+             + "\(programs.map { String($0.program) }.joined(separator: ",")),"
+             + " reparsed \(pendingCount), bank \(bankURL.lastPathComponent)")
         return true
     }
 

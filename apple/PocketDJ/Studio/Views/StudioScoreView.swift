@@ -159,14 +159,18 @@ struct StudioScoreView: View {
             return
         }
         if instruments.isReplaying, instruments.replayClockBelongs(to: takeId) {
-            // Re-seek the RUNNING sound: a multi-staff take re-schedules its MIXDOWN from the tap
-            // (the cache is fresh — it is what's playing — so this is a reschedule, not a
-            // re-render); single-staff exactly as before.
+            // Re-seek the RUNNING sound: a multi-staff take re-schedules its MIXDOWN from the tap.
+            // USUALLY a reschedule, not a re-render — but not always: what is playing may be the
+            // real-time sampler FALLBACK, whose whole reason for existing is that there is no
+            // fresh mixdown, so this tap can start a multi-second offline render. Drive the same
+            // `preparing` spinner the ▶ does; a silent multi-second nothing is the one thing this
+            // screen may never do.
             if take.staffCount > 1 {
                 Task { @MainActor in
                     let outcome = await StudioTakePlayback.start(take: take, fromMs: target,
                                                                  instruments: instruments,
-                                                                 studio: studio, packs: packs)
+                                                                 studio: studio, packs: packs,
+                                                                 preparing: { preparing = $0 })
                     if let msg = outcome.message { errorText = msg }
                 }
             } else {
@@ -486,7 +490,11 @@ struct StudioScoreView: View {
             errorText = "Load an instrument on the Instrument tab first — the overdub records through it."
             return
         }
-        guard take.staffCount < StudioTake.maxStaffs else { return }
+        guard take.staffCount < StudioTake.maxStaffs else {
+            errorText = "This instrumental already has \(StudioTake.maxStaffs) staffs — "
+                + "an overdub would make a fifth."
+            return
+        }
         if instruments.isReplaying { instruments.stopReplay() }
         let parked = instruments.replayPositionMs(forTake: takeId) ?? studio.scoreCursorMs(takeId)
         let p = max(0, min(parked ?? 0, InstrumentEngine.maxReplayMs))
@@ -514,7 +522,13 @@ struct StudioScoreView: View {
         // the sampler entirely free as the user's overdub voice, which is why `asBacking` refuses
         // the sampler route even at one staff. A mixdown that can't be produced degrades to
         // real-time per-staff samplers, never to silence — and says so.
-        guard !take.allScoreEvents.isEmpty else { return }
+        // Overdubbing onto an EMPTY instrumental: nothing to back, and that is legitimate (it is
+        // how a first staff gets played in). The pass stays armed — but it is armed with NO
+        // backing, which a capture must be able to tell apart from a backing that failed.
+        guard !take.allScoreEvents.isEmpty else {
+            NPLog.trace("studio: overdub armed with no backing tk=\(takeId) — the score is empty")
+            return
+        }
         let loop: (startMs: Int, endMs: Int)? = instruments.overdubLoop
             ? (startMs: p, endMs: instruments.overdubRegionEndMs) : nil
         Task { @MainActor in
@@ -523,6 +537,10 @@ struct StudioScoreView: View {
                                                          studio: studio, packs: packs,
                                                          preparing: { preparing = $0 })
             if let msg = outcome.message { errorText = msg }
+            // The backing did not start. The capture is still anchored at the button press —
+            // which the on-demand render may have left seconds in the past — so a confined pass
+            // would finalize itself before the user played anything. Re-anchor to now.
+            if outcome != .playing { instruments.reanchorOverdubIfEmpty() }
         }
     }
 

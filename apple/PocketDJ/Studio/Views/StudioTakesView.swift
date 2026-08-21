@@ -663,13 +663,17 @@ enum StudioTakePlayback {
                       instruments: InstrumentEngine, studio: StudioStore,
                       packs: InstrumentPackStore,
                       preparing: @MainActor (Bool) -> Void = { _ in }) async -> StartOutcome {
-        guard !take.allScoreEvents.isEmpty else { return .nothingToPlay }
+        guard !take.allScoreEvents.isEmpty else {
+            NPLog.trace("studio: take play — nothing to play tk=\(take.id) (0 events on \(take.staffCount) staffs)")
+            return .nothingToPlay
+        }
         switch route(staffCount: take.staffCount, hasRender: take.isRenderFresh, asBacking: asBacking) {
         case .sampler:
             return startSingle(take: take, fromMs: fromMs, instruments: instruments, packs: packs)
         case .renderedAudio:
-            return playRendered(takeId: take.id, take: take, fromMs: fromMs, loopRegion: loopRegion,
-                                instruments: instruments, studio: studio, packs: packs)
+            return await playRendered(takeId: take.id, take: take, fromMs: fromMs,
+                                      loopRegion: loopRegion, instruments: instruments,
+                                      studio: studio, packs: packs)
         case .liveSamplers:
             // Multi-staff with a cold cache: render on demand, VISIBLY (`preparing`), and tell the
             // engine so a short overdub region can't auto-finalize while its backing is being made.
@@ -681,11 +685,13 @@ enum StudioTakePlayback {
             guard r.hasRender else {
                 // No mixdown: fall back to REAL-TIME per-staff samplers rather than to silence.
                 NPLog.trace("studio: take play — no render (\(r)) tk=\(take.id), live samplers instead")
-                return startLiveSamplers(take: take, fromMs: fromMs, loopRegion: loopRegion,
-                                         instruments: instruments, packs: packs, renderOutcome: r)
+                return await startLiveSamplers(take: take, fromMs: fromMs, loopRegion: loopRegion,
+                                               instruments: instruments, studio: studio,
+                                               packs: packs, renderOutcome: r)
             }
-            return playRendered(takeId: take.id, take: take, fromMs: fromMs, loopRegion: loopRegion,
-                                instruments: instruments, studio: studio, packs: packs)
+            return await playRendered(takeId: take.id, take: take, fromMs: fromMs,
+                                      loopRegion: loopRegion, instruments: instruments,
+                                      studio: studio, packs: packs)
         }
     }
 
@@ -695,19 +701,23 @@ enum StudioTakePlayback {
     private static func playRendered(takeId: String, take: StudioTake, fromMs: Int,
                                      loopRegion: (startMs: Int, endMs: Int)?,
                                      instruments: InstrumentEngine, studio: StudioStore,
-                                     packs: InstrumentPackStore) -> StartOutcome {
+                                     packs: InstrumentPackStore) async -> StartOutcome {
         guard let fresh = studio.take(takeId), fresh.isRenderFresh, let rf = fresh.renderedFileName,
               let got = StudioFolders.fileURL(family: .takes, fileName: rf,
                                               wasUserFolder: fresh.renderedWasUserFolder ?? false,
                                               bookmark: studio.bookmark(for: .takes)) else {
             NPLog.trace("studio: backing REFUSED unresolved tk=\(takeId) — the render is gone from disk")
-            return startLiveSamplers(take: take, fromMs: fromMs, loopRegion: loopRegion,
-                                     instruments: instruments, packs: packs, renderOutcome: nil)
+            return await startLiveSamplers(take: take, fromMs: fromMs, loopRegion: loopRegion,
+                                           instruments: instruments, studio: studio,
+                                           packs: packs, renderOutcome: nil)
         }
         let started = instruments.replayRenderedAudio(url: got.url, release: got.release,
                                                       fromMs: fromMs, forTake: takeId,
                                                       loopRegion: loopRegion)
         guard started.isAudible else {
+            // A seek past the mixdown's end PARKS the cursor — the shipped single-staff behaviour,
+            // and not something to raise an alert about just because the audio came from a file.
+            guard !started.isCursorPark else { return .nothingToPlay }
             return .failed("Couldn’t play this instrumental’s audio (\(started.rawValue))."
                            + " Settings ▸ Debug ▸ capture has the reason.")
         }
@@ -746,24 +756,45 @@ enum StudioTakePlayback {
     }
 
     /// Real-time per-staff sampler fallback — used only when no mixdown can be produced.
-    private static func startLiveSamplers(take: StudioTake, fromMs: Int,
+    ///
+    /// Plays the STORE's take, not the caller's. `take` is a value snapshot a view captured, and
+    /// the two paths around this one (`ensureRendered`, `playRendered`) both re-read the store by
+    /// id precisely so an edit that landed since cannot be played back as if it never happened.
+    /// This path used the snapshot — the same staleness hole, just voiced through samplers
+    /// instead of a file, and indistinguishable at the speaker from a missing overdub.
+    private static func startLiveSamplers(take snapshot: StudioTake, fromMs: Int,
                                           loopRegion: (startMs: Int, endMs: Int)?,
-                                          instruments: InstrumentEngine, packs: InstrumentPackStore,
+                                          instruments: InstrumentEngine, studio: StudioStore,
+                                          packs: InstrumentPackStore,
                                           renderOutcome: StudioTakeRenderer.RenderOutcome?)
-        -> StartOutcome {
+        async -> StartOutcome {
+        let take = studio.take(snapshot.id) ?? snapshot
         var staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)] = []
         if !take.scoreEvents.isEmpty { staffs.append((take.scoreEvents, take.instrument)) }
         for st in take.extraStaffs ?? [] where !st.scoreEvents.isEmpty {
             staffs.append((st.scoreEvents, st.instrument))
         }
-        guard !staffs.isEmpty else { return .nothingToPlay }
+        guard !staffs.isEmpty else {
+            NPLog.trace("studio: live samplers — nothing to play tk=\(take.id) (every staff empty)")
+            return .nothingToPlay
+        }
         guard let bank = StudioTakeReplay.bankURL(forInstruments: staffs.map(\.instrument),
                                                   packs: packs) else {
             if case .needPack(let name)? = renderOutcome { return .needPack(name) }
             return .needPack(take.instrument.displayName)
         }
-        instruments.replayStaffsLive(staffs: staffs, bankURL: bank, fromMs: fromMs,
-                                     forTake: take.id, loopRegion: loopRegion)
+        // AWAITED and CHECKED. The fallback has as many refusals as the mixdown path does (no
+        // graph, a stopped engine, a pool that will not load, a delegated single-staff replay with
+        // no bank in the sampler) — reporting `.playing` regardless is a ▶ that does nothing,
+        // alerts nothing, and leaves no reason line in the capture.
+        let started = await instruments.replayStaffsLive(staffs: staffs, bankURL: bank,
+                                                         fromMs: fromMs, forTake: take.id,
+                                                         loopRegion: loopRegion)
+        guard started.isAudible else {
+            guard !started.isCursorPark else { return .nothingToPlay }
+            return .failed("Couldn’t play this instrumental’s staffs (\(started.rawValue))."
+                           + " Settings ▸ Debug ▸ capture has the reason.")
+        }
         return .playing
     }
 }
@@ -918,7 +949,10 @@ enum StudioTakeReplay {
         // renders on demand; `preparing` drives the caller's spinner, and the outcome's message
         // feeds the alert this call site already shows.
         if take.staffCount > 1 {
-            guard !take.allScoreEvents.isEmpty else { return true }
+            guard !take.allScoreEvents.isEmpty else {
+                NPLog.trace("studio: replay toggle — tk=\(take.id) has \(take.staffCount) empty staffs")
+                return true
+            }
             Task { @MainActor in
                 let outcome = await StudioTakePlayback.start(take: take, fromMs: fromMs,
                                                              instruments: instruments,
