@@ -679,13 +679,15 @@ final class InstrumentEngine {
         _ = startEngineIfNeeded()      // wake a system-stopped engine before making sound
         let n = UInt8(clamping: max(0, min(127, note)))
         let v = UInt8(clamping: max(1, min(127, velocity)))
-        // Live staff capture is UNCONDITIONAL (fills even with no instrument loaded) — before the
-        // audible guard, and separate from the take log so it never desyncs a take's audio.
-        eventLog.liveOn(note: Int(n), velocity: Int(v), hostTime: mach_absolute_time())
-        // Overdub capture rides the same unconditional spot: a new-staff note counts whether or
-        // not the sampler made a sound (the live-staff precedent).
+        // Score capture — before the audible guard (a note counts even with no instrument
+        // loaded, the live-staff precedent) and separate from the take log so it never desyncs
+        // a take's audio. While an overdub is armed the note belongs to the NEW staff ONLY —
+        // mirroring it into the always-on live staff would double-write the composition (the
+        // arp loop's "deliberately NO liveOn" rule, applied to hand/MIDI keys too).
         if overdubActive {
             eventLog.overdubOn(note: Int(n), velocity: Int(v), hostTime: mach_absolute_time())
+        } else {
+            eventLog.liveOn(note: Int(n), velocity: Int(v), hostTime: mach_absolute_time())
         }
         guard rt.engineReady, let smp = sampler else { return }
         smp.startNote(n, withVelocity: v, onChannel: 0)
@@ -697,7 +699,10 @@ final class InstrumentEngine {
         // Arp record mode consumed the matching noteOn; the once-sound self-terminates.
         if arpEnabled && arpRecording { return }
         let n = UInt8(clamping: max(0, min(127, note)))
-        eventLog.liveOff(note: Int(n), hostTime: mach_absolute_time())   // unconditional live close
+        // liveOff stays unconditional: it closes a note that was pressed BEFORE the overdub
+        // armed (it no-ops when the live stream has no pending onset for the note), so a
+        // straddling note never dangles. The overdub close is gated as before.
+        eventLog.liveOff(note: Int(n), hostTime: mach_absolute_time())
         if overdubActive {
             eventLog.overdubOff(note: Int(n), hostTime: mach_absolute_time())
         }
@@ -747,7 +752,10 @@ final class InstrumentEngine {
         ensureEngine()
         guard built, rt.engineReady, !isLoadingInstrument, sampler != nil,
               !arpSelectedNotes.isEmpty else { return false }
-        stopReplay()
+        // During an OVERDUB the running replay IS the backing the arp plays over — stopping it
+        // would end the pass out from under the user (the views file the capture when the
+        // backing's isReplaying drops). Outside an overdub the old exclusivity holds.
+        if !overdubActive { stopReplay() }
         stopArpPlayback()
         guard startEngineIfNeeded() else { return false }
         arpGeneration &+= 1
@@ -1261,7 +1269,10 @@ final class InstrumentEngine {
         ensureEngine()
         guard built else { return }
         stopReplay()
-        stopArpPlayback()
+        // A latched arp SURVIVES the overdub backing starting: it is the advertised overdub
+        // source ("latch the arp, then Overdub"), playing the sampler while the backing plays
+        // the synth. Outside an overdub the old replay-vs-arp exclusivity holds.
+        if !overdubActive { stopArpPlayback() }
         guard startEngineIfNeeded() else { return }
         let from = max(0, min(fromMs, Self.maxReplayMs))
         let programs = staffs.enumerated().map { (channel: $0.offset,
@@ -1299,6 +1310,15 @@ final class InstrumentEngine {
             // playhead agree (the `replayTake` anchor contract).
             let start = ContinuousClock.now - .milliseconds(from)
             eng1.replayAnchor = start
+            // The overdub capture armed at button-press, but the backing only starts NOW —
+            // `ensureSynthReady` can cost seconds on a first-time bank parse. Re-anchor a
+            // capture that has nothing in it yet to this same instant, so notes played in time
+            // with the (delayed) backing land at the true score position. A capture with notes
+            // keeps its anchor (re-basing captured events would corrupt them).
+            if eng1.overdubActive, eng1.eventLog.overdubCount == 0 {
+                eng1.eventLog.overdubArm(anchorHostTime: mach_absolute_time(),
+                                         baseMs: eng1.overdubBaseMs)
+            }
             for a in actions {
                 try? await Task.sleep(until: start + .milliseconds(a.ms), clock: .continuous)
                 guard let eng = self, eng.replayGeneration == gen else { return }
@@ -1717,9 +1737,12 @@ final class InstrumentEngine {
                         guard let msg = parseMIDI1Word(words[i]) else { continue }
                         switch msg {
                         case .noteOn(let note, let velocity):
-                            log.liveOn(note: Int(note), velocity: Int(velocity), hostTime: host)
+                            // Overdub armed ⇒ the note belongs to the NEW staff only (never
+                            // double-written into the live staff — the hand-key rule).
                             if rt.overdubActive {
                                 log.overdubOn(note: Int(note), velocity: Int(velocity), hostTime: host)
+                            } else {
+                                log.liveOn(note: Int(note), velocity: Int(velocity), hostTime: host)
                             }
                             if rt.engineReady, let smp = rt.sampler {
                                 smp.startNote(note, withVelocity: velocity, onChannel: 0)

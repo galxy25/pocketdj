@@ -63,11 +63,10 @@ struct StudioInstrumentsView: View {
             .frame(maxWidth: .infinity)
         }
         .background(Theme.bg)
-        // The live overdub ends WITH its backing playback (the score-screen contract) — and a
-        // navigation away never leaves the engine armed with no UI owning it.
-        .onChange(of: instruments.isReplaying) { _, replaying in
-            if !replaying, liveOverdubbing { finishLiveOverdub() }
-        }
+        // The backing's natural end does NOT end the live overdub pass — the user may still
+        // be playing past the last existing note; ending it there would truncate held notes
+        // and drop the tail. The pass ends explicitly (End overdub, a re-anchoring tap, Clear,
+        // Save) — and a navigation away never leaves the engine armed with no UI owning it.
         .onDisappear { if liveOverdubbing { finishLiveOverdub() } }
         .task {
             // Push the live settings into the store (the MixRecorder "views push settings in"
@@ -632,7 +631,7 @@ struct StudioInstrumentsView: View {
     @ViewBuilder private func liveStaffFooter(extras: [InstrumentEngine.LiveStaff]) -> some View {
         if liveOverdubbing {
             Text("Overdubbing staff \(2 + extras.count) from \(Self.clock(Double(instruments.overdubBaseMs) / 1000))"
-                 + " — play the keys (or the arp’s Play); it ends with the backing playback.")
+                 + " — play the keys (or the arp’s Play); tap End overdub to finish.")
                 .font(.caption2).foregroundStyle(Theme.accent2)
         } else if 1 + extras.count >= StudioTake.maxStaffs {
             Text("4 staffs — the maximum for one instrumental.")

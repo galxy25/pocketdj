@@ -182,10 +182,31 @@ final class InstrumentLiveLogTests: XCTestCase {
         XCTAssertEqual(events.map(\.note), [60])
         XCTAssertGreaterThanOrEqual(events[0].onMs, 2_000, "captured ABSOLUTE at base + elapsed")
         XCTAssertTrue(engine.stopOverdub().isEmpty, "a second stop returns nothing")
-        // Hand keys feed BOTH streams by design: the overdub staff AND the always-on live staff.
+        // Overdub notes belong to the NEW staff ONLY — they must NOT double-write into the
+        // always-on live staff (the record-leak fix: staff 1 would otherwise gain a copy of
+        // every overdubbed note at the live log's own anchor).
         engine.pumpLiveOnceForTesting()
-        XCTAssertEqual(engine.liveEvents.map(\.note), [60],
-                       "hand keys still feed the live staff while overdubbing (by design)")
+        XCTAssertTrue(engine.liveEvents.isEmpty,
+                      "overdub notes never leak into the live free-play staff")
+        engine.teardown()
+    }
+
+    /// A note pressed BEFORE the overdub arms still closes into the live staff on release
+    /// (liveOff stays unconditional and self-guards), while notes pressed DURING the overdub
+    /// stay out of the live stream entirely.
+    @MainActor
+    func testOverdubStraddleClosesLiveNoteWithoutLeaking() {
+        let engine = InstrumentEngine()
+        engine.noteOn(48)                                  // live note, held across the arm
+        XCTAssertTrue(engine.startOverdub(fromMs: 1_000))
+        engine.noteOn(60)                                  // overdub-only note
+        engine.noteOff(60)
+        engine.noteOff(48)                                 // straddler closes into LIVE
+        let captured = engine.stopOverdub()
+        XCTAssertEqual(captured.map(\.note), [60], "only the overdub-armed press is captured")
+        engine.pumpLiveOnceForTesting()
+        XCTAssertEqual(engine.liveEvents.map(\.note), [48],
+                       "the straddling note completes in the live staff; 60 never appears")
         engine.teardown()
     }
 }

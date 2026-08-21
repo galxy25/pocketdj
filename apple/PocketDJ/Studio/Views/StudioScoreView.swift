@@ -95,9 +95,10 @@ struct StudioScoreView: View {
         // just ended was ANOTHER instrumental's (started from the takes list, then navigated here),
         // there is nothing of ours to remember: take the freed clock and put OUR cursor back on it.
         .onChange(of: instruments.isReplaying) { _, replaying in
-            // The overdub pass ends WITH its backing playback (file the staff first, so the
-            // cursor bookkeeping below sees the finished state).
-            if !replaying, overdubbing, let take { finishOverdub(take) }
+            // The backing's natural end does NOT end the overdub pass — the user may still be
+            // playing (extending the composition past the last existing note), and ending here
+            // would truncate held notes and drop everything after. The pass ends explicitly:
+            // End overdub, a re-anchoring tap, or leaving the screen.
             if !replaying, persistsCursor { cursor.replayEnded() }
         }
         .onDisappear {
@@ -407,7 +408,7 @@ struct StudioScoreView: View {
         if overdubbing {
             let at = Self.mmss(instruments.overdubBaseMs)
             return "Overdubbing staff \(take.staffCount + 1) from \(at) — play the keys, a MIDI "
-                + "keyboard, or the arp's Play; it ends with the backing playback."
+                + "keyboard, or a latched arp; tap End overdub to finish."
         }
         if take.staffCount >= StudioTake.maxStaffs {
             return "4 staffs — the maximum for one instrumental."
