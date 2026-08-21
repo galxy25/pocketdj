@@ -58,6 +58,8 @@ final class StudioStaffTests: XCTestCase {
                        "events stay ABSOLUTE on the take's one score clock")
         XCTAssertEqual(got.durationMs, 4_750, "duration extends to the overdub's last off")
         XCTAssertNil(got.renderedFileName, "the rendered-audio cache is invalidated")
+        XCTAssertGreaterThan(got.renderRevision, 0, "…and the score revision moves with it")
+        XCTAssertFalse(got.isRenderFresh)
         XCTAssertEqual(got.allScoreEvents.map(\.onMs), [0, 4_250],
                        "allScoreEvents merges every staff onset-sorted")
 
@@ -98,6 +100,18 @@ final class StudioStaffTests: XCTestCase {
         let old = try JSONDecoder().decode(StudioTake.self, from: legacy)
         XCTAssertNil(old.extraStaffs, "absent key ⇒ nil, single-staff")
         XCTAssertEqual(old.staffCount, 1)
+        XCTAssertEqual(old.renderRevision, 0, "absent revision ⇒ 0 (additive-optional)")
+        XCTAssertNil(old.renderedRevision)
+        XCTAssertFalse(old.isRenderFresh, "no cache at all ⇒ nothing to be fresh")
+        // A cache filed BEFORE the stamp existed still counts as fresh — otherwise every
+        // instrumental in an existing library falls back to its raw file, and a live-saved
+        // take’s raw file is a SILENT placeholder.
+        let legacyCached = """
+        {"id":"tk_c","name":"C","instrument":"piano","fileName":"take-tk_c.m4a","bpm":120,
+         "events":[],"durationMs":0,"createdAt":1,"renderedFileName":"take-tk_c-r0.m4a"}
+        """.data(using: .utf8)!
+        let cached = try JSONDecoder().decode(StudioTake.self, from: legacyCached)
+        XCTAssertTrue(cached.isRenderFresh, "a pre-stamp cache reads as revision 0, which it is")
         XCTAssertEqual(old.allScoreEvents.map(\.note), old.scoreEvents.map(\.note))
 
         // Round-trip: a 3-staff take survives encode→decode with per-staff fields intact.
@@ -165,5 +179,66 @@ final class StudioStaffTests: XCTestCase {
         store.deleteStaff("tk_1", staffId: staffId)
         XCTAssertNil(store.take("tk_1")?.extraStaffs,
                      "an emptied staff list collapses to nil (legacy shape)")
+    }
+
+    // MARK: The render cache's freshness stamp (a stale mixdown = "the overdub isn't there")
+
+    /// EVERY mutation the mixdown is made of bumps the take's render revision. Table-driven,
+    /// because the failure mode of a missed one is invisible: playback quietly plays the PREVIOUS
+    /// mixdown, which looks exactly like the multi-staff silence bug never being fixed.
+    func testEveryScoreMutationBumpsTheRenderRevision() {
+        let mutations: [(name: String, apply: (StudioStore, String) -> Void)] = [
+            ("setTakeEvents", { s, sid in s.setTakeEvents("tk_1", events: [self.ev(0, 400)]) }),
+            ("setTakeInstrument", { s, _ in s.setTakeInstrument("tk_1", .violin) }),
+            ("setTakeTempo", { s, _ in s.setTakeTempo("tk_1", newBpm: 90) }),
+            ("revertTakeEdits", { s, _ in
+                s.setTakeEvents("tk_1", events: [self.ev(0, 400)])   // arms the revert
+                s.revertTakeEdits("tk_1")
+            }),
+            ("addOverdubStaff", { s, _ in
+                _ = s.addOverdubStaff("tk_1", instrument: .harp, events: [self.ev(900, 950)])
+            }),
+            ("setStaffEvents", { s, sid in s.setStaffEvents("tk_1", staffId: sid, events: [self.ev(0, 90)]) }),
+            ("setStaffInstrument", { s, sid in s.setStaffInstrument("tk_1", staffId: sid, .clarinet) }),
+            ("revertStaffEdits", { s, sid in
+                s.setStaffEvents("tk_1", staffId: sid, events: [self.ev(0, 90)])
+                s.revertStaffEdits("tk_1", staffId: sid)
+            }),
+            ("deleteStaff", { s, sid in s.deleteStaff("tk_1", staffId: sid) }),
+        ]
+        for m in mutations {
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("pdj-rev-\(UUID().uuidString).json")
+            defer { try? FileManager.default.removeItem(at: url) }
+            let store = StudioStore(fileURL: url)
+            store.addTake(makeTake())
+            let staffId = store.addOverdubStaff("tk_1", instrument: .trumpet,
+                                                events: [ev(1_000, 1_200)])!
+            let before = store.take("tk_1")!.renderRevision
+            m.apply(store, staffId)
+            XCTAssertGreaterThan(store.take("tk_1")!.renderRevision, before,
+                                 "\(m.name) changes the mixdown ⇒ it MUST invalidate the render")
+        }
+    }
+
+    /// THE race the revision exists for: a render started before an edit, landing after it, must
+    /// not re-file itself as the current cache. Without the guard the take would play its
+    /// PRE-OVERDUB mixdown forever — the reported bug, still reported, after the fix.
+    func testAnInFlightRenderCannotRestampAnInvalidatedCache() {
+        let store = StudioStore(fileURL: storeURL)
+        store.addTake(makeTake())
+        let staffId = store.addOverdubStaff("tk_1", instrument: .trumpet, events: [ev(1_000, 1_200)])!
+        let inFlight = store.take("tk_1")!.renderRevision           // what the render was made OF
+        let name = StudioFolders.renderedTakeFileName(id: "tk_1", revision: inFlight)
+        store.setStaffEvents("tk_1", staffId: staffId, events: [ev(1_000, 1_100)])   // …then an edit lands
+        store.setTakeRendered("tk_1", fileName: name, wasUserFolder: false, revision: inFlight)
+        XCTAssertNil(store.take("tk_1")?.renderedFileName,
+                     "a mixdown of the PRE-edit score is refused, not filed as current")
+        XCTAssertFalse(store.take("tk_1")!.isRenderFresh)
+        // The render that matches the CURRENT revision is accepted, and only then is it fresh.
+        let now = store.take("tk_1")!.renderRevision
+        store.setTakeRendered("tk_1", fileName: StudioFolders.renderedTakeFileName(id: "tk_1", revision: now),
+                              wasUserFolder: false, revision: now)
+        XCTAssertTrue(store.take("tk_1")!.isRenderFresh)
     }
 }

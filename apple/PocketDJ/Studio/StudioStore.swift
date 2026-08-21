@@ -928,7 +928,10 @@ final class StudioStore {
         saveNow()
     }
 
-    /// Delete + forget a take's rendered-audio cache (its events changed, so the synth is stale).
+    /// Delete + forget a take's rendered-audio cache (its events changed, so the synth is stale)
+    /// and BUMP the score revision. The bump is what makes a render already in flight harmless:
+    /// `setTakeRendered` refuses a stamp minted against a revision this take has moved past, so a
+    /// pre-edit mixdown can never be filed as the current one.
     private func invalidateTakeRender(_ take: inout StudioTake) {
         if let rf = take.renderedFileName,
            let got = StudioFolders.fileURL(family: .takes, fileName: rf,
@@ -939,6 +942,8 @@ final class StudioStore {
         }
         take.renderedFileName = nil
         take.renderedWasUserFolder = nil
+        take.renderedRevision = nil
+        take.renderRevision &+= 1
     }
 
     /// Delete a take (file + record). Resolves the file against the root it was WRITTEN to
@@ -1215,7 +1220,7 @@ final class StudioStore {
             // Prefer the rendered-audio cache (real synth of the events — the only audible source
             // for a live-saved take, whose raw file is a silent placeholder). Fall back to the raw
             // file (a RECORDED take's real capture; a live placeholder resolves but is silent).
-            if let rf = t.renderedFileName,
+            if t.isRenderFresh, let rf = t.renderedFileName,
                let got = StudioFolders.fileURL(family: .takes, fileName: rf,
                                                wasUserFolder: t.renderedWasUserFolder ?? false, bookmark: bm) {
                 return (got.url, got.release, t.name, t.durationMs)
@@ -1228,12 +1233,28 @@ final class StudioStore {
         return nil
     }
 
-    /// File an instrumental's rendered-audio cache (its `scoreEvents` synthesized to a real `.m4a`).
-    /// The render writer resolves the instrumentals folder + writes the file, then records it here.
-    func setTakeRendered(_ id: String, fileName: String, wasUserFolder: Bool) {
+    /// File an instrumental's rendered-audio cache (every staff synthesized + mixed into a real
+    /// `.m4a`). The render writer resolves the instrumentals folder + writes the file, then records
+    /// it here against the revision it STARTED from.
+    ///
+    /// A stamp whose `revision` the take has already moved past is REFUSED (and its orphan file
+    /// deleted): the score was edited while the render ran, so this file is the pre-edit mixdown
+    /// and filing it would make every later play sound like the edit never happened.
+    func setTakeRendered(_ id: String, fileName: String, wasUserFolder: Bool, revision: Int) {
         guard let i = takes.firstIndex(where: { $0.id == id }) else { return }
+        guard takes[i].renderRevision == revision else {
+            NPLog.trace("studio: render STALE DROPPED tk=\(id) rev \(revision) ≠ \(takes[i].renderRevision)")
+            if let got = StudioFolders.fileURL(family: .takes, fileName: fileName,
+                                               wasUserFolder: wasUserFolder,
+                                               bookmark: bookmark(for: .takes)) {
+                try? FileManager.default.removeItem(at: got.url)
+                got.release?()
+            }
+            return
+        }
         takes[i].renderedFileName = fileName
         takes[i].renderedWasUserFolder = wasUserFolder
+        takes[i].renderedRevision = revision
         saveNow()
     }
 

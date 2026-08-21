@@ -646,6 +646,12 @@ final class InstrumentEngine {
         MixDiag.shared.append(s)
     }
 
+    /// PLAYBACK-PATH trace. `NPLog` (not `dlog`) because a "why is it silent" capture is taken
+    /// either way the tester has one: it os_logs under `nowplaying` unconditionally AND mirrors
+    /// into the Settings ▸ Debug buffer the exported `pocketdj-debug-*.txt` is built from. Every
+    /// refusal on this path carries a DISTINCT reason — the next capture must name the failure.
+    private func plog(_ s: String) { NPLog.trace("instr: \(s)") }
+
     /// Everything downstream of the sampler is pinned at canonical 44.1 kHz stereo for life —
     /// the MixEngine format-pinning doctrine (a live AU seeing a format reconfig asserts).
     nonisolated static let canonicalFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100,
@@ -673,14 +679,35 @@ final class InstrumentEngine {
         let smp = AVAudioUnitSampler()
         let mix = AVAudioMixerNode()
         let click = AVAudioPlayerNode()
+        let backing = AVAudioPlayerNode()
         engine.attach(smp)
         engine.attach(mix)
         engine.attach(click)
+        engine.attach(backing)
         // sampler → instrumentMix → mainMixer, all canonical. The take tap lives on
         // instrumentMix; the click joins at mainMixer DOWNSTREAM of it (never recorded).
         engine.connect(smp, to: mix, format: canonical)
         engine.connect(mix, to: engine.mainMixerNode, format: canonical)
         engine.connect(click, to: engine.mainMixerNode, format: canonical)
+        // The rendered-audio backing joins at instrumentMix — INSIDE the take tap, exactly where
+        // the sampler is. Attached EAGERLY (an idle player node costs nothing) rather than on the
+        // first multi-staff play: reconfiguring a LIVE graph is the class of risk this whole fix
+        // exists to remove.
+        engine.connect(backing, to: mix, format: canonical)
+        // The per-staff sampler POOL, attached + connected here for exactly the same reason. The
+        // real-time multi-staff fallback (`replayStaffsLive`) used to attach and connect its AUs
+        // to a RUNNING engine, at play time — the precise shape of live-graph reconfiguration this
+        // fix exists to remove, and the one property the original silence was never cleared of on
+        // iOS. An `AVAudioUnitSampler` with no bank loaded holds no samples, so the whole pool
+        // costs ~nothing until a staff actually needs it.
+        if backingSamplers.isEmpty {
+            backingSamplers = (0..<StudioTake.maxStaffs).map { _ in AVAudioUnitSampler() }
+            backingLoaded = Array(repeating: nil, count: backingSamplers.count)
+        }
+        for pooled in backingSamplers {
+            engine.attach(pooled)
+            engine.connect(pooled, to: mix, format: canonical)
+        }
         engine.prepare()
         do { try engine.start() } catch {
             dlog("instr: engine.start failed at build — degraded (no audio device?)")
@@ -691,6 +718,7 @@ final class InstrumentEngine {
         sampler = smp
         instrumentMix = mix
         clickPlayer = click
+        backingPlayer = backing
         // The realtime bridge sees the sampler now, but stays CLOSED until a bank is loaded —
         // startNote against an empty/parsing sampler is at best silence, at worst a mid-parse poke.
         rt.sampler = smp
@@ -722,6 +750,7 @@ final class InstrumentEngine {
     func teardown() {
         if isRecordingTake { autoStopTake(reason: "teardown") }
         stopReplay()
+        stopBacking()          // stopReplay early-returns when nothing was playing — never leak the scope
         stopArpPlayback()
         _ = stopOverdub()
         watchdogTask?.cancel(); watchdogTask = nil
@@ -741,6 +770,14 @@ final class InstrumentEngine {
     // system stops the engine out from under the app; tests reproduce that state here.
     func stopEngineForTesting() { engine.stop() }
     var engineIsRunningForTesting: Bool { engine.isRunning }
+    /// How many pool samplers are ATTACHED. The contract this pins: the pool is built with the
+    /// GRAPH, so the real-time fallback never attaches an AU to a running engine.
+    var backingSamplerCountForTesting: Int { backingSamplers.count }
+    /// The loop region the backing is really playing (`loopRegion`) — what the cursor and the
+    /// overdub capture both wrap on.
+    var backingLoopRegionForTesting: (startMs: Int, endMs: Int)? { replayLoopRegion }
+    /// The overdub capture's own region end, which must equal the AUDIO's after a clamp.
+    var overdubRegionEndMsForTesting: Int { overdubRegionEndMs }
     /// Drive the route/config-change observer path directly (tests can't post as the session).
     func simulateEngineRecoveryForTesting() { recoverFromEngineStop() }
     var clickNodeIsPlayingForTesting: Bool { clickPlayer?.isPlaying ?? false }
@@ -1125,22 +1162,43 @@ final class InstrumentEngine {
     /// (overdubbing over a silent bank) must auto-finalize exactly the same way.
     private func overdubDeadlineTick() {
         guard overdubActive, !overdubLoop, !overdubReachedEnd else { return }
-        guard !Self.deadlineDeferred(isReplaying: isReplaying, synthReady: synthReady,
+        guard !Self.deadlineDeferred(isReplaying: isReplaying, backingReady: backingReady,
+                                     backingPreparing: backingPreparing,
                                      capturedCount: eventLog.overdubCount) else { return }
         guard eventLog.overdubRegionExhausted(atHostTime: mach_absolute_time()) else { return }
         overdubReachedEnd = true
         dlog("instr: overdub region END at \(overdubRegionEndMs) ms — auto-finalize")
     }
 
-    /// A pass whose BACKING is still warming up has not started yet: the capture arms at the
-    /// button press, but `replayTakePolyphonic` re-anchors an empty capture to the instant the
-    /// synth is actually ready — a first-time 32 MB bank parse costs SECONDS. Running the deadline
-    /// against the press anchor in that window finalizes a short-region pass before the user hears
-    /// a single note of backing (Overdub then looks like a dead button). Defer until the anchor is
-    /// real; a capture that already has notes keeps its anchor, so its deadline runs as before.
-    nonisolated static func deadlineDeferred(isReplaying: Bool, synthReady: Bool,
+    /// A pass whose BACKING has not started yet has not started: the capture arms at the button
+    /// press, but the backing re-anchors an empty capture to the instant it is actually audible —
+    /// and getting there costs real time (an on-demand mixdown render, a preset parse). Running the
+    /// deadline against the press anchor in that window finalizes a short-region pass before the
+    /// user hears a single note of backing (Overdub then looks like a dead button). Defer until the
+    /// anchor is real; a capture that already has notes keeps its anchor, so its deadline runs as
+    /// before. `backingPreparing` covers the OFF-ENGINE half of the warm-up (the render), where
+    /// `isReplaying` is deliberately still false.
+    nonisolated static func deadlineDeferred(isReplaying: Bool, backingReady: Bool,
+                                             backingPreparing: Bool = false,
                                              capturedCount: Int) -> Bool {
-        isReplaying && !synthReady && capturedCount == 0
+        guard capturedCount == 0 else { return false }
+        return backingPreparing || (isReplaying && !backingReady)
+    }
+
+    /// Re-anchor an EMPTY overdub capture to NOW. The pass arms at the button press, but its
+    /// backing only becomes audible later (an on-demand mixdown render, a preset parse) — and the
+    /// backing paths re-anchor an empty capture at exactly that instant. When the backing REFUSES
+    /// after burning that time, nothing re-anchors it, so a confined region is measured from a
+    /// press that is now seconds in the past and the pass auto-finalizes before the user plays a
+    /// note. The score screens call this on any non-playing outcome. A capture with notes in it
+    /// keeps its anchor — re-basing captured events corrupts them.
+    @discardableResult
+    func reanchorOverdubIfEmpty() -> Bool {
+        guard overdubActive, eventLog.overdubCount == 0 else { return false }
+        eventLog.overdubArm(anchorHostTime: mach_absolute_time(), baseMs: overdubBaseMs,
+                            regionEndMs: overdubRegionEndMs, loop: overdubLoop)
+        plog("overdub RE-ANCHORED at \(overdubBaseMs) ms — the backing never started")
+        return true
     }
 
     /// Notes the armed overdub has captured so far (completed + still-sounding). The score
@@ -1293,15 +1351,27 @@ final class InstrumentEngine {
     /// `forTake` names WHOSE clock this replay is, so another instrumental's open score neither
     /// shows nor persists this one's position (see `replayOwner`). nil = an anonymous replay, which
     /// no score screen will claim.
+    ///
+    /// Returns WHY it did or did not start. The behaviour is bit-for-bit what it always was — the
+    /// return value and the logs are additive — but a bare `return` on the most-used ▶ in the app
+    /// is undiagnosable from a user capture, which is exactly how the multi-staff silence shipped.
+    @discardableResult
     func replayTake(events: [StudioNoteEvent], instrument: InstrumentKey, fromMs: Int = 0,
-                    forTake takeId: String? = nil) {
+                    forTake takeId: String? = nil) -> BackingStart {
         ensureEngine()
-        guard built, rt.engineReady, !isLoadingInstrument, sampler != nil else { return }
+        guard built, rt.engineReady, !isLoadingInstrument, sampler != nil else {
+            plog("replay REFUSED samplerNotReady — built=\(built) bankLoaded=\(rt.engineReady)"
+                 + " loading=\(isLoadingInstrument) sampler=\(sampler != nil ? 1 : 0)")
+            return .samplerNotReady
+        }
         if let cur = currentInstrument, cur != instrument {
             dlog("instr: replay wants \(instrument.rawValue) but \(cur.rawValue) is loaded")
         }
         stopReplay()
-        guard startEngineIfNeeded() else { return }
+        guard startEngineIfNeeded() else {
+            plog("replay REFUSED engineStopped — startEngineIfNeeded failed")
+            return .engineStopped
+        }
         // Clamp before any clock math: a seek derived from a wild layout must degrade, never trap.
         let from = max(0, min(fromMs, Self.maxReplayMs))
         let actions = Self.replayActions(events: events, from: from)
@@ -1309,7 +1379,8 @@ final class InstrumentEngine {
             // Seeked past the last note: nothing left to play, so just park the cursor there (the
             // "last played" emphasis holds) instead of silently doing nothing.
             if from > 0 { parkReplayPosition(atMs: from, forTake: takeId) } else { replayOwner = takeId }
-            return
+            plog("replay nothing to play from \(from) ms (\(events.count) events) — cursor parked")
+            return .nothingToPlay
         }
         replayOwner = takeId
         isReplaying = true
@@ -1348,6 +1419,7 @@ final class InstrumentEngine {
             NowPlayingArbiter.shared.resign(self)
             self.dlog("instr: replay END")
         }
+        return .started
     }
 
     /// Cancel a replay: bump the generation (the loop exits at its next wake) and silence
@@ -1363,8 +1435,10 @@ final class InstrumentEngine {
             }
             smp.sendController(123, withValue: 0, onChannel: 0)
         }
-        // A polyphonic replay voices through the synth — silence it too (CC 123, channels 0–3).
-        if synthReady, let syn = synth { syn.allNotesOff() }
+        // A multi-staff replay voices through the backing — an audio mixdown (stopped + its
+        // security scope released) or the sampler pool (CC 123 across every slot).
+        stopBacking()
+        silenceBackingSamplers()
         for n in replayActiveNotes { eventLog.noteOff(note: n, hostTime: mach_absolute_time()) }
         replayActiveNotes = []
         NowPlayingArbiter.shared.resign(self)
@@ -1383,6 +1457,24 @@ final class InstrumentEngine {
     /// A METHOD over `@ObservationIgnored` storage on purpose (see `replayAnchor`): the score's
     /// playhead calls it from a `TimelineView` tick.
     func replayPositionMs() -> Int? {
+        // An AUDIO backing is its own clock: read the player's render time so cursor and audio can
+        // never disagree (and so a stalled engine freezes the cursor rather than letting a wall
+        // clock march it on). `sampleTime` is monotonic across `.loops` iterations — the wrap folds
+        // it back into the region, exactly as the scheduled-note looper's cursor did.
+        if backingFile != nil {
+            if let p = backingPlayer, p.isPlaying, let nt = p.lastRenderTime,
+               let pt = p.playerTime(forNodeTime: nt),
+               let sr = backingFile?.processingFormat.sampleRate, sr > 0 {
+                // `sampleTime` reads slightly NEGATIVE in the instant between `play()` and the
+                // first render (the node's start is a hair ahead of `lastRenderTime`) — floor the
+                // elapsed at 0 or a looping cursor reports a position OUTSIDE its own region.
+                let elapsed = max(0, Int((Double(pt.sampleTime) / sr * 1000).rounded()))
+                let ms = backingStartMs + elapsed
+                return Self.wrapIntoLoop(ms: max(0, min(ms, Self.maxReplayMs)),
+                                         region: replayLoopRegion)
+            }
+            return backingPausedMs
+        }
         guard let anchor = replayAnchor else { return replayFrozenMs }
         let c = (ContinuousClock.now - anchor).components
         let secs = Double(c.seconds) + Double(c.attoseconds) / 1e18
@@ -1524,50 +1616,343 @@ final class InstrumentEngine {
         }
     }
 
-    // MARK: - Polyphonic replay (all staffs mixed live through the multitimbral synth)
+    // MARK: - Backing playback (rendered audio; the multi-staff ▶ and the overdub backing)
 
-    /// The multitimbral replay node — ONE `kAudioUnitSubType_MIDISynth` AU holding the ONE
-    /// shared SoundFont, addressed on channels 0…3 (the 32 MB font is never duplicated). Created
-    /// lazily on the first polyphonic replay, connected `synth → instrumentMix` in canonical
-    /// format — INSIDE the permanent take tap, upstream of the click, so polyphonic replay is
-    /// recordable exactly like the sampler. The live sampler stays the hand-key/arp/single-staff
-    /// voice; CoreMIDI, loadInstrument, watchdog and rebuild paths are untouched.
-    @ObservationIgnored private var synth: MultiTimbralSynth?
-    /// The `engineReady` contract for the synth: true only when the bank is loaded and programs
-    /// are set (never poked mid-parse).
-    @ObservationIgnored private var synthReady = false
+    /// The RENDERED-AUDIO backing node — one `AVAudioPlayerNode` playing a take's cached mixdown
+    /// (`StudioTakeRenderer.ensureRendered`), attached ONCE in `ensureEngine` as
+    /// `backingPlayer → instrumentMix`: inside the permanent take tap, upstream of the click, so a
+    /// backing is recordable exactly where the sampler is.
+    ///
+    /// Multi-staff playback rides THIS rather than a multitimbral MIDI synth. Per-staff timbre
+    /// never needed one: the offline renderer already voices each staff through its own plain
+    /// `AVAudioUnitSampler` (`loadSoundBankInstrument` loads ONE preset, not the whole 32 MB
+    /// font), so the mixdown it writes is the same music with none of the AU's warm-up. Playing a
+    /// FILE also leaves the live sampler completely free — it is the user's overdub voice, and the
+    /// backing can never contend with it.
+    @ObservationIgnored private var backingPlayer: AVAudioPlayerNode?
+    /// The open mixdown. Non-nil ONLY while an audio backing is scheduled — it is also the gate
+    /// that hands `replayPositionMs()` to the render clock instead of the wall clock.
+    @ObservationIgnored private var backingFile: AVAudioFile?
+    /// Security-scope release for a user-folder mixdown — held for the whole PLAY and released in
+    /// `stopBacking` (releasing early ⇒ silent 0:00, the BurnStore lesson).
+    @ObservationIgnored private var backingRelease: (() -> Void)?
+    /// Score-clock ms of the scheduled window's frame 0 (the render's frame 0 IS score ms 0 —
+    /// `StudioRender.pumpSampler` writes the leading silence), so position = start + elapsed.
+    @ObservationIgnored private var backingStartMs = 0
+    /// Last known backing position — mirrored by the 30 Hz pump and before every `stop()`, so a
+    /// freeze parks where the audio actually stopped rather than where a wall clock guessed.
+    @ObservationIgnored private var backingPausedMs = 0
+    /// The `engineReady` contract for a backing: true only once it is actually scheduled and
+    /// playing (an audio file) or its sampler pool is loaded (the live path) — never poked
+    /// mid-parse. `deadlineDeferred` reads it.
+    @ObservationIgnored private var backingReady = false
+    /// A backing is being PREPARED off-screen (an on-demand render/decode before playback). The
+    /// overdub deadline defers on it exactly as it defers on a warming bank: the capture armed at
+    /// the button press, and a short region must not finalize before a note of backing is heard.
+    /// `@ObservationIgnored` on purpose — the spinner is view state, so `isReplaying` stays FALSE
+    /// through the whole prepare (a score reading it as "replay ended" would write a bogus cursor).
+    @ObservationIgnored private var backingPreparing = false
 
-    /// Replay MULTIPLE staffs mixed (the polyphonic ▶). Single staff delegates to the existing
-    /// `replayTake` — zero regression on legacy takes. `bankURL` is the one shared SoundFont
-    /// (caller resolves via `InstrumentPackStore.localBankURL` — nil there is the "download the
-    /// pack first" prompt, the same gate `StudioTakeReplay.toggle` uses).
-    /// `loopRegion` turns the backing into a LOOPER over `[startMs, endMs)` (req 6: an overdub
-    /// with Loop on replays its confined region forever, so notes can be layered pass after
-    /// pass). Every iteration re-strikes from `startMs` and ALL notes are silenced at the wrap,
-    /// so nothing hangs across the boundary; the score cursor wraps with it
-    /// (`replayPositionMs`). nil = today's single pass.
-    func replayTakePolyphonic(staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)],
-                              bankURL: URL, fromMs: Int = 0, forTake takeId: String? = nil,
-                              forceSynth: Bool = false,
-                              loopRegion: (startMs: Int, endMs: Int)? = nil) {
-        // `forceSynth` routes even a SINGLE staff through the multitimbral synth — the overdub
-        // backing needs the SAMPLER left free (it is the user's overdub voice, playing live over
-        // the backing), and the synth plays the staff's own timbre regardless of what's loaded.
-        guard staffs.count > 1 || (forceSynth && !staffs.isEmpty) else {
-            if let only = staffs.first {
-                replayTake(events: only.events, instrument: only.instrument,
-                           fromMs: fromMs, forTake: takeId)
+    /// Why a backing did (or did not) start. EVERY exit is named: on device a silent `return` and
+    /// a working call that happens to make no sound are indistinguishable, which is precisely how
+    /// the multi-staff silence survived a shipped release.
+    enum BackingStart: String, CaseIterable, Sendable {
+        case started
+        case startedOnePassFallback
+        case noEngine
+        case engineStopped
+        case fileUnreadable
+        case emptyFile
+        case zeroFrameWindow
+        case seekPastEnd
+        // The REAL-TIME sampler paths (`replayStaffsLive`, `replayTake`) report through the same
+        // vocabulary — a fallback that refuses must be as nameable as a mixdown that refuses,
+        // or the ▶ reports success and the capture carries no reason line.
+        case noStaffs
+        case nothingToPlay
+        case samplersUnavailable
+        case samplerNotReady
+
+        /// Did audio actually start? (Both start cases sound; everything else is a refusal.)
+        var isAudible: Bool { self == .started || self == .startedOnePassFallback }
+
+        /// Is this refusal a legitimate CURSOR PARK rather than a failure? Seeking past the last
+        /// note parks the cursor and plays nothing — the shipped single-staff behaviour, and NOT
+        /// something to raise an alert about on any other path either.
+        var isCursorPark: Bool { self == .seekPastEnd || self == .nothingToPlay }
+    }
+
+    /// Mark a backing as being prepared (an on-demand render) — see `backingPreparing`.
+    func setBackingPreparing(_ on: Bool) { backingPreparing = on }
+
+    /// The frame window a backing plays: `[fromMs, end-of-file)` normally, `[loop.start, loop.end)`
+    /// when looping. A zero-frame window is REFUSED (nil) rather than scheduled — scheduling one is
+    /// an uncatchable crash (the `StudioEngine.scheduleSampleWindow` rule). Pure + testable.
+    nonisolated static func backingWindow(fromMs: Int, loop: (startMs: Int, endMs: Int)?,
+                                          fileFrames: AVAudioFramePosition, sampleRate: Double)
+        -> (startFrame: AVAudioFramePosition, frameCount: AVAudioFrameCount, loops: Bool)? {
+        guard fileFrames > 0, sampleRate.isFinite, sampleRate > 0 else { return nil }
+        func frame(_ ms: Int) -> AVAudioFramePosition {
+            let clamped = max(0, min(ms, maxReplayMs))
+            return min(AVAudioFramePosition((Double(clamped) / 1000 * sampleRate).rounded()), fileFrames)
+        }
+        let loops = (loop?.endMs ?? 0) > (loop?.startMs ?? 0)
+        let start = frame(loops ? loop!.startMs : fromMs)
+        let end = loops ? frame(loop!.endMs) : fileFrames
+        let count = end - start
+        guard count > 0, count <= AVAudioFramePosition(AVAudioFrameCount.max) else { return nil }
+        return (start, AVAudioFrameCount(count), loops)
+    }
+
+    /// The region a scheduled loop REALLY plays. Derived from the frames the read ACTUALLY
+    /// returned, never from the frames requested: `AVAudioFile.read(into:frameCount:)` returns UP
+    /// TO `frameCount`, and short reads are routine near EOF and on packet-granular compressed
+    /// audio (the mixdown is AAC). The node loops what is IN the buffer, so a cursor — and the
+    /// overdub capture, which wraps on the same numbers — that used the requested length would
+    /// drift a little further from the audio on every single iteration. nil ⇒ nothing to loop.
+    /// Pure + testable.
+    nonisolated static func loopRegion(startMs: Int, framesRead: AVAudioFrameCount,
+                                       sampleRate: Double) -> (startMs: Int, endMs: Int)? {
+        guard framesRead > 0, sampleRate.isFinite, sampleRate > 0 else { return nil }
+        let playedMs = Int((Double(framesRead) / sampleRate * 1000).rounded())
+        guard playedMs > 0 else { return nil }
+        return (startMs: startMs, endMs: startMs + playedMs)
+    }
+
+    /// Play a take's RENDERED mixdown as the backing, from `fromMs` on the score clock — the
+    /// multi-staff ▶ and the overdub backing both land here. `release` is the mixdown's
+    /// security scope: this engine OWNS it from now until the backing stops.
+    ///
+    /// `loopRegion` makes it a looper over `[startMs, endMs)` (an overdub with Loop on replays its
+    /// confined region forever, so notes layer pass after pass). The score cursor wraps with it
+    /// (`replayPositionMs`), and the position is read from the player's own render clock, so
+    /// cursor and audio can never disagree.
+    @discardableResult
+    func replayRenderedAudio(url: URL, release: (() -> Void)? = nil, fromMs: Int = 0,
+                             forTake takeId: String? = nil,
+                             loopRegion: (startMs: Int, endMs: Int)? = nil) -> BackingStart {
+        ensureEngine()
+        let name = url.lastPathComponent
+        guard built, let player = backingPlayer else {
+            release?()
+            plog("backing REFUSED noEngine — graph not built (no audio device?) \(name)")
+            return .noEngine
+        }
+        stopReplay()
+        // A latched arp SURVIVES the overdub backing starting: it is the advertised overdub source
+        // ("latch the arp, then Overdub"), playing the sampler while the backing plays the file.
+        // Outside an overdub the old replay-vs-arp exclusivity holds.
+        if !overdubActive { stopArpPlayback() }
+        guard startEngineIfNeeded() else {
+            release?()
+            plog("backing REFUSED engineStopped — startEngineIfNeeded failed \(name)")
+            return .engineStopped
+        }
+        let file: AVAudioFile
+        do { file = try AVAudioFile(forReading: url) } catch {
+            release?()
+            plog("backing REFUSED fileUnreadable — \(name): \(error.localizedDescription)")
+            return .fileUnreadable
+        }
+        guard file.length > 0 else {
+            release?()
+            plog("backing REFUSED emptyFile — \(name) 0 frames")
+            return .emptyFile
+        }
+        let from = max(0, min(fromMs, Self.maxReplayMs))
+        let loop: (startMs: Int, endMs: Int)? = loopRegion.flatMap {
+            let r = (startMs: max(0, min($0.startMs, Self.maxReplayMs)),
+                     endMs: max(0, min($0.endMs, Self.maxReplayMs)))
+            return r.endMs > r.startMs ? r : nil
+        }
+        let sr = file.processingFormat.sampleRate
+        guard let win = Self.backingWindow(fromMs: from, loop: loop, fileFrames: file.length,
+                                           sampleRate: sr) else {
+            release?()
+            // Park the cursor where the seek asked for (the `replayTake` rule) — the "last played"
+            // emphasis holds instead of the button doing nothing at all.
+            if from > 0 { parkReplayPosition(atMs: from, forTake: takeId) } else { replayOwner = takeId }
+            if loop == nil {
+                plog("backing seek past end — cursor parked at \(from) ms (\(name) \(file.length)f)")
+                return .seekPastEnd
             }
-            return
+            plog("backing REFUSED zeroFrameWindow from=\(from) loop=\(loop!.startMs)…\(loop!.endMs)"
+                 + " len=\(file.length)f")
+            return .zeroFrameWindow
+        }
+
+        replayGeneration &+= 1
+        let gen = replayGeneration
+        var outcome = BackingStart.started
+        var region: (startMs: Int, endMs: Int)?
+        player.stop()
+        var scheduledLoop = false
+        if win.loops, let loop {
+            // Seamless loop: read the region into a buffer and `.loops` it (the
+            // `StudioEngine.scheduleSampleWindow` looper). The cursor wraps through the SAME
+            // region, so iteration 3 paints where iteration 1 did.
+            if let buf = AVAudioPCMBuffer(pcmFormat: file.processingFormat,
+                                          frameCapacity: win.frameCount) {
+                file.framePosition = win.startFrame
+                if (try? file.read(into: buf, frameCount: win.frameCount)) != nil,
+                   let r = Self.loopRegion(startMs: loop.startMs, framesRead: buf.frameLength,
+                                           sampleRate: sr) {
+                    player.scheduleBuffer(buf, at: nil, options: .loops, completionHandler: nil)
+                    scheduledLoop = true
+                    region = r
+                    if buf.frameLength != win.frameCount {
+                        plog("backing loop SHORT READ — \(buf.frameLength)f of \(win.frameCount)f"
+                             + " asked (\(name))")
+                    }
+                    if r.endMs != loop.endMs {
+                        plog("backing loop CLAMPED to the render — \(loop.startMs)…\(r.endMs)"
+                             + " (asked \(loop.endMs))")
+                    }
+                }
+            }
+            if !scheduledLoop {
+                plog("backing loopReadFailed — one pass instead of looping"
+                     + " \(loop.startMs)…\(loop.endMs) (\(name))")
+                outcome = .startedOnePassFallback
+            }
+        }
+        if !scheduledLoop {
+            // One pass. `.dataPlayedBack` is the only truthful end signal — the player node does
+            // NOT stop itself when a segment runs dry (`isPlaying` stays true, rendering silence).
+            player.scheduleSegment(file, startingFrame: win.startFrame, frameCount: win.frameCount,
+                                   at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.finishBackingReplay(gen: gen) }
+            }
+        }
+        backingFile = file
+        backingRelease = release
+        backingStartMs = scheduledLoop ? (loop?.startMs ?? from) : from
+        backingPausedMs = backingStartMs
+        backingReady = true
+        replayOwner = takeId
+        isReplaying = true
+        NowPlayingArbiter.shared.claim(self)
+        // Fallback clock for the instant before the render clock reports (and for a stalled
+        // engine): back-dated by `from`, the `replayTake` anchor contract.
+        replayAnchor = ContinuousClock.now - .milliseconds(backingStartMs)
+        replayFrozenMs = backingStartMs
+        replayLoopRegion = region
+        player.play()
+        // The overdub capture armed at the button press, but the backing only starts NOW (an
+        // on-demand render/decode costs real time). Re-anchor a capture that has nothing in it yet
+        // to this instant, so notes played in time with the backing land at the true score
+        // position. A capture with notes keeps its anchor (re-basing captured events corrupts them).
+        if overdubActive, eventLog.overdubCount == 0 {
+            // The CAPTURE's loop period must be the SAME number as the AUDIO's. A region the
+            // render could only partly satisfy (a short read, an end past the mixdown) shortens
+            // the audio loop; a capture still wrapping at the ASKED end would put every note an
+            // iteration's worth of drift away from what the user is playing along to.
+            if overdubLoop, let r = region, r.endMs != overdubRegionEndMs {
+                plog("overdub region FOLLOWS the backing — \(overdubRegionEndMs) → \(r.endMs) ms")
+                overdubRegionEndMs = r.endMs
+            }
+            eventLog.overdubArm(anchorHostTime: mach_absolute_time(), baseMs: overdubBaseMs,
+                                regionEndMs: overdubRegionEndMs, loop: overdubLoop)
+        }
+        plog("backing START \(name) from=\(backingStartMs) ms"
+             + " loop=\(region.map { "\($0.startMs)…\($0.endMs)" } ?? "-")"
+             + " win=\(win.startFrame)+\(win.frameCount)f")
+        return outcome
+    }
+
+    /// The backing ran out (its `.dataPlayedBack` completion, or the pump's backstop for a node
+    /// that went idle without one). Generation-guarded — a stopped/replaced replay never ends the
+    /// one that took its place.
+    private func finishBackingReplay(gen: Int) {
+        guard replayGeneration == gen, isReplaying, backingFile != nil else { return }
+        isReplaying = false
+        freezeReplayPosition()
+        stopBacking()
+        NowPlayingArbiter.shared.resign(self)
+        plog("backing END at \(replayFrozenMs ?? 0) ms")
+    }
+
+    /// Stop + fully release the audio backing: mirror the position FIRST (so a freeze parks where
+    /// the audio really is), stop the node, drop the file, and release its security scope. Called
+    /// ONLY from `stopReplay`/`finishBackingReplay`/teardown paths, so no exit can leak the scope.
+    private func stopBacking() {
+        if backingFile != nil, let p = backingPlayer {
+            if p.isPlaying, let ms = replayPositionMs() { backingPausedMs = ms }
+            p.stop()
+        }
+        backingFile = nil
+        backingReady = false
+        backingRelease?()
+        backingRelease = nil
+    }
+
+    /// Pump duty (30 Hz): mirror the backing position, and END a backing whose node has gone idle.
+    /// The completion handler is not a contract worth trusting after a route change — without this
+    /// backstop `isReplaying` sticks true forever, the arbiter is never resigned, and ▶ becomes a
+    /// permanent Stop.
+    private func backingTick() {
+        guard backingFile != nil, let p = backingPlayer else { return }
+        if p.isPlaying, let ms = replayPositionMs() { backingPausedMs = ms }
+        guard isReplaying, !p.isPlaying else { return }
+        plog("backing STOP — node idle at \(backingPausedMs) ms")
+        finishBackingReplay(gen: replayGeneration)
+    }
+
+    // MARK: - Live multi-staff replay (real time, one sampler per staff)
+
+    /// The per-staff sampler pool — ONE plain `AVAudioUnitSampler` per staff, each holding its own
+    /// single GM preset (`loadSoundBankInstrument` loads one preset, NOT the 32 MB font, which is
+    /// what lets `StudioRender.renderStaffPCM` do exactly this offline). Attached once and reused,
+    /// never detached; capped by `StudioTake.maxStaffs`.
+    @ObservationIgnored private var backingSamplers: [AVAudioUnitSampler] = []
+    /// What each pool slot currently holds ("<bank path>|<program>") — the idempotence key, so a
+    /// repeat pass re-parses nothing.
+    @ObservationIgnored private var backingLoaded: [String?] = []
+
+    /// Replay MULTIPLE staffs mixed, IN REAL TIME through the sampler pool — the fallback for a
+    /// backing with no rendered mixdown to play (an unsaved LIVE score, or a render that could not
+    /// be produced). A saved take plays `replayRenderedAudio` instead: proven audio, no AU warm-up.
+    ///
+    /// Single staff delegates to `replayTake` — zero regression on legacy takes. `bankURL` is the
+    /// shared SoundFont (nil at the caller is the "download the pack first" prompt).
+    /// `loopRegion` turns it into a looper over `[startMs, endMs)`: every iteration re-strikes from
+    /// `startMs` and ALL notes are silenced at the wrap, so nothing hangs across the boundary.
+    ///
+    /// ASYNC, and it reports WHY. The pool's preset parse must finish before a note can sound, so
+    /// a `Void` return handed the caller a "success" it could not possibly know yet: a pool that
+    /// fails to load, a graph that never built, a delegated single-staff replay that refused —
+    /// all of them read as "playing" at the ▶, with nothing in the capture to say otherwise. That
+    /// is the reported bug's exact signature, and this path was the last place it still lived.
+    @discardableResult
+    func replayStaffsLive(staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)],
+                          bankURL: URL, fromMs: Int = 0, forTake takeId: String? = nil,
+                          loopRegion: (startMs: Int, endMs: Int)? = nil) async -> BackingStart {
+        guard !staffs.isEmpty else {
+            plog("live-staffs REFUSED noStaffs")
+            return .noStaffs
+        }
+        guard staffs.count > 1 || overdubActive else {
+            // One staff, no overdub: the shipped single-staff path, untouched — but its outcome
+            // is now PASSED THROUGH rather than swallowed.
+            guard let only = staffs.first else {
+                plog("live-staffs REFUSED noStaffs")
+                return .noStaffs
+            }
+            return replayTake(events: only.events, instrument: only.instrument,
+                              fromMs: fromMs, forTake: takeId)
         }
         ensureEngine()
-        guard built else { return }
+        guard built else {
+            plog("live-staffs REFUSED noEngine — graph not built (no audio device?)")
+            return .noEngine
+        }
         stopReplay()
-        // A latched arp SURVIVES the overdub backing starting: it is the advertised overdub
-        // source ("latch the arp, then Overdub"), playing the sampler while the backing plays
-        // the synth. Outside an overdub the old replay-vs-arp exclusivity holds.
+        // A latched arp SURVIVES the overdub backing starting (see `replayRenderedAudio`).
         if !overdubActive { stopArpPlayback() }
-        guard startEngineIfNeeded() else { return }
+        guard startEngineIfNeeded() else {
+            plog("live-staffs REFUSED engineStopped — startEngineIfNeeded failed")
+            return .engineStopped
+        }
         let from = max(0, min(fromMs, Self.maxReplayMs))
         let programs = staffs.enumerated().map { (channel: $0.offset,
                                                   program: $0.element.instrument.gmProgram) }
@@ -1584,66 +1969,70 @@ final class InstrumentEngine {
         if let loop { actions = actions.filter { $0.ms < loop.endMs } }
         guard !actions.isEmpty else {
             if from > 0 { parkReplayPosition(atMs: from, forTake: takeId) } else { replayOwner = takeId }
-            return
+            plog("live-staffs nothing to play from \(from) ms — cursor parked")
+            return .nothingToPlay
         }
         replayOwner = takeId
         isReplaying = true
         NowPlayingArbiter.shared.claim(self)
         replayGeneration &+= 1
         let gen = replayGeneration
-        dlog("instr: poly replay START — \(staffs.count) staffs, \(actions.count) actions"
+        plog("live-staffs START — \(staffs.count) staffs, \(actions.count) actions"
              + (from > 0 ? " from \(from) ms" : ""))
         // Provisional anchor so the cursor reads `from` immediately; re-anchored below once the
-        // synth is ready (a first-time bank parse must not compress the opening notes).
+        // pool is loaded (a first-time preset parse must not compress the opening notes).
         replayAnchor = ContinuousClock.now - .milliseconds(from)
         replayFrozenMs = from
         replayLoopRegion = loop
+        let ok = await ensureBackingSamplers(bankURL: bankURL, programs: programs)
+        guard replayGeneration == gen else {
+            // Stopped, or replaced by a newer transport, while the presets parsed. NOT a failure —
+            // whoever superseded us owns the clock and reports its own outcome.
+            plog("live-staffs superseded during the pool load — a newer transport owns the clock")
+            return .started
+        }
+        guard ok else {
+            plog("live-staffs ABORT — samplers unavailable")
+            isReplaying = false
+            freezeReplayPosition()
+            NowPlayingArbiter.shared.resign(self)
+            return .samplersUnavailable
+        }
+        // Real anchor: back-dated by `from` so the loop's absolute sleeps and the score's
+        // playhead agree (the `replayTake` anchor contract).
+        let start = ContinuousClock.now - .milliseconds(from)
+        replayAnchor = start
+        // The overdub capture armed at button-press but the backing only starts NOW — re-anchor
+        // an empty capture to this instant (a capture with notes keeps its anchor).
+        if overdubActive, eventLog.overdubCount == 0 {
+            eventLog.overdubArm(anchorHostTime: mach_absolute_time(), baseMs: overdubBaseMs,
+                                regionEndMs: overdubRegionEndMs, loop: overdubLoop)
+        }
         Task { @MainActor [weak self] in
-            guard let eng0 = self else { return }
-            let syn = await eng0.ensureSynthReady(bankURL: bankURL, programs: programs)
-            guard let eng1 = self, eng1.replayGeneration == gen else { return }
-            guard let syn else {
-                eng1.dlog("instr: poly replay ABORT — synth/bank unavailable")
-                eng1.isReplaying = false
-                eng1.freezeReplayPosition()
-                NowPlayingArbiter.shared.resign(eng1)
-                return
-            }
-            // Real anchor: back-dated by `from` so the loop's absolute sleeps and the score's
-            // playhead agree (the `replayTake` anchor contract).
-            let start = ContinuousClock.now - .milliseconds(from)
-            eng1.replayAnchor = start
-            // The overdub capture armed at button-press, but the backing only starts NOW —
-            // `ensureSynthReady` can cost seconds on a first-time bank parse. Re-anchor a
-            // capture that has nothing in it yet to this same instant, so notes played in time
-            // with the (delayed) backing land at the true score position. A capture with notes
-            // keeps its anchor (re-basing captured events would corrupt them).
-            if eng1.overdubActive, eng1.eventLog.overdubCount == 0 {
-                eng1.eventLog.overdubArm(anchorHostTime: mach_absolute_time(),
-                                         baseMs: eng1.overdubBaseMs,
-                                         regionEndMs: eng1.overdubRegionEndMs,
-                                         loop: eng1.overdubLoop)
-            }
             // One pass per iteration; a non-looping backing runs the body exactly once (`break`
             // at the bottom), so the legacy path is bit-for-bit what it was.
             var iteration = 0
+            var dropped = 0
             while true {
                 let offset = (loop.map { $0.endMs - $0.startMs } ?? 0) * iteration
                 for a in actions {
                     try? await Task.sleep(until: start + .milliseconds(a.ms + offset),
                                           clock: .continuous)
                     guard let eng = self, eng.replayGeneration == gen else { return }
-                    guard eng.synthReady else { continue }
+                    guard eng.backingReady, a.channel < eng.backingSamplers.count else {
+                        dropped += 1
+                        continue
+                    }
+                    let smp = eng.backingSamplers[a.channel]
                     let n = UInt8(clamping: max(0, min(127, a.note)))
-                    let ch = UInt8(clamping: max(0, min(15, a.channel)))
                     if a.on {
-                        syn.startNote(n, velocity: UInt8(clamping: max(1, min(127, a.velocity))),
-                                      channel: ch)
+                        smp.startNote(n, withVelocity: UInt8(clamping: max(1, min(127, a.velocity))),
+                                      onChannel: 0)
                         eng.replayActiveNotes.insert(a.note)
                         eng.eventLog.noteOn(note: a.note, velocity: a.velocity,
                                             hostTime: mach_absolute_time())   // highlights follow
                     } else {
-                        syn.stopNote(n, channel: ch)
+                        smp.stopNote(n, onChannel: 0)
                         eng.replayActiveNotes.remove(a.note)
                         eng.eventLog.noteOff(note: a.note, hostTime: mach_absolute_time())
                     }
@@ -1654,7 +2043,7 @@ final class InstrumentEngine {
                 try? await Task.sleep(until: start + .milliseconds(loop.endMs + offset),
                                       clock: .continuous)
                 guard let eng = self, eng.replayGeneration == gen else { return }
-                syn.allNotesOff()
+                eng.silenceBackingSamplers()
                 for n in eng.replayActiveNotes {
                     eng.eventLog.noteOff(note: n, hostTime: mach_absolute_time())
                 }
@@ -1665,43 +2054,85 @@ final class InstrumentEngine {
             eng.isReplaying = false
             eng.replayActiveNotes = []
             eng.freezeReplayPosition()
-            syn.allNotesOff()
+            eng.silenceBackingSamplers()
+            eng.backingReady = false
             NowPlayingArbiter.shared.resign(eng)
-            eng.dlog("instr: poly replay END")
+            // A pass that dropped actions made LESS sound than the score says — name it, or the
+            // capture reads exactly like a clean play-through.
+            eng.plog("live-staffs END"
+                     + (dropped > 0 ? " — \(dropped) note actions DROPPED (pool went unready)" : ""))
         }
+        return .started
     }
 
-    /// Attach + load the multitimbral synth (idempotent; re-parses only on a bank change). The
-    /// 32 MB parse runs OFF the main actor with `synthReady` gated closed — the `loadInstrument`
-    /// discipline.
-    private func ensureSynthReady(bankURL: URL,
-                                  programs: [(channel: Int, program: UInt8)]) async
-        -> MultiTimbralSynth? {
-        guard built, let mix = instrumentMix else { return nil }
-        let syn: MultiTimbralSynth
-        if let existing = synth {
-            syn = existing
-        } else {
-            syn = MultiTimbralSynth()
-            engine.attach(syn.node)
-            engine.connect(syn.node, to: mix, format: Self.canonicalFormat)
-            synth = syn
+    /// CC 123 all-notes-off across the pool — belt-and-braces silence at a loop wrap and on stop.
+    private func silenceBackingSamplers() {
+        for s in backingSamplers { s.sendController(123, withValue: 0, onChannel: 0) }
+    }
+
+    /// Grow + load the per-staff sampler pool (idempotent; re-parses only what actually changed).
+    /// Each preset parse runs OFF the main actor with `backingReady` gated closed — the
+    /// `loadInstrument` discipline. Any failure returns false, and the caller ABORTS the replay
+    /// rather than playing a silently-missing part.
+    private func ensureBackingSamplers(bankURL: URL,
+                                       programs: [(channel: Int, program: UInt8)]) async -> Bool {
+        guard built, let mix = instrumentMix else {
+            plog("live-staffs REFUSED noEngine — pool has no mixer")
+            return false
         }
-        if synthReady, syn.loadedBankURL == bankURL {
-            syn.setPrograms(programs)
-            return syn
+        // The pool is built with the GRAPH (`ensureEngine`), so this loop is a SAFETY NET that
+        // should never run — it attaches to a live engine, which is the risk the eager build
+        // removes. If it ever fires, say so loudly: it means a caller asked for more staffs than
+        // `StudioTake.maxStaffs`, and the capture must name that.
+        while backingSamplers.count < programs.count {
+            plog("live-staffs POOL GROWN on a live graph — \(backingSamplers.count) → "
+                 + "\(backingSamplers.count + 1) (asked \(programs.count), cap \(StudioTake.maxStaffs))")
+            let s = AVAudioUnitSampler()
+            engine.attach(s)
+            engine.connect(s, to: mix, format: Self.canonicalFormat)
+            backingSamplers.append(s)
+            backingLoaded.append(nil)
         }
-        synthReady = false
-        let ok: Bool = await withCheckedContinuation { cont in
-            DispatchQueue.global(qos: .userInitiated).async {
-                let loaded = syn.loadedBankURL == bankURL || syn.loadBank(bankURL)
-                if loaded { syn.setPrograms(programs) }
-                cont.resume(returning: loaded)
+        backingReady = false
+        func key(_ program: UInt8) -> String { "\(bankURL.path)|\(program)" }
+        let pending = programs.enumerated()
+            .filter { backingLoaded[$0.offset] != key($0.element.program) }
+            .map { BackingLoadItem(index: $0.offset, sampler: backingSamplers[$0.offset],
+                                   program: $0.element.program) }
+        let pendingCount = pending.count
+        if !pending.isEmpty {
+            let failed: [Int] = await withCheckedContinuation { cont in
+                DispatchQueue.global(qos: .userInitiated).async {
+                    var bad: [Int] = []
+                    for item in pending {
+                        do {
+                            try item.sampler.loadSoundBankInstrument(
+                                at: bankURL, program: item.program,
+                                bankMSB: UInt8(kAUSampler_DefaultMelodicBankMSB),
+                                bankLSB: UInt8(kAUSampler_DefaultBankLSB))
+                        } catch { bad.append(item.index) }
+                    }
+                    cont.resume(returning: bad)
+                }
             }
+            for item in pending {
+                let ok = !failed.contains(item.index)
+                backingLoaded[item.index] = ok ? key(item.program) : nil
+                if !ok {
+                    plog("live-staffs REFUSED bankLoad — idx \(item.index) program \(item.program)"
+                         + " \(bankURL.lastPathComponent)")
+                }
+            }
+            guard failed.isEmpty else { return false }
         }
-        synthReady = ok
-        dlog("instr: synth bank load → \(ok ? "OK" : "FAILED")")
-        return ok ? syn : nil
+        backingReady = true
+        // A SUCCESS line, not only failures: a capture showing `live-staffs START` → `live-staffs
+        // END` with nothing in between is the original bug's signature, and "the pool loaded fine"
+        // has to be distinguishable from "the pool was never asked".
+        plog("live-staffs pool READY — \(programs.count) samplers, programs "
+             + "\(programs.map { String($0.program) }.joined(separator: ",")),"
+             + " reparsed \(pendingCount), bank \(bankURL.lastPathComponent)")
+        return true
     }
 
     // MARK: - Click synthesis + timing math (nonisolated pure — unit-testable)
@@ -2029,8 +2460,10 @@ final class InstrumentEngine {
         stopArpPlayback()
         rt.engineReady = false
         rt.sampler = nil
-        synth = nil                       // the AU is orphaned with the daemon — recreate lazily
-        synthReady = false
+        stopBacking()                     // the open mixdown + its security scope die with the graph
+        backingSamplers = []              // the pool's AUs are orphaned with the daemon
+        backingLoaded = []
+        backingPreparing = false
         if let o = configChangeObserver { NotificationCenter.default.removeObserver(o); configChangeObserver = nil }
         engine.stop()
         engine = AVAudioEngine()          // the orphaned graph is unusable — recreate everything
@@ -2039,6 +2472,7 @@ final class InstrumentEngine {
         sampler = nil
         instrumentMix = nil
         clickPlayer = nil
+        backingPlayer = nil
         ensureEngine()                    // fresh graph + tap + re-registered config observer
         if let key = currentInstrument, let url = loadedBankURL {
             Task { @MainActor [weak self] in
@@ -2251,8 +2685,22 @@ final class InstrumentEngine {
                 // per-frame) full-score relayout.
                 ticks &+= 1
                 if ticks % Self.staffPublishEveryNTicks == 0 { self.publishStaffs() }
+                self.backingTick()
                 self.overdubDeadlineTick()
             }
         }
+    }
+}
+
+/// Off-main-actor carrier for one pool sampler + the preset it must load — the
+/// `InstrumentRealtimeBridge` device. `@unchecked Sendable` for the same reason: the parse runs on
+/// a background queue while `backingReady` is closed, so nothing else talks to these AUs for its
+/// duration, and `loadSoundBankInstrument` is safe from any thread under that rule.
+private final class BackingLoadItem: @unchecked Sendable {
+    let index: Int
+    let sampler: AVAudioUnitSampler
+    let program: UInt8
+    init(index: Int, sampler: AVAudioUnitSampler, program: UInt8) {
+        self.index = index; self.sampler = sampler; self.program = program
     }
 }

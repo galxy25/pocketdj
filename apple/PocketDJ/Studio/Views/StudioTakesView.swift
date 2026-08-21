@@ -34,6 +34,9 @@ struct StudioTakesView: View {
     /// Takes whose events are RENDERING into a sample right now (the offline sampler render is
     /// async) — drives the row spinner + disables a second tap mid-render.
     @State private var samplingIds: Set<String> = []
+    /// Takes whose multi-staff MIXDOWN is being rendered before playback — the ▶ shows a spinner
+    /// instead of doing nothing visible while a cold cache is synthesized (never a silent no-op).
+    @State private var preparingIds: Set<String> = []
     @State private var errorText: String?
     /// The instrumental whose "Add to playlist or pocket…" sheet is open (nil ⇒ closed).
     @State private var addRef: StudioAddRef?
@@ -258,15 +261,25 @@ struct StudioTakesView: View {
                 // In-row leaf actions — .borderless so each button is individually tappable
                 // inside the NavigationLink row (the standard List-row-buttons discipline).
                 Button {
-                    if !StudioTakeReplay.toggle(take: take, instruments: instruments, packs: packs) {
+                    if !StudioTakeReplay.toggle(take: take, instruments: instruments, studio: studio,
+                                                packs: packs,
+                                                preparing: { on in
+                                                    if on { preparingIds.insert(take.id) }
+                                                    else { preparingIds.remove(take.id) }
+                                                },
+                                                onError: { errorText = $0 }) {
                         errorText = "Download the \(take.instrument.displayName) pack to hear this take."
                     }
                 } label: {
-                    Image(systemName: instruments.isReplaying ? "stop.circle" : "play.circle")
-                        .font(.title3)
+                    if preparingIds.contains(take.id) {
+                        ProgressView().controlSize(.small)
+                    } else {
+                        Image(systemName: instruments.isReplaying ? "stop.circle" : "play.circle")
+                            .font(.title3)
+                    }
                 }
                 .buttonStyle(.borderless)
-                .disabled(take.scoreEvents.isEmpty)
+                .disabled(take.allScoreEvents.isEmpty || preparingIds.contains(take.id))
                 .accessibilityIdentifier("take-replay-\(take.id)")
                 Button {
                     useAsSample(take)
@@ -508,30 +521,65 @@ enum StudioTakeSampler {
     }
 }
 
-// MARK: - Instrumental render cache (collection + Mix playback)
+// MARK: - Instrumental render cache (collection + Mix playback + multi-staff replay)
 
-/// Ensures an instrumental has a fresh RENDERED-AUDIO cache — its `scoreEvents` synthesized through
-/// its instrument into a real `.m4a` — so it's audible in collection playback + Mix even when its
-/// raw file is a silent placeholder (a live-saved take). The one place this render happens for
-/// PLAYBACK (the sample path renders into a new `smp_`; this renders into the take's own cache).
+/// Ensures an instrumental has a fresh RENDERED-AUDIO cache — every staff synthesized through its
+/// own instrument and mixed into a real `.m4a` — so it's audible in collection playback, in Mix,
+/// and (for a multi-staff take) under the score's own ▶ even when its raw file is a silent
+/// placeholder (a live-saved take). The one place this render happens for PLAYBACK (the sample
+/// path renders into a new `smp_`; this renders into the take's own cache).
 @MainActor
 enum StudioTakeRenderer {
+    /// What `ensureRendered` did. A TYPED outcome, not `Void`: playback now depends on this, and a
+    /// silent `return` on the playback path is exactly the failure mode this whole change removes.
+    enum RenderOutcome: Equatable {
+        case fresh              // a valid cache was already on disk
+        case rendered           // freshly synthesized + filed
+        case noTake
+        case noNotes            // nothing to synthesize — not an error
+        case needPack(String)   // a staff's instrument pack isn't downloaded (display name)
+        case noFolder
+        case renderFailed(String)
+
+        /// Did this leave a usable cache behind?
+        var hasRender: Bool { self == .fresh || self == .rendered }
+    }
+
     /// No-op when: no such take / no notes / a fresh cache already exists on disk / the instrument
     /// pack isn't downloaded. On the pack-missing path the raw file still resolves — a RECORDED
     /// take is its real capture (audible); a live placeholder stays silent until a later render.
-    static func ensureRendered(takeId: String, studio: StudioStore, packs: InstrumentPackStore) async {
-        guard let take = studio.take(takeId), !take.scoreEvents.isEmpty else { return }
+    @discardableResult
+    static func ensureRendered(takeId: String, studio: StudioStore,
+                               packs: InstrumentPackStore) async -> RenderOutcome {
+        guard let take = studio.take(takeId) else {
+            NPLog.trace("studio: render SKIP noTake tk=\(takeId)")
+            return .noTake
+        }
+        guard !take.allScoreEvents.isEmpty else {
+            NPLog.trace("studio: render SKIP noNotes tk=\(takeId)")
+            return .noNotes
+        }
         let bm = studio.bookmark(for: .takes)
-        if let rf = take.renderedFileName,
+        if take.isRenderFresh, let rf = take.renderedFileName,
            let got = StudioFolders.fileURL(family: .takes, fileName: rf,
                                            wasUserFolder: take.renderedWasUserFolder ?? false, bookmark: bm) {
             got.release?()
-            return   // fresh cache already on disk
+            return .fresh   // fresh cache already on disk
         }
-        guard let bankURL = packs.localBankURL(forInstrument: take.instrument),
-              let dest = StudioFolders.folder(.takes, bookmark: bm, requireWritable: true) else { return }
+        guard let bankURL = packs.localBankURL(forInstrument: take.instrument) else {
+            NPLog.trace("studio: render REFUSED needPack \(take.instrument.rawValue) tk=\(takeId)")
+            return .needPack(take.instrument.displayName)
+        }
+        guard let dest = StudioFolders.folder(.takes, bookmark: bm, requireWritable: true) else {
+            NPLog.trace("studio: render REFUSED noFolder tk=\(takeId)")
+            return .noFolder
+        }
         defer { dest.release?() }
-        let fileName = StudioFolders.renderedTakeFileName(id: takeId)
+        // The revision this render is made OF. `setTakeRendered` refuses the stamp if the score
+        // moved on meanwhile — a mixdown of the pre-edit score must never be filed as current,
+        // because it would play back as "the overdub isn't there" forever.
+        let revision = take.renderRevision
+        let fileName = StudioFolders.renderedTakeFileName(id: takeId, revision: revision)
         let destURL = dest.url.appendingPathComponent(fileName)
         do {
             if let extras = take.extraStaffs, !extras.isEmpty {
@@ -542,7 +590,11 @@ enum StudioTakeRenderer {
                 var staffs: [(events: [StudioNoteEvent], program: UInt8, bankURL: URL)] =
                     [(take.scoreEvents, take.instrument.gmProgram, bankURL)]
                 for staff in extras where !staff.scoreEvents.isEmpty {
-                    guard let staffBank = packs.localBankURL(forInstrument: staff.instrument) else { return }
+                    guard let staffBank = packs.localBankURL(forInstrument: staff.instrument) else {
+                        NPLog.trace("studio: render REFUSED needPack(staff) \(staff.instrument.rawValue)"
+                                    + " tk=\(takeId)")
+                        return .needPack(staff.instrument.displayName)
+                    }
                     staffs.append((staff.scoreEvents, staff.instrument.gmProgram, staffBank))
                 }
                 _ = try await StudioRender.shared.renderTakePolyphonic(staffs: staffs, to: destURL)
@@ -550,10 +602,200 @@ enum StudioTakeRenderer {
                 _ = try await StudioRender.shared.renderTake(events: take.scoreEvents, bankURL: bankURL,
                                                              program: take.instrument.gmProgram, to: destURL)
             }
-            studio.setTakeRendered(takeId, fileName: fileName, wasUserFolder: dest.isUserFolder)
+            studio.setTakeRendered(takeId, fileName: fileName, wasUserFolder: dest.isUserFolder,
+                                   revision: revision)
+            return .rendered
         } catch {
             // Leave uncached — the raw file still resolves for playback (see the doc comment).
+            NPLog.trace("studio: render FAILED tk=\(takeId) — \(error)")
+            return .renderFailed(take.instrument.displayName)
         }
+    }
+}
+
+// MARK: - Take playback routing (which engine path plays this instrumental)
+
+/// WHICH path plays a saved instrumental. A single staff keeps the shipped sampler replay
+/// (`replayTake`) untouched; anything with more than one staff plays its RENDERED MIXDOWN through
+/// the engine's backing player — proven code (the same file collections and Mix already play),
+/// per-staff timbre included, with the live sampler left free for the user's overdub voice.
+@MainActor
+enum StudioTakePlayback {
+    enum Route: Equatable {
+        case sampler         // one staff → the shipped replayTake
+        case renderedAudio   // multi-staff → the cached mixdown
+        case liveSamplers    // multi-staff with no mixdown available → real-time sampler pool
+    }
+
+    /// The routing rule, PURE so it is pinned by a test rather than eyeballed. Single staff is
+    /// `.sampler` whether or not a render exists — that path demonstrably works and is not touched.
+    /// An overdub BACKING never routes to `.sampler` at any staff count: the sampler is the user's
+    /// overdub VOICE, and the backing may not contend with it.
+    nonisolated static func route(staffCount: Int, hasRender: Bool, asBacking: Bool = false) -> Route {
+        guard staffCount > 1 || asBacking else { return .sampler }
+        return hasRender ? .renderedAudio : .liveSamplers
+    }
+
+    /// How a play attempt ended — the ▶ sites alert on anything that isn't `.playing`.
+    enum StartOutcome: Equatable {
+        case playing
+        case nothingToPlay
+        case needPack(String)
+        case failed(String)
+
+        /// User-facing copy for the alert both ▶ sites already show, or nil when there is nothing
+        /// to say (it played, or there was nothing to play).
+        var message: String? {
+            switch self {
+            case .playing, .nothingToPlay: return nil
+            case .needPack(let name): return "Download the \(name) pack to hear this instrumental."
+            case .failed(let why): return why
+            }
+        }
+    }
+
+    /// Start `take` playing from `fromMs`, rendering its mixdown on demand when needed.
+    /// `preparing` is called with true around a render that has to happen first (the caller shows a
+    /// spinner) — the ENGINE is told separately, so a short overdub region can't auto-finalize
+    /// while its backing is still being made.
+    static func start(take: StudioTake, fromMs: Int = 0,
+                      loopRegion: (startMs: Int, endMs: Int)? = nil, asBacking: Bool = false,
+                      instruments: InstrumentEngine, studio: StudioStore,
+                      packs: InstrumentPackStore,
+                      preparing: @MainActor (Bool) -> Void = { _ in }) async -> StartOutcome {
+        guard !take.allScoreEvents.isEmpty else {
+            NPLog.trace("studio: take play — nothing to play tk=\(take.id) (0 events on \(take.staffCount) staffs)")
+            return .nothingToPlay
+        }
+        switch route(staffCount: take.staffCount, hasRender: take.isRenderFresh, asBacking: asBacking) {
+        case .sampler:
+            return startSingle(take: take, fromMs: fromMs, instruments: instruments, packs: packs)
+        case .renderedAudio:
+            return await playRendered(takeId: take.id, take: take, fromMs: fromMs,
+                                      loopRegion: loopRegion, instruments: instruments,
+                                      studio: studio, packs: packs)
+        case .liveSamplers:
+            // Multi-staff with a cold cache: render on demand, VISIBLY (`preparing`), and tell the
+            // engine so a short overdub region can't auto-finalize while its backing is being made.
+            preparing(true)
+            instruments.setBackingPreparing(true)
+            let r = await StudioTakeRenderer.ensureRendered(takeId: take.id, studio: studio, packs: packs)
+            instruments.setBackingPreparing(false)
+            preparing(false)
+            guard r.hasRender else {
+                // No mixdown: fall back to REAL-TIME per-staff samplers rather than to silence.
+                NPLog.trace("studio: take play — no render (\(r)) tk=\(take.id), live samplers instead")
+                return await startLiveSamplers(take: take, fromMs: fromMs, loopRegion: loopRegion,
+                                               instruments: instruments, studio: studio,
+                                               packs: packs, renderOutcome: r)
+            }
+            return await playRendered(takeId: take.id, take: take, fromMs: fromMs,
+                                      loopRegion: loopRegion, instruments: instruments,
+                                      studio: studio, packs: packs)
+        }
+    }
+
+    /// Resolve the take's fresh mixdown and hand it to the engine. The security scope goes WITH it
+    /// (released here is the shipped "silent 0:00" bug); a cache that vanished off disk degrades to
+    /// the real-time sampler pool.
+    private static func playRendered(takeId: String, take: StudioTake, fromMs: Int,
+                                     loopRegion: (startMs: Int, endMs: Int)?,
+                                     instruments: InstrumentEngine, studio: StudioStore,
+                                     packs: InstrumentPackStore) async -> StartOutcome {
+        guard let fresh = studio.take(takeId), fresh.isRenderFresh, let rf = fresh.renderedFileName,
+              let got = StudioFolders.fileURL(family: .takes, fileName: rf,
+                                              wasUserFolder: fresh.renderedWasUserFolder ?? false,
+                                              bookmark: studio.bookmark(for: .takes)) else {
+            NPLog.trace("studio: backing REFUSED unresolved tk=\(takeId) — the render is gone from disk")
+            return await startLiveSamplers(take: take, fromMs: fromMs, loopRegion: loopRegion,
+                                           instruments: instruments, studio: studio,
+                                           packs: packs, renderOutcome: nil)
+        }
+        let started = instruments.replayRenderedAudio(url: got.url, release: got.release,
+                                                      fromMs: fromMs, forTake: takeId,
+                                                      loopRegion: loopRegion)
+        guard started.isAudible else {
+            // A seek past the mixdown's end PARKS the cursor — the shipped single-staff behaviour,
+            // and not something to raise an alert about just because the audio came from a file.
+            guard !started.isCursorPark else { return .nothingToPlay }
+            return .failed("Couldn’t play this instrumental’s audio (\(started.rawValue))."
+                           + " Settings ▸ Debug ▸ capture has the reason.")
+        }
+        return .playing
+    }
+
+    /// The SHIPPED single-staff path, byte-for-byte what `StudioTakeReplay.toggle` always did:
+    /// the take's own bank when it's downloaded, whatever IS loaded otherwise (wrong timbre beats
+    /// a dead button), and `.needPack` only when the sampler holds nothing at all.
+    static func startSingle(take: StudioTake, fromMs: Int, instruments: InstrumentEngine,
+                            packs: InstrumentPackStore) -> StartOutcome {
+        guard !take.scoreEvents.isEmpty else { return .nothingToPlay }
+        if instruments.currentInstrument == take.instrument {
+            instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
+                                   fromMs: fromMs, forTake: take.id)
+            return .playing
+        }
+        // Wrong (or no) instrument loaded: load the right bank first when it's downloaded.
+        if let pack = packs.packs.first(where: { $0.instrument == take.instrument }),
+           let url = packs.localBankURL(pack) {
+            Task { @MainActor in
+                _ = await instruments.loadInstrument(take.instrument, bankURL: url)
+                instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
+                                       fromMs: fromMs, forTake: take.id)
+            }
+            return .playing
+        }
+        // No bank for this instrument on disk. If SOMETHING is loaded, degrade to it
+        // (audible, logged); with nothing loaded the sampler is silent — report that.
+        if instruments.currentInstrument != nil {
+            instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
+                                   fromMs: fromMs, forTake: take.id)
+            return .playing
+        }
+        return .needPack(take.instrument.displayName)
+    }
+
+    /// Real-time per-staff sampler fallback — used only when no mixdown can be produced.
+    ///
+    /// Plays the STORE's take, not the caller's. `take` is a value snapshot a view captured, and
+    /// the two paths around this one (`ensureRendered`, `playRendered`) both re-read the store by
+    /// id precisely so an edit that landed since cannot be played back as if it never happened.
+    /// This path used the snapshot — the same staleness hole, just voiced through samplers
+    /// instead of a file, and indistinguishable at the speaker from a missing overdub.
+    private static func startLiveSamplers(take snapshot: StudioTake, fromMs: Int,
+                                          loopRegion: (startMs: Int, endMs: Int)?,
+                                          instruments: InstrumentEngine, studio: StudioStore,
+                                          packs: InstrumentPackStore,
+                                          renderOutcome: StudioTakeRenderer.RenderOutcome?)
+        async -> StartOutcome {
+        let take = studio.take(snapshot.id) ?? snapshot
+        var staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)] = []
+        if !take.scoreEvents.isEmpty { staffs.append((take.scoreEvents, take.instrument)) }
+        for st in take.extraStaffs ?? [] where !st.scoreEvents.isEmpty {
+            staffs.append((st.scoreEvents, st.instrument))
+        }
+        guard !staffs.isEmpty else {
+            NPLog.trace("studio: live samplers — nothing to play tk=\(take.id) (every staff empty)")
+            return .nothingToPlay
+        }
+        guard let bank = StudioTakeReplay.bankURL(forInstruments: staffs.map(\.instrument),
+                                                  packs: packs) else {
+            if case .needPack(let name)? = renderOutcome { return .needPack(name) }
+            return .needPack(take.instrument.displayName)
+        }
+        // AWAITED and CHECKED. The fallback has as many refusals as the mixdown path does (no
+        // graph, a stopped engine, a pool that will not load, a delegated single-staff replay with
+        // no bank in the sampler) — reporting `.playing` regardless is a ▶ that does nothing,
+        // alerts nothing, and leaves no reason line in the capture.
+        let started = await instruments.replayStaffsLive(staffs: staffs, bankURL: bank,
+                                                         fromMs: fromMs, forTake: take.id,
+                                                         loopRegion: loopRegion)
+        guard started.isAudible else {
+            guard !started.isCursorPark else { return .nothingToPlay }
+            return .failed("Couldn’t play this instrumental’s staffs (\(started.rawValue))."
+                           + " Settings ▸ Debug ▸ capture has the reason.")
+        }
+        return .playing
     }
 }
 
@@ -676,11 +918,13 @@ enum DemuxTakeSwitch {
 
 // MARK: - Shared replay helper (takes list + score view)
 
-/// Replay a take through the sampler, loading the take's OWN instrument first when its bank is
-/// on disk (score and sound should agree — spec §7). Falls back to whatever instrument is
-/// loaded (wrong timbre beats a dead button — the engine logs the mismatch). Returns false
-/// only when replay is impossible right now (no bank loaded AND none downloaded) so callers
-/// can point the user at the pack download.
+/// Replay a take: a SINGLE staff through the sampler, loading the take's OWN instrument first
+/// when its bank is on disk (score and sound should agree — spec §7), falling back to whatever
+/// instrument is loaded (wrong timbre beats a dead button — the engine logs the mismatch); a
+/// MULTI-STAFF take through its rendered mixdown (`StudioTakePlayback`), which is async because a
+/// cold cache renders first. Returns false only when a single-staff replay is impossible right now
+/// (no bank loaded AND none downloaded) so callers can point the user at the pack download —
+/// multi-staff failures arrive on `onError` instead, since they can only be known after the render.
 @MainActor
 enum StudioTakeReplay {
     /// `fromMs` starts the replay part-way in — the score screen passes where its cursor was left
@@ -692,57 +936,38 @@ enum StudioTakeReplay {
     /// clock of the instrumental someone started in the list", which it must, because remembering
     /// the wrong one is now durable.
     @discardableResult
-    static func toggle(take: StudioTake, instruments: InstrumentEngine,
-                       packs: InstrumentPackStore, fromMs: Int = 0) -> Bool {
+    static func toggle(take: StudioTake, instruments: InstrumentEngine, studio: StudioStore,
+                       packs: InstrumentPackStore, fromMs: Int = 0,
+                       preparing: @escaping @MainActor (Bool) -> Void = { _ in },
+                       onError: @escaping @MainActor (String) -> Void = { _ in }) -> Bool {
         if instruments.isReplaying {
             instruments.stopReplay()
             return true
         }
-        // Multi-staff: play ALL staffs mixed through the multitimbral synth (its own bank —
-        // the loaded live instrument is irrelevant). One shared font addressed per channel.
-        if let extras = take.extraStaffs, !extras.isEmpty {
-            guard !take.allScoreEvents.isEmpty else { return true }
-            guard let bankURL = polyphonicBankURL(take: take, packs: packs) else { return false }
-            var staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)] =
-                [(take.scoreEvents, take.instrument)]
-            for staff in extras { staffs.append((staff.scoreEvents, staff.instrument)) }
-            instruments.replayTakePolyphonic(staffs: staffs, bankURL: bankURL,
-                                             fromMs: fromMs, forTake: take.id)
-            return true
-        }
-        guard !take.scoreEvents.isEmpty else { return true }   // nothing to play — not an error
-        if instruments.currentInstrument == take.instrument {
-            instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
-                                   fromMs: fromMs, forTake: take.id)
-            return true
-        }
-        // Wrong (or no) instrument loaded: load the right bank first when it's downloaded.
-        if let pack = packs.packs.first(where: { $0.instrument == take.instrument }),
-           let url = packs.localBankURL(pack) {
+        // Multi-staff: play the take's RENDERED MIXDOWN (each staff synthesized through its own
+        // sampler offline, then mixed) — audio, not a live MIDI synth. Async because a cold cache
+        // renders on demand; `preparing` drives the caller's spinner, and the outcome's message
+        // feeds the alert this call site already shows.
+        if take.staffCount > 1 {
+            guard !take.allScoreEvents.isEmpty else {
+                NPLog.trace("studio: replay toggle — tk=\(take.id) has \(take.staffCount) empty staffs")
+                return true
+            }
             Task { @MainActor in
-                _ = await instruments.loadInstrument(take.instrument, bankURL: url)
-                instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
-                                       fromMs: fromMs, forTake: take.id)
+                let outcome = await StudioTakePlayback.start(take: take, fromMs: fromMs,
+                                                             instruments: instruments,
+                                                             studio: studio, packs: packs,
+                                                             preparing: preparing)
+                if let msg = outcome.message { onError(msg) }
             }
             return true
         }
-        // No bank for this instrument on disk. If SOMETHING is loaded, degrade to it
-        // (audible, logged); with nothing loaded the sampler is silent — report that.
-        if instruments.currentInstrument != nil {
-            instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
-                                   fromMs: fromMs, forTake: take.id)
-            return true
+        guard !take.scoreEvents.isEmpty else { return true }   // nothing to play — not an error
+        switch StudioTakePlayback.startSingle(take: take, fromMs: fromMs,
+                                              instruments: instruments, packs: packs) {
+        case .needPack: return false
+        default: return true
         }
-        return false
-    }
-
-    /// The ONE shared SoundFont for a polyphonic replay: every staff's instrument must resolve to
-    /// a downloaded bank (nil = "download the pack first", the single-staff gate's sibling). All
-    /// packs share one font file today, so the primary's bank IS the synth's bank; the per-staff
-    /// check still guards a future split-pack world.
-    static func polyphonicBankURL(take: StudioTake, packs: InstrumentPackStore) -> URL? {
-        bankURL(forInstruments: [take.instrument] + (take.extraStaffs ?? []).map(\.instrument),
-                packs: packs)
     }
 
     /// The same every-staff gate for an ARBITRARY staff list (the live score's overdub backing,

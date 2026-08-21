@@ -1104,7 +1104,10 @@ actor StudioRender {
 
     /// AAC `.m4a` — sample renders, pattern bounces, take audio (spec §4): 44.1 kHz stereo
     /// ~192 kbps.
-    private static let aacSettings: [String: Any] = [
+    /// The instrumental mixdown's SHIPPING format. Internal (not private) on purpose: the
+    /// playback tests write their fixtures with THIS dictionary, so a fixture can never drift into
+    /// a format production never plays (the `AVAudioFile` decodes-by-extension lesson).
+    static let aacSettings: [String: Any] = [
         AVFormatIDKey: kAudioFormatMPEG4AAC,
         AVSampleRateKey: canonicalSampleRate,
         AVNumberOfChannelsKey: 2,

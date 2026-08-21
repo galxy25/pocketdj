@@ -209,10 +209,15 @@ enum StudioFolders {
         "sample-\(id)-r\(revision).m4a"
     }
 
-    /// The rendered-audio cache name for an instrumental (its `scoreEvents` synthesized to a real
-    /// `.m4a`): `take-<id>-r0.m4a`. Carries the same `-r<digits>` stamp `fileId` strips, so both the
-    /// raw take file and its render attribute to the same take id in usage/reconcile scans.
-    static func renderedTakeFileName(id: String) -> String { "take-\(id)-r0.m4a" }
+    /// The rendered-audio cache name for an instrumental (every staff synthesized + mixed into a
+    /// real `.m4a`): `take-<id>-r<revision>.m4a`. Carries the same `-r<digits>` stamp `fileId`
+    /// strips, so both the raw take file and its render attribute to the same take id in
+    /// usage/reconcile scans. The revision is load-bearing (the `renderedSampleFileName` rule): a
+    /// re-render must never overwrite the file a LIVE playback still holds open, and a crashed
+    /// re-render can never leave a fresh-looking stale file behind.
+    static func renderedTakeFileName(id: String, revision: Int) -> String {
+        "take-\(id)-r\(revision).m4a"
+    }
 
     /// STRICT parser: the id embedded in a family artifact's file name, or nil when `name` is
     /// not EXACTLY this family's deterministic shape. Loose prefix matches are forbidden —

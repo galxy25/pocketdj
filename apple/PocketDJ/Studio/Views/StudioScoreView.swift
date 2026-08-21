@@ -30,6 +30,10 @@ struct StudioScoreView: View {
     /// Rendering the instrumental's events → audio for export (async offline render) — drives the
     /// Audio button's spinner + disables a second tap mid-render.
     @State private var exportingAudio = false
+    /// A multi-staff MIXDOWN is being rendered before it can play (▶ or an overdub backing). VIEW
+    /// state on purpose: `instruments.isReplaying` must stay FALSE through the whole prepare, or
+    /// the `onChange` below reads it as "the replay ended" and writes a bogus cursor.
+    @State private var preparing = false
     @State private var errorText: String?
 
     /// Edit mode (spec §7) — toggled by the action bar, passed to EVERY staff's ScoreEditorView
@@ -155,12 +159,20 @@ struct StudioScoreView: View {
             return
         }
         if instruments.isReplaying, instruments.replayClockBelongs(to: takeId) {
-            // Re-seek the RUNNING sound: multi-staff replays re-seek polyphonically (all staffs
-            // mixed), single-staff exactly as before.
-            if let staffs = polyStaffs(take),
-               let bank = StudioTakeReplay.polyphonicBankURL(take: take, packs: packs) {
-                instruments.replayTakePolyphonic(staffs: staffs, bankURL: bank,
-                                                 fromMs: target, forTake: takeId)
+            // Re-seek the RUNNING sound: a multi-staff take re-schedules its MIXDOWN from the tap.
+            // USUALLY a reschedule, not a re-render — but not always: what is playing may be the
+            // real-time sampler FALLBACK, whose whole reason for existing is that there is no
+            // fresh mixdown, so this tap can start a multi-second offline render. Drive the same
+            // `preparing` spinner the ▶ does; a silent multi-second nothing is the one thing this
+            // screen may never do.
+            if take.staffCount > 1 {
+                Task { @MainActor in
+                    let outcome = await StudioTakePlayback.start(take: take, fromMs: target,
+                                                                 instruments: instruments,
+                                                                 studio: studio, packs: packs,
+                                                                 preparing: { preparing = $0 })
+                    if let msg = outcome.message { errorText = msg }
+                }
             } else {
                 instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
                                        fromMs: target, forTake: takeId)
@@ -169,17 +181,6 @@ struct StudioScoreView: View {
             instruments.parkReplayPosition(atMs: target, forTake: takeId)
         }
         if persistsCursor { studio.setScoreCursorMs(target, forTake: takeId) }
-    }
-
-    /// The take's non-empty staffs as the polyphonic replay wants them — nil for a legacy
-    /// single-staff take (callers fall back to the sampler path).
-    private func polyStaffs(_ take: StudioTake)
-        -> [(events: [StudioNoteEvent], instrument: InstrumentKey)]? {
-        guard let extras = take.extraStaffs, !extras.isEmpty else { return nil }
-        var staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)] = []
-        if !take.scoreEvents.isEmpty { staffs.append((take.scoreEvents, take.instrument)) }
-        for st in extras where !st.scoreEvents.isEmpty { staffs.append((st.scoreEvents, st.instrument)) }
-        return staffs.isEmpty ? nil : staffs
     }
 
     // MARK: Content
@@ -354,16 +355,22 @@ struct StudioScoreView: View {
                 // Free the sampler from a foreign replay first, so `toggle` starts ours rather than
                 // just stopping theirs.
                 if instruments.isReplaying, !ours { instruments.stopReplay() }
-                if !StudioTakeReplay.toggle(take: take, instruments: instruments, packs: packs,
-                                            fromMs: from) {
+                if !StudioTakeReplay.toggle(take: take, instruments: instruments, studio: studio,
+                                            packs: packs, fromMs: from,
+                                            preparing: { preparing = $0 },
+                                            onError: { errorText = $0 }) {
                     errorText = "Download the \(take.instrument.displayName) pack to hear this take."
                 }
             } label: {
-                Label(ours ? "Stop" : "Replay", systemImage: ours ? "stop.fill" : "play.fill")
+                if preparing {
+                    Label("Preparing…", systemImage: "waveform")
+                } else {
+                    Label(ours ? "Stop" : "Replay", systemImage: ours ? "stop.fill" : "play.fill")
+                }
             }
             .buttonStyle(.borderedProminent)
             .tint(ours ? Theme.danger : Theme.accent)
-            .disabled(take.allScoreEvents.isEmpty || overdubbing)
+            .disabled(take.allScoreEvents.isEmpty || overdubbing || preparing)
             .accessibilityIdentifier("score-replay")
             editButtons(take)
             Spacer(minLength: 0)
@@ -475,16 +482,19 @@ struct StudioScoreView: View {
     }
 
     /// Arm the overdub at the parked cursor (the position the user tapped — nothing tapped ⇒
-    /// the top) and start the EXISTING staffs playing back mixed from there, through the
-    /// multitimbral synth so the SAMPLER stays free as the user's overdub voice. The overdub
-    /// log anchors at the same instant the backing anchors its clock, so played notes land at
-    /// the true score position.
+    /// the top) and start the EXISTING staffs playing back mixed from there, as RENDERED AUDIO so
+    /// the SAMPLER stays free as the user's overdub voice. The overdub log anchors at the same
+    /// instant the backing anchors its clock, so played notes land at the true score position.
     private func beginOverdub(_ take: StudioTake) {
         guard instruments.currentInstrument != nil else {
             errorText = "Load an instrument on the Instrument tab first — the overdub records through it."
             return
         }
-        guard take.staffCount < StudioTake.maxStaffs else { return }
+        guard take.staffCount < StudioTake.maxStaffs else {
+            errorText = "This instrumental already has \(StudioTake.maxStaffs) staffs — "
+                + "an overdub would make a fifth."
+            return
+        }
         if instruments.isReplaying { instruments.stopReplay() }
         let parked = instruments.replayPositionMs(forTake: takeId) ?? studio.scoreCursorMs(takeId)
         let p = max(0, min(parked ?? 0, InstrumentEngine.maxReplayMs))
@@ -506,24 +516,32 @@ struct StudioScoreView: View {
                                        loop: settings.studioOverdubLoop) else { return }
         overdubbing = true
         instruments.setClickEnabled(settings.studioOverdubClickEnabled, bpm: take.bpm)
-        // Backing: every non-empty staff, mixed. A missing bank degrades to a silent backing
-        // (the overdub still records) rather than blocking the pass — same shared font today,
-        // so this is a nearly-impossible path, surfaced honestly when it happens.
-        var staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)] = []
-        if !take.scoreEvents.isEmpty { staffs.append((take.scoreEvents, take.instrument)) }
-        for st in take.extraStaffs ?? [] where !st.scoreEvents.isEmpty {
-            staffs.append((st.scoreEvents, st.instrument))
-        }
-        guard !staffs.isEmpty else { return }
-        guard let bank = StudioTakeReplay.polyphonicBankURL(take: take, packs: packs) else {
-            errorText = "Download the instrument packs to hear the backing — overdubbing without it."
+        // Backing: the take's RENDERED MIXDOWN of every existing staff, from the anchor — and
+        // under Loop, looping the confined region so notes layer pass after pass. The staffs
+        // cannot change during a pass, so a mixdown is a valid backing; playing a FILE also leaves
+        // the sampler entirely free as the user's overdub voice, which is why `asBacking` refuses
+        // the sampler route even at one staff. A mixdown that can't be produced degrades to
+        // real-time per-staff samplers, never to silence — and says so.
+        // Overdubbing onto an EMPTY instrumental: nothing to back, and that is legitimate (it is
+        // how a first staff gets played in). The pass stays armed — but it is armed with NO
+        // backing, which a capture must be able to tell apart from a backing that failed.
+        guard !take.allScoreEvents.isEmpty else {
+            NPLog.trace("studio: overdub armed with no backing tk=\(takeId) — the score is empty")
             return
         }
-        instruments.replayTakePolyphonic(staffs: staffs, bankURL: bank, fromMs: p,
-                                         forTake: takeId, forceSynth: true,
-                                         loopRegion: instruments.overdubLoop
-                                             ? (startMs: p, endMs: instruments.overdubRegionEndMs)
-                                             : nil)
+        let loop: (startMs: Int, endMs: Int)? = instruments.overdubLoop
+            ? (startMs: p, endMs: instruments.overdubRegionEndMs) : nil
+        Task { @MainActor in
+            let outcome = await StudioTakePlayback.start(take: take, fromMs: p, loopRegion: loop,
+                                                         asBacking: true, instruments: instruments,
+                                                         studio: studio, packs: packs,
+                                                         preparing: { preparing = $0 })
+            if let msg = outcome.message { errorText = msg }
+            // The backing did not start. The capture is still anchored at the button press —
+            // which the on-demand render may have left seconds in the past — so a confined pass
+            // would finalize itself before the user played anything. Re-anchor to now.
+            if outcome != .playing { instruments.reanchorOverdubIfEmpty() }
+        }
     }
 
     /// End the overdub pass: file the capture as a new staff through the store (empty capture ⇒
