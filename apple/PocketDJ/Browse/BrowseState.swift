@@ -375,9 +375,18 @@ final class BrowseState {
         let base: [BrowseItem]; let keys: [String]
         if let c = externalBaseCache, c.key == baseKey {
             base = c.base; keys = c.keys
-        } else {
-            (base, keys) = externalBase?() ?? ([], [])
+        } else if let build = externalBase {
+            (base, keys) = build()
             externalBaseCache = (baseKey, base, keys)
+        } else {
+            // NO base bound yet — the host's binding lost the race with this recompute.
+            // Publishing here would be doubly sticky: the empty base memoizes under
+            // `baseKey` (session-long, since baseKey only moves with the catalog/event
+            // revision) AND `displayKey` stamps the signature, so the "already current"
+            // guard above would short-circuit every later run for it. Publish nothing,
+            // stamp nothing: the next run recomputes for real. (Hosts should still bind
+            // BEFORE they recompute — see HistoryView / QueueBuilderState.refreshDevice.)
+            return
         }
         let (q, cl, sk) = (query, clauses, sortKeys)
         let pc = playCounts
@@ -389,6 +398,11 @@ final class BrowseState {
         displayItems = sorted
         displayKey = signature
     }
+
+    /// Drop the "already current" memo so the NEXT `refreshExternal` recomputes even when the
+    /// signature is unchanged. The explicit-submit seam: a user who types the same term and hits
+    /// Search must get a real search, not the early return at the top of `refreshExternal`.
+    func invalidateDisplayKey() { displayKey = nil }
 
     /// A stable signature of the filter/sort inputs (query + complete clauses + sort keys),
     /// WITHOUT the catalog revision — History composes this with its own event-log revision to

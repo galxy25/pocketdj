@@ -424,9 +424,9 @@ struct RootView: View {
     /// collapse chevron and dressed identically (44pt hit area included).
     private var builderOpenButton: some View {
         Button { builderPresented = true } label: {
-            Image(systemName: "plus")
+            Image(systemName: builder.draft.isEmpty ? "plus" : "text.badge.plus")
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(Theme.fgDim)
+                .foregroundStyle(builder.draft.isEmpty ? Theme.fgDim : Theme.accent)
                 .padding(8)
                 .background(Theme.bgRaised.opacity(0.85), in: Circle())
                 .frame(minWidth: 44, minHeight: 44)
@@ -434,9 +434,25 @@ struct RootView: View {
         }
         .buttonStyle(.plain)
         .padding(.top, 6).padding(.leading, 10)
-        .help("Build a queue")
+        .help(builderHelp)
         .accessibilityLabel("Build a queue")
+        // The draft survives dismissal (the builder is RootView @State) but nothing
+        // outside the sheet used to show it — a swipe-dismissed draft was invisible
+        // until you happened to reopen. The value carries the count for a11y/tests.
+        .accessibilityValue(builderDraftValue)
         .accessibilityIdentifier("np-builder-open")
+    }
+
+    /// Shared dress for the two builder entry points: the draft count, when there
+    /// is one, is the whole point of showing anything different at all.
+    private var builderHelp: String {
+        builder.draft.isEmpty
+            ? "Build a queue"
+            : "Build a queue — \(builder.draft.count) waiting"
+    }
+
+    private var builderDraftValue: String {
+        builder.draft.isEmpty ? "Empty" : "\(builder.draft.count) queued"
     }
 
     /// The idle entry: with no set running the panel is absent, so this row keeps the
@@ -449,6 +465,12 @@ struct RootView: View {
                 Text("Build a queue")
                     .font(.subheadline.weight(.medium)).foregroundStyle(Theme.fg)
                 Spacer()
+                if !builder.draft.isEmpty {
+                    Text("\(builder.draft.count)")
+                        .font(.caption2.weight(.bold)).foregroundStyle(Theme.bg)
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(Theme.accent, in: Capsule())
+                }
             }
             .padding(.horizontal, 14)
             .frame(minHeight: 44)
@@ -541,6 +563,7 @@ struct RootView: View {
         let size = overlaySize(window: window)
         if nowPlayingVisible && size > 0 {
             NowPlayingExpandedView(openBuilder: { builderPresented = true },
+                                   draftCount: builder.draft.count,
                                    collapse: { collapseExpanded() })
                 .frame(width: isPortraitPhone ? nil : size,
                        height: isPortraitPhone ? size : nil)

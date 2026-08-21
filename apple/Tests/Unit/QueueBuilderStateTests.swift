@@ -3,10 +3,16 @@ import XCTest
 
 /// Queue builder (Now Playing ＋) — the controller behind the builder sheet.
 /// Device search rides the BrowseState `refreshExternal` lane (the History
-/// precedent, never the shared browse memo); cloud rides the Discover machinery;
-/// adds map onto SetlistPlayer's live-edit primitives when a set runs and onto
-/// the DRAFT accumulator when idle; Play consumes the draft for the playNow
-/// funnel. Cloud adds must record catalog citizenship BEFORE queueing (playNow
+/// precedent, never the shared browse memo); cloud rides the Discover machinery.
+///
+/// SEMANTICS: EVERY add lands in the DRAFT — running or not. Play hands the draft
+/// to the playNow funnel (REPLACING playback) and is gated on the draft alone;
+/// `flushToQueue` is the second exit that appends the draft to a running set's
+/// live queue. The shipped build instead routed adds straight to the live queue
+/// whenever `sequencer.isRunning` — which includes a PAUSED set and a cold-launch
+/// session restore — so the draft stayed empty, the sheet showed no trace of the
+/// add, and Play (gated on a non-empty draft AND `!isRunning`) could never appear.
+/// Cloud adds must still record catalog citizenship BEFORE drafting (playNow
 /// drops ids absent from `songsById`).
 @MainActor
 final class QueueBuilderStateTests: XCTestCase {
@@ -149,55 +155,134 @@ final class QueueBuilderStateTests: XCTestCase {
         XCTAssertEqual(b.browse.kind, .song)            // pinned throughout
     }
 
-    // MARK: Add position — running regime (the live-edit primitives)
+    // MARK: Add while a set runs — THE user-reported bug
 
-    func testAddPositionsIntoRunningQueue() {
+    /// The report was "it won't let me add anything to the queue". It did add — into
+    /// the LIVE queue, behind a sheet that showed nothing and offered no Play. The
+    /// contract now: an add while running is VISIBLE (it is in the draft) and
+    /// PLAYABLE (`canPlay`), and it does NOT mutate the running set behind the
+    /// user's back. PRE-FIX this fails on every assertion: the draft stayed empty,
+    /// `seq.queue` grew silently, and Play was gated off by `isRunning`.
+    func testAddWhileRunningIsVisibleInTheDraftAndPlayable() {
         let seq = makeSequencer()
         let b = makeBuilder()
         seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: nil)
+        XCTAssertTrue(seq.isRunning)
+        XCTAssertFalse(b.canPlay, "nothing drafted yet")
 
-        b.add([item("e")], at: .bottom, sequencer: seq)
-        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "c", "d", "e"])
+        b.add([item("e")], at: .bottom)
+        XCTAssertEqual(b.draft.map(\.id), ["e"], "the add must be VISIBLE in the draft")
+        XCTAssertTrue(b.canPlay, "…and playable the moment it lands")
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "c", "d"],
+                       "a plain ＋ must not silently mutate the running set")
 
-        b.add([item("f")], at: .top, sequencer: seq)
-        XCTAssertEqual(seq.queue.map(\.id), ["a", "f", "b", "c", "d", "e"])
-
-        // Surprise slot: range is the LIVE tail (right-after-current ... end).
+        // Positions apply to the DRAFT in both regimes now (the menu labels say so).
+        b.add([item("f")], at: .top)
+        XCTAssertEqual(b.draft.map(\.id), ["f", "e"])
         var seenRange: ClosedRange<Int>?
-        b.add([item("g")], at: .random, sequencer: seq, slot: { r in seenRange = r; return r.lowerBound })
-        XCTAssertEqual(seenRange, 1...6)
-        XCTAssertEqual(seq.queue.map(\.id), ["a", "g", "f", "b", "c", "d", "e"])
-        // The running regime never touches the draft.
-        XCTAssertTrue(b.draft.isEmpty)
+        b.add([item("g")], at: .random, slot: { r in seenRange = r; return 1 })
+        XCTAssertEqual(seenRange, 0...2, "the Surprise slot spans the draft, inclusive ends")
+        XCTAssertEqual(b.draft.map(\.id), ["f", "g", "e"])
+        seq.stop()
+    }
+
+    /// Play's gate, stated once: the DRAFT alone. Never `sequencer.isRunning` —
+    /// that half of the shipped condition made Play unreachable for a paused set
+    /// and for every cold launch that restored a session (`restore(from:)` sets
+    /// `isRunning = true` with no audio started).
+    func testCanPlayIsGatedOnTheDraftAloneEvenWhileASetRuns() {
+        let seq = makeSequencer()
+        let b = makeBuilder()
+        XCTAssertFalse(b.canPlay)                       // idle + empty
+        b.add([item("x")], at: .bottom)
+        XCTAssertTrue(b.canPlay)                        // idle + drafted
+
+        seq.play([item("a")], sourceSetlistId: nil)
+        XCTAssertTrue(seq.isRunning)
+        XCTAssertTrue(b.canPlay, "a running set must NOT hide Play")
+
+        b.removeDraft(uids: Set(b.draft.map(\.uid)))
+        XCTAssertFalse(b.canPlay, "…but an empty draft still has nothing to play")
+        seq.stop()
+    }
+
+    // MARK: The second exit — flushToQueue (draft → the running set's live queue)
+
+    func testFlushToQueueAppendsTheDraftAndLeavesAReceipt() {
+        let seq = makeSequencer()
+        let b = makeBuilder()
+        seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: nil)
+        b.add([item("e"), item("f")], at: .bottom)
+
+        XCTAssertEqual(b.flushToQueue(at: .bottom, sequencer: seq), 2)
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "c", "d", "e", "f"])
+        XCTAssertTrue(b.draft.isEmpty, "the draft is consumed by the flush")
+        XCTAssertEqual(b.notice?.kind, .confirmation)
+        XCTAssertEqual(b.notice?.text, "Added 2 songs to Up next.")
+
+        // Insert-next and the Surprise slot ride the same live-edit primitives.
+        b.add([item("g")], at: .bottom)
+        XCTAssertEqual(b.flushToQueue(at: .top, sequencer: seq), 1)
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "g", "b", "c", "d", "e", "f"])
+        XCTAssertEqual(b.notice?.text, "Added \u{201C}g\u{201D} to Up next.")
+
+        b.add([item("h")], at: .bottom)
+        var seenRange: ClosedRange<Int>?
+        XCTAssertEqual(b.flushToQueue(at: .random, sequencer: seq,
+                                      slot: { r in seenRange = r; return r.lowerBound }), 1)
+        XCTAssertEqual(seenRange, 1...7, "the LIVE tail — right-after-current ... end")
+        seq.stop()
+    }
+
+    /// The race between the render that offered "Up next" and the tap: the set can
+    /// end in between. Returning 0 in silence is the exact failure this whole change
+    /// exists to kill, so it must SAY so — and keep the draft, which Play can start.
+    func testFlushAfterTheSetEndedSaysSoAndKeepsTheDraft() {
+        let seq = makeSequencer()
+        let b = makeBuilder()
+        b.add([item("x"), item("y")], at: .bottom)
+        XCTAssertFalse(seq.isRunning)
+
+        XCTAssertEqual(b.flushToQueue(at: .bottom, sequencer: seq), 0)
+        XCTAssertEqual(b.notice?.kind, .problem, "a no-op must never read as a confirmation")
+        XCTAssertEqual(b.draft.map(\.id), ["x", "y"], "the draft survives — Play still works")
+        XCTAssertTrue(b.canPlay)
+    }
+
+    func testFlushOfAnEmptyDraftIsAQuietNoOp() {
+        let seq = makeSequencer()
+        let b = makeBuilder()
+        seq.play([item("a")], sourceSetlistId: nil)
+        XCTAssertEqual(b.flushToQueue(at: .bottom, sequencer: seq), 0)
+        XCTAssertNil(b.notice, "nothing was asked for, so nothing is reported")
         seq.stop()
     }
 
     // MARK: Add position — draft regime (idle) + Play hand-off
 
     func testDraftAccumulatesWithPositionSemantics() {
-        let seq = makeSequencer()                       // idle: primitives would no-op
+        let seq = makeSequencer()                       // idle set, for the untouched-queue check
         let b = makeBuilder()
 
-        b.add([item("x")], at: .bottom, sequencer: seq)
-        b.add([item("y")], at: .bottom, sequencer: seq)
+        b.add([item("x")], at: .bottom)
+        b.add([item("y")], at: .bottom)
         XCTAssertEqual(b.draft.map(\.id), ["x", "y"])
 
-        b.add([item("z")], at: .top, sequencer: seq)
+        b.add([item("z")], at: .top)
         XCTAssertEqual(b.draft.map(\.id), ["z", "x", "y"])
 
         var seenRange: ClosedRange<Int>?
-        b.add([item("w")], at: .random, sequencer: seq, slot: { r in seenRange = r; return 2 })
+        b.add([item("w")], at: .random, slot: { r in seenRange = r; return 2 })
         XCTAssertEqual(seenRange, 0...3)                // anywhere in the draft, inclusive ends
         XCTAssertEqual(b.draft.map(\.id), ["z", "x", "w", "y"])
         XCTAssertTrue(seq.queue.isEmpty)                // idle queue untouched
     }
 
     func testConsumeDraftForPlayReturnsIdsInOrderAndResets() {
-        let seq = makeSequencer()
         let b = makeBuilder()
         b.songQuery = "q"; b.artistQuery = "a"
-        b.add([item("x"), item("y")], at: .bottom, sequencer: seq)
-        b.add([item("z")], at: .top, sequencer: seq)
+        b.add([item("x"), item("y")], at: .bottom)
+        b.add([item("z")], at: .top)
 
         let ids = b.consumeDraftForPlay()
         XCTAssertEqual(ids, ["z", "x", "y"])            // the playNow funnel's input, in draft order
@@ -208,9 +293,8 @@ final class QueueBuilderStateTests: XCTestCase {
     }
 
     func testDraftRemoveAndMove() {
-        let seq = makeSequencer()
         let b = makeBuilder()
-        b.add([item("x"), item("y"), item("z")], at: .bottom, sequencer: seq)
+        b.add([item("x"), item("y"), item("z")], at: .bottom)
         b.moveDraft(fromOffsets: IndexSet(integer: 2), toOffset: 0)
         XCTAssertEqual(b.draft.map(\.id), ["z", "x", "y"])
         let yUid = b.draft[2].uid
@@ -237,13 +321,12 @@ final class QueueBuilderStateTests: XCTestCase {
     }
 
     func testCloudAddRecordsProvisionalBeforeDraftInsertThenPerforms() async {
-        let seq = makeSequencer()
         let b = makeBuilder()
         let adder = StubCloudAdder()
         b.cloudAdder = adder
         adder.onRecord = { XCTAssertTrue(b.draft.isEmpty, "citizenship must land BEFORE the insert") }
 
-        let task = b.addCloudHit(hit("123"), at: .bottom, sequencer: seq)
+        let task = b.addCloudHit(hit("123"), at: .bottom)
         // The synchronous half: recorded, then drafted — perform not yet run.
         XCTAssertEqual(adder.events, ["record:amrec_123"])
         XCTAssertEqual(b.draft.map(\.id), ["amrec_123"])
@@ -256,25 +339,37 @@ final class QueueBuilderStateTests: XCTestCase {
         XCTAssertEqual(adder.events, ["record:amrec_123", "perform:amrec_123"])
     }
 
-    func testCloudAddLandsInLiveQueueWhenRunning() async {
+    /// A cloud ＋ while a set runs obeys the SAME contract as a device ＋: it lands
+    /// in the draft where the user can see it, and leaves the running set alone.
+    /// Pre-fix it went straight into the live queue behind the sheet — and a cloud
+    /// add is the one most likely to fail asynchronously, so the invisible landing
+    /// spot was worst here.
+    func testCloudAddWhileRunningLandsInTheVisibleDraft() async {
         let seq = makeSequencer()
         let b = makeBuilder()
         let adder = StubCloudAdder()
         b.cloudAdder = adder
         seq.play([item("a"), item("b")], sourceSetlistId: nil)
 
-        let task = b.addCloudHit(hit("9"), at: .top, sequencer: seq)
+        // NOTE: every live-queue assertion stays in this synchronous stretch — the
+        // real SetlistPlayer resolves (and tears down unresolvable ids) across awaits.
+        let task = b.addCloudHit(hit("9"), at: .top)
+        XCTAssertEqual(b.draft.map(\.id), ["amrec_9"], "visible, not swallowed by the live queue")
+        XCTAssertTrue(b.canPlay)
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b"], "the running set is untouched")
+
+        // …and the second exit still puts it in the live queue, on purpose this time.
+        XCTAssertEqual(b.flushToQueue(at: .top, sequencer: seq), 1)
         XCTAssertEqual(seq.queue.map(\.id), ["a", "amrec_9", "b"])
-        XCTAssertTrue(b.draft.isEmpty)
+        seq.stop()
+
         await task?.value
         XCTAssertEqual(adder.events, ["record:amrec_9", "perform:amrec_9"])
-        seq.stop()
     }
 
     func testCloudAddWithoutAdderStillQueues() {
-        let seq = makeSequencer()
         let b = makeBuilder()                           // no cloudAdder wired
-        let task = b.addCloudHit(hit("7"), at: .bottom, sequencer: seq)
+        let task = b.addCloudHit(hit("7"), at: .bottom)
         XCTAssertNil(task)
         XCTAssertEqual(b.draft.map(\.id), ["amrec_7"])
     }
@@ -340,10 +435,9 @@ final class QueueBuilderStateTests: XCTestCase {
         XCTAssertEqual(adapter.resolvedSongId(hit("999")), "sng_real")
 
         // End-to-end through addCloudHit: the DRAFT holds the live twin id.
-        let seq = makeSequencer()
         let b = makeBuilder()
         b.cloudAdder = adapter
-        _ = b.addCloudHit(hit("999", title: "How You Say My Name"), at: .bottom, sequencer: seq)
+        _ = b.addCloudHit(hit("999", title: "How You Say My Name"), at: .bottom)
         XCTAssertNil(app.songsById["amrec_999"], "the provisional twin still yields")
         XCTAssertEqual(b.draft.map(\.id), ["sng_real"],
                        "the queued item must carry the id playNow can resolve")
@@ -359,10 +453,9 @@ final class QueueBuilderStateTests: XCTestCase {
     // MARK: Play failure (H2) — the draft must survive a refused Play
 
     func testPlayDraftConsumesOnlyOnSuccess() async {
-        let seq = makeSequencer()
         let b = makeBuilder()
         b.songQuery = "q"; b.artistQuery = "a"
-        b.add([item("x"), item("y")], at: .bottom, sequencer: seq)
+        b.add([item("x"), item("y")], at: .bottom)
 
         struct Refused: Error {}
         var seen: [String]?
@@ -386,5 +479,192 @@ final class QueueBuilderStateTests: XCTestCase {
         let b = makeBuilder()
         let played = await b.playDraft { _ in XCTFail("empty draft must not reach playNow") }
         XCTAssertFalse(played)
+    }
+
+    // ========================================================================
+    // MARK: Search reliability — the ordering race, the sticky empty, the submit
+    // ========================================================================
+
+    /// THE RACE. The shipped view bound `externalBase` in a plain `.task` declared
+    /// alongside the `.task(id:)` recompute — two siblings with no ordering
+    /// guarantee. `refreshDevice` now binds ITSELF, so the order is a call sequence
+    /// rather than a scheduling coin-flip. Note the deliberate absence of a
+    /// `bindExternalBase` call here: PRE-FIX this yields 0 rows.
+    func testRefreshDeviceBindsItsOwnBaseSoTheRecomputeCannotLoseTheRace() async {
+        let app = await loadedApp()
+        let b = makeBuilder()
+        b.songQuery = "neon"
+        await b.refreshDevice(app)                      // no explicit bind, on purpose
+        XCTAssertEqual(b.deviceResults.map(\.idString), ["sng_1"])
+        XCTAssertEqual(b.deviceState, .loaded)
+    }
+
+    /// THE STICKY EMPTY, at the BrowseState seam. When a recompute did land before
+    /// any base was bound, the shipped `refreshExternal` resolved the base to `[]`
+    /// AND memoized it under `baseKey` (which only moves with the catalog revision)
+    /// AND stamped `displayKey = signature` — so the "already current" guard turned
+    /// that empty answer into a permanent one for the rest of the session. It must
+    /// now publish nothing and stamp nothing, leaving the next run free to do the
+    /// real work. PRE-FIX the second refresh early-returns and this stays empty.
+    func testUnboundBaseNeitherPoisonsTheCacheNorStampsTheDisplayKey() async {
+        let app = await loadedApp()
+        let b = makeBuilder()
+        let signature = b.deviceSignature(app)
+        let baseKey = b.deviceBaseKey(app)
+
+        // The race, exactly: recompute with nothing bound yet.
+        await b.browse.refreshExternal(signature: signature, baseKey: baseKey)
+        XCTAssertTrue(b.browse.displayItems.isEmpty, "nothing to publish yet")
+
+        // The binding lands late…
+        b.bindExternalBase(app)
+        // …and the SAME signature + SAME baseKey must still produce a real answer.
+        await b.browse.refreshExternal(signature: signature, baseKey: baseKey)
+        XCTAssertEqual(b.browse.displayItems.count, 7,
+                       "an empty first pass must never become sticky")
+    }
+
+    /// The same thing end-to-end through the controller, and then a REPEAT of the
+    /// identical query — the "I typed it again and still nothing" path.
+    func testRepeatedIdenticalQueryStillPublishesAfterAnEmptyFirstPass() async {
+        let app = await loadedApp()
+        let b = makeBuilder()
+        b.songQuery = "neon"
+        // Recompute BEFORE any bind (the losing order), straight at the browse lane.
+        await b.browse.refreshExternal(signature: b.deviceSignature(app),
+                                       baseKey: b.deviceBaseKey(app))
+        XCTAssertTrue(b.deviceResults.isEmpty)
+
+        // Now the normal path runs for the very same signature.
+        await b.refreshDevice(app)
+        XCTAssertEqual(b.deviceResults.map(\.idString), ["sng_1"])
+
+        // And typing the same term again + submitting still searches.
+        await b.refreshDevice(app, force: true)
+        XCTAssertEqual(b.deviceResults.map(\.idString), ["sng_1"])
+    }
+
+    /// EXPLICIT SUBMIT, at the seam. `refreshExternal` checks `displayKey` FIRST and
+    /// early-returns on an unchanged signature — so a naive Search button would be
+    /// inert: re-submitting the same query would do literally nothing, even with a
+    /// different base underneath. `invalidateDisplayKey` is what makes it real.
+    func testInvalidateDisplayKeyIsWhatMakesAnExplicitSubmitDoAnything() async throws {
+        let all = try TestData.songItems()
+        let b = makeBuilder()
+        var rows = Array(all.prefix(2))
+        b.browse.externalBase = { (rows, []) }
+
+        await b.browse.refreshExternal(signature: "S", baseKey: "K1")
+        XCTAssertEqual(b.browse.displayItems.count, 2)
+
+        // The base moved (new baseKey) but the signature did NOT.
+        rows = Array(all.prefix(5))
+        await b.browse.refreshExternal(signature: "S", baseKey: "K2")
+        XCTAssertEqual(b.browse.displayItems.count, 2,
+                       "the 'already current' memo — this is why a plain re-run is inert")
+
+        b.browse.invalidateDisplayKey()
+        await b.browse.refreshExternal(signature: "S", baseKey: "K2")
+        XCTAssertEqual(b.browse.displayItems.count, 5, "an EXPLICIT submit gets past the memo")
+    }
+
+    /// …and the controller's `force` flag wired to it, against the exact real-world
+    /// shape: a lost race already published an EMPTY set under the signature the
+    /// user's query maps to. Un-forced, the memo keeps that blank forever; the ⌕
+    /// button / return key must still produce a real search.
+    func testForcedRefreshDeviceGetsPastAPoisonedPublish() async {
+        let app = await loadedApp()
+        let b = makeBuilder()
+        b.songQuery = "neon"
+
+        b.browse.externalBase = { ([], []) }
+        await b.browse.refreshExternal(signature: b.deviceSignature(app), baseKey: "poison")
+        XCTAssertTrue(b.deviceResults.isEmpty)
+
+        await b.refreshDevice(app)
+        XCTAssertTrue(b.deviceResults.isEmpty, "unchanged signature ⇒ the memo short-circuits")
+
+        await b.refreshDevice(app, force: true)
+        XCTAssertEqual(b.deviceResults.map(\.idString), ["sng_1"],
+                       "an explicit submit must always yield a real search")
+    }
+
+    /// In-flight ≠ empty. The shipped header read `On-device (0)` for "still
+    /// computing", "genuinely no matches", and "the base never bound" alike.
+    func testDeviceStateSeparatesSearchingFromLoaded() async {
+        let app = await loadedApp()
+        let b = makeBuilder()
+        XCTAssertEqual(b.deviceState, .idle, "nothing has run yet — not a zero-result answer")
+
+        b.songQuery = "neon"
+        let running = Task { await b.refreshDevice(app) }
+        await Task.yield()
+        XCTAssertEqual(b.deviceState, .searching, "the 180 ms debounce must SAY it is searching")
+        await running.value
+        XCTAssertEqual(b.deviceState, .loaded)
+
+        // A real zero-result answer is `.loaded` with no rows — distinguishable.
+        b.songQuery = "zzzznope"
+        await b.refreshDevice(app)
+        XCTAssertEqual(b.deviceState, .loaded)
+        XCTAssertTrue(b.deviceResults.isEmpty)
+    }
+
+    /// The cloud lane must announce itself SYNCHRONOUSLY, before the 400 ms
+    /// coalescing sleep. Pre-fix `state` was only set inside the task after the
+    /// sleep, so the first 400 ms of every cloud search rendered the idle hint —
+    /// i.e. looked like the keystroke did nothing at all.
+    func testCloudSearchGoesLoadingBeforeTheDebounceSleep() {
+        let b = makeBuilder()
+        b.mode = .cloud
+        b.songQuery = "daft"
+        XCTAssertEqual(b.discover.state, .idle)
+        b.refreshCloud(rips: makeRips())
+        XCTAssertEqual(b.discover.state, .loading,
+                       "in-flight is visible from the first keystroke, not 400 ms later")
+    }
+
+    /// A blank pair of omni bars is not a search — device mode lists the whole
+    /// catalog (the discoverable default) and cloud shows its hint rather than a
+    /// bare "No matches."
+    func testHasSearchTermDistinguishesBlankFromTyped() {
+        let b = makeBuilder()
+        XCTAssertFalse(b.hasSearchTerm)
+        b.songQuery = "   "
+        XCTAssertFalse(b.hasSearchTerm, "whitespace is not a query")
+        b.songQuery = "neon"
+        XCTAssertTrue(b.hasSearchTerm)
+        b.songQuery = ""; b.artistQuery = "aria"
+        XCTAssertTrue(b.hasSearchTerm, "an artist-only refine is still a search")
+    }
+
+    // MARK: Notices — a refusal must never render as a confirmation
+
+    func testRefusedPlayLeavesAProblemNoticeCarryingTheReason() async {
+        let b = makeBuilder()
+        b.add([item("x")], at: .bottom)
+
+        let played = await b.playDraft { _ in throw PocketDJIntentError.emptyCollection("Queue") }
+        XCTAssertFalse(played)
+        XCTAssertEqual(b.notice?.kind, .problem,
+                       "a refusal drawn with a green checkmark is worse than no notice")
+        XCTAssertEqual(b.notice?.text, String(localized: PocketDJIntentError
+                                                  .emptyCollection("Queue").localizedStringResource))
+        XCTAssertEqual(b.draft.map(\.id), ["x"], "and the draft survives (H2)")
+
+        // A successful Play clears the stale refusal.
+        let ok = await b.playDraft { _ in }
+        XCTAssertTrue(ok)
+        XCTAssertNil(b.notice)
+    }
+
+    func testANewAddClearsAStaleNotice() {
+        let seq = makeSequencer()
+        let b = makeBuilder()
+        b.add([item("x")], at: .bottom)
+        _ = b.flushToQueue(at: .bottom, sequencer: seq)   // idle ⇒ problem notice
+        XCTAssertEqual(b.notice?.kind, .problem)
+        b.add([item("y")], at: .bottom)
+        XCTAssertNil(b.notice, "a receipt must never outlive the thing it described")
     }
 }

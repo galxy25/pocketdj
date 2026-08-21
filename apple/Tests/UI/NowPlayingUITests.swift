@@ -433,9 +433,15 @@ final class NowPlayingUITests: XCTestCase {
     }
 
     /// Req 2/3/4 smoke — the panel's top-left ＋ presents the queue builder with its
-    /// bottom omni bars (song + artist fields, the device⇄cloud mode toggle) and
-    /// device results that add to the live queue.
-    func testBuilderOpensFromPanelPlusAndAddsToQueue() throws {
+    /// bottom omni bars (song + artist fields, the device⇄cloud mode toggle), an
+    /// EXPLICIT search control, and device results that add to a VISIBLE draft.
+    ///
+    /// `PDJ_SEED_PLAYBACK_SESSION=1` puts this in the RUNNING regime on purpose —
+    /// the one the user hit, and the one the shipped smoke silently accepted. It
+    /// used to tap ＋, close the sheet, and assert on the queue OUTSIDE; it could
+    /// therefore never catch "nothing gets added" or "no Play button", because both
+    /// complaints are about what the sheet shows WHILE it is open. Assert in-sheet.
+    func testBuilderAddIsVisibleAndPlayableWhileASetIsRunning() throws {
         #if os(macOS)
         throw XCTSkip("builder smoke exercised on iOS (macOS UI automation unavailable headless)")
         #else
@@ -453,20 +459,41 @@ final class NowPlayingUITests: XCTestCase {
         XCTAssertTrue(app.any("np-builder-artist-field").exists, "bottom artist omni bar")
         XCTAssertTrue(app.el("np-builder-mode").exists, "one-click device⇄cloud toggle")
         XCTAssertTrue(app.el("np-builder-filters").exists, "device mode offers filters")
+        // Req 1: a user who never reaches for the keyboard's Search key still has
+        // a visible way to trigger the search.
+        XCTAssertTrue(app.el("np-builder-search").exists, "explicit submit control")
+        // First-run guidance stands in for the empty draft, not a blank sheet.
+        XCTAssertTrue(app.any("np-builder-hint").exists, "empty-state guidance")
 
-        // Type a device query and one-click add the first result to the live queue.
+        // Type a device query and submit it explicitly (the return key path).
         let field = app.textFields["np-builder-song-field"]
         field.tap()
-        field.typeText("neon")
+        field.typeText("neon\n")
         let add = app.el("np-builder-add-0")
         XCTAssertTrue(add.waitForExistence(timeout: 8), "windowed device results render an ＋")
         add.tap()
-        attach("queue-builder")
+        attach("queue-builder-after-add")
+
+        // THE BUG, asserted from inside the sheet: the add is visible, and Play is
+        // reachable. Pre-fix all three of these were absent while a set ran.
+        XCTAssertTrue(app.any("np-builder-draft-header").waitForExistence(timeout: 5),
+                      "the add must show up in the draft — this is the only receipt")
+        XCTAssertTrue(app.any("np-builder-draft-count").exists, "…and the always-visible count")
+        XCTAssertTrue(app.el("np-builder-play").waitForExistence(timeout: 5),
+                      "Play must be reachable whenever there is something to play")
+        // The running-set second exit: append to Up next instead of replacing.
+        XCTAssertTrue(app.el("np-builder-flush").exists, "a running set also offers Up next")
+
+        app.el("np-builder-flush").tap()
+        XCTAssertTrue(app.any("np-builder-notice").waitForExistence(timeout: 5),
+                      "the flush confirms in-sheet (the panel behind is covered on iPhone)")
 
         app.el("np-builder-close").tap()
         XCTAssertFalse(app.any("np-builder").waitForExistence(timeout: 2))
-        // The add landed at the queue's END (default position).
-        XCTAssertTrue(app.any("np-queue-1").waitForExistence(timeout: 8),
+        // The flushed song landed at the queue's END (default position). Up Next is a
+        // LAZY list under the deck, so scroll toward the row rather than waiting on a
+        // tree that may never contain it (the `swipeTo` idiom).
+        XCTAssertTrue(app.swipeTo(app.any("np-queue-1")),
                       "builder add joins Up next behind the restored row")
         #endif
     }
