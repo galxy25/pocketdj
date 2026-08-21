@@ -1085,9 +1085,10 @@ final class StudioStoreTests: XCTestCase {
         XCTAssertEqual(r1?.lengthMs, 800)
         r1?.release?()
         // A render cache present ⇒ preferred.
-        let rendered = StudioFolders.renderedTakeFileName(id: "tk_p")
+        let rev = store.take("tk_p")!.renderRevision
+        let rendered = StudioFolders.renderedTakeFileName(id: "tk_p", revision: rev)
         try Data(repeating: 0, count: 8).write(to: try StudioFolders.appRoot(.takes).appendingPathComponent(rendered))
-        store.setTakeRendered("tk_p", fileName: rendered, wasUserFolder: false)
+        store.setTakeRendered("tk_p", fileName: rendered, wasUserFolder: false, revision: rev)
         let r2 = store.localURLForPlayback(id: "tk_p")
         XCTAssertEqual(r2?.url.lastPathComponent, rendered)
         r2?.release?()
@@ -1098,11 +1099,12 @@ final class StudioStoreTests: XCTestCase {
     func testTakeRenderCacheClearedOnEdit() throws {
         let store = StudioStore(fileURL: storeURL)
         let raw = try writeFile(.takes, id: "tk_e")
-        let rendered = StudioFolders.renderedTakeFileName(id: "tk_e")
+        let rendered = StudioFolders.renderedTakeFileName(id: "tk_e", revision: 0)
         let renderedURL = try StudioFolders.appRoot(.takes).appendingPathComponent(rendered)
         try Data(repeating: 0, count: 8).write(to: renderedURL)
         store.addTake(StudioTake(id: "tk_e", name: "E", fileName: raw, durationMs: 500,
-                                 renderedFileName: rendered, renderedWasUserFolder: false))
+                                 renderedFileName: rendered, renderedWasUserFolder: false,
+                                 renderRevision: 0, renderedRevision: 0))
         XCTAssertEqual(store.localURLForPlayback(id: "tk_e")?.url.lastPathComponent, rendered)
         store.setTakeEvents("tk_e", events: [StudioNoteEvent(onMs: 0, offMs: 300, note: 62, velocity: 90)])
         XCTAssertNil(store.take("tk_e")?.renderedFileName)

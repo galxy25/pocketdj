@@ -289,7 +289,7 @@ final class ScoreCursorTests: XCTestCase {
     // MARK: Polyphonic scheduling (multi-staff replay — pure action math)
 
     /// Every staff's actions appear, tagged with its channel, globally time-sorted with the
-    /// offs-before-ons rule intact — the merged schedule the multitimbral synth dispatches.
+    /// offs-before-ons rule intact — the merged schedule the live sampler pool dispatches.
     func testPolyphonicActionsContainAllStaffsWithChannels() {
         let staffs: [(events: [StudioNoteEvent], channel: Int)] = [
             ([StudioNoteEvent(onMs: 0, offMs: 500, note: 60, velocity: 96)], 0),

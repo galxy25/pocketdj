@@ -750,9 +750,10 @@ struct StudioInstrumentsView: View {
     }
 
     /// Arm a live overdub pass at the parked cursor and start the existing staffs playing back
-    /// MIXED from there (through the multitimbral synth — the SAMPLER stays free: it is the
-    /// user’s overdub voice). The overdub log anchors at the same instant the backing anchors
-    /// its clock, so played notes land at the true score position.
+    /// MIXED from there — REAL TIME, one `AVAudioUnitSampler` per staff (`replayStaffsLive`),
+    /// because a live score has no saved take and therefore no rendered mixdown to play. The live
+    /// sampler stays free: it is the user’s overdub voice. The overdub log anchors at the same
+    /// instant the backing anchors its clock, so played notes land at the true score position.
     private func beginLiveOverdub() {
         guard instruments.currentInstrument != nil else {
             notice = "Pick an instrument first — the overdub records through it."
@@ -792,11 +793,11 @@ struct StudioInstrumentsView: View {
             notice = "Backing playback needs the sound bank — overdubbing without it."
             return
         }
-        instruments.replayTakePolyphonic(staffs: staffs, bankURL: bank, fromMs: p,
-                                         forTake: Self.liveReplayOwner, forceSynth: true,
-                                         loopRegion: instruments.overdubLoop
-                                             ? (startMs: p, endMs: instruments.overdubRegionEndMs)
-                                             : nil)
+        instruments.replayStaffsLive(staffs: staffs, bankURL: bank, fromMs: p,
+                                     forTake: Self.liveReplayOwner,
+                                     loopRegion: instruments.overdubLoop
+                                         ? (startMs: p, endMs: instruments.overdubRegionEndMs)
+                                         : nil)
     }
 
     /// End the live overdub pass: file the capture as a new in-memory staff (empty capture ⇒ no

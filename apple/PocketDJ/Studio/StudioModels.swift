@@ -786,6 +786,28 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     /// because the instrumentals folder setting may have changed since the raw capture.
     var renderedFileName: String?
     var renderedWasUserFolder: Bool?
+    /// Monotonic SCORE stamp — bumped by the store whenever anything the mixdown is made of
+    /// changes (any staff's events/instrument, the tempo, a staff added or removed). The cache is
+    /// FRESH iff `renderedRevision == renderRevision`, the `StudioSample.renderRevision` contract.
+    /// Load-bearing for correctness, not just tidiness: a render started BEFORE an edit lands
+    /// AFTER it, and without the stamp it would re-file a cache of the PRE-edit mixdown — which
+    /// plays back as "the overdub isn't there", indistinguishable from a broken playback path.
+    /// ADDITIVE + OPTIONAL (the `editedEvents` doctrine): a legacy take decodes 0 / nil, i.e. not
+    /// fresh, and re-renders once on first play.
+    var renderRevision: Int = 0
+    var renderedRevision: Int?
+
+    /// Whether the render cache exists (per the record) AND matches the current score revision.
+    /// Disk existence is still checked at resolve time (`StudioStore.localURLForPlayback`).
+    ///
+    /// A cache filed BEFORE this stamp existed carries no `renderedRevision`, and is read as
+    /// revision 0 — which is exactly what a take that has never been invalidated is (invalidation
+    /// nils `renderedFileName` in the same breath, so a present name already means "not stale
+    /// since"). Without that reading, every instrumental in an existing library would fall back to
+    /// its RAW file, and a live-saved take's raw file is a silent placeholder.
+    var isRenderFresh: Bool {
+        renderedFileName != nil && (renderedRevision ?? 0) == renderRevision
+    }
 
     /// Demux provenance (F8 slice B — the comping↔melody switch). `demuxSourceKey` is the
     /// `DemuxDocument` key the take was extracted from (so the switch re-reaches the chords /
@@ -813,17 +835,20 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, instrument, fileName, wasUserFolder, bpm, events, durationMs, createdAt, editedEvents
         case renderedFileName, renderedWasUserFolder, demuxSourceKey, demuxMode, folderId, extraStaffs
+        case renderRevision, renderedRevision
     }
     init(id: String, name: String, instrument: InstrumentKey = .piano, fileName: String,
          wasUserFolder: Bool = false, bpm: Double = 120, events: [StudioNoteEvent] = [],
          durationMs: Int = 0, createdAt: Double = 0, editedEvents: [StudioNoteEvent]? = nil,
          renderedFileName: String? = nil, renderedWasUserFolder: Bool? = nil,
+         renderRevision: Int = 0, renderedRevision: Int? = nil,
          demuxSourceKey: String? = nil, demuxMode: String? = nil, folderId: String? = nil,
          extraStaffs: [StudioTakeStaff]? = nil) {
         self.id = id; self.name = name; self.instrument = instrument; self.fileName = fileName
         self.wasUserFolder = wasUserFolder; self.bpm = bpm; self.events = events
         self.durationMs = durationMs; self.createdAt = createdAt; self.editedEvents = editedEvents
         self.renderedFileName = renderedFileName; self.renderedWasUserFolder = renderedWasUserFolder
+        self.renderRevision = renderRevision; self.renderedRevision = renderedRevision
         self.demuxSourceKey = demuxSourceKey; self.demuxMode = demuxMode
         self.folderId = folderId
         self.extraStaffs = extraStaffs
@@ -844,6 +869,8 @@ struct StudioTake: Codable, Identifiable, Hashable, Sendable {
             .compactMap(\.value)
         renderedFileName = try? c.decode(String.self, forKey: .renderedFileName)
         renderedWasUserFolder = try? c.decode(Bool.self, forKey: .renderedWasUserFolder)
+        renderRevision = (try? c.decode(Int.self, forKey: .renderRevision)) ?? 0
+        renderedRevision = try? c.decode(Int.self, forKey: .renderedRevision)
         demuxSourceKey = try? c.decode(String.self, forKey: .demuxSourceKey)
         demuxMode = try? c.decode(String.self, forKey: .demuxMode)
         folderId = try? c.decode(String.self, forKey: .folderId)

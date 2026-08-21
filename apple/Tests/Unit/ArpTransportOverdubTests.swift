@@ -281,21 +281,30 @@ final class OverdubRegionTests: XCTestCase {
     }
 
     /// The auto-finalize deadline is measured against the capture's REAL anchor: while the
-    /// backing is still warming up (a first-time 32 MB bank parse costs seconds) the pass has not
-    /// started, and a short region must not finalize it before the user hears a note.
+    /// backing is still warming up (a preset parse, or an on-demand mixdown render) the pass has
+    /// not started, and a short region must not finalize it before the user hears a note.
     func testDeadlineDefersWhileTheBackingWarmsUp() {
-        XCTAssertTrue(InstrumentEngine.deadlineDeferred(isReplaying: true, synthReady: false,
+        XCTAssertTrue(InstrumentEngine.deadlineDeferred(isReplaying: true, backingReady: false,
                                                         capturedCount: 0),
                       "armed, backing not yet audible, nothing captured ⇒ the anchor is still moving")
-        XCTAssertFalse(InstrumentEngine.deadlineDeferred(isReplaying: true, synthReady: true,
+        XCTAssertFalse(InstrumentEngine.deadlineDeferred(isReplaying: true, backingReady: true,
                                                          capturedCount: 0),
                        "the backing started ⇒ the re-anchor already happened")
-        XCTAssertFalse(InstrumentEngine.deadlineDeferred(isReplaying: true, synthReady: false,
+        XCTAssertFalse(InstrumentEngine.deadlineDeferred(isReplaying: true, backingReady: false,
                                                          capturedCount: 3),
                        "a capture with notes KEEPS its anchor, so its deadline runs")
-        XCTAssertFalse(InstrumentEngine.deadlineDeferred(isReplaying: false, synthReady: false,
+        XCTAssertFalse(InstrumentEngine.deadlineDeferred(isReplaying: false, backingReady: false,
                                                          capturedCount: 0),
                        "no backing at all (silent bank) ⇒ the region is real time, as before")
+        // The OFF-ENGINE half of the warm-up: the mixdown is still being rendered, so nothing is
+        // replaying yet (`isReplaying` must stay false — a score reads it as "replay ended").
+        // Without this the pass auto-finalizes while its backing is still being made.
+        XCTAssertTrue(InstrumentEngine.deadlineDeferred(isReplaying: false, backingReady: false,
+                                                        backingPreparing: true, capturedCount: 0),
+                      "a backing still RENDERING has not started the pass either")
+        XCTAssertFalse(InstrumentEngine.deadlineDeferred(isReplaying: false, backingReady: false,
+                                                         backingPreparing: true, capturedCount: 2),
+                       "…unless notes were already captured, which fixes the anchor")
     }
 
     /// The live capture is BUDGETED: a latched arp is a machine, and an unbounded staff

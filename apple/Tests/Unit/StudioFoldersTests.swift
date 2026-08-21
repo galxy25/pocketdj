@@ -89,9 +89,13 @@ final class StudioFoldersTests: XCTestCase {
                        "generaluser-gs-2.0.3")
         // The take render-cache name carries the `-r<digits>` stamp, stripped back to the take id
         // (both the raw file and its render attribute to the same instrumental in usage/reconcile).
-        XCTAssertEqual(StudioFolders.renderedTakeFileName(id: "tk_abc"), "take-tk_abc-r0.m4a")
+        XCTAssertEqual(StudioFolders.renderedTakeFileName(id: "tk_abc", revision: 0), "take-tk_abc-r0.m4a")
+        XCTAssertEqual(StudioFolders.renderedTakeFileName(id: "tk_abc", revision: 7), "take-tk_abc-r7.m4a",
+                       "the revision is IN the name — a re-render never overwrites the file a live "
+                       + "playback still has open")
         XCTAssertEqual(StudioFolders.fileId(family: .takes,
-                                            name: StudioFolders.renderedTakeFileName(id: "tk_abc")), "tk_abc")
+                                            name: StudioFolders.renderedTakeFileName(id: "tk_abc", revision: 12)),
+                       "tk_abc")
     }
 
     /// The parser is STRICT — user files share these folders, so anything that isn't exactly
