@@ -12,11 +12,10 @@ final class RecordingBulletproofTests: XCTestCase {
 
     // MARK: - Helpers
 
+    /// Burned-id-seeded engine (`MixBurnFixture`): startAutoMix ejects + re-loads both decks
+    /// from its queue now, so the auto items ("x"/"y") must resolve to real on-disk burns.
     private func makeEngine() -> MixEngine {
-        let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!, session: .shared)
-        let burnsURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("rbtest-burns-\(UUID().uuidString).json")
-        return MixEngine(burns: BurnStore(rips: rips, fileURL: burnsURL))
+        MixEngine(burns: try! MixBurnFixture.burnStore())
     }
 
     private func makeStore() -> MixSessionStore {

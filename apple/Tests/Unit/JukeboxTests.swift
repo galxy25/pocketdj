@@ -28,13 +28,17 @@ final class JukeboxTests: XCTestCase {
         let mix: MixEngine
     }
 
-    private func makeStack() -> Stack {
+    /// `burned:` seeds REAL on-disk burns for those ids (`MixBurnFixture`) — startAutoMix
+    /// ejects + re-loads both decks from its queue now, so a broadcast test's auto items must
+    /// resolve for the mix to start. Empty (the default) keeps the old empty ledger.
+    private func makeStack(burned: [String] = []) -> Stack {
         let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!,
                              session: URLSession(configuration: .ephemeral))
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("pdj-jukebox-\(UUID().uuidString).json")
         addTeardownBlock { try? FileManager.default.removeItem(at: url) }
-        let burns = BurnStore(rips: rips, fileURL: url)
+        let burns = burned.isEmpty ? BurnStore(rips: rips, fileURL: url)
+                                   : try! MixBurnFixture.burnStore(ids: burned, rips: rips)
         let player = PlayerEngine()
         let coordinator = PlaybackCoordinator(
             ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
@@ -289,7 +293,7 @@ final class JukeboxTests: XCTestCase {
     /// never displaced (in-mix actions take precedence). Engine-level, no audio needed:
     /// the queue shape is bookkeeping (unresolvable loadables just leave decks empty).
     func testMixAutoQueueInsertRespectsCommittedDecks() throws {
-        let stack = makeStack()
+        let stack = makeStack(burned: ["a", "b", "c"])
         let mix = stack.mix
         func load(_ id: String) -> MixLoadable {
             MixLoadable(songId: id, title: id.uppercased(), artist: "A",
@@ -320,7 +324,7 @@ final class JukeboxTests: XCTestCase {
     /// sequencer is never started underneath a running mix.
     func testBroadcastAcceptOfUnburnedTrackParksAPendingInsert() async throws {
         let app = await makeApp()
-        let stack = makeStack()
+        let stack = makeStack(burned: ["q"])
         let store = makeStore(app, stack)
         stack.mix.startAutoMix([.init(loadable: MixLoadable(songId: "q", title: "Q", artist: "A",
                                                             bpm: nil, camelot: nil, key: nil,

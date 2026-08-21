@@ -160,10 +160,18 @@ final class IntentServicesTests: XCTestCase {
         XCTAssertThrowsError(try services.pauseAutoMix())
         XCTAssertThrowsError(try services.resumeAutoMix())
 
-        // Start an auto-mix directly on the engine (MixEngineTests' canonical shape —
-        // deck loads no-op without burned files, but the machine runs).
+        // Start an auto-mix directly on the engine. startAutoMix ejects + re-loads both
+        // decks from its queue now, so the item must RESOLVE — wire the studio seam
+        // (the MixDeckSessionTests idiom) with a real WAV.
+        let wav = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-intents-\(UUID().uuidString).wav")
+        try MixBurnFixture.writeSineWAV(to: wav, seconds: 2)
+        addTeardownBlock { try? FileManager.default.removeItem(at: wav) }
+        services.mix.studioResolve = { id in
+            id == "smp_1" ? (url: wav, release: nil, title: "T", lengthMs: 2_000) : nil
+        }
         let item = MixEngine.AutoMixItem(
-            loadable: MixLoadable(songId: "sng_1", title: "T", artist: "A", bpm: nil,
+            loadable: MixLoadable(songId: "smp_1", title: "T", artist: "A", bpm: nil,
                                   camelot: nil, key: nil, albumId: nil, lengthMs: 180_000),
             durationMs: 180_000)
         services.mix.startAutoMix([item], shuffled: false, lead: 15, fade: 3)

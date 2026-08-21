@@ -827,10 +827,13 @@ final class MixEngineTests: XCTestCase {
     /// Enabling the pulse hydrates the loaded deck's per-beat grid from a LOCAL (burned) sidecar —
     /// no network — so the pulse can phase-lock to the real beats.
     func testEnablingPulseHydratesLocalBeatGrid() throws {
-        let e = makeEngine()
+        // Own store (not makeEngine's) so the sidecar can be written into the SAME hermetic
+        // burns dir the store resolves against (`appBurnsDirOverride`).
+        let burns = try MixBurnFixture.burnStore()
+        let e = MixEngine(burns: burns)
         e.ensureEngine()
         try XCTSkipUnless(e.isReady, "no audio device on this test host")
-        let dir = try RipsStore.burnsDirectory()
+        let dir = try XCTUnwrap(burns.appBurnsDirOverride)
         let sidecar = dir.appendingPathComponent("analysis-bg.json")
         try Data(#"{"beatsMs":[100,600,1100],"downbeatsMs":[100]}"#.utf8).write(to: sidecar)
         defer { try? FileManager.default.removeItem(at: sidecar) }
@@ -1493,11 +1496,11 @@ final class MixEngineTests: XCTestCase {
         func hasPlayed(_ songId: String) -> Bool { played.contains(songId) }
     }
 
+    /// Engine whose BurnStore holds REAL burned WAVs for the standard auto-mix ids —
+    /// `startAutoMix` ejects + re-loads both decks from its queue now, so an auto item must
+    /// resolve to an on-disk burn for the mix to start (see `MixBurnFixture`).
     private func makeEngine() -> MixEngine {
-        let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!, session: .shared)
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("mixtest-burns-\(UUID().uuidString).json")
-        return MixEngine(burns: BurnStore(rips: rips, fileURL: url))
+        MixEngine(burns: try! MixBurnFixture.burnStore())
     }
 
     private func meta(_ id: String, bpm: Double?) -> MixEngine.LoadedTrack {

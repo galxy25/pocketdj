@@ -228,6 +228,10 @@ struct PocketDJApp: App {
     /// App-side recorder for mix SESSIONS (played tracks + the full time-stamped action log, kept
     /// until Reset). Wired as `mix.recorder` so every deck action is logged; persists its own JSON.
     @State private var mixSessions: MixSessionStore
+    /// Collection download pipeline for the Mix tab — app-scoped NEXT TO the engine (a running
+    /// mix, and the download run feeding it, survive tab switches). Orchestrates the existing
+    /// BurnStore/RipsStore/TransferCoordinator primitives; drives the Mix screen's bottom bar.
+    @State private var mixDownloader: CollectionMixDownloader
     /// Durable mix-deck session (phase 2 of durable playback sessions): the Mix engine's
     /// real-time snapshot (decks + mixer + Auto-DJ queue) so a force-quit/restart rehydrates
     /// the Mix tab held. Constructed WITHOUT any disk read (the visionOS first-frame lesson) —
@@ -607,6 +611,32 @@ struct PocketDJApp: App {
         _studioMic = State(initialValue: studioMic)
         _instrumentEngine = State(initialValue: instrumentEngine)
         _instrumentPacks = State(initialValue: instrumentPacks)
+
+        // ── Collection mix downloader (Mix tab download pipeline) ──────────────
+        // Created HERE (after the studio store — its resolver closure builds the same
+        // MixResolver the Mix tab loads through). Composes existing primitives only.
+        let mixDownloader = CollectionMixDownloader(engine: mix, burns: burns, rips: rips,
+                                                    transfers: burns.transfers)
+        mixDownloader.resolveRipIds = { [weak collections] source in
+            guard let collections else { return [] }
+            switch source {
+            case .pocket(let id):  return collections.ripIds(forPocket: id)
+            case .setlist(let id): return collections.ripIds(forSetlist: id)
+            }
+        }
+        mixDownloader.resolveLoadables = { [weak app, weak collections, weak burns, weak studio] source in
+            guard let app, let collections, let burns, let studio else { return [] }
+            return MixResolver(app: app, collections: collections, burns: burns, studio: studio)
+                .loadables(for: source)
+        }
+        mixDownloader.songLengthSeconds = { [weak app] id in
+            (app?.songsById[id]?.length).map { Double($0) / 1000 }   // catalog length is ms
+        }
+        mixDownloader.songTitleArtist = { [weak app] id in
+            let song = app?.songsById[id]
+            return (title: song?.name ?? id, artist: song?.artist ?? "")
+        }
+        _mixDownloader = State(initialValue: mixDownloader)
 
         // ── Store cross-wiring ─────────────────────────────────────────────────
         // Wired HERE (not in RootView.task) so an App Intent that background-launches
@@ -1492,6 +1522,7 @@ struct PocketDJApp: App {
                 .environment(demux)
                 .environment(profileSource)
                 .environment(mix)
+                .environment(mixDownloader)
                 .environment(mixSessions)
                 .environment(mixRecorder)
                 .environment(playStats)
