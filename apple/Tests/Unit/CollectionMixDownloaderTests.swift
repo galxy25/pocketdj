@@ -296,6 +296,72 @@ final class CollectionMixDownloaderTests: XCTestCase {
         XCTAssertNotNil(burns.localURL(forSong: "c4"))
         XCTAssertNotNil(burns.localURL(forSong: "c5"))
     }
+
+    // MARK: 7 — ▶ on an all-undownloaded collection: the FIRST landing starts the mix
+
+    func testPlayOnEmptyDownloadedSetStartsMixOnFirstLanding() async throws {
+        let rips = makeRips()
+        rips.setManifest([
+            "z1": .init(key: "rips/z1.mp3", source: "digital", durationMs: 2_000),
+            "z2": .init(key: "rips/z2.mp3", source: "digital", durationMs: 2_000),
+        ])
+        // Freeze the run mid-download: the burn lane's fetches fail, so nothing "lands" except
+        // what the test scripts.
+        DownloaderStubURLProtocol.statusCodeByPath["/rips/z1.mp3"] = 404
+        DownloaderStubURLProtocol.statusCodeByPath["/rips/z2.mp3"] = 404
+        // The ENGINE's store has z1's burned file (the mix must genuinely load it once it "lands");
+        // the DOWNLOADER's store starts empty — nothing downloaded when the user presses ▶.
+        let engineBurns = try MixBurnFixture.burnStore(ids: ["z1"], rips: rips)
+        let engine = MixEngine(burns: engineBurns)
+        engine.ensureEngine()
+        try XCTSkipUnless(engine.isReady, "no audio device on this test host")
+        let dlBurns = try MixBurnFixture.burnStore(ids: [], rips: rips)
+        var eligible: [MixLoadable] = []
+        let d = makeDownloader(engine: engine, burns: dlBurns, rips: rips,
+                               ripIds: ["z1", "z2"],
+                               loadables: { eligible })
+
+        d.begin(source: .pocket("pkt_test"))
+        XCTAssertTrue(d.isActive)
+        XCTAssertEqual(d.downloadedCount, 0, "nothing on disk at ▶ time")
+
+        // MixView.startAuto with ZERO loadables: the engine's empty-queue guard means no mix —
+        // noteAutoStarted arms the pending start instead.
+        d.noteAutoStarted(initialIds: [], lead: 15, fade: 3, label: "L")
+        XCTAssertTrue(d.autoStartPendingForTesting)
+        XCTAssertFalse(engine.autoMixing)
+
+        eligible = [loadable("z1")]
+        d.simulateLandingForTesting("z1")            // the first track finishes downloading
+        XCTAssertTrue(engine.autoMixing, "the pressed-▶ mix starts on the first landing")
+        XCTAssertEqual(engine.loaded(.a)?.songId, "z1")
+        XCTAssertEqual(engine.autoSourceLabel, "L")
+        XCTAssertFalse(d.autoStartPendingForTesting, "the pending start fired exactly once")
+        XCTAssertTrue(d.appendedIdsForTesting.contains("z1"))
+
+        // A CANCELLED run must never surprise-start a mix later.
+        engine.stopAutoMix()
+        d.noteAutoStarted(initialIds: [], lead: 15, fade: 3, label: "L")
+        XCTAssertTrue(d.autoStartPendingForTesting)
+        d.cancel()
+        XCTAssertFalse(d.autoStartPendingForTesting)
+        eligible = [loadable("z1"), loadable("z2")]
+        d.simulateLandingForTesting("z2")
+        XCTAssertFalse(engine.autoMixing, "a cancelled run stays silent")
+        engine.teardown()
+    }
+
+    // MARK: 8 — the bar's ETA label wording
+
+    func testEtaLabelFormatting() {
+        XCTAssertEqual(CollectionMixDownloader.etaLabel(nil), "—", "no throughput sample yet")
+        XCTAssertEqual(CollectionMixDownloader.etaLabel(200), "3m 20s")
+        XCTAssertEqual(CollectionMixDownloader.etaLabel(45), "45s")
+        XCTAssertEqual(CollectionMixDownloader.etaLabel(59.6), "1m 0s", "rounds before the split")
+        XCTAssertEqual(CollectionMixDownloader.etaLabel(0), "0s")
+        XCTAssertEqual(CollectionMixDownloader.etaLabel(-5), "—", "a negative ETA is a lie — show —")
+        XCTAssertEqual(CollectionMixDownloader.etaLabel(.infinity), "—")
+    }
 }
 
 // MARK: - Stub (the ManifestStubURLProtocol idiom — manifest GET + rip server POSTs + audio GETs)

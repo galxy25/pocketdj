@@ -68,6 +68,11 @@ final class IntentServices {
     /// the expansion falls through to the rip server's subscription-free proxy, which is the same
     /// degradation the phone takes.
     var streaming: StreamingStore?
+    /// The Mix tab's collection download pipeline. An intent-started auto-mix must kick the same
+    /// download run MixView's ▶/🔀 does (the mix may start before the Mix tab ever opened), so the
+    /// bridge carries the ONE app-scoped downloader. Optional so a test host can build the bridge
+    /// without it.
+    var mixDownloader: CollectionMixDownloader?
     /// Async "Create pocket" builder — kept observable so UI can surface progress later.
     let pocketBuilder: PocketBuilderService
 
@@ -270,12 +275,20 @@ final class IntentServices {
         mix.setBeatPulseEnabled(settings.beatPulseEnabled)
         mix.setMixGlideSeconds(settings.mixGlideSeconds)
         mix.setSkipFadeSeconds(settings.skipFadeSeconds)
+        // Kick the collection's download run (same pipeline as MixView's ▶/🔀 — idempotent per
+        // source). Deliberately BEFORE the loadables guard: an all-undownloaded collection still
+        // starts pulling, so a retried intent finds tracks on disk.
+        mixDownloader?.begin(source: source)
         let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: source)
         guard !loadables.isEmpty else { throw PocketDJIntentError.noBurnedSongs(name) }
         let items = loadables.map { MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? 180_000) }
         mix.startAutoMix(items, shuffled: shuffle,
                          lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
                          label: name)
+        // Progressive eligibility: tracks that finish downloading join this mix's queue.
+        mixDownloader?.noteAutoStarted(initialIds: Set(loadables.map(\.songId)),
+                                       lead: settings.autoMixLeadSeconds,
+                                       fade: settings.autoMixFadeSeconds, label: name)
         return (name, items.count)
     }
 

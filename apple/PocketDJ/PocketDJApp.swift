@@ -1469,6 +1469,9 @@ struct PocketDJApp: App {
         intents.forYouFeed = forYouFeed
         intents.releaseFeed = releaseFeed
         intents.streaming = streaming
+        // An intent-started auto-mix kicks the SAME collection download run MixView's ▶ does —
+        // the one app-scoped downloader, never a second instance.
+        intents.mixDownloader = mixDownloader
         // Starting ANY set retires the previous recommendation scope, so the now-playing 👍/👎
         // pair can never file a verdict against a tile the listener has already left. `playNow` is
         // the single funnel every play path in the app goes through, which is why the hook lives

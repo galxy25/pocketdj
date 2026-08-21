@@ -92,6 +92,14 @@ final class CollectionMixDownloader {
         return remainingPlaybackSeconds * bytesPerPlaybackSecond / max(bps, 1)
     }
 
+    /// The progress bar's ETA text: "3m 20s" / "45s", or "—" while the throughput window has no
+    /// sample yet (nil). Pure so the bar's exact wording is unit-testable without a view.
+    nonisolated static func etaLabel(_ seconds: Double?) -> String {
+        guard let s = seconds, s.isFinite, s >= 0 else { return "—" }
+        let t = Int(s.rounded())
+        return t >= 60 ? "\(t / 60)m \(t % 60)s" : "\(t)s"
+    }
+
     // MARK: Dependencies
 
     private let engine: MixEngine
@@ -132,6 +140,10 @@ final class CollectionMixDownloader {
 
     // Auto-mix continuation bookkeeping (armed by `noteAutoStarted`).
     @ObservationIgnored private var autoArmed = false
+    /// The user pressed ▶/🔀 on a collection with NOTHING downloaded yet, so the engine's
+    /// empty-queue guard meant no mix ever started. The FIRST landing starts it (the zero-start
+    /// twin of the `autoEndedExhausted` pickup — "never stalls waiting for the whole collection").
+    @ObservationIgnored private var autoStartPending = false
     @ObservationIgnored private var initialAutoIds: Set<String> = []
     @ObservationIgnored private var appendedIds: Set<String> = []
     @ObservationIgnored private var autoLead: Double = 15
@@ -192,6 +204,9 @@ final class CollectionMixDownloader {
         autoLead = lead
         autoFade = fade
         autoLabel = label
+        // ▶ on a collection with nothing downloaded yet: the engine's empty-queue guard means no
+        // mix started — arm the FIRST landing to start it (the zero-start exhaustion twin).
+        autoStartPending = initialIds.isEmpty && !engine.autoMixing
     }
 
     // MARK: Cancel / leave
@@ -214,6 +229,7 @@ final class CollectionMixDownloader {
             }
         }
         removeHooks()
+        autoStartPending = false   // a cancelled run must never surprise-start a mix later
         isActive = false
         source = nil
         totalCount = 0
@@ -346,6 +362,7 @@ final class CollectionMixDownloader {
         }
         guard !fresh.isEmpty else { return }
         if engine.autoMixing {
+            autoStartPending = false                                    // a mix is running — nothing pending
             guard engine.autoSourceLabel == autoLabel else { return }   // someone else's mix
             for l in fresh {
                 engine.autoQueueInsert(
@@ -353,7 +370,8 @@ final class CollectionMixDownloader {
                     placement: .end)
                 appendedIds.insert(l.songId)
             }
-        } else if engine.autoEndedExhausted {
+        } else if engine.autoEndedExhausted || autoStartPending {
+            autoStartPending = false
             for l in fresh { appendedIds.insert(l.songId) }
             engine.startAutoMix(
                 fresh.map { MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? Self.fallbackDurationMs) },
@@ -405,4 +423,8 @@ final class CollectionMixDownloader {
     }
     var burnQueueForTesting: [String] { burnQueue }
     var appendedIdsForTesting: Set<String> { appendedIds }
+    var autoArmedForTesting: Bool { autoArmed }
+    var autoStartPendingForTesting: Bool { autoStartPending }
+    var initialAutoIdsForTesting: Set<String> { initialAutoIds }
+    var autoLabelForTesting: String? { autoLabel }
 }
