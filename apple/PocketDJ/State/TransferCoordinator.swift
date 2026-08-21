@@ -96,6 +96,12 @@ final class TransferCoordinator: NSObject {
     /// bound to `progressSnapshot` here would never re-render as downloads finish — the
     /// "burning number doesn't update" bug. Set by `BurnStore` when a coordinator is injected.
     var onProgress: (@MainActor (_ enqueued: Int, _ finished: Int) -> Void)?
+    /// ADDITIVE (collection mix downloader): called on the MAIN actor as a burn download's bytes
+    /// land, with the song id + the byte DELTA since the last publish. Throttled to at most one
+    /// publish per task per 0.5 s (deltas accumulate between publishes) so the hot delegate path
+    /// never floods the main actor — see the progress-mirroring lesson above. nil ⇒ zero overhead
+    /// beyond the throttle bookkeeping; nothing else reads these counters.
+    var onBytes: (@MainActor (_ songId: String, _ bytesDelta: Int64) -> Void)?
 
     /// Live progress snapshot, published to the MAIN actor whenever records change (enqueue /
     /// finish / cancel). The UI reads ONLY this — never the `lock`-guarded counters below — so
@@ -118,6 +124,11 @@ final class TransferCoordinator: NSObject {
     // MARK: Internals
 
     private let lock = NSLock()
+    /// `onBytes` throttle bookkeeping (guarded by `lock`): accumulated not-yet-published byte
+    /// deltas + the last publish stamp, keyed by task identifier. Entries are dropped when the
+    /// task finishes (`didFinishDownloadingTo`) or is cancelled (`cancelAll`).
+    private var bytesPendingByTask: [Int: Int64] = [:]
+    private var lastBytesPublishAt: [Int: TimeInterval] = [:]
     private let fileURL: URL
     private var doc = TransferDoc()
     /// Test seam: when true (unit tests), no real background session is created.
@@ -271,6 +282,7 @@ final class TransferCoordinator: NSObject {
         lock.lock()
         let toCancel = doc.tasks.filter { ids.contains($0.songId) }.map { $0.taskIdentifier }
         doc.tasks.removeAll { ids.contains($0.songId) }
+        for t in toCancel { bytesPendingByTask[t] = nil; lastBytesPublishAt[t] = nil }
         // Stop counts the cancelled items as "enqueued but no longer pending" so the overlay
         // (done < total) clears rather than sticking at the old total.
         enqueuedTotal = max(0, enqueuedTotal - toCancel.count)
@@ -290,6 +302,8 @@ final class TransferCoordinator: NSObject {
         doc.tasks.removeAll()
         enqueuedTotal = 0
         finishedTotal = 0
+        bytesPendingByTask = [:]
+        lastBytesPublishAt = [:]
         persistLocked()
         lock.unlock()
         publishProgress()
@@ -432,6 +446,8 @@ extension TransferCoordinator: URLSessionDownloadDelegate {
         lock.lock()
         removeRecordLocked(songId: record.songId)
         finishedTotal += 1
+        bytesPendingByTask[downloadTask.taskIdentifier] = nil
+        lastBytesPublishAt[downloadTask.taskIdentifier] = nil
         persistLocked()
         lock.unlock()
         publishProgress()
@@ -439,6 +455,32 @@ extension TransferCoordinator: URLSessionDownloadDelegate {
         let finalBytes = bytes
         DispatchQueue.main.async { [weak self] in
             MainActor.assumeIsolated { self?.onBurnFinalized?(record, finalBytes) }
+        }
+    }
+
+    /// Byte-level progress for a running download (iOS background path). Publishes the accumulated
+    /// delta to the main-actor `onBytes` hook at most every 0.5 s per task — the delegate can fire
+    /// this many times a second, and the main actor must not pay for a publish per chunk.
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask,
+                    didWriteData bytesWritten: Int64, totalBytesWritten: Int64,
+                    totalBytesExpectedToWrite: Int64) {
+        let now = Date().timeIntervalSince1970
+        lock.lock()
+        let taskId = downloadTask.taskIdentifier
+        let record = recordForTaskLocked(taskId)
+        let pending = (bytesPendingByTask[taskId] ?? 0) + bytesWritten
+        let last = lastBytesPublishAt[taskId] ?? 0
+        let publish = now - last >= 0.5
+        if publish {
+            bytesPendingByTask[taskId] = 0
+            lastBytesPublishAt[taskId] = now
+        } else {
+            bytesPendingByTask[taskId] = pending
+        }
+        lock.unlock()
+        guard publish, let record else { return }
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated { self?.onBytes?(record.songId, pending) }
         }
     }
 

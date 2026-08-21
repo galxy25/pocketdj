@@ -12,7 +12,9 @@ final class IntentServicesTests: XCTestCase {
 
     // MARK: Fixtures
 
-    private func makeServices() async -> (IntentServices, CollectionsStore, AppModel) {
+    /// `burnedIds` non-nil ⇒ the BurnStore is a `MixBurnFixture` ledger with REAL on-disk WAVs for
+    /// those ids (an auto-mix success path needs loadable burns; see the fixture's doc).
+    private func makeServices(burnedIds: [String]? = nil) async -> (IntentServices, CollectionsStore, AppModel) {
         let app = AppModel(loader: TestData.StubLoader())
         await app.loadIfNeeded()
         let url = FileManager.default.temporaryDirectory
@@ -26,10 +28,15 @@ final class IntentServicesTests: XCTestCase {
         let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!,
                              session: URLSession(configuration: .ephemeral))
         let player = PlayerEngine()
-        let burnsURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("pdj-intents-burns-\(UUID().uuidString).json")
-        addTeardownBlock { try? FileManager.default.removeItem(at: burnsURL) }
-        let burns = BurnStore(rips: rips, fileURL: burnsURL)
+        let burns: BurnStore
+        if let burnedIds {
+            burns = try! MixBurnFixture.burnStore(ids: burnedIds, rips: rips)
+        } else {
+            let burnsURL = FileManager.default.temporaryDirectory
+                .appendingPathComponent("pdj-intents-burns-\(UUID().uuidString).json")
+            addTeardownBlock { try? FileManager.default.removeItem(at: burnsURL) }
+            burns = BurnStore(rips: rips, fileURL: burnsURL)
+        }
         let coordinator = PlaybackCoordinator(
             ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
             appleMusic: AppleMusicPlaybackProvider(provider: AppleMusicProvider()))
@@ -144,6 +151,38 @@ final class IntentServicesTests: XCTestCase {
         XCTAssertFalse(services.mix.autoMixing)
     }
 
+    /// An intent-started auto-mix kicks the SAME collection download run MixView's ▶ does and
+    /// arms progressive eligibility (tracks that finish downloading later join this mix's queue).
+    func testStartAutoMixKicksCollectionDownloadAndArmsContinuation() async throws {
+        let (services, collections, _) = await makeServices(burnedIds: ["sng_1", "sng_2"])
+        services.mix.ensureEngine()
+        try XCTSkipUnless(services.mix.isReady, "no audio device on this test host")
+        let d = CollectionMixDownloader(engine: services.mix, burns: services.burns,
+                                        rips: services.rips, transfers: nil)
+        d.resolveRipIds = { _ in ["sng_1", "sng_2"] }
+        d.resolveLoadables = { _ in [] }
+        services.mixDownloader = d
+        let pocket = collections.createPocket("Deep Cuts")
+        collections.addSong("sng_1", toPocket: pocket.id)
+        collections.addSong("sng_2", toPocket: pocket.id)
+
+        let (name, count) = try await services.startAutoMix(source: .pocket(pocket.id), shuffle: false)
+
+        XCTAssertEqual(name, "Deep Cuts")
+        XCTAssertEqual(count, 2)
+        XCTAssertTrue(services.mix.autoMixing)
+        XCTAssertEqual(d.source, .pocket(pocket.id), "the intent kicked the download run")
+        XCTAssertEqual(d.totalCount, 2)
+        XCTAssertEqual(d.downloadedCount, 2, "the seed pass found both burns on disk")
+        XCTAssertFalse(d.isActive, "nothing left to download ⇒ no bar")
+        XCTAssertTrue(d.autoArmedForTesting, "landings would join this mix's queue")
+        XCTAssertEqual(d.initialAutoIdsForTesting, ["sng_1", "sng_2"])
+        XCTAssertEqual(d.autoLabelForTesting, "Deep Cuts", "append targets OUR mix, by label")
+        XCTAssertFalse(d.autoStartPendingForTesting, "a running mix never has a pending start")
+        services.mix.stopAutoMix()
+        services.mix.teardown()
+    }
+
     func testAutoMixUnknownSourceThrows() async {
         let (services, _, _) = await makeServices()
         do {
@@ -160,10 +199,18 @@ final class IntentServicesTests: XCTestCase {
         XCTAssertThrowsError(try services.pauseAutoMix())
         XCTAssertThrowsError(try services.resumeAutoMix())
 
-        // Start an auto-mix directly on the engine (MixEngineTests' canonical shape —
-        // deck loads no-op without burned files, but the machine runs).
+        // Start an auto-mix directly on the engine. startAutoMix ejects + re-loads both
+        // decks from its queue now, so the item must RESOLVE — wire the studio seam
+        // (the MixDeckSessionTests idiom) with a real WAV.
+        let wav = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-intents-\(UUID().uuidString).wav")
+        try MixBurnFixture.writeSineWAV(to: wav, seconds: 2)
+        addTeardownBlock { try? FileManager.default.removeItem(at: wav) }
+        services.mix.studioResolve = { id in
+            id == "smp_1" ? (url: wav, release: nil, title: "T", lengthMs: 2_000) : nil
+        }
         let item = MixEngine.AutoMixItem(
-            loadable: MixLoadable(songId: "sng_1", title: "T", artist: "A", bpm: nil,
+            loadable: MixLoadable(songId: "smp_1", title: "T", artist: "A", bpm: nil,
                                   camelot: nil, key: nil, albumId: nil, lengthMs: 180_000),
             durationMs: 180_000)
         services.mix.startAutoMix([item], shuffled: false, lead: 15, fade: 3)

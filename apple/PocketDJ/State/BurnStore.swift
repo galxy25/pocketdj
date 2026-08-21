@@ -157,6 +157,13 @@ final class BurnStore {
 
     private let rips: RipsStore
 
+    /// ADDITIVE fan-out (collection mix downloader): fired AFTER a background burn download is
+    /// finalized (`finalizeBurn` upserted the `.ready` item + saved), with the landed byte count.
+    /// Distinct from the coordinator's single-subscriber `onBurnFinalized` wiring (`wireTransfers`),
+    /// which THIS store owns — downstream observers hook here instead of clobbering that. nil-safe;
+    /// unset in every existing test (byte-for-byte unchanged behavior).
+    var onAnyBurnFinalized: ((_ songId: String, _ bytes: Int) -> Void)?
+
     /// Feature (backgrounded burning): when set, `burn(...)` hands each song to a BACKGROUND
     /// download task (via the coordinator) that survives suspend, persisting the `.downloading`
     /// item IMMEDIATELY and finalizing each `.ready` item from the delegate callback. When nil
@@ -324,6 +331,7 @@ final class BurnStore {
             state: .ready, error: nil, wasAppStorage: record.wasAppStorage,
             cutFileName: prevCut?.cutFileName, cutDownloadedAt: prevCut?.cutDownloadedAt)
         save()
+        onAnyBurnFinalized?(record.songId, bytes)   // fan-out AFTER the .ready item landed
     }
 
     // MARK: Feature 2 — burnt-music folder resolution (security-scoped)

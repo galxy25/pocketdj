@@ -42,6 +42,10 @@ struct MixView: View {
     @Environment(MixSessionStore.self) private var mixSessions
     @Environment(MixRecorder.self) private var recorder
     @Environment(JukeboxStore.self) private var jukebox
+    /// Collection download pipeline (app-scoped, like the engine): picking a collection for a mix
+    /// — auto (`autoSource`) OR manual (either deck's source) — starts pulling its tracks onto the
+    /// device; the bottom `downloadBar` shows "N of M downloaded" + ETA while it runs.
+    @Environment(CollectionMixDownloader.self) private var downloader
 
     /// The detail NavigationStack's path (owned by RootView) — so the Sessions button can push.
     @Binding var path: NavigationPath
@@ -82,6 +86,9 @@ struct MixView: View {
             .frame(maxWidth: .infinity)                 // ...centered in a wide window
         }
         .background(Theme.bg)
+        // Collection download progress — pinned to the BOTTOM of the Mix screen (floats over the
+        // scroll, content scrolls above it). Renders only while a run is short of complete.
+        .safeAreaInset(edge: .bottom) { downloadBar }
         // The renamable session name lives in the CONTENT (`sessionHeader`), not the toolbar: macOS
         // reserves a toolbar item's right-click for its own "Icon Only / Icon & Text" menu, so a
         // toolbar title can never host a right-click → Rename. The nav bar just shows the screen name.
@@ -121,8 +128,19 @@ struct MixView: View {
         .onChange(of: settings.beatPulseEnabled) { engine.setBeatPulseEnabled(settings.beatPulseEnabled) }
         // Auto mode pins BOTH decks' load source to the auto-mix collection (so a Pause → hand-load-more
         // flow needs no per-deck source picking). Fires when you pick the collection or flip on Auto.
-        .onChange(of: autoSource) { syncDeckSourcesToAuto() }
+        .onChange(of: autoSource) { syncDeckSourcesToAuto(); beginDownload(autoSource) }
         .onChange(of: engine.autoEnabled) { syncDeckSourcesToAuto() }
+        // Picking a collection for a MANUAL mix (either deck's source menu / loader sheet) starts
+        // its download run too — `begin` is idempotent per source, so the auto-mode mirroring above
+        // (which sets both decks to the auto collection) never double-starts, and picking a
+        // DIFFERENT collection cancels the old run inside `begin` (collection switch).
+        .onChange(of: sourceA) { beginDownload(sourceA) }
+        .onChange(of: sourceB) { beginDownload(sourceB) }
+        // Leaving the tab with NO mix running tears the download run down; a live mix (auto or
+        // manual decks) keeps its downloads feeding the queue across tab switches. This touches
+        // ONLY the downloader — the engine's load-bearing no-teardown-on-disappear rule (below)
+        // stands untouched.
+        .onDisappear { downloader.handleMixLeave(engineActive: engine.autoMixing || engine.isRunning) }
         // DELIBERATELY no `.onDisappear { engine.pauseBoth()/stopAutoMix()/teardown() }`: the engine is
         // app-scoped and its tick + audio graph must keep running when you leave the Mix tab, so a mix
         // (and an Auto-DJ) keeps playing and the lock-screen card stays live. Sibling views do pause on
@@ -547,6 +565,7 @@ struct MixView: View {
     private func startAuto(shuffled: Bool) {
         guard let src = autoSource else { return }
         sourceA = src; sourceB = src           // both decks browse the auto collection (for hand-loading on Pause)
+        downloader.begin(source: src)          // (re)start the collection pull — idempotent per source
         let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: src)
         let items = loadables.map { l in
             MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? 180_000)
@@ -554,8 +573,70 @@ struct MixView: View {
         engine.startAutoMix(items, shuffled: shuffled,
                             lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
                             label: autoSourceName)
+        // Arm progressive eligibility: each track that finishes downloading joins this mix's queue
+        // (or, if the queue was EMPTY — nothing downloaded yet — the first landing starts the mix).
+        downloader.noteAutoStarted(initialIds: Set(loadables.map(\.songId)),
+                                   lead: settings.autoMixLeadSeconds,
+                                   fade: settings.autoMixFadeSeconds,
+                                   label: autoSourceName)
         // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
         IntentDonations.startedAutoMix(source: src, shuffle: shuffled, collections: collections)
+    }
+
+    /// Kick the download pipeline for a freshly-picked mix collection (nil-safe onChange funnel).
+    private func beginDownload(_ source: MixSource?) {
+        guard let source else { return }
+        downloader.begin(source: source)
+    }
+
+    // MARK: Collection download bar (bottom-pinned)
+
+    /// "N of M downloaded · ~ETA left [· K ripping]" + linear progress + ✕ — pinned to the bottom
+    /// of the Mix screen while a collection download run is short of complete; hides on
+    /// completion/cancel/idle. The ETA covers the remaining MANIFEST-READY tracks (256 kbps model
+    /// over a 30 s rolling window of observed throughput — see `CollectionMixDownloader`); tracks
+    /// still being ripped server-side surface as the separate "K ripping" count.
+    @ViewBuilder private var downloadBar: some View {
+        if downloader.isActive && downloader.downloadedCount < downloader.totalCount {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 4) {
+                        Text("\(downloader.downloadedCount) of \(downloader.totalCount) downloaded")
+                            .font(.caption.weight(.semibold)).foregroundStyle(Theme.fg)
+                        Text("· ~\(CollectionMixDownloader.etaLabel(downloader.etaSeconds)) left")
+                            .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                        if downloader.rippingCount > 0 {
+                            Text("· \(downloader.rippingCount) ripping")
+                                .font(.caption).foregroundStyle(Theme.fgDim)
+                        }
+                    }
+                    .lineLimit(1)
+                    ProgressView(value: Double(downloader.downloadedCount),
+                                 total: Double(max(downloader.totalCount, 1)))
+                        .tint(Theme.accent)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("mix-dl-bar")
+                Button { downloader.cancel() } label: {
+                    Image(systemName: "xmark").font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.bordered)
+                .tint(Theme.accent)
+                .help("Stop downloading this collection")
+                .accessibilityLabel("Stop collection download")
+                .accessibilityIdentifier("mix-dl-cancel")   // on the Button ITSELF, never a container
+            }
+            .padding(10)
+            .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
+                .strokeBorder(Theme.accent.opacity(0.5), lineWidth: 1))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+            .frame(maxWidth: 900)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            // NO accessibilityIdentifier on the outer HStack: a button-container id would merge the
+            // children and hide mix-dl-cancel from the a11y tree (toolbar-overflow lesson).
+        }
     }
 
     /// The single bottom Play/Pause — starts/stops BOTH decks (and the engine). Mirrors the

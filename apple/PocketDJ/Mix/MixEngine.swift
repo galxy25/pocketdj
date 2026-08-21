@@ -295,6 +295,17 @@ final class MixEngine {
 
     private(set) var autoEnabled = false
     private(set) var autoMixing = false
+    /// True when the LAST auto-mix ended because the queue was exhausted (natural end / skip on the
+    /// last track / resume with nothing unplayed) — NOT because the user stopped it. Runtime-only
+    /// (never persisted): the collection downloader reads it to CONTINUE the mix when a track that
+    /// finished downloading after the exhaustion lands. Cleared by any start, by a user Stop, and
+    /// by any MANUAL deck load/play (the DJ took the decks — a landing must never seize them).
+    private(set) var autoEndedExhausted = false
+    /// Monotonic count of deck-touching calls (`load`/`play`/`playBoth`). The collection
+    /// downloader's ZERO-START pickup captures it when ▶ arms the pending mix and refuses to
+    /// fire if it moved since — any deck activity after the arm means the DJ took the decks by
+    /// hand, and a background download landing must never seize them mid-performance.
+    private(set) var deckGestureGeneration = 0
     /// PAUSED auto-mix: the DJ stepped away → hit Pause. The mix stays `autoMixing` (recording +
     /// playback keep running) but the TRANSITION machine is suspended so you can take the decks over by
     /// hand; Resume re-arms it. Distinct from `autoMixing=false` (a full Stop). See `pauseAuto`/`resumeAuto`.
@@ -852,6 +863,15 @@ final class MixEngine {
     func parkPlayerNodeForTesting(_ deck: Deck) { players[deck]?.pause() }
     func playerNodeIsPlayingForTesting(_ deck: Deck) -> Bool { players[deck]?.isPlaying ?? false }
 
+    // Auto-mix queue introspection (auto-reset + collection-downloader progressive-append tests).
+    var autoQueueCountForTesting: Int { autoQueue.count }
+    var autoNextToLoadForTesting: Int { autoNextToLoad }
+    /// Complete the in-flight crossfade NOW (tests can't wait out a wall-clock fade).
+    func finishAutoCrossfadeForTesting() { if autoFadeStartedAt != nil { finishAutoCrossfade() } }
+    func autoDeckDurationMsForTesting(_ deck: Deck) -> Int? { autoDeckDurationMs[deck] }
+    /// Drive one tick's park-heal pass directly (the watchdog path a test can't wait for).
+    func healParkedPlayersForTesting() { healParkedPlayers() }
+
     func teardown() {
         endAutoLoop()
         stopRecording()                 // finalize any in-progress capture (the file stays on disk)
@@ -877,6 +897,13 @@ final class MixEngine {
 
     func load(songId: String, title: String, artist: String, bpm: Double?,
               camelot: String?, key: String?, albumId: String?, lengthMs: Int? = nil, on deck: Deck) {
+        deckGestureGeneration &+= 1
+        // A load while an exhausted-ended auto mix is armed for pickup means the DJ started
+        // hand-mixing: the pickup dies here, or a later background download landing would
+        // eject these decks mid-performance and restart the old mix unbidden. Auto-machine
+        // loads (`loadAuto`) only ever run while the flag is already false, so this only ever
+        // disarms MANUAL activity.
+        autoEndedExhausted = false
         // STUDIO performance items resolve via the studio seam (no BurnStore file). Their beat grid
         // (from the item's known bpm) + detected key ride `studioMixInfo` into the LoadedTrack, so
         // the pulse/beat-sync + harmonic glide work exactly like a burned song's.
@@ -1056,6 +1083,8 @@ final class MixEngine {
     func play(_ deck: Deck) {
         guard state(deck).loaded != nil else { return }   // never run an empty deck's playhead
         dlog("ui: play(\(deck.rawValue)) run=\(engine.isRunning ? 1 : 0) node=\((players[deck]?.isPlaying ?? false) ? 1 : 0)")
+        deckGestureGeneration &+= 1
+        autoEndedExhausted = false   // a manual start disarms the exhausted pickup (see `load`)
         masterPausedDecks = []   // any manual start invalidates the lock-screen pause memory
         ensureEngine()
         // Even when the engine can't run RIGHT NOW (mid route change / session in transition) the
@@ -1089,6 +1118,8 @@ final class MixEngine {
 
     func playBoth() {
         dlog("ui: playBoth run=\(engine.isRunning ? 1 : 0)")
+        deckGestureGeneration &+= 1
+        autoEndedExhausted = false   // a manual start disarms the exhausted pickup (see `load`)
         masterPausedDecks = []   // any manual start invalidates the lock-screen pause memory
         unfreezeAutoClock()      // master play un-silences everything — unpark any remote-frozen fade
         ensureEngine()
@@ -1251,6 +1282,16 @@ final class MixEngine {
     /// a plain tap just resets parameters + rewinds (`resetDeck`), keeping the loaded track. One
     /// semantic `.resetDeck` event marks it in the session log (a clear is a reset that also ejects).
     func clearDeck(_ deck: Deck) {
+        ejectDeckCore(deck)
+        rec(.resetDeck, deck)
+        persistMixDeckSession()   // eject persists; BOTH decks empty (no auto) ⇒ session cleared
+    }
+
+    /// The eject CORE shared by `clearDeck` and `startAutoMix`'s take-over reset: stop the deck,
+    /// drop its track/stems/loops/scopes, return EVERY per-deck parameter to default — including
+    /// the cue/PFL send, which `resetDeck` deliberately keeps — and push the defaults onto the
+    /// graph. Records/persists NOTHING: the caller owns the semantic timeline event + the persist.
+    private func ejectDeckCore(_ deck: Deck) {
         setPlaying(deck, false)          // emit .pause if it was running (BEFORE we forget the track)
         stopActiveNodes(deck)            // stop the single file + any stem voices
         unwireStems(deck)                // drop stem files + their security scope
@@ -1266,8 +1307,6 @@ final class MixEngine {
         applyMixGains(); applyBoost(deck); applyCueRouting()
         updateSystemNowPlaying()                   // an empty now-playing deck → clear/refresh the card
         refreshTransport()
-        rec(.resetDeck, deck)
-        persistMixDeckSession()   // eject persists; BOTH decks empty (no auto) ⇒ session cleared
     }
 
     /// Seek to an absolute SOURCE position (seconds from the song's start). Sample-accurate, bounded
@@ -1887,6 +1926,17 @@ final class MixEngine {
         ensureEngine()
         endAutoLoop()
 
+        // BUG FIX (two songs at once): starting an Auto Mix takes over BOTH decks, so fully EJECT
+        // them first — stop any already-playing deck (deck B kept sounding under the new mix) and
+        // return every per-deck parameter to default: volume/boost, effects + strengths, stem
+        // toggles, loops, AND the cue/PFL send (`resetDeck` deliberately keeps cue; the eject
+        // doesn't). Manual deck starts never come through here, so hand-mixing is untouched.
+        ejectDeckCore(.a)
+        ejectDeckCore(.b)
+        rec(.resetDeck, .a); rec(.resetDeck, .b)   // honest timeline: the auto start wiped both decks
+        masterPausedDecks = []   // stale lock-screen pause memory dies with the old mix
+        autoEndedExhausted = false
+
         autoEnabled = true
         autoSourceLabel = label
         autoLeadSeconds = max(1, lead)
@@ -1909,8 +1959,16 @@ final class MixEngine {
         fxGlidePrng = Self.fxSeed(from: autoQueue)
 
         applyCrossfader(0)
-        loadAuto(autoQueue[0], onto: .a)
-        if autoQueue.count > 1 { loadAuto(autoQueue[1], onto: .b) }
+        // A queue item whose file vanished (purged burn / detached folder) must not claim a deck —
+        // the machine would burn a whole transition on silence. Drop unloadable LEADING items, then
+        // preload the next loadable onto B; ALL unloadable ⇒ no mix (mirrors the empty-queue guard).
+        while !autoQueue.isEmpty, !loadAuto(autoQueue[0], onto: .a) { autoQueue.removeFirst() }
+        guard !autoQueue.isEmpty else {
+            refreshAutoStatus()
+            persistMixDeckSession()   // the eject above emptied both decks — land that state
+            return
+        }
+        while autoQueue.count > 1, !loadAuto(autoQueue[1], onto: .b) { autoQueue.remove(at: 1) }
         autoNextToLoad = min(2, autoQueue.count)
 
         let now = Date()
@@ -1924,6 +1982,7 @@ final class MixEngine {
     }
 
     func stopAutoMix() {
+        autoEndedExhausted = false   // user-initiated stop by default; exhaust sites re-set it after
         endAutoLoop()
         pauseBoth()
     }
@@ -2005,7 +2064,11 @@ final class MixEngine {
     /// nothing is left to play.
     private func beginResumeHandoff(now: Date, freed: Deck) {
         silence(freed)                                            // the ended deck is done — retire it cleanly
-        guard let k = nextUnplayedQueueIndex(excludingDeck: autoLiveDeck) else { stopAutoMix(); return }
+        guard let k = nextUnplayedQueueIndex(excludingDeck: autoLiveDeck) else {
+            stopAutoMix()
+            autoEndedExhausted = true   // resume-handoff with nothing unplayed = exhausted too
+            return
+        }
         loadAuto(autoQueue[k], onto: freed)                       // freed == other(autoLiveDeck)
         autoLivePos = max(0, k - 1)
         autoNextToLoad = k + 1
@@ -2120,7 +2183,12 @@ final class MixEngine {
             guard let endsAt = autoDeckEndsAt[autoLiveDeck] else { return }
             let secondsLeft = endsAt.timeIntervalSince(now)
             if autoLivePos + 1 < autoQueue.count {
-                if secondsLeft <= autoLeadSeconds {
+                // `ensureNextPreloaded` (not just the count check): a progressive append — a
+                // collection-download landing or jukebox insert — can arrive while the LAST queued
+                // track is live, AFTER all preloading already ran, so the idle deck holds a retired
+                // (or no) track. Transitioning into it would double-play the old track or fade to
+                // silence. On failure the unloadable tail was dropped; the natural end takes over.
+                if secondsLeft <= autoLeadSeconds, ensureNextPreloaded() {
                     // Cap the fade to the runway left: if you slid a track to (say) 2 s from its end,
                     // crossfade over ~2 s instead of the full length so it completes before it runs out.
                     if secondsLeft < autoFadeSeconds, pendingFadeRestore == nil {
@@ -2142,6 +2210,7 @@ final class MixEngine {
                 }
             } else if secondsLeft <= 0 {
                 stopAutoMix()
+                autoEndedExhausted = true   // natural end — a late-landing download may continue it
             }
         }
         refreshAutoStatus()
@@ -2155,7 +2224,18 @@ final class MixEngine {
     /// a one-off fast skip never shortens the next AUTOMATIC crossfade.
     func skipToNext(fadeSeconds: Double) {
         guard autoEnabled, autoMixing, isReady, !autoTransitioning else { return }
-        guard autoLivePos + 1 < autoQueue.count else { stopAutoMix(); return }   // last track → end
+        guard autoLivePos + 1 < autoQueue.count else {                          // last track → end
+            stopAutoMix()
+            autoEndedExhausted = true   // skip-exhausted twin of the natural end above
+            return
+        }
+        // Late-append safety (see the tick): the incoming deck must actually hold the next queue
+        // item before a transition fires into it. All-unloadable tail ⇒ same as the last track.
+        guard ensureNextPreloaded() else {
+            stopAutoMix()
+            autoEndedExhausted = true
+            return
+        }
         if anyGlide {
             // A manual skip glides too, but with NO preroll (skip = advance now); it still applies the
             // effect / pitch offset on the incoming deck + rolls it back off in the postroll.
@@ -2198,9 +2278,12 @@ final class MixEngine {
             setGlideEffect(c.fxEffect, enabled: c.savedFrom.on, strength: c.savedFrom.strength, on: from)
             setGlideRate(1.0, on: from); setGlidePitch(0.0, on: from)
         }
-        if autoNextToLoad < autoQueue.count {
-            loadAuto(autoQueue[autoNextToLoad], onto: from)
+        // Preload the next LOADABLE queue item, advancing past entries whose file vanished (a
+        // failed load returns false and must not burn the next transition on a stale/empty deck).
+        while autoNextToLoad < autoQueue.count {
+            let ok = loadAuto(autoQueue[autoNextToLoad], onto: from)
             autoNextToLoad += 1
+            if ok { break }
         }
         updateSystemNowPlaying()      // the now-playing deck just switched → refresh the card
         if autoTransitionIsGlide {
@@ -2212,9 +2295,47 @@ final class MixEngine {
         persistMixDeckSession()       // the cursor advanced (auto or Skip) — persist the new live pos
     }
 
-    private func loadAuto(_ item: AutoMixItem, onto deck: Deck) {
+    /// Late-append safety net for the transition machine: verify the deck the mix is about to
+    /// crossfade INTO (`other(autoLiveDeck)`) actually holds `autoQueue[autoLivePos + 1]`, loading
+    /// it now if not. Preloading normally happens in `startAutoMix` and `finishAutoCrossfade`, so a
+    /// progressive append (collection-download landing, jukebox request) that arrives while the
+    /// LAST queued track is live is never on the idle deck — that deck still holds the previous,
+    /// retired track (double-play) or nothing at all (fade to silence). Unloadable entries
+    /// (vanished burns) are dropped from the queue. Returns false when nothing loadable remains at
+    /// `autoLivePos + 1` — the caller must not begin a transition.
+    private func ensureNextPreloaded() -> Bool {
+        let deck = other(autoLiveDeck)
+        while autoLivePos + 1 < autoQueue.count {
+            let next = autoQueue[autoLivePos + 1]
+            if state(deck).loaded?.songId == next.loadable.songId {
+                // Already preloaded — or a queue DUPLICATE of what this deck still holds, which is
+                // equally fine: `beginAutoCrossfade` re-schedules the segment via `restart`, so
+                // even a fully-consumed player replays. Re-stamp the duration in case the queue
+                // entry differs (an insert of the same song with another length).
+                autoDeckDurationMs[deck] = next.durationMs
+                autoNextToLoad = max(autoNextToLoad, autoLivePos + 2)
+                return true
+            }
+            if loadAuto(next, onto: deck) {
+                // The deck just committed to index livePos+1 — later inserts must land after it.
+                autoNextToLoad = max(autoNextToLoad, autoLivePos + 2)
+                return true
+            }
+            autoQueue.remove(at: autoLivePos + 1)
+            if autoNextToLoad > autoLivePos + 1 { autoNextToLoad -= 1 }
+        }
+        return false
+    }
+
+    /// Load a queue item onto a deck for the auto machine. Returns false — WITHOUT stamping the
+    /// deck's duration — when the underlying `load` failed (BurnStore/studio/profile miss, unreadable
+    /// file): a failed load must not arm a transition clock against a track that isn't there.
+    @discardableResult
+    private func loadAuto(_ item: AutoMixItem, onto deck: Deck) -> Bool {
         load(item.loadable, on: deck)
+        guard state(deck).loaded?.songId == item.loadable.songId else { return false }
         autoDeckDurationMs[deck] = item.durationMs
+        return true
     }
 
     private func refreshAutoStatus() {
