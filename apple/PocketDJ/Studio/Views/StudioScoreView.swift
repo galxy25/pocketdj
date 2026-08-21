@@ -445,8 +445,8 @@ struct StudioScoreView: View {
     private func overdubCaption(_ take: StudioTake) -> String {
         if overdubbing {
             let at = Self.mmss(instruments.overdubBaseMs)
-            // An UNBOUNDED region (`.max`) is the empty-score/at-the-end case — there is no
-            // boundary to name, so the caption doesn't invent one.
+            // An UNBOUNDED region (`.max`) is the EMPTY-score case — there is no boundary to
+            // name, so the caption doesn't invent one.
             let bounded = instruments.overdubRegionEndMs < .max
             let end = bounded ? Self.mmss(instruments.overdubRegionEndMs) : ""
             let ending: String
@@ -493,6 +493,14 @@ struct StudioScoreView: View {
         // which is the only way to overdub onto an empty instrumental at all.
         let end = InstrumentEngine.scoreEndMs(
             staffs: [take.scoreEvents] + (take.extraStaffs ?? []).map(\.scoreEvents))
+        // Playing the score to the end parks the cursor exactly AT that end — there is no region
+        // left to record into, and an overdub may never lengthen the score (req 5). Say so rather
+        // than arm a pass that auto-finalizes on the next tick.
+        guard InstrumentEngine.hasOverdubRoom(fromMs: p, scoreEndMs: end) else {
+            errorText = "The cursor is at the end of this score — an overdub can’t make it longer."
+                + " Tap an earlier position on the score, then Overdub."
+            return
+        }
         guard instruments.startOverdub(fromMs: p, anchorHostTime: mach_absolute_time(),
                                        scoreEndMs: end > 0 ? end : .max,
                                        loop: settings.studioOverdubLoop) else { return }

@@ -533,9 +533,13 @@ struct StudioInstrumentsView: View {
     /// record a NEW staff from there while the existing staffs play back mixed.
     @ViewBuilder
     private var liveStaffSection: some View {
-        let live = instruments.liveEvents
+        // Deliberately the cheap `liveHasEvents` FLAG, never the event array: the engine
+        // republishes the live capture ~10×/s while you play (and a latched arp plays at machine
+        // speed), and reading the array here would re-quantize + re-paginate every staff in this
+        // section on each publish. `LiveStaffView` owns that read, so it invalidates alone.
+        let hasLive = instruments.liveHasEvents
         let extras = instruments.liveExtraStaffs
-        let hasAny = !live.isEmpty || !extras.isEmpty || liveOverdubbing
+        let hasAny = hasLive || !extras.isEmpty || liveOverdubbing
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
                 Label("Live score", systemImage: "music.quarternote.3")
@@ -567,12 +571,11 @@ struct StudioInstrumentsView: View {
                      + "score you can edit and save as a take.")
                     .font(.caption2).foregroundStyle(Theme.fgDim)
             } else {
-                ScoreEditorView(events: live, bpm: 120,
-                                instrument: instruments.currentInstrument ?? .piano,
-                                title: extras.isEmpty ? "Live" : "Live · Staff 1",
-                                editing: liveEditing,
-                                onEdit: { instruments.setLiveEvents($0) },
-                                playback: livePlaybackClock)
+                LiveStaffView(bpm: 120,
+                              instrument: instruments.currentInstrument ?? .piano,
+                              title: extras.isEmpty ? "Live" : "Live · Staff 1",
+                              editing: liveEditing,
+                              playback: livePlaybackClock)
                 ForEach(Array(extras.enumerated()), id: \.element.id) { i, staff in
                     liveStaffHeader(staff, index: i)
                     ScoreEditorView(events: staff.events, bpm: 120,
@@ -706,6 +709,14 @@ struct StudioInstrumentsView: View {
     /// Status line under the live staffs: overdub-armed notice, or the staff-cap message.
     @ViewBuilder private func liveStaffFooter(extras: [InstrumentEngine.LiveStaff]) -> some View {
         overdubOptionsRow
+        if instruments.liveCaptureFull {
+            // The capture stopped growing rather than growing without bound (a latched arp is a
+            // machine) — said out loud, because the keys still sound.
+            Text("Live score is full (\(InstrumentEventLog.maxLiveEvents) notes) — Save or Clear "
+                 + "it to keep capturing. The keys still play.")
+                .font(.caption2).foregroundStyle(Theme.danger)
+                .accessibilityIdentifier("live-capture-full")
+        }
         if liveOverdubbing {
             Text("Overdubbing staff \(2 + extras.count) from \(Self.clock(Double(instruments.overdubBaseMs) / 1000))"
                  + " — play the keys (or the arp’s Play). " + liveOverdubEndingCaption)
@@ -755,6 +766,14 @@ struct StudioInstrumentsView: View {
         // engine reads as unbounded — that is "overdub from silence", the first take.
         let end = InstrumentEngine.scoreEndMs(
             staffs: [instruments.liveEvents] + instruments.liveExtraStaffs.map(\.events))
+        // At/near the score's END there is no region to record into, and an overdub may never
+        // lengthen the score — so say that, instead of arming a pass that finalizes itself on the
+        // next tick and looks like a dead button.
+        guard InstrumentEngine.hasOverdubRoom(fromMs: p, scoreEndMs: end) else {
+            notice = "The cursor is at the end of the live score — an overdub can’t make it "
+                + "longer. Tap an earlier position, then Overdub."
+            return
+        }
         let loop = settings.studioOverdubLoop
         guard instruments.startOverdub(fromMs: p, anchorHostTime: mach_absolute_time(),
                                        scoreEndMs: end > 0 ? end : .max, loop: loop) else { return }

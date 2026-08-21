@@ -255,12 +255,67 @@ final class OverdubRegionTests: XCTestCase {
         XCTAssertTrue(engine.overdubLoop)
         _ = engine.stopOverdub()
 
-        // A cursor parked AT/past the end has no region to confine to — the legacy unbounded
-        // pass (this is the only way to overdub onto an empty instrumental at all).
-        XCTAssertTrue(engine.startOverdub(fromMs: 9_000, scoreEndMs: end, loop: true))
+        // A cursor parked AT/past a REAL score's end has no room: the pass is REFUSED, never
+        // silently un-confined. (Playing a score to its end parks the cursor exactly there, so
+        // this is the ordinary "play it, then overdub" flow — the one req 5 is about.)
+        XCTAssertFalse(engine.startOverdub(fromMs: 9_000, scoreEndMs: end, loop: true),
+                       "at the end there is nothing to overdub — and a pass may never lengthen the score")
+        XCTAssertFalse(engine.overdubActive)
+        XCTAssertFalse(InstrumentEngine.hasOverdubRoom(fromMs: 9_000, scoreEndMs: end))
+        XCTAssertFalse(InstrumentEngine.hasOverdubRoom(fromMs: end, scoreEndMs: end))
+        // Nor a sliver of room: a region shorter than the minimum is an instant auto-finalize.
+        XCTAssertFalse(engine.startOverdub(fromMs: end - InstrumentEngine.minOverdubRegionMs + 1,
+                                           scoreEndMs: end))
+        XCTAssertTrue(engine.startOverdub(fromMs: end - InstrumentEngine.minOverdubRegionMs,
+                                          scoreEndMs: end))
+        XCTAssertEqual(engine.overdubRegionEndMs, end, "still CONFINED — never .max")
+        _ = engine.stopOverdub()
+
+        // An EMPTY score (what both screens signal with `.max`) is the ONE unbounded pass:
+        // overdub-from-silence, which has nothing to lengthen.
+        XCTAssertTrue(engine.startOverdub(fromMs: 9_000, scoreEndMs: .max, loop: true))
         XCTAssertEqual(engine.overdubRegionEndMs, .max)
         XCTAssertFalse(engine.overdubLoop, "no region ⇒ no wrap point")
+        XCTAssertTrue(InstrumentEngine.hasOverdubRoom(fromMs: 9_000, scoreEndMs: 0))
         _ = engine.stopOverdub()
+    }
+
+    /// The auto-finalize deadline is measured against the capture's REAL anchor: while the
+    /// backing is still warming up (a first-time 32 MB bank parse costs seconds) the pass has not
+    /// started, and a short region must not finalize it before the user hears a note.
+    func testDeadlineDefersWhileTheBackingWarmsUp() {
+        XCTAssertTrue(InstrumentEngine.deadlineDeferred(isReplaying: true, synthReady: false,
+                                                        capturedCount: 0),
+                      "armed, backing not yet audible, nothing captured ⇒ the anchor is still moving")
+        XCTAssertFalse(InstrumentEngine.deadlineDeferred(isReplaying: true, synthReady: true,
+                                                         capturedCount: 0),
+                       "the backing started ⇒ the re-anchor already happened")
+        XCTAssertFalse(InstrumentEngine.deadlineDeferred(isReplaying: true, synthReady: false,
+                                                         capturedCount: 3),
+                       "a capture with notes KEEPS its anchor, so its deadline runs")
+        XCTAssertFalse(InstrumentEngine.deadlineDeferred(isReplaying: false, synthReady: false,
+                                                         capturedCount: 0),
+                       "no backing at all (silent bank) ⇒ the region is real time, as before")
+    }
+
+    /// The live capture is BUDGETED: a latched arp is a machine, and an unbounded staff
+    /// re-quantizes itself into a hang. Past the cap new onsets are refused, held notes still
+    /// close, and the log says it is full — Clear resets it.
+    func testLiveCaptureIsBudgeted() {
+        let log = InstrumentEventLog()
+        let t0 = mach_absolute_time()
+        let cap = InstrumentEventLog.maxLiveEvents
+        XCTAssertFalse(log.liveCaptureFull)
+        for i in 0..<(cap + 50) {
+            log.liveOn(note: 60, velocity: 90, hostTime: host(after: t0, Double(i) * 0.01))
+            log.liveOff(note: 60, hostTime: host(after: t0, Double(i) * 0.01 + 0.005))
+        }
+        let events = log.snapshotLiveIfDirty() ?? []
+        XCTAssertEqual(events.count, cap, "the stream stops growing AT the cap")
+        XCTAssertTrue(log.liveCaptureFull, "and says so, rather than growing without bound")
+        log.clearLive()
+        XCTAssertFalse(log.liveCaptureFull)
+        XCTAssertTrue((log.snapshotLiveIfDirty() ?? []).isEmpty)
     }
 
     /// The ENGINE's auto-finalize signal: a pass whose region is already spent accepts nothing,

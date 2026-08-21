@@ -843,3 +843,27 @@ struct OverdubProgressStaffView: View {
             .accessibilityIdentifier(a11y)
     }
 }
+
+
+/// The always-on LIVE (free-play) staff, reading the engine's published capture ITSELF.
+///
+/// Deliberately its own view, exactly like `OverdubProgressStaffView` above: the engine
+/// republishes the live stream ~10×/s while you play — and a LATCHED ARP plays at machine speed —
+/// so reading `liveEvents` in the host section's body would re-quantize and re-paginate every
+/// OTHER staff in that section (its overdub staffs, its in-progress capture) on every publish.
+/// Owning the read here confines the invalidation to the staff whose notes actually changed.
+struct LiveStaffView: View {
+    @Environment(InstrumentEngine.self) private var instruments
+
+    var bpm: Double
+    var instrument: InstrumentKey
+    var title: String
+    var editing: Bool
+    var playback: ScorePlaybackClock?
+
+    var body: some View {
+        ScoreEditorView(events: instruments.liveEvents, bpm: bpm, instrument: instrument,
+                        title: title, editing: editing,
+                        onEdit: { instruments.setLiveEvents($0) }, playback: playback)
+    }
+}
