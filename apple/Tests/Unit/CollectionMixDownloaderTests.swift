@@ -351,6 +351,82 @@ final class CollectionMixDownloaderTests: XCTestCase {
         engine.teardown()
     }
 
+    // MARK: 9 — a late landing must never seize decks the DJ is hand-mixing on
+
+    func testLandingNeverSeizesDecksMidManualMix() async throws {
+        let rips = makeRips()
+        let engineBurns = try MixBurnFixture.burnStore(ids: ["e1", "e2"], rips: rips)
+        let engine = MixEngine(burns: engineBurns)
+        engine.ensureEngine()
+        try XCTSkipUnless(engine.isReady, "no audio device on this test host")
+
+        let dlBurns = try MixBurnFixture.burnStore(ids: ["e1"], rips: rips)
+        var eligible = [loadable("e1")]
+        let d = makeDownloader(engine: engine, burns: dlBurns, rips: rips,
+                               ripIds: ["e1", "e2"],
+                               loadables: { eligible })
+        d.begin(source: .pocket("pkt_test"))
+
+        engine.startAutoMix([item("e1")], shuffled: false, lead: 15, fade: 3, label: "L")
+        d.noteAutoStarted(initialIds: ["e1"], lead: 15, fade: 3, label: "L")
+        engine.skipToNext(fadeSeconds: 5)            // last track → exhausted end
+        XCTAssertTrue(engine.autoEndedExhausted)
+
+        // The DJ takes the decks by hand: loads a track and starts playing it.
+        engine.load(songId: "e1", title: "T", artist: "A", bpm: 120,
+                    camelot: nil, key: nil, albumId: nil, on: .a)
+        engine.play(.a)
+        XCTAssertTrue(engine.isRunning)
+
+        eligible.append(loadable("e2"))
+        d.simulateLandingForTesting("e2")            // e2 lands mid-performance
+        XCTAssertFalse(engine.autoMixing, "a landing must never restart the mix over a manual set")
+        XCTAssertEqual(engine.loaded(.a)?.songId, "e1", "the manual deck is untouched")
+        XCTAssertTrue(engine.isPlaying(.a), "…and keeps playing")
+        engine.teardown()
+        d.cancel()
+    }
+
+    // MARK: 10 — zero-start arm dies on manual deck activity; cancel disarms the whole arm
+
+    func testPendingZeroStartDiesOnManualDeckActivityAndCancelDisarms() async throws {
+        let rips = makeRips()
+        rips.setManifest(["z1": .init(key: "rips/z1.mp3", source: "digital", durationMs: 2_000)])
+        DownloaderStubURLProtocol.statusCodeByPath["/rips/z1.mp3"] = 404   // freeze the run
+        let engineBurns = try MixBurnFixture.burnStore(ids: ["z1"], rips: rips)
+        let engine = MixEngine(burns: engineBurns)
+        engine.ensureEngine()
+        try XCTSkipUnless(engine.isReady, "no audio device on this test host")
+        let dlBurns = try MixBurnFixture.burnStore(ids: [], rips: rips)
+        var eligible: [MixLoadable] = []
+        let d = makeDownloader(engine: engine, burns: dlBurns, rips: rips,
+                               ripIds: ["z1"],
+                               loadables: { eligible })
+        d.begin(source: .pocket("pkt_test"))
+
+        d.noteAutoStarted(initialIds: [], lead: 15, fade: 3, label: "L")
+        XCTAssertTrue(d.autoStartPendingForTesting)
+
+        // The DJ loads a deck by hand (still paused) while the downloads run.
+        engine.load(songId: "z1", title: "T", artist: "A", bpm: 120,
+                    camelot: nil, key: nil, albumId: nil, on: .a)
+
+        eligible = [loadable("z1")]
+        d.simulateLandingForTesting("z1")
+        XCTAssertFalse(engine.autoMixing, "the zero-start arm died with the manual load")
+        XCTAssertFalse(d.autoStartPendingForTesting)
+        XCTAssertEqual(engine.loaded(.a)?.songId, "z1", "the manually loaded deck is untouched")
+
+        // Cancel kills the WHOLE continuation arm — a re-picked collection's landings can't
+        // restart the old mix with no ▶ pressed.
+        d.noteAutoStarted(initialIds: ["z1"], lead: 15, fade: 3, label: "L")
+        XCTAssertTrue(d.autoArmedForTesting)
+        d.cancel()
+        XCTAssertFalse(d.autoArmedForTesting, "cancel disarms the continuation, not just the pending start")
+        XCTAssertFalse(d.autoStartPendingForTesting)
+        engine.teardown()
+    }
+
     // MARK: 8 — the bar's ETA label wording
 
     func testEtaLabelFormatting() {

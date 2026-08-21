@@ -165,4 +165,75 @@ final class MixAutoResetTests: XCTestCase {
         XCTAssertNil(e.autoDeckDurationMsForTesting(.a), "no duration stamped for a failed load")
         e.teardown()
     }
+
+    // MARK: - Late-append transition safety (progressive downloads / jukebox inserts)
+
+    /// A progressive append that arrives while the LAST queued track is live (single-item mix —
+    /// deck B was never preloaded): the transition must load the appended track onto the incoming
+    /// deck, never fire into an EMPTY deck (dead air for a whole fallback track slot).
+    func testLateAppendDuringFinalTrackLoadsIncomingDeckBeforeTransition() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        e.startAutoMix([item("x")], shuffled: false, lead: 15, fade: 3)   // ONE item — no B preload
+        XCTAssertTrue(e.autoMixing)
+        XCTAssertNil(e.loaded(.b), "nothing was ever preloaded onto deck B")
+
+        e.autoQueueInsert(item("z", durationMs: 222_000), placement: .end)  // download landed mid-final-track
+        e.skipToNext(fadeSeconds: 5)                                        // transition into the append
+
+        XCTAssertTrue(e.autoMixing, "the mix continues into the late append")
+        XCTAssertEqual(e.loaded(.b)?.songId, "z", "the incoming deck holds the APPENDED track")
+        XCTAssertTrue(e.isPlaying(.b), "…and it is actually playing — no silent transition")
+        XCTAssertEqual(e.autoDeckDurationMsForTesting(.b), 222_000,
+                       "the transition clock is the append's duration, not a fallback")
+        e.teardown()
+    }
+
+    /// The retired-deck twin: after a completed transition the idle deck still holds the RETIRED
+    /// track; an append + transition must replace it, never restart the already-played track in
+    /// the append's queue slot (double-play with a lying Now Playing).
+    func testLateAppendAfterRetiredDeckReplacesStaleTrack() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        e.startAutoMix([item("x"), item("y")], shuffled: false, lead: 15, fade: 3)
+        e.skipToNext(fadeSeconds: 5)                 // fade x → y
+        e.finishAutoCrossfadeForTesting()            // live = deck B (y); deck A retired, still holds x
+        XCTAssertEqual(e.loaded(.a)?.songId, "x", "precondition: the retired deck holds the OLD track")
+
+        e.autoQueueInsert(item("z", durationMs: 222_000), placement: .end)
+        e.skipToNext(fadeSeconds: 5)                 // transition must go into z, not replay x
+
+        XCTAssertEqual(e.loaded(.a)?.songId, "z", "the stale retired track was replaced by the append")
+        XCTAssertTrue(e.isPlaying(.a))
+        XCTAssertEqual(e.autoDeckDurationMsForTesting(.a), 222_000)
+        e.teardown()
+    }
+
+    // MARK: - Manual deck activity disarms the exhausted pickup
+
+    /// After an auto mix ends exhausted, a MANUAL load or play means the DJ took the decks by
+    /// hand — the exhausted-pickup arm (`autoEndedExhausted`) must clear so a late background
+    /// download landing can never eject the manual decks and restart the old mix unbidden.
+    func testManualLoadAndPlayDisarmExhaustedPickup() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        e.startAutoMix([item("x")], shuffled: false, lead: 15, fade: 3)
+        e.skipToNext(fadeSeconds: 5)                 // skip on the last track = exhausted end
+        XCTAssertTrue(e.autoEndedExhausted)
+        loadBurned("y", on: .a, engine: e)           // DJ starts hand-mixing
+        XCTAssertFalse(e.autoEndedExhausted, "a manual load disarms the pickup")
+
+        e.startAutoMix([item("x")], shuffled: false, lead: 15, fade: 3)
+        e.skipToNext(fadeSeconds: 5)
+        XCTAssertTrue(e.autoEndedExhausted)
+        e.play(.a)                                   // deck A still holds the ended track
+        XCTAssertFalse(e.autoEndedExhausted, "a manual play disarms the pickup")
+        e.teardown()
+    }
 }

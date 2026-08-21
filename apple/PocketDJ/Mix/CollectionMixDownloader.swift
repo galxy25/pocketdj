@@ -144,6 +144,11 @@ final class CollectionMixDownloader {
     /// empty-queue guard meant no mix ever started. The FIRST landing starts it (the zero-start
     /// twin of the `autoEndedExhausted` pickup — "never stalls waiting for the whole collection").
     @ObservationIgnored private var autoStartPending = false
+    /// `engine.deckGestureGeneration` at arm time: the zero-start pickup only fires while it is
+    /// unmoved — any manual deck load/play after ▶ means the DJ took the decks by hand, and a
+    /// background landing must never seize them (the exhausted pickup's twin guard lives in the
+    /// engine: manual load/play clears `autoEndedExhausted`).
+    @ObservationIgnored private var armGestureGeneration = 0
     @ObservationIgnored private var initialAutoIds: Set<String> = []
     @ObservationIgnored private var appendedIds: Set<String> = []
     @ObservationIgnored private var autoLead: Double = 15
@@ -207,6 +212,7 @@ final class CollectionMixDownloader {
         // ▶ on a collection with nothing downloaded yet: the engine's empty-queue guard means no
         // mix started — arm the FIRST landing to start it (the zero-start exhaustion twin).
         autoStartPending = initialIds.isEmpty && !engine.autoMixing
+        armGestureGeneration = engine.deckGestureGeneration
     }
 
     // MARK: Cancel / leave
@@ -229,7 +235,14 @@ final class CollectionMixDownloader {
             }
         }
         removeHooks()
-        autoStartPending = false   // a cancelled run must never surprise-start a mix later
+        // A cancelled run must never surprise-start (or keep feeding) a mix later: kill the WHOLE
+        // continuation arm, not just the pending zero-start — otherwise tab-leave-cancel followed
+        // by re-picking the same collection restarts the old mix on a landing with no ▶ pressed.
+        autoStartPending = false
+        autoArmed = false
+        initialAutoIds = []
+        appendedIds = []
+        autoLabel = nil
         isActive = false
         source = nil
         totalCount = 0
@@ -371,6 +384,15 @@ final class CollectionMixDownloader {
                 appendedIds.insert(l.songId)
             }
         } else if engine.autoEndedExhausted || autoStartPending {
+            // A DJ hand-mixing owns the decks — a background landing must never seize them.
+            // A playing deck (manual — `autoMixing` is false here) or any deck gesture since the
+            // zero-start arm kills the pickup for good. (`autoEndedExhausted` needs no generation
+            // check: the engine clears it on any manual load/play.)
+            if engine.isRunning ||
+                (autoStartPending && engine.deckGestureGeneration != armGestureGeneration) {
+                autoStartPending = false
+                return
+            }
             autoStartPending = false
             for l in fresh { appendedIds.insert(l.songId) }
             engine.startAutoMix(
