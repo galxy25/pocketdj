@@ -83,21 +83,21 @@ final class InstrumentLiveLogTests: XCTestCase {
         XCTAssertEqual(log.recordedCount, 0)                            // …but the TAKE log stayed empty
     }
 
-    // MARK: Arp record mode (keys SELECT, sound once, write NOTHING to any score)
+    // MARK: Arp PROGRAM mode (keys SELECT, sound once, write NOTHING to any score)
 
-    /// Record mode's contract: a key press toggles arp-set membership (insertion-ordered — the
+    /// Program mode's contract: a key press toggles arp-set membership (insertion-ordered — the
     /// `.order` mode's source) and never reaches the live staff; a re-press removes silently.
     @MainActor
-    func testArpRecordModeSelectsAndWritesNothing() {
+    func testArpProgramModeSelectsAndWritesNothing() {
         let engine = InstrumentEngine()
         engine.arpEnabled = true
-        engine.arpRecording = true
+        engine.arpProgramming = true
         engine.noteOn(67); engine.noteOff(67)
         engine.noteOn(60); engine.noteOff(60)
         engine.noteOn(64); engine.noteOff(64)
         XCTAssertEqual(engine.arpSelectedNotes, [67, 60, 64], "insertion order preserved")
         engine.pumpLiveOnceForTesting()
-        XCTAssertTrue(engine.liveEvents.isEmpty, "record mode writes NOTHING to the live staff")
+        XCTAssertTrue(engine.liveEvents.isEmpty, "program mode writes NOTHING to the live staff")
 
         engine.noteOn(60); engine.noteOff(60)                // re-press ⇒ remove (toggle)
         XCTAssertEqual(engine.arpSelectedNotes, [67, 64])
@@ -120,11 +120,11 @@ final class InstrumentLiveLogTests: XCTestCase {
     func testArpToggleOffKeepsSelection() {
         let engine = InstrumentEngine()
         engine.arpEnabled = true
-        engine.arpRecording = true
+        engine.arpProgramming = true
         engine.noteOn(60); engine.noteOff(60)
         engine.arpEnabled = false
         XCTAssertEqual(engine.arpSelectedNotes, [60], "the set survives an off/on toggle")
-        XCTAssertFalse(engine.arpRecording, "record mode exits with the master switch")
+        XCTAssertFalse(engine.arpProgramming, "program mode exits with the master switch")
         engine.teardown()
     }
 

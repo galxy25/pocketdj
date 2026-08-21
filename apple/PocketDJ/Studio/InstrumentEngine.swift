@@ -66,6 +66,14 @@ final class InstrumentEventLog: @unchecked Sendable {
     private var livePending: [Int: (onMs: Int, velocity: Int)] = [:]
     private var liveAnchor: UInt64?
     private var liveDirty = false
+    /// The live stream hit its note BUDGET and is refusing new onsets (see `liveOn`).
+    private var liveFull = false
+
+    /// Hard cap on the always-on live capture. A pair of hands never reaches it; a LATCHED ARP
+    /// is a machine that strikes up to ~40 notes/second for as long as its transport runs, and an
+    /// unbounded staff is re-quantized + re-paginated on every publish until the app hangs. The
+    /// stream stops growing at the cap and says so (`liveCaptureFull`) instead.
+    static let maxLiveEvents = 4_000
 
     /// Arm recording. Called BEFORE beat 1 (during the count-in): notes sound immediately but
     /// only packets stamped at/after `beat1HostTime` enter the log — a warm-up note during the
@@ -141,6 +149,9 @@ final class InstrumentEventLog: @unchecked Sendable {
     /// re-trigger with no off closes the prior sounding at the new onset.
     func liveOn(note: Int, velocity: Int, hostTime: UInt64) {
         lock.lock(); defer { lock.unlock() }
+        // BUDGET (see `maxLiveEvents`): past the cap the stream refuses NEW onsets — notes already
+        // sounding still close normally, so nothing dangles — and publishes that it is full.
+        guard liveEvents.count < Self.maxLiveEvents else { liveFull = true; return }
         if liveAnchor == nil { liveAnchor = hostTime }
         let ms = max(0, msFrom(liveAnchor!, hostTime))
         if let prev = livePending.removeValue(forKey: note) {
@@ -163,10 +174,21 @@ final class InstrumentEventLog: @unchecked Sendable {
     /// Coalesced drain of the LIVE (free-play) stream — completed notes, onset-sorted, iff it
     /// changed since the last drain. nil when unchanged (the pump publishes nothing while idle).
     func snapshotLiveIfDirty() -> [StudioNoteEvent]? {
-        lock.lock(); defer { lock.unlock() }
-        guard liveDirty else { return nil }
+        lock.lock()
+        guard liveDirty else { lock.unlock(); return nil }
         liveDirty = false
-        return liveEvents.sorted { $0.onMs < $1.onMs }
+        let snapshot = liveEvents          // O(1) COW handoff — the SORT happens unlocked, below
+        lock.unlock()
+        // Sorting inside the lock would make the MIDI thread wait on an O(n log n) main-actor
+        // sort of a growing array, ~10 times a second, for its per-note append. It waits on a
+        // retain instead.
+        return snapshot.sorted { $0.onMs < $1.onMs }
+    }
+
+    /// The live capture is at its budget and refusing new notes (the UI says so; Save/Clear resets).
+    var liveCaptureFull: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return liveFull
     }
 
     /// Replace the live stream (score editing on the live staff). Keeps the anchor + any held
@@ -174,6 +196,7 @@ final class InstrumentEventLog: @unchecked Sendable {
     func setLive(_ newEvents: [StudioNoteEvent]) {
         lock.lock(); defer { lock.unlock() }
         liveEvents = newEvents
+        liveFull = newEvents.count >= Self.maxLiveEvents
         liveDirty = true
     }
 
@@ -183,6 +206,7 @@ final class InstrumentEventLog: @unchecked Sendable {
         liveEvents = []
         livePending = [:]
         liveAnchor = nil
+        liveFull = false
         liveDirty = true
     }
 
@@ -194,41 +218,92 @@ final class InstrumentEventLog: @unchecked Sendable {
     private var odArmed = false
     private var odAnchorHost: UInt64 = 0
     private var odBaseMs = 0                       // the chosen score position P (caller-clamped)
+    /// EXCLUSIVE end of the overdub REGION on the score clock — the score's end at arm time
+    /// (req: an overdub can NEVER extend the score). `Int.max` = unbounded (legacy callers).
+    private var odRegionEndMs = Int.max
+    /// Looper mode over the confined region: strike positions WRAP (`base + elapsed % L`), every
+    /// iteration LAYERS into the same capture, and a note held across the wrap closes AT the
+    /// boundary — no onset ever hangs across iterations.
+    private var odLoop = false
     private var odEvents: [StudioNoteEvent] = []
-    private var odPending: [Int: (onMs: Int, velocity: Int)] = [:]
+    /// note → (wrapped onset, velocity, iteration index) — iteration 0 always in non-loop mode.
+    private var odPending: [Int: (onMs: Int, velocity: Int, iter: Int)] = [:]
+    /// Completed-capture dirty flag: the pump publishes the IN-PROGRESS overdub staff from this
+    /// (completed notes only — the live-staff precedent: a held note appears on release).
+    private var odDirty = false
 
     /// Arm the overdub stream: notes from `anchorHostTime` onward capture at
     /// `baseMs + elapsed` — the caller anchors at the same instant the backing replay anchors
     /// its clock, so hand/arp notes land at the true score position.
-    func overdubArm(anchorHostTime: UInt64, baseMs: Int) {
+    /// `regionEndMs` confines the capture to `[baseMs, regionEndMs)` on the score clock;
+    /// `loop` wraps positions into that region looper-style (both default to the legacy
+    /// unbounded single-pass behavior).
+    func overdubArm(anchorHostTime: UInt64, baseMs: Int,
+                    regionEndMs: Int = .max, loop: Bool = false) {
         lock.lock(); defer { lock.unlock() }
         odArmed = true
         odAnchorHost = anchorHostTime
         odBaseMs = max(0, baseMs)
+        odRegionEndMs = max(odBaseMs, regionEndMs)
+        odLoop = loop && odRegionEndMs > odBaseMs && odRegionEndMs < .max
         odEvents = []
         odPending = [:]
+        odDirty = false
     }
 
-    /// Overdub note-on (any thread). Pre-anchor stamps are dropped (`ms >= base` guard — the
-    /// count-in convention); a re-trigger with no off closes the prior sounding at the new onset.
+    /// Map raw elapsed-ms since the anchor to a position inside the region, or nil when the
+    /// strike falls OUTSIDE it — pre-anchor stamps (the count-in convention) and, loop OFF,
+    /// anything at/past the boundary (req: the pass stops accepting notes at the score's end).
+    /// Loop ON never discards: positions wrap into the region with their iteration index.
+    private func odPosition(elapsedMs e: Int) -> (ms: Int, iter: Int)? {
+        guard e >= 0 else { return nil }
+        if odLoop {
+            let len = odRegionEndMs - odBaseMs
+            return (odBaseMs + e % len, e / len)
+        }
+        let ms = odBaseMs + e
+        guard ms < odRegionEndMs else { return nil }
+        return (ms, 0)
+    }
+
+    /// Close a sounding overdub note at raw elapsed `e`: same iteration ⇒ its wrapped position,
+    /// a LATER iteration ⇒ AT the region boundary (a held note never crosses the wrap); non-loop
+    /// offs clamp to the boundary the same way (a note held past the score's end closes there).
+    private func odCloseMs(pending pnd: (onMs: Int, velocity: Int, iter: Int), elapsedMs e: Int) -> Int {
+        let off: Int
+        if odLoop {
+            let len = odRegionEndMs - odBaseMs
+            off = (e >= 0 && e / len == pnd.iter) ? odBaseMs + e % len : odRegionEndMs
+        } else {
+            off = min(odBaseMs + max(0, e), odRegionEndMs)
+        }
+        return max(pnd.onMs, off)
+    }
+
+    /// Overdub note-on (any thread). Strikes OUTSIDE the region are dropped (`odPosition`);
+    /// a re-trigger with no off closes the prior sounding at the new strike.
     func overdubOn(note: Int, velocity: Int, hostTime: UInt64) {
         lock.lock(); defer { lock.unlock() }
         guard odArmed else { return }
-        let ms = odBaseMs + msFrom(odAnchorHost, hostTime)
-        guard ms >= odBaseMs else { return }
+        let e = msFrom(odAnchorHost, hostTime)
+        guard let pos = odPosition(elapsedMs: e) else { return }
         if let prev = odPending.removeValue(forKey: note) {
-            odEvents.append(StudioNoteEvent(onMs: prev.onMs, offMs: max(prev.onMs, ms),
+            odEvents.append(StudioNoteEvent(onMs: prev.onMs, offMs: odCloseMs(pending: prev, elapsedMs: e),
                                             note: note, velocity: prev.velocity))
+            odDirty = true
         }
-        odPending[note] = (ms, velocity)
+        odPending[note] = (pos.ms, velocity, pos.iter)
     }
 
-    /// Overdub note-off (any thread) — closes the sounding note into the capture.
+    /// Overdub note-off (any thread) — closes the sounding note into the capture (clamped/
+    /// wrap-closed by `odCloseMs`).
     func overdubOff(note: Int, hostTime: UInt64) {
         lock.lock(); defer { lock.unlock() }
         guard odArmed, let p = odPending.removeValue(forKey: note) else { return }
-        let ms = max(p.onMs, odBaseMs + msFrom(odAnchorHost, hostTime))
-        odEvents.append(StudioNoteEvent(onMs: p.onMs, offMs: ms, note: note, velocity: p.velocity))
+        odEvents.append(StudioNoteEvent(onMs: p.onMs,
+                                        offMs: odCloseMs(pending: p, elapsedMs: msFrom(odAnchorHost, hostTime)),
+                                        note: note, velocity: p.velocity))
+        odDirty = true
     }
 
     /// Disarm + close every still-sounding note at `endHostTime`, returning the capture sorted
@@ -237,15 +312,40 @@ final class InstrumentEventLog: @unchecked Sendable {
         lock.lock(); defer { lock.unlock() }
         guard odArmed else { return [] }
         odArmed = false
-        let endMs = max(odBaseMs, odBaseMs + msFrom(odAnchorHost, endHostTime))
+        let e = msFrom(odAnchorHost, endHostTime)
         for (note, p) in odPending {
-            odEvents.append(StudioNoteEvent(onMs: p.onMs, offMs: max(p.onMs, endMs),
+            odEvents.append(StudioNoteEvent(onMs: p.onMs, offMs: odCloseMs(pending: p, elapsedMs: e),
                                             note: note, velocity: p.velocity))
         }
         odPending = [:]
         let out = odEvents.sorted { $0.onMs < $1.onMs }
         odEvents = []
+        odDirty = false
         return out
+    }
+
+    /// Coalesced drain of the ARMED pass's completed captures — the score UIs render the
+    /// in-progress overdub staff from this (the staff fills DURING the pass, not only at End
+    /// overdub). nil when unchanged since the last drain.
+    func snapshotOverdubIfDirty() -> [StudioNoteEvent]? {
+        lock.lock()
+        guard odDirty else { lock.unlock(); return nil }
+        odDirty = false
+        let snapshot = odEvents            // O(1) COW handoff — the SORT happens unlocked, below
+        lock.unlock()
+        // Same rule as `snapshotLiveIfDirty`: a looping pass layers for as long as the user keeps
+        // playing, and the realtime append must never queue behind a sort of the whole capture.
+        return snapshot.sorted { $0.onMs < $1.onMs }
+    }
+
+    /// Has the CONFINED region run out? True only for an armed, NON-looping, bounded pass whose
+    /// elapsed time has reached the region's end — the point where the pass stops accepting notes
+    /// (`odPosition` already discards them) and the engine publishes the auto-finalize. A looping
+    /// pass never exhausts: it wraps forever until the user ends it.
+    func overdubRegionExhausted(atHostTime hostTime: UInt64) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        guard odArmed, !odLoop, odRegionEndMs < .max else { return false }
+        return odBaseMs + msFrom(odAnchorHost, hostTime) >= odRegionEndMs
     }
 
     /// Captured-so-far count for the ARMED overdub (completed + pending) — the engine's
@@ -306,6 +406,12 @@ final class InstrumentEngine {
     private(set) var isRecordingTake = false
     /// Inside the count-in bar (click audible, events/audio not yet recorded).
     private(set) var isCountingIn = false
+    /// The metronome is ON — a take's click OR the free-play/overdub MONITORING click (req 7).
+    /// Published so the toggle always shows what the graph is actually doing, and flippable LIVE
+    /// through `setClickEnabled` mid-take or mid-overdub. The click node joins at `mainMixer`,
+    /// DOWNSTREAM of the take tap, so it is monitoring-only: it can never reach a take's audio,
+    /// an offline render, or a single score event.
+    private(set) var clickEnabled = false
     /// A recorded take's events are being replayed through the sampler.
     private(set) var isReplaying = false
     /// Currently-held keys (MIDI + on-screen), coalesced at ~30 Hz — the ONLY note-driven UI
@@ -314,6 +420,13 @@ final class InstrumentEngine {
     /// The always-on LIVE (free-play) note stream, coalesced at ~30 Hz — the live editable staff
     /// renders this. Completed notes only; edits round-trip through `setLiveEvents`.
     private(set) var liveEvents: [StudioNoteEvent] = []
+    /// Does the live staff hold ANY notes? A cheap Bool the live-score SECTION reads instead of
+    /// the event array, so a staff publish invalidates only the one view that renders the notes —
+    /// not the overdub staffs, the in-progress capture and the footer around it.
+    private(set) var liveHasEvents = false
+    /// The live capture reached `InstrumentEventLog.maxLiveEvents` and is refusing new notes
+    /// (a latched arp is a machine): surfaced in the live score's footer. Save/Clear resets it.
+    private(set) var liveCaptureFull = false
     /// Display names of connected wired/USB MIDI sources (refreshed on CoreMIDI setup changes).
     private(set) var midiSourceNames: [String] = []
     /// The in-flight take's file name — `StudioStore.activeTakeFileName` wires to this so
@@ -322,21 +435,25 @@ final class InstrumentEngine {
 
     // MARK: Arpeggiator state (deliberately OUTSIDE any #if os fence — the platform-fence lesson)
 
-    /// Arp master switch. Turning it off stops playback + record mode but KEEPS the selected
-    /// set (off/on is non-destructive; `arpClearSelection` is the explicit reset).
+    /// Arp master switch. Turning it off pauses the transport + leaves program mode but KEEPS the
+    /// selected set (off/on is non-destructive; `arpClearSelection` is the explicit reset).
     var arpEnabled = false {
         didSet {
             guard !arpEnabled, oldValue else { return }
-            arpRecording = false
+            arpProgramming = false
             stopArpPlayback()
         }
     }
-    /// RECORD mode: keys toggle membership in the arp set (each sounds ONCE on add, stays
-    /// highlighted) — and write NOTHING to any score (live, take, or overdub).
-    var arpRecording = false
-    /// PLAY mode is running (read by the panel's Play toggle).
+    /// PROGRAM mode (the panel's "Program" button — named for what it does: it programs the
+    /// pattern, it does not record a performance): keys toggle membership in the arp set (each
+    /// sounds ONCE on add, stays highlighted) — and write NOTHING to any score (live, take, or
+    /// overdub). Programming is INDEPENDENT of the transport: the pattern can be audibly playing
+    /// while you add/remove notes, so you hear it evolve (edits land at the next cycle boundary).
+    var arpProgramming = false
+    /// The arp TRANSPORT is running (read by the panel's play/pause button). Published, so latch
+    /// OFF's auto-pause at the end of one cycle shows up as a paused button with no user action.
     private(set) var arpPlaying = false
-    /// The recorded arp set — insertion-ordered (drives `.order`) and deduped; also drives the
+    /// The programmed arp set — insertion-ordered (drives `.order`) and deduped; also drives the
     /// keyboard's steady highlight.
     private(set) var arpSelectedNotes: [Int] = []
     /// Knob state, mirrored from SettingsStore by the panel. Cycle-boundary reads: edits take
@@ -353,6 +470,23 @@ final class InstrumentEngine {
     private(set) var overdubActive = false
     /// The score position the current overdub was anchored at (clamped caller input).
     private(set) var overdubBaseMs = 0
+    /// EXCLUSIVE end of the pass's CONFINED region on the score clock — the score's own end at
+    /// arm time. An overdub can NEVER extend the score (req 5), so notes struck past this are
+    /// discarded and a held note closes AT it. `Int.max` = unbounded, which ONLY an EMPTY score
+    /// degrades to — there is no region to confine to, and nothing to lengthen.
+    private(set) var overdubRegionEndMs = Int.max
+    /// Looper mode over that region (req 6): the backing replay loops `[base, regionEnd)`, the
+    /// pass stays armed across iterations, and every iteration's notes LAYER into one capture at
+    /// their wrapped position.
+    private(set) var overdubLoop = false
+    /// The ARMED pass's capture so far, coalesced at ~30 Hz by the same pump that publishes
+    /// `liveEvents` — the score views render the in-progress overdub staff from this, so the
+    /// staff visibly fills DURING the pass instead of appearing at "End overdub" (req 4).
+    /// Completed notes only (the live-staff precedent: a held note appears on release).
+    private(set) var overdubEvents: [StudioNoteEvent] = []
+    /// A non-looping pass ran out of region: it accepts nothing more, and the owning score view
+    /// finalizes it on the next observation tick (req 5's clean auto-finalize).
+    private(set) var overdubReachedEnd = false
 
     /// One LIVE overdub staff (staffs 2…4 of the free-play score). IN-MEMORY ONLY, like
     /// `liveEvents` itself — the live score has never persisted; "Save" files everything as a
@@ -440,12 +574,17 @@ final class InstrumentEngine {
     @ObservationIgnored private var takeId = ""
     @ObservationIgnored private var takeURL: URL?
     @ObservationIgnored private var takeBpm: Double = 120
-    @ObservationIgnored private var takeClickEnabled = false
     @ObservationIgnored private var takeInstrument: InstrumentKey?
     /// Host time of beat 1 (end of count-in) — the click realign + event log anchor.
     @ObservationIgnored private var takeBeat1Host: UInt64 = 0
-    /// The bar-loop click buffer for the take's BPM (kept for realign after recovery).
+    /// The bar-loop click buffer for the click's current BPM (kept for realign after recovery).
     @ObservationIgnored private var clickBuffer: AVAudioPCMBuffer?
+    /// The BPM the click grid is running at — the take's BPM mid-take, the caller's otherwise.
+    @ObservationIgnored private var clickBpm: Double = 120
+    /// The click grid's phase anchor: beat 1 of a take, or the instant a MONITORING click was
+    /// switched on. Every start/realign lands on a beat of THIS grid, so a mid-take flip can
+    /// never fold the parked gap into the bar phase.
+    @ObservationIgnored private var clickGridHost: UInt64 = 0
     /// Invalidates the count-in's deferred writer-begin task when the take ends first.
     @ObservationIgnored private var takeGeneration = 0
 
@@ -465,6 +604,11 @@ final class InstrumentEngine {
     /// / `replayAnchor`; nil whenever the clock is nil. `@ObservationIgnored` for the same reason
     /// the anchor is: it is read from a `TimelineView` tick.
     @ObservationIgnored private var replayOwner: String?
+    /// The running backing's LOOP region, if it is a looper (an overdub with Loop on). The
+    /// cursor wraps through it, so the playhead paints inside the region instead of marching off
+    /// the end of a score the loop never actually leaves. `@ObservationIgnored` for the same
+    /// reason the anchor is — it is read from a `TimelineView` tick.
+    @ObservationIgnored private var replayLoopRegion: (startMs: Int, endMs: Int)?
 
     // Watchdog + recovery (the MixEngine tickFire shape).
     @ObservationIgnored private var watchdogTask: Task<Void, Never>?
@@ -667,9 +811,10 @@ final class InstrumentEngine {
     /// either input.
     func noteOn(_ note: Int, velocity: Int = 96) {
         ensureEngine()
-        // Arp RECORD mode: keys SELECT notes (sound once, stay highlighted) and never fall
-        // through — record mode writes NOTHING to any score (live, take, or overdub).
-        if arpEnabled && arpRecording {
+        // Arp PROGRAM mode: keys SELECT notes (sound once, stay highlighted) and never fall
+        // through — programming writes NOTHING to any score (live, take, or overdub), even while
+        // the transport is audibly playing the pattern being programmed.
+        if arpEnabled && arpProgramming {
             arpToggleSelection(note, velocity: velocity)
             return
         }
@@ -696,8 +841,8 @@ final class InstrumentEngine {
     }
 
     func noteOff(_ note: Int) {
-        // Arp record mode consumed the matching noteOn; the once-sound self-terminates.
-        if arpEnabled && arpRecording { return }
+        // Arp program mode consumed the matching noteOn; the once-sound self-terminates.
+        if arpEnabled && arpProgramming { return }
         let n = UInt8(clamping: max(0, min(127, note)))
         // liveOff stays unconditional: it closes a note that was pressed BEFORE the overdub
         // armed (it no-ops when the live stream has no pending onset for the note), so a
@@ -711,9 +856,9 @@ final class InstrumentEngine {
         eventLog.noteOff(note: Int(n), hostTime: mach_absolute_time())
     }
 
-    // MARK: - Arpeggiator (record/select + play scheduler; pure math in ArpeggiatorEngine.swift)
+    // MARK: - Arpeggiator (program/select + transport scheduler; math in ArpeggiatorEngine.swift)
 
-    /// Toggle a note's membership in the arp set (record mode). Adding SOUNDS it once (250 ms,
+    /// Toggle a note's membership in the arp set (program mode). Adding SOUNDS it once (250 ms,
     /// generation-guarded) and appends in insertion order (the `.order` contract); re-pressing
     /// removes it silently. NOTHING is logged to any score stream.
     private func arpToggleSelection(_ note: Int, velocity: Int) {
@@ -728,11 +873,14 @@ final class InstrumentEngine {
         let v = UInt8(clamping: max(1, min(127, velocity)))
         smp.startNote(UInt8(clamping: n), withVelocity: v, onChannel: 0)
         NowPlayingArbiter.shared.claim(self)
-        let gen = arpGeneration
         Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 250_000_000)
-            guard let self, self.arpGeneration == gen, self.rt.engineReady,
-                  let smp = self.sampler else { return }
+            guard let self, self.rt.engineReady, let smp = self.sampler else { return }
+            // Deliberately NOT generation-guarded: the transport starting/stopping — or the Arp
+            // master toggle flipping OFF, which bumps the generation and (paused) sends no
+            // all-notes-off — would strand this preview SOUNDING FOREVER. The only note this must
+            // not cut is one the scheduler is currently sounding; that one owns its own gate-off.
+            guard !self.arpSoundingNotes.contains(n) else { return }
             smp.stopNote(UInt8(clamping: n), onChannel: 0)
         }
     }
@@ -743,21 +891,39 @@ final class InstrumentEngine {
         if arpPlaying { stopArpPlayback() }
     }
 
-    /// PLAY mode: loop the current pattern through the instrument's own voice (the loaded
+    /// TRANSPORT ▶: loop the current pattern through the instrument's own voice (the loaded
     /// program, channel 0 — the same node as live keys). The cycle is REGENERATED from the
-    /// current set + knobs at each cycle boundary, so edits take effect next cycle; latch OFF
-    /// plays exactly one cycle then auto-stops. Modeled on `replayTake`'s scheduling loop.
+    /// current set + knobs at each cycle boundary, so edits — including notes added/removed in
+    /// PROGRAM mode while this is running — take effect next cycle; latch OFF plays exactly one
+    /// cycle then auto-pauses (`arpPlaying` drops, which is what the transport button shows).
+    /// Modeled on `replayTake`'s scheduling loop.
     @discardableResult
     func startArpPlayback(bpm: Double) -> Bool {
+        startArpPlayback(bpm: bpm, requireAudio: true)
+    }
+
+    /// TEST SEAM: the same transport with the audio preconditions relaxed — headless CI has no
+    /// sampler and no 32 MB bank, so the sounding path is unreachable there, but the SCORE-write
+    /// path (req: a playing arp is captured like hand keys) and the latch/auto-pause state
+    /// machine are exactly the shipped ones.
+    @discardableResult
+    func startArpPlaybackForTesting(bpm: Double) -> Bool {
+        startArpPlayback(bpm: bpm, requireAudio: false)
+    }
+
+    @discardableResult
+    private func startArpPlayback(bpm: Double, requireAudio: Bool) -> Bool {
         ensureEngine()
-        guard built, rt.engineReady, !isLoadingInstrument, sampler != nil,
-              !arpSelectedNotes.isEmpty else { return false }
+        if requireAudio {
+            guard built, rt.engineReady, !isLoadingInstrument, sampler != nil else { return false }
+        }
+        guard !arpSelectedNotes.isEmpty else { return false }
         // During an OVERDUB the running replay IS the backing the arp plays over — stopping it
         // would end the pass out from under the user (the views file the capture when the
         // backing's isReplaying drops). Outside an overdub the old exclusivity holds.
         if !overdubActive { stopReplay() }
         stopArpPlayback()
-        guard startEngineIfNeeded() else { return false }
+        if requireAudio { guard startEngineIfNeeded() else { return false } }
         arpGeneration &+= 1
         let gen = arpGeneration
         arpPlaying = true
@@ -782,31 +948,10 @@ final class InstrumentEngine {
                                                                    swingPct: s.swingPct)
                     try? await Task.sleep(until: start + .milliseconds(onAt), clock: .continuous)
                     guard let eng = self, eng.arpGeneration == gen else { return }
-                    let n = UInt8(clamping: max(0, min(127, note)))
-                    if eng.rt.engineReady, let smp = eng.sampler {
-                        smp.startNote(n, withVelocity: 96, onChannel: 0)
-                        eng.arpSoundingNotes.insert(note)
-                        // EXACTLY what replayTake does: highlights follow, and the take log fills
-                        // iff a take is armed ("arp records like hand keys" during a take is free).
-                        // Deliberately NO liveOn — the free-play staff must not fill with arp loops.
-                        eng.eventLog.noteOn(note: note, velocity: 96,
-                                            hostTime: mach_absolute_time())
-                        if eng.overdubActive {
-                            eng.eventLog.overdubOn(note: note, velocity: 96,
-                                                   hostTime: mach_absolute_time())
-                        }
-                    }
+                    eng.arpStrikeOn(note)
                     try? await Task.sleep(until: start + .milliseconds(offAt), clock: .continuous)
                     guard let eng = self, eng.arpGeneration == gen else { return }
-                    guard eng.arpSoundingNotes.contains(note) else { continue }
-                    if eng.rt.engineReady, let smp = eng.sampler {
-                        smp.stopNote(n, onChannel: 0)
-                    }
-                    eng.arpSoundingNotes.remove(note)
-                    eng.eventLog.noteOff(note: note, hostTime: mach_absolute_time())
-                    if eng.overdubActive {
-                        eng.eventLog.overdubOff(note: note, hostTime: mach_absolute_time())
-                    }
+                    eng.arpStrikeOff(note)
                 }
                 // Next cycle starts on the grid: cycle length rounded UP to a whole pair so the
                 // swing phase is preserved across cycles.
@@ -821,8 +966,51 @@ final class InstrumentEngine {
         return true
     }
 
-    /// Cancel arp playback: bump the generation (the loop exits at its next wake) and silence
-    /// anything still sounding NOW — cancelled tasks never claim generations.
+    /// One arp step's ONSET, on the SAME write path a hand key takes (`noteOn`): the score
+    /// capture happens BEFORE the audible guard — a PLAYING arp is a live performance and is
+    /// captured like any other playing (req 3) — into the overdub staff while a pass is armed,
+    /// else into the always-on live staff. NEVER both (the double-write rule). PROGRAM mode is
+    /// unaffected: it never reaches here, it only edits `arpSelectedNotes`.
+    private func arpStrikeOn(_ note: Int) {
+        let clamped = max(0, min(127, note))
+        let host = mach_absolute_time()
+        if overdubActive {
+            eventLog.overdubOn(note: clamped, velocity: Int(Self.arpVelocity), hostTime: host)
+        } else {
+            eventLog.liveOn(note: clamped, velocity: Int(Self.arpVelocity), hostTime: host)
+        }
+        arpSoundingNotes.insert(clamped)
+        guard rt.engineReady, let smp = sampler else { return }
+        smp.startNote(UInt8(clamping: clamped), withVelocity: Self.arpVelocity, onChannel: 0)
+        // EXACTLY what replayTake does: highlights follow, and the take log fills iff a take is
+        // armed ("arp records like hand keys" during a take is free).
+        eventLog.noteOn(note: clamped, velocity: Int(Self.arpVelocity), hostTime: mach_absolute_time())
+    }
+
+    /// One arp step's GATE-OFF — the `noteOff` mirror: `liveOff` is unconditional (it self-guards
+    /// when the live stream has no pending onset, so a note struck BEFORE a pass armed still
+    /// closes on the live staff), the overdub close is gated on the armed pass.
+    private func arpStrikeOff(_ note: Int) {
+        let clamped = max(0, min(127, note))
+        guard arpSoundingNotes.remove(clamped) != nil else { return }
+        let host = mach_absolute_time()
+        eventLog.liveOff(note: clamped, hostTime: host)
+        if overdubActive { eventLog.overdubOff(note: clamped, hostTime: host) }
+        guard rt.engineReady, let smp = sampler else { return }
+        smp.stopNote(UInt8(clamping: clamped), onChannel: 0)
+        eventLog.noteOff(note: clamped, hostTime: mach_absolute_time())
+    }
+
+    /// TEST SEAM: drive ONE arp step through the shipped write path (see `arpStrikeOn/Off`).
+    func arpStepForTesting(note: Int, on: Bool) {
+        on ? arpStrikeOn(note) : arpStrikeOff(note)
+    }
+
+    /// The arp's fixed strike velocity (the pattern is a machine, not a performance).
+    nonisolated static let arpVelocity: UInt8 = 96
+
+    /// Cancel arp playback (the transport's ⏸): bump the generation (the loop exits at its next
+    /// wake) and silence anything still sounding NOW — cancelled tasks never claim generations.
     func stopArpPlayback() {
         arpGeneration &+= 1
         guard arpPlaying else { return }
@@ -834,15 +1022,12 @@ final class InstrumentEngine {
 
     private func finishArpPlayback() {
         arpPlaying = false
-        if rt.engineReady, let smp = sampler {
-            for n in arpSoundingNotes {
-                smp.stopNote(UInt8(clamping: max(0, min(127, n))), onChannel: 0)
-                eventLog.noteOff(note: n, hostTime: mach_absolute_time())
-                if overdubActive { eventLog.overdubOff(note: n, hostTime: mach_absolute_time()) }
-            }
-            smp.sendController(123, withValue: 0, onChannel: 0)
-        }
+        // Close every sounding step through the SAME gate-off path a scheduled step takes, so a
+        // pause (or latch-OFF's auto-pause) can never leave a hanging onset in the live staff or
+        // the overdub capture. Iterate a copy — `arpStrikeOff` mutates the set.
+        for n in arpSoundingNotes { arpStrikeOff(n) }
         arpSoundingNotes = []
+        if rt.engineReady, let smp = sampler { smp.sendController(123, withValue: 0, onChannel: 0) }
         NowPlayingArbiter.shared.resign(self)
     }
 
@@ -852,16 +1037,68 @@ final class InstrumentEngine {
     /// host-time instant that MAPS to `fromMs` — the caller passes the same instant it anchors
     /// the backing replay's clock, so captured notes land at the true score position. Refused
     /// mid-take (`startTake` owns that session's streams).
+    ///
+    /// `scoreEndMs` confines the pass to `[fromMs, scoreEndMs)` — the overdub can never extend
+    /// the score (req 5). Only an EMPTY score (`scoreEndMs == .max`, what the score screens pass
+    /// when there is nothing to confine to) degrades to the unbounded pass, which is what
+    /// "overdub from silence" has always been; a cursor parked at a REAL score's end has no room
+    /// and is refused (`hasOverdubRoom`). `loop` turns the confined region into a looper (req 6);
+    /// it is ignored for an unbounded pass, which has no wrap point.
     @discardableResult
-    func startOverdub(fromMs: Int, anchorHostTime: UInt64 = mach_absolute_time()) -> Bool {
+    func startOverdub(fromMs: Int, anchorHostTime: UInt64 = mach_absolute_time(),
+                      scoreEndMs: Int = .max, loop: Bool = false) -> Bool {
         guard !isRecordingTake, !overdubActive else { return false }
         let base = max(0, min(fromMs, Self.maxReplayMs))
+        // UNBOUNDED is the EMPTY-score case ONLY — `scoreEndMs == .max`, which is what both score
+        // screens pass for a score with no notes ("overdub from silence"). A REAL score always
+        // confines the pass, INCLUDING when the cursor is parked at its very end (playing a score
+        // to the end parks it exactly there): degrading that to unbounded would let the pass
+        // lengthen the score, which is precisely what req 5 forbids. With no room at the anchor
+        // there is nothing to overdub, so the pass is REFUSED — arming it would auto-finalize on
+        // the next pump tick and look like a dead button. The callers say why.
+        var end = Int.max
+        if scoreEndMs != .max {
+            end = min(scoreEndMs, Self.maxReplayMs)
+            guard end - base >= Self.minOverdubRegionMs else {
+                dlog("instr: overdub REFUSED — no room at \(base) ms (score ends at \(end) ms)")
+                return false
+            }
+        }
         overdubBaseMs = base
+        overdubRegionEndMs = end
+        overdubLoop = loop && end < .max
+        overdubEvents = []
+        overdubReachedEnd = false
         overdubActive = true
         rt.overdubActive = true
-        eventLog.overdubArm(anchorHostTime: anchorHostTime, baseMs: base)
-        dlog("instr: overdub ARM at \(base) ms")
+        eventLog.overdubArm(anchorHostTime: anchorHostTime, baseMs: base,
+                            regionEndMs: end, loop: overdubLoop)
+        dlog("instr: overdub ARM at \(base) ms region→\(end == .max ? "∞" : String(end))"
+             + " loop=\(overdubLoop ? 1 : 0)")
         return true
+    }
+
+    /// The least room a CONFINED pass needs at the anchor: below this the "pass" is an instant
+    /// auto-finalize — armed and finished before the backing (or the user) played a note.
+    nonisolated static let minOverdubRegionMs = 250
+
+    /// Is there room to overdub at `fromMs`? `scoreEndMs == 0` is an EMPTY score, always
+    /// overdubbable (the unbounded from-silence pass). The score screens ask BEFORE arming so a
+    /// refusal can be explained instead of looking like a dead button.
+    nonisolated static func hasOverdubRoom(fromMs: Int, scoreEndMs: Int) -> Bool {
+        guard scoreEndMs > 0 else { return true }
+        return min(scoreEndMs, maxReplayMs) - max(0, min(fromMs, maxReplayMs)) >= minOverdubRegionMs
+    }
+
+    /// The score's END on the score clock — the exclusive upper bound of an overdub region: the
+    /// last note-off across every staff, 0 for an empty score (which `startOverdub` reads as
+    /// "unbounded"). Pure + testable; both score screens compute the region with it.
+    nonisolated static func scoreEndMs(staffs: [[StudioNoteEvent]]) -> Int {
+        var end = 0
+        for staff in staffs {
+            for e in staff { end = max(end, max(0, e.onMs), e.offMs) }
+        }
+        return min(end, maxReplayMs)
     }
 
     /// End overdub mode, returning the captured events (ABSOLUTE score-clock ms, onset-sorted).
@@ -871,8 +1108,39 @@ final class InstrumentEngine {
         overdubActive = false
         rt.overdubActive = false
         let events = eventLog.overdubDisarmAndFinish(atHostTime: mach_absolute_time())
+        // The in-progress publication is handed OFF here, never duplicated: the caller files
+        // exactly these events as the finished staff, so the "recording" staff the views render
+        // from `overdubEvents` must vanish in the same turn.
+        overdubEvents = []
+        overdubReachedEnd = false
+        overdubRegionEndMs = .max
+        overdubLoop = false
         dlog("instr: overdub END — \(events.count) events from \(overdubBaseMs) ms")
         return events
+    }
+
+    /// Loop OFF: the confined region is exhausted ⇒ the log already refuses further strikes and
+    /// closed any held note AT the boundary; publish it so the owning score view finalizes the
+    /// pass cleanly (req 5). Runs on the audio-INDEPENDENT 30 Hz pump — a pass with no backing
+    /// (overdubbing over a silent bank) must auto-finalize exactly the same way.
+    private func overdubDeadlineTick() {
+        guard overdubActive, !overdubLoop, !overdubReachedEnd else { return }
+        guard !Self.deadlineDeferred(isReplaying: isReplaying, synthReady: synthReady,
+                                     capturedCount: eventLog.overdubCount) else { return }
+        guard eventLog.overdubRegionExhausted(atHostTime: mach_absolute_time()) else { return }
+        overdubReachedEnd = true
+        dlog("instr: overdub region END at \(overdubRegionEndMs) ms — auto-finalize")
+    }
+
+    /// A pass whose BACKING is still warming up has not started yet: the capture arms at the
+    /// button press, but `replayTakePolyphonic` re-anchors an empty capture to the instant the
+    /// synth is actually ready — a first-time 32 MB bank parse costs SECONDS. Running the deadline
+    /// against the press anchor in that window finalizes a short-region pass before the user hears
+    /// a single note of backing (Overdub then looks like a dead button). Defer until the anchor is
+    /// real; a capture that already has notes keeps its anchor, so its deadline runs as before.
+    nonisolated static func deadlineDeferred(isReplaying: Bool, synthReady: Bool,
+                                             capturedCount: Int) -> Bool {
+        isReplaying && !synthReady && capturedCount == 0
     }
 
     /// Notes the armed overdub has captured so far (completed + still-sounding). The score
@@ -914,7 +1182,6 @@ final class InstrumentEngine {
         takeId = id
         takeURL = url
         takeBpm = b
-        takeClickEnabled = click
         takeInstrument = instrument
         activeTakeFileName = fileName
         isRecordingTake = true
@@ -925,6 +1192,10 @@ final class InstrumentEngine {
         // PRE-LATCH the recording gate (spec §4): armed now, cutoff enforced by timestamp.
         eventLog.arm(beat1HostTime: takeBeat1Host)
 
+        // The take's grid: beat 1 is the anchor, the click's first tick is the count-in's start.
+        clickBpm = b
+        clickGridHost = takeBeat1Host
+        clickEnabled = click
         if click {
             clickBuffer = Self.makeClickBarBuffer(bpm: b, format: Self.canonicalFormat)
             if let clickPlayer, let buf = clickBuffer {
@@ -934,6 +1205,12 @@ final class InstrumentEngine {
                 clickPlayer.scheduleBuffer(buf, at: nil, options: [.loops])
                 clickPlayer.play(at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: startSec)))
             }
+        } else {
+            // Intent and node must never diverge: a MONITORING click already running (the
+            // free-play / overdub toggle) would tick right through the take with every control
+            // showing OFF — and `healParkedClick`/`realignClick` gate on `clickEnabled`, so
+            // nothing would ever take it back.
+            clickPlayer?.stop()
         }
 
         // The WRITER begins AT beat 1 (count-in bars are click-only — never in the take audio,
@@ -967,6 +1244,7 @@ final class InstrumentEngine {
         isCountingIn = false
         clickPlayer?.stop()
         clickBuffer = nil
+        clickEnabled = false
         let events = eventLog.disarmAndFinish(atHostTime: mach_absolute_time())
         // Duration = the writer's CONTENT clock (media seconds actually appended), not wall
         // time — an engine stall mid-take must not inflate the take's length.
@@ -1111,7 +1389,16 @@ final class InstrumentEngine {
         // Clamp BEFORE the Int conversion — a wild clock delta must degrade, never trap (the
         // StaffChordView Int.min lesson). 24 h is far past any instrumental.
         guard secs.isFinite else { return replayFrozenMs }
-        return Int((min(max(secs, 0), 86_400) * 1000).rounded())
+        let ms = Int((min(max(secs, 0), 86_400) * 1000).rounded())
+        return Self.wrapIntoLoop(ms: ms, region: replayLoopRegion)
+    }
+
+    /// A looping backing's cursor: positions past the wrap point fold back into the region, so
+    /// iteration 3 of an overdub loop paints at the same place iteration 1 did. Pure + testable;
+    /// identity when there is no loop.
+    nonisolated static func wrapIntoLoop(ms: Int, region: (startMs: Int, endMs: Int)?) -> Int {
+        guard let r = region, r.endMs > r.startMs, ms >= r.endMs else { return ms }
+        return r.startMs + (ms - r.startMs) % (r.endMs - r.startMs)
     }
 
     /// The replay clock read THROUGH its owner: the position only when the clock describes THIS
@@ -1131,6 +1418,7 @@ final class InstrumentEngine {
     private func freezeReplayPosition() {
         replayFrozenMs = replayPositionMs()
         replayAnchor = nil
+        replayLoopRegion = nil
     }
 
     /// Park the replay cursor at an explicit score-clock ms — a tap-to-seek while stopped, or the
@@ -1253,9 +1541,15 @@ final class InstrumentEngine {
     /// `replayTake` — zero regression on legacy takes. `bankURL` is the one shared SoundFont
     /// (caller resolves via `InstrumentPackStore.localBankURL` — nil there is the "download the
     /// pack first" prompt, the same gate `StudioTakeReplay.toggle` uses).
+    /// `loopRegion` turns the backing into a LOOPER over `[startMs, endMs)` (req 6: an overdub
+    /// with Loop on replays its confined region forever, so notes can be layered pass after
+    /// pass). Every iteration re-strikes from `startMs` and ALL notes are silenced at the wrap,
+    /// so nothing hangs across the boundary; the score cursor wraps with it
+    /// (`replayPositionMs`). nil = today's single pass.
     func replayTakePolyphonic(staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)],
                               bankURL: URL, fromMs: Int = 0, forTake takeId: String? = nil,
-                              forceSynth: Bool = false) {
+                              forceSynth: Bool = false,
+                              loopRegion: (startMs: Int, endMs: Int)? = nil) {
         // `forceSynth` routes even a SINGLE staff through the multitimbral synth — the overdub
         // backing needs the SAMPLER left free (it is the user's overdub voice, playing live over
         // the backing), and the synth plays the staff's own timbre regardless of what's loaded.
@@ -1277,9 +1571,17 @@ final class InstrumentEngine {
         let from = max(0, min(fromMs, Self.maxReplayMs))
         let programs = staffs.enumerated().map { (channel: $0.offset,
                                                   program: $0.element.instrument.gmProgram) }
-        let actions = Self.replayActionsMulti(
+        var actions = Self.replayActionsMulti(
             staffs: staffs.enumerated().map { (events: $0.element.events, channel: $0.offset) },
             from: from)
+        // A looping backing plays the REGION only: everything at/after the wrap point is cut, and
+        // the wrap itself silences whatever is still sounding (below).
+        let loop: (startMs: Int, endMs: Int)? = loopRegion.flatMap {
+            let r = (startMs: max(0, min($0.startMs, Self.maxReplayMs)),
+                     endMs: max(0, min($0.endMs, Self.maxReplayMs)))
+            return r.endMs > r.startMs ? r : nil
+        }
+        if let loop { actions = actions.filter { $0.ms < loop.endMs } }
         guard !actions.isEmpty else {
             if from > 0 { parkReplayPosition(atMs: from, forTake: takeId) } else { replayOwner = takeId }
             return
@@ -1295,6 +1597,7 @@ final class InstrumentEngine {
         // synth is ready (a first-time bank parse must not compress the opening notes).
         replayAnchor = ContinuousClock.now - .milliseconds(from)
         replayFrozenMs = from
+        replayLoopRegion = loop
         Task { @MainActor [weak self] in
             guard let eng0 = self else { return }
             let syn = await eng0.ensureSynthReady(bankURL: bankURL, programs: programs)
@@ -1317,25 +1620,46 @@ final class InstrumentEngine {
             // keeps its anchor (re-basing captured events would corrupt them).
             if eng1.overdubActive, eng1.eventLog.overdubCount == 0 {
                 eng1.eventLog.overdubArm(anchorHostTime: mach_absolute_time(),
-                                         baseMs: eng1.overdubBaseMs)
+                                         baseMs: eng1.overdubBaseMs,
+                                         regionEndMs: eng1.overdubRegionEndMs,
+                                         loop: eng1.overdubLoop)
             }
-            for a in actions {
-                try? await Task.sleep(until: start + .milliseconds(a.ms), clock: .continuous)
-                guard let eng = self, eng.replayGeneration == gen else { return }
-                guard eng.synthReady else { continue }
-                let n = UInt8(clamping: max(0, min(127, a.note)))
-                let ch = UInt8(clamping: max(0, min(15, a.channel)))
-                if a.on {
-                    syn.startNote(n, velocity: UInt8(clamping: max(1, min(127, a.velocity))),
-                                  channel: ch)
-                    eng.replayActiveNotes.insert(a.note)
-                    eng.eventLog.noteOn(note: a.note, velocity: a.velocity,
-                                        hostTime: mach_absolute_time())   // highlights follow
-                } else {
-                    syn.stopNote(n, channel: ch)
-                    eng.replayActiveNotes.remove(a.note)
-                    eng.eventLog.noteOff(note: a.note, hostTime: mach_absolute_time())
+            // One pass per iteration; a non-looping backing runs the body exactly once (`break`
+            // at the bottom), so the legacy path is bit-for-bit what it was.
+            var iteration = 0
+            while true {
+                let offset = (loop.map { $0.endMs - $0.startMs } ?? 0) * iteration
+                for a in actions {
+                    try? await Task.sleep(until: start + .milliseconds(a.ms + offset),
+                                          clock: .continuous)
+                    guard let eng = self, eng.replayGeneration == gen else { return }
+                    guard eng.synthReady else { continue }
+                    let n = UInt8(clamping: max(0, min(127, a.note)))
+                    let ch = UInt8(clamping: max(0, min(15, a.channel)))
+                    if a.on {
+                        syn.startNote(n, velocity: UInt8(clamping: max(1, min(127, a.velocity))),
+                                      channel: ch)
+                        eng.replayActiveNotes.insert(a.note)
+                        eng.eventLog.noteOn(note: a.note, velocity: a.velocity,
+                                            hostTime: mach_absolute_time())   // highlights follow
+                    } else {
+                        syn.stopNote(n, channel: ch)
+                        eng.replayActiveNotes.remove(a.note)
+                        eng.eventLog.noteOff(note: a.note, hostTime: mach_absolute_time())
+                    }
                 }
+                guard let loop else { break }
+                // Sleep to the wrap point (the region's end, not the last action's) and silence
+                // everything AT the boundary — no backing note may hang into the next iteration.
+                try? await Task.sleep(until: start + .milliseconds(loop.endMs + offset),
+                                      clock: .continuous)
+                guard let eng = self, eng.replayGeneration == gen else { return }
+                syn.allNotesOff()
+                for n in eng.replayActiveNotes {
+                    eng.eventLog.noteOff(note: n, hostTime: mach_absolute_time())
+                }
+                eng.replayActiveNotes = []
+                iteration += 1
             }
             guard let eng = self, eng.replayGeneration == gen else { return }
             eng.isReplaying = false
@@ -1399,6 +1723,43 @@ final class InstrumentEngine {
         return beat1Sec + n * barSec
     }
 
+    /// The next BEAT boundary at/after `nowSec + lead` on the click grid, with its index WITHIN
+    /// the bar (0 = the accented beat 1). Works before the grid anchor too (negative beat indices
+    /// wrap positively). Wild input degrades to "now + lead, beat 1" — never traps (the
+    /// StaffChordView `Int.min` lesson: clamp BEFORE the Int conversion).
+    nonisolated static func nextBeatOnGrid(nowSec: Double, gridSec: Double, beatSec: Double,
+                                           lead: Double = 0.05) -> (atSec: Double, beatInBar: Int) {
+        guard beatSec.isFinite, beatSec > 0, nowSec.isFinite, gridSec.isFinite else {
+            return (nowSec.isFinite ? nowSec + lead : lead, 0)
+        }
+        let raw = ((nowSec + lead - gridSec) / beatSec).rounded(.up)
+        guard raw.isFinite, abs(raw) < 1e12 else { return (nowSec + lead, 0) }
+        let n = Int(raw)
+        return (gridSec + Double(n) * beatSec, ((n % 4) + 4) % 4)
+    }
+
+    /// The REMAINDER of a bar-click buffer from `beat` (1…3) onward — scheduled ONCE ahead of the
+    /// looping bar so a click switched on mid-bar starts at the next beat while the loop behind it
+    /// still lands on the bar line. nil for beat 0 (the loop alone is already in phase).
+    nonisolated static func clickTailBuffer(_ bar: AVAudioPCMBuffer, fromBeat beat: Int)
+        -> AVAudioPCMBuffer? {
+        let total = Int(bar.frameLength)
+        let beatFrames = total / 4
+        let b = max(0, min(3, beat))
+        guard b > 0, beatFrames > 0 else { return nil }
+        let offset = b * beatFrames
+        let length = total - offset
+        guard length > 0,
+              let out = AVAudioPCMBuffer(pcmFormat: bar.format,
+                                         frameCapacity: AVAudioFrameCount(length)),
+              let src = bar.floatChannelData, let dst = out.floatChannelData else { return nil }
+        out.frameLength = AVAudioFrameCount(length)
+        for ch in 0..<Int(bar.format.channelCount) {
+            memcpy(dst[ch], src[ch] + offset, length * MemoryLayout<Float>.size)
+        }
+        return out
+    }
+
     /// Synthesize ONE bar of metronome at `bpm`: four short decaying sine ticks — beat 1 at a
     /// higher pitch (the bar tick) than beats 2–4 (spec §4's two pitches). Scheduled with
     /// `.loops`, so the buffer length IS the bar length (rounding drift ≈ ½ frame/bar — inaudible
@@ -1431,15 +1792,61 @@ final class InstrumentEngine {
     /// stop() + fresh schedule + play(at: next bar) is a STRONGER re-prime than pause()+play():
     /// it revives a zombie node AND restores bar phase, which no resume-in-place can.
     private func realignClick() {
-        guard isRecordingTake, takeClickEnabled,
-              let click = clickPlayer, let buf = clickBuffer else { return }
+        guard clickEnabled else { return }
+        startClickOnGrid()
+    }
+
+    /// Start (or restart) the click on its own grid, at the NEXT BEAT: mid-bar, the remainder of
+    /// the bar is scheduled ONCE as a tail so the looping bar behind it still lands on the bar
+    /// line (the accent stays on beat 1). This is the LIVE-toggle path (req 7: flipping the click
+    /// takes effect on the next beat, without stopping the take, reconfiguring the graph, or
+    /// writing anything anywhere) AND the recovery path — a stop + fresh schedule revives a
+    /// zombie node, which no resume-in-place can.
+    private func startClickOnGrid() {
+        guard built, let click = clickPlayer else { return }
+        guard let bar = Self.makeClickBarBuffer(bpm: clickBpm, format: Self.canonicalFormat) else { return }
+        clickBuffer = bar
+        guard startEngineIfNeeded() else { return }
         let now = AVAudioTime.seconds(forHostTime: mach_absolute_time())
-        let beat1 = AVAudioTime.seconds(forHostTime: takeBeat1Host)
-        let target = Self.nextBarAnchor(nowSec: now, beat1Sec: beat1,
-                                        barSec: Self.barSeconds(bpm: takeBpm))
+        let grid = AVAudioTime.seconds(forHostTime: clickGridHost)
+        let beat = Self.nextBeatOnGrid(nowSec: now, gridSec: grid,
+                                       beatSec: 60.0 / max(1, clickBpm))
         click.stop()
-        click.scheduleBuffer(buf, at: nil, options: [.loops])
-        click.play(at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: target)))
+        if beat.beatInBar > 0, let tail = Self.clickTailBuffer(bar, fromBeat: beat.beatInBar) {
+            click.scheduleBuffer(tail, at: nil, options: [])
+        }
+        click.scheduleBuffer(bar, at: nil, options: [.loops])
+        click.play(at: AVAudioTime(hostTime: AVAudioTime.hostTime(forSeconds: beat.atSec)))
+    }
+
+    /// Flip the metronome LIVE — free play, an overdub pass (looped or not), or mid-take. The
+    /// take/pass is never touched: only the click node stops or (re)starts, on the next beat of
+    /// the current grid. `bpm` sets the monitoring grid; mid-take the take's own BPM always wins.
+    func setClickEnabled(_ on: Bool, bpm: Double? = nil) {
+        ensureEngine()
+        guard on else {
+            clickEnabled = false
+            clickPlayer?.stop()
+            if !isRecordingTake { clickBuffer = nil }
+            dlog("instr: click OFF")
+            return
+        }
+        let requested: Double = {
+            guard let asked = bpm, asked.isFinite, asked > 0 else { return clickBpm }
+            return min(300, max(40, asked))          // the startTake range, one clamp for both
+        }()
+        let b = isRecordingTake ? takeBpm : requested
+        // Already ticking at this tempo ⇒ a no-op re-assert (never a restart, which would audibly
+        // stutter the grid the user is playing to).
+        if clickEnabled, abs(b - clickBpm) < 0.0001, clickPlayer?.isPlaying == true { return }
+        if !isRecordingTake, !clickEnabled || abs(b - clickBpm) >= 0.0001 {
+            clickGridHost = AVAudioTime.hostTime(forSeconds:
+                AVAudioTime.seconds(forHostTime: mach_absolute_time()) + Self.clickStartLead)
+        }
+        clickBpm = b
+        clickEnabled = true
+        startClickOnGrid()
+        dlog("instr: click ON at \(Int(b)) BPM")
     }
 
     // MARK: - Watchdog (~10 Hz; the MixEngine tickFire shape)
@@ -1508,11 +1915,10 @@ final class InstrumentEngine {
     }
 
     /// The macOS device-switch case: engine renders while the reconfigure silently parked the
-    /// click node — intent (`isRecordingTake && takeClickEnabled`) vs `node.isPlaying` is the
-    /// truth. Realigns rather than blindly `play()`s so the bar phase survives.
+    /// click node — intent (`clickEnabled`) vs `node.isPlaying` is the truth. Realigns rather
+    /// than blindly `play()`s so the bar phase survives.
     private func healParkedClick() {
-        guard isRecordingTake, takeClickEnabled,
-              let click = clickPlayer, !click.isPlaying else { return }
+        guard clickEnabled, let click = clickPlayer, !click.isPlaying else { return }
         dlog("instr: heal — realign parked click")
         realignClick()
     }
@@ -1788,33 +2194,64 @@ final class InstrumentEngine {
     /// immediately and the log's source so notes played after an edit share the same time base.
     func setLiveEvents(_ events: [StudioNoteEvent]) {
         eventLog.setLive(events)
-        liveEvents = events
+        publishLive(events)
     }
 
     /// Reset the live staff (after "Save as take", or a manual clear).
     func clearLiveEvents() {
         eventLog.clearLive()
-        liveEvents = []
+        publishLive([])
     }
 
-    /// TEST SEAM: run one live-drain synchronously (the 30 Hz pump does this on a timer). Lets a
-    /// unit test verify the noteOn/noteOff → liveEvents path without the async pump or a UI gesture.
+    /// TEST SEAM: run ONE pump pass synchronously (the 30 Hz pump does exactly this on a timer):
+    /// publish the live staff, publish the in-progress overdub staff, and check the confined
+    /// region's deadline. Lets a unit test verify the capture → published-state paths without the
+    /// async pump or a UI gesture.
     func pumpLiveOnceForTesting() {
-        if let live = eventLog.snapshotLiveIfDirty() { liveEvents = live }
+        publishStaffs()
+        overdubDeadlineTick()
     }
+
+    /// Publish the drained live staff + in-progress overdub staff, and the cheap flags derived
+    /// from the live one (one place, so the pump, the test seam and score edits never disagree).
+    private func publishStaffs() {
+        if let live = eventLog.snapshotLiveIfDirty() { publishLive(live) }
+        if let od = eventLog.snapshotOverdubIfDirty() { overdubEvents = od }
+    }
+
+    /// Assign the live staff + its derived flags, writing each only on a real change (an
+    /// @Observable set invalidates its readers even when the value is identical).
+    private func publishLive(_ events: [StudioNoteEvent]) {
+        liveEvents = events
+        if liveHasEvents != !events.isEmpty { liveHasEvents = !events.isEmpty }
+        let full = eventLog.liveCaptureFull
+        if liveCaptureFull != full { liveCaptureFull = full }
+    }
+
+    /// Staff publishes are coalesced HARDER than key highlights: each one re-quantizes and
+    /// re-paginates the staff that renders it, while a highlight only compares a small Set. Every
+    /// third ~30 Hz tick ⇒ ~10 Hz, which still reads as "the notation fills as you play" and costs
+    /// a third of the layout. A skipped tick consumes NOTHING: the dirty flags stay set and the
+    /// next publish carries everything.
+    nonisolated static let staffPublishEveryNTicks = 3
 
     private func startHighlightPump() {
         guard highlightTask == nil else { return }
         highlightTask = Task { @MainActor [weak self] in
+            var ticks = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 33_000_000)   // ~30 Hz
                 guard let self else { break }
                 if let notes = self.eventLog.drainHighlightsIfDirty() {
                     self.pressedNotes = notes
                 }
-                if let live = self.eventLog.snapshotLiveIfDirty() {
-                    self.liveEvents = live
-                }
+                // The live staff and the IN-PROGRESS overdub staff (req 4) ride the same
+                // coalesced, append-only drain — at ~10 Hz (see `staffPublishEveryNTicks`), and
+                // only when the capture changed, so a filling staff never costs a per-note (nor a
+                // per-frame) full-score relayout.
+                ticks &+= 1
+                if ticks % Self.staffPublishEveryNTicks == 0 { self.publishStaffs() }
+                self.overdubDeadlineTick()
             }
         }
     }

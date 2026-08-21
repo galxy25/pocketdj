@@ -818,3 +818,52 @@ struct ScorePlaybackCanvas: View {
         }
     }
 }
+
+// MARK: - The IN-PROGRESS overdub staff (published live, kept OUT of its host's body)
+
+/// The armed overdub pass's capture, rendered as a staff that fills WHILE you play (req: the
+/// notation appears during the pass, not at "End overdub"). Read-only until the pass is filed.
+///
+/// Deliberately its OWN view: the engine publishes the capture ~30× a second, and reading
+/// `overdubEvents` in the host score's body would re-run that body — re-quantizing and
+/// re-paginating EVERY staff — on each publish. Owning the read here confines the invalidation
+/// to this one small staff (the score's non-observable-playhead discipline, applied to capture).
+struct OverdubProgressStaffView: View {
+    @Environment(InstrumentEngine.self) private var instruments
+
+    var bpm: Double
+    var instrument: InstrumentKey
+    var title: String
+    var playback: ScorePlaybackClock?
+    var a11y: String
+
+    var body: some View {
+        ScoreEditorView(events: instruments.overdubEvents, bpm: bpm, instrument: instrument,
+                        title: title, editing: false, onEdit: { _ in }, playback: playback)
+            .accessibilityIdentifier(a11y)
+    }
+}
+
+
+/// The always-on LIVE (free-play) staff, reading the engine's published capture ITSELF.
+///
+/// Deliberately its own view, exactly like `OverdubProgressStaffView` above: the engine
+/// republishes the live stream ~10×/s while you play — and a LATCHED ARP plays at machine speed —
+/// so reading `liveEvents` in the host section's body would re-quantize and re-paginate every
+/// OTHER staff in that section (its overdub staffs, its in-progress capture) on every publish.
+/// Owning the read here confines the invalidation to the staff whose notes actually changed.
+struct LiveStaffView: View {
+    @Environment(InstrumentEngine.self) private var instruments
+
+    var bpm: Double
+    var instrument: InstrumentKey
+    var title: String
+    var editing: Bool
+    var playback: ScorePlaybackClock?
+
+    var body: some View {
+        ScoreEditorView(events: instruments.liveEvents, bpm: bpm, instrument: instrument,
+                        title: title, editing: editing,
+                        onEdit: { instruments.setLiveEvents($0) }, playback: playback)
+    }
+}

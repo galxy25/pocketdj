@@ -238,6 +238,15 @@ final class SettingsStore {
     var studioArpSwing: Double
     /// Latch ON ⇒ arp play loops until toggled off; OFF ⇒ exactly one cycle.
     var studioArpLatch: Bool
+    /// Studio ▸ Instruments: the MONITORING metronome for free play + overdub passes (the
+    /// take-recording click is `studioClickEnabled`). OFF by default; persisted like the arp
+    /// knobs (every write persists). Monitoring only — it never reaches a take, a render, or a
+    /// score.
+    var studioOverdubClickEnabled: Bool
+    /// Studio ▸ Instruments: an overdub pass LOOPS its confined region (anchor → the score's
+    /// end), so notes can be layered pass after pass. OFF by default = one single pass that ends
+    /// at the region's end.
+    var studioOverdubLoop: Bool
     /// GLOBAL gate for converted-collection source sync (ON by default): when on, every
     /// catalog refresh reconciles each source-converted pocket AND source-duplicated
     /// playlist with its source playlist (adds/removals propagate; the user's own edits
@@ -442,6 +451,8 @@ final class SettingsStore {
         self.studioArpOctaves = data.studioArpOctaves ?? 1
         self.studioArpSwing = data.studioArpSwing ?? 50
         self.studioArpLatch = data.studioArpLatch ?? true
+        self.studioOverdubClickEnabled = data.studioOverdubClickEnabled ?? false
+        self.studioOverdubLoop = data.studioOverdubLoop ?? false
         self.syncConvertedPockets = data.syncConvertedPockets ?? true
         self.cloudSyncEnabled = data.cloudSyncEnabled ?? true
         // Legacy migration: pre-rename check builds persisted "local"/"remote" — map to the Bool.
@@ -614,6 +625,8 @@ final class SettingsStore {
             studioArpOctaves: studioArpOctaves,
             studioArpSwing: studioArpSwing,
             studioArpLatch: studioArpLatch,
+            studioOverdubClickEnabled: studioOverdubClickEnabled,
+            studioOverdubLoop: studioOverdubLoop,
             syncConvertedPockets: syncConvertedPockets,
             cloudSyncEnabled: cloudSyncEnabled,
             writeBackBackfillDays: writeBackBackfillDays,
@@ -687,6 +700,8 @@ final class SettingsStore {
         studioArpOctaves = d.studioArpOctaves ?? 1
         studioArpSwing = d.studioArpSwing ?? 50
         studioArpLatch = d.studioArpLatch ?? true
+        studioOverdubClickEnabled = d.studioOverdubClickEnabled ?? false
+        studioOverdubLoop = d.studioOverdubLoop ?? false
         syncConvertedPockets = d.syncConvertedPockets ?? true
         cloudSyncEnabled = d.cloudSyncEnabled ?? true
         // Mirror init's capture (reset clears ripServerURL, so the derived default is public) —
@@ -802,6 +817,10 @@ struct SettingsData: Codable {
     var studioArpSwing: Double?
     /// Optional so older blobs still decode — arp latch (nil = true).
     var studioArpLatch: Bool?
+    /// Optional so older blobs still decode — monitoring metronome (nil = OFF).
+    var studioOverdubClickEnabled: Bool?
+    /// Optional so older blobs still decode — overdub looper (nil = OFF, a single pass).
+    var studioOverdubLoop: Bool?
     /// Optional so older blobs still decode (coalesced to TRUE at the read sites — converted
     /// pockets sync with their source unless turned off).
     var syncConvertedPockets: Bool?
@@ -898,6 +917,8 @@ struct SettingsData: Codable {
         studioArpOctaves: nil,
         studioArpSwing: nil,
         studioArpLatch: nil,
+        studioOverdubClickEnabled: nil,
+        studioOverdubLoop: nil,
         syncConvertedPockets: nil,
         cloudSyncEnabled: nil,
         writeBackBackfillDays: nil,
