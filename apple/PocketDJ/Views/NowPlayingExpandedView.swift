@@ -235,19 +235,34 @@ struct NowPlayingExpandedView: View {
 
 // MARK: - Resize grabber
 
-/// The req-7 drag affordance: a slim capsule reading as a handle, carrying the
-/// same ≥44pt hit discipline as every new control. RootView attaches the actual
-/// `DragGesture` (it owns the window geometry + persisted fractions).
+/// The req-7 drag affordance: a slim capsule reading as a handle. RootView
+/// attaches the actual `DragGesture` (it owns the window geometry + persisted
+/// fractions) and overlays this on the panel's leading drag edge.
+///
+/// The grab band is SHALLOW across the panel edge. The grabber is an overlay
+/// painted above the panel's list, and a hit-testable overlay swallows every tap
+/// beneath it: a 44pt-DEEP rect reached past the panel's ~22pt chrome margin and
+/// covered the first list row, so the Albums/Songs section headers could not be
+/// collapsed at all (their tap point fell inside the handle). `bandDepth` pulls
+/// the rect back inside that margin; `bandLength` stays at the original 44 so the
+/// grab area is a strict SUBSET of what it was — this can only stop swallowing
+/// taps, never start.
 struct ResizeGrabber: View {
     enum GrabAxis { case horizontal, vertical }
     let axis: GrabAxis
+
+    /// Across the panel edge — must stay inside the panel's chrome margin.
+    private let bandDepth: CGFloat = 20
+    /// Along the panel edge.
+    private let bandLength: CGFloat = 44
 
     var body: some View {
         Capsule()
             .fill(Theme.fgDim.opacity(0.55))
             .frame(width: axis == .vertical ? 5 : 44,
                    height: axis == .vertical ? 44 : 5)
-            .frame(minWidth: 44, minHeight: 44)
+            .frame(width: axis == .vertical ? bandDepth : bandLength,
+                   height: axis == .vertical ? bandLength : bandDepth)
             .contentShape(Rectangle())
             .accessibilityLabel("Resize Now Playing")
             .accessibilityIdentifier("np-resize-handle")

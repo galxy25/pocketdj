@@ -380,6 +380,15 @@ struct RootView: View {
     /// builder ＋ top-left (req 2 — the chevron's mirror), and the req-7 resize handle
     /// (trailing edge in the horizontal lane; top edge on iPhone portrait). The
     /// background reader measures the dock size the drags spring back to.
+    ///
+    /// The handle stays an `.overlay` (reserving layout space would cost the queue
+    /// a visible row), so its HIT RECT is deliberately kept clear of the panel's
+    /// list — see `ResizeGrabber`, whose grab band is sized to fit inside the
+    /// panel's top/trailing chrome margin. An overlay is hit-testable and paints
+    /// above the list, so a 44pt-square rect silently ate every tap beneath it:
+    /// the Albums/Songs headers begin ~22pt under the panel's top edge, so their
+    /// tap point landed inside the portrait handle and the sections could not be
+    /// collapsed at all.
     private var dockedPanel: some View {
         NowPlayingPanel()
             #if os(iOS)

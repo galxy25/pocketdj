@@ -118,7 +118,13 @@ final class NowPlayingUITests: XCTestCase {
         field.typeText("night\n")   // Search key dismisses the keyboard, keeps the query
         XCTAssertTrue(app.el("np-add-album-alb_1").waitForExistence(timeout: 8))
         app.el("np-albums-header").tap()             // collapse
-        XCTAssertFalse(app.el("np-add-album-alb_1").exists)
+        // The header toggles inside `withAnimation`, so give the removal
+        // transition a settle window rather than checking `.exists` on the very
+        // next runloop turn. Still a real assertion: it fails if the section
+        // never collapses (which is how the resize grabber swallowing this tap
+        // was caught — the grabber's 44pt rect covered the header's tap point).
+        XCTAssertTrue(app.el("np-add-album-alb_1").waitForNonExistence(timeout: 5),
+                      "tapping the Albums header should collapse the album rows")
         app.el("np-albums-header").tap()             // expand again
         XCTAssertTrue(app.el("np-add-album-alb_1").waitForExistence(timeout: 4))
         attach("add-search-results")
@@ -407,16 +413,20 @@ final class NowPlayingUITests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.revealNowPlayingHome().waitForExistence(timeout: 15))
 
+        // The a11y frame of a `.frame(minWidth: 44, minHeight: 44)` view can come
+        // back as 43.99999999999994 (pixel-grid float noise, ~6e-14 pt) — compare
+        // with an epsilon so the assertion tests the DESIGN, not the FP rounding.
+        let eps = 0.001
         let collapse = app.el("np-collapse")
         XCTAssertTrue(collapse.waitForExistence(timeout: 8))
-        XCTAssertGreaterThanOrEqual(collapse.frame.width, 44, "np-collapse hit width")
-        XCTAssertGreaterThanOrEqual(collapse.frame.height, 44, "np-collapse hit height")
+        XCTAssertGreaterThanOrEqual(collapse.frame.width + eps, 44, "np-collapse hit width")
+        XCTAssertGreaterThanOrEqual(collapse.frame.height + eps, 44, "np-collapse hit height")
         collapse.tap()
 
         let expand = app.el("np-expand")
         XCTAssertTrue(expand.waitForExistence(timeout: 8), "strip should offer the expand chevron")
-        XCTAssertGreaterThanOrEqual(expand.frame.width, 44, "np-expand hit width")
-        XCTAssertGreaterThanOrEqual(expand.frame.height, 44, "np-expand hit height")
+        XCTAssertGreaterThanOrEqual(expand.frame.width + eps, 44, "np-expand hit width")
+        XCTAssertGreaterThanOrEqual(expand.frame.height + eps, 44, "np-expand hit height")
         expand.tap()
         XCTAssertTrue(app.el("np-collapse").waitForExistence(timeout: 8), "panel restored")
         #endif

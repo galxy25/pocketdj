@@ -306,4 +306,85 @@ final class QueueBuilderStateTests: XCTestCase {
                                                         artist: "Aria", songId: "sng_1"))
         XCTAssertEqual(adds.entries.count, 1)
     }
+
+    // MARK: Supersede blind spot (H1) — an owned recording must queue its OWN row
+
+    private func indexSong(_ id: String, am: String?, name: String) -> IndexSong {
+        var obj: [String: Any] = ["id": id, "name": name, "artist": "Roy Woods"]
+        if let am { obj["appleMusicId"] = am }
+        return try! JSONDecoder().decode(IndexSong.self,
+                                         from: try! JSONSerialization.data(withJSONObject: obj))
+    }
+
+    /// A cloud hit for a recording the catalog ALREADY holds (an indexed row claims
+    /// the same `appleMusicId`): `recordProvisional`'s supersede yields to the twin,
+    /// so `amrec_X` never becomes a citizen — the queued item must carry the twin's
+    /// id, or playNow silently drops the song from the set.
+    func testCloudAddOfOwnedRecordingQueuesTheIndexedTwinNotTheDeadId() async {
+        let app = AppModel()
+        app.injectImported(songs: [indexSong("sng_real", am: "999", name: "How You Say My Name")],
+                           albums: [])
+        XCTAssertEqual(app.songId(forAppleMusicId: "999"), "sng_real")
+
+        let rips = makeRips()
+        let addsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-qbuilder-twin-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: addsURL) }
+        let adds = DiscoverAddsStore(fileURL: addsURL)
+        adds.onAdded = { [weak app] song in app?.injectDiscoverAdd(song) }
+        rips.discoverAdds = adds
+        let adapter = DiscoverQueueBuilderCloudAdder(app: app, rips: rips, library: nil)
+
+        // The adapter's re-resolution, in isolation: dead provisional id → the twin.
+        XCTAssertNil(app.songsById["amrec_999"])
+        XCTAssertEqual(adapter.resolvedSongId(hit("999")), "sng_real")
+
+        // End-to-end through addCloudHit: the DRAFT holds the live twin id.
+        let seq = makeSequencer()
+        let b = makeBuilder()
+        b.cloudAdder = adapter
+        _ = b.addCloudHit(hit("999", title: "How You Say My Name"), at: .bottom, sequencer: seq)
+        XCTAssertNil(app.songsById["amrec_999"], "the provisional twin still yields")
+        XCTAssertEqual(b.draft.map(\.id), ["sng_real"],
+                       "the queued item must carry the id playNow can resolve")
+
+        // A genuinely-new hit is untouched by the re-resolution.
+        XCTAssertEqual(adapter.resolvedSongId(hit("1000")), "amrec_1000")
+        // …and once a provisional IS a citizen, its own id stays authoritative.
+        adapter.recordProvisional(hit("1000", title: "Something New"))
+        XCTAssertNotNil(app.songsById["amrec_1000"])
+        XCTAssertEqual(adapter.resolvedSongId(hit("1000")), "amrec_1000")
+    }
+
+    // MARK: Play failure (H2) — the draft must survive a refused Play
+
+    func testPlayDraftConsumesOnlyOnSuccess() async {
+        let seq = makeSequencer()
+        let b = makeBuilder()
+        b.songQuery = "q"; b.artistQuery = "a"
+        b.add([item("x"), item("y")], at: .bottom, sequencer: seq)
+
+        struct Refused: Error {}
+        var seen: [String]?
+        // Throwing funnel (onboarding veto / every id dropped): NOTHING is consumed.
+        let failed = await b.playDraft { ids in seen = ids; throw Refused() }
+        XCTAssertFalse(failed)
+        XCTAssertEqual(seen, ["x", "y"])
+        XCTAssertEqual(b.draft.map(\.id), ["x", "y"], "a failed Play must not lose the draft")
+        XCTAssertEqual(b.songQuery, "q")
+        XCTAssertEqual(b.artistQuery, "a")
+
+        // Successful funnel: draft + queries reset, caller told to dismiss.
+        let played = await b.playDraft { ids in XCTAssertEqual(ids, ["x", "y"]) }
+        XCTAssertTrue(played)
+        XCTAssertTrue(b.draft.isEmpty)
+        XCTAssertEqual(b.songQuery, "")
+        XCTAssertEqual(b.artistQuery, "")
+    }
+
+    func testPlayDraftEmptyDraftNeverFiresTheFunnel() async {
+        let b = makeBuilder()
+        let played = await b.playDraft { _ in XCTFail("empty draft must not reach playNow") }
+        XCTAssertFalse(played)
+    }
 }

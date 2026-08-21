@@ -359,10 +359,15 @@ struct QueueBuilderView: View {
     /// Now Playing setlist ⇒ history/recs/durable session all inherit).
     private var playButton: some View {
         Button {
-            let ids = builder.consumeDraftForPlay()
-            guard !ids.isEmpty else { return }
-            dismiss()
-            Task { try? await intents.playSongIds(ids, name: "Queue", source: .browser) }
+            // Consume-only-on-success: `playDraft` keeps the draft (and queries)
+            // intact when playNow refuses — onboarding veto, or every id dropped —
+            // so a failed Play never dismisses the sheet with the set silently gone.
+            Task {
+                let played = await builder.playDraft { ids in
+                    _ = try await intents.playSongIds(ids, name: "Queue", source: .browser)
+                }
+                if played { dismiss() }
+            }
         } label: {
             Label("Play", systemImage: "play.fill")
                 .font(.subheadline.weight(.semibold))

@@ -173,7 +173,14 @@ final class QueueBuilderState {
                      sequencer: SetlistPlayer,
                      slot: (ClosedRange<Int>) -> Int = { Int.random(in: $0) }) -> Task<Void, Never>? {
         cloudAdder?.recordProvisional(hit)
-        let item = SetlistPlayer.Item(id: hit.songId, title: hit.title,
+        // Re-resolve AFTER the record: when an indexed twin already claims this
+        // recording's Apple Music id, `injectDiscoverAdd` supersedes the provisional
+        // row instead of appending it — `amrec_X` never becomes a citizen, and
+        // queueing it would make playNow silently drop the song (and the live-queue
+        // projection find no stream). The adapter hands back the id that is actually
+        // live in `songsById` (the claimed twin), so the user's OWN row queues.
+        let id = cloudAdder?.resolvedSongId(hit) ?? hit.songId
+        let item = SetlistPlayer.Item(id: id, title: hit.title,
                                       artist: hit.artist, lengthMs: hit.durationMs)
         add([item], at: pos, sequencer: sequencer, slot: slot)
         guard let adder = cloudAdder else { return nil }
@@ -205,6 +212,20 @@ final class QueueBuilderState {
         artistQuery = ""
         return ids
     }
+
+    /// Play the draft through the caller-supplied funnel (the view passes
+    /// `IntentServices.playSongIds`). The draft is consumed ONLY on success: a
+    /// throw (`vetoDuringOnboarding`, or `emptyCollection` when playNow drops every
+    /// id) leaves the draft + queries intact, so a failed Play never silently loses
+    /// the set the user built. Returns true when playback started (the view then
+    /// dismisses the sheet); false = nothing played, sheet stays up for a retry.
+    func playDraft(_ play: ([String]) async throws -> Void) async -> Bool {
+        let ids = draft.map(\.id)
+        guard !ids.isEmpty else { return false }
+        do { try await play(ids) } catch { return false }
+        _ = consumeDraftForPlay()
+        return true
+    }
 }
 
 // ============================================================================
@@ -223,6 +244,15 @@ protocol QueueBuilderCloudAdding: AnyObject {
     /// The full add: Apple Music library write (truthful outcome) + rip request —
     /// `RipsStore.discoverAdd`, NOT the recognizer's force-rip path.
     func performAdd(_ hit: RipsStore.DiscoverHit) async
+    /// The catalog id the queued item must carry — normally `hit.songId`, but the
+    /// indexed TWIN's id when `recordProvisional`'s supersede yielded to a row the
+    /// catalog already holds (same `appleMusicId`). Called after `recordProvisional`.
+    func resolvedSongId(_ hit: RipsStore.DiscoverHit) -> String
+}
+
+extension QueueBuilderCloudAdding {
+    /// Default: no re-resolution (test stubs and adapters without catalog access).
+    func resolvedSongId(_ hit: RipsStore.DiscoverHit) -> String { hit.songId }
 }
 
 /// Production adapter over the canonical Discover add flow. Record-first means
@@ -255,5 +285,15 @@ final class DiscoverQueueBuilderCloudAdder: QueueBuilderCloudAdding {
 
     func performAdd(_ hit: RipsStore.DiscoverHit) async {
         await rips.discoverAdd(hit, library: library)
+    }
+
+    /// The supersede blind spot: `recordProvisional` → `injectDiscoverAdd` yields to
+    /// an indexed twin claiming the same `appleMusicId` (never a second row for one
+    /// recording), so `hit.songId` can be dead on return. Queue the id that is live.
+    func resolvedSongId(_ hit: RipsStore.DiscoverHit) -> String {
+        guard let app, app.songsById[hit.songId] == nil,
+              let claimed = app.songId(forAppleMusicId: hit.appleMusicId),
+              app.songsById[claimed] != nil else { return hit.songId }
+        return claimed
     }
 }
