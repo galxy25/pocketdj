@@ -740,10 +740,19 @@ enum StudioTakeReplay {
     /// a downloaded bank (nil = "download the pack first", the single-staff gate's sibling). All
     /// packs share one font file today, so the primary's bank IS the synth's bank; the per-staff
     /// check still guards a future split-pack world.
-    private static func polyphonicBankURL(take: StudioTake, packs: InstrumentPackStore) -> URL? {
-        guard let bank = packs.localBankURL(forInstrument: take.instrument) else { return nil }
-        for staff in take.extraStaffs ?? [] {
-            guard packs.localBankURL(forInstrument: staff.instrument) != nil else { return nil }
+    static func polyphonicBankURL(take: StudioTake, packs: InstrumentPackStore) -> URL? {
+        bankURL(forInstruments: [take.instrument] + (take.extraStaffs ?? []).map(\.instrument),
+                packs: packs)
+    }
+
+    /// The same every-staff gate for an ARBITRARY staff list (the live score's overdub backing,
+    /// where the staffs are in-memory `LiveStaff`s, not a saved take).
+    static func bankURL(forInstruments instruments: [InstrumentKey],
+                        packs: InstrumentPackStore) -> URL? {
+        guard let first = instruments.first,
+              let bank = packs.localBankURL(forInstrument: first) else { return nil }
+        for inst in instruments.dropFirst() {
+            guard packs.localBankURL(forInstrument: inst) != nil else { return nil }
         }
         return bank
     }

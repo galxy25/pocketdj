@@ -122,3 +122,18 @@ enum ArpPattern {
         return Int(min(max(ms, 0), Double(maxOnsetMs)).rounded())
     }
 }
+
+extension ArpSettings {
+    /// Knob state from the PERSISTED raw values (`SettingsStore.studioArp*`), degrading unknown
+    /// or wild values to the defaults — the read-site coalescing the settings fields promise
+    /// (a renamed order or a hand-edited blob must re-time, never crash, the arp). Pure +
+    /// unit-tested; the panel is a thin `settings → this → InstrumentEngine.arpSettings` mirror.
+    static func fromPersisted(order: String, length: Int, octaves: Int,
+                              swing: Double, latch: Bool) -> ArpSettings {
+        ArpSettings(order: ArpOrder(rawValue: order) ?? .up,
+                    length: ArpStepLength(rawValue: length) ?? .sixteenth,
+                    octaves: max(1, min(4, octaves)),
+                    swingPct: swing.isFinite ? min(max(swing, 50), 75) : 50,
+                    latch: latch)
+    }
+}

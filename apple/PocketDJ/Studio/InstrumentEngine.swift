@@ -248,6 +248,14 @@ final class InstrumentEventLog: @unchecked Sendable {
         return out
     }
 
+    /// Captured-so-far count for the ARMED overdub (completed + pending) — the engine's
+    /// `overdubCapturedCount` reads this for the score screen's re-anchor rule.
+    var overdubCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        guard odArmed else { return 0 }
+        return odEvents.count + odPending.count
+    }
+
     /// ms from beat 1 for a packet host time — negative during the count-in. Both operands go
     /// through `AVAudioTime.seconds(forHostTime:)` (mach timebase) and subtract as Doubles so
     /// pre-beat-1 stamps can't underflow the UInt64 domain.
@@ -345,6 +353,52 @@ final class InstrumentEngine {
     private(set) var overdubActive = false
     /// The score position the current overdub was anchored at (clamped caller input).
     private(set) var overdubBaseMs = 0
+
+    /// One LIVE overdub staff (staffs 2…4 of the free-play score). IN-MEMORY ONLY, like
+    /// `liveEvents` itself — the live score has never persisted; "Save" files everything as a
+    /// take (`StudioTakeStaff` is the durable twin).
+    struct LiveStaff: Identifiable, Equatable {
+        let id: String
+        var instrument: InstrumentKey
+        var events: [StudioNoteEvent]
+    }
+    /// The live score's overdub staffs (primary = `liveEvents`). Capped with the primary at
+    /// `StudioTake.maxStaffs` total, same as a saved take.
+    private(set) var liveExtraStaffs: [LiveStaff] = []
+
+    /// Append a finished LIVE overdub capture as a new staff. Refused (nil) at the
+    /// `StudioTake.maxStaffs` cap or for an empty capture (no junk staffs) — the
+    /// `StudioStore.addOverdubStaff` contract, in memory.
+    @discardableResult
+    func appendLiveExtraStaff(instrument: InstrumentKey, events: [StudioNoteEvent]) -> String? {
+        guard !events.isEmpty, 1 + liveExtraStaffs.count < StudioTake.maxStaffs else { return nil }
+        let id = StudioFactory.newStaffId()
+        liveExtraStaffs.append(LiveStaff(id: id, instrument: instrument, events: events))
+        return id
+    }
+
+    /// Commit an edited stream for one live overdub staff (its score editor's `onEdit`).
+    func setLiveExtraStaffEvents(id: String, events: [StudioNoteEvent]) {
+        guard let i = liveExtraStaffs.firstIndex(where: { $0.id == id }) else { return }
+        liveExtraStaffs[i].events = events
+    }
+
+    /// Switch one live overdub staff's voice (polyphonic playback re-synthesizes through it).
+    func setLiveExtraStaffInstrument(id: String, _ instrument: InstrumentKey) {
+        guard let i = liveExtraStaffs.firstIndex(where: { $0.id == id }) else { return }
+        liveExtraStaffs[i].instrument = instrument
+    }
+
+    /// Remove one live overdub staff.
+    func deleteLiveExtraStaff(id: String) {
+        liveExtraStaffs.removeAll { $0.id == id }
+    }
+
+    /// Reset the live overdub staffs (after "Save as take", or a manual clear — callers clear
+    /// these alongside `clearLiveEvents()`; the two are separate so an edit-commit never races).
+    func clearLiveExtraStaffs() {
+        liveExtraStaffs = []
+    }
 
     /// Everything the VIEW needs to file a finished take via `StudioStore.addTake` (spec §4:
     /// the engine records, the store persists — the view is the seam between them).
@@ -813,6 +867,13 @@ final class InstrumentEngine {
         return events
     }
 
+    /// Notes the armed overdub has captured so far (completed + still-sounding). The score
+    /// screen's re-anchor rule reads this: a tap while overdubbing moves the anchor only while
+    /// NOTHING has been captured — once notes exist the anchor is fixed for this pass.
+    var overdubCapturedCount: Int {
+        overdubActive ? eventLog.overdubCount : 0
+    }
+
     // MARK: - Take recording (click + count-in; audio + events anchored at beat 1)
 
     /// Begin a take: (optionally) one bar of count-in click, then beat 1 — where the event log's
@@ -1185,8 +1246,12 @@ final class InstrumentEngine {
     /// (caller resolves via `InstrumentPackStore.localBankURL` — nil there is the "download the
     /// pack first" prompt, the same gate `StudioTakeReplay.toggle` uses).
     func replayTakePolyphonic(staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)],
-                              bankURL: URL, fromMs: Int = 0, forTake takeId: String? = nil) {
-        guard staffs.count > 1 else {
+                              bankURL: URL, fromMs: Int = 0, forTake takeId: String? = nil,
+                              forceSynth: Bool = false) {
+        // `forceSynth` routes even a SINGLE staff through the multitimbral synth — the overdub
+        // backing needs the SAMPLER left free (it is the user's overdub voice, playing live over
+        // the backing), and the synth plays the staff's own timbre regardless of what's loaded.
+        guard staffs.count > 1 || (forceSynth && !staffs.isEmpty) else {
             if let only = staffs.first {
                 replayTake(events: only.events, instrument: only.instrument,
                            fromMs: fromMs, forTake: takeId)
