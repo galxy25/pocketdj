@@ -217,6 +217,60 @@ final class StudioRenderTests: XCTestCase {
     // in the simulator — the SoundFont bank it loads is a 32 MB download, not bundled for unit
     // tests. Here we cover the two guards that need no bank: no-notes and an unloadable bank.
 
+    /// The polyphonic mixdown: float sum to the LONGEST buffer, hard-clamped to ±1.0, tails
+    /// passing through where only one staff still sounds.
+    func testMixPCMSumsAndClamps() throws {
+        // Two constant-level buffers at 0.75 → the sum saturates at 1.0 (clamp), not 1.5.
+        let a = AVAudioPCMBuffer(pcmFormat: StudioAudio.canonicalFormat, frameCapacity: 1_000)!
+        a.frameLength = 1_000
+        let b = AVAudioPCMBuffer(pcmFormat: StudioAudio.canonicalFormat, frameCapacity: 1_500)!
+        b.frameLength = 1_500
+        for c in 0..<2 {
+            for i in 0..<1_000 { a.floatChannelData![c][i] = 0.75 }
+            for i in 0..<1_500 { b.floatChannelData![c][i] = 0.75 }
+        }
+        let mixed = try StudioRender.mixPCM([a, b])
+        XCTAssertEqual(mixed.frameLength, 1_500, "mix runs to the LONGEST staff")
+        XCTAssertEqual(mixed.floatChannelData![0][10], 1.0, "0.75 + 0.75 hard-clamps to 1.0")
+        XCTAssertEqual(mixed.floatChannelData![1][999], 1.0)
+        XCTAssertEqual(mixed.floatChannelData![0][1_200], 0.75, accuracy: 0.0001,
+                       "past the shorter staff, the longer one passes through unscaled")
+
+        // Signed clamp too: −0.8 + −0.8 → −1.0.
+        for c in 0..<2 { for i in 0..<1_000 { a.floatChannelData![c][i] = -0.8 } }
+        for c in 0..<2 { for i in 0..<1_500 { b.floatChannelData![c][i] = -0.8 } }
+        let neg = try StudioRender.mixPCM([a, b])
+        XCTAssertEqual(neg.floatChannelData![0][10], -1.0)
+
+        // A single small mix does NOT clip (plain sum).
+        for c in 0..<2 { for i in 0..<1_000 { a.floatChannelData![c][i] = 0.25 } }
+        for c in 0..<2 { for i in 0..<1_500 { b.floatChannelData![c][i] = 0.25 } }
+        let quiet = try StudioRender.mixPCM([a, b])
+        XCTAssertEqual(quiet.floatChannelData![0][10], 0.5, accuracy: 0.0001)
+
+        // Degenerate input throws rather than fabricating audio.
+        XCTAssertThrowsError(try StudioRender.mixPCM([]))
+    }
+
+    /// The polyphonic render's gates mirror `renderTake`'s: no sounding staff ⇒ `emptyTake`;
+    /// an unloadable bank ⇒ `bankLoadFailed`; both leave NO partial file.
+    func testRenderTakePolyphonicRejectsEmptyAndBadBank() async throws {
+        let dest = dir.appendingPathComponent("poly.m4a")
+        do {
+            _ = try await StudioRender.shared.renderTakePolyphonic(
+                staffs: [([], 0, dir.appendingPathComponent("missing.sf2"))], to: dest)
+            XCTFail("expected emptyTake")
+        } catch StudioRenderError.emptyTake {}
+        do {
+            _ = try await StudioRender.shared.renderTakePolyphonic(
+                staffs: [([StudioNoteEvent(onMs: 0, offMs: 200, note: 60, velocity: 96)],
+                          0, dir.appendingPathComponent("missing.sf2"))], to: dest)
+            XCTFail("expected bankLoadFailed")
+        } catch StudioRenderError.bankLoadFailed {}
+        XCTAssertFalse(FileManager.default.fileExists(atPath: dest.path),
+                       "a throwing render leaves no partial file")
+    }
+
     func testRenderTakeRejectsEmptyEvents() async throws {
         do {
             _ = try await StudioRender.shared.renderTake(events: [], bankURL: dir, program: 0,

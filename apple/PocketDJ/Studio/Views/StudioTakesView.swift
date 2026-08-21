@@ -534,8 +534,22 @@ enum StudioTakeRenderer {
         let fileName = StudioFolders.renderedTakeFileName(id: takeId)
         let destURL = dest.url.appendingPathComponent(fileName)
         do {
-            _ = try await StudioRender.shared.renderTake(events: take.scoreEvents, bankURL: bankURL,
-                                                         program: take.instrument.gmProgram, to: destURL)
+            if let extras = take.extraStaffs, !extras.isEmpty {
+                // Multi-staff: render EVERY staff and mix (sequential single-sampler renders —
+                // the one 32 MB font is never held twice). Refused when any staff's pack is
+                // missing (a partial mix would silently drop a part — the bank gate holds
+                // per-staff).
+                var staffs: [(events: [StudioNoteEvent], program: UInt8, bankURL: URL)] =
+                    [(take.scoreEvents, take.instrument.gmProgram, bankURL)]
+                for staff in extras where !staff.scoreEvents.isEmpty {
+                    guard let staffBank = packs.localBankURL(forInstrument: staff.instrument) else { return }
+                    staffs.append((staff.scoreEvents, staff.instrument.gmProgram, staffBank))
+                }
+                _ = try await StudioRender.shared.renderTakePolyphonic(staffs: staffs, to: destURL)
+            } else {
+                _ = try await StudioRender.shared.renderTake(events: take.scoreEvents, bankURL: bankURL,
+                                                             program: take.instrument.gmProgram, to: destURL)
+            }
             studio.setTakeRendered(takeId, fileName: fileName, wasUserFolder: dest.isUserFolder)
         } catch {
             // Leave uncached — the raw file still resolves for playback (see the doc comment).
@@ -684,6 +698,18 @@ enum StudioTakeReplay {
             instruments.stopReplay()
             return true
         }
+        // Multi-staff: play ALL staffs mixed through the multitimbral synth (its own bank —
+        // the loaded live instrument is irrelevant). One shared font addressed per channel.
+        if let extras = take.extraStaffs, !extras.isEmpty {
+            guard !take.allScoreEvents.isEmpty else { return true }
+            guard let bankURL = polyphonicBankURL(take: take, packs: packs) else { return false }
+            var staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)] =
+                [(take.scoreEvents, take.instrument)]
+            for staff in extras { staffs.append((staff.scoreEvents, staff.instrument)) }
+            instruments.replayTakePolyphonic(staffs: staffs, bankURL: bankURL,
+                                             fromMs: fromMs, forTake: take.id)
+            return true
+        }
         guard !take.scoreEvents.isEmpty else { return true }   // nothing to play — not an error
         if instruments.currentInstrument == take.instrument {
             instruments.replayTake(events: take.scoreEvents, instrument: take.instrument,
@@ -708,6 +734,18 @@ enum StudioTakeReplay {
             return true
         }
         return false
+    }
+
+    /// The ONE shared SoundFont for a polyphonic replay: every staff's instrument must resolve to
+    /// a downloaded bank (nil = "download the pack first", the single-staff gate's sibling). All
+    /// packs share one font file today, so the primary's bank IS the synth's bank; the per-staff
+    /// check still guards a future split-pack world.
+    private static func polyphonicBankURL(take: StudioTake, packs: InstrumentPackStore) -> URL? {
+        guard let bank = packs.localBankURL(forInstrument: take.instrument) else { return nil }
+        for staff in take.extraStaffs ?? [] {
+            guard packs.localBankURL(forInstrument: staff.instrument) != nil else { return nil }
+        }
+        return bank
     }
 
     /// Where Replay should START given the cursor currently parked on the score: FROM the cursor,

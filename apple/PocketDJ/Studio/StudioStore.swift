@@ -845,8 +845,85 @@ final class StudioStore {
         }
         takes[i].events = takes[i].events.map(rescale)
         if let edited = takes[i].editedEvents { takes[i].editedEvents = edited.map(rescale) }
+        // Every overdub staff rides the SAME score clock — rescale them with the identical
+        // closure or a tempo change silently corrupts multi-staff alignment.
+        if let extras = takes[i].extraStaffs {
+            takes[i].extraStaffs = extras.map { staff in
+                var s = staff
+                s.events = s.events.map(rescale)
+                if let edited = s.editedEvents { s.editedEvents = edited.map(rescale) }
+                return s
+            }
+        }
         takes[i].bpm = target
         takes[i].durationMs = Int((Double(takes[i].durationMs) * scale).rounded())
+        invalidateTakeRender(&takes[i])
+        saveNow()
+    }
+
+    // MARK: Overdub staffs (staffs 2…4 — the multi-staff score)
+
+    /// Append an OVERDUB staff to a take (the overdub-mode stop files its capture here). Events
+    /// are ABSOLUTE on the take's score clock (the capture log anchored them at the chosen
+    /// position). Returns the new staff's id, or nil when refused: unknown take, empty capture
+    /// (no junk staffs), or the `StudioTake.maxStaffs` cap (1 primary + ≤3 extras).
+    @discardableResult
+    func addOverdubStaff(_ takeId: String, instrument: InstrumentKey,
+                         events: [StudioNoteEvent]) -> String? {
+        guard let i = takes.firstIndex(where: { $0.id == takeId }), !events.isEmpty,
+              takes[i].staffCount < StudioTake.maxStaffs else { return nil }
+        let staff = StudioTakeStaff(id: StudioFactory.newStaffId(), instrument: instrument,
+                                    events: events, createdAt: Date().timeIntervalSince1970)
+        takes[i].extraStaffs = (takes[i].extraStaffs ?? []) + [staff]
+        if let maxOff = events.map(\.offMs).max(), maxOff > takes[i].durationMs {
+            takes[i].durationMs = maxOff
+        }
+        invalidateTakeRender(&takes[i])   // the mix changed ⇒ the rendered audio is stale
+        saveNow()
+        return staff.id
+    }
+
+    /// Persist an EDITED note stream for one overdub staff (the per-staff score editor's
+    /// `onEdit`) — the staff sibling of `setTakeEvents`, same `editedEvents` contract.
+    func setStaffEvents(_ takeId: String, staffId: String, events: [StudioNoteEvent]) {
+        guard let i = takes.firstIndex(where: { $0.id == takeId }),
+              let s = takes[i].extraStaffs?.firstIndex(where: { $0.id == staffId }) else { return }
+        takes[i].extraStaffs?[s].editedEvents = events
+        if let maxOff = events.map(\.offMs).max(), maxOff > takes[i].durationMs {
+            takes[i].durationMs = maxOff
+        }
+        invalidateTakeRender(&takes[i])
+        saveNow()
+    }
+
+    /// Drop one staff's edits — its score reverts to deriving from the raw overdub capture.
+    func revertStaffEdits(_ takeId: String, staffId: String) {
+        guard let i = takes.firstIndex(where: { $0.id == takeId }),
+              let s = takes[i].extraStaffs?.firstIndex(where: { $0.id == staffId }),
+              takes[i].extraStaffs?[s].editedEvents != nil else { return }
+        takes[i].extraStaffs?[s].editedEvents = nil
+        invalidateTakeRender(&takes[i])
+        saveNow()
+    }
+
+    /// Switch one overdub staff's voice — polyphonic playback re-synthesizes the SAME notes
+    /// through the new instrument's program (the `setTakeInstrument` sibling).
+    func setStaffInstrument(_ takeId: String, staffId: String, _ instrument: InstrumentKey) {
+        guard let i = takes.firstIndex(where: { $0.id == takeId }),
+              let s = takes[i].extraStaffs?.firstIndex(where: { $0.id == staffId }),
+              takes[i].extraStaffs?[s].instrument != instrument else { return }
+        takes[i].extraStaffs?[s].instrument = instrument
+        invalidateTakeRender(&takes[i])
+        saveNow()
+    }
+
+    /// Remove one overdub staff. An emptied list collapses to nil so the persisted document is
+    /// byte-identical to a take that never had staffs (legacy shape preserved).
+    func deleteStaff(_ takeId: String, staffId: String) {
+        guard let i = takes.firstIndex(where: { $0.id == takeId }),
+              takes[i].extraStaffs?.contains(where: { $0.id == staffId }) == true else { return }
+        takes[i].extraStaffs?.removeAll { $0.id == staffId }
+        if takes[i].extraStaffs?.isEmpty == true { takes[i].extraStaffs = nil }
         invalidateTakeRender(&takes[i])
         saveNow()
     }

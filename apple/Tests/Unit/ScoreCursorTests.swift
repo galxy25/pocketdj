@@ -285,4 +285,71 @@ final class ScoreCursorTests: XCTestCase {
         XCTAssertEqual(StudioTakeReplay.resumeMs(parkedMs: 500, events: []), 0,
                        "an empty take has no resume point")
     }
+
+    // MARK: Polyphonic scheduling (multi-staff replay — pure action math)
+
+    /// Every staff's actions appear, tagged with its channel, globally time-sorted with the
+    /// offs-before-ons rule intact — the merged schedule the multitimbral synth dispatches.
+    func testPolyphonicActionsContainAllStaffsWithChannels() {
+        let staffs: [(events: [StudioNoteEvent], channel: Int)] = [
+            ([StudioNoteEvent(onMs: 0, offMs: 500, note: 60, velocity: 96)], 0),
+            ([StudioNoteEvent(onMs: 250, offMs: 750, note: 64, velocity: 90)], 1),
+            ([StudioNoteEvent(onMs: 500, offMs: 900, note: 67, velocity: 80)], 2),
+        ]
+        let acts = InstrumentEngine.replayActionsMulti(staffs: staffs)
+        XCTAssertEqual(acts.count, 6)
+        for (i, staff) in staffs.enumerated() {
+            XCTAssertTrue(acts.contains { $0.channel == i && $0.on
+                                          && $0.note == staff.events[0].note })
+            XCTAssertTrue(acts.contains { $0.channel == i && !$0.on
+                                          && $0.note == staff.events[0].note })
+        }
+        XCTAssertEqual(acts.map(\.ms), acts.map(\.ms).sorted(), "globally ms-sorted")
+        // At ms 500: staff 0's OFF (60) sorts before staff 2's ON (67).
+        let at500 = acts.filter { $0.ms == 500 }
+        XCTAssertEqual(at500.map(\.on), [false, true], "offs before ons at equal ms")
+    }
+
+    /// The chase rule holds PER STAFF: a note sounding across `from` in one staff is struck at
+    /// `from` on THAT staff's channel; everything earlier is dropped on all channels.
+    func testPolyphonicChaseFromSeeksEveryStaff() {
+        let staffs: [(events: [StudioNoteEvent], channel: Int)] = [
+            ([StudioNoteEvent(onMs: 0, offMs: 400, note: 55, velocity: 70)], 0),    // long done
+            ([StudioNoteEvent(onMs: 1_500, offMs: 1_900, note: 64, velocity: 80)], 1),
+            ([StudioNoteEvent(onMs: 200, offMs: 1_800, note: 60, velocity: 100)], 2), // straddles
+        ]
+        let acts = InstrumentEngine.replayActionsMulti(staffs: staffs, from: 1_000)
+        let first = acts.first!
+        XCTAssertEqual(first.ms, 1_000)
+        XCTAssertTrue(first.on)
+        XCTAssertEqual(first.note, 60, "the straddling note is chased at the seek point")
+        XCTAssertEqual(first.channel, 2, "…on ITS staff's channel")
+        XCTAssertFalse(acts.contains { $0.note == 55 }, "finished-before-seek dropped")
+        XCTAssertTrue(acts.contains { $0.ms == 1_500 && $0.on && $0.note == 64 && $0.channel == 1 })
+        // Sampler-honesty invariant per channel: no off without a prior on.
+        var sounding: Set<Int> = []
+        for a in acts {
+            let key = a.channel << 8 | a.note
+            if a.on { sounding.insert(key) }
+            else { XCTAssertNotNil(sounding.remove(key),
+                                   "note \(a.note) ch \(a.channel) stopped without a start") }
+        }
+    }
+
+    /// Staff → channel/program assignment: primary on channel 0 with the take's instrument,
+    /// extra staff i on channel i+1 with ITS instrument (GM program numbers pinned).
+    func testChannelProgramsPerStaffInstrument() {
+        let take = StudioTake(id: "tk_p", name: "P", instrument: .piano, fileName: "f.m4a",
+                              extraStaffs: [
+                                  StudioTakeStaff(id: "stf_1", instrument: .trumpet),
+                                  StudioTakeStaff(id: "stf_2", instrument: .harp),
+                              ])
+        let assigned = InstrumentEngine.channelPrograms(for: take)
+        XCTAssertEqual(assigned.map(\.channel), [0, 1, 2])
+        XCTAssertEqual(assigned.map(\.program), [0, 56, 46])
+
+        let single = StudioTake(id: "tk_s", name: "S", instrument: .violin, fileName: "g.m4a")
+        XCTAssertEqual(InstrumentEngine.channelPrograms(for: single).map(\.channel), [0])
+        XCTAssertEqual(InstrumentEngine.channelPrograms(for: single).map(\.program), [40])
+    }
 }

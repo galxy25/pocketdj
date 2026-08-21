@@ -28,6 +28,9 @@ final class InstrumentRealtimeBridge: @unchecked Sendable {
     /// The sampler node, reachable off-main by design (spec §4's "nonisolated(unsafe) sampler
     /// ref"). Set/cleared on the main actor around load/rebuild; only read under `engineReady`.
     var sampler: AVAudioUnitSampler?
+    /// Overdub mode is armed — the CoreMIDI thread mirrors hand-played notes into the overdub
+    /// capture stream. Same aligned-Bool contract as `engineReady` (a torn read costs one note).
+    var overdubActive = false
 }
 
 // MARK: - Event log (NSLock-protected; owned by the recorder)
@@ -183,6 +186,68 @@ final class InstrumentEventLog: @unchecked Sendable {
         liveDirty = true
     }
 
+    // MARK: Overdub capture (a THIRD stream — the take stream belongs to `startTake`, the live
+    // stream is the always-on free-play staff; overdub is its own armed gate + its own anchor,
+    // BASE-OFFSET by the score position the user chose, so captured events land ABSOLUTE on the
+    // take's one score clock).
+
+    private var odArmed = false
+    private var odAnchorHost: UInt64 = 0
+    private var odBaseMs = 0                       // the chosen score position P (caller-clamped)
+    private var odEvents: [StudioNoteEvent] = []
+    private var odPending: [Int: (onMs: Int, velocity: Int)] = [:]
+
+    /// Arm the overdub stream: notes from `anchorHostTime` onward capture at
+    /// `baseMs + elapsed` — the caller anchors at the same instant the backing replay anchors
+    /// its clock, so hand/arp notes land at the true score position.
+    func overdubArm(anchorHostTime: UInt64, baseMs: Int) {
+        lock.lock(); defer { lock.unlock() }
+        odArmed = true
+        odAnchorHost = anchorHostTime
+        odBaseMs = max(0, baseMs)
+        odEvents = []
+        odPending = [:]
+    }
+
+    /// Overdub note-on (any thread). Pre-anchor stamps are dropped (`ms >= base` guard — the
+    /// count-in convention); a re-trigger with no off closes the prior sounding at the new onset.
+    func overdubOn(note: Int, velocity: Int, hostTime: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        guard odArmed else { return }
+        let ms = odBaseMs + msFrom(odAnchorHost, hostTime)
+        guard ms >= odBaseMs else { return }
+        if let prev = odPending.removeValue(forKey: note) {
+            odEvents.append(StudioNoteEvent(onMs: prev.onMs, offMs: max(prev.onMs, ms),
+                                            note: note, velocity: prev.velocity))
+        }
+        odPending[note] = (ms, velocity)
+    }
+
+    /// Overdub note-off (any thread) — closes the sounding note into the capture.
+    func overdubOff(note: Int, hostTime: UInt64) {
+        lock.lock(); defer { lock.unlock() }
+        guard odArmed, let p = odPending.removeValue(forKey: note) else { return }
+        let ms = max(p.onMs, odBaseMs + msFrom(odAnchorHost, hostTime))
+        odEvents.append(StudioNoteEvent(onMs: p.onMs, offMs: ms, note: note, velocity: p.velocity))
+    }
+
+    /// Disarm + close every still-sounding note at `endHostTime`, returning the capture sorted
+    /// by onset (absolute score-clock ms) — the clone of `disarmAndFinish` for the third stream.
+    func overdubDisarmAndFinish(atHostTime endHostTime: UInt64) -> [StudioNoteEvent] {
+        lock.lock(); defer { lock.unlock() }
+        guard odArmed else { return [] }
+        odArmed = false
+        let endMs = max(odBaseMs, odBaseMs + msFrom(odAnchorHost, endHostTime))
+        for (note, p) in odPending {
+            odEvents.append(StudioNoteEvent(onMs: p.onMs, offMs: max(p.onMs, endMs),
+                                            note: note, velocity: p.velocity))
+        }
+        odPending = [:]
+        let out = odEvents.sorted { $0.onMs < $1.onMs }
+        odEvents = []
+        return out
+    }
+
     /// ms from beat 1 for a packet host time — negative during the count-in. Both operands go
     /// through `AVAudioTime.seconds(forHostTime:)` (mach timebase) and subtract as Doubles so
     /// pre-beat-1 stamps can't underflow the UInt64 domain.
@@ -246,6 +311,40 @@ final class InstrumentEngine {
     /// The in-flight take's file name — `StudioStore.activeTakeFileName` wires to this so
     /// delete-all can never sweep the file the writer holds open (spec §3).
     private(set) var activeTakeFileName: String?
+
+    // MARK: Arpeggiator state (deliberately OUTSIDE any #if os fence — the platform-fence lesson)
+
+    /// Arp master switch. Turning it off stops playback + record mode but KEEPS the selected
+    /// set (off/on is non-destructive; `arpClearSelection` is the explicit reset).
+    var arpEnabled = false {
+        didSet {
+            guard !arpEnabled, oldValue else { return }
+            arpRecording = false
+            stopArpPlayback()
+        }
+    }
+    /// RECORD mode: keys toggle membership in the arp set (each sounds ONCE on add, stays
+    /// highlighted) — and write NOTHING to any score (live, take, or overdub).
+    var arpRecording = false
+    /// PLAY mode is running (read by the panel's Play toggle).
+    private(set) var arpPlaying = false
+    /// The recorded arp set — insertion-ordered (drives `.order`) and deduped; also drives the
+    /// keyboard's steady highlight.
+    private(set) var arpSelectedNotes: [Int] = []
+    /// Knob state, mirrored from SettingsStore by the panel. Cycle-boundary reads: edits take
+    /// effect at the NEXT cycle, mid-cycle timing untouched.
+    var arpSettings = ArpSettings()
+    /// Cancellation latch for the play-mode scheduler + the record-mode once-sound — the
+    /// `replayGeneration` discipline (cancelled tasks never claim generations).
+    @ObservationIgnored private var arpGeneration: UInt64 = 0
+
+    // MARK: Overdub state (same fence rule)
+
+    /// Overdub mode: while armed, played notes (hand keys, MIDI, or the arp's play mode) also
+    /// capture into the overdub stream — a NEW staff starting at the chosen score position.
+    private(set) var overdubActive = false
+    /// The score position the current overdub was anchored at (clamped caller input).
+    private(set) var overdubBaseMs = 0
 
     /// Everything the VIEW needs to file a finished take via `StudioStore.addTake` (spec §4:
     /// the engine records, the store persists — the view is the seam between them).
@@ -425,6 +524,8 @@ final class InstrumentEngine {
     func teardown() {
         if isRecordingTake { autoStopTake(reason: "teardown") }
         stopReplay()
+        stopArpPlayback()
+        _ = stopOverdub()
         watchdogTask?.cancel(); watchdogTask = nil
         highlightTask?.cancel(); highlightTask = nil
         if built { engine.stop() }
@@ -472,6 +573,7 @@ final class InstrumentEngine {
         guard built, sampler != nil else { return false }
         guard !isLoadingInstrument else { return false }   // one parse at a time
         guard !isRecordingTake else { return false }       // switching banks mid-take is nonsense
+        stopArpPlayback()                                  // the arp voice is about to reload
         isLoadingInstrument = true
         rt.engineReady = false
         let program = key.gmProgram
@@ -511,6 +613,12 @@ final class InstrumentEngine {
     /// either input.
     func noteOn(_ note: Int, velocity: Int = 96) {
         ensureEngine()
+        // Arp RECORD mode: keys SELECT notes (sound once, stay highlighted) and never fall
+        // through — record mode writes NOTHING to any score (live, take, or overdub).
+        if arpEnabled && arpRecording {
+            arpToggleSelection(note, velocity: velocity)
+            return
+        }
         #if os(iOS)
         interruptionParked = false     // an explicit key press is a user resume
         #endif
@@ -520,6 +628,11 @@ final class InstrumentEngine {
         // Live staff capture is UNCONDITIONAL (fills even with no instrument loaded) — before the
         // audible guard, and separate from the take log so it never desyncs a take's audio.
         eventLog.liveOn(note: Int(n), velocity: Int(v), hostTime: mach_absolute_time())
+        // Overdub capture rides the same unconditional spot: a new-staff note counts whether or
+        // not the sampler made a sound (the live-staff precedent).
+        if overdubActive {
+            eventLog.overdubOn(note: Int(n), velocity: Int(v), hostTime: mach_absolute_time())
+        }
         guard rt.engineReady, let smp = sampler else { return }
         smp.startNote(n, withVelocity: v, onChannel: 0)
         eventLog.noteOn(note: Int(n), velocity: Int(v), hostTime: mach_absolute_time())
@@ -527,11 +640,177 @@ final class InstrumentEngine {
     }
 
     func noteOff(_ note: Int) {
+        // Arp record mode consumed the matching noteOn; the once-sound self-terminates.
+        if arpEnabled && arpRecording { return }
         let n = UInt8(clamping: max(0, min(127, note)))
         eventLog.liveOff(note: Int(n), hostTime: mach_absolute_time())   // unconditional live close
+        if overdubActive {
+            eventLog.overdubOff(note: Int(n), hostTime: mach_absolute_time())
+        }
         guard rt.engineReady, let smp = sampler else { return }
         smp.stopNote(n, onChannel: 0)
         eventLog.noteOff(note: Int(n), hostTime: mach_absolute_time())
+    }
+
+    // MARK: - Arpeggiator (record/select + play scheduler; pure math in ArpeggiatorEngine.swift)
+
+    /// Toggle a note's membership in the arp set (record mode). Adding SOUNDS it once (250 ms,
+    /// generation-guarded) and appends in insertion order (the `.order` contract); re-pressing
+    /// removes it silently. NOTHING is logged to any score stream.
+    private func arpToggleSelection(_ note: Int, velocity: Int) {
+        let n = max(0, min(127, note))
+        if let i = arpSelectedNotes.firstIndex(of: n) {
+            arpSelectedNotes.remove(at: i)
+            return
+        }
+        arpSelectedNotes.append(n)
+        _ = startEngineIfNeeded()
+        guard rt.engineReady, let smp = sampler else { return }
+        let v = UInt8(clamping: max(1, min(127, velocity)))
+        smp.startNote(UInt8(clamping: n), withVelocity: v, onChannel: 0)
+        NowPlayingArbiter.shared.claim(self)
+        let gen = arpGeneration
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard let self, self.arpGeneration == gen, self.rt.engineReady,
+                  let smp = self.sampler else { return }
+            smp.stopNote(UInt8(clamping: n), onChannel: 0)
+        }
+    }
+
+    /// Empty the arp set (the panel's explicit "Clear"; toggling Arp off keeps the set).
+    func arpClearSelection() {
+        arpSelectedNotes = []
+        if arpPlaying { stopArpPlayback() }
+    }
+
+    /// PLAY mode: loop the current pattern through the instrument's own voice (the loaded
+    /// program, channel 0 — the same node as live keys). The cycle is REGENERATED from the
+    /// current set + knobs at each cycle boundary, so edits take effect next cycle; latch OFF
+    /// plays exactly one cycle then auto-stops. Modeled on `replayTake`'s scheduling loop.
+    @discardableResult
+    func startArpPlayback(bpm: Double) -> Bool {
+        ensureEngine()
+        guard built, rt.engineReady, !isLoadingInstrument, sampler != nil,
+              !arpSelectedNotes.isEmpty else { return false }
+        stopReplay()
+        stopArpPlayback()
+        guard startEngineIfNeeded() else { return false }
+        arpGeneration &+= 1
+        let gen = arpGeneration
+        arpPlaying = true
+        NowPlayingArbiter.shared.claim(self)
+        let start = ContinuousClock.now
+        dlog("instr: arp START — \(arpSelectedNotes.count) notes \(arpSettings.order.rawValue)")
+        Task { @MainActor [weak self] in
+            var cycleBaseMs = 0
+            var rng: any RandomNumberGenerator = SystemRandomNumberGenerator()
+            while true {
+                guard let eng = self, eng.arpGeneration == gen else { return }
+                // Snapshot set + knobs at the cycle boundary (edits land next cycle).
+                let s = eng.arpSettings
+                let cycle = ArpPattern.cycle(notes: eng.arpSelectedNotes, order: s.order,
+                                             octaves: s.octaves, rng: &rng)
+                guard !cycle.isEmpty else { break }
+                let step = ArpPattern.stepMs(length: s.length, bpm: bpm)
+                for (k, note) in cycle.enumerated() {
+                    let onAt = cycleBaseMs + ArpPattern.onsetMs(step: k, stepMs: step,
+                                                                swingPct: s.swingPct)
+                    let offAt = cycleBaseMs + ArpPattern.gateOffMs(step: k, stepMs: step,
+                                                                   swingPct: s.swingPct)
+                    try? await Task.sleep(until: start + .milliseconds(onAt), clock: .continuous)
+                    guard let eng = self, eng.arpGeneration == gen else { return }
+                    let n = UInt8(clamping: max(0, min(127, note)))
+                    if eng.rt.engineReady, let smp = eng.sampler {
+                        smp.startNote(n, withVelocity: 96, onChannel: 0)
+                        eng.arpSoundingNotes.insert(note)
+                        // EXACTLY what replayTake does: highlights follow, and the take log fills
+                        // iff a take is armed ("arp records like hand keys" during a take is free).
+                        // Deliberately NO liveOn — the free-play staff must not fill with arp loops.
+                        eng.eventLog.noteOn(note: note, velocity: 96,
+                                            hostTime: mach_absolute_time())
+                        if eng.overdubActive {
+                            eng.eventLog.overdubOn(note: note, velocity: 96,
+                                                   hostTime: mach_absolute_time())
+                        }
+                    }
+                    try? await Task.sleep(until: start + .milliseconds(offAt), clock: .continuous)
+                    guard let eng = self, eng.arpGeneration == gen else { return }
+                    guard eng.arpSoundingNotes.contains(note) else { continue }
+                    if eng.rt.engineReady, let smp = eng.sampler {
+                        smp.stopNote(n, onChannel: 0)
+                    }
+                    eng.arpSoundingNotes.remove(note)
+                    eng.eventLog.noteOff(note: note, hostTime: mach_absolute_time())
+                    if eng.overdubActive {
+                        eng.eventLog.overdubOff(note: note, hostTime: mach_absolute_time())
+                    }
+                }
+                // Next cycle starts on the grid: cycle length rounded UP to a whole pair so the
+                // swing phase is preserved across cycles.
+                let pairs = (cycle.count + 1) / 2
+                cycleBaseMs += Int((Double(pairs) * 2 * step).rounded())
+                guard cycleBaseMs <= ArpPattern.maxOnsetMs else { break }
+                if !s.latch { break }                     // latch OFF ⇒ exactly one cycle
+            }
+            guard let eng = self, eng.arpGeneration == gen else { return }
+            eng.finishArpPlayback()
+        }
+        return true
+    }
+
+    /// Cancel arp playback: bump the generation (the loop exits at its next wake) and silence
+    /// anything still sounding NOW — cancelled tasks never claim generations.
+    func stopArpPlayback() {
+        arpGeneration &+= 1
+        guard arpPlaying else { return }
+        finishArpPlayback()
+    }
+
+    /// Notes the arp scheduler is currently sounding (silenced on stop/cancel).
+    @ObservationIgnored private var arpSoundingNotes: Set<Int> = []
+
+    private func finishArpPlayback() {
+        arpPlaying = false
+        if rt.engineReady, let smp = sampler {
+            for n in arpSoundingNotes {
+                smp.stopNote(UInt8(clamping: max(0, min(127, n))), onChannel: 0)
+                eventLog.noteOff(note: n, hostTime: mach_absolute_time())
+                if overdubActive { eventLog.overdubOff(note: n, hostTime: mach_absolute_time()) }
+            }
+            smp.sendController(123, withValue: 0, onChannel: 0)
+        }
+        arpSoundingNotes = []
+        NowPlayingArbiter.shared.resign(self)
+    }
+
+    // MARK: - Overdub mode (played notes — hand or arp — capture into a NEW staff at a position)
+
+    /// Arm overdub capture from score position `fromMs` (clamped). `anchorHostTime` is the
+    /// host-time instant that MAPS to `fromMs` — the caller passes the same instant it anchors
+    /// the backing replay's clock, so captured notes land at the true score position. Refused
+    /// mid-take (`startTake` owns that session's streams).
+    @discardableResult
+    func startOverdub(fromMs: Int, anchorHostTime: UInt64 = mach_absolute_time()) -> Bool {
+        guard !isRecordingTake, !overdubActive else { return false }
+        let base = max(0, min(fromMs, Self.maxReplayMs))
+        overdubBaseMs = base
+        overdubActive = true
+        rt.overdubActive = true
+        eventLog.overdubArm(anchorHostTime: anchorHostTime, baseMs: base)
+        dlog("instr: overdub ARM at \(base) ms")
+        return true
+    }
+
+    /// End overdub mode, returning the captured events (ABSOLUTE score-clock ms, onset-sorted).
+    /// Empty ⇒ the caller files no staff (no junk).
+    func stopOverdub() -> [StudioNoteEvent] {
+        guard overdubActive else { return [] }
+        overdubActive = false
+        rt.overdubActive = false
+        let events = eventLog.overdubDisarmAndFinish(atHostTime: mach_absolute_time())
+        dlog("instr: overdub END — \(events.count) events from \(overdubBaseMs) ms")
+        return events
     }
 
     // MARK: - Take recording (click + count-in; audio + events anchored at beat 1)
@@ -734,10 +1013,12 @@ final class InstrumentEngine {
         if rt.engineReady, let smp = sampler {
             for n in replayActiveNotes {
                 smp.stopNote(UInt8(clamping: max(0, min(127, n))), onChannel: 0)
-                eventLog.noteOff(note: n, hostTime: mach_absolute_time())
             }
             smp.sendController(123, withValue: 0, onChannel: 0)
         }
+        // A polyphonic replay voices through the synth — silence it too (CC 123, channels 0–3).
+        if synthReady, let syn = synth { syn.allNotesOff() }
+        for n in replayActiveNotes { eventLog.noteOff(note: n, hostTime: mach_absolute_time()) }
         replayActiveNotes = []
         NowPlayingArbiter.shared.resign(self)
     }
@@ -846,6 +1127,172 @@ final class InstrumentEngine {
         -> Bool {
         if a.ms != b.ms { return a.ms < b.ms }
         return !a.on && b.on
+    }
+
+    // MARK: - Polyphonic replay scheduling (multi-staff — pure, unit-testable)
+
+    /// One scheduled polyphonic action: `replayActions` tagged with the staff's MIDI channel.
+    typealias MultiAction = (ms: Int, on: Bool, note: Int, velocity: Int, channel: Int)
+
+    /// Channel/program assignment for a multi-staff take: staff 0 (the primary) → channel 0 with
+    /// the take's instrument, extra staff i → channel i+1 with ITS instrument. Max 4 channels by
+    /// the `StudioTake.maxStaffs` cap — the one shared bank is addressed per-channel, never
+    /// duplicated.
+    nonisolated static func channelPrograms(for take: StudioTake) -> [(channel: Int, program: UInt8)] {
+        var out: [(channel: Int, program: UInt8)] = [(0, take.instrument.gmProgram)]
+        for (i, staff) in (take.extraStaffs ?? []).enumerated() {
+            out.append((i + 1, staff.instrument.gmProgram))
+        }
+        return out
+    }
+
+    /// The merged action list for a polyphonic replay starting at `from`: each staff's events run
+    /// through the SAME chase-aware `replayActions(events:from:)`, tagged with the staff's
+    /// channel, then globally sorted — ms ascending, offs before ons at equal ms (the
+    /// `actionOrder` semantics), channel/note as deterministic tiebreaks (Swift's sort is not
+    /// guaranteed stable).
+    nonisolated static func replayActionsMulti(staffs: [(events: [StudioNoteEvent], channel: Int)],
+                                               from: Int = 0) -> [MultiAction] {
+        var merged: [MultiAction] = []
+        for staff in staffs {
+            for a in replayActions(events: staff.events, from: from) {
+                merged.append((a.ms, a.on, a.note, a.velocity, staff.channel))
+            }
+        }
+        return merged.sorted { a, b in
+            if a.ms != b.ms { return a.ms < b.ms }
+            if a.on != b.on { return !a.on }
+            if a.channel != b.channel { return a.channel < b.channel }
+            return a.note < b.note
+        }
+    }
+
+    // MARK: - Polyphonic replay (all staffs mixed live through the multitimbral synth)
+
+    /// The multitimbral replay node — ONE `kAudioUnitSubType_MIDISynth` AU holding the ONE
+    /// shared SoundFont, addressed on channels 0…3 (the 32 MB font is never duplicated). Created
+    /// lazily on the first polyphonic replay, connected `synth → instrumentMix` in canonical
+    /// format — INSIDE the permanent take tap, upstream of the click, so polyphonic replay is
+    /// recordable exactly like the sampler. The live sampler stays the hand-key/arp/single-staff
+    /// voice; CoreMIDI, loadInstrument, watchdog and rebuild paths are untouched.
+    @ObservationIgnored private var synth: MultiTimbralSynth?
+    /// The `engineReady` contract for the synth: true only when the bank is loaded and programs
+    /// are set (never poked mid-parse).
+    @ObservationIgnored private var synthReady = false
+
+    /// Replay MULTIPLE staffs mixed (the polyphonic ▶). Single staff delegates to the existing
+    /// `replayTake` — zero regression on legacy takes. `bankURL` is the one shared SoundFont
+    /// (caller resolves via `InstrumentPackStore.localBankURL` — nil there is the "download the
+    /// pack first" prompt, the same gate `StudioTakeReplay.toggle` uses).
+    func replayTakePolyphonic(staffs: [(events: [StudioNoteEvent], instrument: InstrumentKey)],
+                              bankURL: URL, fromMs: Int = 0, forTake takeId: String? = nil) {
+        guard staffs.count > 1 else {
+            if let only = staffs.first {
+                replayTake(events: only.events, instrument: only.instrument,
+                           fromMs: fromMs, forTake: takeId)
+            }
+            return
+        }
+        ensureEngine()
+        guard built else { return }
+        stopReplay()
+        stopArpPlayback()
+        guard startEngineIfNeeded() else { return }
+        let from = max(0, min(fromMs, Self.maxReplayMs))
+        let programs = staffs.enumerated().map { (channel: $0.offset,
+                                                  program: $0.element.instrument.gmProgram) }
+        let actions = Self.replayActionsMulti(
+            staffs: staffs.enumerated().map { (events: $0.element.events, channel: $0.offset) },
+            from: from)
+        guard !actions.isEmpty else {
+            if from > 0 { parkReplayPosition(atMs: from, forTake: takeId) } else { replayOwner = takeId }
+            return
+        }
+        replayOwner = takeId
+        isReplaying = true
+        NowPlayingArbiter.shared.claim(self)
+        replayGeneration &+= 1
+        let gen = replayGeneration
+        dlog("instr: poly replay START — \(staffs.count) staffs, \(actions.count) actions"
+             + (from > 0 ? " from \(from) ms" : ""))
+        // Provisional anchor so the cursor reads `from` immediately; re-anchored below once the
+        // synth is ready (a first-time bank parse must not compress the opening notes).
+        replayAnchor = ContinuousClock.now - .milliseconds(from)
+        replayFrozenMs = from
+        Task { @MainActor [weak self] in
+            guard let eng0 = self else { return }
+            let syn = await eng0.ensureSynthReady(bankURL: bankURL, programs: programs)
+            guard let eng1 = self, eng1.replayGeneration == gen else { return }
+            guard let syn else {
+                eng1.dlog("instr: poly replay ABORT — synth/bank unavailable")
+                eng1.isReplaying = false
+                eng1.freezeReplayPosition()
+                NowPlayingArbiter.shared.resign(eng1)
+                return
+            }
+            // Real anchor: back-dated by `from` so the loop's absolute sleeps and the score's
+            // playhead agree (the `replayTake` anchor contract).
+            let start = ContinuousClock.now - .milliseconds(from)
+            eng1.replayAnchor = start
+            for a in actions {
+                try? await Task.sleep(until: start + .milliseconds(a.ms), clock: .continuous)
+                guard let eng = self, eng.replayGeneration == gen else { return }
+                guard eng.synthReady else { continue }
+                let n = UInt8(clamping: max(0, min(127, a.note)))
+                let ch = UInt8(clamping: max(0, min(15, a.channel)))
+                if a.on {
+                    syn.startNote(n, velocity: UInt8(clamping: max(1, min(127, a.velocity))),
+                                  channel: ch)
+                    eng.replayActiveNotes.insert(a.note)
+                    eng.eventLog.noteOn(note: a.note, velocity: a.velocity,
+                                        hostTime: mach_absolute_time())   // highlights follow
+                } else {
+                    syn.stopNote(n, channel: ch)
+                    eng.replayActiveNotes.remove(a.note)
+                    eng.eventLog.noteOff(note: a.note, hostTime: mach_absolute_time())
+                }
+            }
+            guard let eng = self, eng.replayGeneration == gen else { return }
+            eng.isReplaying = false
+            eng.replayActiveNotes = []
+            eng.freezeReplayPosition()
+            syn.allNotesOff()
+            NowPlayingArbiter.shared.resign(eng)
+            eng.dlog("instr: poly replay END")
+        }
+    }
+
+    /// Attach + load the multitimbral synth (idempotent; re-parses only on a bank change). The
+    /// 32 MB parse runs OFF the main actor with `synthReady` gated closed — the `loadInstrument`
+    /// discipline.
+    private func ensureSynthReady(bankURL: URL,
+                                  programs: [(channel: Int, program: UInt8)]) async
+        -> MultiTimbralSynth? {
+        guard built, let mix = instrumentMix else { return nil }
+        let syn: MultiTimbralSynth
+        if let existing = synth {
+            syn = existing
+        } else {
+            syn = MultiTimbralSynth()
+            engine.attach(syn.node)
+            engine.connect(syn.node, to: mix, format: Self.canonicalFormat)
+            synth = syn
+        }
+        if synthReady, syn.loadedBankURL == bankURL {
+            syn.setPrograms(programs)
+            return syn
+        }
+        synthReady = false
+        let ok: Bool = await withCheckedContinuation { cont in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let loaded = syn.loadedBankURL == bankURL || syn.loadBank(bankURL)
+                if loaded { syn.setPrograms(programs) }
+                cont.resume(returning: loaded)
+            }
+        }
+        synthReady = ok
+        dlog("instr: synth bank load → \(ok ? "OK" : "FAILED")")
+        return ok ? syn : nil
     }
 
     // MARK: - Click synthesis + timing math (nonisolated pure — unit-testable)
@@ -1088,8 +1535,11 @@ final class InstrumentEngine {
         dlog("instr: MEDIA RESET — rebuilding")
         if isRecordingTake { autoStopTake(reason: "media services reset") }
         stopReplay()
+        stopArpPlayback()
         rt.engineReady = false
         rt.sampler = nil
+        synth = nil                       // the AU is orphaned with the daemon — recreate lazily
+        synthReady = false
         if let o = configChangeObserver { NotificationCenter.default.removeObserver(o); configChangeObserver = nil }
         engine.stop()
         engine = AVAudioEngine()          // the orphaned graph is unusable — recreate everything
@@ -1203,12 +1653,18 @@ final class InstrumentEngine {
                         switch msg {
                         case .noteOn(let note, let velocity):
                             log.liveOn(note: Int(note), velocity: Int(velocity), hostTime: host)
+                            if rt.overdubActive {
+                                log.overdubOn(note: Int(note), velocity: Int(velocity), hostTime: host)
+                            }
                             if rt.engineReady, let smp = rt.sampler {
                                 smp.startNote(note, withVelocity: velocity, onChannel: 0)
                             }
                             log.noteOn(note: Int(note), velocity: Int(velocity), hostTime: host)
                         case .noteOff(let note):
                             log.liveOff(note: Int(note), hostTime: host)
+                            if rt.overdubActive {
+                                log.overdubOff(note: Int(note), hostTime: host)
+                            }
                             if rt.engineReady, let smp = rt.sampler {
                                 smp.stopNote(note, onChannel: 0)
                             }

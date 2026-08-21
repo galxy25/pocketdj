@@ -82,4 +82,110 @@ final class InstrumentLiveLogTests: XCTestCase {
         XCTAssertEqual(log.snapshotLiveIfDirty()?.count, 1)             // captured while un-armed
         XCTAssertEqual(log.recordedCount, 0)                            // …but the TAKE log stayed empty
     }
+
+    // MARK: Arp record mode (keys SELECT, sound once, write NOTHING to any score)
+
+    /// Record mode's contract: a key press toggles arp-set membership (insertion-ordered — the
+    /// `.order` mode's source) and never reaches the live staff; a re-press removes silently.
+    @MainActor
+    func testArpRecordModeSelectsAndWritesNothing() {
+        let engine = InstrumentEngine()
+        engine.arpEnabled = true
+        engine.arpRecording = true
+        engine.noteOn(67); engine.noteOff(67)
+        engine.noteOn(60); engine.noteOff(60)
+        engine.noteOn(64); engine.noteOff(64)
+        XCTAssertEqual(engine.arpSelectedNotes, [67, 60, 64], "insertion order preserved")
+        engine.pumpLiveOnceForTesting()
+        XCTAssertTrue(engine.liveEvents.isEmpty, "record mode writes NOTHING to the live staff")
+
+        engine.noteOn(60); engine.noteOff(60)                // re-press ⇒ remove (toggle)
+        XCTAssertEqual(engine.arpSelectedNotes, [67, 64])
+        engine.pumpLiveOnceForTesting()
+        XCTAssertTrue(engine.liveEvents.isEmpty)
+
+        engine.arpClearSelection()
+        XCTAssertTrue(engine.arpSelectedNotes.isEmpty)
+
+        // Arp OFF ⇒ keys are plain keys again (live capture resumes).
+        engine.arpEnabled = false
+        engine.noteOn(62); engine.noteOff(62)
+        engine.pumpLiveOnceForTesting()
+        XCTAssertEqual(engine.liveEvents.map(\.note), [62])
+        engine.teardown()
+    }
+
+    /// Toggling Arp off keeps the recorded set (off/on is non-destructive); Clear is the reset.
+    @MainActor
+    func testArpToggleOffKeepsSelection() {
+        let engine = InstrumentEngine()
+        engine.arpEnabled = true
+        engine.arpRecording = true
+        engine.noteOn(60); engine.noteOff(60)
+        engine.arpEnabled = false
+        XCTAssertEqual(engine.arpSelectedNotes, [60], "the set survives an off/on toggle")
+        XCTAssertFalse(engine.arpRecording, "record mode exits with the master switch")
+        engine.teardown()
+    }
+
+    // MARK: Overdub capture stream (the third stream — anchored at a chosen score position)
+
+    /// The overdub log anchors captured notes at `baseMs + elapsed` — ABSOLUTE on the score
+    /// clock, so a staff recorded from position P starts at `onMs ≥ P`.
+    func testOverdubLogAnchorsAtPosition() {
+        let log = InstrumentEventLog()
+        let t0 = mach_absolute_time()
+        log.overdubArm(anchorHostTime: t0, baseMs: 4_000)
+        log.overdubOn(note: 60, velocity: 90, hostTime: host(after: t0, 0.25))
+        log.overdubOff(note: 60, hostTime: host(after: t0, 0.75))
+        log.overdubOn(note: 64, velocity: 80, hostTime: host(after: t0, 0.75))   // left open
+        let events = log.overdubDisarmAndFinish(atHostTime: host(after: t0, 1.0))
+        XCTAssertEqual(events.count, 2)
+        XCTAssertEqual(events[0].note, 60)
+        XCTAssertEqual(Double(events[0].onMs), 4_250, accuracy: 3)
+        XCTAssertEqual(Double(events[0].offMs), 4_750, accuracy: 3)
+        XCTAssertEqual(events[1].note, 64)
+        XCTAssertEqual(Double(events[1].offMs), 5_000, accuracy: 3,
+                       "an open note is closed at the disarm instant")
+        XCTAssertTrue(log.overdubDisarmAndFinish(atHostTime: host(after: t0, 2.0)).isEmpty,
+                      "a second disarm returns nothing (stream already closed)")
+    }
+
+    /// Pre-anchor stamps are dropped (the count-in convention), and un-armed calls are no-ops.
+    func testOverdubLogDropsPreAnchorAndUnarmedNotes() {
+        let log = InstrumentEventLog()
+        let t0 = mach_absolute_time()
+        log.overdubOn(note: 60, velocity: 90, hostTime: t0)               // never armed
+        XCTAssertTrue(log.overdubDisarmAndFinish(atHostTime: host(after: t0, 1.0)).isEmpty)
+
+        let anchor = host(after: t0, 10)                                  // anchor in the future
+        log.overdubArm(anchorHostTime: anchor, baseMs: 1_000)
+        log.overdubOn(note: 60, velocity: 90, hostTime: t0)               // BEFORE the anchor
+        log.overdubOn(note: 64, velocity: 90, hostTime: host(after: anchor, 0.5))
+        log.overdubOff(note: 64, hostTime: host(after: anchor, 1.0))
+        let events = log.overdubDisarmAndFinish(atHostTime: host(after: anchor, 1.5))
+        XCTAssertEqual(events.map(\.note), [64], "the pre-anchor press never entered the capture")
+        XCTAssertEqual(Double(events[0].onMs), 1_500, accuracy: 3)
+    }
+
+    /// The ENGINE surface: arm/stop round-trip, double-arm refused, mid-take refused.
+    @MainActor
+    func testEngineOverdubArmStopSurface() {
+        let engine = InstrumentEngine()
+        XCTAssertTrue(engine.startOverdub(fromMs: 2_000))
+        XCTAssertTrue(engine.overdubActive)
+        XCTAssertEqual(engine.overdubBaseMs, 2_000)
+        XCTAssertFalse(engine.startOverdub(fromMs: 3_000), "double-arm refused")
+        engine.noteOn(60); engine.noteOff(60)
+        let events = engine.stopOverdub()
+        XCTAssertFalse(engine.overdubActive)
+        XCTAssertEqual(events.map(\.note), [60])
+        XCTAssertGreaterThanOrEqual(events[0].onMs, 2_000, "captured ABSOLUTE at base + elapsed")
+        XCTAssertTrue(engine.stopOverdub().isEmpty, "a second stop returns nothing")
+        // Hand keys feed BOTH streams by design: the overdub staff AND the always-on live staff.
+        engine.pumpLiveOnceForTesting()
+        XCTAssertEqual(engine.liveEvents.map(\.note), [60],
+                       "hand keys still feed the live staff while overdubbing (by design)")
+        engine.teardown()
+    }
 }

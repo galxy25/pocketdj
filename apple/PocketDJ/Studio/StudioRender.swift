@@ -566,17 +566,154 @@ actor StudioRender {
         return (frames, durationMs)
     }
 
-    /// Event-driven offline pump: render the sampler's output in blocks, firing each note on/off at
-    /// its frame, then drain the release tail (the same −60 dBFS / 3 s stop the sample bakes use).
-    /// The counterpart to `pullAndWrite`, but the source is MIDI actions instead of a scheduled
-    /// file — everything past the priming head is written; the head is dropped.
+    /// Synthesize a MULTI-STAFF take into ONE mixed AAC `.m4a`: each staff renders SEQUENTIALLY
+    /// through the same single-sampler machinery `renderTake` uses (one fresh offline
+    /// engine+sampler per staff, torn down before the next — at most ONE sampler holds the 32 MB
+    /// font's samples at any moment), then the per-staff PCM is float-summed and hard-clamped.
+    /// The result lands in the same `renderedFileName` cache, so collections/Mix get the
+    /// polyphonic mix with zero collections-side changes. Offline cost is linear in staffs.
+    ///
+    /// `staffs` carries each staff's `scoreEvents` + its instrument's GM program + the bank to
+    /// voice it with (per-staff resolution — the caller refuses when any staff's pack is
+    /// missing, the `renderTake` bank gate).
+    func renderTakePolyphonic(staffs: [(events: [StudioNoteEvent], program: UInt8, bankURL: URL)],
+                              to destURL: URL) async throws -> (frames: Int64, durationMs: Int) {
+        guard staffs.contains(where: { !$0.events.isEmpty }) else { throw StudioRenderError.emptyTake }
+        var rendered: [AVAudioPCMBuffer] = []
+        for staff in staffs where !staff.events.isEmpty {
+            rendered.append(try renderStaffPCM(events: staff.events, bankURL: staff.bankURL,
+                                               program: staff.program))
+        }
+        let mixed = try Self.mixPCM(rendered)
+        let frames = try Self.writeAtomically(to: destURL, settings: Self.aacSettings) { out in
+            try out.write(from: mixed)
+            return Int64(mixed.frameLength)
+        }
+        let durationMs = Int((Double(frames) / Self.canonicalSampleRate * 1000).rounded())
+        Self.rlog("poly take \(staffs.count) staffs → \(frames)f/\(durationMs)ms")
+        return (frames, durationMs)
+    }
+
+    /// One staff's events → canonical-format PCM (the body of `renderTake`, returning the PCM
+    /// instead of writing AAC — the polyphonic mix's per-staff step). Fresh engine+sampler per
+    /// call, torn down on return.
+    private func renderStaffPCM(events: [StudioNoteEvent], bankURL: URL,
+                                program: UInt8) throws -> AVAudioPCMBuffer {
+        let actions = InstrumentEngine.replayActions(events: events)
+        guard !actions.isEmpty else { throw StudioRenderError.emptyTake }
+
+        let fmt = Self.canonicalFormat
+        let sr = Self.canonicalSampleRate
+        let engine = AVAudioEngine()
+        do { try engine.enableManualRenderingMode(.offline, format: fmt,
+                                                  maximumFrameCount: Self.chunkFrames) }
+        catch { throw StudioRenderError.engineStart(error) }
+        let sampler = AVAudioUnitSampler()
+        engine.attach(sampler)
+        engine.connect(sampler, to: engine.mainMixerNode, format: fmt)
+        do {
+            try sampler.loadSoundBankInstrument(at: bankURL, program: program,
+                                                bankMSB: UInt8(kAUSampler_DefaultMelodicBankMSB),
+                                                bankLSB: UInt8(kAUSampler_DefaultBankLSB))
+        } catch { throw StudioRenderError.bankLoadFailed(bankURL) }
+        do { try engine.start() } catch { throw StudioRenderError.engineStart(error) }
+        defer { engine.stop() }
+
+        let lastMs = actions.map(\.ms).max() ?? 0
+        let nominal = Int64((Double(lastMs) / 1000 * sr).rounded())
+        let latencySec = sampler.auAudioUnit.latency + engine.outputNode.auAudioUnit.latency
+        let skipHead = max(0, Int64((latencySec * sr).rounded()))
+
+        // Capacity = the musical length + the bounded tail cap (+ one chunk of slack for the
+        // final partial pull); `appendPCM` clamps to capacity, so a wild input degrades.
+        let capacity = nominal + Int64(Self.tailCapSeconds * sr) + Int64(Self.chunkFrames)
+        guard capacity > 0, capacity <= Int64(UInt32.max),
+              let acc = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: AVAudioFrameCount(capacity)) else {
+            throw StudioRenderError.cannotCreateBuffer
+        }
+        _ = try Self.pumpSampler(engine: engine, sampler: sampler, actions: actions,
+                                 sampleRate: sr, skipHead: skipHead, nominal: nominal,
+                                 accumulateInto: acc)
+        guard acc.frameLength > 0 else { throw StudioRenderError.emptyWindow }
+        return acc
+    }
+
+    /// Float-sum `buffers` (same canonical format) to the LONGEST length, hard-clamped to ±1.0.
+    /// Pure + testable — the polyphonic mixdown step.
+    nonisolated static func mixPCM(_ buffers: [AVAudioPCMBuffer]) throws -> AVAudioPCMBuffer {
+        let longest = buffers.map { Int($0.frameLength) }.max() ?? 0
+        guard longest > 0,
+              let out = AVAudioPCMBuffer(pcmFormat: canonicalFormat,
+                                         frameCapacity: AVAudioFrameCount(longest)),
+              let dst = out.floatChannelData else {
+            throw StudioRenderError.cannotCreateBuffer
+        }
+        out.frameLength = AVAudioFrameCount(longest)
+        let channels = Int(canonicalFormat.channelCount)
+        for c in 0..<channels { memset(dst[c], 0, longest * MemoryLayout<Float>.size) }
+        for buf in buffers {
+            guard let src = buf.floatChannelData else { continue }
+            let n = Int(buf.frameLength)
+            let srcCh = Int(buf.format.channelCount)
+            for c in 0..<channels {
+                let s = src[min(c, srcCh - 1)]
+                let d = dst[c]
+                for i in 0..<n { d[i] += s[i] }
+            }
+        }
+        for c in 0..<channels {
+            let d = dst[c]
+            for i in 0..<longest { d[i] = max(-1.0, min(1.0, d[i])) }
+        }
+        return out
+    }
+
+    /// Event-driven offline pump writing to an `AVAudioFile` — the `renderTake` sink (see
+    /// `pumpSampler(…sink:)` for the shared core).
     private static func pumpSampler(engine: AVAudioEngine, sampler: AVAudioUnitSampler,
                                     actions: [(ms: Int, on: Bool, note: Int, velocity: Int)],
                                     sampleRate: Double, skipHead: Int64, nominal: Int64,
                                     to out: AVAudioFile) throws -> Int64 {
         let fmt = engine.manualRenderingFormat
-        guard let render = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: chunkFrames),
-              let scratch = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: chunkFrames) else {
+        guard let scratch = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: chunkFrames) else {
+            throw StudioRenderError.cannotCreateBuffer
+        }
+        return try pumpSampler(engine: engine, sampler: sampler, actions: actions,
+                               sampleRate: sampleRate, skipHead: skipHead, nominal: nominal) {
+            buffer, dropFront in
+            try writeSlice(buffer, from: dropFront, to: out, scratch: scratch)
+        }
+    }
+
+    /// Event-driven offline pump ACCUMULATING into a PCM buffer — the polyphonic per-staff sink
+    /// (`appendPCM` clamps to the accumulator's capacity).
+    private static func pumpSampler(engine: AVAudioEngine, sampler: AVAudioUnitSampler,
+                                    actions: [(ms: Int, on: Bool, note: Int, velocity: Int)],
+                                    sampleRate: Double, skipHead: Int64, nominal: Int64,
+                                    accumulateInto acc: AVAudioPCMBuffer) throws -> Int64 {
+        try pumpSampler(engine: engine, sampler: sampler, actions: actions,
+                        sampleRate: sampleRate, skipHead: skipHead, nominal: nominal) {
+            buffer, dropFront in
+            if dropFront == 0 { appendPCM(buffer, to: acc); return }
+            guard dropFront < Int(buffer.frameLength),
+                  let sliced = sliceBuffer(buffer, from: Int64(dropFront),
+                                           frames: Int64(buffer.frameLength) - Int64(dropFront))
+            else { return }
+            appendPCM(sliced, to: acc)
+        }
+    }
+
+    /// Event-driven offline pump CORE: render the sampler's output in blocks, firing each note
+    /// on/off at its frame, then drain the release tail (the same −60 dBFS / 3 s stop the sample
+    /// bakes use). The counterpart to `pullAndWrite`, but the source is MIDI actions instead of a
+    /// scheduled file — everything past the priming head goes to `sink` (buffer + the frames to
+    /// drop from its front); the head is dropped.
+    private static func pumpSampler(engine: AVAudioEngine, sampler: AVAudioUnitSampler,
+                                    actions: [(ms: Int, on: Bool, note: Int, velocity: Int)],
+                                    sampleRate: Double, skipHead: Int64, nominal: Int64,
+                                    sink: (AVAudioPCMBuffer, Int) throws -> Void) throws -> Int64 {
+        let fmt = engine.manualRenderingFormat
+        guard let render = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: chunkFrames) else {
             throw StudioRenderError.cannotCreateBuffer
         }
         // Render-timeline frame of an event = musical frame + priming head.
@@ -592,7 +729,7 @@ actor StudioRender {
                 let status = try engine.renderOffline(want, to: render)
                 guard status == .success, render.frameLength > 0 else { break }
                 let dropFront = Int(max(0, min(Int64(render.frameLength), skipHead - pulled)))
-                try writeSlice(render, from: dropFront, to: out, scratch: scratch)
+                try sink(render, dropFront)
                 written += Int64(render.frameLength) - Int64(dropFront)
                 pulled += Int64(render.frameLength)
             }
@@ -619,7 +756,7 @@ actor StudioRender {
         while tail < cap {
             let status = try engine.renderOffline(tailWindowFrames, to: render)
             guard status == .success, render.frameLength > 0 else { break }
-            try writeSlice(render, from: 0, to: out, scratch: scratch)
+            try sink(render, 0)
             written += Int64(render.frameLength)
             tail += Int64(render.frameLength)
             if isBelowFloor(render, floorDb: tailFloorDb) { break }
