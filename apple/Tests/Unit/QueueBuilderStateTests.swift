@@ -133,14 +133,19 @@ final class QueueBuilderStateTests: XCTestCase {
                        "a read-time refine must not re-fire the debounce + filter/sort")
 
         // …and it still narrows what the list shows, immediately, off the SAME rows.
+        // CONCRETE ids, deliberately: `deviceResults` IS
+        // `refineByArtist(browse.displayItems, artist: artistQuery)`, so asserting it
+        // against that same expression asserts nothing — a `refineByArtist` whose field
+        // lookup matched NOTHING kept that version of this test green.
         b.songQuery = ""
         await b.refreshDevice(app)
-        let all = b.browse.displayItems.count
-        XCTAssertEqual(b.deviceResults.count,
-                       QueueBuilderState.refineByArtist(b.browse.displayItems,
-                                                        artist: "cobalt").count)
+        let all = b.browse.displayItems.map(\.idString)
+        XCTAssertEqual(all, ["sng_1", "sng_2", "sng_3", "sng_4", "sng_5", "sng_6", "sng_7"])
+        XCTAssertEqual(b.deviceResults.map(\.idString), ["sng_6", "sng_7"],
+                       "the refine narrows to Cobalt's songs, off the already-published rows")
         b.artistQuery = ""
-        XCTAssertEqual(b.deviceResults.count, all, "clearing the refine restores every row")
+        XCTAssertEqual(b.deviceResults.map(\.idString), all,
+                       "clearing the refine restores every row")
     }
 
     // MARK: Mode switch
@@ -610,6 +615,35 @@ final class QueueBuilderStateTests: XCTestCase {
         await b.refreshDevice(app, force: true)
         XCTAssertEqual(b.deviceResults.map(\.idString), ["sng_1"],
                        "an explicit submit must always yield a real search")
+    }
+
+    /// THE STICKY EMPTY, one level under the one `force` fixed — reached THROUGH the
+    /// explicit submit. `refreshDevice` evaluates `deviceSignature(app)` BEFORE
+    /// `refreshExternal`'s 180 ms text debounce, while the rows are filtered from
+    /// `query` read AFTER it. The submit task is unstructured (nothing cancels it, by
+    /// design: an unchanged id must still re-fire), so a user who keeps typing inside
+    /// that window used to get the NEW query's rows published under the OLD query's
+    /// signature — after which the "already current" guard early-returned for that
+    /// signature forever and the submitted query could never be searched again.
+    /// PRE-FIX the final assertion sees an empty list.
+    func testASubmitOvertakenByMoreTypingNeverStampsTheOldQuerysSignature() async {
+        let app = await loadedApp()
+        let b = makeBuilder()
+        b.bindExternalBase(app)
+        b.songQuery = "neon"
+
+        // The explicit submit, exactly as the sheet fires it…
+        let submit = Task { await b.refreshDevice(app, force: true) }
+        // …and one more keystroke inside its debounce window (20 ms ≪ 180 ms).
+        try? await Task.sleep(for: .milliseconds(20))
+        b.songQuery = "neonzzz"
+        await submit.value
+
+        // Back to the query the user actually submitted: it must still SEARCH.
+        b.songQuery = "neon"
+        await b.refreshDevice(app)
+        XCTAssertEqual(b.deviceResults.map(\.idString), ["sng_1"],
+                       "a superseded submit must not poison the signature it was fired for")
     }
 
     /// In-flight ≠ empty. The shipped header read `On-device (0)` for "still

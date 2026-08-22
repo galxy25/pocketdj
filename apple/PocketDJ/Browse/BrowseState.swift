@@ -368,9 +368,24 @@ final class BrowseState {
         // Debounce an active text query FIRST so a burst of keystrokes coalesces BEFORE any
         // expensive work (the base build below is O(events); doing it per-keystroke was the
         // main-thread jank the Browser path was refactored to avoid).
+        //
+        // SUPERSEDE CHECK. `signature` was composed by the CALLER *before* this call, while
+        // the rows below are filtered from `query`/`clauses`/`sortKeys` read *after* the
+        // sleep. If those moved while we slept, publishing would stamp `displayKey` with the
+        // OLD signature over the NEW query's rows — and the "already current" guard at the
+        // top would then refuse to ever recompute that old signature again: the same sticky
+        // class as the unbound base below, one level down, and reached through the very
+        // control (explicit submit) added to escape it. A `.task(id:)` host is cancelled here
+        // by SwiftUI when its id moves, but the explicit-submit path is UNSTRUCTURED on
+        // purpose (an id that did not move must still re-fire), so nothing cancels it and the
+        // check has to be made here. Snapshot what the caller's signature is built from (both
+        // hosts compose `<extras>-filterSortSignature()`) and abandon on a mismatch: the run
+        // that moved the inputs owns the publish.
+        let inputs = filterSortSignature()
         if !query.isEmpty {
             try? await Task.sleep(for: .milliseconds(180))
             if Task.isCancelled { return }
+            guard filterSortSignature() == inputs else { return }
         }
         // Reuse the built base across query/filter/sort edits; rebuild only when `baseKey` changed.
         let base: [BrowseItem]; let keys: [String]
@@ -403,6 +418,10 @@ final class BrowseState {
                                    playCounts: pc)
         }.value
         if Task.isCancelled { return }
+        // The same check at the publish point: the off-main filter/sort is a second window
+        // (and the empty-query path skips the debounce entirely), so the pair
+        // (`displayItems`, `displayKey`) is only ever written when the two AGREE.
+        guard filterSortSignature() == inputs else { return }
         displayItems = sorted
         displayKey = signature
     }

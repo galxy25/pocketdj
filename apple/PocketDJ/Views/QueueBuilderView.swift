@@ -40,6 +40,11 @@ struct QueueBuilderView: View {
     @State private var draftShown = RowWindow.page
     @State private var showFilter = false
     @State private var showSort = false
+    /// The explicit-submit device run. Held so a second submit CANCELS the first:
+    /// unlike the `.task(id:)` recompute (which SwiftUI cancels on every id change),
+    /// this one is unstructured — nothing else would ever stop it, and a burst of
+    /// returns would otherwise leave several forced runs racing to publish.
+    @State private var deviceSubmit: Task<Void, Never>?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -88,6 +93,7 @@ struct QueueBuilderView: View {
             await builder.refreshDevice(app)
         }
         .onChange(of: builder.songQuery) { refreshCloudIfNeeded() }
+        .onDisappear { deviceSubmit?.cancel(); deviceSubmit = nil }
         // The artist box is a READ-time refine in device mode (deliberately out of
         // `deviceSignature`, so it narrows instantly instead of paying the debounce +
         // a full filter/sort) — which means nothing else resets the render window for
@@ -134,7 +140,8 @@ struct QueueBuilderView: View {
             builder.refreshCloud(rips: rips, catalog: streaming.appleMusicProvider,
                                  immediate: true)
         } else {
-            Task { await builder.refreshDevice(app, force: true) }
+            deviceSubmit?.cancel()
+            deviceSubmit = Task { await builder.refreshDevice(app, force: true) }
         }
     }
 
