@@ -19,6 +19,10 @@ struct NowPlayingExpandedView: View {
 
     /// Present the queue-builder sheet (RootView owns it).
     var openBuilder: () -> Void
+    /// How many songs are waiting in the builder's draft. The draft outlives the
+    /// sheet (RootView @State), so every entry point has to show it — otherwise a
+    /// swipe-dismissed draft is invisible until you reopen by chance.
+    var draftCount: Int = 0
     /// Animate back to the docked panel (RootView zeroes the persisted fraction).
     var collapse: () -> Void
 
@@ -200,9 +204,9 @@ struct NowPlayingExpandedView: View {
 
     private var builderButton: some View {
         Button(action: openBuilder) {
-            Image(systemName: "plus")
+            Image(systemName: draftCount == 0 ? "plus" : "text.badge.plus")
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(Theme.fgDim)
+                .foregroundStyle(draftCount == 0 ? Theme.fgDim : Theme.accent)
                 .padding(8)
                 .background(Theme.bgRaised.opacity(0.85), in: Circle())
                 .frame(minWidth: 44, minHeight: 44)
@@ -212,6 +216,7 @@ struct NowPlayingExpandedView: View {
         .padding(.top, 6).padding(.leading, 10)
         .help("Build a queue")
         .accessibilityLabel("Build a queue")
+        .accessibilityValue(draftCount == 0 ? "Empty" : "\(draftCount) queued")
         .accessibilityIdentifier("np-x-builder-open")
     }
 

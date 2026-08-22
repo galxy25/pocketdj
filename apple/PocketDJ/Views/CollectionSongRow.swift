@@ -40,6 +40,11 @@ struct SongRowView: View {
     /// Optional trailing accessory (e.g. a setlist source/sequence badge column) shown
     /// to the left of the play/download buttons.
     var trailing: AnyView?
+    /// Whether the row ends in the ▶/⤓ `RowTransport`. Off for surfaces whose row tap
+    /// means something else entirely — the queue builder, where a preview-play button
+    /// beside the ＋ reads as "add" and silently isn't. Defaulted on: every existing
+    /// call site keeps the transport it has always had.
+    var showsTransport = true
 
     /// Show year/genre only when there's room: regular width (iPad) or macOS (nil).
     private var showsExtra: Bool { hSize != .compact }
@@ -161,9 +166,11 @@ struct SongRowView: View {
 
                     FavoriteToggle(songId: data.songId, appleMusicId: data.appleMusicId)
 
-                    RowTransport(song: (id: data.songId, title: data.title, artist: data.artist),
-                                 startMs: data.startMs,
-                                 cleanOnlyCollection: data.cleanOnlyCollection)
+                    if showsTransport {
+                        RowTransport(song: (id: data.songId, title: data.title, artist: data.artist),
+                                     startMs: data.startMs,
+                                     cleanOnlyCollection: data.cleanOnlyCollection)
+                    }
                 }
             }
         }

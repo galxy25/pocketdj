@@ -1,5 +1,6 @@
 import SwiftUI
 import Observation
+import os
 
 /// View-state for the Browser: item kind, text query, filter clauses, sort keys,
 /// and layout. Pure of the data layer — it takes an `AppModel` to read from, so
@@ -367,17 +368,48 @@ final class BrowseState {
         // Debounce an active text query FIRST so a burst of keystrokes coalesces BEFORE any
         // expensive work (the base build below is O(events); doing it per-keystroke was the
         // main-thread jank the Browser path was refactored to avoid).
+        //
+        // SUPERSEDE CHECK. `signature` was composed by the CALLER *before* this call, while
+        // the rows below are filtered from `query`/`clauses`/`sortKeys` read *after* the
+        // sleep. If those moved while we slept, publishing would stamp `displayKey` with the
+        // OLD signature over the NEW query's rows — and the "already current" guard at the
+        // top would then refuse to ever recompute that old signature again: the same sticky
+        // class as the unbound base below, one level down, and reached through the very
+        // control (explicit submit) added to escape it. A `.task(id:)` host is cancelled here
+        // by SwiftUI when its id moves, but the explicit-submit path is UNSTRUCTURED on
+        // purpose (an id that did not move must still re-fire), so nothing cancels it and the
+        // check has to be made here. Snapshot what the caller's signature is built from (both
+        // hosts compose `<extras>-filterSortSignature()`) and abandon on a mismatch: the run
+        // that moved the inputs owns the publish.
+        let inputs = filterSortSignature()
         if !query.isEmpty {
             try? await Task.sleep(for: .milliseconds(180))
             if Task.isCancelled { return }
+            guard filterSortSignature() == inputs else { return }
         }
         // Reuse the built base across query/filter/sort edits; rebuild only when `baseKey` changed.
         let base: [BrowseItem]; let keys: [String]
         if let c = externalBaseCache, c.key == baseKey {
             base = c.base; keys = c.keys
+        } else if let build = externalBase {
+            (base, keys) = build()
+            // NEVER memoize an EMPTY base. `baseKey` only moves with the catalog/event
+            // revision, so caching a transient empty answer (a catalog still loading, a
+            // binding that hands back nothing yet) blanks the surface for that WHOLE
+            // revision — the same sticky-empty class as the unbound case below, one level
+            // down, and the one `invalidateDisplayKey` could not rescue: dropping the
+            // display memo re-runs the filter, but it re-runs it against the cached
+            // nothing. An empty base costs nothing to rebuild, so never keep one.
+            if !base.isEmpty { externalBaseCache = (baseKey, base, keys) }
         } else {
-            (base, keys) = externalBase?() ?? ([], [])
-            externalBaseCache = (baseKey, base, keys)
+            // NO base bound yet — the host's binding lost the race with this recompute.
+            // Publishing here would be doubly sticky: the empty base memoizes under
+            // `baseKey` (session-long, since baseKey only moves with the catalog/event
+            // revision) AND `displayKey` stamps the signature, so the "already current"
+            // guard above would short-circuit every later run for it. Publish nothing,
+            // stamp nothing: the next run recomputes for real. (Hosts should still bind
+            // BEFORE they recompute — see HistoryView / QueueBuilderState.refreshDevice.)
+            return
         }
         let (q, cl, sk) = (query, clauses, sortKeys)
         let pc = playCounts
@@ -386,8 +418,25 @@ final class BrowseState {
                                    playCounts: pc)
         }.value
         if Task.isCancelled { return }
+        // The same check at the publish point: the off-main filter/sort is a second window
+        // (and the empty-query path skips the debounce entirely), so the pair
+        // (`displayItems`, `displayKey`) is only ever written when the two AGREE.
+        guard filterSortSignature() == inputs else { return }
         displayItems = sorted
         displayKey = signature
+    }
+
+    /// Drop the "already current" memo so the NEXT `refreshExternal` recomputes even when the
+    /// signature is unchanged. The explicit-submit seam: a user who types the same term and hits
+    /// Search must get a real search, not the early return at the top of `refreshExternal`.
+    ///
+    /// The BASE memo goes too. An explicit submit means "whatever you think you know, look
+    /// again" — clearing only `displayKey` would re-run the filter over the same remembered
+    /// base, so a stale (or empty) base would survive the one gesture the user has for
+    /// escaping it. Rebuilding the base is an O(1) hand-off from the host's closure.
+    func invalidateDisplayKey() {
+        displayKey = nil
+        externalBaseCache = nil
     }
 
     /// A stable signature of the filter/sort inputs (query + complete clauses + sort keys),
@@ -510,11 +559,38 @@ final class BrowseState {
         // "abba\n" matching "abba".
         let q = query.replacingOccurrences(of: "\n", with: "")
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-        if !q.isEmpty, base.count == searchKeys.count {
-            items = zip(base, searchKeys).compactMap { $0.1.contains(q) ? $0.0 : nil }
+        if !q.isEmpty {
+            if base.count == searchKeys.count {
+                items = zip(base, searchKeys).compactMap { $0.1.contains(q) ? $0.0 : nil }
+            } else {
+                // A caller handed mismatched parallel arrays. This used to DROP the query
+                // and return the whole base — which reads to a user as "typing does
+                // nothing", the exact symptom this surface was reported for, with no log
+                // and no way to tell it from a genuinely broad result. Honour the query on
+                // the item's own fields instead (correct, just slower) and shout in debug.
+                mismatchLog.fault("searchKeys \(searchKeys.count) must parallel base \(base.count) — falling back to per-item matching")
+                items = base.filter { matchesFolded($0, q) }
+            }
         }
         return SortEngine.apply(FilterEngine.apply(items, clauses, playCounts: playCounts),
                                 sortKeys, playCounts: playCounts)
+    }
+
+    /// Per-item fallback for the (should-never) mismatched-`searchKeys` path above: fold the
+    /// row's own name/artist the way `AppModel.searchKey` folds the haystack, so a query still
+    /// narrows. `q` is expected pre-folded by the caller.
+    /// The parallel-array invariant is a programmer contract, so a violation is a fault, not a
+    /// user-facing error — but it must be LOUD (and testable): the old silent drop rendered as
+    /// "search does nothing", indistinguishable from a broken query.
+    nonisolated static let mismatchLog = Logger(subsystem: "com.levi.pocketdj", category: "browse")
+
+    nonisolated static func matchesFolded(_ item: BrowseItem, _ q: String) -> Bool {
+        for field in ["name", "artist"] {
+            guard case .string(let s) = Fields.value(item, field) else { continue }
+            if s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                .contains(q) { return true }
+        }
+        return false
     }
 
     /// Distinct values present for an options-backed field (drives `any of` pickers).

@@ -7,9 +7,20 @@ import Observation
 
 /// Controller for the Now Playing panel's "queue builder": search the catalog
 /// (on-device) or the Apple Music catalog (cloud, via the Discover machinery) and
-/// feed songs into the LIVE queue — or, with nothing playing, into a DRAFT list
-/// that Play hands to the `CollectionsStore.playNow` funnel (the reserved Now
-/// Playing setlist, so history/recs/session plumbing all inherit).
+/// accumulate songs into a DRAFT the user can see.
+///
+/// SEMANTICS — one accumulator, two exits (the shipped build's regime switch was a
+/// dead end: with `sequencer.isRunning` true — which includes a PAUSED set and a
+/// cold-launch session RESTORE — every ＋ went straight to the live queue, so the
+/// draft stayed empty forever, the sheet showed no trace of the add, and Play,
+/// gated on a non-empty draft, could never appear):
+///   • EVERY ＋ lands in `draft`, running or not. The draft list IS the receipt.
+///   • PLAY hands the draft to `CollectionsStore.playNow` (the reserved Now Playing
+///     setlist, so history/recs/session plumbing all inherit) — which REPLACES what
+///     is playing. Available whenever the draft is non-empty, full stop.
+///   • ADD TO UP NEXT (`flushToQueue`) appends the draft to a RUNNING set's live
+///     queue at the chosen position and clears it. Only meaningful while running.
+/// So "play this now" and "queue this after" are each one tap, and neither hides.
 ///
 /// View-free by design (the BrowseState/DiscoverSearchModel split): the sheet
 /// renders what this owns, and every derivation here is unit-testable.
@@ -59,10 +70,34 @@ final class QueueBuilderState {
     var songQuery = "" { didSet { browse.query = songQuery } }
     var artistQuery = ""
 
-    /// The no-set accumulator: with nothing running, adds land here and Play feeds
-    /// `consumeDraftForPlay()` into the playNow funnel. View-state only — never
-    /// persisted, no schema.
+    /// The accumulator EVERY add lands in — running or idle. Play feeds
+    /// `consumeDraftForPlay()` into the playNow funnel (replacing playback);
+    /// `flushToQueue` hands it to a running set's live queue. View-state only —
+    /// never persisted, no schema.
     private(set) var draft: [SetlistPlayer.Item] = []
+
+    /// Device-search lifecycle, so the sheet can tell "still computing" from "zero
+    /// rows" (the shipped header read `On-device (0)` for both, and for a base that
+    /// never bound). Cloud has the same three states on `discover.state`.
+    enum DeviceState { case idle, searching, loaded }
+    private(set) var deviceState: DeviceState = .idle
+
+    /// The one-line receipt/diagnosis under the omni bars — "Added 3 to Up next",
+    /// or the reason a Play refused (`playDraft` used to swallow the throw and do
+    /// visibly nothing). Cleared by the next add/edit so it never goes stale.
+    ///
+    /// TYPED, not a bare string: the sheet draws a confirmation and a refusal
+    /// differently (checkmark vs warning, accent vs danger). A `playDraft` failure
+    /// rendered with a green checkmark is worse than no notice at all — it tells
+    /// the user the thing that just refused actually worked.
+    struct Notice: Equatable {
+        enum Kind: Equatable { case confirmation, problem }
+        var kind: Kind
+        var text: String
+    }
+    private(set) var notice: Notice?
+
+    func clearNotice() { notice = nil }
 
     /// Cloud-add seam (library write + rip request) — set by the host view to the
     /// production adapter; tests stub it to pin the record-before-queue ordering.
@@ -93,19 +128,44 @@ final class QueueBuilderState {
     }
 
     /// The `.task(id:)` recompute driver. `filterSortSignature()` is deliberately
-    /// catalog-revision-free, so the revision is composed in here (the History
-    /// idiom); `artistQuery` rides along so the read-time refine republishes too.
+    /// catalog-revision-free, so the revision is composed in here (the History idiom).
+    ///
+    /// `artistQuery` is deliberately ABSENT. It is a READ-time predicate over
+    /// `browse.displayItems` (see `deviceResults`) — nothing downstream of the
+    /// off-main filter/sort consumes it — so putting it in the signature bought
+    /// nothing and cost the full pipeline per Artist keystroke: the 180 ms text
+    /// debounce plus a complete filter+sort of the catalog (~25 ms at 26k rows),
+    /// after which the refine ran anyway. Out of the signature, an Artist keystroke
+    /// narrows the visible list on the very next body pass, which is what "typing
+    /// does something" has to feel like.
     func deviceSignature(_ app: AppModel) -> String {
-        "\(app.catalogRevision)|\(artistQuery)|\(browse.filterSortSignature())"
+        "\(app.catalogRevision)|\(browse.filterSortSignature())"
     }
 
     /// Base cache key: rebuild the handed-off base only when the catalog moves.
     func deviceBaseKey(_ app: AppModel) -> String { "qb-\(app.catalogRevision)" }
 
     /// Run the debounced off-main filter/sort and publish to `browse.displayItems`.
-    func refreshDevice(_ app: AppModel) async {
+    ///
+    /// The bind is done HERE, not in a sibling `.task`, so the base can never lose a
+    /// race with the recompute (a `.task` and a `.task(id:)` declared side by side
+    /// have no ordering guarantee; when the id-task won, `refreshExternal` computed
+    /// against a nil base and — before the companion BrowseState fix — memoized the
+    /// empty answer for the whole catalog revision, blanking device search for the
+    /// rest of the session). `bindExternalBase` is idempotent, so re-binding on every
+    /// recompute costs one closure allocation.
+    ///
+    /// `force` (the explicit-submit path) drops BrowseState's "already current" memo
+    /// so an unchanged signature still recomputes.
+    func refreshDevice(_ app: AppModel, force: Bool = false) async {
+        bindExternalBase(app)
+        if force { browse.invalidateDisplayKey() }
+        deviceState = .searching
         await browse.refreshExternal(signature: deviceSignature(app),
                                      baseKey: deviceBaseKey(app))
+        // A cancelled run is superseded by a newer one that has already flipped the
+        // state back to `.searching` — never stamp `.loaded` on its behalf.
+        if !Task.isCancelled { deviceState = .loaded }
     }
 
     /// What the device-mode list renders: the off-main-computed rows with the
@@ -133,44 +193,156 @@ final class QueueBuilderState {
     /// Kick the debounced Discover search for the current queries. `catalog` is the
     /// MusicKit lane (`streaming.providers` first `StreamingSearch`), exactly as
     /// BrowseView's triggerDiscover passes it.
-    func refreshCloud(rips: RipsStore, catalog: (any StreamingSearch)? = nil) {
-        discover.searchDebounced(songQuery, artist: artistQuery, rips: rips, catalog: catalog)
+    /// `immediate` = the explicit submit (return key / Search button): skip the 400 ms
+    /// coalescing window entirely rather than restart it.
+    func refreshCloud(rips: RipsStore, catalog: (any StreamingSearch)? = nil,
+                      immediate: Bool = false) {
+        discover.searchDebounced(songQuery, artist: artistQuery, rips: rips, catalog: catalog,
+                                 debounce: immediate ? .zero : .milliseconds(400))
+    }
+
+    /// PLAY'S GATE — the draft alone, never `sequencer.isRunning`. Lives here (not
+    /// as a view-local `!builder.draft.isEmpty`) so the rule that actually broke the
+    /// shipped build is covered by a unit test rather than only by the eye.
+    var canPlay: Bool { !draft.isEmpty }
+
+    /// Is there anything to search for at all? (Both omni bars blank ⇒ device mode
+    /// lists the whole catalog, cloud mode shows its hint.)
+    var hasSearchTerm: Bool {
+        DiscoverSearchModel.term(title: songQuery, artist: artistQuery) != nil
+    }
+
+    /// WHY cloud search can't answer — nil when it can. Both of Discover's lanes can be
+    /// absent at once (no import server configured AND Apple Music unauthorized), and
+    /// when they are, the machinery settles `.loaded` with zero hits and NO error: every
+    /// query renders "Nothing in the Apple Music catalog matched that", which is a lie
+    /// about the catalog rather than the truth about this device. That is the fourth
+    /// state the sheet needs, and it is knowable BEFORE any search runs.
+    nonisolated static func cloudUnavailableMessage(hasServer: Bool,
+                                                    canSearchCatalog: Bool) -> String? {
+        if canSearchCatalog || hasServer { return nil }
+        return "Apple Music search isn’t available on this device — link Apple Music, "
+             + "or set an import server, in Settings."
+    }
+
+    /// The live twin of the above, over the two stores the sheet already holds.
+    func cloudUnavailable(rips: RipsStore, catalog: (any StreamingSearch)?) -> String? {
+        Self.cloudUnavailableMessage(hasServer: rips.hasServer,
+                                     canSearchCatalog: catalog?.canSearch ?? false)
+    }
+
+    // MARK: The LIVE queue (read-only context — "what is already playing/queued")
+
+    /// What the sheet shows ABOVE the draft so the user can always see the queue they
+    /// are working against — not just the rows they are assembling. Without it a flush
+    /// to Up next was a one-way door into somewhere the sheet could not render (the
+    /// panel behind it is fully covered on iPhone), which is the same invisible-add the
+    /// draft exists to kill, one step later.
+    struct LiveQueue: Equatable {
+        var nowPlaying: SetlistPlayer.Item?
+        var upNext: [SetlistPlayer.Item]
+        /// Total upcoming, which may exceed `upNext.count` (that one is windowed).
+        var upNextTotal: Int
+        /// A RESTORED set that has not started sounding (`isHeldForResume`): running by
+        /// every flag, silent in fact. The sheet must not claim it is "playing".
+        var isHeld: Bool
+        var isEmpty: Bool { nowPlaying == nil && upNext.isEmpty }
+    }
+
+    /// Project the running set for display. `limit` is load-bearing: `SetlistPlayer.upcoming`
+    /// is an `ArraySlice` precisely so nobody materializes a 26k-track tail per body pass —
+    /// take a prefix and report the true total separately.
+    func liveQueue(_ sequencer: SetlistPlayer, limit: Int = 40) -> LiveQueue {
+        guard sequencer.isRunning else {
+            return LiveQueue(nowPlaying: nil, upNext: [], upNextTotal: 0, isHeld: false)
+        }
+        let queue = sequencer.queue
+        let current = sequencer.index < queue.count ? queue[sequencer.index] : nil
+        let upcoming = sequencer.upcoming
+        return LiveQueue(nowPlaying: current,
+                         upNext: Array(upcoming.prefix(limit)),
+                         upNextTotal: upcoming.count,
+                         isHeld: sequencer.isHeldForResume)
     }
 
     // MARK: Adds (one method, both regimes)
 
-    /// Land items at `pos`. A RUNNING set gets the live-edit primitives (append /
-    /// insert-next / Surprise random); idle mirrors their semantics onto `draft`
-    /// (the primitives guard `isRunning` and would no-op). `slot` is injectable for
-    /// determinism — SetlistPlayer's own test seam, extended to the draft regime.
-    func add(_ items: [SetlistPlayer.Item], at pos: AddPosition, sequencer: SetlistPlayer,
+    /// Land items in the DRAFT at `pos` — running or not (see the type doc: the
+    /// draft is the one accumulator, and the only thing the sheet can show the user
+    /// as proof their ＋ landed). `slot` is injectable for determinism, SetlistPlayer's
+    /// own test seam. The live queue is reached from the draft, via `flushToQueue`.
+    func add(_ items: [SetlistPlayer.Item], at pos: AddPosition,
              slot: (ClosedRange<Int>) -> Int = { Int.random(in: $0) }) {
         guard !items.isEmpty else { return }
-        if sequencer.isRunning {
-            switch pos {
-            case .bottom: sequencer.appendToQueue(items)
-            case .top:    sequencer.insertNextInQueue(items)
-            case .random: sequencer.insertRandomInQueue(items, slot: slot)
-            }
-        } else {
-            switch pos {
-            case .bottom: draft.append(contentsOf: items)
-            case .top:    draft.insert(contentsOf: items, at: 0)
-            case .random:
-                let i = slot(0...draft.count)
-                draft.insert(contentsOf: items, at: min(max(i, 0), draft.count))
-            }
+        switch pos {
+        case .bottom: draft.append(contentsOf: items)
+        case .top:    draft.insert(contentsOf: items, at: 0)
+        case .random:
+            let i = slot(0...draft.count)
+            draft.insert(contentsOf: items, at: min(max(i, 0), draft.count))
+        }
+        // EVERY add says so. It used to CLEAR the notice line instead, so adds 2..N
+        // changed exactly one dim digit at the bottom of the sheet — and the draft row
+        // that was the only other receipt sits above the results, where a scrolled list
+        // hides it. "It wouldn't let me add them" is what a silent add looks like.
+        notice = Notice(kind: .confirmation, text: Self.addReceipt(items, at: pos))
+    }
+
+    /// The add receipt — names the SONG (one add) or the count, and the slot when it
+    /// isn't the default end-of-draft, because that is the whole reason the position
+    /// menu exists and the row it lands on may be off-screen.
+    nonisolated static func addReceipt(_ items: [SetlistPlayer.Item], at pos: AddPosition) -> String {
+        let what = items.count == 1 ? "“\(items[0].title)”" : "\(items.count) songs"
+        switch pos {
+        case .bottom: return "Added \(what) to the draft queue."
+        case .top:    return "Added \(what) to the TOP of the draft queue."
+        case .random: return "Dropped \(what) somewhere in the draft queue."
         }
     }
 
+    /// Ids currently in the draft — the result list marks these "added" so a user who
+    /// isn't sure their tap registered can SEE that it did (and doesn't add a silent
+    /// duplicate to find out). Cheap set, rebuilt only when the draft moves.
+    var draftedIds: Set<String> { Set(draft.map(\.id)) }
+
+    /// The SECOND exit: hand the whole draft to a RUNNING set's live queue at `pos`
+    /// (the SetlistPlayer live-edit primitives — append / insert-after-current /
+    /// Jukebox Surprise slot) and clear it. Returns how many items moved; 0 when
+    /// nothing is running or the draft is empty (the primitives guard `isRunning`
+    /// and would silently no-op, which is exactly the invisible add we're fixing).
+    @discardableResult
+    func flushToQueue(at pos: AddPosition, sequencer: SetlistPlayer,
+                      slot: (ClosedRange<Int>) -> Int = { Int.random(in: $0) }) -> Int {
+        guard !draft.isEmpty else { return 0 }
+        // The set can END between the render that offered this button and the tap.
+        // Silently returning 0 is the very failure mode this whole change exists to
+        // kill, so SAY the set ended — and point at Play, which still works.
+        guard sequencer.isRunning else {
+            notice = Notice(kind: .problem,
+                            text: "Nothing is playing any more — hit Play to start these.")
+            return 0
+        }
+        let items = draft
+        switch pos {
+        case .bottom: sequencer.appendToQueue(items)
+        case .top:    sequencer.insertNextInQueue(items)
+        case .random: sequencer.insertRandomInQueue(items, slot: slot)
+        }
+        draft.removeAll()
+        notice = Notice(kind: .confirmation,
+                        text: items.count == 1
+                            ? "Added “\(items[0].title)” to Up next."
+                            : "Added \(items.count) songs to Up next.")
+        return items.count
+    }
+
     /// Cloud add: provisional catalog citizenship FIRST (playNow drops ids absent
-    /// from `songsById`, so the record must land before the item can enter a queue
-    /// or the draft), then the queue/draft insert, then the async library write +
+    /// from `songsById`, so the record must land before the item can enter the
+    /// draft), then the draft insert, then the async library write +
     /// rip request. Returns the async half so tests (and any caller) can await it;
     /// nil when no adder is wired (the item still queues — it just won't rip).
     @discardableResult
     func addCloudHit(_ hit: RipsStore.DiscoverHit, at pos: AddPosition,
-                     sequencer: SetlistPlayer,
                      slot: (ClosedRange<Int>) -> Int = { Int.random(in: $0) }) -> Task<Void, Never>? {
         cloudAdder?.recordProvisional(hit)
         // Re-resolve AFTER the record: when an indexed twin already claims this
@@ -182,7 +354,7 @@ final class QueueBuilderState {
         let id = cloudAdder?.resolvedSongId(hit) ?? hit.songId
         let item = SetlistPlayer.Item(id: id, title: hit.title,
                                       artist: hit.artist, lengthMs: hit.durationMs)
-        add([item], at: pos, sequencer: sequencer, slot: slot)
+        add([item], at: pos, slot: slot)
         guard let adder = cloudAdder else { return nil }
         return Task { await adder.performAdd(hit) }
     }
@@ -192,6 +364,7 @@ final class QueueBuilderState {
     func removeDraft(uids: Set<UUID>) {
         guard !uids.isEmpty else { return }
         draft.removeAll { uids.contains($0.uid) }
+        notice = nil
     }
 
     func moveDraft(fromOffsets: IndexSet, toOffset: Int) {
@@ -210,6 +383,7 @@ final class QueueBuilderState {
         draft.removeAll()
         songQuery = ""
         artistQuery = ""
+        notice = nil
         return ids
     }
 
@@ -222,9 +396,28 @@ final class QueueBuilderState {
     func playDraft(_ play: ([String]) async throws -> Void) async -> Bool {
         let ids = draft.map(\.id)
         guard !ids.isEmpty else { return false }
-        do { try await play(ids) } catch { return false }
+        notice = nil
+        do {
+            try await play(ids)
+        } catch {
+            // A refused Play used to do visibly NOTHING (the throw was swallowed and
+            // the sheet simply stayed up). Say why — the intent errors are already
+            // written as user-facing sentences.
+            notice = Notice(kind: .problem, text: Self.playFailureMessage(error))
+            return false
+        }
         _ = consumeDraftForPlay()
         return true
+    }
+
+    /// The user-facing reason a Play refused. `PocketDJIntentError` carries a
+    /// Siri-speakable sentence (onboarding veto, "…has no playable songs yet") —
+    /// anything else falls back to its `localizedDescription`.
+    nonisolated static func playFailureMessage(_ error: Error) -> String {
+        if let intent = error as? PocketDJIntentError {
+            return String(localized: intent.localizedStringResource)
+        }
+        return "Couldn’t start playback: \(error.localizedDescription)"
     }
 }
 

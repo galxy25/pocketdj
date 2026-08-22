@@ -27,15 +27,22 @@ final class DiscoverSearchModel {
     ///     term while its Instrumental does), so MusicKit leads when available.
     ///   • the rip-server `/search` proxy — reachable by every tester (no Apple Music
     ///     subscription needed) and the authority on ripped/streamable state.
+    /// `debounce` is the coalescing window; an EXPLICIT submit (return key / Search
+    /// button) passes `.zero` so a user who types-and-hits-return searches at once.
     func searchDebounced(_ query: String, artist: String = "", rips: RipsStore,
-                         catalog: (any StreamingSearch)? = nil) {
+                         catalog: (any StreamingSearch)? = nil,
+                         debounce: Duration = .milliseconds(400)) {
         task?.cancel()
         guard let term = Self.term(title: query, artist: artist) else {
             hits = []; state = .idle; return
         }
+        // In-flight SYNCHRONOUSLY, before the debounce sleep: a surface that renders
+        // `.loading` must say "Searching…" from the first keystroke, never leave a
+        // stale/empty list looking like a finished answer of "no matches".
+        state = .loading
         let refine = artist.trimmingCharacters(in: .whitespaces)
         task = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(400))
+            if debounce > .zero { try? await Task.sleep(for: debounce) }
             guard !Task.isCancelled, let self else { return }
             self.state = .loading
             async let proxyHits = rips.discoverSearch(term)
