@@ -113,11 +113,34 @@ final class QueueBuilderStateTests: XCTestCase {
         b.songQuery = "x"
         let s1 = b.deviceSignature(app)
         XCTAssertNotEqual(s0, s1)                       // query is in the signature
-        b.artistQuery = "y"
-        let s2 = b.deviceSignature(app)
-        XCTAssertNotEqual(s1, s2)                       // artist refine re-fires the task
         b.browse.sortKeys = [SortKey(field: "bpm", dir: .desc)]
-        XCTAssertNotEqual(s2, b.deviceSignature(app))   // sort too
+        XCTAssertNotEqual(s1, b.deviceSignature(app))   // sort too
+    }
+
+    /// …and the ONE input that must NOT be in it. `artistQuery` is a read-time predicate
+    /// over the already-computed rows (`deviceResults`); nothing downstream of the
+    /// off-main filter/sort reads it. In the signature it bought nothing and charged an
+    /// Artist keystroke the 180 ms text debounce plus a full catalog filter+sort before
+    /// the refine ran anyway — which is what "typing does nothing" feels like. Out of it,
+    /// the refine lands on the next body pass.
+    func testArtistQueryIsNotInTheRecomputeSignature() async {
+        let app = await loadedApp()
+        let b = makeBuilder()
+        b.songQuery = "x"
+        let before = b.deviceSignature(app)
+        b.artistQuery = "cobalt"
+        XCTAssertEqual(before, b.deviceSignature(app),
+                       "a read-time refine must not re-fire the debounce + filter/sort")
+
+        // …and it still narrows what the list shows, immediately, off the SAME rows.
+        b.songQuery = ""
+        await b.refreshDevice(app)
+        let all = b.browse.displayItems.count
+        XCTAssertEqual(b.deviceResults.count,
+                       QueueBuilderState.refineByArtist(b.browse.displayItems,
+                                                        artist: "cobalt").count)
+        b.artistQuery = ""
+        XCTAssertEqual(b.deviceResults.count, all, "clearing the refine restores every row")
     }
 
     // MARK: Mode switch
@@ -658,13 +681,188 @@ final class QueueBuilderStateTests: XCTestCase {
         XCTAssertNil(b.notice)
     }
 
-    func testANewAddClearsAStaleNotice() {
+    func testANewAddReplacesAStaleNoticeWithItsOwnReceipt() {
         let seq = makeSequencer()
         let b = makeBuilder()
         b.add([item("x")], at: .bottom)
         _ = b.flushToQueue(at: .bottom, sequencer: seq)   // idle ⇒ problem notice
         XCTAssertEqual(b.notice?.kind, .problem)
         b.add([item("y")], at: .bottom)
-        XCTAssertNil(b.notice, "a receipt must never outlive the thing it described")
+        XCTAssertEqual(b.notice?.kind, .confirmation,
+                       "a receipt must never outlive the thing it described")
+        XCTAssertTrue(b.notice?.text.contains("y") == true, "and the new one names the add")
+    }
+
+    /// Every ＋ SAYS SO. `add` used to CLEAR the notice line, so adds 2..N moved exactly
+    /// one dim digit in the bottom bar while the only other receipt — the draft row —
+    /// sat above the results where a scrolled list hides it. PRE-FIX every assertion
+    /// here fails on `notice == nil`.
+    func testEveryAddLeavesAVisibleReceiptNamingWhatLanded() {
+        let b = makeBuilder()
+        b.add([item("Neon")], at: .bottom)
+        XCTAssertEqual(b.notice?.kind, .confirmation)
+        XCTAssertTrue(b.notice?.text.contains("Neon") == true, "one add names the song")
+
+        // The slot is part of the receipt whenever it isn't the default end-of-draft:
+        // the row it lands on may be nowhere near the user's eyes.
+        b.add([item("Cobalt")], at: .top)
+        XCTAssertTrue(b.notice?.text.contains("TOP") == true, "…and says where it went")
+
+        b.add([item("a"), item("b"), item("c")], at: .bottom)
+        XCTAssertTrue(b.notice?.text.contains("3 songs") == true, "a batch counts")
+
+        // A remove is not an add — its receipt would be a lie about the draft's shape.
+        b.removeDraft(uids: Set(b.draft.prefix(1).map(\.uid)))
+        XCTAssertNil(b.notice)
+    }
+
+    /// The ROW's own receipt. Without it a user unsure their tap registered taps again
+    /// and silently gets two copies (`add` appends unconditionally, by design).
+    func testDraftedIdsMarkTheResultRowsAlreadyAdded() {
+        let b = makeBuilder()
+        XCTAssertTrue(b.draftedIds.isEmpty)
+        b.add([item("sng_1")], at: .bottom)
+        XCTAssertTrue(b.draftedIds.contains("sng_1"))
+        XCTAssertFalse(b.draftedIds.contains("sng_2"))
+        b.removeDraft(uids: Set(b.draft.map(\.uid)))
+        XCTAssertTrue(b.draftedIds.isEmpty, "…and it un-marks when the row leaves the draft")
+    }
+
+    // MARK: The LIVE queue — "I can see what I am building" (requirement A)
+
+    /// The sheet covers the Now Playing panel on iPhone, so while it is open the running
+    /// set was invisible: the user built a queue with no view of what it was being built
+    /// against. PRE-FIX there is no `liveQueue` at all.
+    func testLiveQueueProjectsWhatIsPlayingAndWhatIsQueuedBehindIt() {
+        let seq = makeSequencer()
+        let b = makeBuilder()
+        XCTAssertTrue(b.liveQueue(seq).isEmpty, "nothing running ⇒ nothing to show")
+
+        seq.play([item("a"), item("b"), item("c"), item("d")], sourceSetlistId: nil)
+        let live = b.liveQueue(seq)
+        XCTAssertEqual(live.nowPlaying?.id, "a")
+        XCTAssertEqual(live.upNext.map(\.id), ["b", "c", "d"])
+        XCTAssertEqual(live.upNextTotal, 3)
+        XCTAssertFalse(live.isHeld)
+        XCTAssertFalse(live.isEmpty)
+
+        // WINDOWED: `SetlistPlayer.upcoming` is a slice precisely so nobody materializes
+        // a 26k tail per body pass. The total is reported separately so the sheet can
+        // say "+ N more" instead of lying about the set's length.
+        let windowed = b.liveQueue(seq, limit: 2)
+        XCTAssertEqual(windowed.upNext.map(\.id), ["b", "c"])
+        XCTAssertEqual(windowed.upNextTotal, 3)
+        seq.stop()
+    }
+
+    /// A RESTORED set is `isRunning` with NO audio. Calling that "Now playing" is the
+    /// same class of lie the shipped Up-next receipt told, so the projection carries the
+    /// distinction and the sheet's header reads "Paused set".
+    func testLiveQueueMarksARestoredSetHeldRatherThanPlaying() {
+        let seq = makeSequencer()
+        let b = makeBuilder()
+        seq.restore(from: PlaybackSessionStore.Snapshot(
+            sessionId: "pses_t",
+            source: .init(kind: "playlist", id: "pls_1", name: "Roadtrip"),
+            queue: [.init(songId: "s_a", title: "A", artist: "X", lengthMs: nil, repeatCount: nil),
+                    .init(songId: "s_b", title: "B", artist: "X", lengthMs: nil, repeatCount: nil)],
+            index: 0, positionMs: 0, isPlaying: true, updatedAt: 0))
+        XCTAssertTrue(seq.isRunning)
+        let live = b.liveQueue(seq)
+        XCTAssertTrue(live.isHeld, "running by every flag, silent in fact")
+        XCTAssertEqual(live.nowPlaying?.id, "s_a")
+        XCTAssertEqual(live.upNext.map(\.id), ["s_b"])
+        seq.stop()
+    }
+
+    /// The flush was a ONE-WAY DOOR: the draft emptied, Play vanished with it, and the
+    /// songs went somewhere the sheet could not render — one line of text was the whole
+    /// receipt. They must remain VISIBLE, in the live queue, right where they landed.
+    func testFlushedSongsStayVisibleInTheLiveQueue() {
+        let seq = makeSequencer()
+        let b = makeBuilder()
+        seq.play([item("a"), item("b")], sourceSetlistId: nil)
+        b.add([item("e"), item("f")], at: .bottom)
+        XCTAssertEqual(b.liveQueue(seq).upNext.map(\.id), ["b"], "not there yet")
+
+        XCTAssertEqual(b.flushToQueue(at: .bottom, sequencer: seq), 2)
+        XCTAssertTrue(b.draft.isEmpty)
+        XCTAssertEqual(b.liveQueue(seq).upNext.map(\.id), ["b", "e", "f"],
+                       "the draft emptied INTO something the sheet can show")
+        XCTAssertEqual(b.notice?.kind, .confirmation)
+        seq.stop()
+    }
+
+    // MARK: Cloud — the FOURTH state (no backend at all)
+
+    /// With no import server AND no Apple Music authorization, Discover settles `.loaded`
+    /// with zero hits and NO error, so every query rendered "Nothing in the Apple Music
+    /// catalog matched that" — a claim about the CATALOG standing in for the truth about
+    /// this device. Knowable before any search runs.
+    func testCloudUnavailableIsItsOwnStateNotAnEmptyResult() {
+        XCTAssertNil(QueueBuilderState.cloudUnavailableMessage(hasServer: true,
+                                                               canSearchCatalog: false))
+        XCTAssertNil(QueueBuilderState.cloudUnavailableMessage(hasServer: false,
+                                                               canSearchCatalog: true))
+        XCTAssertNil(QueueBuilderState.cloudUnavailableMessage(hasServer: true,
+                                                               canSearchCatalog: true))
+        let message = QueueBuilderState.cloudUnavailableMessage(hasServer: false,
+                                                                canSearchCatalog: false)
+        XCTAssertNotNil(message, "neither lane can answer — SAY so")
+        XCTAssertTrue(message?.contains("Settings") == true, "…and point somewhere actionable")
+    }
+
+    // MARK: Sticky-empty, one level below the unbound case (the BASE memo)
+
+    /// `baseKey` moves only with the catalog revision, so memoizing an EMPTY base blanks
+    /// the surface for that WHOLE revision — every later signature reuses the cached
+    /// nothing. PRE-FIX the second call reuses `[]` under "K" and this asserts 0 == 5.
+    func testAnEmptyBaseIsNeverMemoizedUnderItsBaseKey() async throws {
+        let all = try TestData.songItems()
+        let b = makeBuilder()
+        var rows: [BrowseItem] = []
+        b.browse.externalBase = { (rows, []) }
+
+        await b.browse.refreshExternal(signature: "S1", baseKey: "K")
+        XCTAssertTrue(b.browse.displayItems.isEmpty)
+
+        // The base fills in — WITHOUT the catalog revision (and so `baseKey`) moving.
+        rows = Array(all.prefix(5))
+        await b.browse.refreshExternal(signature: "S2", baseKey: "K")
+        XCTAssertEqual(b.browse.displayItems.count, 5,
+                       "an empty base must never be remembered")
+    }
+
+    /// …and the explicit submit must escape it even when the empty base WAS cached under
+    /// the real key. This is TRACE A's poisoned-base probe against the REAL `qb-<rev>`
+    /// key (the existing forced-refresh test uses a different key, so it never touched
+    /// the base memo). PRE-FIX: `invalidateDisplayKey` cleared only the DISPLAY memo, so
+    /// the forced run re-filtered the cached nothing and the user stayed blank forever.
+    func testExplicitSubmitEscapesABasePoisonedUnderTheRealBaseKey() async {
+        let app = await loadedApp()
+        let b = makeBuilder()
+        b.songQuery = "neon"
+
+        // The lost race, exactly as it lands in production: a bound-but-empty base
+        // published under the signature AND the real baseKey.
+        b.browse.externalBase = { ([], []) }
+        await b.browse.refreshExternal(signature: b.deviceSignature(app),
+                                       baseKey: b.deviceBaseKey(app))
+        XCTAssertTrue(b.deviceResults.isEmpty)
+
+        await b.refreshDevice(app, force: true)
+        XCTAssertEqual(b.deviceResults.map(\.idString), ["sng_1"],
+                       "the ⌕ button / return key is the one gesture that must ALWAYS work")
+    }
+
+    /// The silent no-op where an assertion belongs: mismatched parallel arrays used to
+    /// DROP the text query and return the whole base — indistinguishable, to a user,
+    /// from "typing has no effect". PRE-FIX this returns all 7 rows.
+    func testFilterSortHonoursTheQueryEvenWithMismatchedSearchKeys() throws {
+        let items = try TestData.songItems()
+        let out = BrowseState.filterSort(base: items, searchKeys: [], query: "neon",
+                                         clauses: [], sortKeys: [])
+        XCTAssertEqual(out.map(\.idString), ["sng_1"],
+                       "a broken haystack must never silently widen the search")
     }
 }

@@ -839,6 +839,17 @@ struct NowPlayingMiniBar: View {
     @Environment(PlayerEngine.self) private var player
     @Environment(PlaybackCoordinator.self) private var coordinator
     @Environment(AppModel.self) private var app
+    /// Opens the queue-builder sheet (owned by RootView). Declared BEFORE `expand` so
+    /// the existing trailing-closure call site keeps binding to `expand`.
+    ///
+    /// Without it this strip was a DEAD END for the builder: RootView picks the strip
+    /// over the docked panel while `npCollapsed` (a persisted @AppStorage), the strip
+    /// carried no ＋, and the `idleBuilderRow` that would have held one is unreachable
+    /// because a set IS running. A user who had ever collapsed the deck had no way to
+    /// add anything to a queue at all.
+    var openBuilder: () -> Void
+    /// The draft count, for the same badge the panel's ＋ carries.
+    var draftCount: Int
     /// Flips the collapse state back off (owned by RootView's @AppStorage).
     var expand: () -> Void
 
@@ -866,6 +877,23 @@ struct NowPlayingMiniBar: View {
                 // against a tile the listener never opened.
                 NowPlayingFeedbackButtons(font: .footnote)
             }
+            Button(action: openBuilder) {
+                Image(systemName: draftCount == 0 ? "plus" : "text.badge.plus")
+                    .font(.footnote.weight(.semibold))
+                    .overlay(alignment: .topTrailing) {
+                        if draftCount > 0 {
+                            Circle().fill(Theme.accent).frame(width: 6, height: 6)
+                                .offset(x: 4, y: -3)
+                        }
+                    }
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+            .help(draftCount == 0 ? "Build a queue" : "Build a queue — \(draftCount) waiting")
+            .accessibilityLabel("Build a queue")
+            .accessibilityValue(draftCount == 0 ? "Empty" : "\(draftCount) queued")
+            // Same id as the panel/idle entries: exactly ONE of the three exists at a time.
+            .accessibilityIdentifier("np-builder-open")
             Button { sequencer.skipPrevious() } label: {
                 Image(systemName: "backward.fill").font(.footnote)
             }

@@ -11,6 +11,11 @@ import SwiftUI
 /// session). While a set runs, a second action flushes the draft into the live
 /// queue instead of replacing it.
 ///
+/// THREE lists, top to bottom, and the first two are ALWAYS there: the running set
+/// (read-only — what is playing and what is queued behind it), the DRAFT the user is
+/// assembling, and the search results. Everything a ＋ can do is visible somewhere on
+/// this sheet; nothing lands anywhere the user cannot see.
+///
 /// The VIEW is thin by contract: `QueueBuilderState` owns search/mode/draft/adds
 /// (unit-tested there); this file renders its state and wires the environment.
 /// Device results ride the BrowseState `refreshExternal` lane (never the shared
@@ -40,6 +45,10 @@ struct QueueBuilderView: View {
         VStack(spacing: 0) {
             headerRow
             List {
+                // WHAT IS ALREADY THERE, first: the sheet covers the Now Playing panel
+                // on iPhone, so without this the user is building a queue blind — and a
+                // flush to Up next lands somewhere the sheet cannot render.
+                liveQueueSection
                 // The draft is the ONE receipt an add can land in, so it renders on
                 // its own emptiness alone; with nothing in it, its slot carries the
                 // first-run guidance instead of collapsing to a blank sheet.
@@ -79,7 +88,14 @@ struct QueueBuilderView: View {
             await builder.refreshDevice(app)
         }
         .onChange(of: builder.songQuery) { refreshCloudIfNeeded() }
-        .onChange(of: builder.artistQuery) { refreshCloudIfNeeded() }
+        // The artist box is a READ-time refine in device mode (deliberately out of
+        // `deviceSignature`, so it narrows instantly instead of paying the debounce +
+        // a full filter/sort) — which means nothing else resets the render window for
+        // it. A narrowed list must start at the top of its budget, not 150 rows in.
+        .onChange(of: builder.artistQuery) {
+            shownResults = RowWindow.page
+            refreshCloudIfNeeded()
+        }
         .onChange(of: builder.mode) { _, mode in
             shownResults = RowWindow.page
             if mode == .cloud { refreshCloudIfNeeded() }
@@ -144,6 +160,67 @@ struct QueueBuilderView: View {
         .padding(.horizontal, 14).padding(.top, 10)
     }
 
+    // MARK: - The LIVE queue (read-only context)
+
+    /// "What is already playing / queued", above everything else. Read-only on purpose:
+    /// the sheet's job is building, and the panel behind it owns live editing. What it
+    /// buys is that the user can always SEE the queue they are working against — and,
+    /// after an "Up next" flush, can see exactly where their songs went instead of
+    /// getting one line of text and a draft that vanished.
+    @ViewBuilder private var liveQueueSection: some View {
+        // SIX rows, not the whole tail: this is context, not a second queue view. A
+        // long set would otherwise put forty rows between the sheet's top and the
+        // search results — the panel behind owns the full list, and "+ N more" says
+        // how much is not shown.
+        let live = builder.liveQueue(sequencer, limit: 6)
+        if !live.isEmpty {
+            Section {
+                if let now = live.nowPlaying {
+                    liveRow(now, symbol: live.isHeld ? "pause.circle" : "speaker.wave.2.fill",
+                            emphasized: true, id: "np-builder-live-now")
+                }
+                ForEach(Array(live.upNext.enumerated()), id: \.element.uid) { offset, item in
+                    liveRow(item, symbol: nil, emphasized: false,
+                            id: "np-builder-live-\(offset)")
+                }
+                if live.upNextTotal > live.upNext.count {
+                    Text("+ \(live.upNextTotal - live.upNext.count) more in the set")
+                        .font(.caption2).foregroundStyle(Theme.fgDim)
+                        .listRowBackground(Theme.bg)
+                        .accessibilityIdentifier("np-builder-live-more")
+                }
+            } header: {
+                // A RESTORED set is `isRunning` with no audio — saying "Now playing"
+                // there is the same lie the shipped build told with its Up-next receipt.
+                Text(live.isHeld
+                     ? "Paused set (\(live.upNextTotal) up next)"
+                     : "Now playing (\(live.upNextTotal) up next)")
+                    .font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("np-builder-live-header")
+            }
+        }
+    }
+
+    private func liveRow(_ item: SetlistPlayer.Item, symbol: String?,
+                         emphasized: Bool, id: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: symbol ?? "circle.fill")
+                .font(symbol == nil ? .system(size: 4) : .caption2)
+                .foregroundStyle(emphasized ? Theme.accent : Theme.fgDim)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 0) {
+                Text(item.title)
+                    .font(emphasized ? .caption.weight(.semibold) : .caption)
+                    .foregroundStyle(emphasized ? Theme.fg : Theme.fgDim).lineLimit(1)
+                Text(item.artist).font(.caption2).foregroundStyle(Theme.fgDim).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+        }
+        .listRowBackground(Theme.bg)
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier(id)
+    }
+
     // MARK: - First-run guidance (shown wherever the draft would be, when empty)
 
     /// What a first-time user needs to know in one breath: search, ＋, Play. The
@@ -158,8 +235,13 @@ struct QueueBuilderView: View {
                      + "Hold ＋ to choose where it lands.")
                     .font(.caption2).foregroundStyle(Theme.fgDim)
                 Text(canFlushToLiveQueue
-                     ? "Play replaces what’s playing now; Up next adds to the end of the current set."
+                     ? "Play replaces what’s playing now; Up next adds to the end of the set above."
                      : "Then hit Play to start the set.")
+                    .font(.caption2).foregroundStyle(Theme.fgDim)
+                // A first-timer whose device catalog is thin has no way to guess that
+                // the whole Apple Music catalog is one tap away on the source button.
+                Text("Not finding it? Tap \(builder.mode == .device ? "Apple Music" : "On-device") "
+                     + "beside the search boxes to switch source.")
                     .font(.caption2).foregroundStyle(Theme.fgDim)
             }
             .padding(.vertical, 2)
@@ -192,7 +274,15 @@ struct QueueBuilderView: View {
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel("Remove from draft")
                         .accessibilityIdentifier("np-builder-draft-remove-\(offset)")
+                        // Reorder was real (`.onMove`) but ADVERTISED nowhere: no edit
+                        // button, no handle, so on iOS it only answered a long press
+                        // nobody had a reason to try. The glyph is the advert.
+                        Image(systemName: "line.3.horizontal")
+                            .font(.caption).foregroundStyle(Theme.fgDim)
+                            .accessibilityLabel("Drag to reorder")
+                            .accessibilityIdentifier("np-builder-draft-handle-\(offset)")
                     }
                     .contentShape(Rectangle())
                     .listRowBackground(Theme.bg)
@@ -211,6 +301,16 @@ struct QueueBuilderView: View {
                 Text("Draft queue (\(draft.count))")
                     .font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
                     .accessibilityIdentifier("np-builder-draft-header")
+            } footer: {
+                // The guidance used to be either/or with this section, so the two lines
+                // a user needs MOST (where ＋ can land, how to reorder) disappeared at
+                // the exact moment they became actionable. They live here now.
+                Text("Hold ＋ to choose where a song lands · drag ≡ to reorder · swipe to remove."
+                     + (canFlushToLiveQueue
+                        ? " Play replaces what’s playing; Up next appends to the set above."
+                        : " Hit Play to start these."))
+                    .font(.caption2).foregroundStyle(Theme.fgDim)
+                    .accessibilityIdentifier("np-builder-draft-hint")
             }
         }
     }
@@ -219,6 +319,7 @@ struct QueueBuilderView: View {
 
     @ViewBuilder private var deviceResultsSection: some View {
         let results = builder.deviceResults
+        let drafted = builder.draftedIds
         Section {
             // In-flight ≠ empty ≠ never-ran. The shipped header said `On-device (0)`
             // for all three (including a base that never bound), which reads as
@@ -237,9 +338,16 @@ struct QueueBuilderView: View {
                     id: \.element.id) { offset, item in
                 if case .song(let song, _, _, _, _) = item {
                     HStack(spacing: 8) {
+                        // `showsTransport: false` — the shared row ends in a ▶ that
+                        // PREVIEWS one track and adds nothing. Sitting a few points from
+                        // the ＋ on iPhone portrait, it is the likeliest thing a user
+                        // reaching for "add" actually hit: a song plays, the queue stays
+                        // empty, and the sheet looks like it refused. In a sheet whose
+                        // only job is adding, the add must be the only play-shaped glyph.
                         SongRowView(data: SongRowData(song: song,
-                                                      album: app.album(forSongId: song.id)))
-                        addButton(offset: offset) { pos in
+                                                      album: app.album(forSongId: song.id)),
+                                    showsTransport: false)
+                        addButton(offset: offset, isAdded: drafted.contains(song.id)) { pos in
                             builder.add([Self.item(for: song)], at: pos)
                         }
                     }
@@ -306,7 +414,14 @@ struct QueueBuilderView: View {
     @ViewBuilder private var cloudResultsSection: some View {
         let hits = rankedHits
         Section {
-            if !builder.hasSearchTerm {
+            // FOURTH state, and it is knowable before any query: with no import server
+            // AND no Apple Music authorization, Discover settles `.loaded` with zero
+            // hits and NO error, so every search rendered "nothing matched" — a claim
+            // about the catalog standing in for the truth about this device.
+            if let unavailable = builder.cloudUnavailable(rips: rips,
+                                                          catalog: streaming.appleMusicProvider) {
+                errorRow(unavailable)
+            } else if !builder.hasSearchTerm {
                 // Wording matches what ＋ ACTUALLY does now: it drafts. The shipped
                 // line promised "queues it", which was untrue in the draft regime.
                 Text("Search Apple Music — ＋ adds the song to your library and to the draft below.")
@@ -330,9 +445,11 @@ struct QueueBuilderView: View {
                             emptyRow("Nothing in the Apple Music catalog matched that.")
                         }
                     } else {
+                        let drafted = builder.draftedIds
                         ForEach(Array(hits.prefix(shownResults).enumerated()),
                                 id: \.element.songId) { offset, hit in
-                            cloudRow(hit: hit, offset: offset)
+                            cloudRow(hit: hit, offset: offset,
+                                     isAdded: drafted.contains(hit.songId))
                         }
                         RowWindowSentinel(total: hits.count, shown: $shownResults)
                             .listRowBackground(Theme.bg)
@@ -347,7 +464,8 @@ struct QueueBuilderView: View {
 
     /// Slim cloud row — DiscoverHit fields only. Deliberately NOT `DiscoverRow`
     /// (that row is BrowseView-coupled: album-preview pushes, rip-phase spinners).
-    private func cloudRow(hit: RipsStore.DiscoverHit, offset: Int) -> some View {
+    private func cloudRow(hit: RipsStore.DiscoverHit, offset: Int,
+                          isAdded: Bool) -> some View {
         HStack(spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 6) {
@@ -374,7 +492,7 @@ struct QueueBuilderView: View {
                 Text(String(format: "%d:%02d", ms / 60_000, (ms / 1000) % 60))
                     .font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
             }
-            addButton(offset: offset) { pos in
+            addButton(offset: offset, isAdded: isAdded) { pos in
                 builder.addCloudHit(hit, at: pos)
             }
         }
@@ -389,11 +507,15 @@ struct QueueBuilderView: View {
     /// (macOS) picks the slot. The labels are DRAFT-relative in both regimes now:
     /// the shipped menu said "Play next", which in the draft regime played nothing
     /// next — it inserted at draft index 0.
-    private func addButton(offset: Int,
+    private func addButton(offset: Int, isAdded: Bool = false,
                            add: @escaping (QueueBuilderState.AddPosition) -> Void) -> some View {
         Button { add(.bottom) } label: {
-            Image(systemName: "plus.circle.fill")
-                .foregroundStyle(Theme.accent)
+            // The ROW's own receipt. A user unsure whether their tap registered had
+            // nothing here to read and would tap again, silently getting two copies;
+            // the check answers at the point of the gesture. Still tappable — adding a
+            // second copy on purpose is legitimate.
+            Image(systemName: isAdded ? "checkmark.circle.fill" : "plus.circle.fill")
+                .foregroundStyle(isAdded ? Theme.fgDim : Theme.accent)
                 .frame(minWidth: 44, minHeight: 44)
                 .contentShape(Rectangle())
         }
@@ -402,13 +524,18 @@ struct QueueBuilderView: View {
             Button { add(.bottom) } label: {
                 Label("Add to end", systemImage: "text.append")
             }
+            .accessibilityIdentifier("np-builder-add-end-\(offset)")
             Button { add(.top) } label: {
                 Label("Add to top", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
+            .accessibilityIdentifier("np-builder-add-top-\(offset)")
             Button { add(.random) } label: {
                 Label("Surprise", systemImage: "dice")
             }
+            .accessibilityIdentifier("np-builder-add-random-\(offset)")
         }
+        .accessibilityLabel(isAdded ? "Add again" : "Add to draft queue")
+        .accessibilityValue(isAdded ? "In the draft" : "Not added")
         .accessibilityIdentifier("np-builder-add-\(offset)")
     }
 
@@ -494,7 +621,7 @@ struct QueueBuilderView: View {
             Spacer(minLength: 0)
             Button { builder.clearNotice() } label: {
                 Image(systemName: "xmark").font(.caption2)
-                    .frame(minWidth: 32, minHeight: 32).contentShape(Rectangle())
+                    .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Dismiss")
@@ -580,7 +707,12 @@ struct QueueBuilderView: View {
         // (`.onSubmit(submitSearch)`), and on macOS a focused field's Return also
         // fires the window's default button — one keystroke doing both would race.
         // A typing user means "search"; Play is a deliberate tap.
-        .help(sequencer.isRunning
+        // Honest about WHAT it replaces. `sequencer.isRunning` is also true while the
+        // Mix owns the audio — the playNow funnel takes over the SET there but nothing
+        // in it tears the Mix down, so promising "replaces what's playing" would be a
+        // claim the app doesn't keep. `canFlushToLiveQueue` is the panel's own "this
+        // set is the audio" test.
+        .help(canFlushToLiveQueue
               ? "Play these now — replaces what’s playing"
               : "Play these now")
         .accessibilityIdentifier("np-builder-play")
@@ -605,12 +737,15 @@ struct QueueBuilderView: View {
             Button { builder.flushToQueue(at: .bottom, sequencer: sequencer) } label: {
                 Label("Add to end of the set", systemImage: "text.append")
             }
+            .accessibilityIdentifier("np-builder-flush-end")
             Button { builder.flushToQueue(at: .top, sequencer: sequencer) } label: {
                 Label("Play next", systemImage: "text.line.first.and.arrowtriangle.forward")
             }
+            .accessibilityIdentifier("np-builder-flush-next")
             Button { builder.flushToQueue(at: .random, sequencer: sequencer) } label: {
                 Label("Surprise", systemImage: "dice")
             }
+            .accessibilityIdentifier("np-builder-flush-random")
         }
         .help("Add these to the end of what’s playing")
         .accessibilityIdentifier("np-builder-flush")

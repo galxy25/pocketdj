@@ -1,5 +1,6 @@
 import SwiftUI
 import Observation
+import os
 
 /// View-state for the Browser: item kind, text query, filter clauses, sort keys,
 /// and layout. Pure of the data layer — it takes an `AppModel` to read from, so
@@ -377,7 +378,14 @@ final class BrowseState {
             base = c.base; keys = c.keys
         } else if let build = externalBase {
             (base, keys) = build()
-            externalBaseCache = (baseKey, base, keys)
+            // NEVER memoize an EMPTY base. `baseKey` only moves with the catalog/event
+            // revision, so caching a transient empty answer (a catalog still loading, a
+            // binding that hands back nothing yet) blanks the surface for that WHOLE
+            // revision — the same sticky-empty class as the unbound case below, one level
+            // down, and the one `invalidateDisplayKey` could not rescue: dropping the
+            // display memo re-runs the filter, but it re-runs it against the cached
+            // nothing. An empty base costs nothing to rebuild, so never keep one.
+            if !base.isEmpty { externalBaseCache = (baseKey, base, keys) }
         } else {
             // NO base bound yet — the host's binding lost the race with this recompute.
             // Publishing here would be doubly sticky: the empty base memoizes under
@@ -402,7 +410,15 @@ final class BrowseState {
     /// Drop the "already current" memo so the NEXT `refreshExternal` recomputes even when the
     /// signature is unchanged. The explicit-submit seam: a user who types the same term and hits
     /// Search must get a real search, not the early return at the top of `refreshExternal`.
-    func invalidateDisplayKey() { displayKey = nil }
+    ///
+    /// The BASE memo goes too. An explicit submit means "whatever you think you know, look
+    /// again" — clearing only `displayKey` would re-run the filter over the same remembered
+    /// base, so a stale (or empty) base would survive the one gesture the user has for
+    /// escaping it. Rebuilding the base is an O(1) hand-off from the host's closure.
+    func invalidateDisplayKey() {
+        displayKey = nil
+        externalBaseCache = nil
+    }
 
     /// A stable signature of the filter/sort inputs (query + complete clauses + sort keys),
     /// WITHOUT the catalog revision — History composes this with its own event-log revision to
@@ -524,11 +540,38 @@ final class BrowseState {
         // "abba\n" matching "abba".
         let q = query.replacingOccurrences(of: "\n", with: "")
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
-        if !q.isEmpty, base.count == searchKeys.count {
-            items = zip(base, searchKeys).compactMap { $0.1.contains(q) ? $0.0 : nil }
+        if !q.isEmpty {
+            if base.count == searchKeys.count {
+                items = zip(base, searchKeys).compactMap { $0.1.contains(q) ? $0.0 : nil }
+            } else {
+                // A caller handed mismatched parallel arrays. This used to DROP the query
+                // and return the whole base — which reads to a user as "typing does
+                // nothing", the exact symptom this surface was reported for, with no log
+                // and no way to tell it from a genuinely broad result. Honour the query on
+                // the item's own fields instead (correct, just slower) and shout in debug.
+                mismatchLog.fault("searchKeys \(searchKeys.count) must parallel base \(base.count) — falling back to per-item matching")
+                items = base.filter { matchesFolded($0, q) }
+            }
         }
         return SortEngine.apply(FilterEngine.apply(items, clauses, playCounts: playCounts),
                                 sortKeys, playCounts: playCounts)
+    }
+
+    /// Per-item fallback for the (should-never) mismatched-`searchKeys` path above: fold the
+    /// row's own name/artist the way `AppModel.searchKey` folds the haystack, so a query still
+    /// narrows. `q` is expected pre-folded by the caller.
+    /// The parallel-array invariant is a programmer contract, so a violation is a fault, not a
+    /// user-facing error — but it must be LOUD (and testable): the old silent drop rendered as
+    /// "search does nothing", indistinguishable from a broken query.
+    nonisolated static let mismatchLog = Logger(subsystem: "com.levi.pocketdj", category: "browse")
+
+    nonisolated static func matchesFolded(_ item: BrowseItem, _ q: String) -> Bool {
+        for field in ["name", "artist"] {
+            guard case .string(let s) = Fields.value(item, field) else { continue }
+            if s.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil)
+                .contains(q) { return true }
+        }
+        return false
     }
 
     /// Distinct values present for an options-backed field (drives `any of` pickers).

@@ -498,6 +498,97 @@ final class NowPlayingUITests: XCTestCase {
         #endif
     }
 
+    /// Requirement A — "I can see the queue I am building". The sheet covers the Now
+    /// Playing panel on iPhone, so while it is open the RUNNING set used to be
+    /// invisible: the user assembled a queue with no view of what it was queued
+    /// behind, and an "Up next" flush emptied the draft into somewhere this sheet
+    /// could not render. Asserted entirely from INSIDE the sheet, because that is
+    /// where every one of the user's complaints lives.
+    ///
+    /// Also the two receipts the shipped build never gave: results BEFORE any typing
+    /// (the sheet must open populated, not blank) and a confirmation for a plain ＋.
+    func testBuilderShowsTheLiveQueueAndConfirmsEveryAdd() throws {
+        #if os(macOS)
+        throw XCTSkip("builder smoke exercised on iOS (macOS UI automation unavailable headless)")
+        #else
+        app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
+        app.launch()
+        XCTAssertTrue(app.revealNowPlayingHome().waitForExistence(timeout: 15))
+        let plus = app.el("np-builder-open")
+        XCTAssertTrue(plus.waitForExistence(timeout: 8))
+        plus.tap()
+        XCTAssertTrue(app.any("np-builder").waitForExistence(timeout: 8), "builder sheet presents")
+
+        // 1. The running set is VISIBLE from inside the sheet (seed: 3 rows, index 1 ⇒
+        //    "Pulse" playing, "Drift" up next).
+        XCTAssertTrue(app.any("np-builder-live-header").waitForExistence(timeout: 8),
+                      "the queue being built against must be on screen")
+        XCTAssertTrue(app.any("np-builder-live-now").exists, "…including what is playing")
+        XCTAssertTrue(app.any("np-builder-live-0").exists, "…and what is queued behind it")
+
+        // 2. Device mode opens POPULATED — an empty query lists the catalog, windowed.
+        //    A blank list with no way to search is the report's first half.
+        let add = app.el("np-builder-add-0")
+        XCTAssertTrue(add.waitForExistence(timeout: 10),
+                      "the results list must be non-empty before any typing")
+
+        // 3. A plain ＋ CONFIRMS. Pre-fix it cleared the notice line, so adds 2..N moved
+        //    one dim digit at the bottom of the sheet and nothing else.
+        add.tap()
+        XCTAssertTrue(app.any("np-builder-notice").waitForExistence(timeout: 5),
+                      "every add says so, in a line the user is looking at")
+        XCTAssertTrue(app.any("np-builder-draft-header").exists, "…and lands in the visible draft")
+        XCTAssertTrue(app.el("np-builder-play").exists, "…which is immediately playable")
+        attach("queue-builder-live-and-draft")
+
+        // 4. The flush is no longer a one-way door into somewhere invisible: the songs
+        //    move INTO the live-queue section this sheet renders.
+        app.el("np-builder-flush").tap()
+        XCTAssertTrue(app.any("np-builder-live-1").waitForExistence(timeout: 8),
+                      "the flushed song is visible where it landed, not just described")
+        XCTAssertFalse(app.any("np-builder-draft-header").exists, "the draft emptied into it")
+        XCTAssertTrue(app.any("np-builder-hint").exists, "guidance retakes the empty draft's slot")
+        app.el("np-builder-close").tap()
+        #endif
+    }
+
+    /// Requirement 1 — typing NARROWS, and the states are distinguishable. A device
+    /// query for a fixture song must leave exactly that row addable; clearing it must
+    /// restore the full list. Run from the idle regime so the results section owns the
+    /// whole sheet.
+    func testBuilderTypingNarrowsTheResultsAndSaysWhenNothingMatches() throws {
+        #if os(macOS)
+        throw XCTSkip("builder smoke exercised on iOS (macOS UI automation unavailable headless)")
+        #else
+        app.launch()
+        // Idle: no panel to reveal, but the same helper pops the phone's stack back to
+        // the sidebar, which is where `idleBuilderRow` holds the builder's slot.
+        _ = app.revealNowPlayingHome()
+        let plus = app.el("np-builder-open")
+        XCTAssertTrue(plus.waitForExistence(timeout: 15), "idle entry row holds the builder's slot")
+        plus.tap()
+        XCTAssertTrue(app.any("np-builder").waitForExistence(timeout: 8))
+        XCTAssertTrue(app.el("np-builder-add-0").waitForExistence(timeout: 10),
+                      "opens populated (empty query ⇒ the whole catalog, windowed)")
+
+        let field = app.textFields["np-builder-song-field"]
+        field.tap()
+        field.typeText("neon\n")                     // the EXPLICIT submit path
+        XCTAssertTrue(app.el("np-builder-add-0").waitForExistence(timeout: 8),
+                      "a matching query still has rows")
+        // A refine that matches NOTHING must SAY so — never a silent blank list. The
+        // artist box also exercises the read-time refine that is deliberately out of
+        // the recompute signature: it must narrow without any recompute at all.
+        let artist = app.textFields["np-builder-artist-field"]
+        artist.tap()
+        artist.typeText("zzzz\n")
+        XCTAssertTrue(app.any("np-builder-empty").waitForExistence(timeout: 8),
+                      "no matches is its own stated state")
+        attach("queue-builder-no-matches")
+        app.el("np-builder-close").tap()
+        #endif
+    }
+
     private func attach(_ name: String) {
         let att = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         att.name = name

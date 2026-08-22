@@ -171,7 +171,10 @@ struct RootView: View {
                     Divider().overlay(Theme.border)
                     #if os(iOS)
                     if npCollapsed {
-                        NowPlayingMiniBar { npCollapsed = false }
+                        NowPlayingMiniBar(openBuilder: { builderPresented = true },
+                                          draftCount: builder.draft.count) {
+                            npCollapsed = false
+                        }
                     } else {
                         dockedPanel
                     }
@@ -529,7 +532,10 @@ struct RootView: View {
     /// pins to the detail column's bottom; its chevron restores the sidebar.
     @ViewBuilder private var collapsedSidebarMiniBar: some View {
         if showsSidebarToggle && columnVisibility == .detailOnly && nowPlayingVisible {
-            NowPlayingMiniBar { withAnimation { columnVisibility = .all } }
+            NowPlayingMiniBar(openBuilder: { builderPresented = true },
+                              draftCount: builder.draft.count) {
+                withAnimation { columnVisibility = .all }
+            }
         }
     }
 
