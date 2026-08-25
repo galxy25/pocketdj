@@ -260,19 +260,38 @@ const newestFileSince = (dir, sinceMs) => {
 };
 
 // play a track by Persistent ID; returns {ok, durationSec}
+// A library row whose `kind` is EMPTY is a placeholder with no playable asset — Music
+// ACCEPTS `play t` on it, silently does nothing, and leaves whatever was playing before
+// in place. The health probe then reads that stale state and reports the player as
+// "wedged", which is how ~51 songs blamed Music.app for four days (2026-08-24). These
+// duplicates sit right beside the real row (same name+artist, `kind` = "HLS media" /
+// "Apple Music AAC audio file"), so every play path must pick a PLAYABLE row and then
+// PROVE the player actually landed on it.
+const PLAYABLE_CLAUSE = 'kind is not ""';
+
 function playByPersistentID(pid) {
   const s = `tell application "Music"
   set t to first track of library playlist 1 whose persistent ID is ${JSON.stringify(pid)}
+  if (kind of t) is "" then
+    set nm to name of t
+    set ar to artist of t
+    set alt to (every track of library playlist 1 whose name is nm and artist is ar and ${PLAYABLE_CLAUSE})
+    if (count of alt) is 0 then return "UNPLAYABLE"
+    set t to item 1 of alt
+  end if
   set dur to (duration of t)
   play t
   return dur as text
 end tell`;
   const r = osa(s, 30000);
+  if (r.ok && r.out === 'UNPLAYABLE') {
+    return { ok: false, durationSec: 0, err: 'library row has no playable asset (empty kind) and no playable duplicate' };
+  }
   return { ok: r.ok, durationSec: parseFloat(r.out) || 0, err: r.err };
 }
 function searchAndPlay(artist, title) {
   const s = `tell application "Music"
-  set matches to (every track of library playlist 1 whose name contains ${JSON.stringify(title)} and artist contains ${JSON.stringify(artist)})
+  set matches to (every track of library playlist 1 whose name contains ${JSON.stringify(title)} and artist contains ${JSON.stringify(artist)} and ${PLAYABLE_CLAUSE})
   if (count of matches) is 0 then return "NONE"
   set t to item 1 of matches
   set dur to (duration of t)
@@ -334,6 +353,23 @@ async function ripOne(p) {
       err: `play accepted but Music never reached state=playing within ${PLAY_START_TIMEOUT_MS}ms `
         + `(last state=${health.lastState}, position=${health.lastPosition == null ? 'missing value' : health.lastPosition}, `
         + `${health.samples} probes) — playback engine wedged; restart Music.app` };
+  }
+  // 2b-ii) IDENTITY, not just liveness. A no-op `play` (see PLAYABLE_CLAUSE) leaves the
+  // PREVIOUS track running, so a probe that only asks "is something playing?" would happily
+  // record the wrong song under this song's name. Prove the player is on the track we asked
+  // for before a single byte is attributed to it.
+  {
+    const want = (p.title || '').toLowerCase();
+    const cur = osa('tell application "Music" to return name of current track', 15000);
+    const got = (cur.ok ? String(cur.out || '') : '').toLowerCase();
+    if (want && got && !got.includes(want.slice(0, Math.min(24, want.length)))
+        && !want.includes(got.slice(0, Math.min(24, got.length)))) {
+      AH.stop();
+      pauseMusic();
+      return { ...p, status: 'wrong-track', durationSec: pr.durationSec,
+        err: `player is on ${JSON.stringify(cur.out)} but this job asked for ${JSON.stringify(p.title)} `
+          + `— the play was accepted and ignored (placeholder library row?); refusing to record a mislabelled capture` };
+    }
   }
   // 2c) …and the mirror-image failure: playback is real but Audio Hijack never armed (the
   // shortcut exits 0 whether or not the session actually records). Same symptom as the wedge
