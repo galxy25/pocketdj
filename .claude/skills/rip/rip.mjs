@@ -267,12 +267,15 @@ const newestFileSince = (dir, sinceMs) => {
 // duplicates sit right beside the real row (same name+artist, `kind` = "HLS media" /
 // "Apple Music AAC audio file"), so every play path must pick a PLAYABLE row and then
 // PROVE the player actually landed on it.
-const PLAYABLE_CLAUSE = 'kind is not ""';
+// Also skip rows Apple has retired ("no longer available"): they answer `duration` and
+// accept `play` exactly like the empty-kind placeholders do, and several of these songs
+// keep a PLAYABLE uploaded/matched copy right beside the dead subscription row.
+const PLAYABLE_CLAUSE = 'kind is not "" and cloud status is not no longer available';
 
 function playByPersistentID(pid) {
   const s = `tell application "Music"
   set t to first track of library playlist 1 whose persistent ID is ${JSON.stringify(pid)}
-  if (kind of t) is "" then
+  if ((kind of t) is "") or ((cloud status of t) is no longer available) then
     set nm to name of t
     set ar to artist of t
     set alt to (every track of library playlist 1 whose name is nm and artist is ar and ${PLAYABLE_CLAUSE})
