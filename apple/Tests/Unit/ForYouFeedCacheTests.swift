@@ -458,6 +458,37 @@ final class ForYouFeedCacheTests: XCTestCase {
         XCTAssertEqual(snap.reasons(forTileId: "col-c1"), [:])
     }
 
+    /// The SOUND-ADMITTED badge set rides the same frozen document as the ids and the captions —
+    /// frozen for the same reason `zoneBuriedIds` is: a badge derived at render could disappear
+    /// from a row while the row stayed put.
+    func testSoundAdmittedIdsSurviveTheSnapshotRoundTrip() throws {
+        let crate = ForYouFeedSnapshot.Crate(id: "pkt_gym", kind: "pocket", name: "Gym",
+                                             songIds: ["a", "b", "c"],
+                                             reasons: ["b": "Sounds like this crate: punchy"],
+                                             soundIds: ["b"])
+        let snap = ForYouFeedSnapshot(refreshedAtMs: 9, zoneIds: ["z1"], crates: [crate])
+        let reborn = try JSONDecoder().decode(ForYouFeedSnapshot.self,
+                                              from: JSONEncoder().encode(snap))
+        XCTAssertEqual(reborn, snap)
+        XCTAssertEqual(reborn.soundIds(forTileId: "col-pkt_gym"), ["b"])
+        XCTAssertEqual(reborn.soundIds(forTileId: "zone"), [],
+                       "In Da Zone has no admission gate to come through, so it has no door and "
+                       + "no badges")
+    }
+
+    /// A snapshot cached BEFORE the sound door existed must decode with `nil` — its rows simply
+    /// render without badges. Additive-optional persistence, same doctrine as `reasons`.
+    func testAbsentSoundIdsDecodeAsNilAndBadgeNothing() throws {
+        try Data(#"""
+        {"refreshedAtMs":9,"zoneIds":["z"],
+         "crates":[{"id":"c1","kind":"pocket","name":"C","songIds":["x"]}]}
+        """#.utf8).write(to: url("pre-sound.json"))
+        let snap = ForYouFeedStore(fileURL: url("pre-sound.json")).snapshot
+        XCTAssertEqual(snap.zoneIds, ["z"], "the pre-field document still decodes whole")
+        XCTAssertNil(snap.crates.first?.soundIds, "absent ⇒ nil, not empty")
+        XCTAssertEqual(snap.soundIds(forTileId: "col-c1"), [])
+    }
+
     /// The DEVICE-RANKED path: the builder now asks `suggestionsExplained`, so every crate row
     /// arrives with the engine's why — same ids, same order as the unexplained ranking.
     func testBuilderAttachesTheEnginesReasonToEveryCrateRow() {

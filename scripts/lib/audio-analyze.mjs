@@ -98,7 +98,10 @@ export async function analyzeAudio(opts) {
         { encoding: 'utf8', timeout: 180000 });
       const j = JSON.parse(res.trim().split('\n').filter(Boolean).pop());
       if (j.ok && j.f) {
-        out.timbre = { v: TIMBRE_VERSION, f: j.f };
+        // The RAW block rides along when the engine produced one — see analyze-timbre.py for why
+        // keeping it makes the next rail change arithmetic instead of a multi-day sweep.
+        out.timbre = { v: TIMBRE_VERSION, f: j.f,
+                       ...(j.r && typeof j.r === 'object' ? { r: j.r } : {}) };
         if (out.durationSec == null && Number.isFinite(j.durationSec)) out.durationSec = j.durationSec;
       }
     } catch { /* timbre is best-effort, exactly like bpm/key above */ }

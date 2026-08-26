@@ -601,9 +601,10 @@ enum SimilarityFamilies {
     // ── THE FIT SATURATES INSIDE THE PROFILE'S OWN SPREAD (the era-window shape) ─────────────
     // fit = 1.0 for any candidate within the profile's own mean member distance — a crate's own
     // sound is a REGION, and a song inside it is not "more the sound" for hugging the centroid —
-    // then exponential decay outside, e-fold `timbreDecay` (0.05). Reference points on the real
-    // corpus: a held-out member averages 0.73, a same-genre non-member 0.62, the whole analysed
-    // catalog 0.57, and a candidate at the corpus' between-group mean distance keeps ~28%.
+    // then exponential decay outside, e-fold `timbreDecay` (0.12 — the instrument's own error
+    // bar; see the constant). Reference points on the real corpus: a held-out member averages
+    // 0.73, a same-genre non-member 0.62, the whole analysed catalog 0.57, and a candidate at the
+    // corpus' between-group mean distance keeps ~61%.
     //
     // ── FAIL OPEN, BOTH DIRECTIONS — THE ROUND-LEVEL-NEVER-PER-SONG RULE ─────────────────────
     // A profile with fewer than `timbreMinVectors` analysed members produces NO profile: the term
@@ -626,15 +627,92 @@ enum SimilarityFamilies {
     /// Below this many shared finite axes two vectors are not comparable — half a vector is a
     /// different instrument, not a noisier reading of the same one.
     static let timbreMinSharedAxes = 8
+
+    /// **WHICH CALIBRATION THIS BUILD SPEAKS.** Mirrors `TIMBRE_VERSION` in
+    /// `scripts/lib/audio-analyze.mjs` — the number the fold stamps on `public/timbre.json` and on
+    /// every row in it. `tests/unit/timbre-version-parity.test.mjs` reads THIS line and pins the
+    /// two, because a comment saying "keep in sync" is not a check.
+    ///
+    /// The rails ARE the units: `bright` under the v1 rails and `bright` under the v2 rails are
+    /// different physical quantities wearing the same name and the same 0…1 range, so a distance
+    /// taken across them is arithmetic on incomparable numbers — and it yields a perfectly
+    /// ordinary-looking float, which is the dangerous kind of wrong. Every constant below
+    /// (`timbreDecay`, `timbreNoiseFloor`, `soundAdmitMargin`, `soundAdmitMaxSpread`) is in v1
+    /// rail units, so a corpus at another calibration does not merely shift the numbers, it
+    /// invalidates the thresholds they are compared against.
+    ///
+    /// So every consumer REFUSES a corpus stamped at a different version rather than mixing:
+    /// `fold-timbre.mjs` (`versionDropped`), `build-rec-features.mjs` (`timbreMap`), the Lambda
+    /// (`TIMBRE_VERSION`) — and, because the DEVICE is the reader that actually computes the
+    /// door's distances, `TimbreCatalog.decode`. The corpus ships on the catalog CDN and the app
+    /// ships through TestFlight; the two update independently, so the device is precisely the
+    /// reader that can meet a corpus its build has never seen.
+    static let timbreVersion = 1
     /// Minimum analysed members for a LIVE positive profile. A centroid of two songs is those two
     /// songs, not a sound.
     static let timbreMinVectors = 3
-    /// e-fold of the fit OUTSIDE the profile's own spread, in RMS distance. At 0.05, a candidate
-    /// at the typical same-genre non-member distance keeps ~79% of the term and one at the
-    /// corpus' between-group mean (~0.23 against a typical spread of ~0.17) keeps ~28% — graded,
-    /// never a cliff. Chosen against 0.08, which flattened the member/whole-catalog gap
-    /// (0.80 vs 0.65) enough to blunt the term.
-    static let timbreDecay = 0.05
+
+    /// At or above this many axes pinned to EXACTLY 0.0 the row is not a dark record, it is a
+    /// failed capture. Mirrors `analyze-timbre.py`'s MAX_ZERO_AXES and the Node
+    /// `TIMBRE_MAX_ZERO_AXES`.
+    static let timbreMaxZeroAxes = 7
+
+    /// IS THIS ROW USABLE AT ALL? Three ways a row is junk, all three observed in the shipped
+    /// corpus:
+    ///   · a null / non-finite axis — 2 rows, both SILENT captures whose ratio axes (percussive
+    ///     share, crest factor) divided by zero energy and came back as JSON `null`;
+    ///   · fewer than `timbreMinSharedAxes` usable axes — not comparable to anything, by
+    ///     construction, so it can only ever contribute a `nil` distance;
+    ///   · `timbreMaxZeroAxes` or more axes at EXACTLY 0.0 — 30 rows that are all the SAME
+    ///     degenerate point. Those rows read as mutually similar to one another, so they form a
+    ///     tight fake cluster and recommend each other; a listener sees a little clump of
+    ///     unrelated songs with no explanation. That is strictly worse than a missing vector,
+    ///     which merely makes the term fail open.
+    ///
+    /// Checked HERE and not only at the fold, deliberately. The fold is the writer, but a reader
+    /// must not depend on the writer's discipline — the same rule `decode` already follows for
+    /// alias chains, and a corpus published before the fold learned this check is still out there.
+    ///
+    /// The PRESENT-but-null case is caught one level up, in `TimbreCatalog.decode`: this type
+    /// cannot represent it (a `[String: Double]` has already lost the difference between an
+    /// absent axis and a null one), and treating a stripped null as merely absent would quietly
+    /// admit a 13-axis row the fold and the Lambda both reject.
+    static func isUsableTimbreRow(_ f: TimbreVector) -> Bool {
+        var usable = 0
+        var zeros = 0
+        for axis in timbreAxes {
+            guard let v = f[axis] else { continue }
+            guard v.isFinite else { return false }
+            usable += 1
+            if v == 0 { zeros += 1 }
+        }
+        return usable >= timbreMinSharedAxes && zeros < timbreMaxZeroAxes
+    }
+    /// e-fold of the fit OUTSIDE the profile's own spread, in RMS distance.
+    ///
+    /// MEASURED AGAINST THE INSTRUMENT, not chosen for feel. The shipped value was 0.05 — two to
+    /// two-and-a-half times FINER than the error bar above. At 0.05, `exp(-0.1022/0.05) = 0.130`:
+    /// a difference that is PURE MEASUREMENT NOISE destroyed 87 % of the term. That is not
+    /// sensitivity, it is noise amplification — the curve was grading distinctions the instrument
+    /// cannot make.
+    ///
+    /// Setting the e-fold AT the noise floor is the only non-arbitrary choice available: one
+    /// e-fold per error bar, by definition. 0.12 is taken rather than the tighter 0.1022 because
+    /// it is no finer than the instrument under EITHER estimate, and the safe direction of error
+    /// here is flatter, not sharper. Rounded, because the floor carries a CI and four significant
+    /// figures would be false precision.
+    ///
+    /// Reference points move accordingly: a same-genre non-member (excess ≈ 0.012) 0.79 → 0.90,
+    /// and a candidate at the corpus' between-group mean (excess ≈ 0.06) 0.28 → 0.61. Yes, that
+    /// FLATTENS the term. That is the honest consequence of the finding that the artist/genre
+    /// gate, not the curve, is what keeps the timbre signal off the visible rows — the lever for
+    /// that is an admission quota, not a decay finer than the instrument.
+    ///
+    /// UNITS WARNING: this constant is in v1 rail units, like every distance above it. Any rail
+    /// recalibration rescales the whole distance space and INVALIDATES it — the floor, the
+    /// random-pair median and this decay must be re-measured and land together with the rails.
+    /// `testDecayIsNoFinerThanTheInstrument` is the guard against quietly tightening it.
+    static let timbreDecay = 0.12
     /// Fallback neutral for a round with too few analysed candidates to measure one. MEASURED:
     /// the mean fit of the full analysed corpus (1-in-7 sample, n=164,246 scorings) against the
     /// owner's 78 live pocket profiles is **0.565**. Mirrors the Lambda's
@@ -659,6 +737,131 @@ enum SimilarityFamilies {
     /// happens TOWARD the crate's own sound. The era term skips shrinkage at 99.2% coverage;
     /// this term must not. Scale it down as the corpus grows.
     static let timbrePrior = 2.0
+
+    // ── THE ADMISSION BAR (audio-similarity v3: sound may ADMIT, not only re-rank) ───────────
+    // `ZoneEngine.suggestions` only ever CONSIDERED a candidate that already shared an artist or
+    // a genre category with the crate (`guard a > 0 || g > 0`), so the timbre term could reorder
+    // rows metadata had already qualified and nothing else: cross-genre discovery by sound was
+    // impossible by construction. These constants are the narrow door through that gate, and
+    // every one of them is a MEASUREMENT, not a taste.
+
+    /// **THE INSTRUMENT'S OWN ERROR BAR**, in the same RMS distance every constant here is in:
+    /// the median distance between two INDEPENDENT captures of the SAME recording.
+    ///
+    /// MEASURED on the shipping v1 corpus, three ways that agree: 0.119 (n=214) and 0.1202
+    /// (n=279) over same-artist-and-title pairs, and 0.1022 with 95 % CI [0.0911, 0.1119] and
+    /// mean 0.1145 over 410 pairs when the pairing is additionally corroborated by DURATION (the
+    /// `RecRecordingIdentity` rule, so a re-recording or a live cut cannot inflate it). Against a
+    /// random-pair median of 0.2324. Two songs closer together than ~0.10–0.12 are not
+    /// distinguishable by this extractor at all.
+    ///
+    /// It is the floor under the admission radius for that reason: a crate whose own spread
+    /// measures tighter than the error bar has not earned a tighter door, it has just been
+    /// measured luckily. It is also the e-fold of the fit itself — see `timbreDecay`.
+    static let timbreNoiseFloor = 0.12
+    /// How far INSIDE the crate's own radius an outsider must sit to be admitted on sound alone.
+    /// Half the noise floor — the smallest margin that is still larger than half the instrument's
+    /// error, so an admission is a claim the measurement can actually support. "Analysed" is not
+    /// a qualification; being audibly, measurably inside the crate's sound is.
+    static let soundAdmitMargin = 0.06
+    /// Minimum analysed members for a profile trustworthy enough to admit ACROSS the genre
+    /// boundary. `timbreMinVectors` (3) is the bar for RE-RANKING rows metadata already
+    /// qualified; three songs is a centroid of three songs, not a sound, and re-ranking inside a
+    /// qualified pool is a cheap mistake while admitting a stranger is an expensive one. Raised,
+    /// never lowered — the two bars are deliberately different numbers for different acts.
+    static let soundAdmitMinProfileVectors = 8
+    /// …and at least this share of the crate must be analysed. A 500-song crate with 8 analysed
+    /// members has a vector for 1.6% of itself; whatever those 8 sound like is not "the crate's
+    /// sound", and projecting it through the gate would let a sampling accident recruit.
+    static let soundAdmitMinAnalysedShare = 0.5
+    /// A crate whose own radius approaches the RANDOM-PAIR median (~0.22) has no sound to admit
+    /// on — its members are as far apart as two songs picked out of a hat, so "inside the radius"
+    /// stops meaning anything. Below that by a comfortable margin, so the test bites before the
+    /// distance degenerates.
+    static let soundAdmitMaxSpread = 0.20
+
+    /// The radius an outsider must beat to be admitted on sound: the crate's own spread, floored
+    /// at the instrument's error bar, less the margin. Floored because a razor-tight crate (a
+    /// duplicate-heavy one, most often) would otherwise set a door narrower than the extractor
+    /// can measure, and admit nothing at all or admit on noise.
+    static func soundAdmitRadius(spread: Double) -> Double {
+        max(spread, timbreNoiseFloor) - soundAdmitMargin
+    }
+
+    /// Is this profile trustworthy enough to admit strangers on sound? All three preconditions,
+    /// in one place, so the engine and its tests read the same rule.
+    ///
+    /// HOW OFTEN IT SAYS NO, MEASURED on the owner's 81 live pockets against the shipped corpus:
+    /// 80/81 pass — 1 fails the vector floor, 0 fail the analysed share, 0 fail the spread bar
+    /// (max observed spread 0.180 against a 0.20 bar and a 0.2324 random-pair median). These bars
+    /// were set when coverage was 20.6%, where the same measurement is 0/81 eligible, so read them
+    /// as "the crate is not disqualified" and NOT as a scarce filter. See the measured table at
+    /// the door's preconditions in `ZoneEngine.suggestions`.
+    ///
+    /// - Parameter profileSize: how many songs the profile was DRAWN FROM (members + 👍), not how
+    ///   many of them carried a vector — the analysed SHARE is the point of the test.
+    static func timbreProfileAdmits(_ p: TimbreProfile?, profileSize: Int) -> Bool {
+        guard let p, profileSize > 0 else { return false }
+        guard p.vectors >= soundAdmitMinProfileVectors else { return false }
+        guard Double(p.vectors) / Double(profileSize) >= soundAdmitMinAnalysedShare else { return false }
+        return p.spread <= soundAdmitMaxSpread
+    }
+
+    // ── THE PACKED CORPUS ────────────────────────────────────────────────────────────────────
+    // `TimbreVector` is a DICTIONARY for a good reason (see its doc: an extractor that adds or
+    // drops an axis degrades to "fewer shared axes" instead of misaligning every component), and
+    // that was free while the artist/genre gate short-circuited ahead of every distance call —
+    // only qualified candidates were ever measured. ADMISSION INVERTS THAT: the admit scan has to
+    // reach candidates the gate REJECTS, i.e. every analysed row in a ~96k catalog, once per
+    // crate (~40 of them per refresh). At 28 string-keyed probes per distance that is ~100M
+    // hashes a refresh.
+    //
+    // So the corpus is packed ONCE per refresh — dictionary → fixed 14-slot array in `timbreAxes`
+    // order, absent axes as `.nan` — and the admit scan reads the array. The dictionary form is
+    // untouched everywhere else, and `timbreDistance(_:_:)` over two packed vectors is the same
+    // arithmetic in the same order, which `TimbreCatalogTests` pins.
+
+    /// One song's timbre as a fixed 14-slot array in `timbreAxes` order; `.nan` marks an axis the
+    /// vector does not carry (or carries non-finitely — the same thing to every reader).
+    struct PackedVector: Sendable, Equatable {
+        var v: [Double]
+        /// How many of the 14 slots are finite — the shared-axis test's cheap half.
+        var count: Int
+    }
+
+    /// song id → packed vector. Derived ONCE by the caller and shared across every crate, exactly
+    /// like `ZoneEngine.versionKeys` — deriving it per crate is the cost this type exists to
+    /// avoid.
+    typealias PackedCorpus = [String: PackedVector]
+
+    static func pack(_ v: TimbreVector) -> PackedVector {
+        var out = [Double](repeating: .nan, count: timbreAxes.count)
+        var n = 0
+        for (i, k) in timbreAxes.enumerated() {
+            guard let x = v[k], x.isFinite else { continue }
+            out[i] = x
+            n += 1
+        }
+        return PackedVector(v: out, count: n)
+    }
+
+    static func pack(_ m: [String: TimbreVector]) -> PackedCorpus { m.mapValues(pack) }
+
+    /// The SAME RMS distance as `timbreDistance(_:_:)`, over packed vectors. Same axes, same
+    /// order, same shared-axis minimum — a parity test pins the two, because an admission
+    /// threshold read off a different arithmetic than the ranking's would be a silent divergence.
+    static func timbreDistance(_ a: PackedVector, _ b: PackedVector) -> Double? {
+        guard a.count >= timbreMinSharedAxes, b.count >= timbreMinSharedAxes else { return nil }
+        var sum = 0.0, n = 0
+        for i in 0..<timbreAxes.count {
+            let x = a.v[i], y = b.v[i]
+            guard x.isFinite, y.isFinite else { continue }
+            sum += (x - y) * (x - y)
+            n += 1
+        }
+        guard n >= timbreMinSharedAxes else { return nil }
+        return (sum / Double(n)).squareRoot()
+    }
 
     /// RMS distance over the axes BOTH vectors carry, or nil below `timbreMinSharedAxes`.
     /// F10's distance — see the section doc for the verification that it is.
@@ -690,12 +893,11 @@ enum SimilarityFamilies {
     static func timbreProfile(_ members: [(vector: TimbreVector, weight: Double)],
                               minVectors: Int = timbreMinVectors) -> TimbreProfile? {
         // Usability counts CANONICAL axes with finite values — not raw dictionary keys, which a
-        // future extractor could pad with fields this distance never reads (the Lambda counts the
-        // same way; the parity fixture would catch a drift here).
-        let usable = members.filter { m in
-            m.weight > 0
-                && timbreAxes.filter { m.vector[$0]?.isFinite ?? false }.count >= timbreMinSharedAxes
-        }
+        // future extractor could pad with fields this distance never reads — and additionally
+        // rejects the degenerate rows (see `isUsableTimbreRow`), so a fake-similarity row can
+        // never drag a crate's centroid. The Lambda counts the same way; the parity fixture would
+        // catch a drift here.
+        let usable = members.filter { $0.weight > 0 && isUsableTimbreRow($0.vector) }
         guard usable.count >= max(1, minVectors) else { return nil }
         var centroid = TimbreVector()
         for axis in timbreAxes {

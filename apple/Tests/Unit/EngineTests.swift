@@ -46,9 +46,42 @@ final class GenreTests: XCTestCase {
         XCTAssertEqual(Genre.category("qwertyuiop"), "Other")
     }
     func testCategoryNames() {
-        XCTAssertEqual(Genre.categoryNames.first, "hip-hop")
+        XCTAssertEqual(Genre.categoryNames.first, "holiday")
         XCTAssertEqual(Genre.categoryNames.last, "Other")
-        XCTAssertEqual(Genre.categoryNames.count, 15)  // 14 categories + Other
+        XCTAssertEqual(Genre.categoryNames.count, 16)  // 15 categories + Other
+    }
+
+    /// A seasonal tag outranks the parent genre it is glued to — the whole point of putting
+    /// `holiday` first. Before this, "Holiday" and "Christmas" both fell through to "Other"
+    /// and `build-rec-features` then dropped the row's genre field entirely, which is why a
+    /// 62-song holiday crate profiled itself off its 11 non-holiday members.
+    func testHolidayOutranksTheParentGenre() {
+        XCTAssertEqual(Genre.category("Holiday"), "holiday")
+        XCTAssertEqual(Genre.category("Christmas"), "holiday")
+        XCTAssertEqual(Genre.category("Christmas: R&B"), "holiday")
+        XCTAssertEqual(Genre.category("Christmas: Pop"), "holiday")
+        XCTAssertEqual(Genre.category("Christmas: Country"), "holiday")
+    }
+
+    /// The second pass exists so a broad parent tag loses to any specific genre in the SAME
+    /// string. If these ever collapse into one pass, "Alternative Folk" silently becomes rock.
+    func testBroadTagsLoseToASpecificGenreInTheSameString() {
+        XCTAssertEqual(Genre.category("Alternative"), "rock")
+        XCTAssertEqual(Genre.category("Indie"), "rock")
+        XCTAssertEqual(Genre.category("Alternative Folk"), "folk")
+        XCTAssertEqual(Genre.category("Indie, Pop, Alternative"), "pop")
+        XCTAssertEqual(Genre.category("Alternative Rap"), "hip-hop")
+        XCTAssertEqual(Genre.category("Soundtrack"), "classical")
+        XCTAssertEqual(Genre.category("Christian"), "soul")
+        XCTAssertEqual(Genre.category("Ambient"), "electronic")
+    }
+
+    /// Labels that are not a genre stay "Other" ON PURPOSE. Inventing a category for
+    /// "Instrumental" or "Hörspiele" would be fabricating signal, not recovering it.
+    func testNonGenreLabelsStayOther() {
+        XCTAssertEqual(Genre.category("Instrumental"), "Other")
+        XCTAssertEqual(Genre.category("Hörspiele"), "Other")
+        XCTAssertEqual(Genre.category("Unknown Genre"), "Other")
     }
 }
 

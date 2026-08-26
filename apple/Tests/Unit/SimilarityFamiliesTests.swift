@@ -783,8 +783,12 @@ final class SimilarityFamiliesTests: XCTestCase {
         let far = try XCTUnwrap(SimilarityFamilies.timbreFit(soundAFlipped(), profile: p))
         XCTAssertLessThan(far, 0.01,
                           "the flipped sound is buried on timbre — and still free to win on genre/artist")
+        // At the decay this term now uses — the instrument's own error bar — a candidate roughly
+        // half an error bar outside the crate's spread keeps ~64%, where the old 0.05 decay left
+        // it ~30%. The flattening is deliberate; see the doc on `timbreDecay`. The Lambda's
+        // mirror of this case asserts the same band, and the parity fixture pins the value.
         let mid = try XCTUnwrap(SimilarityFamilies.timbreFit(soundA(0.06), profile: p))
-        XCTAssertTrue(mid > 0.2 && mid < 0.6, "a nearby sound keeps a graded share, got \(mid)")
+        XCTAssertTrue(mid > 0.55 && mid < 0.72, "a nearby sound keeps a graded share, got \(mid)")
     }
 
     func testTimbreNetFitSubtractsTheRejectedSoundFlooredAtZero() throws {
@@ -847,4 +851,35 @@ final class SimilarityFamiliesTests: XCTestCase {
                        ["punchy", "busy", "clean"],
                        "ties break on the word so the sentence is deterministic")
     }
+
+    /// THE DECAY IS TIED TO A MEASUREMENT, NOT TO TASTE.
+    ///
+    /// `timbreDecay` was 0.05 against a measured same-recording noise floor of 0.1022–0.1202 —
+    /// two to two-and-a-half times finer than the extractor can resolve — so `exp(-0.1022/0.05)
+    /// = 0.130` let a difference that is PURE MEASUREMENT ERROR destroy 87 % of the term. This
+    /// is the guard against quietly tightening it again: a candidate sitting exactly ONE noise
+    /// floor outside the crate's own spread must keep exactly 1/e of the fit — no more, and (the
+    /// failure this exists for) no less.
+    func testDecayIsNoFinerThanTheInstrument() {
+        XCTAssertEqual(SimilarityFamilies.timbreDecay, SimilarityFamilies.timbreNoiseFloor,
+                       "one e-fold per error bar is the only non-arbitrary choice on offer")
+
+        var seed = SimilarityFamilies.TimbreVector()
+        for (i, a) in SimilarityFamilies.timbreAxes.enumerated() { seed[a] = 0.45 + Double(i) * 0.01 }
+        guard let p = SimilarityFamilies.timbreProfile(
+            [(seed, 1.0), (seed.mapValues { $0 + 0.01 }, 1.0), (seed.mapValues { $0 - 0.01 }, 1.0)])
+        else { return XCTFail("a three-member profile must be live") }
+
+        // A uniform offset δ on every axis IS an RMS distance of δ, so this lands exactly one
+        // noise floor outside the spread. Offset DOWNWARD so no axis clamps and changes the
+        // distance out from under the assertion.
+        let delta = p.spread + SimilarityFamilies.timbreNoiseFloor
+        let oneErrorBarOut = p.centroid.mapValues { $0 - delta }
+        XCTAssertEqual(SimilarityFamilies.timbreDistance(oneErrorBarOut, p.centroid) ?? -1,
+                       delta, accuracy: 1e-9)
+        XCTAssertEqual(SimilarityFamilies.timbreFit(oneErrorBarOut, profile: p) ?? -1,
+                       1 / M_E, accuracy: 1e-9,
+                       "one e-fold at one error bar — see the doc on timbreDecay")
+    }
+
 }

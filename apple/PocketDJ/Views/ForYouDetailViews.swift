@@ -363,6 +363,11 @@ struct ForYouSongListView: View {
     /// Pool per song, for the zone route only — drives the "Buried" badge and the header's blend
     /// readout. Empty for collection routes, which have no pools.
     @State private var pools: [String: ZoneEngine.Pool] = [:]
+    /// Which rows came through the SOUND DOOR — seated on audio alone, sharing neither an artist
+    /// nor a genre with this collection. Set ONCE in `build()` beside `reasons`, from the frozen
+    /// snapshot or the on-demand ranking, and never derived in the body. Empty for the zone
+    /// route, which has no admission gate to come through.
+    @State private var soundIds: Set<String> = []
     @State private var didBuild = false
     /// Ids added on THIS screen — the row's ＋ flips to a ✓ so a long suggestion list does not
     /// lose track of what has already been taken.
@@ -549,6 +554,9 @@ struct ForYouSongListView: View {
             // derivation. `[:]` (a pre-reasons cached document, or a device-ranked zone, which
             // supplies none) simply means no captions.
             reasons = feed?.reasons(forTileId: route.tileId) ?? [:]
+            // The badge rides the SAME frozen document as the ids and the captions — one read,
+            // no derivation, and it cannot disagree with the list it is drawn on.
+            soundIds = feed?.soundIds(forTileId: route.tileId) ?? []
             // ALREADY IN THE COLLECTION ⇒ not an offer, at READ time. The frozen list was filtered
             // when it was built, but membership has moved since — every add does that, the 👍 on
             // this very screen included — and a frozen filter goes stale the moment he acts on it.
@@ -624,14 +632,16 @@ struct ForYouSongListView: View {
             // `suggestionsExplained` — the SAME ranking as `suggestions` (it wraps it), with the
             // engine's one-line why per row, so the on-demand fallback carries the same captions
             // the frozen feed does. Still off the main actor: this sweeps the whole catalog.
-            let rows = await Task.detached(priority: .userInitiated) {
-                ZoneEngine.suggestionsExplained(memberSongIds: members, tracks: tracks,
+            let ranked = await Task.detached(priority: .userInitiated) {
+                ZoneEngine.explainedSuggestions(memberSongIds: members, tracks: tracks,
                                                 playCount: { counts[$0] ?? 0 }, feedback: fb,
                                                 timbre: timbre)
             }.value
+            let rows = ranked.rows
             songIds = rows.map(\.songId)
             reasons = Dictionary(rows.filter { !$0.why.isEmpty }.map { ($0.songId, $0.why) },
                                  uniquingKeysWith: { a, _ in a })
+            soundIds = ranked.soundAdmitted
         case .new:
             // New has its own screen (`NewReleasesView`) and is never routed here; the case exists
             // so adding a tile kind is a compile error rather than a silently empty list.
@@ -659,6 +669,21 @@ struct ForYouSongListView: View {
                                 .fill(Theme.accent2.opacity(0.22)))
                             .foregroundStyle(Theme.accent2)
                             .accessibilityIdentifier("foryou-buried-\(id)")
+                    }
+                    // A SOUND-ADMITTED row is the one row on this tile that shares neither an
+                    // artist nor a genre with the collection — it is here because it SOUNDS like
+                    // it. Badged for the same reason "Buried" is: without the label it reads as
+                    // the engine losing the plot, and a 👎 on it would be a verdict on the wrong
+                    // question. `Theme.accent`, not `accent2` — "Buried" owns that colour, and
+                    // two badges in one dress would read as one thing.
+                    if soundIds.contains(id) {
+                        Text("Sounds like")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 4).padding(.vertical, 1)
+                            .background(RoundedRectangle(cornerRadius: 3)
+                                .fill(Theme.accent.opacity(0.22)))
+                            .foregroundStyle(Theme.accent)
+                            .accessibilityIdentifier("foryou-soundmatch-\(id)")
                     }
                 }
                 // THE WHY, one line under the row — the engine's/Lambda's own string, rendered

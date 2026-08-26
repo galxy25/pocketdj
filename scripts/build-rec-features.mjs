@@ -25,6 +25,8 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TIMBRE_VERSION } from './lib/audio-analyze.mjs';
+import { isUsableTimbreRow } from './lib/timbre-hygiene.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, '..', 'public');
@@ -34,43 +36,97 @@ const fromCdn = process.argv.includes('--from-cdn');
 
 // ── Genre → tier-1 category ─────────────────────────────────────────────────────────────────────
 // KEEP IN SYNC with apple/PocketDJ/Support/Genre.swift (the ordered substring matcher + the full
-// keyword table, ported verbatim). Drift silently skews the engine's genre scoring.
+// keyword table, ported verbatim). Drift silently skews the engine's genre scoring;
+// tests/unit/genre-parity.test.mjs reads the Swift source and fails if the two tables diverge.
+//
+// AN UNMATCHED LABEL IS A DROPPED ROW, NOT A HARMLESS DEFAULT. `reduce()` omits row.g when the
+// category is 'other', so a raw genre this table does not recognise leaves the song with NO genre
+// signal — the engine cannot tell it apart from a song that was never genred. 57 real labels
+// covering 10,516 songs (9.6% of the catalog) were being dropped that way — 'Alternative' 6,341,
+// 'Singer/Songwriter' 600, 'Soundtrack' 583, 'Holiday' 218 — which is why 51 of the 62 members of
+// the "Twinkle Toes" holiday crate carried no category and its profile was built from the 11
+// non-holiday leftovers. Adding a keyword here is cheap; leaving one out is silent.
+//
+// Each entry is [name, keywords] or [name, keywords, broadKeywords]. The matcher runs TWO passes:
+//   pass 1 — every category's `keywords`, in table order: specific leaf genres.
+//   pass 2 — every category's `broadKeywords`, in table order: parent tags so broad they must lose
+//            to ANY specific genre. "Alternative Folk" is folk; a bare "Alternative" is rock.
+// A pass-2 tag cannot simply be appended to pass 1: the table is first-hit-wins and rock sits
+// ahead of folk and pop, so 'alternative' in rock's pass-1 list would drag 58 "Alternative Folk"
+// and 15 "Indie, Pop, Alternative" rows out of the category they already resolve to correctly.
+//
+// ── WHAT RESTORING 9,722 CATEGORIES DID TO THE RANKING THEY FEED ────────────────────────────────
+// Doubling the largest category (`rock` 5,060 → 11,457) is not a neutral perturbation, and
+// `Tuning.suggestionAuxGain`, `maxPerArtist` and the genre-novelty buckets were all calibrated
+// against the OLD distribution — so this was measured rather than assumed.
+// `node scripts/measure-rec-report.mjs --collections 40`, run on this rec-features.json and again
+// on the one the previous table produced (same catalog, same play counts, same 40 crates):
+//
+//     rank Spearman vs similarity        0.95368 → 0.95373   (the ranking is the same ranking)
+//     distinct artists over all tiles        234 → 232
+//     top-10 artists' share of all rows     22.4% → 22.0%
+//     played share of picks                 0.986 → 0.988
+//     aux multiplier band       1.0000…1.3000x → 1.0000…1.3000x, bound 1.40x HELD both sides
+//     genre-novelty mean                    0.179 → 0.092
+//     genre-novelty p90                     1.000 → 0.257
+//
+// The last two are the point, and they are the FIX showing up rather than a side effect: a song
+// with no category was indistinguishable from a song whose category the crate had never seen, so
+// a tenth of every candidate pool scored MAXIMALLY genre-novel purely for being unrecognised.
+// Missing data was wearing novelty's clothes. Everything else moves under a percent.
 const GENRE_CATEGORIES = [
+  // A seasonal tag is the most specific thing about a record and outranks its parent genre:
+  // "Christmas: R&B" belongs with the other holiday songs, not with the rest of soul.
+  ['holiday', ['holiday', 'christmas', 'xmas', 'hanukkah', 'kwanzaa', 'yuletide', 'halloween']],
   ['hip-hop', ['hip hop', 'hip-hop', 'hiphop', 'rap', 'boom bap', 'gangsta', 'g-funk', 'crunk',
                'trap', 'conscious', 'jazzy hip', 'jazz rap', 'plunderphonics', 'dj battle',
                'cut-up/dj', 'ragga hiphop', 'thug rap', 'dance rap', 'political rap',
                'old-school hip', 'new-school hip', 'golden age', 'underground hip',
-               'alternative hip', 'instrumental hip', 'east coast', 'west coast', 'southern hip']],
+               'alternative hip', 'instrumental hip', 'east coast', 'west coast', 'southern hip',
+               'dirty south']],
   ['classical', ['classical', 'baroque', 'romantic', 'symphonic', 'orchestral', 'chamber',
-                 'opera', 'film music', 'wagnerian']],
-  ['blues', ['blues']],
+                 'opera', 'film music', 'wagnerian', 'minimalism'],
+                // A soundtrack is whatever the film needed; only claim it when nothing else did.
+                ['soundtrack', 'score', 'musicals']],
+  ['blues', ['blues', 'jug band']],
   ['country', ['country', 'americana', 'bluegrass', 'outlaw', 'nashville', 'bakersfield',
                'countrypolitan', 'western', 'ranchera', 'mariachi', 'norteño', 'norteno', 'honky']],
+  // 'asia', 'france', 'farsi', 'arabic' are Apple Music's REGIONAL buckets, which arrive as the
+  // whole genre string for imported rows; they carry no other meaning in this catalog.
   ['world', ['latin', 'salsa', 'merengue', 'cumbia', 'charanga', 'bolero', 'samba', 'guajira',
              'marimba', 'andean', 'bossa', 'reggae', 'dancehall', 'ragga', 'ska', 'afro',
-             'polka', 'hawaiian', 'indian classical', 'hindustani', 'world']],
+             'polka', 'hawaiian', 'indian classical', 'hindustani', 'world', 'african',
+             'música tropical', 'musica tropical', 'música mexicana', 'musica mexicana',
+             'brazilian', 'mpb', 'amapiano', 'kizomba', 'highlife', 'celtic', 'caribbean',
+             'exotica', 'jùjú', 'juju', 'regional indian', 'asia', 'france', 'farsi', 'arabic']],
   ['jazz', ['jazz', 'bossa nova', 'big band', 'bebop', 'cool jazz', 'smooth jazz', 'post-bop',
-            'vocal jazz', 'fusion', 'crossover jazz', 'acid jazz', 'soul-jazz']],
+            'vocal jazz', 'fusion', 'crossover jazz', 'acid jazz', 'soul-jazz', 'bop']],
   ['disco', ['disco', 'boogie', 'hi nrg', 'hi-nrg', 'hinrg', 'post-disco', 'nu-disco',
              'eurodance', 'freestyle', 'go-go']],
   ['funk', ['funk', 'minneapolis', 'p-funk', 'avant-funk', 'jazz-funk', 'jazz funk', 'acid jazz',
             'synth-funk', 'quiet storm', 'go-go']],
   ['soul', ['soul', 'motown', 'philly soul', 'philadelphia soul', 'gospel', 'doo wop',
-            'doo-wop', 'quiet storm']],
+            'doo-wop', 'quiet storm'],
+           // Sits with gospel — but Christian ROCK is rock, so it only claims what nothing else did.
+           ['christian', 'religious']],
   ['r&b', ['r&b', 'rnb', 'rhythm & blues', 'rhythm and blues', 'new jack', 'contemporary r&b',
            'hip-hop soul', 'hip hop soul', 'urban', 'minneapolis sound']],
   ['electronic', ['electronic', 'electronica', 'house', 'techno', 'trance', 'edm', 'synth-pop',
                   'synthpop', 'synth pop', 'electropop', 'electro', 'downtempo', 'trip hop',
                   'leftfield', 'new wave', 'breaks', 'tribal house', 'deep house',
                   'progressive house', 'witch house', 'darkwave', 'indietronica', 'bass music',
-                  'dub', 'hi nrg']],
+                  'dub', 'hi nrg', 'breakbeat', 'jungle', "drum'n'bass", 'drum and bass'],
+                 ['ambient', 'idm', 'experimental', 'new age', 'bass']],
   ['rock', ['rock', 'metal', 'punk', 'grunge', 'psychedelic', 'garage', 'shoegaze', 'indie rock',
-            'glam', 'arena', 'heartland', 'thrash']],
-  ['folk', ['folk', 'singer-songwriter', 'indie folk', 'folk rock', 'folk-pop', 'folk jazz',
-            'sunshine pop', 'spoken word', 'poetry']],
+            'glam', 'arena', 'heartland', 'thrash'],
+           // The catalog's single biggest dropped label ('Alternative', 6,341 rows) lives here.
+           ['alternative', 'indie', 'hardcore']],
+  ['folk', ['folk', 'singer-songwriter', 'singer/songwriter', 'singer songwriter', 'indie folk',
+            'folk rock', 'folk-pop', 'folk jazz', 'sunshine pop', 'spoken word', 'poetry']],
   ['pop', ['pop', 'dance-pop', 'dance pop', 'dance-rock', 'art pop', 'baroque pop', 'chamber pop',
            'sophisti-pop', 'europop', 'new pop', 'traditional pop', 'novelty', 'comedy',
-           'adult contemporary', 'dance']],
+           'adult contemporary', 'dance', 'easy listening', 'children', 'oldies', 'lounge',
+           'vocal']],
 ];
 
 const CSS_BLOB = /\.mw-parser-output[^}]*\}/g;
@@ -84,6 +140,9 @@ export function genreCategory(genre) {
   if (!s) return 'other';
   for (const [name, keywords] of GENRE_CATEGORIES) {
     if (keywords.some((k) => s.includes(k))) return name;
+  }
+  for (const [name, , broad] of GENRE_CATEGORIES) {
+    if (broad?.some((k) => s.includes(k))) return name;
   }
   return 'other';
 }
@@ -104,11 +163,41 @@ async function loadIndex(name) {
 /// EXPLICIT same-recording indirections built by build-timbre-aliases.mjs — resolved here, at
 /// read time, one hop only (an alias to an alias is a build error and resolves to nothing
 /// rather than chasing a chain into a cycle).
-export function timbreMap(doc) {
+export function timbreMap(doc, { strict = false } = {}) {
   const m = new Map();
   const songs = doc?.songs && typeof doc.songs === 'object' ? doc.songs : {};
+  // ── REFUSE TO MIX CALIBRATIONS ────────────────────────────────────────────────────────────
+  // The rails are the UNITS, so a corpus written under different rails is not "slightly stale",
+  // it is a different measurement of a different quantity. Attaching it to rec-features would
+  // ship those numbers to every device and to the Lambda, where nothing could tell them apart
+  // from correct ones. So: attach NOTHING, loudly.
+  //
+  // Loudly but NOT fatally by default. A catalog deploy carries artists, albums, play counts and
+  // genres; failing the whole build over an out-of-date audio corpus would hold all of that
+  // hostage to a librosa sweep. `--strict` makes it throw instead, for a caller that would rather
+  // fail than ship a catalog with a dead timbre term.
+  //
+  // NOBODY PASSES IT TODAY, and that is deliberate rather than an oversight: the two shipping
+  // callers — `scripts/deploy.sh` and `scripts/streaming-links-nightly.sh` — both invoke this
+  // bare and `||`-soft-fail, keeping the previously published rec-features.json serving. There is
+  // no CI that runs this build, so a comment naming one would be describing a gate that does not
+  // exist. The flag is here for an operator running the build by hand ahead of a re-extraction
+  // sweep, and for `assertNoTimbreRegression`, which throws unconditionally.
+  if (doc) {
+    const v = Number.isFinite(doc.timbreVersion) ? doc.timbreVersion : 1;
+    if (v !== TIMBRE_VERSION) {
+      const msg = `[rec-features] TIMBRE CORPUS REFUSED: public/timbre.json is calibration v${v}, `
+        + `this build speaks v${TIMBRE_VERSION}. No \`t\` fields attached — the timbre term will be `
+        + 'dead until the corpus is re-extracted (node scripts/timbre-batch.mjs && node scripts/fold-timbre.mjs).';
+      if (strict) throw new Error(msg);
+      console.warn(`\n${'!'.repeat(100)}\n${msg}\n${'!'.repeat(100)}\n`);
+      return m;
+    }
+  }
   for (const [id, row] of Object.entries(songs)) {
-    if (row?.f && typeof row.f === 'object') m.set(id, row.f);
+    // Same hygiene predicate the fold and the device apply — a reader must not depend on the
+    // writer's discipline, and an all-zero row is a fake similarity cluster wherever it lands.
+    if (row?.f && typeof row.f === 'object' && isUsableTimbreRow(row.f)) m.set(id, row.f);
   }
   for (const [id, row] of Object.entries(songs)) {
     if (row?.alias && !m.has(id)) {
@@ -159,6 +248,40 @@ export function reduce(index, timbre = null) {
   return rows;
 }
 
+/// ── DO NOT SILENTLY REPLACE A CORPUS WITH NOTHING ─────────────────────────────────────────────
+/// `timbreMap`'s refusal is deliberately non-fatal so an out-of-date audio corpus cannot hold a
+/// catalog deploy hostage. On its own, though, that turns the worst outcome into the QUIETEST one:
+/// the nightly runs, the corpus is a version behind, a warning scrolls past in a log nobody reads,
+/// and a rec-features.json carrying ZERO `t` fields overwrites one carrying 18,747 of them. The
+/// timbre term then dies everywhere it is read, and the only symptom is a recommendation feed that
+/// feels slightly worse.
+///
+/// So the file on disk gets a vote. Dropping a term the CURRENT artifact carries is a regression,
+/// and a regression has to be asked for by name (`--allow-timbre-loss` — for the deliberate case,
+/// e.g. retiring the corpus). Adding, growing or keeping the term is always fine, and a first run
+/// with nothing on disk is fine.
+export function assertNoTimbreRegression(doc, allowLoss = false, previous = readCurrentOutput()) {
+  const had = previous?.songs?.some?.((s) => s && s.t) === true;
+  const has = doc?.songs?.some?.((s) => s && s.t) === true;
+  if (!had || has || allowLoss) return;
+  const beforeCount = previous.songs.filter((s) => s && s.t).length;
+  throw new Error(
+    `[rec-features] REFUSING TO PUBLISH: the existing ${OUT} carries timbre vectors for `
+    + `${beforeCount} songs (calibration v${previous.timbreVersion ?? 1}) and this build would `
+    + 'attach NONE, silently killing the timbre term on every device and in the Lambda.\n'
+    + '  Rebuild the corpus first:\n'
+    + '    node scripts/timbre-batch.mjs && node scripts/fold-timbre.mjs\n'
+    + '  Or pass --allow-timbre-loss if dropping the term is what you actually mean.');
+}
+
+function readCurrentOutput() {
+  try {
+    return existsSync(OUT) ? JSON.parse(readFileSync(OUT, 'utf8')) : null;
+  } catch {
+    return null;   // unreadable/half-written: nothing to protect, and this is not the place to fail
+  }
+}
+
 async function main() {
   // Priority order for the appleMusicId dedupe: apple-music > digital > vinyl (keep first).
   const sources = [
@@ -167,8 +290,8 @@ async function main() {
     ['current-index.json', await loadIndex('current-index.json')],
   ];
   // Timbre corpus rides along when present (built by fold-timbre.mjs; absent = no `t` fields).
-  const timbre = timbreMap(await loadIndex('timbre.json'));
-  if (timbre.size) console.log(`[rec-features] timbre corpus: ${timbre.size} songs`);
+  const timbre = timbreMap(await loadIndex('timbre.json'), { strict: process.argv.includes('--strict') });
+  if (timbre.size) console.log(`[rec-features] timbre corpus: ${timbre.size} songs (calibration v${TIMBRE_VERSION})`);
   const seenAm = new Set();
   const songs = [];
   for (const [name, index] of sources) {
@@ -187,10 +310,14 @@ async function main() {
   const doc = {
     v: 1,
     generatedAt: new Date().toISOString(),
+    // Which calibration the `t` vectors below speak, or null when none were attached. A reader
+    // that finds a version it does not speak drops `t` outright rather than scoring foreign units.
+    timbreVersion: timbre.size ? TIMBRE_VERSION : null,
     counts: { songs: songs.length },
     songs,
   };
   const json = JSON.stringify(doc);
+  assertNoTimbreRegression(doc, process.argv.includes('--allow-timbre-loss'));
   writeFileSync(OUT, json);
   const mb = json.length / (1024 * 1024);
   console.log(`[rec-features] wrote ${OUT} — ${songs.length} songs, ${mb.toFixed(1)} MB`);

@@ -6,6 +6,7 @@ import { parseTasksFile } from '../../scripts/timbre-batch.mjs';
 import { sidecarsToRows } from '../../scripts/fold-cloud-timbre.mjs';
 import { foldTimbre } from '../../scripts/fold-timbre.mjs';
 import { TIMBRE_VERSION } from '../../scripts/lib/audio-analyze.mjs';
+import { TIMBRE_AXES } from '../../scripts/lib/timbre-hygiene.mjs';
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -88,7 +89,9 @@ describe('timbre-batch --tasks — the cloud work list', () => {
 });
 
 describe('sidecarsToRows — the cloud→corpus seam', () => {
-  const f = { bright: 0.5 };
+  // All 14 axes: the fold quarantines anything below the 8-axis floor, so a one-key stand-in
+  // would be discarded before this seam's assertion could mean anything.
+  const f = Object.fromEntries(TIMBRE_AXES.map((a, i) => [a, Math.round((0.11 + i * 0.055) * 1e4) / 1e4]));
   it('produces rows the EXISTING fold accepts, with no changes to fold-timbre', () => {
     const rows = sidecarsToRows([{ id: 'sng_a', v: TIMBRE_VERSION, ok: true, f, atMs: 5, by: 'cloud' }]);
     const { songs, stats } = foldTimbre(rows, {});
@@ -103,11 +106,31 @@ describe('sidecarsToRows — the cloud→corpus seam', () => {
   });
   it('keeps the LATEST row per id (LWW by atMs) so a re-analysis replaces, never accumulates', () => {
     const rows = sidecarsToRows([
-      { id: 'sng_a', v: TIMBRE_VERSION, ok: true, f: { bright: 0.1 }, atMs: 1 },
-      { id: 'sng_a', v: TIMBRE_VERSION, ok: true, f: { bright: 0.9 }, atMs: 2 },
+      { id: 'sng_a', v: TIMBRE_VERSION, ok: true, f: { ...f, bright: 0.1 }, atMs: 1 },
+      { id: 'sng_a', v: TIMBRE_VERSION, ok: true, f: { ...f, bright: 0.9 }, atMs: 2 },
     ]);
     expect(rows).toHaveLength(1);
     expect(rows[0].f.bright).toBe(0.9);
+  });
+  it('CARRIES THE RAW MEASUREMENT BLOCK — the calibrator input, and the fold\'s LWW CLEARS it', () => {
+    // `r` is what makes the next rail change arithmetic instead of a re-listen of 15k songs. The
+    // whitelist above dropped it, so with all batch analysis running in the cloud
+    // data/timbre-raw.json could never grow at all — and worse, because foldTimbre's LWW on `raw`
+    // is a CLEAR, a later cloud row carrying no `r` DELETES the block a local run measured for the
+    // same song (s3-song and vinyl-cut share provenance rank 2, so the newer row wins on atMs).
+    const r = { bright: { v: 1234.5, lo: 500, hi: 4000 }, loud: { v: -9.5 } };
+    const rows = sidecarsToRows([
+      { id: 'sng_a', v: TIMBRE_VERSION, ok: true, f, r, atMs: 5, by: 'cloud', instance: 'i-1' },
+    ]);
+    expect(rows[0].r).toEqual(r);
+    expect(rows[0].instance).toBeUndefined();   // worker provenance still stays out of the corpus
+
+    // …and it reaches the artifact: the fold collects it, and the ERASURE case is real.
+    const raw = new Map();
+    foldTimbre(rows, {}, raw);
+    expect(raw.get('sng_a')).toEqual(r);
+    foldTimbre(sidecarsToRows([{ id: 'sng_a', v: TIMBRE_VERSION, ok: true, f, atMs: 9 }]), {}, raw);
+    expect(raw.has('sng_a')).toBe(false);
   });
   it('emits ids in sorted order so the file is deterministic and diffable', () => {
     const rows = sidecarsToRows([

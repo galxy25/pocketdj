@@ -192,12 +192,44 @@ const TIMBRE_AXES = ['bright', 'brightVar', 'air', 'width', 'noisy', 'fizz', 'pu
                      'dynamic', 'loud', 'm1', 'm2', 'm3', 'm4'];
 /// Below this many shared finite axes two vectors are not comparable.
 const TIMBRE_MIN_AXES = 8;
+/// At or above this many axes pinned to EXACTLY 0.0 the row is a failed capture, not a dark
+/// record. Mirrors `SimilarityFamilies.timbreMaxZeroAxes`, `scripts/lib/timbre-hygiene.mjs` and
+/// `analyze-timbre.py`'s MAX_ZERO_AXES.
+const TIMBRE_MAX_ZERO_AXES = 7;
+
+/**
+ * IS THIS ROW USABLE AT ALL? Degenerate rows — a null axis, too few axes, or 7+ axes at exactly
+ * 0.0 — are all the SAME POINT, so they read as each other's nearest neighbours and recommend
+ * each other in a little self-referential clump. That is strictly worse than a missing vector,
+ * which merely makes the term fail open. The fold quarantines them and `build-rec-features`
+ * refuses to attach them, but this is a READER and a reader must not depend on the writer's
+ * discipline — a features file built before those guards existed is still cached at the edge.
+ * Mirrors `SimilarityFamilies.isUsableTimbreRow`.
+ */
+export function isUsableTimbreRow(f) {
+  if (!f || typeof f !== 'object') return false;
+  let usable = 0; let zeros = 0;
+  for (const k of TIMBRE_AXES) {
+    if (!(k in f)) continue;
+    if (!Number.isFinite(f[k])) return false;
+    usable += 1;
+    if (f[k] === 0) zeros += 1;
+  }
+  return usable >= TIMBRE_MIN_AXES && zeros < TIMBRE_MAX_ZERO_AXES;
+}
 /// Minimum analysed members for a LIVE positive profile — a centroid of two songs is those two
 /// songs, not a sound. (The NEGATIVE profile passes 1: every 👎 is a deliberate act.)
 const TIMBRE_MIN_VECTORS = 3;
-/// e-fold of the fit OUTSIDE the profile's own spread. At 0.05 a candidate at the typical
-/// same-genre non-member distance keeps ~79% and one at the corpus between-group mean ~28%.
-const TIMBRE_DECAY = 0.05;
+/// The INSTRUMENT'S OWN ERROR BAR — the median distance between two independent captures of the
+/// same recording, 0.1022 (410 duration-corroborated pairs) to 0.1202 (279 looser ones), against
+/// a random-pair median of 0.2324. Mirrors `SimilarityFamilies.timbreNoiseFloor`.
+const TIMBRE_NOISE_FLOOR = 0.12;
+/// e-fold of the fit OUTSIDE the profile's own spread, set AT the noise floor: one e-fold per
+/// error bar. It was 0.05 — finer than the instrument — so `exp(-0.1022/0.05) = 0.130` let pure
+/// measurement noise destroy 87% of the term. Reference points: a same-genre non-member now keeps
+/// ~90% and one at the corpus between-group mean ~61%. In v1 rail units, like every distance in
+/// this file; a rail recalibration invalidates it. Mirrors `SimilarityFamilies.timbreDecay`.
+const TIMBRE_DECAY = TIMBRE_NOISE_FLOOR;
 /// How far the fit may lift a candidate in the MULTIPLIER surfaces (scoreForYou):
 /// `sim × (1 + TIMBRE_GAIN × fit)` — the NOVELTY_AUX_GAIN shape, deliberately under its 1.40×
 /// band because timbre's measured same-genre separation (AUC 0.56) is real but modest. Its
@@ -581,6 +613,15 @@ async function listProfileHashes() {
 /// re-analysis at a newer `TIMBRE_VERSION` replaces the old vector instead of accumulating two
 /// readings of the same recording under one id.
 ///
+/// REFUSES ANOTHER CALIBRATION, like every other store of these vectors. The rails ARE the units,
+/// so a v(N) and a v(N+1) reading are different quantities sharing a name — and this was the one
+/// store in the system with no version refusal: it stamped `v` on the row and then filtered on
+/// nothing, so one document could hold both and no reader could tell them apart. The doc comment
+/// above describes exactly this filter, and it was not there. A row at another calibration is
+/// DROPPED (never accepted, never counted), which leaves the previous vector standing rather than
+/// replacing a readable number with an unreadable one; the id still drains from the queue at the
+/// call site, because a worker that reported is a worker that reported.
+///
 /// Exported for the tests: this is where the corpus cap and the shape validation live, and both
 /// are far easier to pin here than through an HTTP fixture.
 export function mergeAudioFeatures(doc, rows) {
@@ -591,6 +632,9 @@ export function mergeAudioFeatures(doc, rows) {
     const songId = str(raw?.songId);
     const f = raw?.f;
     if (!songId || !f || typeof f !== 'object') continue;
+    // Absent ⇒ 1, the version that shipped before the field existed — the same reading every
+    // other consumer gives an unstamped row.
+    if ((Number.isFinite(raw.v) ? raw.v : 1) !== TIMBRE_VERSION) continue;
     const clean = {};
     for (const [k, v] of Object.entries(f)) {
       // Axis names are short identifiers and values are 0…1 — anything else is a bug or a
@@ -600,7 +644,7 @@ export function mergeAudioFeatures(doc, rows) {
       clean[k] = Math.round(Math.min(1, Math.max(0, v)) * 1000) / 1000;
     }
     if (!Object.keys(clean).length) continue;
-    out.songs[songId] = { v: Number.isFinite(raw.v) ? raw.v : 1, f: clean, atMs: Date.now() };
+    out.songs[songId] = { v: TIMBRE_VERSION, f: clean, atMs: Date.now() };
     accepted += 1;
   }
   // Oldest-first eviction, matching every other cap here.
@@ -1346,9 +1390,8 @@ export function timbreDistance(a, b) {
  * `members`: [{ f, w }]. Mirrors `SimilarityFamilies.timbreProfile`.
  */
 export function timbreProfile(members, minVectors = TIMBRE_MIN_VECTORS) {
-  const usable = (members || []).filter((m) => m && m.f && typeof m.f === 'object'
-    && Number.isFinite(m.w) && m.w > 0
-    && TIMBRE_AXES.filter((k) => Number.isFinite(m.f[k])).length >= TIMBRE_MIN_AXES);
+  const usable = (members || []).filter((m) => m && Number.isFinite(m.w) && m.w > 0
+    && isUsableTimbreRow(m.f));
   if (usable.length < Math.max(1, minVectors)) return null;
   const centroid = {};
   for (const k of TIMBRE_AXES) {
