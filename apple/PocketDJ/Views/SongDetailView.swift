@@ -127,16 +127,13 @@ struct SongDetailView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+        // Share + "add to collection" deliberately do NOT live here — see the in-content
+        // action cluster in `playback`. This view is presented as a SHEET from Now Playing,
+        // and a sheet's toolbar is not a reliable surface on macOS/iPad (the same reason the
+        // sheet's own Back button becomes a ✕ overlay there), so a toolbar-only Share was
+        // simply absent on macOS (Levi, 2026-08-25).
         .toolbar {
             ToolbarItemGroup(placement: .primaryAction) {
-                ShareLink(item: ShareText.forSong(current),
-                          subject: Text("\(current.name) — \(current.artist)")) {
-                    Image(systemName: "square.and.arrow.up")
-                }
-                .help("Share this song")
-                .accessibilityIdentifier("song-share")
-                Button { showAdd = true } label: { Image(systemName: "plus.circle") }
-                    .accessibilityIdentifier("add-song-to")
                 Button("Edit") { showEdit = true }.accessibilityIdentifier("edit-song")
             }
         }
@@ -427,6 +424,22 @@ struct SongDetailView: View {
                 // iPhone the toolbar's primaryAction group overflows into a nested "More"
                 // menu, which would bury a one-tap primary action two taps deep.
                 FavoriteToggle(songId: current.id, appleMusicId: current.appleMusicId, font: .title3)
+                // Share + add-to-collection sit beside ♥ for the SAME reason ♥ is here, plus
+                // one more: from Now Playing this view is a sheet, and a sheet toolbar does
+                // not render reliably on macOS — in the toolbar these two were invisible there.
+                ShareLink(item: ShareText.forSong(current),
+                          subject: Text("\(current.name) — \(current.artist)")) {
+                    Image(systemName: "square.and.arrow.up").font(.title3)
+                }
+                .buttonStyle(.plain)
+                .help("Share this song")
+                .accessibilityIdentifier("song-share")
+                Button { showAdd = true } label: {
+                    Image(systemName: "plus.circle").font(.title3)
+                }
+                .buttonStyle(.plain)
+                .help("Add this song to a collection")
+                .accessibilityIdentifier("add-song-to")
                 // Queue actions live in the in-content cluster for the same reason ♥ does: on
                 // iPhone the toolbar's primaryAction group overflows into a nested "More".
                 // Rendered only while a set is running (QueueMenuItems is empty otherwise), so
