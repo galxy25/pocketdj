@@ -70,9 +70,22 @@ enum ZoneEngine {
         /// how long they run. Optional and defaulted, so no fixture has to say anything about it.
         let lengthMs: Int?
 
+        /// The album's RAW genre label — "Hip-Hop/Rap", "Neo-Soul", "Disco" — as opposed to
+        /// `genre`, which is the 16-bucket `Genre.category` the similarity families join on.
+        ///
+        /// NOT a ranking signal, and deliberately not folded into `genre`: it exists for the two
+        /// places that must count VARIETY rather than measure SIMILARITY — the diversity floor
+        /// (`RecComposition.Diversity`) and the sound quota's skew caps (`RecSoundAdmit`). Both
+        /// numbers the audit measured — 6.47 distinct genres per 25 rows, 29.17% new-genre share
+        /// — were measured on raw labels, and a category has so few values that a tile can hold
+        /// seven of them while sounding like one record. Absent and defaulted, so the ~37 test
+        /// and preview construction sites say nothing about it and every one keeps compiling.
+        let genreRaw: String?
+
         init(songId: String, artistKey: String, artistName: String, genre: String?,
              year: Int? = nil, bpm: Double? = nil, camelot: String? = nil,
-             appleMusicId: String? = nil, title: String? = nil, lengthMs: Int? = nil) {
+             appleMusicId: String? = nil, title: String? = nil, lengthMs: Int? = nil,
+             genreRaw: String? = nil) {
             self.songId = songId
             self.artistKey = artistKey
             self.artistName = artistName
@@ -83,6 +96,7 @@ enum ZoneEngine {
             self.appleMusicId = appleMusicId
             self.title = title
             self.lengthMs = lengthMs
+            self.genreRaw = genreRaw
         }
     }
 
@@ -402,6 +416,43 @@ enum ZoneEngine {
         /// multiplier drops entirely (ranking-neutral by construction — a multiplicative term
         /// needs no denominator renormalization).
         var timbreGain: Double = 0.35
+
+        /// ── THE SOUND QUOTA (audio-similarity v3) ────────────────────────────────────────────
+        /// How much of a collection tile may be seated on AUDIO ALONE — candidates sharing
+        /// NEITHER an artist NOR a genre category with the crate, which the admission gate
+        /// (`guard a > 0 || g > 0`) rejects outright and which the timbre multiplier therefore
+        /// never had a chance to speak about. See `RecSoundAdmit` for the measurement that says
+        /// this is where the sound signal actually lives.
+        ///
+        /// 0.12 of 25 rows is ⌊3⌋ — three rows, and `soundAdmitHardCap` says three is also the
+        /// ceiling on a longer list. Small on purpose, and the two constants are BOTH here on
+        /// purpose: the share is what keeps a SHORT tile from being mostly guesses (a 9-row
+        /// crate seats one), the hard cap is what keeps a LONG one from being flooded. Three is
+        /// the largest quota the skew guard can still hold, because its bucket caps admit at most
+        /// one row per decade, per raw genre and per artist — a quota of three therefore FORCES
+        /// three distinct decades and three distinct genres, while a quota of six would start
+        /// scraping the pool for rows those caps have to reject and hand the seats back to the
+        /// best-covered corner of the corpus by default.
+        ///
+        /// `0` disables the quota entirely and the ranking is byte-identical to audio-similarity
+        /// v2 — the same posture every term here has taken.
+        var soundAdmitMaxShare: Double = 0.12
+        var soundAdmitHardCap: Int = 3
+
+        /// ── THE DIVERSITY FLOOR ──────────────────────────────────────────────────────────────
+        /// Minimum share of the emitted list that must be DISTINCT RAW GENRES (⌈limit × share⌉),
+        /// and how many swaps the floor may spend reaching it. 0.25 of 25 is 7, which is the
+        /// distinct-genre count the tile measured WITHOUT the timbre term (7.33 per 25 rows,
+        /// against 6.47 with it): the floor's job is to hold the line the sound term was measured
+        /// to cost, not to invent variety the ranking never had. `maxSwaps` at ⌊limit / 5⌋ = 5
+        /// bounds the disturbance — beyond that the floor would stop being a floor and start
+        /// being the ranking.
+        ///
+        /// `0` on either constant disables the phase; so does a catalog projection that carries
+        /// no raw genres at all (every row's `genreRaw` nil ⇒ no swap can ever raise the count ⇒
+        /// the walk fails open on its first iteration and the list is exactly today's).
+        var suggestionMinRawGenreShare: Double = 0.25
+        var suggestionDiversityMaxSwapShare: Double = 0.2
 
         public init() {}
     }
@@ -1299,6 +1350,12 @@ enum ZoneEngine {
     ///   members that have been analysed. Empty ⇒ the timbre term is dead everywhere and the
     ///   ranking is byte-identical to what it was before audio-similarity v2 — the same
     ///   default-argument posture every other new input here has taken.
+    /// - Parameter packed: `SimilarityFamilies.pack(timbre)`, derived ONCE by the caller and
+    ///   shared across every crate — the `versions:` arrangement, for the same reason. The SOUND
+    ///   QUOTA's scan has to measure candidates the artist/genre gate rejects, so unlike the
+    ///   ranking's timbre multiplier it cannot ride the gate's short-circuit; over ~96k rows ×
+    ///   ~40 crates the dictionary form is ~100M string hashes a refresh. `nil` ⇒ pack here,
+    ///   which is right for the single-crate callers and ruinous for the multi-crate one.
     static func suggestions(memberSongIds: [String],
                             tracks: [Track],
                             playCount: (String) -> Int,
@@ -1306,9 +1363,43 @@ enum ZoneEngine {
                             limit: Int = 25,
                             tuning: Tuning = Tuning(),
                             versions: [String: RecVersionIdentity.Key]? = nil,
-                            timbre: [String: SimilarityFamilies.TimbreVector] = [:]) -> [String] {
+                            timbre: [String: SimilarityFamilies.TimbreVector] = [:],
+                            packed: SimilarityFamilies.PackedCorpus? = nil) -> [String] {
+        rank(memberSongIds: memberSongIds, tracks: tracks, playCount: playCount,
+             feedback: feedback, limit: limit, tuning: tuning, versions: versions,
+             timbre: timbre, packed: packed).ids
+    }
+
+    /// One ranking, with the facts about it the captions need.
+    ///
+    /// `suggestions` and `suggestionsExplained` MUST agree about which rows were sound-admitted —
+    /// a badge on a row the ranking did not admit, or a missing badge on one it did, is a caption
+    /// that lies about the engine. The explainer used to re-derive the crate's timbre profile
+    /// from members alone while the ranking scored against members + 👍, an approximation that
+    /// was harmless while timbre only reordered and is not once it ADMITS. So the ranking is
+    /// computed ONCE, here, and both faces read the same answer. Nothing downstream re-derives
+    /// the admitted set.
+    struct Ranking: Sendable, Equatable {
+        var ids: [String] = []
+        /// Which of `ids` came through the SOUND DOOR rather than the artist/genre gate.
+        var soundAdmitted: Set<String> = []
+        /// The words this crate's sound can honestly be described in
+        /// (`SimilarityFamilies.timbreAdjectives`), for the admitted rows' caption. `nil` when
+        /// the crate has no live timbre profile.
+        var soundWords: String? = nil
+    }
+
+    static func rank(memberSongIds: [String],
+                     tracks: [Track],
+                     playCount: (String) -> Int,
+                     feedback: Feedback = Feedback(),
+                     limit: Int = 25,
+                     tuning: Tuning = Tuning(),
+                     versions: [String: RecVersionIdentity.Key]? = nil,
+                     timbre: [String: SimilarityFamilies.TimbreVector] = [:],
+                     packed: SimilarityFamilies.PackedCorpus? = nil) -> Ranking {
         let members = Set(memberSongIds)
-        guard !members.isEmpty, !tracks.isEmpty else { return [] }
+        guard !members.isEmpty, !tracks.isEmpty else { return Ranking() }
         let trackById = Dictionary(tracks.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
         // Members resolve their store id through the catalog projection when they ARE in it (the
         // ordinary `sng_` member), which is what makes the ad-hoc join work in both directions.
@@ -1372,16 +1463,20 @@ enum ZoneEngine {
         var genres: [String: Double] = [:]
         var years: [Double] = []
         var musicalMembers: [(bpm: Double?, camelot: String?, weight: Double)] = []
+        // The crate's RAW genre labels — what "a genre this collection does not already hold"
+        // means to the diversity floor. Raw, not the 15 categories: see `Track.genreRaw`.
+        var memberRawGenres: Set<String> = []
         for id in profileIds {
             guard let t = trackById[id] else { continue }
             artists[t.artistKey, default: 0] += 1
+            if let rg = RecSoundAdmit.genreBucket(t.genreRaw) { memberRawGenres.insert(rg) }
             if let g = t.genre, !g.isEmpty { genres[g, default: 0] += 1 }
             if let y = t.year { years.append(Double(y)) }
             if t.bpm != nil || t.camelot != nil {
                 musicalMembers.append((bpm: t.bpm, camelot: t.camelot, weight: 1))
             }
         }
-        guard !artists.isEmpty || !genres.isEmpty else { return [] }
+        guard !artists.isEmpty || !genres.isEmpty else { return Ranking() }
         if let maxA = artists.values.max(), maxA > 0 { for (k, v) in artists { artists[k] = v / maxA } }
         if let maxG = genres.values.max(), maxG > 0 { for (k, v) in genres { genres[k] = v / maxG } }
 
@@ -1434,6 +1529,24 @@ enum ZoneEngine {
                                                rejectionWeight: tuning.rejectionWeight)
         }
 
+        // ── THE SOUND DOOR'S PRECONDITIONS, SETTLED ONCE PER CRATE ───────────────────────────
+        // Evaluated BEFORE the candidate loop, deliberately: most crates fail here (too few
+        // vectors, too little of the crate analysed, a spread as wide as random) and a crate that
+        // fails pays nothing at all — no packing, no distances, not one extra branch taken in the
+        // 96k-row sweep beyond the one `admitEligible` test the compiler hoists into a constant.
+        // See `RecSoundAdmit` for what each bar is and the measurement behind it.
+        let admitQuota = min(max(0, tuning.soundAdmitHardCap),
+                             max(0, Int((Double(limit) * tuning.soundAdmitMaxShare).rounded(.down))))
+        let admitEligible = admitQuota > 0
+            && SimilarityFamilies.timbreProfileAdmits(timbreProfile, profileSize: profileIds.count)
+        // Packed ONLY when the door is open — the whole point of the precondition order.
+        let packedCorpus: SimilarityFamilies.PackedCorpus? = admitEligible
+            ? (packed ?? SimilarityFamilies.pack(timbre)) : nil
+        let packedCentroid = admitEligible ? timbreProfile.map { SimilarityFamilies.pack($0.centroid) } : nil
+        let packedNegCentroid = admitEligible ? negTimbreProfile.map { SimilarityFamilies.pack($0.centroid) } : nil
+        let admitRadius = timbreProfile.map { SimilarityFamilies.soundAdmitRadius(spread: $0.spread) } ?? 0
+        var admitPool: [RecSoundAdmit.Candidate] = []
+
         // ONE PASS over `tracks`: the play-count ceiling, the primary-artist CAP key (memoized per
         // artist, not per track), and the per-artist play totals the novelty axis is built from.
         // No new input reaches this function and no call site changes — the artist totals are
@@ -1479,7 +1592,7 @@ enum ZoneEngine {
         for (k, v) in negGenres { negGenres[k] = min(1, v / Tuning.rejectionSaturation) }
 
         var scored: [(id: String, artist: String, capKey: String, score: Double,
-                      isIncumbent: Bool)] = []
+                      isIncumbent: Bool, rawGenre: String?, isNewGenre: Bool)] = []
         // `membership.contains`, NOT `members.contains` — a variant id or an ad-hoc capture of a
         // song already in here is the same song, and offering it is the defect this filter exists
         // to prevent.
@@ -1505,6 +1618,43 @@ enum ZoneEngine {
             if feedback.suppressed.contains(t.songId) { continue }
             let a = artists[t.artistKey] ?? 0
             let g = t.genre.flatMap { genres[$0] } ?? 0
+            // ── THE SOUND DOOR — the ONLY way past the artist/genre gate ─────────────────────
+            // A candidate sharing neither an artist nor a genre category with the crate has no
+            // metadata score to compute and never enters `scored`; it can only ever be SEATED
+            // by the quota, and only if it is measurably inside the crate's own sound. This is
+            // the `else` branch of the gate rather than a second sweep on purpose: the loop is
+            // ~96k rows × ~40 crates, and a second pass would double the most expensive thing
+            // For You does.
+            if a <= 0 && g <= 0 {
+                guard admitEligible, !isIncumbent(t),
+                      let v = packedCorpus?[t.songId], let centroid = packedCentroid,
+                      let d = SimilarityFamilies.timbreDistance(v, centroid),
+                      // A MARGIN, in the instrument's own units — not merely "has a vector".
+                      // The candidate must sit half a noise-floor INSIDE the crate's own radius,
+                      // which on a typical crate (spread ~0.17) means d ≤ 0.11 against a
+                      // random-pair median of ~0.22. Being analysed is not a qualification.
+                      d <= admitRadius else { continue }
+                // A 👎'd SOUND NEVER ADMITS. The row is inside the radius, so its positive fit is
+                // 1.0 by construction and the rejected profile is the only thing left that can
+                // disqualify it — the same subtract-the-negative shape the multiplier uses,
+                // applied here as a veto because there is no score for it to shade.
+                if let neg = negTimbreProfile, let nc = packedNegCentroid,
+                   let dn = SimilarityFamilies.timbreDistance(v, nc) {
+                    let negFit = dn <= neg.spread ? 1
+                        : exp(-(dn - neg.spread) / SimilarityFamilies.timbreDecay)
+                    guard 1 - tuning.rejectionWeight * negFit >= RecSoundAdmit.minNetFit else {
+                        continue
+                    }
+                }
+                admitPool.append(RecSoundAdmit.Candidate(
+                    id: t.songId,
+                    capKey: capKeyByArtist[t.artistKey] ?? t.artistKey,
+                    decade: t.year.map { ($0 / 10) * 10 },
+                    rawGenre: RecSoundAdmit.genreBucket(t.genreRaw),
+                    distance: d))
+                RecSoundAdmit.trimIfNeeded(&admitPool)
+                continue
+            }
             guard a > 0 || g > 0 else { continue }
             var score = terms.artist * a + terms.genre * g
             if let era, let eraCal {
@@ -1555,7 +1705,9 @@ enum ZoneEngine {
                 net *= 1 - tuning.skipPenaltyWeight * min(1, max(0, p))
             }
             guard net > 0 else { continue }
-            scored.append((t.songId, t.artistKey, capKey, net, isIncumbent(t)))
+            let rawGenre = RecSoundAdmit.genreBucket(t.genreRaw)
+            scored.append((t.songId, t.artistKey, capKey, net, isIncumbent(t), rawGenre,
+                           rawGenre.map { !memberRawGenres.contains($0) } ?? false))
         }
         scored.sort { $0.score > $1.score || ($0.score == $1.score && $0.id < $1.id) }
 
@@ -1568,17 +1720,41 @@ enum ZoneEngine {
         // CANDIDATE, which is how "Expressway To Your Heart" reached one crate twice under two
         // catalog ids — carrying DIFFERENT feedback state, because they were two genuinely
         // different rows. See `RecRecordingIdentity` for the identity and its false-merge risk.
-        let keep = RecRecordingIdentity.keepMask(scored.map { r in
-            let am = trackById[r.id]?.appleMusicId
+        //
+        // ── ONE MASK OVER BOTH POOLS, NOT ONE PER POOL ───────────────────────────────────────
+        // The sound door opened a SECOND way into the list, and a collapse that only sees the
+        // scored pool cannot see across it. The gap is narrow but real: `RecSoundAdmit.select`'s
+        // per-artist bucket cap already blocks the admitted-vs-admitted case, and a row whose
+        // artist matches the crate is scored rather than admitted — but two catalog ids for ONE
+        // recording whose credit strings normalise to DIFFERENT `artistKey`s ("X" and "X feat.
+        // Y") put one instance in `scored` and the other in `admitPool`, and both would be
+        // emitted. That is exactly the bug the collapse was landed to kill, arriving through the
+        // new door.
+        //
+        // `keepMask` already has the mechanism — `tier`, "the highest-ranked POOL, asked FIRST",
+        // whose doc says a caller with parallel pools slices ONE mask rather than running
+        // collapses that cannot see each other. Scored rows take the higher tier: a row metadata
+        // qualified is strictly better evidence than one admitted on sound alone, and the two
+        // pools' numbers do not mean the same thing (a net score against an RMS distance), so
+        // the POOL settles a cross-pool twin and never the two incomparable scores. Within the
+        // admit pool `-distance` is the ranking, matching `select`'s closest-first order.
+        let scoredCount = scored.count
+        func identityCandidate(_ id: String, tier: Int, score: Double) -> RecRecordingIdentity.Candidate {
+            let am = trackById[id]?.appleMusicId
             return RecRecordingIdentity.Candidate(
-                id: r.id,
-                identity: RecRecordingIdentity.identity(songId: r.id, appleMusicId: am,
-                                                        version: versionKeys[r.id],
-                                                        lengthMs: trackById[r.id]?.lengthMs),
-                score: r.score,
+                id: id,
+                identity: RecRecordingIdentity.identity(songId: id, appleMusicId: am,
+                                                        version: versionKeys[id],
+                                                        lengthMs: trackById[id]?.lengthMs),
+                tier: tier,
+                score: score,
                 playable: RecRecordingIdentity.resolvesToStreamableAudio(appleMusicId: am))
-        })
-        scored = zip(scored, keep).compactMap { $1 ? $0 : nil }
+        }
+        let keep = RecRecordingIdentity.keepMask(
+            scored.map { identityCandidate($0.id, tier: 1, score: $0.score) }
+            + admitPool.map { identityCandidate($0.id, tier: 0, score: -$0.distance) })
+        scored = zip(scored, keep.prefix(scoredCount)).compactMap { $1 ? $0 : nil }
+        admitPool = zip(admitPool, keep.dropFirst(scoredCount)).compactMap { $1 ? $0 : nil }
 
         // ── THE CAP RUNS AFTER THE SORT, AND ON THE PRIMARY ARTIST ───────────────────────────
         // After, so no ranking change can defeat it — it is a property of the OUTPUT, not a
@@ -1592,11 +1768,47 @@ enum ZoneEngine {
         // holds take at most `suggestionIncumbentMaxShare` of the list, newcomers deeper in the
         // ranking are pulled up in their own order, and the floor fails OPEN from incumbents when
         // the newcomer pool runs dry. A list already under the cap comes back byte-identical.
-        return RecComposition.compose(
+        //
+        // …and TWO more phases, both of which are no-ops on a crate that cannot earn them. The
+        // SOUND QUOTA seats what the door admitted at reserved positions (never row 0, never
+        // more than `soundAdmitHardCap`), and the DIVERSITY FLOOR holds the tile's raw-genre
+        // count at the level it measured with the timbre term OFF — the variety the term was
+        // measured to cost (−0.86 distinct genres, −5.28pp new-genre share per 25 rows).
+        let admittedRows = RecSoundAdmit.select(admitPool, cap: admitQuota).map { c in
+            RecComposition.Row(id: c.id, capKey: c.capKey, isIncumbent: false,
+                               rawGenre: c.rawGenre,
+                               // Admitted by definition means "shares no genre category with the
+                               // crate", so its raw label is new to the crate too.
+                               isNewGenre: true)
+        }
+        let minRawGenres = max(0, Int((Double(limit) * tuning.suggestionMinRawGenreShare)
+                                        .rounded(.up)))
+        let maxSwaps = max(0, Int((Double(limit) * tuning.suggestionDiversityMaxSwapShare)
+                                    .rounded(.down)))
+        let ids = RecComposition.compose(
             scored.map { RecComposition.Row(id: $0.id, capKey: $0.capKey,
-                                            isIncumbent: $0.isIncumbent) },
+                                            isIncumbent: $0.isIncumbent,
+                                            rawGenre: $0.rawGenre, isNewGenre: $0.isNewGenre) },
             limit: limit, maxPerArtist: tuning.maxPerArtist,
-            incumbentMaxShare: tuning.suggestionIncumbentMaxShare)
+            incumbentMaxShare: tuning.suggestionIncumbentMaxShare,
+            soundAdmit: admittedRows.isEmpty ? nil
+                : RecComposition.SoundAdmit(rows: admittedRows,
+                                            maxShare: tuning.soundAdmitMaxShare,
+                                            hardCap: tuning.soundAdmitHardCap),
+            diversity: minRawGenres > 0 && maxSwaps > 0
+                ? RecComposition.Diversity(minDistinctRawGenres: minRawGenres,
+                                           maxSwaps: maxSwaps,
+                                           searchDepth: max(limit * 8, 50)) : nil)
+        // The admitted set is the intersection with what was actually EMITTED — the quota can be
+        // trimmed by the artist budget or by the truncation back to `n`, and a badge on a row
+        // that did not survive would be a caption about a row nobody can see.
+        let emitted = Set(ids)
+        return Ranking(ids: ids,
+                       soundAdmitted: Set(admittedRows.map(\.id)).intersection(emitted),
+                       soundWords: timbreProfile.map {
+                           SimilarityFamilies.timbreAdjectives($0.centroid)
+                               .joined(separator: ", ")
+                       })
     }
 
     /// The same ranking, with the one-line WHY each row earned its place.
@@ -1613,12 +1825,39 @@ enum ZoneEngine {
                                      limit: Int = 25,
                                      tuning: Tuning = Tuning(),
                                      versions: [String: RecVersionIdentity.Key]? = nil,
-                                     timbre: [String: SimilarityFamilies.TimbreVector] = [:])
+                                     timbre: [String: SimilarityFamilies.TimbreVector] = [:],
+                                     packed: SimilarityFamilies.PackedCorpus? = nil)
     -> [(songId: String, why: String)] {
-        let ids = suggestions(memberSongIds: memberSongIds, tracks: tracks, playCount: playCount,
-                              feedback: feedback, limit: limit, tuning: tuning, versions: versions,
-                              timbre: timbre)
-        guard !ids.isEmpty else { return [] }
+        explainedSuggestions(memberSongIds: memberSongIds, tracks: tracks, playCount: playCount,
+                             feedback: feedback, limit: limit, tuning: tuning, versions: versions,
+                             timbre: timbre, packed: packed).rows
+    }
+
+    /// The explained ranking PLUS which rows came through the sound door — what a surface needs
+    /// to render the "Sounds like" badge beside the caption.
+    ///
+    /// Two faces of one ranking, never two rankings: the badge set comes from `rank`, which is
+    /// also what produced the ids, so the badge cannot disagree with the list it is drawn on.
+    struct ExplainedRanking: Sendable {
+        var rows: [(songId: String, why: String)] = []
+        var soundAdmitted: Set<String> = []
+    }
+
+    static func explainedSuggestions(memberSongIds: [String],
+                                     tracks: [Track],
+                                     playCount: (String) -> Int,
+                                     feedback: Feedback = Feedback(),
+                                     limit: Int = 25,
+                                     tuning: Tuning = Tuning(),
+                                     versions: [String: RecVersionIdentity.Key]? = nil,
+                                     timbre: [String: SimilarityFamilies.TimbreVector] = [:],
+                                     packed: SimilarityFamilies.PackedCorpus? = nil)
+    -> ExplainedRanking {
+        let ranking = rank(memberSongIds: memberSongIds, tracks: tracks, playCount: playCount,
+                           feedback: feedback, limit: limit, tuning: tuning, versions: versions,
+                           timbre: timbre, packed: packed)
+        let ids = ranking.ids
+        guard !ids.isEmpty else { return ExplainedRanking() }
         let trackById = Dictionary(tracks.map { ($0.songId, $0) }, uniquingKeysWith: { a, _ in a })
         var maxPlays = 0
         var capKeyByArtist: [String: String] = [:]
@@ -1666,7 +1905,21 @@ enum ZoneEngine {
             SimilarityFamilies.timbreAdjectives($0.centroid).joined(separator: ", ")
         }
         _ = members
-        return ids.map { id in
+        let rows: [(songId: String, why: String)] = ids.map { id in
+            // ── THE SOUND DOOR SPEAKS FIRST, AND IT IS THE ONLY ROW THAT MAY ────────────────
+            // An admitted row shares NEITHER an artist NOR a genre with this crate: every other
+            // caption below would be false of it, and the strongest true one — "New artist for
+            // this crate" — is true but hides the actual evidence, which is that the engine
+            // measured it and it sounds like the crate. A suggestion made on sound has to be
+            // legible AS a suggestion made on sound, or a 👎 on it is a verdict on the wrong
+            // question. Same caption family the re-rank half already uses, so there is one
+            // idiom for "this is about how it sounds", not two.
+            if ranking.soundAdmitted.contains(id) {
+                if let words = ranking.soundWords, !words.isEmpty {
+                    return (id, "Sounds like this crate: \(words)")
+                }
+                return (id, "Sounds like this crate")
+            }
             guard let t = trackById[id] else { return (id, "Fits this collection") }
             let cap = capKeyByArtist[t.artistKey] ?? t.artistKey
             let incumbent = isIncumbent(t)
@@ -1701,5 +1954,6 @@ enum ZoneEngine {
             if !memberCreditKeys.isEmpty, !incumbent { return (id, "New artist for this crate") }
             return (id, "Fits this collection")
         }
+        return ExplainedRanking(rows: rows, soundAdmitted: ranking.soundAdmitted)
     }
 }

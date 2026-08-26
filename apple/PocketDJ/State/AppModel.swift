@@ -285,7 +285,14 @@ final class AppModel {
                                     // that share an artist and a title are only fused into one
                                     // recording when their lengths agree, which is what keeps an
                                     // unlabelled live take out of the studio cut's row.
-                                    lengthMs: s.length)
+                                    lengthMs: s.length,
+                                    // The album's RAW genre, UNCOLLAPSED and NOT mapped through
+                                    // the "Other" rule above: the diversity floor and the sound
+                                    // quota's skew caps count VARIETY, and both numbers the
+                                    // audit measured were measured on raw labels. Feeding them
+                                    // the 16 categories would let a tile satisfy the floor while
+                                    // showing one sound. See `ZoneEngine.Track.genreRaw`.
+                                    genreRaw: album?.genre)
         }
         zoneTracksCache = (catalogRevision, tracks)
         return tracks

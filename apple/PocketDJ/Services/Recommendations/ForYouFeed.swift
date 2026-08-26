@@ -68,6 +68,13 @@ struct ForYouFeedSnapshot: Codable, Equatable, Sendable {
         /// a failed decode, never an empty-string caption. Precedence between reasons is the
         /// ENGINE's decision; nothing downstream re-derives or re-ranks these strings.
         var reasons: [String: String]? = nil
+        /// Which of `songIds` came through the SOUND DOOR — seated on audio alone, sharing
+        /// neither an artist nor a genre with this crate (`ZoneEngine.Ranking.soundAdmitted`).
+        /// Frozen WITH the list, exactly like `zoneBuriedIds`, so the badge cannot disappear
+        /// from a row while the row stays put. OPTIONAL AND DEFAULTED on the same doctrine as
+        /// `reasons`: a snapshot cached before this field existed decodes to `nil` and its rows
+        /// simply render without badges — never a failed decode.
+        var soundIds: [String]? = nil
     }
 
     var schemaVersion: Int = forYouFeedSchemaVersion
@@ -115,6 +122,14 @@ struct ForYouFeedSnapshot: Codable, Equatable, Sendable {
     func reasons(forTileId tileId: String) -> [String: String] {
         if tileId == ForYouTileRoute.Kind.zone.rawValue { return zoneReasons ?? [:] }
         return crates.first(where: { "col-\($0.id)" == tileId })?.reasons ?? [:]
+    }
+
+    /// The frozen SOUND-ADMITTED ids for a tile. `[]` — a pre-field snapshot, In Da Zone (which
+    /// has no admission gate to pass and therefore no door to come through), an unknown tile —
+    /// means "no badges", and the rows render exactly as they did before this field existed.
+    func soundIds(forTileId tileId: String) -> Set<String> {
+        guard tileId != ForYouTileRoute.Kind.zone.rawValue else { return [] }
+        return Set(crates.first(where: { "col-\($0.id)" == tileId })?.soundIds ?? [])
     }
 
     /// Codable is hand-rolled ONLY for leniency: a document written by a newer build (or a
@@ -248,6 +263,12 @@ enum ForYouFeedBuilder {
         // `Task.detached` hop, which is why `AppModel.zoneTracks` carries raw titles rather than
         // parsed keys. See `ZoneEngine.versionKeys`.
         let versions = ZoneEngine.versionKeys(inputs.tracks)
+        // ── AND THE TIMBRE CORPUS, PACKED ONCE FOR THE WHOLE REFRESH ─────────────────────────
+        // Same reasoning as `versions` above, and the same shape. The SOUND DOOR's scan measures
+        // candidates the artist/genre gate rejects, so it cannot ride the gate's short-circuit
+        // the way the ranking's timbre multiplier does: over ~96k rows × ~40 crates the
+        // dictionary form is ~100M string hashes a refresh. Packed here, once, it is 96k.
+        let packed = SimilarityFamilies.pack(inputs.timbre)
         let crates = inputs.crates
             .filter { !inputs.recsOffCrateIds.contains($0.id) }
             .map { c -> ForYouFeedSnapshot.Crate in
@@ -256,21 +277,27 @@ enum ForYouFeedBuilder {
                 // one-line WHY each row earned its place riding along. The reason string is the
                 // engine's verdict verbatim — precedence (timbre > genre when observed) is
                 // decided in `ZoneEngine`, and the view renders whatever lands here.
-                let rows = ZoneEngine.suggestionsExplained(
+                let ranked = ZoneEngine.explainedSuggestions(
                     memberSongIds: c.songIds, tracks: inputs.tracks,
                     playCount: { counts[$0] ?? 0 },
                     feedback: inputs.crateFeedback[c.id] ?? ZoneEngine.Feedback(),
                     versions: versions,
-                    timbre: inputs.timbre)
+                    timbre: inputs.timbre,
+                    packed: packed)
+                let rows = ranked.rows
                 // An empty why is stored as ABSENCE, never as "": the view's contract is
                 // "no reason ⇒ no caption row", and an empty string would render a blank gap.
                 let reasons = Dictionary(rows.filter { !$0.why.isEmpty }
                                              .map { ($0.songId, $0.why) },
                                          uniquingKeysWith: { a, _ in a })
+                // …and the badge set, frozen in EMITTED ORDER so the stored document is stable
+                // across refreshes that produce the same list (a Set's iteration order is not).
+                let sound = rows.map(\.songId).filter(ranked.soundAdmitted.contains)
                 return ForYouFeedSnapshot.Crate(
                     id: c.id, kind: c.kind, name: c.name,
                     songIds: rows.map(\.songId),
-                    reasons: reasons.isEmpty ? nil : reasons)
+                    reasons: reasons.isEmpty ? nil : reasons,
+                    soundIds: sound.isEmpty ? nil : sound)
             }
         return ForYouFeedSnapshot(
             refreshedAtMs: inputs.nowMs,
@@ -503,6 +530,9 @@ final class ForYouFeedStore {
     func reasons(forTileId tileId: String) -> [String: String] {
         snapshot.reasons(forTileId: tileId)
     }
+
+    /// The frozen sound-admitted ids for a tile — the "Sounds like" badge source.
+    func soundIds(forTileId tileId: String) -> Set<String> { snapshot.soundIds(forTileId: tileId) }
 
     // ========================================================================
     // MARK: - CloudSync — the feed follows the Apple ID

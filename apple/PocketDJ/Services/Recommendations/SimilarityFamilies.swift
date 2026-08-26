@@ -667,18 +667,6 @@ enum SimilarityFamilies {
         }
         return usable >= timbreMinSharedAxes && zeros < timbreMaxZeroAxes
     }
-    /// THE INSTRUMENT'S OWN ERROR BAR, in the same RMS distance the fit is measured in.
-    ///
-    /// MEASURED on the shipping v1 corpus: the median distance between two INDEPENDENT captures
-    /// of the SAME recording — distinct catalog ids agreeing on artist and title AND corroborated
-    /// by duration (the `RecRecordingIdentity` rule, so a re-recording or a live cut cannot
-    /// inflate the floor), 410 such pairs, both sides carrying their own vector — is **0.1022**,
-    /// 95 % CI [0.0911, 0.1119], mean 0.1145. A looser pairing without the duration corroborator
-    /// measures 0.1202, CI [0.1116, 0.1335], on 279 pairs. Both estimates say the same thing:
-    /// two songs closer together than ~0.10–0.12 are not distinguishable by this extractor at all.
-    /// For scale, the median distance between two RANDOM songs in the same corpus is 0.2324.
-    static let timbreNoiseFloor = 0.12
-
     /// e-fold of the fit OUTSIDE the profile's own spread, in RMS distance.
     ///
     /// MEASURED AGAINST THE INSTRUMENT, not chosen for feel. The shipped value was 0.05 — two to
@@ -728,6 +716,124 @@ enum SimilarityFamilies {
     /// happens TOWARD the crate's own sound. The era term skips shrinkage at 99.2% coverage;
     /// this term must not. Scale it down as the corpus grows.
     static let timbrePrior = 2.0
+
+    // ── THE ADMISSION BAR (audio-similarity v3: sound may ADMIT, not only re-rank) ───────────
+    // `ZoneEngine.suggestions` only ever CONSIDERED a candidate that already shared an artist or
+    // a genre category with the crate (`guard a > 0 || g > 0`), so the timbre term could reorder
+    // rows metadata had already qualified and nothing else: cross-genre discovery by sound was
+    // impossible by construction. These constants are the narrow door through that gate, and
+    // every one of them is a MEASUREMENT, not a taste.
+
+    /// **THE INSTRUMENT'S OWN ERROR BAR**, in the same RMS distance every constant here is in:
+    /// the median distance between two INDEPENDENT captures of the SAME recording.
+    ///
+    /// MEASURED on the shipping v1 corpus, three ways that agree: 0.119 (n=214) and 0.1202
+    /// (n=279) over same-artist-and-title pairs, and 0.1022 with 95 % CI [0.0911, 0.1119] and
+    /// mean 0.1145 over 410 pairs when the pairing is additionally corroborated by DURATION (the
+    /// `RecRecordingIdentity` rule, so a re-recording or a live cut cannot inflate it). Against a
+    /// random-pair median of 0.2324. Two songs closer together than ~0.10–0.12 are not
+    /// distinguishable by this extractor at all.
+    ///
+    /// It is the floor under the admission radius for that reason: a crate whose own spread
+    /// measures tighter than the error bar has not earned a tighter door, it has just been
+    /// measured luckily. It is also the e-fold of the fit itself — see `timbreDecay`.
+    static let timbreNoiseFloor = 0.12
+    /// How far INSIDE the crate's own radius an outsider must sit to be admitted on sound alone.
+    /// Half the noise floor — the smallest margin that is still larger than half the instrument's
+    /// error, so an admission is a claim the measurement can actually support. "Analysed" is not
+    /// a qualification; being audibly, measurably inside the crate's sound is.
+    static let soundAdmitMargin = 0.06
+    /// Minimum analysed members for a profile trustworthy enough to admit ACROSS the genre
+    /// boundary. `timbreMinVectors` (3) is the bar for RE-RANKING rows metadata already
+    /// qualified; three songs is a centroid of three songs, not a sound, and re-ranking inside a
+    /// qualified pool is a cheap mistake while admitting a stranger is an expensive one. Raised,
+    /// never lowered — the two bars are deliberately different numbers for different acts.
+    static let soundAdmitMinProfileVectors = 8
+    /// …and at least this share of the crate must be analysed. A 500-song crate with 8 analysed
+    /// members has a vector for 1.6% of itself; whatever those 8 sound like is not "the crate's
+    /// sound", and projecting it through the gate would let a sampling accident recruit.
+    static let soundAdmitMinAnalysedShare = 0.5
+    /// A crate whose own radius approaches the RANDOM-PAIR median (~0.22) has no sound to admit
+    /// on — its members are as far apart as two songs picked out of a hat, so "inside the radius"
+    /// stops meaning anything. Below that by a comfortable margin, so the test bites before the
+    /// distance degenerates.
+    static let soundAdmitMaxSpread = 0.20
+
+    /// The radius an outsider must beat to be admitted on sound: the crate's own spread, floored
+    /// at the instrument's error bar, less the margin. Floored because a razor-tight crate (a
+    /// duplicate-heavy one, most often) would otherwise set a door narrower than the extractor
+    /// can measure, and admit nothing at all or admit on noise.
+    static func soundAdmitRadius(spread: Double) -> Double {
+        max(spread, timbreNoiseFloor) - soundAdmitMargin
+    }
+
+    /// Is this profile trustworthy enough to admit strangers on sound? All three preconditions,
+    /// in one place, so the engine and its tests read the same rule.
+    ///
+    /// - Parameter profileSize: how many songs the profile was DRAWN FROM (members + 👍), not how
+    ///   many of them carried a vector — the analysed SHARE is the point of the test.
+    static func timbreProfileAdmits(_ p: TimbreProfile?, profileSize: Int) -> Bool {
+        guard let p, profileSize > 0 else { return false }
+        guard p.vectors >= soundAdmitMinProfileVectors else { return false }
+        guard Double(p.vectors) / Double(profileSize) >= soundAdmitMinAnalysedShare else { return false }
+        return p.spread <= soundAdmitMaxSpread
+    }
+
+    // ── THE PACKED CORPUS ────────────────────────────────────────────────────────────────────
+    // `TimbreVector` is a DICTIONARY for a good reason (see its doc: an extractor that adds or
+    // drops an axis degrades to "fewer shared axes" instead of misaligning every component), and
+    // that was free while the artist/genre gate short-circuited ahead of every distance call —
+    // only qualified candidates were ever measured. ADMISSION INVERTS THAT: the admit scan has to
+    // reach candidates the gate REJECTS, i.e. every analysed row in a ~96k catalog, once per
+    // crate (~40 of them per refresh). At 28 string-keyed probes per distance that is ~100M
+    // hashes a refresh.
+    //
+    // So the corpus is packed ONCE per refresh — dictionary → fixed 14-slot array in `timbreAxes`
+    // order, absent axes as `.nan` — and the admit scan reads the array. The dictionary form is
+    // untouched everywhere else, and `timbreDistance(_:_:)` over two packed vectors is the same
+    // arithmetic in the same order, which `TimbreCatalogTests` pins.
+
+    /// One song's timbre as a fixed 14-slot array in `timbreAxes` order; `.nan` marks an axis the
+    /// vector does not carry (or carries non-finitely — the same thing to every reader).
+    struct PackedVector: Sendable, Equatable {
+        var v: [Double]
+        /// How many of the 14 slots are finite — the shared-axis test's cheap half.
+        var count: Int
+    }
+
+    /// song id → packed vector. Derived ONCE by the caller and shared across every crate, exactly
+    /// like `ZoneEngine.versionKeys` — deriving it per crate is the cost this type exists to
+    /// avoid.
+    typealias PackedCorpus = [String: PackedVector]
+
+    static func pack(_ v: TimbreVector) -> PackedVector {
+        var out = [Double](repeating: .nan, count: timbreAxes.count)
+        var n = 0
+        for (i, k) in timbreAxes.enumerated() {
+            guard let x = v[k], x.isFinite else { continue }
+            out[i] = x
+            n += 1
+        }
+        return PackedVector(v: out, count: n)
+    }
+
+    static func pack(_ m: [String: TimbreVector]) -> PackedCorpus { m.mapValues(pack) }
+
+    /// The SAME RMS distance as `timbreDistance(_:_:)`, over packed vectors. Same axes, same
+    /// order, same shared-axis minimum — a parity test pins the two, because an admission
+    /// threshold read off a different arithmetic than the ranking's would be a silent divergence.
+    static func timbreDistance(_ a: PackedVector, _ b: PackedVector) -> Double? {
+        guard a.count >= timbreMinSharedAxes, b.count >= timbreMinSharedAxes else { return nil }
+        var sum = 0.0, n = 0
+        for i in 0..<timbreAxes.count {
+            let x = a.v[i], y = b.v[i]
+            guard x.isFinite, y.isFinite else { continue }
+            sum += (x - y) * (x - y)
+            n += 1
+        }
+        guard n >= timbreMinSharedAxes else { return nil }
+        return (sum / Double(n)).squareRoot()
+    }
 
     /// RMS distance over the axes BOTH vectors carry, or nil below `timbreMinSharedAxes`.
     /// F10's distance — see the section doc for the verification that it is.
