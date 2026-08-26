@@ -19,11 +19,20 @@ import Foundation
 ///     store id IN THE NAME, and the indexed catalog row that eventually supersedes it carries the
 ///     same number as `IndexSong.appleMusicId` — so those two strings name one recording with
 ///     nothing textual in common.
+///  4. **A SECOND ORDINARY CATALOG ID** — two plain `sng_` rows for one recording, because the
+///     Apple Music library genuinely holds them: a real row beside a retired or empty-`kind`
+///     placeholder, or the same song on two albums. Measured on the owner's 96,383-row catalog:
+///     **4,344 title+artist groups hold more than one id**, 1,698 of them on the SAME album. No
+///     id comparison can see this one and neither can `RecVersionIndex` (the two signatures are
+///     EQUAL, so it is honestly not "a different version") — it takes the recording key, which is
+///     `RecRecordingIdentity`'s, shared with the pass that guarantees one recording can never
+///     occupy two rows of one list.
 ///
 /// This exact duplicate-identity class has already cost this app a bug once: a track that played
 /// twice because two ids for it both looked new. Here it costs a *suggestion slot* — the tile
 /// offers a song he already filed, the 👍 is a no-op, and the candidate that should have had the
-/// row never gets it.
+/// row never gets it. Identity 4 cost it a second time, visibly: "Expressway To Your Heart" filled
+/// TWO adjacent rows of one crate's list, with different feedback state on each.
 ///
 /// ── WHY A VALUE TYPE AND NOT A METHOD ON THE STORE ───────────────────────────────────────────
 /// The ranking runs OFF the main actor (`ForYouFeedBuilder` is `Task.detached` over ~96k rows) and
@@ -64,11 +73,14 @@ struct RecMembership: Sendable, Equatable {
         var keys = Set<String>()
         var versionKeys: [RecVersionIdentity.Key] = []
         for id in memberIds {
-            for k in Self.identityKeys(songId: id, appleMusicId: appleMusicId(id)) { keys.insert(k) }
-            if let ta = titleArtist(id),
-               let vk = RecVersionIdentity.key(title: ta.title, artist: ta.artist) {
-                versionKeys.append(vk)
+            // ONE parse per member, feeding BOTH halves: the recording key (identity — the
+            // FOURTH id form, two plain `sng_` rows for one song) and the version index (the
+            // adjacent "different edition of what he has" question).
+            let vk = titleArtist(id).flatMap { RecVersionIdentity.key(title: $0.title, artist: $0.artist) }
+            for k in Self.identityKeys(songId: id, appleMusicId: appleMusicId(id), version: vk) {
+                keys.insert(k)
             }
+            if let vk { versionKeys.append(vk) }
         }
         self.keys = keys
         self.versions = RecVersionIndex(owned: versionKeys)
@@ -98,8 +110,15 @@ struct RecMembership: Sendable, Equatable {
     /// carries one on most "Apple Music (Local)" rows). Without it the ad-hoc join still works in
     /// the direction that matters most — an `amrec_` MEMBER vs a catalog candidate — only when the
     /// candidate side supplies the number, so callers that can pass it should.
-    func contains(_ songId: String, appleMusicId: String? = nil) -> Bool {
-        for k in Self.identityKeys(songId: songId, appleMusicId: appleMusicId) where keys.contains(k) {
+    /// `version` is the CANDIDATE's pre-parsed version identity, and it is what closes the
+    /// FOURTH gap: the Apple Music library genuinely holds two plain `sng_` rows for one
+    /// recording (measured: 4,344 title+artist groups on the owner's catalog), so a member filed
+    /// under id A can otherwise still be offered under id B with nothing but the text relating
+    /// them. Absent ⇒ the id join alone, exactly as before.
+    func contains(_ songId: String, appleMusicId: String? = nil,
+                  version: RecVersionIdentity.Key? = nil) -> Bool {
+        for k in Self.identityKeys(songId: songId, appleMusicId: appleMusicId, version: version)
+        where keys.contains(k) {
             return true
         }
         return false
@@ -127,9 +146,9 @@ struct RecMembership: Sendable, Equatable {
                    titleArtist: (String) -> (title: String, artist: String)? = { _ in nil }) -> [String] {
         guard !isEmpty else { return ids }
         return ids.filter { id in
-            if contains(id, appleMusicId: appleMusicId(id)) { return false }
-            if !versions.isEmpty, let ta = titleArtist(id),
-               versions.supersedes(title: ta.title, artist: ta.artist) { return false }
+            let vk = titleArtist(id).flatMap { RecVersionIdentity.key(title: $0.title, artist: $0.artist) }
+            if contains(id, appleMusicId: appleMusicId(id), version: vk) { return false }
+            if !versions.isEmpty, let vk, versions.supersedes(vk) { return false }
             return true
         }
     }
@@ -141,14 +160,12 @@ struct RecMembership: Sendable, Equatable {
     /// Every key one song id can be recognised by. THE definition of "the same song" for
     /// recommendation membership, and the only one — two answers to this question is how the app
     /// ends up suggesting what it already owns.
-    static func identityKeys(songId id: String, appleMusicId: String? = nil) -> [String] {
-        // The BASE id collapses `_clean` / `_explicit` onto the recording; identity for every
-        // other id shape (`amrec_`, `smp_`, `pdj_`, a bare `sng_`), so the ordinary case is one
-        // string and one set lookup.
-        var out = [SongVariant.baseId(id)]
-        if let store = adHocStoreId(id) { out.append(storeKey(store)) }
-        if let am = appleMusicId, let key = validStoreKey(am) { out.append(key) }
-        return out
+    /// Delegates to `RecRecordingIdentity` — THE identity function, shared with the pass that
+    /// guarantees one recording can never occupy two rows of one list. Two answers to "is this
+    /// the same recording" is precisely how a song owned under id A gets recommended under id B.
+    static func identityKeys(songId id: String, appleMusicId: String? = nil,
+                             version: RecVersionIdentity.Key? = nil) -> [String] {
+        RecRecordingIdentity.identityKeys(songId: id, appleMusicId: appleMusicId, version: version)
     }
 
     /// `amrec_<storeId>` ad-hoc rip ids carry their Apple Music store id in the name (the
@@ -161,7 +178,7 @@ struct RecMembership: Sendable, Equatable {
     }
 
     /// Namespaced so an Apple Music store id can never collide with a song id in the same set.
-    private static func storeKey(_ storeId: String) -> String { "am:" + storeId }
+    static func storeKey(_ storeId: String) -> String { "am:" + storeId }
 
     /// ── WHY THE STORE ID IS VALIDATED AND NOT JUST NON-EMPTY ─────────────────────────────────
     /// This key is a JOIN, and a bad join is the one failure mode worse than the bug it fixes: a
@@ -169,7 +186,7 @@ struct RecMembership: Sendable, Equatable {
     /// catalog into ONE identity and silently delete real suggestions. Apple's adam ids are long
     /// bare numerals, so requiring exactly that is a cheap, total guard — anything else simply
     /// does not participate in the join and falls back to id equality.
-    private static func validStoreKey(_ raw: String) -> String? {
+    static func validStoreKey(_ raw: String) -> String? {
         guard raw.count >= 4, raw.allSatisfy(\.isNumber), raw.contains(where: { $0 != "0" }) else {
             return nil
         }
