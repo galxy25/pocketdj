@@ -450,6 +450,11 @@ async function main() {
         const verdict = classifyResult(r);
         if (verdict === 'ok') {
           row.ok = true; row.f = r.f;
+          // The RAW block rides along (14 floats). It is what makes a future rail recalibration a
+          // RE-NORMALISATION instead of a re-extraction — the shipped corpus was built without it
+          // and that is precisely why its rails could not be moved. fold-timbre keeps it out of
+          // the published corpus and folds it into data/timbre-raw.json.
+          if (r.r && typeof r.r === 'object') row.r = r.r;
           if (Number.isFinite(r.durationSec)) row.durationSec = r.durationSec;
           counters.ok += 1; timings.push(ms);
           if (a.verbose) log(`  ✓ [${shard.i}] ${cur.task.id} ${ms} ms`);

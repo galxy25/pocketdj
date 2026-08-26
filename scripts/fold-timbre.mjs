@@ -28,6 +28,10 @@
 //    degenerate rows are all the same point, so they read as each other's nearest neighbours and
 //    recommend each other. That is worse than having no vector at all.
 //  · Within one id, last write (atMs) wins — a re-analysis replaces, never accumulates.
+//  · The RAW measurement blocks are folded OUT, into data/timbre-raw.json — the calibrator's
+//    input, and the reason a future rail change can be a re-normalisation rather than a
+//    re-extraction. They never enter the published corpus: 14 more floats would roughly double a
+//    file every device downloads, to serve a script that runs on a laptop.
 //  · …EXCEPT ACROSS PROVENANCE. `vinyl-cut` (a stream copy of the song's window out of the raw
 //    album file) and `s3-cut` (the burned, re-encoded cut mp3 on S3) are measurements of two
 //    DIFFERENT FILES, not two runs of one measurement — and the cloud lane can only ever produce
@@ -49,7 +53,8 @@ import { isUsableTimbreRow } from './lib/timbre-hygiene.mjs';
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 /// Pure fold. results: iterable of parsed NDJSON rows; aliases: {fromId:{to}} (or {fromId:to}).
-export function foldTimbre(results, aliases = {}) {
+/// `raw` (optional Map) collects each folded song's RAW measurement block for the calibrator.
+export function foldTimbre(results, aliases = {}, raw = null) {
   const songs = {};
   const best = new Map();       // id -> {atMs, rank} of the row currently folded
   let dropped = 0; let held = 0; let versionDropped = 0; let quarantined = 0;
@@ -70,6 +75,7 @@ export function foldTimbre(results, aliases = {}) {
     }
     best.set(r.id, { atMs: at, rank });
     songs[r.id] = { v: r.v, f: r.f };
+    if (raw) { if (r.r && typeof r.r === 'object') raw.set(r.id, r.r); else raw.delete(r.id); }
   }
   let aliased = 0; let pending = 0; let shadowed = 0;
   for (const [from, spec] of Object.entries(aliases || {})) {
@@ -111,7 +117,8 @@ async function main() {
   const outPath = arg('--out', join(REPO, 'public', 'timbre.json'));
 
   const aliases = existsSync(aliasPath) ? (JSON.parse(readFileSync(aliasPath, 'utf8')).aliases || {}) : {};
-  const { songs, stats } = foldTimbre(readResults(resultsDir), aliases);
+  const raw = new Map();
+  const { songs, stats } = foldTimbre(readResults(resultsDir), aliases, raw);
 
   // SHRINK GUARD ON THE CORPUS ITSELF. build-timbre-aliases has one, but it measures the alias
   // TARGETS (is /Volumes mounted?) — a different quantity that does not move when the vectors do.
@@ -133,6 +140,18 @@ async function main() {
   };
   writeFileSync(outPath, JSON.stringify(doc));
   console.error(`[fold-timbre] wrote ${outPath} — ${JSON.stringify(doc.counts)}`);
+  // The RAW measurements go to a SEPARATE artifact, never into the published corpus. This is the
+  // calibrator's input: it is what would let the rails be re-derived, and every stored vector
+  // re-normalized, without touching audio again. Written only when there is something to write,
+  // so a fold over a corpus that predates raw-persistence leaves no misleading empty file.
+  if (raw.size) {
+    const rawPath = arg('--raw-out', join(REPO, 'data', 'timbre-raw.json'));
+    writeFileSync(rawPath, JSON.stringify({
+      v: 1, timbreVersion: TIMBRE_VERSION, generatedAt: doc.generatedAt, count: raw.size,
+      songs: Object.fromEntries([...raw.entries()].sort(([x], [y]) => (x < y ? -1 : 1))),
+    }));
+    console.error(`[fold-timbre] wrote ${rawPath} — ${raw.size} raw blocks (calibrator input)`);
+  }
 }
 
 /// The vector count of the artifact already on disk, or null when there is no comparable baseline.

@@ -82,6 +82,30 @@ describe('foldTimbre', () => {
     expect(stats.pending).toBe(1);
   });
 
+  it('collects the RAW block for the calibrator WITHOUT putting it in the published corpus', () => {
+    // 14 more floats per row would roughly double a file every device downloads, to serve a
+    // script that runs on a laptop. Keeping them is what makes the NEXT rail change arithmetic
+    // on measurements already taken rather than a multi-day re-extraction — which is exactly the
+    // price that kept a 76-song calibration in force while the corpus grew past 15,000.
+    const raw = new Map();
+    const r = { cent: 2000, centStd: 700, roll: 4000, band: 2200, flat: 0.01, zcr: 0.08,
+                perc: 0.3, onsetRate: 4, crest: 2.5, rms: 0.05, m1: 200, m2: 50, m3: 90, m4: -10 };
+    const { songs } = foldTimbre([row('sng_a', { r }), row('sng_b')], {}, raw);
+    expect(raw.get('sng_a')).toEqual(r);
+    expect(songs.sng_a.r).toBeUndefined();
+    expect(raw.has('sng_b')).toBe(false, 'a row predating raw-persistence contributes nothing');
+  });
+
+  it('a re-analysis WITHOUT a raw block clears the stale one — LWW applies to `r` too', () => {
+    // Otherwise the raw map would keep a block from a measurement the corpus no longer holds,
+    // and the calibrator would derive rails from a vector that is not in the file it calibrates.
+    const raw = new Map();
+    const r = { cent: 2000, centStd: 700, roll: 4000, band: 2200, flat: 0.01, zcr: 0.08,
+                perc: 0.3, onsetRate: 4, crest: 2.5, rms: 0.05, m1: 200, m2: 50, m3: 90, m4: -10 };
+    foldTimbre([row('sng_a', { r, atMs: 1000 }), row('sng_a', { atMs: 2000 })], {}, raw);
+    expect(raw.has('sng_a')).toBe(false);
+  });
+
   it('last write wins per id (re-analysis replaces, never accumulates)', () => {
     const f2 = Object.fromEntries(TIMBRE_AXES.map((a, i) => [a, Math.round((0.9 - i * 0.05) * 1e4) / 1e4]));
     const { songs } = foldTimbre([row('sng_a'), row('sng_a', { f: f2, atMs: 2000 })]);

@@ -116,13 +116,15 @@ def main():
         # ── THE lo/hi TABLE IS MEASURED, NOT GUESSED ────────────────────────────────────────────
         # Every pair below is the p02/p98 of the RAW value over a 76-song sample of the owner's
         # own ripped catalog (10 artists across rock / r&b / electronic / jazz / hip-hop), dumped
-        # with `--raw`. The first cut of this file used plausible textbook ranges and three axes
+        # from the raw blocks. The first cut of this file used plausible textbook ranges and three axes
         # came back DEAD: m1 pinned at 1.0 for 88 % of songs, m3 for 66 %, `punch` at a rail for
         # 14 %. A saturated axis is not a weak feature, it is a MISSING one — every song scores
         # the same, so it contributes exactly zero to any distance while still costing a slot in
-        # the vector. Re-derive with `--raw` if the collection's centre of gravity moves; bump
-        # TIMBRE_VERSION in scripts/lib/audio-analyze.mjs when you do, so the nightly job
-        # re-analyzes what it already has instead of mixing two calibrations in one corpus.
+        # the vector. Re-derive from the stored `r` blocks (data/timbre-raw.json) if the
+        # collection's centre of gravity moves; bump TIMBRE_VERSION in
+        # scripts/lib/audio-analyze.mjs when you do, so every consumer refuses to mix two
+        # calibrations in one corpus — and re-measure the decay, the admission margin and the
+        # spread bar at the same time, because the rails ARE the units those are expressed in.
         f = {
             # NAMED axes ─ each one is a sentence a person could say about the record.
             "bright": norm(np.mean(cent), 1200, 6200),         # spectral centroid, Hz
@@ -155,18 +157,24 @@ def main():
             fail("degenerate-axes")
 
         out = {"ok": True, "v": 1, "durationSec": round(n / sr, 1), "f": f}
-        # `--raw` dumps the pre-normalization values. This is how the lo/hi percentiles above were
-        # calibrated against the real catalog, and it is the only way to RE-calibrate them without
-        # guessing when the collection's centre of gravity moves.
-        if "--raw" in sys.argv[2:]:
-            out["r"] = {
-                "cent": float(np.mean(cent)), "centStd": float(np.std(cent)),
-                "roll": float(np.mean(roll)), "band": float(np.mean(band)),
-                "flat": float(np.mean(flat)), "zcr": float(np.mean(zcr)),
-                "perc": perc, "onsetRate": onset_rate, "crest": crest, "rms": rms_mean,
-                "m1": float(np.mean(mf[1])), "m2": float(np.mean(mf[2])),
-                "m3": float(np.mean(mf[3])), "m4": float(np.mean(mf[4])),
-            }
+        # ── THE RAW MEASUREMENTS RIDE ALONG, ALWAYS ─────────────────────────────────────────
+        # Normalization is a pure affine clamp, so keeping the raw values makes a future rail
+        # recalibration a RE-NORMALISATION (arithmetic on numbers already taken) instead of a
+        # RE-EXTRACTION (15k songs × ~3.5 s of librosa, and 10,388 of them behind a removable
+        # volume no cloud worker can mount). This used to sit behind `--raw`, which is exactly
+        # why the shipped corpus was built without it and why a calibration derived from 76
+        # songs stayed in force while the corpus grew 200× — moving it cost hours nobody had.
+        #
+        # It is 14 floats. `fold-timbre.mjs` keeps them OUT of the published corpus and folds
+        # them into data/timbre-raw.json, so no device downloads a byte of this.
+        out["r"] = {
+            "cent": float(np.mean(cent)), "centStd": float(np.std(cent)),
+            "roll": float(np.mean(roll)), "band": float(np.mean(band)),
+            "flat": float(np.mean(flat)), "zcr": float(np.mean(zcr)),
+            "perc": perc, "onsetRate": onset_rate, "crest": crest, "rms": rms_mean,
+            "m1": float(np.mean(mf[1])), "m2": float(np.mean(mf[2])),
+            "m3": float(np.mean(mf[3])), "m4": float(np.mean(mf[4])),
+        }
         print(json.dumps(out))
     except Exception as exc:                                    # noqa: BLE001 — best-effort stage
         print(json.dumps({"ok": False, "error": str(exc)}))
