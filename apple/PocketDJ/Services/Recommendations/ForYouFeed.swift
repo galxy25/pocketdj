@@ -1,7 +1,20 @@
 import Foundation
 import Observation
 
-let forYouFeedSchemaVersion = 1
+/// **2** — a feed frozen by an engine that could emit one recording twice.
+///
+/// `ZoneEngine` now collapses duplicate recordings at emit time, but the owner's cached feed was
+/// built before that and holds them: measured on his live snapshot, **54 of 86 crates carried at
+/// least one duplicated recording, 81 duplicate rows in all**. The lists are frozen by the cache
+/// rule and only recomputed on an explicit Refresh, so without a version gate the reported bug
+/// would still be on screen after the fix shipped — for a week, or until he happened to refresh.
+///
+/// Bumping this retires those documents: a snapshot written under an older schema is treated as
+/// NO CACHE, `hasResult` is false, and `ForYouView`'s cold-cache branch rebuilds on the next open
+/// regardless of the refresh cadence. Exactly one rebuild, and never again for the same reason.
+/// The alternative — collapsing a second time at read, in `ForYouGrid` and in `ForYouDetailViews`
+/// — is the per-view sprinkling that guarantees the next surface reintroduces the bug.
+let forYouFeedSchemaVersion = 2
 
 // ============================================================================
 // MARK: - The frozen result
@@ -400,7 +413,8 @@ final class ForYouFeedStore {
     init(fileURL: URL = ForYouFeedStore.launchURL()) {
         self.fileURL = fileURL
         if let data = try? Data(contentsOf: fileURL),
-           let doc = try? JSONDecoder().decode(ForYouFeedSnapshot.self, from: data) {
+           let doc = try? JSONDecoder().decode(ForYouFeedSnapshot.self, from: data),
+           doc.schemaVersion >= forYouFeedSchemaVersion {
             snapshot = doc
         }
     }
@@ -529,6 +543,7 @@ final class ForYouFeedStore {
     /// half-written payload has to degrade to "keep what we have" rather than to a blank grid.
     func applyPulledPayload(_ data: Data) {
         guard let incoming = try? JSONDecoder().decode(ForYouFeedSnapshot.self, from: data),
+              incoming.schemaVersion >= forYouFeedSchemaVersion,
               incoming.refreshedAtMs > snapshot.refreshedAtMs else {
             // Not fresher (or not decodable): keep ours, and re-stamp so the watermark
             // `CloudSyncService` reads immediately after this call still describes OUR refresh.
@@ -549,6 +564,10 @@ final class ForYouFeedStore {
     func reloadFromDisk() -> Bool {
         guard let data = try? Data(contentsOf: fileURL),
               let doc = try? JSONDecoder().decode(ForYouFeedSnapshot.self, from: data),
+              // A PEER STILL ON THE OLD ENGINE must not push its duplicate-bearing ranking onto a
+              // device that has already been fixed — the sync is last-writer-wins over refresh
+              // recency, and "more recent" would otherwise beat "correct".
+              doc.schemaVersion >= forYouFeedSchemaVersion,
               doc.refreshedAtMs > snapshot.refreshedAtMs else { return false }
         snapshot = doc
         revision &+= 1

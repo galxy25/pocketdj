@@ -63,9 +63,16 @@ enum ZoneEngine {
         /// happens and why it may not happen here.
         let title: String?
 
+        /// The recording's length in milliseconds (`IndexSong.length`). Like `appleMusicId` and
+        /// `title` it is NOT a ranking signal — it is the CORROBORATOR the one-recording-one-row
+        /// collapse requires before it fuses two rows on their text (`RecRecordingIdentity`): an
+        /// unlabelled live take and the studio cut share an artist and a title and differ only in
+        /// how long they run. Optional and defaulted, so no fixture has to say anything about it.
+        let lengthMs: Int?
+
         init(songId: String, artistKey: String, artistName: String, genre: String?,
              year: Int? = nil, bpm: Double? = nil, camelot: String? = nil,
-             appleMusicId: String? = nil, title: String? = nil) {
+             appleMusicId: String? = nil, title: String? = nil, lengthMs: Int? = nil) {
             self.songId = songId
             self.artistKey = artistKey
             self.artistName = artistName
@@ -75,6 +82,7 @@ enum ZoneEngine {
             self.camelot = camelot
             self.appleMusicId = appleMusicId
             self.title = title
+            self.lengthMs = lengthMs
         }
     }
 
@@ -113,6 +121,35 @@ enum ZoneEngine {
             if let key = RecVersionIdentity.key(title: title, artistKey: ak) { out[t.songId] = key }
         }
         return out
+    }
+
+    /// **THE ZONE'S HALF OF THE RECORDING IDENTITY** — `RecRecordingIdentity.identity` for a
+    /// catalog row, with the artist half of the version parse memoized in `artistKeys`.
+    ///
+    /// Memoized for the same reason `versionKeys` memoizes it: the real catalog holds ~12.7k
+    /// artists across ~96k rows, and In Da Zone's last-resort fallback pool can be most of the
+    /// library. An id the snapshot cannot resolve falls back to ID EQUALITY ON THE BASE ID — the
+    /// same fail-open posture every other join in this file takes, and the same answer
+    /// `RecRecordingIdentity` gives, because two answers to "is this the same recording" is the
+    /// exact failure this file exists to remove.
+    ///
+    /// Written once and shared by both `interleave` callers — two copies of an identity rule is
+    /// how the answers start disagreeing.
+    private static func identity(_ id: String, in songsById: [String: IndexSong],
+                                 artistKeys: inout [String: String]) -> RecRecordingIdentity.Identity {
+        guard let s = songsById[id] else {
+            return RecRecordingIdentity.Identity(baseId: SongVariant.baseId(id))
+        }
+        let ak: String
+        if let k = artistKeys[s.artist] { ak = k }
+        else {
+            ak = RecVersionIdentity.artistKey(s.artist)
+            artistKeys[s.artist] = ak
+        }
+        return RecRecordingIdentity.identity(
+            songId: id, appleMusicId: s.appleMusicId,
+            version: RecVersionIdentity.key(title: s.name, artistKey: ak),
+            lengthMs: s.length)
     }
 
     /// One play from the append-only history log.
@@ -903,6 +940,20 @@ enum ZoneEngine {
         rediscoveryPool.sort(by: byScore)
         fallbackPool.sort(by: byScore)
 
+        // ── THE LAST-RESORT POOL STAYS BOUNDED ───────────────────────────────────────────────
+        // "Everything below this line runs at most `shortlistCap` times regardless of how big the
+        // library is" is the invariant stated at the top of pass 2, and this pool is the one
+        // collection that can break it: a NARROW taste profile (one artist on repeat, in a genre
+        // nothing else shares) sends every row the admission gate rejects here, which on a 96k-row
+        // catalog is most of the library. The walk below only reaches this pool after both real
+        // pools are exhausted, takes at most `minSongs` picks from it, and spends them under a
+        // per-artist cap — so past the shortlist bound it is unreachable material that the
+        // identity pass would nevertheless parse a title for, row by row. Sorted already, so the
+        // bound keeps the best of it.
+        if fallbackPool.count > tuning.shortlistCap {
+            fallbackPool.removeSubrange(tuning.shortlistCap...)
+        }
+
         // ── 5. Size the queue ────────────────────────────────────────────────────────────────
         // Length tracks the BREADTH of the zone, which is the only property of his listening that
         // says how much material there honestly is: `maxPerArtist × distinct recent artists` is
@@ -916,8 +967,17 @@ enum ZoneEngine {
         let target = min(tuning.maxSongs,
                          max(tuning.minSongs, tuning.maxPerArtist * recentArtists.count))
 
+        // The identity inputs for the collapse inside `interleave` — one memo for the whole
+        // queue, so the version parse's artist half runs once per ARTIST (see `identity(_:in:)`).
+        var artistKeyMemo: [String: String] = [:]
+        func recordingIdentity(_ id: String) -> RecRecordingIdentity.Identity {
+            Self.identity(id, in: songsById, artistKeys: &artistKeyMemo)
+        }
         return interleave(familiar: familiarPool, rediscovery: rediscoveryPool,
-                          fallback: fallbackPool, target: target, tuning: tuning)
+                          fallback: fallbackPool, target: target, tuning: tuning,
+                          identity: recordingIdentity,
+                          playable: { RecRecordingIdentity.resolvesToStreamableAudio(
+                              appleMusicId: songsById[$0]?.appleMusicId) })
     }
 
     // ========================================================================
@@ -1024,8 +1084,18 @@ enum ZoneEngine {
         // function of how many artists the SEED SET held, and there is no seed set here — the
         // server did the seeding. The pools are already short (the client asks for ~200 ids), so
         // the honest bound is "as much as the cap and the pools allow, up to the tile's maximum".
+        // A SERVER LIST MUST NEVER BYPASS CLIENT FILTERING, and "one recording, one row" is now
+        // one of those filters: the server dedups on its own ids and cannot know that two of them
+        // name one recording in this install's catalog.
+        var artistKeyMemo: [String: String] = [:]
+        func recordingIdentity(_ id: String) -> RecRecordingIdentity.Identity {
+            Self.identity(id, in: songsById, artistKeys: &artistKeyMemo)
+        }
         return interleave(familiar: familiar, rediscovery: rediscovery, fallback: [],
-                          target: tuning.maxSongs, tuning: tuning)
+                          target: tuning.maxSongs, tuning: tuning,
+                          identity: recordingIdentity,
+                          playable: { RecRecordingIdentity.resolvesToStreamableAudio(
+                              appleMusicId: songsById[$0]?.appleMusicId) })
     }
 
     /// Weighted tempo/key shape of a seed set — built from the same fields `PuzzleSimilarity` reads
@@ -1062,11 +1132,49 @@ enum ZoneEngine {
     /// hitting their third song costs the queue nothing, it just moves to the next eligible song.
     /// A pool only stops contributing when it is genuinely exhausted, and then the other pool
     /// takes the remaining slots.
+    ///
+    /// ── ONE RECORDING, ONE ROW ───────────────────────────────────────────────────────────────
+    /// THE choke point for both zone surfaces (the on-device ranking and the cloud-shaped one —
+    /// they are the only two callers, and neither can reach a queue except through here). The
+    /// collapse runs ACROSS the three pools, which is not optional: two ids for one recording can
+    /// land in DIFFERENT pools — one played inside the window (familiar), its twin dormant
+    /// (rediscovery) — and a per-pool dedup would take both. Ahead of the walk, so a dropped twin
+    /// costs the queue nothing: the cursor simply moves to the next eligible song.
+    ///
+    /// - Parameters:
+    ///   - identity: `RecRecordingIdentity.identity` for a pooled id, supplied by the caller
+    ///     because only it holds the catalog rows.
+    ///   - playable: `RecRecordingIdentity.resolvesToStreamableAudio` for a pooled id.
     private static func interleave(familiar: [(id: String, capKey: String, score: Double)],
                                    rediscovery: [(id: String, capKey: String, score: Double)],
                                    fallback: [(id: String, capKey: String, score: Double)],
                                    target: Int,
-                                   tuning: Tuning) -> Queue {
+                                   tuning: Tuning,
+                                   identity: (String) -> RecRecordingIdentity.Identity,
+                                   playable: (String) -> Bool) -> Queue {
+        // TIERS, not scores, decide a cross-pool twin: a familiar row's score is how hard he has
+        // been leaning on that exact song and a rediscovery row's is a similarity, so the two
+        // numbers are not on one scale and comparing them would be arithmetic theatre. The pool
+        // IS the answer — a recording he has actually played recently is familiar, whichever of
+        // its ids the play landed on.
+        let pools = [(rows: familiar, tier: 2), (rows: rediscovery, tier: 1), (rows: fallback, tier: 0)]
+        let keep = RecRecordingIdentity.keepMask(pools.flatMap { pool in
+            pool.rows.map {
+                RecRecordingIdentity.Candidate(id: $0.id, identity: identity($0.id),
+                                               tier: pool.tier, score: $0.score,
+                                               playable: playable($0.id))
+            }
+        })
+        var cut = 0
+        func surviving(_ rows: [(id: String, capKey: String, score: Double)])
+        -> [(id: String, capKey: String, score: Double)] {
+            defer { cut += rows.count }
+            return rows.indices.compactMap { keep[cut + $0] ? rows[$0] : nil }
+        }
+        let familiar = surviving(familiar)
+        let rediscovery = surviving(rediscovery)
+        let fallback = surviving(fallback)
+
         var perArtist: [String: Int] = [:]
         var fi = 0, ri = 0
         var picks: [Pick] = []
@@ -1211,6 +1319,18 @@ enum ZoneEngine {
         // identity, which is the same fail-open posture the id join takes.
         let versionKeys = versions ?? Self.versionKeys(tracks)
         let ownedVersions = RecVersionIndex(owned: memberSongIds.compactMap { versionKeys[$0] })
+        // ── THE FOURTH IDENTITY: TWO PLAIN `sng_` ROWS FOR ONE RECORDING ─────────────────────
+        // `membership` folds the three ID forms and `ownedVersions` folds the EDITIONS — and
+        // neither can see the case the Apple Music library actually produces most often: the same
+        // recording filed twice under two ordinary catalog ids, byte-identical artist and title,
+        // sometimes on the same album (measured: 4,344 such groups on the owner's 96k rows).
+        // `ownedVersions.supersedes` is honest about refusing that pair — the signatures are
+        // EQUAL, so it is not "a different version" — which is exactly why the ownership question
+        // needs the recording key as well. Same key the emit-time collapse below dedups on, so a
+        // song owned under one id can never be recommended under another.
+        let ownedRecordings = Set(memberSongIds.compactMap {
+            RecRecordingIdentity.recordingKey(versionKeys[$0])
+        })
 
         // ── THE INCUMBENT SET (the owner's 50% newcomer floor) ───────────────────────────────
         // Which artists are ALREADY IN this collection — in CREDIT space, never raw strings.
@@ -1364,6 +1484,16 @@ enum ZoneEngine {
         // song already in here is the same song, and offering it is the defect this filter exists
         // to prevent.
         for t in tracks where !membership.contains(t.songId, appleMusicId: t.appleMusicId) {
+            // ALREADY IN HERE UNDER ANOTHER CATALOG ID — same artist, same title, different
+            // `sng_`. Asked HERE rather than through `membership` (which also knows this key)
+            // because this `RecMembership` is built WITHOUT the `titleArtist` lookup — the
+            // engine has the parse already, in `versionKeys`, and handing the same work to the
+            // membership set would build one recording key per candidate TWICE over a sweep of
+            // ~96k rows per crate. Skipped entirely on a crate whose members carry no text
+            // identity.
+            if !ownedRecordings.isEmpty,
+               let rk = RecRecordingIdentity.recordingKey(versionKeys[t.songId]),
+               ownedRecordings.contains(rk) { continue }
             // A DIFFERENT VERSION of something already filed here — the deluxe/bonus/remix/
             // extended case the ids cannot see. Cheap: one dictionary lookup against a pre-parsed
             // key, and skipped entirely on a crate whose members carry no version identity.
@@ -1428,6 +1558,27 @@ enum ZoneEngine {
             scored.append((t.songId, t.artistKey, capKey, net, isIncumbent(t)))
         }
         scored.sort { $0.score > $1.score || ($0.score == $1.score && $0.id < $1.id) }
+
+        // ── ONE RECORDING, ONE ROW ───────────────────────────────────────────────────────────
+        // THE choke point for this surface, and it sits HERE — after the final sort so the
+        // survivor is the highest-ranked instance, and BEFORE `compose` so the freed slot is
+        // refilled from deeper in the ranking and the list never shrinks from 25 to 24.
+        //
+        // The ranking has always de-duplicated candidate-vs-MEMBER and never candidate-vs-
+        // CANDIDATE, which is how "Expressway To Your Heart" reached one crate twice under two
+        // catalog ids — carrying DIFFERENT feedback state, because they were two genuinely
+        // different rows. See `RecRecordingIdentity` for the identity and its false-merge risk.
+        let keep = RecRecordingIdentity.keepMask(scored.map { r in
+            let am = trackById[r.id]?.appleMusicId
+            return RecRecordingIdentity.Candidate(
+                id: r.id,
+                identity: RecRecordingIdentity.identity(songId: r.id, appleMusicId: am,
+                                                        version: versionKeys[r.id],
+                                                        lengthMs: trackById[r.id]?.lengthMs),
+                score: r.score,
+                playable: RecRecordingIdentity.resolvesToStreamableAudio(appleMusicId: am))
+        })
+        scored = zip(scored, keep).compactMap { $1 ? $0 : nil }
 
         // ── THE CAP RUNS AFTER THE SORT, AND ON THE PRIMARY ARTIST ───────────────────────────
         // After, so no ranking change can defeat it — it is a property of the OUTPUT, not a
