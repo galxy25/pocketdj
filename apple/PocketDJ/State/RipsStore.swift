@@ -764,6 +764,35 @@ final class RipsStore {
         return variantId
     }
 
+    /// Ask the server to run CLOUD TIMBRE analysis for these songs — the transport behind
+    /// TimbreEnrollment. Returns true only when the server accepted the batch, so a failure
+    /// leaves the ids queued on device instead of dropping them (offline safety).
+    ///
+    /// This never blocks an add and never triggers a rip: the server filters to songs that
+    /// already HAVE audio and lack a current-version vector, so ids with no capture yet are a
+    /// no-op here and are covered by the rip server's own on-capture hook when they are ripped.
+    /// A song that is already analysed is a no-op at the server too — the client is deliberately
+    /// allowed to be approximate and must never be what decides whether analysis is needed.
+    @discardableResult
+    func requestTimbreAnalysis(_ songIds: [String]) async -> Bool {
+        guard hasServer, !songIds.isEmpty else { return false }
+        let base = serverUrl, tok = token
+        do {
+            var post = URLRequest(url: URL(string: "\(base)/analyze-timbre")!)
+            post.httpMethod = "POST"
+            post.timeoutInterval = 20
+            post.setValue("application/json", forHTTPHeaderField: "content-type")
+            applyAuth(&post, token: tok)
+            post.httpBody = try JSONSerialization.data(withJSONObject: ["songIds": songIds])
+            let (_, response) = try await session.data(for: post)
+            guard let http = response as? HTTPURLResponse else { return false }
+            // 404 ⇒ an OLDER server with no timbre route. Treat it as accepted so the queue does
+            // not grow without bound against a server that will never take it; the server-side
+            // backstop sweep covers those songs once it is upgraded.
+            return (200..<300).contains(http.statusCode) || http.statusCode == 404
+        } catch { return false }
+    }
+
     func requestRipIfNeeded(_ songId: String) async {
         // (0) spec §8 — a studio id NEVER rips (fire-and-forget path: silent guard-return).
         if fencedStudioId(songId, path: "requestRipIfNeeded") { return }

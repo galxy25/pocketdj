@@ -3,6 +3,16 @@
 //
 //   node scripts/timbre-batch.mjs [--shards 6] [--max N] [--until HH:MM] [--sample N]
 //        [--manifest s3|<path>] [--state-dir ~/.pocketdj/timbre-batch] [--dry-run] [--verbose]
+//   node scripts/timbre-batch.mjs --tasks <file.json> [--shards 8] [--state-dir <dir>]
+//
+// ── --tasks MODE (the CLOUD lane; scripts/timbre-worker.mjs drives it) ─────────────────────────
+// `--tasks <file.json>` supplies the work list DIRECTLY as a JSON array of task objects
+// ([{id,kind:'s3-song'|'s3-cut',key}, …]) instead of deriving it from the manifest + analog
+// catalog. In that mode the driver never reads the manifest, public/current-index.json or
+// POCKETDJ_ANALOG_BASE — none of which exist on an EC2 worker. EVERYTHING downstream is the
+// same code: the same ranged GET, the same warm docker shards, the same
+// {id,v,src,atMs,ms,ok,f,durationSec} result row. That is the parity argument: the cloud runs
+// the driver that measured the existing corpus, not a re-implementation of it.
 //
 // WHY THIS EXISTS: the nightly rec-audio job runs ONE `docker run` per song, and F10 measured
 // 93% of its ~14 s/song timbre cost as per-process warm-up (python start + librosa import +
@@ -136,6 +146,25 @@ export function buildWorkList({ manifest, analogIndex, analogBase, exists }) {
   return { tasks: [...tasks.values()], skipped };
 }
 
+/// Pure: validate + normalize a --tasks file's contents into driver tasks. Accepts either a bare
+/// array or {tasks:[…]}. Every entry needs an id and an S3 key; a `kind` defaults to 's3-song'
+/// (the row's `src`, which is provenance only). Throws on a shape the driver could not stage —
+/// a silently-dropped task would look like a completed song that never got a vector.
+export function parseTasksFile(raw) {
+  const arr = Array.isArray(raw) ? raw : (Array.isArray(raw?.tasks) ? raw.tasks : null);
+  if (!arr) throw new Error('tasks file: expected an array or {tasks:[…]}');
+  const seen = new Set();
+  const out = [];
+  for (const t of arr) {
+    if (!t || typeof t.id !== 'string' || !t.id) throw new Error('tasks file: entry with no id');
+    if (typeof t.key !== 'string' || !t.key) throw new Error(`tasks file: ${t.id} has no S3 key`);
+    if (seen.has(t.id)) continue;                       // one task per song, first wins
+    seen.add(t.id);
+    out.push({ id: t.id, kind: t.kind === 's3-cut' ? 's3-cut' : 's3-song', key: t.key });
+  }
+  return out;
+}
+
 // ── args / config ───────────────────────────────────────────────────────────────────────────────
 const a = {};
 for (let i = 2; i < process.argv.length; i++) {
@@ -152,13 +181,17 @@ const CFG = {
   until: a.until || null,
   bucket: a.bucket || process.env.POCKETDJ_RIPS_BUCKET || 'pocketdj-rips-011183829623',
   region: a.region || process.env.AWS_REGION || 'us-west-2',
+  // '-' = NO --profile flag at all: the cloud lane runs on an EC2 instance role, where a named
+  // profile does not exist and `--profile levi` fails every S3 call. Local runs keep the default.
   profile: a.profile || process.env.AWS_PROFILE || 'levi',
   image: a.image || process.env.AUDIO_IMAGE || 'pocketdj-audio:latest',
   analogBase: (a['analog-base'] || process.env.POCKETDJ_ANALOG_BASE || '/Volumes/RipBurnMix').replace(/^~/, homedir()),
   stateDir: (a['state-dir'] || join(homedir(), '.pocketdj', 'timbre-batch')).replace(/^~/, homedir()),
   manifest: a.manifest || null,
+  tasks: a.tasks || null,            // --tasks <file.json>: cloud lane; see the header
 };
 const log = (...m) => console.error(`[timbre-batch ${new Date().toISOString()}]`, ...m);
+const profileArgs = () => (CFG.profile && CFG.profile !== '-' ? ['--profile', CFG.profile] : []);
 
 function deadlineMs(hhmm, now = new Date()) {
   const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || '').trim());
@@ -177,7 +210,7 @@ async function loadManifestAsync() {
   const cache = join(homedir(), '.pocketdj', 'rips', 'manifest.json');
   if (CFG.manifest !== 's3' && existsSync(cache)) return JSON.parse(readFileSync(cache, 'utf8'));
   const out = await execFile('aws', ['s3', 'cp', `s3://${CFG.bucket}/rips/manifest.json`, '-',
-    '--profile', CFG.profile, '--region', CFG.region], { maxBuffer: 256 * 1024 * 1024 });
+    ...profileArgs(), '--region', CFG.region], { maxBuffer: 256 * 1024 * 1024 });
   return JSON.parse(out.stdout || '{}');
 }
 
@@ -219,7 +252,7 @@ async function stage(task, dest) {
   // s3-song / s3-cut: ranged GET of the analysis window (see header proof).
   await execFile('aws', ['s3api', 'get-object', '--bucket', CFG.bucket, '--key', task.key,
     '--range', `bytes=0-${RANGE_BYTES - 1}`, dest,
-    '--profile', CFG.profile, '--region', CFG.region], { timeout: 300000, maxBuffer: 1024 * 1024 });
+    ...profileArgs(), '--region', CFG.region], { timeout: 300000, maxBuffer: 1024 * 1024 });
 }
 
 // ── one shard: a long-lived docker worker + a stage-ahead queue ────────────────────────────────
@@ -265,11 +298,18 @@ async function main() {
   mkdirSync(join(CFG.stateDir, 'results'), { recursive: true });
   writeFileSync(join(CFG.stateDir, 'pid'), String(process.pid));
 
-  const manifest = await loadManifestAsync();
-  const analogIndex = JSON.parse(readFileSync(join(REPO, 'public/current-index.json'), 'utf8'));
-  const { tasks, skipped } = buildWorkList({
-    manifest, analogIndex, analogBase: CFG.analogBase, exists: existsSync,
-  });
+  let tasks; let skipped;
+  if (CFG.tasks) {
+    // CLOUD lane: the work list is handed to us. No manifest, no analog catalog, no /Volumes.
+    tasks = parseTasksFile(JSON.parse(readFileSync(CFG.tasks, 'utf8')));
+    skipped = {};
+  } else {
+    const manifest = await loadManifestAsync();
+    const analogIndex = JSON.parse(readFileSync(join(REPO, 'public/current-index.json'), 'utf8'));
+    ({ tasks, skipped } = buildWorkList({
+      manifest, analogIndex, analogBase: CFG.analogBase, exists: existsSync,
+    }));
+  }
   const done = loadDone(join(CFG.stateDir, 'results'));
   let todo = tasks.filter((t) => !done.has(t.id));
   if (CFG.sample > 0) {

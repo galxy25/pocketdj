@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent for the PocketDJ CLOUD TIMBRE autoscaler. Same script and the same scale-UP-only
+  loop as com.pocketdj.stem-autoscaler, pointed at the timbre lane (`--lane timbre`): its own SQS
+  queue, its own arm64 launch template, its own tag. Workers self-retire on idle and the launch
+  template terminates on shutdown, so the fleet drains to zero — this agent never scales down.
+
+  The two lanes share ONE account-level standard-vCPU quota, and the reconcile counts BOTH fleets
+  before launching (POCKETDJ_TOTAL_VCPU_CAP), so running both agents cannot trip the quota.
+
+  This agent is a CONVENIENCE, not the trigger: the rip server enqueues timbre work on capture,
+  on a collection add, and on its own 6-hourly backstop sweep. Without this agent the jobs simply
+  wait in SQS until someone runs `node scripts/stem-autoscaler.mjs --lane timbre`.
+
+  Install:
+    cp scripts/launchd/com.pocketdj.timbre-autoscaler.plist ~/Library/LaunchAgents/
+    launchctl unload ~/Library/LaunchAgents/com.pocketdj.timbre-autoscaler.plist 2>/dev/null
+    launchctl load   ~/Library/LaunchAgents/com.pocketdj.timbre-autoscaler.plist
+  Logs:  ~/.pocketdj/timbre-autoscaler.log
+  Stop:  launchctl unload ~/Library/LaunchAgents/com.pocketdj.timbre-autoscaler.plist
+
+  Uses the `levi` AWS profile (SQS + EC2 run-instances on the pocketdj-timbre-worker template).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.pocketdj.timbre-autoscaler</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/deepspacenine/forges/levi/pocketdj/scripts/stem-autoscaler.mjs</string>
+    <string>--lane</string>
+    <string>timbre</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AWS_PROFILE</key>
+    <string>levi</string>
+    <key>HOME</key>
+    <string>/Users/deepspacenine</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>/Users/deepspacenine/forges/levi/pocketdj</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/deepspacenine/.pocketdj/timbre-autoscaler.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/deepspacenine/.pocketdj/timbre-autoscaler.log</string>
+</dict>
+</plist>

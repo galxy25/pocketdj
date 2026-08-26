@@ -23,8 +23,9 @@ import { randomUUID, createHash, createPrivateKey, sign as cryptoSign } from 'no
 import { homedir, hostname } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { analyzeAudio, ANALYSIS_VERSION } from './lib/audio-analyze.mjs';
+import { analyzeAudio, ANALYSIS_VERSION, TIMBRE_VERSION } from './lib/audio-analyze.mjs';
 import { separateStems, STEMS_VERSION, STEMS_MODEL, STEM_NAMES } from './lib/audio-stem.mjs';
+import { timbreKeyFor, wantTimbre, buildTimbreBatches, timbreHealth } from './lib/timbre-jobs.mjs';
 import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './lib/am-match.mjs';
 import { runOsascriptAsync } from './lib/am-music.mjs';
 import { captureWithHeal, createHealGate, healMusic, WEDGED_REASON } from './lib/music-health.mjs';
@@ -144,6 +145,24 @@ const CFG = {
   stemJobsQueue: process.env.POCKETDJ_STEM_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-jobs',
   stemResultsQueue: process.env.POCKETDJ_STEM_RESULTS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-results',
   stemDlqQueue: process.env.POCKETDJ_STEM_DLQ_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-jobs-dlq',
+  // ---- Cloud TIMBRE offload (scripts/timbre-worker.mjs on the arm64 fleet) ----
+  // The 14-axis recommendation vector. OWN queues, not the stem lane's: the stem fleet is x86_64
+  // and cannot run the calibrated arm64 pocketdj-audio image, and a timbre job landing on the
+  // stem queue would be claimed by a stem worker, produce nothing, and be DELETED — the job gone
+  // with an empty DLQ and nothing looking wrong. See scripts/timbre-sqs-setup.mjs.
+  timbreOffload: process.env.POCKETDJ_TIMBRE_OFFLOAD !== '0',
+  // A timbre job is a BATCH of songs sharing one warm python fleet (93% of naive per-song cost is
+  // warm-up), so the enqueue chunks rather than sending one message per song.
+  timbreBatchSize: Number(process.env.POCKETDJ_TIMBRE_BATCH_SIZE || 50),
+  // T3 backstop sweep interval. Lives IN THIS PROCESS — which is already running, already holds
+  // the manifest, and already has credentials. scripts/install-rec-audio-nightly.sh's launchd job
+  // is a no-op until ~/.pocketdj/rec-audio.env holds REC_ENGINE_BASE + REC_ENROLL_SECRET, which
+  // that script cannot invent; a nightly gated on an empty credential file is exactly how the
+  // corpus froze for 14 days. A sweep with nothing to sweep costs nothing.
+  timbreSweepMs: Number(process.env.POCKETDJ_TIMBRE_SWEEP_MS || 6 * 60 * 60_000),
+  timbreJobsQueue: process.env.POCKETDJ_TIMBRE_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-timbre-jobs',
+  timbreResultsQueue: process.env.POCKETDJ_TIMBRE_RESULTS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-timbre-results',
+  timbreDlqQueue: process.env.POCKETDJ_TIMBRE_DLQ_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-timbre-jobs-dlq',
 };
 // PUBLIC posture always boots (simplicity wins during beta — setup-rip-funnel.sh
 // provisions tokens before the Funnel port is ever mounted), but a missing or collapsed
@@ -1054,6 +1073,10 @@ async function runAnalogJob(job, song) {
   setPhase(job, 'ready', { message: `album ${album.name} ready` });
   inflight.delete(job.resourceKey);
   enqueueAnalysis(song.id); // background: album waveform (per-song bpm/key kept from catalog)
+  // ON-CUT: an ANALOG song's timbre needs its per-song cutKey, which the cut pass above wrote —
+  // it does not exist at capture time. Hanging the trigger here is why analog rips get a vector
+  // at all; the T3 sweep is the backstop for anything cut outside this path.
+  offloadTimbre((songsByAlbum.get(album.id) || []).map((x) => x.id));
   // rip→stem chain: the cut pass above wrote each cutKey, so any song of this album that a
   // stem is waiting on can now separate (gated on the durable wantStem set).
   for (const s of songsByAlbum.get(album.id) || []) kickWantedStem(s.id);
@@ -1119,6 +1142,7 @@ async function backfillCuts() {
         e.cutKey = cutKey; e.cutBytes = statSync(cutOut).size; e.cutRippedAt = Date.now();
         if (e.durationMs == null) e.durationMs = durMs;
         kickWantedStem(s.id); // cut→stem chain: a stem waiting on this cut can now separate
+        offloadTimbre(s.id);  // cut→timbre chain: the song now has audio of its own to analyse
         done++;
         if (done % 10 === 0) await saveManifest();
       } catch (err) {
@@ -1265,6 +1289,7 @@ async function runDigitalJob(job, song) {
     job.url = publicUrl(st.key);
     setPhase(job, 'ready', { message: `${song.name} ready` });
     enqueueAnalysis(song.id); // background: bpm/key/camelot + waveform for this song
+    offloadTimbre(song.id);   // ON-CAPTURE: freshly ripped audio gets its rec vector, no human in the loop
     kickWantedStem(song.id);  // rip→stem chain: a waiting stem can now separate this mp3
     if (CFG.autoStemOnRip) acceptStem(song.id);  // AUTO PIPELINE: stems (→ lyrics) unprompted
     inflight.delete(job.resourceKey);
@@ -1293,14 +1318,14 @@ let analyzing = false;
 const DISPATCH_CONC = Number(process.env.POCKETDJ_OFFLOAD_DISPATCH_CONC || 12);
 const dispatchQ = [];
 let dispatchActive = 0;
-function dispatchSend(body) {
-  return new Promise((resolve) => { dispatchQ.push({ body, resolve }); dispatchPump(); });
+function dispatchSend(body, queue = CFG.stemJobsQueue) {
+  return new Promise((resolve) => { dispatchQ.push({ body, queue, resolve }); dispatchPump(); });
 }
 function dispatchPump() {
   while (dispatchActive < DISPATCH_CONC && dispatchQ.length) {
-    const { body, resolve } = dispatchQ.shift();
+    const { body, queue, resolve } = dispatchQ.shift();
     dispatchActive++;
-    aws(['sqs', 'send-message', '--queue-url', CFG.stemJobsQueue, '--message-body', body])
+    aws(['sqs', 'send-message', '--queue-url', queue, '--message-body', body])
       .then(() => resolve(true)).catch((e) => { console.error('  offload send failed:', e.message); resolve(false); })
       .finally(() => { dispatchActive--; dispatchPump(); });
   }
@@ -1320,6 +1345,136 @@ async function offloadAnalysis(songId) {
   if (await dispatchSend(JSON.stringify({ songId, srcKey: e.key, tasks: ['analysis'] })))
     console.error(`  → offloaded analysis ${songId} (${e.key}) to SQS`);
 }
+// ---------------- CLOUD TIMBRE offload (the recommendation vector) ----------------
+// The 14-axis timbre vector the rec engine scores against. Unlike stems/lyrics NOTHING about it
+// is per-song interactive, so there is no job object, no inflight map and no reap: the S3 sidecar
+// (rips/timbre/v<N>/<id>.json) is the durable artifact and the manifest stamp is a pointer to it.
+//
+// IDEMPOTENCE, four independent layers (the stem lane's, followed rather than reinvented):
+//   1. wantTimbre() here — an already-analysed song at the current version is never enqueued.
+//   2. worker-side dedup — one S3 prefix listing per batch skips anything already on S3.
+//   3. the SQS claim — a crashed/scaled-in worker's message redelivers; sidecars upload per song
+//      as each finishes, so redelivery re-runs only what was actually in flight.
+//   4. fold-timbre's LWW — a re-analysis replaces, never accumulates.
+// So "adding an already-analysed song" is a no-op at every layer, not just the first.
+// timbreKeyFor / wantTimbre / buildTimbreBatches / timbreHealth are pure — they live in
+// scripts/lib/timbre-jobs.mjs so tests can import them (this file listens on a port at import).
+
+/// Enqueue timbre analysis for a set of song ids. Cheap, idempotent, non-blocking, deduped by
+/// song id, and batched through the SAME bounded dispatcher the stem/analysis offloads use — a
+/// backfill must never fork thousands of `aws` processes. Returns the number of songs enqueued.
+async function offloadTimbre(songIds, { force = false } = {}) {
+  try { return await offloadTimbreInner(songIds, force); }
+  // Every caller is FIRE-AND-FORGET (the capture hot path, the cut pass, the add route), so an
+  // unhandled rejection here would take the whole rip server down over a recommendation vector.
+  // Nothing about timbre is worth failing a capture for.
+  catch (e) { console.error('  timbre offload failed:', e.message); return 0; }
+}
+async function offloadTimbreInner(songIds, force) {
+  if (!CFG.timbreOffload) return 0;
+  const ids = (Array.isArray(songIds) ? songIds : [songIds]).filter(Boolean);
+  const entries = [];
+  for (const id of ids) {
+    const e = manifest[id];
+    if (!e) continue;                                   // no audio yet — the on-capture hook covers it
+    if (!force && !wantTimbre(e)) continue;             // already analysed at this version: NO-OP
+    const key = timbreKeyFor(e);
+    if (key) entries.push([id, key, e.source]);
+  }
+  if (!entries.length) return 0;
+  const batches = buildTimbreBatches(entries, { size: CFG.timbreBatchSize, dedup: !force });
+  let sent = 0;
+  await Promise.all(batches.map(async (b) => {
+    if (await dispatchSend(JSON.stringify(b), CFG.timbreJobsQueue)) sent += b.songs.length;
+  }));
+  if (sent) console.error(`  → offloaded timbre for ${sent} song(s) in ${batches.length} batch(es)`);
+  return sent;
+}
+
+// BACKFILL timbre + the T3 BACKSTOP SWEEP. Idempotent and gated by wantTimbre, so it costs
+// nothing when there is nothing to do. This runs on an interval INSIDE the rip server rather than
+// as a launchd nightly precisely because the nightly that was supposed to do this has been a
+// no-op since it was written — it needs a credential file the installer cannot create.
+let timbreBackfillRunning = false;
+const timbreCandidates = () => Object.entries(manifest).filter(([, e]) => wantTimbre(e)).map(([id]) => id);
+async function backfillTimbre({ cap = Infinity } = {}) {
+  const ids = timbreCandidates().slice(0, cap);
+  if (!ids.length) return 0;
+  console.error(`  backfill-timbre: enqueueing ${ids.length} un-analysed song(s)`);
+  return offloadTimbre(ids);
+}
+function sweepTimbre() {
+  if (timbreBackfillRunning || !CFG.timbreOffload) return;
+  timbreBackfillRunning = true;
+  backfillTimbre({ cap: 500 }).catch((e) => console.error('  timbre sweep failed:', e.message))
+    .finally(() => { timbreBackfillRunning = false; });
+}
+
+// STALENESS SIGNAL — the thing whose absence let the corpus freeze silently for 14 days. Surfaced
+// on /health and logged when the backlog goes stale, so silence is never mistaken for health.
+function logTimbreStaleness() {
+  const h = timbreHealth(manifest);
+  if (h.outstanding && h.oldestOutstandingAgeMs != null && h.oldestOutstandingAgeMs > 24 * 60 * 60_000) {
+    console.error(`  ⚠ timbre backlog ${h.outstanding} song(s), oldest ${Math.round(h.oldestOutstandingAgeMs / 86400000)}d`);
+  }
+}
+
+// Consume timbre results and stamp the manifest. Its own pump, NOT a branch of pumpStemResults:
+// a timbre result posted to the stem results queue would set no `changed` flag, skip the
+// durability guard, and be DELETED with nothing folded. Copies the GOOD half of that function —
+// delete only after saveManifest() resolves true.
+async function pumpTimbreResults() {
+  if (!CFG.timbreOffload) return;
+  try {
+    const out = await aws(['sqs', 'receive-message', '--queue-url', CFG.timbreResultsQueue,
+      '--max-number-of-messages', '10', '--wait-time-seconds', '20', '--visibility-timeout', '60', '--output', 'json']);
+    const msgs = (JSON.parse(out || '{}').Messages) || [];
+    for (const m of msgs) {
+      try {
+        const r = JSON.parse(m.Body);
+        let changed = false; let ok = 0; let miss = 0;
+        for (const song of r.songs || []) {
+          const e = song && song.id && manifest[song.id];
+          if (!e) { miss += 1; continue; }
+          if (!song.ok || !song.key) continue;                  // failures stay un-stamped → re-swept
+          e.timbre = song.key; e.timbreVersion = r.timbreVersion ?? TIMBRE_VERSION; e.timbreAt = Date.now();
+          changed = true; ok += 1;
+        }
+        // A result whose songs are ALL unknown to this manifest must not be deleted with nothing
+        // folded — the entry can be legitimately-and-briefly missing (a restart raced a rip's
+        // save). Leave it for redelivery; queue retention bounds a truly stray result.
+        if (!changed && miss) { console.error(`  ⚠ timbre result ${r.batchId} for ${miss} unknown song(s) — left on queue`); continue; }
+        if (changed && !(await saveManifest())) {
+          console.error(`  ⚠ manifest save failed after folding timbre ${r.batchId} — left on queue for redelivery`);
+          continue;
+        }
+        if (ok) console.error(`  ✓ folded cloud timbre ${r.batchId}: ${ok} song(s) (${r.workerSeconds}s, ${r.instanceId || '?'})`);
+        await aws(['sqs', 'delete-message', '--queue-url', CFG.timbreResultsQueue, '--receipt-handle', m.ReceiptHandle]);
+      } catch (err) { console.error('  timbre-result fold error:', err.message); }
+    }
+  } catch (e) { logStemPumpErr('timbre-results', e); }
+  setTimeout(pumpTimbreResults, 500);
+}
+
+// Drain the timbre dead-letter queue. A dead-lettered batch has no per-song job state to fail —
+// it just needs to be VISIBLE, and left for the next sweep (the manifest was never stamped, so
+// wantTimbre still returns true and the backstop re-enqueues it).
+async function pumpTimbreDlq() {
+  if (!CFG.timbreOffload) return;
+  try {
+    const out = await aws(['sqs', 'receive-message', '--queue-url', CFG.timbreDlqQueue,
+      '--max-number-of-messages', '10', '--visibility-timeout', '30', '--output', 'json']);
+    for (const m of (JSON.parse(out || '{}').Messages) || []) {
+      try {
+        const b = JSON.parse(m.Body);
+        console.error(`  ✗ timbre batch dead-lettered ${b.batchId} (${(b.songs || []).length} song(s)) — will be re-swept`);
+        await aws(['sqs', 'delete-message', '--queue-url', CFG.timbreDlqQueue, '--receipt-handle', m.ReceiptHandle]);
+      } catch (err) { console.error('  timbre-dlq drain error:', err.message); }
+    }
+  } catch (e) { logStemPumpErr('timbre-dlq', e); }
+  setTimeout(pumpTimbreDlq, 30_000);
+}
+
 // Fire-and-forget lyrics offload (modeled on offloadAnalysis): the worker transcribes the vocals
 // stem and posts a result the results pump folds. No job object / inflight tracking / reap — the
 // manifest is the only state, and a dropped job is caught by /backfill-lyrics.
@@ -2138,7 +2293,7 @@ function rateLimited(req) {
 const ADMIN_PATHS = new Set(['/backfill-cuts', '/retag-cuts', '/backfill-beatgrids',
   // NOTE: /lyricsify is deliberately NOT here — it's user-tier like /stemify (the app/public can
   // trigger a single song's lyrics tokenlessly); only the batch backfills stay admin.
-  '/stemify-collection', '/backfill-stems', '/backfill-analysis', '/backfill-lyrics',
+  '/stemify-collection', '/backfill-stems', '/backfill-analysis', '/backfill-lyrics', '/backfill-timbre',
   '/analysis', '/ingest-digital', '/am-sync']);
 // ---- Apple Music developer token (ES256 JWT) minting for GET /musickit-token ----
 // Dependency-free (node:crypto). base64url without padding, JOSE-style.
@@ -2177,7 +2332,9 @@ const server = http.createServer(async (req, res) => {
 
   if (path === '/health') {
     return send(res, 200, { ok: true, host: hostname(), version: RIP_PROTOCOL, hls: true, stems: true, analogBase: CFG.analogBase, bucket: CFG.bucket,
-      catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token, public: CFG.public, rateLimit: CFG.rateLimit });
+      catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token, public: CFG.public, rateLimit: CFG.rateLimit,
+      // The FREEZE SIGNAL: a corpus that stops growing is invisible without a number that says so.
+      timbre: { ...timbreHealth(manifest), offload: CFG.timbreOffload } });
   }
   // GET /hls/<songId>/<index.m3u8|seg_N.ts> — live HLS (iOS-native). Same ?token= auth.
   const hm = path.match(/^\/hls\/([^/]+)\/([A-Za-z0-9_.-]+)$/);
@@ -2532,6 +2689,34 @@ const server = http.createServer(async (req, res) => {
     if (!analysisBackfillRunning) { analysisBackfillRunning = true; backfillAnalysis().finally(() => { analysisBackfillRunning = false; }); }
     return send(res, 200, { ok: true, candidates, offload: CFG.analysisOffload, running: analysisBackfillRunning });
   }
+  // POST|GET /backfill-timbre {confirmLarge?} — enqueue cloud timbre analysis for every song with
+  // audio and no current-version vector. Candidate-capped exactly like /backfill-analysis so it
+  // can never silently kick a full-corpus run.
+  if (path === '/backfill-timbre' && (req.method === 'POST' || req.method === 'GET')) {
+    const body = req.method === 'POST' ? await readJson(req).catch(() => ({})) : {};
+    const confirmLarge = !!body.confirmLarge || url.searchParams.get('confirmLarge') === '1';
+    if (!CFG.timbreOffload) return send(res, 503, { error: 'timbre offload is disabled (POCKETDJ_TIMBRE_OFFLOAD=0)' });
+    const candidates = timbreCandidates().length;
+    if (candidates > CFG.stemCollectionCap && !confirmLarge)
+      return send(res, 200, { ok: false, needsConfirm: true, candidates, cap: CFG.stemCollectionCap });
+    if (!timbreBackfillRunning) {
+      timbreBackfillRunning = true;
+      backfillTimbre({}).finally(() => { timbreBackfillRunning = false; });
+    }
+    return send(res, 200, { ok: true, candidates, running: timbreBackfillRunning, ...timbreHealth(manifest) });
+  }
+  // POST /analyze-timbre {songIds:[…], force?} — the EVENT-DRIVEN entry point the app calls when
+  // songs are ADDED TO A COLLECTION. Cheap, idempotent, non-blocking, deduped by song id: ids that
+  // are already analysed, or that have no audio yet, are a NO-OP (a no-audio song is covered by
+  // the on-capture hook when it IS ripped, so a 500-song add can never trigger 500 captures).
+  if (path === '/analyze-timbre' && req.method === 'POST') {
+    const body = await readJson(req).catch(() => ({}));
+    const ids = Array.isArray(body.songIds) ? body.songIds.slice(0, 5000) : [];
+    if (!CFG.timbreOffload) return send(res, 503, { error: 'timbre offload is disabled' });
+    const eligible = ids.filter((id) => manifest[id] && (body.force || wantTimbre(manifest[id])));
+    offloadTimbre(eligible, { force: !!body.force });    // fire-and-forget: never block the add
+    return send(res, 200, { ok: true, requested: ids.length, enqueued: eligible.length });
+  }
   // GET|POST /backfill-lyrics {confirmLarge?} — transcribe every stemmed song that lacks fresh
   // timed lyrics (offloads to the cloud workers). Candidate-capped like /backfill-analysis; re-send
   // with confirmLarge (POST body or ?confirmLarge=1) for a full-corpus sweep. GET is curl-friendly.
@@ -2653,6 +2838,7 @@ const server = http.createServer(async (req, res) => {
     }
     if (added || updated) await saveManifest();
     for (const id of toAnalyze) enqueueAnalysis(id); // fire-and-forget: SQS offload (or local conc-1 if offload off)
+    offloadTimbre(toAnalyze);                        // ON-INGEST: an imported digital file gets its rec vector too
     return send(res, 200, { ok: true, added, updated, skipped, total: entries.length, analysisQueued: toAnalyze.length, cached: Object.keys(manifest).length });
   }
   // POST /am-sync — kick an Apple Music (Local) library check and return IMMEDIATELY with a
@@ -2688,6 +2874,12 @@ resumePending(); // re-enqueue any rip requests left pending by a previous run
 resumeAnalysis(); // analyze any ripped songs that don't have bpm/key/waveform yet
 resumeStems(); // re-drive any stem requests left pending by a previous run
 if (CFG.stemOffload || CFG.analysisOffload || CFG.lyricsOffload) { pumpStemResults(); pumpStemDlq(); setInterval(reapStaleOffloadStems, 5 * 60_000).unref?.(); } // consume results + dead-letters; reap stuck jobs (any offload family keeps the fold alive)
+if (CFG.timbreOffload) {
+  pumpTimbreResults(); pumpTimbreDlq();
+  logTimbreStaleness();
+  sweepTimbre();                                          // T3 BACKSTOP: catch anything the event triggers missed
+  setInterval(() => { logTimbreStaleness(); sweepTimbre(); }, CFG.timbreSweepMs).unref?.();
+}
 server.listen(CFG.port, () => {
   console.error(`✓ listening on http://localhost:${CFG.port}  (analogBase=${CFG.analogBase}, bucket=${CFG.bucket}, auth=${CFG.token ? 'on' : 'off'})`);
 });
