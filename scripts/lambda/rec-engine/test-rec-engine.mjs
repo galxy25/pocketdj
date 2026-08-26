@@ -2023,7 +2023,27 @@ test('timbreFit: saturates inside the profile\'s own spread (a sound is a REGION
   const far = timbreFit(soundAFlipped(), p);
   assert.ok(far < 0.01, `the flipped sound is buried on timbre (${far}) — and still free to win on genre/artist`);
   const mid = timbreFit(soundA(0.06), p);
-  assert.ok(mid > 0.2 && mid < 0.6, `a nearby sound keeps a graded share, got ${mid}`);
+  // At the decay this term now uses — the instrument's own error bar — a candidate roughly half
+  // an error bar outside the crate's spread keeps ~64%, where the old 0.05 decay left it ~30%.
+  // The flattening is deliberate: see the doc on TIMBRE_DECAY.
+  assert.ok(mid > 0.55 && mid < 0.72, `a nearby sound keeps a graded share, got ${mid}`);
+});
+
+test('the decay is no finer than the instrument: one e-fold at one error bar', () => {
+  // THIS is the assertion that ties the constant to a measurement instead of to taste. The decay
+  // was 0.05 against a measured same-recording noise floor of 0.1022–0.1202, i.e. 2–2.5× finer
+  // than the extractor can resolve, so `exp(-0.1022/0.05) = 0.13` let pure measurement error
+  // destroy 87% of the term. A candidate sitting exactly ONE noise floor outside the crate's own
+  // spread must keep exactly 1/e — no more, and (the failure this guards) no less.
+  const NOISE_FLOOR = 0.12;
+  const p = timbreProfile([{ f: soundA(0.01), w: 1 }, { f: soundA(-0.01), w: 1 }, { f: soundA(), w: 1 }]);
+  // A uniform offset δ on every axis IS an RMS distance of δ, so this lands exactly one floor
+  // outside the spread. Offset downward so no axis clamps at 1 and changes the distance.
+  const delta = p.spread + NOISE_FLOOR;
+  const oneErrorBarOut = Object.fromEntries(TAXES.map((k) => [k, p.centroid[k] - delta]));
+  assert.ok(Math.abs(timbreDistance(oneErrorBarOut, p.centroid) - delta) < 1e-9);
+  assert.ok(Math.abs(timbreFit(oneErrorBarOut, p) - 1 / Math.E) < 1e-6,
+            `one e-fold per error bar, got ${timbreFit(oneErrorBarOut, p)}`);
 });
 
 test('timbreAdjectives: named axes only, ≥0.15 off the middle, strongest first', () => {

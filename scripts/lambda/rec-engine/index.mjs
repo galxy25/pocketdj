@@ -220,9 +220,16 @@ export function isUsableTimbreRow(f) {
 /// Minimum analysed members for a LIVE positive profile — a centroid of two songs is those two
 /// songs, not a sound. (The NEGATIVE profile passes 1: every 👎 is a deliberate act.)
 const TIMBRE_MIN_VECTORS = 3;
-/// e-fold of the fit OUTSIDE the profile's own spread. At 0.05 a candidate at the typical
-/// same-genre non-member distance keeps ~79% and one at the corpus between-group mean ~28%.
-const TIMBRE_DECAY = 0.05;
+/// The INSTRUMENT'S OWN ERROR BAR — the median distance between two independent captures of the
+/// same recording, 0.1022 (410 duration-corroborated pairs) to 0.1202 (279 looser ones), against
+/// a random-pair median of 0.2324. Mirrors `SimilarityFamilies.timbreNoiseFloor`.
+const TIMBRE_NOISE_FLOOR = 0.12;
+/// e-fold of the fit OUTSIDE the profile's own spread, set AT the noise floor: one e-fold per
+/// error bar. It was 0.05 — finer than the instrument — so `exp(-0.1022/0.05) = 0.130` let pure
+/// measurement noise destroy 87% of the term. Reference points: a same-genre non-member now keeps
+/// ~90% and one at the corpus between-group mean ~61%. In v1 rail units, like every distance in
+/// this file; a rail recalibration invalidates it. Mirrors `SimilarityFamilies.timbreDecay`.
+const TIMBRE_DECAY = TIMBRE_NOISE_FLOOR;
 /// How far the fit may lift a candidate in the MULTIPLIER surfaces (scoreForYou):
 /// `sim × (1 + TIMBRE_GAIN × fit)` — the NOVELTY_AUX_GAIN shape, deliberately under its 1.40×
 /// band because timbre's measured same-genre separation (AUC 0.56) is real but modest. Its

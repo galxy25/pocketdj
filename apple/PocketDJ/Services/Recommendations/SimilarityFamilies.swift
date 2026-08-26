@@ -601,9 +601,10 @@ enum SimilarityFamilies {
     // ── THE FIT SATURATES INSIDE THE PROFILE'S OWN SPREAD (the era-window shape) ─────────────
     // fit = 1.0 for any candidate within the profile's own mean member distance — a crate's own
     // sound is a REGION, and a song inside it is not "more the sound" for hugging the centroid —
-    // then exponential decay outside, e-fold `timbreDecay` (0.05). Reference points on the real
-    // corpus: a held-out member averages 0.73, a same-genre non-member 0.62, the whole analysed
-    // catalog 0.57, and a candidate at the corpus' between-group mean distance keeps ~28%.
+    // then exponential decay outside, e-fold `timbreDecay` (0.12 — the instrument's own error
+    // bar; see the constant). Reference points on the real corpus: a held-out member averages
+    // 0.73, a same-genre non-member 0.62, the whole analysed catalog 0.57, and a candidate at the
+    // corpus' between-group mean distance keeps ~61%.
     //
     // ── FAIL OPEN, BOTH DIRECTIONS — THE ROUND-LEVEL-NEVER-PER-SONG RULE ─────────────────────
     // A profile with fewer than `timbreMinVectors` analysed members produces NO profile: the term
@@ -666,12 +667,43 @@ enum SimilarityFamilies {
         }
         return usable >= timbreMinSharedAxes && zeros < timbreMaxZeroAxes
     }
-    /// e-fold of the fit OUTSIDE the profile's own spread, in RMS distance. At 0.05, a candidate
-    /// at the typical same-genre non-member distance keeps ~79% of the term and one at the
-    /// corpus' between-group mean (~0.23 against a typical spread of ~0.17) keeps ~28% — graded,
-    /// never a cliff. Chosen against 0.08, which flattened the member/whole-catalog gap
-    /// (0.80 vs 0.65) enough to blunt the term.
-    static let timbreDecay = 0.05
+    /// THE INSTRUMENT'S OWN ERROR BAR, in the same RMS distance the fit is measured in.
+    ///
+    /// MEASURED on the shipping v1 corpus: the median distance between two INDEPENDENT captures
+    /// of the SAME recording — distinct catalog ids agreeing on artist and title AND corroborated
+    /// by duration (the `RecRecordingIdentity` rule, so a re-recording or a live cut cannot
+    /// inflate the floor), 410 such pairs, both sides carrying their own vector — is **0.1022**,
+    /// 95 % CI [0.0911, 0.1119], mean 0.1145. A looser pairing without the duration corroborator
+    /// measures 0.1202, CI [0.1116, 0.1335], on 279 pairs. Both estimates say the same thing:
+    /// two songs closer together than ~0.10–0.12 are not distinguishable by this extractor at all.
+    /// For scale, the median distance between two RANDOM songs in the same corpus is 0.2324.
+    static let timbreNoiseFloor = 0.12
+
+    /// e-fold of the fit OUTSIDE the profile's own spread, in RMS distance.
+    ///
+    /// MEASURED AGAINST THE INSTRUMENT, not chosen for feel. The shipped value was 0.05 — two to
+    /// two-and-a-half times FINER than the error bar above. At 0.05, `exp(-0.1022/0.05) = 0.130`:
+    /// a difference that is PURE MEASUREMENT NOISE destroyed 87 % of the term. That is not
+    /// sensitivity, it is noise amplification — the curve was grading distinctions the instrument
+    /// cannot make.
+    ///
+    /// Setting the e-fold AT the noise floor is the only non-arbitrary choice available: one
+    /// e-fold per error bar, by definition. 0.12 is taken rather than the tighter 0.1022 because
+    /// it is no finer than the instrument under EITHER estimate, and the safe direction of error
+    /// here is flatter, not sharper. Rounded, because the floor carries a CI and four significant
+    /// figures would be false precision.
+    ///
+    /// Reference points move accordingly: a same-genre non-member (excess ≈ 0.012) 0.79 → 0.90,
+    /// and a candidate at the corpus' between-group mean (excess ≈ 0.06) 0.28 → 0.61. Yes, that
+    /// FLATTENS the term. That is the honest consequence of the finding that the artist/genre
+    /// gate, not the curve, is what keeps the timbre signal off the visible rows — the lever for
+    /// that is an admission quota, not a decay finer than the instrument.
+    ///
+    /// UNITS WARNING: this constant is in v1 rail units, like every distance above it. Any rail
+    /// recalibration rescales the whole distance space and INVALIDATES it — the floor, the
+    /// random-pair median and this decay must be re-measured and land together with the rails.
+    /// `testDecayIsNoFinerThanTheInstrument` is the guard against quietly tightening it.
+    static let timbreDecay = 0.12
     /// Fallback neutral for a round with too few analysed candidates to measure one. MEASURED:
     /// the mean fit of the full analysed corpus (1-in-7 sample, n=164,246 scorings) against the
     /// owner's 78 live pocket profiles is **0.565**. Mirrors the Lambda's

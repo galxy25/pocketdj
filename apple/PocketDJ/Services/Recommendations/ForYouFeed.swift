@@ -14,7 +14,11 @@ import Observation
 /// regardless of the refresh cadence. Exactly one rebuild, and never again for the same reason.
 /// The alternative — collapsing a second time at read, in `ForYouGrid` and in `ForYouDetailViews`
 /// — is the per-view sprinkling that guarantees the next surface reintroduces the bug.
-let forYouFeedSchemaVersion = 2
+// v3: the timbre fit's e-fold moved from 0.05 to the instrument's measured error bar, and the
+// genre table stopped dropping one catalog row in ten. Both change the ORDER of a cached feed,
+// so a snapshot written before them would keep showing the old ranking until the next scheduled
+// refresh happened to fire.
+let forYouFeedSchemaVersion = 3
 
 // ============================================================================
 // MARK: - The frozen result
