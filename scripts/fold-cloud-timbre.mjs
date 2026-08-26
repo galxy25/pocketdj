@@ -35,6 +35,10 @@ const CACHE = arg('--cache', join(homedir(), '.pocketdj', 'timbre-batch', 'cloud
 /// Pure: sidecar objects -> the NDJSON rows fold-timbre.mjs consumes. Drops anything at a
 /// different TIMBRE_VERSION (a stale calibration must never enter the corpus) and anything with
 /// no vector (a permanent engine failure is resume state, not coverage). LWW by atMs per id.
+///
+/// The whitelist is deliberate — a sidecar carries worker provenance the fold has no business
+/// seeing — but it is also the ONE place a field can be silently lost between the driver that
+/// measured it and the artifact that ships it. Anything the fold reads must be listed here.
 export function sidecarsToRows(sidecars) {
   const best = new Map();
   for (const s of sidecars) {
@@ -43,6 +47,13 @@ export function sidecarsToRows(sidecars) {
     const cur = best.get(s.id);
     if (cur && (Number.isFinite(cur.atMs) ? cur.atMs : 0) >= at) continue;
     const row = { id: s.id, v: s.v, src: s.src || 's3-song', atMs: at, ok: true, f: s.f };
+    // THE RAW MEASUREMENT BLOCK RIDES ALONG. `r` is what makes the NEXT rail change arithmetic
+    // instead of a re-listen of 15k songs: fold-timbre.mjs collects it into data/timbre-raw.json,
+    // and its LWW is a CLEAR (a newer row carrying no `r` deletes the stored block), so dropping
+    // it here does not merely fail to grow the raw corpus — a cloud row would ERASE the block a
+    // local run had already measured for the same song. With all batch analysis running in the
+    // cloud, this whitelist is the only path `r` has into the artifact at all.
+    if (s.r && typeof s.r === 'object') row.r = s.r;
     if (Number.isFinite(s.ms)) row.ms = s.ms;
     if (Number.isFinite(s.durationSec)) row.durationSec = s.durationSec;
     if (s.by) row.by = s.by;

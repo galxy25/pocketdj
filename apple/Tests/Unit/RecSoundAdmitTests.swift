@@ -535,4 +535,157 @@ final class RecSoundAdmitTests: XCTestCase {
         XCTAssertTrue(open.soundAdmitted.contains("cut-live"))
     }
 
+    // ========================================================================
+    // MARK: - The regime that actually SHIPS (radius, not the noise floor)
+    // ========================================================================
+
+    /// A vector at `shift` from the crate's own centre, built on a base with headroom at BOTH ends
+    /// so a uniform shift is never clamped by `tvec` — the "uniform shift of s ⇒ RMS distance
+    /// exactly s" identity is what lets these tests state distances in the units the thresholds
+    /// are written in, and `soundA` (base 0.2, punch 0.9) cannot carry a ±0.17 shift without
+    /// clipping two axes and quietly changing the distance.
+    private func soundB(_ shift: Double = 0) -> SimilarityFamilies.TimbreVector {
+        tvec(0.45, ["punch": 0.55, "busy": 0.5], shift: shift)
+    }
+
+    /// A crate at the spread REAL crates measure. `fixture()` builds members 0.002 apart, so its
+    /// spread is floored by `timbreNoiseFloor` and every admission test above runs at radius
+    /// `0.12 − 0.06 = 0.06`. The owner's 81 live pockets measure spread **0.156…0.180**, i.e.
+    /// radius **0.096…0.120** — a band no test touched. It is not a rounding difference: on the
+    /// shipped corpus 0.053 % of random pairs clear 0.06 and 2.75 % clear 0.11, so the tested door
+    /// was ~52× narrower than the one that ships, and the other regime (`wideSpread: true`) is
+    /// rejected outright by `soundAdmitMaxSpread`.
+    ///
+    /// Members alternate ±`spread` around the base, so the centroid is the base exactly and every
+    /// member sits at distance `spread` from it — the profile's spread is the number asked for,
+    /// not an emergent one, and `testTheRealisticFixtureReallyIsAtTheShippingRadius` proves it.
+    private func realisticFixture(members: Int = 10, fillers: Int = 40,
+                                  spread: Double = 0.17) -> Fixture {
+        var tracks: [ZoneEngine.Track] = []
+        var timbre: [String: SimilarityFamilies.TimbreVector] = [:]
+        var ids: [String] = []
+        for i in 0..<members {
+            let id = "m-\(i)"
+            ids.append(id)
+            tracks.append(track(id, artist: "Member \(i)", genre: "soul", rawGenre: "Neo-Soul",
+                                year: 1990))
+            timbre[id] = soundB(i % 2 == 0 ? spread : -spread)
+        }
+        for i in 0..<fillers {
+            tracks.append(track("f-\(i)", artist: "Filler \(i)", genre: "soul", rawGenre: "Soul",
+                                year: 1990))
+        }
+        return Fixture(members: ids, tracks: tracks, timbre: timbre)
+    }
+
+    /// THE FIXTURE IS THE CLAIM, so measure it rather than assert on it by construction.
+    func testTheRealisticFixtureReallyIsAtTheShippingRadius() throws {
+        let f = realisticFixture()
+        let profile = try XCTUnwrap(SimilarityFamilies.timbreProfile(
+            f.members.compactMap { id in f.timbre[id].map { (vector: $0, weight: 1.0) } }))
+        XCTAssertEqual(profile.spread, 0.17, accuracy: 1e-9,
+                       "the crate sits inside the 0.156…0.180 band the live pockets measure")
+        XCTAssertEqual(SimilarityFamilies.soundAdmitRadius(spread: profile.spread), 0.11,
+                       accuracy: 1e-9,
+                       "…so the door is at 0.11 — the crate's own spread less the margin, NOT the "
+                       + "noise floor, which stops binding above spread 0.12")
+        XCTAssertTrue(SimilarityFamilies.timbreProfileAdmits(profile, profileSize: f.members.count),
+                      "and the preconditions pass, exactly as they do on 80 of the 81 real pockets")
+    }
+
+    /// The door opens at the radius a real crate produces — including on a candidate that the
+    /// noise-floor regime every other test runs in would have REFUSED.
+    func testSoundAdmitsAtTheRadiusRealCratesProduce() {
+        var f = realisticFixture()
+        f.tracks.append(track("x-near", artist: "Stranger", genre: "jazz", rawGenre: "Free Jazz",
+                              year: 2015))
+        f.timbre["x-near"] = soundB(0.10)     // 0.10 ≤ 0.11 — inside the shipping door…
+        f.tracks.append(track("x-far", artist: "Outsider", genre: "metal", rawGenre: "Doom",
+                              year: 2005))
+        f.timbre["x-far"] = soundB(0.115)     // …and 0.115 is not, by five thousandths
+
+        let open = rank(f)
+        XCTAssertTrue(open.soundAdmitted.contains("x-near"),
+                      "0.10 is nearly TWICE the 0.06 radius every other admission test runs at — "
+                      + "this row is admitted only in the regime that actually ships")
+        XCTAssertFalse(open.soundAdmitted.contains("x-far"),
+                       "the radius still BITES at the shipping width; it is not open season")
+
+        let shut = ZoneEngine.suggestions(memberSongIds: f.members, tracks: f.tracks,
+                                          playCount: { _ in 0 }, tuning: doorShut,
+                                          timbre: f.timbre)
+        XCTAssertFalse(shut.contains("x-near"), "…and the gate is what kept it out before")
+    }
+
+    // ========================================================================
+    // MARK: - The door is a SECOND WAY IN, so every demotion must reach it
+    // ========================================================================
+
+    /// A 👎 on another tile is promised to reach this row "through `negArtists`/`negGenres`". It
+    /// did not reach an ADMITTED row: the admit branch checked tombstones and the rejected SOUND
+    /// and nothing else, so a thumbs-downed artist walked past the gate on timbre and was seated
+    /// at a reserved position.
+    func testAThumbsDownedArtistCannotWalkInThroughTheSoundDoor() {
+        var f = realisticFixture()
+        f.tracks.append(track("x-near", artist: "Stranger", genre: "jazz", rawGenre: "Free Jazz",
+                              year: 2015))
+        f.timbre["x-near"] = soundB(0.10)
+        // The 👎'd row itself: same artist, a DIFFERENT genre from the admitted row, and NO
+        // vector — so neither the rejected SOUND profile nor `negGenres` can be what vetoes, and
+        // the artist shape is measured alone.
+        f.tracks.append(track("r-1", artist: "Stranger", genre: "blues", rawGenre: "Delta Blues",
+                              year: 2011))
+
+        XCTAssertTrue(rank(f).soundAdmitted.contains("x-near"),
+                      "with no feedback it IS admitted — the veto below is what is being measured")
+        let out = rank(f, feedback: ZoneEngine.Feedback(rejected: ["r-1": 1]))
+        XCTAssertFalse(out.soundAdmitted.contains("x-near"),
+                       "one 👎 saturates to 1/3, which at rejectionWeight 0.5 puts the net fit at "
+                       + "0.833 — under the 0.9 bar, so sound alone no longer qualifies it")
+    }
+
+    /// …and the same for the rejected GENRE shape. An admitted row shares no genre with the CRATE
+    /// by construction, but it can very well share one with a row the owner just rejected.
+    func testAThumbsDownedGenreCannotWalkInThroughTheSoundDoor() {
+        var f = realisticFixture()
+        f.tracks.append(track("x-near", artist: "Stranger", genre: "jazz", rawGenre: "Free Jazz",
+                              year: 2015))
+        f.timbre["x-near"] = soundB(0.10)
+        f.tracks.append(track("r-1", artist: "Someone Else", genre: "jazz", rawGenre: "Bebop",
+                              year: 2011))
+
+        XCTAssertTrue(rank(f).soundAdmitted.contains("x-near"))
+        let out = rank(f, feedback: ZoneEngine.Feedback(rejected: ["r-1": 1]))
+        XCTAssertFalse(out.soundAdmitted.contains("x-near"),
+                       "the 👎'd genre reaches the door, not only the scored path")
+    }
+
+    /// THE BROADLY-REACHABLE ONE: `skipPenalty` is built from actual playback over the whole
+    /// catalog (`Feedback.skipPenalties(plays:skips:)`), not from this tile's offers. A song the
+    /// owner skips every time it plays was demoted up to 35 % on the scored path and admitted at
+    /// FULL strength through the door.
+    ///
+    /// It stays a GRADED veto, not a filter: the door has no ordering to demote within, so the
+    /// demotion lands on the same net fit — and the dampener that keeps one skip from burying a
+    /// song keeps one skip from closing the door too.
+    func testASongTheOwnerAlwaysSkipsIsNotSeatedOnSoundAlone() throws {
+        var f = realisticFixture()
+        f.tracks.append(track("x-near", artist: "Stranger", genre: "jazz", rawGenre: "Free Jazz",
+                              year: 2015))
+        f.timbre["x-near"] = soundB(0.10)
+
+        let always = ZoneEngine.Feedback.skipPenalties(plays: ["x-near": 10], skips: ["x-near": 10])
+        XCTAssertEqual(try XCTUnwrap(always["x-near"]), 10.0 / 13.0, accuracy: 1e-9)
+        XCTAssertFalse(rank(f, feedback: ZoneEngine.Feedback(skipPenalty: always))
+                           .soundAdmitted.contains("x-near"),
+                       "0.77 skip pressure × 0.35 leaves a net fit of 0.73, under the 0.9 bar")
+
+        let once = ZoneEngine.Feedback.skipPenalties(plays: ["x-near": 1], skips: ["x-near": 1])
+        XCTAssertEqual(try XCTUnwrap(once["x-near"]), 0.25, accuracy: 1e-9)
+        XCTAssertTrue(rank(f, feedback: ZoneEngine.Feedback(skipPenalty: once))
+                          .soundAdmitted.contains("x-near"),
+                      "…while ONE skip of one play is 0.25 → net fit 0.9125, still admitted: the "
+                      + "Laplace dampener means the same thing on both paths into the tile")
+    }
+
 }

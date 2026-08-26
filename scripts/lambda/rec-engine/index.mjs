@@ -613,6 +613,15 @@ async function listProfileHashes() {
 /// re-analysis at a newer `TIMBRE_VERSION` replaces the old vector instead of accumulating two
 /// readings of the same recording under one id.
 ///
+/// REFUSES ANOTHER CALIBRATION, like every other store of these vectors. The rails ARE the units,
+/// so a v(N) and a v(N+1) reading are different quantities sharing a name — and this was the one
+/// store in the system with no version refusal: it stamped `v` on the row and then filtered on
+/// nothing, so one document could hold both and no reader could tell them apart. The doc comment
+/// above describes exactly this filter, and it was not there. A row at another calibration is
+/// DROPPED (never accepted, never counted), which leaves the previous vector standing rather than
+/// replacing a readable number with an unreadable one; the id still drains from the queue at the
+/// call site, because a worker that reported is a worker that reported.
+///
 /// Exported for the tests: this is where the corpus cap and the shape validation live, and both
 /// are far easier to pin here than through an HTTP fixture.
 export function mergeAudioFeatures(doc, rows) {
@@ -623,6 +632,9 @@ export function mergeAudioFeatures(doc, rows) {
     const songId = str(raw?.songId);
     const f = raw?.f;
     if (!songId || !f || typeof f !== 'object') continue;
+    // Absent ⇒ 1, the version that shipped before the field existed — the same reading every
+    // other consumer gives an unstamped row.
+    if ((Number.isFinite(raw.v) ? raw.v : 1) !== TIMBRE_VERSION) continue;
     const clean = {};
     for (const [k, v] of Object.entries(f)) {
       // Axis names are short identifiers and values are 0…1 — anything else is a bug or a
@@ -632,7 +644,7 @@ export function mergeAudioFeatures(doc, rows) {
       clean[k] = Math.round(Math.min(1, Math.max(0, v)) * 1000) / 1000;
     }
     if (!Object.keys(clean).length) continue;
-    out.songs[songId] = { v: Number.isFinite(raw.v) ? raw.v : 1, f: clean, atMs: Date.now() };
+    out.songs[songId] = { v: TIMBRE_VERSION, f: clean, atMs: Date.now() };
     accepted += 1;
   }
   // Oldest-first eviction, matching every other cap here.

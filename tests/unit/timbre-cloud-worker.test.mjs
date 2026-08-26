@@ -112,6 +112,26 @@ describe('sidecarsToRows — the cloud→corpus seam', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].f.bright).toBe(0.9);
   });
+  it('CARRIES THE RAW MEASUREMENT BLOCK — the calibrator input, and the fold\'s LWW CLEARS it', () => {
+    // `r` is what makes the next rail change arithmetic instead of a re-listen of 15k songs. The
+    // whitelist above dropped it, so with all batch analysis running in the cloud
+    // data/timbre-raw.json could never grow at all — and worse, because foldTimbre's LWW on `raw`
+    // is a CLEAR, a later cloud row carrying no `r` DELETES the block a local run measured for the
+    // same song (s3-song and vinyl-cut share provenance rank 2, so the newer row wins on atMs).
+    const r = { bright: { v: 1234.5, lo: 500, hi: 4000 }, loud: { v: -9.5 } };
+    const rows = sidecarsToRows([
+      { id: 'sng_a', v: TIMBRE_VERSION, ok: true, f, r, atMs: 5, by: 'cloud', instance: 'i-1' },
+    ]);
+    expect(rows[0].r).toEqual(r);
+    expect(rows[0].instance).toBeUndefined();   // worker provenance still stays out of the corpus
+
+    // …and it reaches the artifact: the fold collects it, and the ERASURE case is real.
+    const raw = new Map();
+    foldTimbre(rows, {}, raw);
+    expect(raw.get('sng_a')).toEqual(r);
+    foldTimbre(sidecarsToRows([{ id: 'sng_a', v: TIMBRE_VERSION, ok: true, f, atMs: 9 }]), {}, raw);
+    expect(raw.has('sng_a')).toBe(false);
+  });
   it('emits ids in sorted order so the file is deterministic and diffable', () => {
     const rows = sidecarsToRows([
       { id: 'sng_b', v: TIMBRE_VERSION, ok: true, f, atMs: 1 },

@@ -1530,11 +1530,36 @@ enum ZoneEngine {
         }
 
         // ── THE SOUND DOOR'S PRECONDITIONS, SETTLED ONCE PER CRATE ───────────────────────────
-        // Evaluated BEFORE the candidate loop, deliberately: most crates fail here (too few
-        // vectors, too little of the crate analysed, a spread as wide as random) and a crate that
-        // fails pays nothing at all — no packing, no distances, not one extra branch taken in the
-        // 96k-row sweep beyond the one `admitEligible` test the compiler hoists into a constant.
-        // See `RecSoundAdmit` for what each bar is and the measurement behind it.
+        // Evaluated BEFORE the candidate loop so a crate that fails pays nothing at all — no
+        // centroid packing, no distances, not one extra branch taken in the 96k-row sweep beyond
+        // the one `admitEligible` test the compiler hoists into a constant.
+        //
+        // WHO ACTUALLY FAILS, MEASURED — because the bars were tuned when vector coverage was
+        // 20.6% and 98.6% inverted them, and the comment here used to claim "most crates fail",
+        // which is now false. On the owner's 81 live pockets against the shipped corpus:
+        //
+        //     admit-eligible                                   80 / 81 (99%)
+        //     rejected by `soundAdmitMinProfileVectors` (≥8)     1 / 81
+        //     rejected by `soundAdmitMinAnalysedShare` (≥0.5)    0 / 81
+        //     rejected by `soundAdmitMaxSpread` (≤0.20)          0 / 81   max observed 0.180
+        //     crate spread                                   0.156…0.180 (so the noise floor
+        //                                                     under the radius never binds)
+        //     admit pool     min 4 · p25 78 · median 142 · mean 184 · max 602
+        //     …at the OLD 20.6% coverage the same measurement is 0 / 81 eligible.
+        //
+        // So the door is open on essentially every crate, the full quota seats on every tile, and
+        // the per-crate cost below is PAID, not skipped. That cost is bounded on purpose and the
+        // bound is the reason this stayed affordable: the corpus is packed ONCE for the whole
+        // refresh by the caller (`ForYouFeed`) and passed in, so what an open door actually adds
+        // per crate is one 14-float distance per analysed candidate the artist/genre gate
+        // rejected — never a re-pack, never a string-keyed probe.
+        //
+        // The bars are unchanged and deliberately so: none of them has been shown to be the WRONG
+        // bar, they simply stopped being scarce. `soundAdmitMinAnalysedShare` is satisfied because
+        // the crates really are analysed now, which is the coverage work landing, not a bar
+        // failing. Retuning them is a MEASUREMENT job (`scripts/measure-rec-report.mjs`), and the
+        // table above is the regime any such retune has to start from. See `RecSoundAdmit` for
+        // what each bar is and the evidence behind the quota.
         let admitQuota = min(max(0, tuning.soundAdmitHardCap),
                              max(0, Int((Double(limit) * tuning.soundAdmitMaxShare).rounded(.down))))
         let admitEligible = admitQuota > 0
@@ -1614,7 +1639,8 @@ enum ZoneEngine {
                ownedVersions.supersedes(v) { continue }
             // Tombstoned IN THIS TILE ⇒ out of the ranking (the view re-injects it at the bottom).
             // Scoped and expiring — a 👎 given on another tile does not remove the row here; its
-            // shape reaches the score through `negArtists`/`negGenres` below. See `inDaZone`.
+            // shape reaches the score through `negArtists`/`negGenres` below, on BOTH paths into
+            // the tile (the sound door applies the same shape as a veto). See `inDaZone`.
             if feedback.suppressed.contains(t.songId) { continue }
             let a = artists[t.artistKey] ?? 0
             let g = t.genre.flatMap { genres[$0] } ?? 0
@@ -1634,18 +1660,39 @@ enum ZoneEngine {
                       // which on a typical crate (spread ~0.17) means d ≤ 0.11 against a
                       // random-pair median of ~0.22. Being analysed is not a qualification.
                       d <= admitRadius else { continue }
-                // A 👎'd SOUND NEVER ADMITS. The row is inside the radius, so its positive fit is
-                // 1.0 by construction and the rejected profile is the only thing left that can
-                // disqualify it — the same subtract-the-negative shape the multiplier uses,
-                // applied here as a veto because there is no score for it to shade.
+                // ── EVERY NEGATIVE SIGNAL THE SCORED PATH APPLIES, APPLIED HERE TOO ─────────
+                // THE DOOR IS A SECOND WAY INTO THE TILE. The row is inside the radius, so its
+                // positive fit is 1.0 by construction and there is no score for a penalty to
+                // shade — so each of the scored path's demotions lands here as a VETO on one
+                // shared net fit (`RecSoundAdmit.minNetFit`), which is the shape the rejected
+                // SOUND already used. Anything the ranking below subtracts and this branch does
+                // not is a way for a demoted song to walk in through the side door and be seated
+                // at a reserved row — the same class of hole `keepMask` closed, on the same door.
+                //
+                //   · the 👎'd SOUND — distance to the rejected centroid, decayed like the fit;
+                //   · the 👎'd SHAPE — `negArtists` / `negGenres`, the very thing the comment
+                //     above promises a thumbs-down on another tile still reaches this row
+                //     through. Combined by MAX rather than summed: the term weights that make
+                //     the scored path's sum meaningful (`terms.artist`, `terms.genre`) are
+                //     weights on a metadata score this row does not have, so the honest
+                //     statement is "the strongest rejection signal on this row", not a blend;
+                //   · the SKIP demotion — `feedback.skipPenalty`, built from actual playback over
+                //     the whole catalog rather than from this tile's offers, so it is the
+                //     broadly-reachable one: a song the owner skips every time it plays was
+                //     demoted up to 35% on the scored path and admitted at FULL strength here.
+                var negFit = 0.0
                 if let neg = negTimbreProfile, let nc = packedNegCentroid,
                    let dn = SimilarityFamilies.timbreDistance(v, nc) {
-                    let negFit = dn <= neg.spread ? 1
+                    negFit = dn <= neg.spread ? 1
                         : exp(-(dn - neg.spread) / SimilarityFamilies.timbreDecay)
-                    guard 1 - tuning.rejectionWeight * negFit >= RecSoundAdmit.minNetFit else {
-                        continue
-                    }
                 }
+                negFit = max(negFit, max(negArtists[t.artistKey] ?? 0,
+                                         t.genre.flatMap { negGenres[$0] } ?? 0))
+                var netFit = 1 - tuning.rejectionWeight * negFit
+                if let p = feedback.skipPenalty[t.songId] {
+                    netFit *= 1 - tuning.skipPenaltyWeight * min(1, max(0, p))
+                }
+                guard netFit >= RecSoundAdmit.minNetFit else { continue }
                 admitPool.append(RecSoundAdmit.Candidate(
                     id: t.songId,
                     capKey: capKeyByArtist[t.artistKey] ?? t.artistKey,

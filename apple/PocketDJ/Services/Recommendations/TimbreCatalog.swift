@@ -101,8 +101,9 @@ actor TimbreCatalog {
     }
 
     // ── The document (fold-timbre.mjs shape) ────────────────────────────────────────────────
-    //   { "v":1, "songs": { "sng_a": {"v":1,"f":{…14 axes…}},   ← own vector
-    //                       "sng_b": {"alias":"sng_a"} } }      ← same recording, other id
+    //   { "v":1, "timbreVersion":1,
+    //     "songs": { "sng_a": {"v":1,"f":{…14 axes…}},   ← own vector, stamped with ITS calibration
+    //                "sng_b": {"alias":"sng_a"} } }      ← same recording, other id
     // Aliases resolve here, at read time, ONE hop — an alias to an alias is a build error
     // upstream and resolves to nothing rather than chasing a chain (build-rec-features.mjs'
     // `timbreMap` rule, mirrored).
@@ -115,12 +116,45 @@ actor TimbreCatalog {
             /// first one and would silently discard the WHOLE corpus for two bad axes.
             var f: [String: Double?]?
             var alias: String?
+            /// Per-row calibration stamp, when the fold wrote one. A row disagreeing with the
+            /// document's own version is dropped ALONE — one stale row must not kill the corpus.
+            ///
+            /// NAMED `v`, because that is the key `fold-timbre.mjs` actually writes
+            /// (`songs[id] = { v: r.v, f: r.f }`). A reader's field names are part of the artifact
+            /// contract, and the artifact is the arbiter: spelled anything else this guard would
+            /// be dead code that only a hand-written fixture could ever exercise.
+            var v: Int?
         }
         var songs: [String: Row]
+        /// Which calibration produced these numbers. Absent ⇒ 1, the version that shipped before
+        /// the field existed.
+        var timbreVersion: Int?
     }
 
     nonisolated static func decode(_ data: Data) -> [String: SimilarityFamilies.TimbreVector]? {
         guard let doc = try? JSONDecoder().decode(Doc.self, from: data) else { return nil }
+        // ── REFUSE TO MIX CALIBRATIONS ──────────────────────────────────────────────────────
+        // THE DEVICE IS THE READER THAT ACTUALLY MEASURES. `fold-timbre.mjs`,
+        // `build-rec-features.mjs` and the Lambda all refuse a corpus at another calibration; this
+        // file is the fourth consumer and the only one that computes the sound door's distances
+        // against `timbreNoiseFloor` / `soundAdmitMargin` / `soundAdmitMaxSpread` / `timbreDecay`
+        // — constants written in v1 rail units. The rails ARE the units, so a distance taken
+        // across two calibrations is arithmetic on incomparable numbers, and it produces a
+        // perfectly plausible-looking float: the dangerous kind of wrong.
+        //
+        // And this reader is the one that can actually MEET such a corpus. `timbre.json` rides the
+        // catalog CDN; the app ships through TestFlight; the two update independently, so a device
+        // on the previous build downloads the next calibration's corpus the moment it lands.
+        //
+        // MIGRATING is a build-time job, never a device one — the published corpus arrives at ONE
+        // version, always the current one, so a device never has to reconcile two.
+        //
+        // Refusing means an EMPTY map, which this file's contract already defines as "the timbre
+        // term is dead this round": fail open, the ranking falls back to pre-timbre behaviour,
+        // nothing crashes and nothing is scored on numbers it cannot read.
+        let docVersion = doc.timbreVersion ?? 1
+        guard docVersion == SimilarityFamilies.timbreVersion else { return [:] }
+
         // OWN vectors first. Null/non-finite axes drop; the distance already treats a missing
         // axis as "does not vote". A row that then fails `isUsableTimbreRow` is QUARANTINED
         // rather than admitted with `!clean.isEmpty`: a single surviving axis passed that old
@@ -132,6 +166,9 @@ actor TimbreCatalog {
         own.reserveCapacity(doc.songs.count)
         for (id, row) in doc.songs {
             guard let f = row.f else { continue }
+            // A row whose OWN stamp disagrees with the document's drops ALONE. One stale row is a
+            // lost song; a refused corpus is a dead feature, and they are not the same failure.
+            if let rowVersion = row.v, rowVersion != docVersion { continue }
             // A PRESENT-but-null axis has to be caught HERE and not in the predicate, because
             // `TimbreVector` ([String: Double]) cannot express the difference between an axis the
             // extractor never wrote and one it wrote as `null` — and that difference is the whole

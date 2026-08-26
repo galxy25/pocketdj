@@ -114,6 +114,56 @@ final class TimbreCatalogTests: XCTestCase {
         XCTAssertFalse(SimilarityFamilies.isUsableTimbreRow(nonFinite))
     }
 
+    // ── REFUSE TO MIX CALIBRATIONS (the device is the reader that MEASURES) ──────────────────
+
+    /// The rails ARE the units. A corpus written under other rails is not "slightly stale", it is
+    /// a different measurement of a different quantity — and the device is the consumer that
+    /// computes the sound door's distances against thresholds written in v1 rail units. It is also
+    /// the consumer that can actually MEET such a corpus: `timbre.json` rides the catalog CDN, the
+    /// app ships through TestFlight, and the two update independently.
+    func testACorpusAtAnotherCalibrationIsRefusedWHOLE() throws {
+        let stale = "{\"v\":1,\"timbreVersion\":\(SimilarityFamilies.timbreVersion + 1),"
+            + "\"songs\":{\"sng_a\":{\"f\":{\(Self.body(0.1))}}}}"
+        let map = try XCTUnwrap(decode(stale), "refusing is an EMPTY map, never a nil decode")
+        XCTAssertTrue(map.isEmpty,
+                      "an empty map is this file's contract for 'the term is dead this round' — "
+                      + "fail open, the ranking falls back to pre-timbre, and nothing is scored "
+                      + "on numbers this build cannot read")
+
+        // …and the same corpus stamped at THIS build's calibration is read normally, so the test
+        // above is measuring the version guard and not a broken fixture.
+        let current = "{\"v\":1,\"timbreVersion\":\(SimilarityFamilies.timbreVersion),"
+            + "\"songs\":{\"sng_a\":{\"f\":{\(Self.body(0.1))}}}}"
+        XCTAssertNotNil(try XCTUnwrap(decode(current))["sng_a"])
+    }
+
+    /// Documents written before the field existed are v1 by definition — the shipped corpus stamps
+    /// it, but a cached copy on a device from before the fold wrote one must not go dark.
+    func testAnUnstampedCorpusIsReadAsVersionOne() throws {
+        let unstamped = "{\"v\":1,\"songs\":{\"sng_a\":{\"f\":{\(Self.body(0.1))}}}}"
+        let map = try XCTUnwrap(decode(unstamped))
+        XCTAssertEqual(map.isEmpty, SimilarityFamilies.timbreVersion != 1,
+                       "absent ⇒ 1: read while this build speaks v1, refused once it does not")
+    }
+
+    /// A stale ROW must not take the corpus with it — one bad row is a lost song, a refused corpus
+    /// is a dead feature, and they are not the same failure.
+    ///
+    /// `v` is the key `fold-timbre.mjs` actually writes (`songs[id] = { v: r.v, f: r.f }`), read
+    /// off the shipped artifact rather than invented here: a guard spelled for a key no writer
+    /// emits is dead code that only its own fixture can exercise.
+    func testASingleWrongVersionRowDropsALONE() throws {
+        let doc = "{\"v\":1,\"timbreVersion\":\(SimilarityFamilies.timbreVersion),\"songs\":{"
+            + "\"sng_stale\":{\"v\":\(SimilarityFamilies.timbreVersion + 1),\"f\":{\(Self.body(0.1))}},"
+            + "\"sng_ok\":{\"v\":\(SimilarityFamilies.timbreVersion),\"f\":{\(Self.body(0.2))}},"
+            + "\"sng_alias\":{\"alias\":\"sng_stale\"}}}"
+        let map = try XCTUnwrap(decode(doc))
+        XCTAssertNil(map["sng_stale"], "the row at another calibration drops")
+        XCTAssertNotNil(map["sng_ok"], "…and the corpus around it survives")
+        XCTAssertNil(map["sng_alias"],
+                     "an alias to a dropped row is coverage that does not exist, not a free vector")
+    }
+
     func testDecodeRejectsGarbageWholesale() {
         XCTAssertNil(decode("<!doctype html><html>SPA shell</html>"),
                      "the CDN's SPA-fallback HTML must never be cached as a corpus")

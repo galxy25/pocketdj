@@ -627,6 +627,27 @@ enum SimilarityFamilies {
     /// Below this many shared finite axes two vectors are not comparable — half a vector is a
     /// different instrument, not a noisier reading of the same one.
     static let timbreMinSharedAxes = 8
+
+    /// **WHICH CALIBRATION THIS BUILD SPEAKS.** Mirrors `TIMBRE_VERSION` in
+    /// `scripts/lib/audio-analyze.mjs` — the number the fold stamps on `public/timbre.json` and on
+    /// every row in it. `tests/unit/timbre-version-parity.test.mjs` reads THIS line and pins the
+    /// two, because a comment saying "keep in sync" is not a check.
+    ///
+    /// The rails ARE the units: `bright` under the v1 rails and `bright` under the v2 rails are
+    /// different physical quantities wearing the same name and the same 0…1 range, so a distance
+    /// taken across them is arithmetic on incomparable numbers — and it yields a perfectly
+    /// ordinary-looking float, which is the dangerous kind of wrong. Every constant below
+    /// (`timbreDecay`, `timbreNoiseFloor`, `soundAdmitMargin`, `soundAdmitMaxSpread`) is in v1
+    /// rail units, so a corpus at another calibration does not merely shift the numbers, it
+    /// invalidates the thresholds they are compared against.
+    ///
+    /// So every consumer REFUSES a corpus stamped at a different version rather than mixing:
+    /// `fold-timbre.mjs` (`versionDropped`), `build-rec-features.mjs` (`timbreMap`), the Lambda
+    /// (`TIMBRE_VERSION`) — and, because the DEVICE is the reader that actually computes the
+    /// door's distances, `TimbreCatalog.decode`. The corpus ships on the catalog CDN and the app
+    /// ships through TestFlight; the two update independently, so the device is precisely the
+    /// reader that can meet a corpus its build has never seen.
+    static let timbreVersion = 1
     /// Minimum analysed members for a LIVE positive profile. A centroid of two songs is those two
     /// songs, not a sound.
     static let timbreMinVectors = 3
@@ -769,6 +790,13 @@ enum SimilarityFamilies {
 
     /// Is this profile trustworthy enough to admit strangers on sound? All three preconditions,
     /// in one place, so the engine and its tests read the same rule.
+    ///
+    /// HOW OFTEN IT SAYS NO, MEASURED on the owner's 81 live pockets against the shipped corpus:
+    /// 80/81 pass — 1 fails the vector floor, 0 fail the analysed share, 0 fail the spread bar
+    /// (max observed spread 0.180 against a 0.20 bar and a 0.2324 random-pair median). These bars
+    /// were set when coverage was 20.6%, where the same measurement is 0/81 eligible, so read them
+    /// as "the crate is not disqualified" and NOT as a scarce filter. See the measured table at
+    /// the door's preconditions in `ZoneEngine.suggestions`.
     ///
     /// - Parameter profileSize: how many songs the profile was DRAWN FROM (members + 👍), not how
     ///   many of them carried a vector — the analysed SHARE is the point of the test.

@@ -1720,24 +1720,38 @@ test('audio features: posting vectors stores them AND drains the queue', async (
     join(HOME, 'rec', 'audio', `${audioHash(AUDIO_PROFILE)}.json`), 'utf8'));
   assert.deepEqual(corpus.songs.sng_e1.f, { bright: 0.4, punch: 0.9 });
 
-  // A re-analysis REPLACES rather than accumulating: one recording, one vector, whichever
-  // calibration produced it last.
+  // A re-analysis at THIS calibration REPLACES rather than accumulating: one recording, one
+  // vector.
   await post({ p: audioHash(AUDIO_PROFILE),
-               features: [{ songId: 'sng_e1', v: 2, f: { bright: 0.1 } }] });
+               features: [{ songId: 'sng_e1', v: 1, f: { bright: 0.1 } }] });
   const again = JSON.parse(readFileSync(
     join(HOME, 'rec', 'audio', `${audioHash(AUDIO_PROFILE)}.json`), 'utf8'));
-  assert.deepEqual(again.songs.sng_e1, { v: 2, f: { bright: 0.1 }, atMs: again.songs.sng_e1.atMs });
+  assert.deepEqual(again.songs.sng_e1, { v: 1, f: { bright: 0.1 }, atMs: again.songs.sng_e1.atMs });
+
+  // …and a re-analysis at ANOTHER calibration is REFUSED. The rails are the units, so a v2
+  // reading of `bright` is a different quantity wearing the same name, and this store used to
+  // stamp `v` on the row and then filter on nothing — one document could hold both and no reader
+  // could tell them apart. Refusing leaves the readable vector standing.
+  const r2 = await post({ p: audioHash(AUDIO_PROFILE),
+                          features: [{ songId: 'sng_e1', v: 2, f: { bright: 0.9 } }] });
+  assert.equal(JSON.parse(r2.body).accepted, 0, 'nothing at another calibration is accepted');
+  const third = JSON.parse(readFileSync(
+    join(HOME, 'rec', 'audio', `${audioHash(AUDIO_PROFILE)}.json`), 'utf8'));
+  assert.deepEqual(third.songs.sng_e1.f, { bright: 0.1 },
+                   'the v1 vector survives — a foreign reading never replaces a readable one');
 });
 
 test('audio features: hostile shapes are dropped, not stored', async () => {
   const { doc } = mergeAudioFeatures(null, [
     { songId: 'ok', f: { bright: 0.5, 'Bad Key!': 1, huge: 99, neg: -3, nan: NaN } },
+    { songId: 'unstamped', f: { bright: 0.2 } },      // absent v ⇒ 1, like every other consumer
+    { songId: 'foreign', v: 2, f: { bright: 0.2 } },  // …and another calibration never lands
     { songId: 'nofeatures', f: {} },
     { songId: '', f: { bright: 1 } },
     { f: { bright: 1 } },
     'garbage',
   ]);
-  assert.deepEqual(Object.keys(doc.songs), ['ok']);
+  assert.deepEqual(Object.keys(doc.songs), ['ok', 'unstamped']);
   assert.deepEqual(doc.songs.ok.f, { bright: 0.5, huge: 1, neg: 0 },
                    'axis names are validated and values clamped to 0…1');
 });

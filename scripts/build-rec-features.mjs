@@ -54,6 +54,26 @@ const fromCdn = process.argv.includes('--from-cdn');
 // A pass-2 tag cannot simply be appended to pass 1: the table is first-hit-wins and rock sits
 // ahead of folk and pop, so 'alternative' in rock's pass-1 list would drag 58 "Alternative Folk"
 // and 15 "Indie, Pop, Alternative" rows out of the category they already resolve to correctly.
+//
+// ── WHAT RESTORING 9,722 CATEGORIES DID TO THE RANKING THEY FEED ────────────────────────────────
+// Doubling the largest category (`rock` 5,060 → 11,457) is not a neutral perturbation, and
+// `Tuning.suggestionAuxGain`, `maxPerArtist` and the genre-novelty buckets were all calibrated
+// against the OLD distribution — so this was measured rather than assumed.
+// `node scripts/measure-rec-report.mjs --collections 40`, run on this rec-features.json and again
+// on the one the previous table produced (same catalog, same play counts, same 40 crates):
+//
+//     rank Spearman vs similarity        0.95368 → 0.95373   (the ranking is the same ranking)
+//     distinct artists over all tiles        234 → 232
+//     top-10 artists' share of all rows     22.4% → 22.0%
+//     played share of picks                 0.986 → 0.988
+//     aux multiplier band       1.0000…1.3000x → 1.0000…1.3000x, bound 1.40x HELD both sides
+//     genre-novelty mean                    0.179 → 0.092
+//     genre-novelty p90                     1.000 → 0.257
+//
+// The last two are the point, and they are the FIX showing up rather than a side effect: a song
+// with no category was indistinguishable from a song whose category the crate had never seen, so
+// a tenth of every candidate pool scored MAXIMALLY genre-novel purely for being unrecognised.
+// Missing data was wearing novelty's clothes. Everything else moves under a percent.
 const GENRE_CATEGORIES = [
   // A seasonal tag is the most specific thing about a record and outranks its parent genre:
   // "Christmas: R&B" belongs with the other holiday songs, not with the rest of soul.
@@ -154,7 +174,15 @@ export function timbreMap(doc, { strict = false } = {}) {
   //
   // Loudly but NOT fatally by default. A catalog deploy carries artists, albums, play counts and
   // genres; failing the whole build over an out-of-date audio corpus would hold all of that
-  // hostage to a librosa sweep. `--strict` (CI) makes it fatal.
+  // hostage to a librosa sweep. `--strict` makes it throw instead, for a caller that would rather
+  // fail than ship a catalog with a dead timbre term.
+  //
+  // NOBODY PASSES IT TODAY, and that is deliberate rather than an oversight: the two shipping
+  // callers — `scripts/deploy.sh` and `scripts/streaming-links-nightly.sh` — both invoke this
+  // bare and `||`-soft-fail, keeping the previously published rec-features.json serving. There is
+  // no CI that runs this build, so a comment naming one would be describing a gate that does not
+  // exist. The flag is here for an operator running the build by hand ahead of a re-extraction
+  // sweep, and for `assertNoTimbreRegression`, which throws unconditionally.
   if (doc) {
     const v = Number.isFinite(doc.timbreVersion) ? doc.timbreVersion : 1;
     if (v !== TIMBRE_VERSION) {

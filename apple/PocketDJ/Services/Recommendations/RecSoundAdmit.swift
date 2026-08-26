@@ -48,12 +48,26 @@ enum RecSoundAdmit {
     /// the tile's artist cap uses).
     static let maxPerArtist = 1
 
-    /// The net fit an admitted row must still clear against the REJECTED sound. An admitted row
-    /// is inside the crate's radius, so its positive fit is 1.0 by construction (the fit
-    /// saturates inside the spread) and the negative profile is the only thing left that can
-    /// disqualify it. At the shipped `rejectionWeight` of 0.5 this reads as "its fit to the 👎'd
-    /// sound must be ≤ 0.2" — a veto rather than a shading, because there is no metadata score
-    /// here for a penalty to subtract from.
+    /// The net fit an admitted row must still clear against EVERY negative signal the scored path
+    /// applies. An admitted row is inside the crate's radius, so its positive fit is 1.0 by
+    /// construction (the fit saturates inside the spread) and the negatives are the only thing
+    /// left that can disqualify it — a veto rather than a shading, because there is no metadata
+    /// score here for a penalty to subtract from.
+    ///
+    /// Three signals reach it (see `ZoneEngine.suggestions`' admit branch), because the door is a
+    /// SECOND WAY INTO THE TILE and anything the ranking demotes on and the door ignores is a way
+    /// for a demoted song to be seated at a reserved row:
+    ///   · the 👎'd SOUND — fit to the rejected centroid;
+    ///   · the 👎'd SHAPE — `negArtists` / `negGenres`, so a thumbs-down given on another tile
+    ///     reaches this row exactly as the scored path promises it does;
+    ///   · the SKIP demotion — `feedback.skipPenalty`, the broadly-reachable one, since it is
+    ///     built from actual playback over the whole catalog rather than from this tile's offers.
+    ///
+    /// At the shipped `rejectionWeight` of 0.5 this reads as "its fit to the 👎'd sound, and its
+    /// share of the 👎'd artist/genre, must both be ≤ 0.2"; at the shipped `skipPenaltyWeight` of
+    /// 0.35 it reads as "a skip penalty above 0.29 keeps it out". One thumbs-down on an artist is
+    /// already 1/`rejectionSaturation` = 0.33, so a single 👎 shuts the door on that artist for
+    /// that crate — which is the right blunt answer for a row nothing but sound qualified.
     static let minNetFit = 0.9
 
     /// One candidate that cleared the sound door, as the selector sees it.
