@@ -280,7 +280,12 @@ final class AppModel {
                                     // VERSION identity, parsed HERE and cached with the projection
                                     // — the collection pass would otherwise re-parse the whole
                                     // catalog once per crate. See `ZoneEngine.Track.version`.
-                                    title: s.name)
+                                    title: s.name,
+                                    // IDENTITY again, and the CORROBORATOR half of it: two rows
+                                    // that share an artist and a title are only fused into one
+                                    // recording when their lengths agree, which is what keeps an
+                                    // unlabelled live take out of the studio cut's row.
+                                    lengthMs: s.length)
         }
         zoneTracksCache = (catalogRevision, tracks)
         return tracks
