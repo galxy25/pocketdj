@@ -177,6 +177,8 @@ describe('rip server → cloud timbre lane', () => {
     expect(m.sng_aaaaaaaaaaaa.timbre).toBe(`rips/timbre/v${TIMBRE_VERSION}/sng_aaaaaaaaaaaa.json`);
     expect(m.sng_aaaaaaaaaaaa.timbreVersion).toBe(TIMBRE_VERSION);
     expect(m.sng_aaaaaaaaaaaa.timbreAt).toBeGreaterThan(0);
+    // …and WHICH AUDIO produced it, so the corpus's provenance stays recoverable from the manifest.
+    expect(m.sng_aaaaaaaaaaaa.timbreSrc).toBe('s3-song');
     // The DELETE follows the durable save, never precedes it — so it lands strictly after the
     // stamp is on disk. Wait for it rather than assuming the two are simultaneous.
     for (let i = 0; i < 50 && !deleted().length; i++) await sleep(100);

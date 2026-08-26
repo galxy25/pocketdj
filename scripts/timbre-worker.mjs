@@ -59,6 +59,14 @@ const CFG = {
   image: process.env.AUDIO_IMAGE || 'pocketdj-audio:latest',
   driver: process.env.POCKETDJ_TIMBRE_DRIVER || join(HERE, 'timbre-batch.mjs'),
   maxErrors: Number(process.env.POCKETDJ_TIMBRE_MAX_ERRORS || 20),
+  // HARD BOUND ON ONE BATCH. Nothing else in this process has a timeout that covers the driver:
+  // timbre-batch.mjs times out its ffmpeg and its S3 GETs, but shard.analyze() — the python
+  // round-trip — returns a promise that never rejects. One wedged song would leave the await
+  // pending forever, so serve() never returns, so userdata never reaches `shutdown -h now`, and a
+  // c7g.2xlarge bills until someone notices. On a laptop a human notices; on EC2 nobody does.
+  // 25 min is ~12x the p99 batch (50 songs, 8 shards, p99 20 s/song ≈ 2 min) and stays under the
+  // 1800 s visibility, so the batch fails loudly and redelivers instead of being duplicated.
+  driverTimeoutMs: Number(process.env.POCKETDJ_TIMBRE_DRIVER_TIMEOUT_MS || 25 * 60_000),
 };
 // Variant ids (`sng_<12hex>_explicit`) are minted by rip-server's VARIANT_ID and keyed through the
 // whole pipeline. stem-worker.mjs's regex rejects them — a live bug that has been dead-lettering
@@ -169,8 +177,15 @@ async function runDriver(todo, { prefix, work }) {
       '--state-dir', stateDir, '--profile', '-'],
       { env: { ...process.env, AUDIO_IMAGE: CFG.image }, stdio: ['ignore', 'inherit', 'inherit'] });
     const tick = setInterval(sweep, 3000);
-    p.on('error', (e) => { clearInterval(tick); rej(e); });
-    p.on('close', (code) => { clearInterval(tick); code === 0 ? res() : rej(new Error(`timbre-batch exit ${code}`)); });
+    // Every song whose row already landed has ALREADY been uploaded as its own sidecar, so a
+    // timeout loses only what was genuinely in flight — the redelivery dedups the rest.
+    const bomb = setTimeout(() => {
+      log(`driver exceeded ${Math.round(CFG.driverTimeoutMs / 60000)} min — killing (batch will redeliver)`);
+      try { p.kill('SIGKILL'); } catch { /* already gone */ }
+    }, CFG.driverTimeoutMs);
+    const done = () => { clearInterval(tick); clearTimeout(bomb); };
+    p.on('error', (e) => { done(); rej(e); });
+    p.on('close', (code, sig) => { done(); code === 0 ? res() : rej(new Error(`timbre-batch exit ${code}${sig ? ` (${sig})` : ''}`)); });
   });
   sweep();                                   // final pass picks up the last songs
   return [...uploaded.values()];

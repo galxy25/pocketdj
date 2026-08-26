@@ -25,7 +25,8 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { analyzeAudio, ANALYSIS_VERSION, TIMBRE_VERSION } from './lib/audio-analyze.mjs';
 import { separateStems, STEMS_VERSION, STEMS_MODEL, STEM_NAMES } from './lib/audio-stem.mjs';
-import { timbreKeyFor, wantTimbre, buildTimbreBatches, timbreHealth } from './lib/timbre-jobs.mjs';
+import { timbreKeyFor, wantTimbre, buildTimbreBatches, timbreHealth, readResultRows,
+  reconcileTimbreStamps, crossesTimbreProvenance, cloudKindFor, timbreSrcRank } from './lib/timbre-jobs.mjs';
 import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './lib/am-match.mjs';
 import { runOsascriptAsync } from './lib/am-music.mjs';
 import { captureWithHeal, createHealGate, healMusic, WEDGED_REASON } from './lib/music-health.mjs';
@@ -163,6 +164,11 @@ const CFG = {
   timbreJobsQueue: process.env.POCKETDJ_TIMBRE_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-timbre-jobs',
   timbreResultsQueue: process.env.POCKETDJ_TIMBRE_RESULTS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-timbre-results',
   timbreDlqQueue: process.env.POCKETDJ_TIMBRE_DLQ_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-timbre-jobs-dlq',
+  // The DURABLE RESULT CORPUS — <results>/*.ndjson, where every vector this corpus has ever had
+  // actually lives. The manifest stamp is the ongoing record; this is the historical one, and
+  // the sweep MUST consult it or it re-runs 5,388 already-measured songs on EC2 forever.
+  timbreResultsDir: process.env.POCKETDJ_TIMBRE_RESULTS
+    || join(process.env.HOME || homedir(), '.pocketdj', 'timbre-batch', 'results'),
 };
 // PUBLIC posture always boots (simplicity wins during beta — setup-rip-funnel.sh
 // provisions tokens before the Funnel port is ever mounted), but a missing or collapsed
@@ -1350,12 +1356,16 @@ async function offloadAnalysis(songId) {
 // is per-song interactive, so there is no job object, no inflight map and no reap: the S3 sidecar
 // (rips/timbre/v<N>/<id>.json) is the durable artifact and the manifest stamp is a pointer to it.
 //
-// IDEMPOTENCE, four independent layers (the stem lane's, followed rather than reinvented):
+// IDEMPOTENCE, five independent layers (the stem lane's, followed rather than reinvented):
+//   0. the PROVENANCE GATE + the durable result corpus — a song already measured (in the manifest
+//      stamp OR in <results>/*.ndjson) is never re-enqueued, and an analog song measured from its
+//      raw album file is never re-measured from the burned cut, even under `force`.
 //   1. wantTimbre() here — an already-analysed song at the current version is never enqueued.
 //   2. worker-side dedup — one S3 prefix listing per batch skips anything already on S3.
 //   3. the SQS claim — a crashed/scaled-in worker's message redelivers; sidecars upload per song
 //      as each finishes, so redelivery re-runs only what was actually in flight.
-//   4. fold-timbre's LWW — a re-analysis replaces, never accumulates.
+//   4. fold-timbre's provenance-ranked LWW — a re-analysis replaces, never accumulates, and a
+//      lower-provenance row never replaces a higher one.
 // So "adding an already-analysed song" is a no-op at every layer, not just the first.
 // timbreKeyFor / wantTimbre / buildTimbreBatches / timbreHealth are pure — they live in
 // scripts/lib/timbre-jobs.mjs so tests can import them (this file listens on a port at import).
@@ -1374,13 +1384,20 @@ async function offloadTimbreInner(songIds, force) {
   if (!CFG.timbreOffload) return 0;
   const ids = (Array.isArray(songIds) ? songIds : [songIds]).filter(Boolean);
   const entries = [];
+  let held = 0;
   for (const id of ids) {
     const e = manifest[id];
     if (!e) continue;                                   // no audio yet — the on-capture hook covers it
     if (!force && !wantTimbre(e)) continue;             // already analysed at this version: NO-OP
+    // LAYER 0: the PROVENANCE GATE. An analog song already measured from its raw album file
+    // (vinyl-cut) must never be re-measured from the burned cut mp3 (s3-cut) — different bytes,
+    // a calibration the parity gate has never compared, and fold-timbre's LWW would replace the
+    // good row with it. Held even under `force`, which is about re-measuring the SAME audio.
+    if (crossesTimbreProvenance(e, timbreDone.get(id))) { held += 1; continue; }
     const key = timbreKeyFor(e);
     if (key) entries.push([id, key, e.source]);
   }
+  if (held) console.error(`  timbre: held ${held} song(s) whose vector came from different audio (provenance gate)`);
   if (!entries.length) return 0;
   const batches = buildTimbreBatches(entries, { size: CFG.timbreBatchSize, dedup: !force });
   let sent = 0;
@@ -1396,7 +1413,35 @@ async function offloadTimbreInner(songIds, force) {
 // as a launchd nightly precisely because the nightly that was supposed to do this has been a
 // no-op since it was written — it needs a credential file the installer cannot create.
 let timbreBackfillRunning = false;
-const timbreCandidates = () => Object.entries(manifest).filter(([, e]) => wantTimbre(e)).map(([id]) => id);
+// The durable result corpus, loaded once at boot and refreshed by reconcileTimbre(). The sweep
+// filters against it as well as the manifest stamp, so a song measured before stamps existed —
+// or measured locally after this process started — is never re-run in the cloud.
+let timbreDone = new Map();
+const timbreCandidates = () => Object.entries(manifest)
+  .filter(([id, e]) => wantTimbre(e) && !timbreDone.has(id))
+  .map(([id]) => id);
+
+// Fold the durable corpus into the manifest as stamps. Without this the 15,489 vectors measured
+// before the stamp existed read as outstanding forever: the sweep would enqueue 500 of them every
+// 6 h (~66 h of pointless fleet spin-ups), /health would report a permanent 5,388-song backlog,
+// and the staleness warning would fire nightly on a corpus that is in fact complete.
+async function reconcileTimbre() {
+  if (!CFG.timbreOffload) return { stamped: 0, failed: 0 };
+  try {
+    timbreDone = readResultRows(CFG.timbreResultsDir);
+    if (!timbreDone.size) {
+      console.error(`  ⚠ timbre: no result corpus at ${CFG.timbreResultsDir} — sweeping on manifest stamps alone`);
+      return { stamped: 0, failed: 0 };
+    }
+    const r = reconcileTimbreStamps(manifest, timbreDone);
+    if (r.stamped || r.failed) {
+      if (!(await saveManifest())) { console.error('  ⚠ timbre reconcile: manifest save failed — will retry next sweep'); return r; }
+      console.error(`  ✓ timbre reconcile: stamped ${r.stamped} already-measured song(s) `
+        + `${JSON.stringify(r.bySrc)}${r.failed ? `, ${r.failed} permanently-unanalysable` : ''}`);
+    }
+    return r;
+  } catch (e) { console.error('  timbre reconcile failed:', e.message); return { stamped: 0, failed: 0 }; }
+}
 async function backfillTimbre({ cap = Infinity } = {}) {
   const ids = timbreCandidates().slice(0, cap);
   if (!ids.length) return 0;
@@ -1406,7 +1451,11 @@ async function backfillTimbre({ cap = Infinity } = {}) {
 function sweepTimbre() {
   if (timbreBackfillRunning || !CFG.timbreOffload) return;
   timbreBackfillRunning = true;
-  backfillTimbre({ cap: 500 }).catch((e) => console.error('  timbre sweep failed:', e.message))
+  // Reconcile FIRST: the local driver may have added rows since the last sweep, and re-running
+  // them in the cloud costs money and (for analog) crosses provenance.
+  reconcileTimbre()
+    .then(() => backfillTimbre({ cap: 500 }))
+    .catch((e) => console.error('  timbre sweep failed:', e.message))
     .finally(() => { timbreBackfillRunning = false; });
 }
 
@@ -1438,6 +1487,13 @@ async function pumpTimbreResults() {
           if (!e) { miss += 1; continue; }
           if (!song.ok || !song.key) continue;                  // failures stay un-stamped → re-swept
           e.timbre = song.key; e.timbreVersion = r.timbreVersion ?? TIMBRE_VERSION; e.timbreAt = Date.now();
+          // RECORD WHICH AUDIO PRODUCED IT. A stamp that says only "analysed at v1" cannot answer
+          // the question that matters later — raw album file or re-encoded cut? — and a corpus
+          // whose provenance is unrecoverable is exactly the state this lane exists to avoid.
+          // Never downgrade an existing higher-provenance stamp: the fold would hold the new row
+          // anyway, and the manifest must not claim a swap the corpus refused.
+          const kind = cloudKindFor(e);
+          if (timbreSrcRank(kind) >= timbreSrcRank(e.timbreSrc)) e.timbreSrc = kind;
           changed = true; ok += 1;
         }
         // A result whose songs are ALL unknown to this manifest must not be deleted with nothing
@@ -2713,9 +2769,18 @@ const server = http.createServer(async (req, res) => {
     const body = await readJson(req).catch(() => ({}));
     const ids = Array.isArray(body.songIds) ? body.songIds.slice(0, 5000) : [];
     if (!CFG.timbreOffload) return send(res, 503, { error: 'timbre offload is disabled' });
-    const eligible = ids.filter((id) => manifest[id] && (body.force || wantTimbre(manifest[id])));
-    offloadTimbre(eligible, { force: !!body.force });    // fire-and-forget: never block the add
-    return send(res, 200, { ok: true, requested: ids.length, enqueued: eligible.length });
+    // `force` IS AN ADMIN CAPABILITY, not a request parameter. wantTimbre-filtering is the ONLY
+    // reason this route is safe to leave user-tier: it makes a 5,000-id post a no-op for anything
+    // already analysed. `force` turns that off AND rides `dedup:false` through to the worker,
+    // disabling the S3 skip too — one anonymous POST would then be 5,000 real re-analyses and a
+    // three-instance fleet, on a server that is PUBLIC-BY-DEFAULT behind a tokenless Funnel.
+    // Refuse it rather than silently downgrading, so a legitimate admin force is never a silent
+    // no-op. (/backfill-timbre stays the admin-gated bulk path.)
+    const force = !!body.force;
+    if (force && !adminAuthed(req)) return send(res, 403, { error: 'force requires the admin token' });
+    const eligible = ids.filter((id) => manifest[id] && (force || wantTimbre(manifest[id])));
+    offloadTimbre(eligible, { force });                  // fire-and-forget: never block the add
+    return send(res, 200, { ok: true, requested: ids.length, enqueued: eligible.length, force });
   }
   // GET|POST /backfill-lyrics {confirmLarge?} — transcribe every stemmed song that lacks fresh
   // timed lyrics (offloads to the cloud workers). Candidate-capped like /backfill-analysis; re-send
@@ -2876,6 +2941,9 @@ resumeStems(); // re-drive any stem requests left pending by a previous run
 if (CFG.stemOffload || CFG.analysisOffload || CFG.lyricsOffload) { pumpStemResults(); pumpStemDlq(); setInterval(reapStaleOffloadStems, 5 * 60_000).unref?.(); } // consume results + dead-letters; reap stuck jobs (any offload family keeps the fold alive)
 if (CFG.timbreOffload) {
   pumpTimbreResults(); pumpTimbreDlq();
+  // RECONCILE BEFORE ANYTHING READS THE BACKLOG: both the staleness signal and the sweep are
+  // wrong until the durable corpus has been folded into the manifest as stamps.
+  await reconcileTimbre();
   logTimbreStaleness();
   sweepTimbre();                                          // T3 BACKSTOP: catch anything the event triggers missed
   setInterval(() => { logTimbreStaleness(); sweepTimbre(); }, CFG.timbreSweepMs).unref?.();

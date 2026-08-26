@@ -3,7 +3,7 @@
 // vector, batched onto the timbre jobs queue through a bounded-concurrency dispatcher.
 //
 //   node scripts/timbre-backfill.mjs [--dry-run] [--max N] [--batch 50] [--conc 12] [--force]
-//        [--results ~/.pocketdj/timbre-batch/results] [--no-results-skip]
+//        [--results ~/.pocketdj/timbre-batch/results] [--no-results-skip] [--allow-src-change]
 //
 // ── REUSE WHAT IS ALREADY COMPUTED ────────────────────────────────────────────────────────────
 // The 12,395 vectors measured locally live in <results>/*.ndjson, NOT as manifest stamps — the
@@ -25,12 +25,12 @@
 // `aws sqs send-message` at once would fork 62 processes for no gain. Mirrors DISPATCH_CONC in
 // rip-server.mjs — cap concurrent sends, never total throughput.
 import { execFile } from 'node:child_process';
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
-import { buildTimbreBatches, wantTimbre, timbreKeyFor, timbreHealth } from './lib/timbre-jobs.mjs';
-import { TIMBRE_VERSION } from './lib/audio-analyze.mjs';
+import { buildTimbreBatches, wantTimbre, timbreKeyFor, timbreHealth, readResultRows,
+  crossesTimbreProvenance } from './lib/timbre-jobs.mjs';
 
 const run = promisify(execFile);
 const arg = (f, d) => { const i = process.argv.indexOf(f); return i >= 0 ? process.argv[i + 1] : d; };
@@ -54,42 +54,34 @@ async function loadManifest() {
   return JSON.parse(stdout || '{}');
 }
 
-/// Ids already analysed at the current version, read from the NDJSON result corpus — local
-/// shards AND cloud.ndjson alike (both are just *.ndjson in the same dir, which is exactly why
-/// the cloud lane writes there). `permanent` failures count as done: an engine that ran and
-/// found nothing usable must never wedge the queue.
-function doneIdsFromResults(dir) {
-  const done = new Set();
-  if (!existsSync(dir)) return done;
-  for (const f of readdirSync(dir)) {
-    if (!f.endsWith('.ndjson')) continue;
-    for (const line of readFileSync(join(dir, f), 'utf8').split('\n')) {
-      if (!line.trim()) continue;
-      try { const r = JSON.parse(line); if (r.id && r.v === TIMBRE_VERSION && (r.ok || r.permanent)) done.add(r.id); }
-      catch { /* torn tail line from a crash — the song simply re-runs */ }
-    }
-  }
-  return done;
-}
-
 async function main() {
   const manifest = await loadManifest();
   const resultsDir = arg('--results', join(homedir(), '.pocketdj', 'timbre-batch', 'results'));
-  const done = process.argv.includes('--no-results-skip') || FORCE ? new Set() : doneIdsFromResults(resultsDir);
+  // readResultRows keeps the row (not just the id) so the PROVENANCE GATE below can see WHICH
+  // audio a song's existing vector was measured from. --no-results-skip drops the reuse skip but
+  // NOT the gate: re-measuring is a choice, silently swapping the source audio is not.
+  const rows = readResultRows(resultsDir);
+  const skipDone = !(process.argv.includes('--no-results-skip') || FORCE);
+  const allowSrcChange = process.argv.includes('--allow-src-change');
   const health = timbreHealth(manifest);
   const entries = [];
-  let alreadyDone = 0;
+  let alreadyDone = 0; let held = 0;
   for (const [id, e] of Object.entries(manifest)) {
     if (!FORCE && !wantTimbre(e)) continue;
-    if (done.has(id)) { alreadyDone += 1; continue; }        // already measured — reuse, don't re-run
+    if (skipDone && rows.has(id)) { alreadyDone += 1; continue; }   // already measured — reuse, don't re-run
+    // An analog song measured from its RAW album file (vinyl-cut) would come back from the cloud
+    // measured from the BURNED cut mp3 (s3-cut) — different bytes, and fold-timbre would have to
+    // hold the result anyway. Never enqueue work whose result cannot be folded.
+    if (crossesTimbreProvenance(e, rows.get(id), { allowSrcChange })) { held += 1; continue; }
     const key = timbreKeyFor(e);
     if (key) entries.push([id, key, e.source]);
     if (entries.length >= MAX) break;
   }
   const batches = buildTimbreBatches(entries, { size: BATCH, dedup: !FORCE });
   console.error(`[timbre-backfill] manifest ${Object.keys(manifest).length} · already measured ${alreadyDone} `
-    + `(local+cloud results) · stamped ${health.analysed} · enqueueing ${entries.length} song(s) in ${batches.length} batch(es)`);
-  if (DRY) { console.log(JSON.stringify({ candidates: entries.length, batches: batches.length, sample: batches[0]?.songs.slice(0, 3) }, null, 2)); return; }
+    + `(local+cloud results) · held ${held} (provenance) · stamped ${health.analysed} `
+    + `· enqueueing ${entries.length} song(s) in ${batches.length} batch(es)`);
+  if (DRY) { console.log(JSON.stringify({ candidates: entries.length, held, alreadyDone, batches: batches.length, sample: batches[0]?.songs.slice(0, 3) }, null, 2)); return; }
 
   let sent = 0; let failed = 0; let i = 0;
   const worker = async () => {

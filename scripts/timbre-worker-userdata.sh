@@ -23,6 +23,16 @@ ship() { aws s3 cp $LOG "s3://pocketdj-rips-011183829623/worker-logs/${IID:-unkn
 trap ship EXIT
 echo "=== timbre worker boot $(date -u) instance=$IID ==="
 
+# DEAD-MAN SWITCH, armed BEFORE anything can hang. Scale-to-zero here is not an autoscaler
+# decision — it is this instance shutting itself down when serve() returns — so ANY path that
+# never returns bills a c7g.2xlarge indefinitely: a wedged docker/python round-trip, a dnf that
+# hangs on a mirror, an S3 copy with no progress. There is no ASG and no max-instance-lifetime
+# behind this template to catch it. `shutdown -h +N` is scheduled in the background and is
+# superseded by the `shutdown -h now` at the end of a healthy run, so a normal worker never sees
+# it; a wedged one terminates anyway. N is generously above a real run (idle-exit is 120 s and a
+# batch is minutes), so it can only ever fire on a fault.
+shutdown -h "+${POCKETDJ_TIMBRE_MAX_LIFETIME_MIN:-360}" "pdj timbre worker max lifetime" || true
+
 dnf install -y docker || yum install -y docker
 dnf install -y nodejs20 || dnf install -y nodejs || dnf install -y nodejs18
 NODE=$(command -v node || command -v node-20 || echo /usr/bin/node)

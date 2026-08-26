@@ -54,20 +54,57 @@ numeric path because a multi-threaded BLAS changes reduction order.
 
 Compute: `c7g.2xlarge` (Graviton3, 8 vCPU), **8 warm shards per instance**, max 3 instances.
 
-## Idempotence — four independent layers
+## Idempotence — five independent layers
 
+0. **The durable corpus + the provenance gate.** The manifest stamp is the *ongoing* record of
+   "analysed"; it is not where the corpus lives. 15,489 vectors were measured before any stamp
+   existed, and `~/.pocketdj/rips/manifest.json` still carries **zero** `timbreVersion` fields.
+   So `reconcileTimbre()` folds `results/*.ndjson` into the manifest as stamps at boot and before
+   every sweep, and `timbreCandidates()` filters against the corpus as well as the stamp.
+   Without it the startup sweep enqueues **5,388 already-measured songs**, 500 every 6 h.
 1. **`wantTimbre`** (server/CLI): a song analysed at the current version is never enqueued.
 2. **Worker dedup**: one S3 prefix listing per batch. Sidecars are **version-prefixed**
    (`rips/timbre/v<N>/<id>.json`), so a `TIMBRE_VERSION` bump invalidates all of them for free.
 3. **The SQS claim**: sidecars upload *as each song finishes*, so a crashed or scaled-in worker's
    redelivery re-runs only what was actually in flight.
-4. **`foldTimbre`'s LWW**: a re-analysis replaces, never accumulates.
+4. **`foldTimbre`'s provenance-ranked LWW**: a re-analysis replaces, never accumulates — and a
+   lower-provenance row never replaces a higher one.
+
+## The parity gap the parity gate cannot see
+
+`timbre-parity-check` compares 120 songs, and **all 120 are `s3-song`** — the class where both
+lanes read the *same bytes*. It is therefore silent about the class where they do not:
+
+| src | measured from | who can produce it |
+|---|---|---|
+| `s3-song` | the per-song digital rip | local **and** cloud (parity-proven identical, max ǀΔǀ = 0) |
+| `vinyl-cut` | ffmpeg **stream copy** of the song's own window out of the raw album file (often AIFF/PCM) | local only — `/Volumes/RipBurnMix` is not on EC2 |
+| `s3-cut` | the **burned, re-encoded** cut mp3 on S3 | cloud only, for any analog song |
+
+**10,388 of the 15,489 vectors are `vinyl-cut`.** A plain-recency fold would let a cloud sweep
+replace them one batch at a time, leaving a corpus on two calibrations with nothing in the
+artifact saying which row is which — undetectable after the fact, and worse than a stale corpus.
+Three places now refuse it, so the gap is *closed by construction* rather than by comparison:
+
+* `crossesTimbreProvenance()` — never enqueue an analog song that already has a `vinyl-cut`
+  vector. Held **even under `force`**; `--allow-src-change` is the deliberate operator opt-out.
+* `foldTimbre()` — `timbreSrcRank`: an `s3-cut` row never replaces a `vinyl-cut` one, whatever
+  the timestamps say and in whichever file order they are read. Counted as `held`.
+* The manifest stamp records `timbreSrc`, so provenance stays recoverable from the manifest alone.
+
+The 3,094 cloud vectors that landed are **all `s3-song`** — inside the parity-proven class — so
+the corpus on disk is single-calibration today (`held: 0` on a full re-fold).
 
 `~/.pocketdj/timbre-batch/state.json` semantics are **unchanged** — it was always a per-run
 snapshot, never durable state. The durable state is `results/*.ndjson`; the cloud appends
 `results/cloud.ndjson`, and because both `loadDone()` and `readResults()` glob `*.ndjson`, no code
 in either changed. **Rollback is `rm results/cloud.ndjson && node scripts/fold-timbre.mjs`** — the
 corpus returns byte-exact to the locally-measured rows.
+
+`fold-timbre.mjs` also refuses to write a corpus that **shrank more than 5%** (exit 3,
+`--allow-shrink` to override). The vectors live only in an unbacked-up home directory and
+`am-sync-nightly.sh` now commits, pushes and ships whatever the fold produces; the alias
+`shrinkGuard` cannot catch it, because it measures alias *targets*, not vectors.
 
 ## Runbook
 
@@ -94,6 +131,9 @@ node scripts/build-rec-features.mjs
 node scripts/timbre-coverage.mjs
 
 # CONFIRM SCALE-TO-ZERO
+#   Belt: the launch template's userdata arms `shutdown -h +360` BEFORE anything can hang, and
+#   the worker kills its driver after 25 min. There is no ASG and no max-instance-lifetime behind
+#   this template, so without those a wedged docker/python round-trip bills a c7g.2xlarge forever.
 aws ec2 describe-instances --filters Name=tag:pocketdj-timbre-worker,Values=1 \
   Name=instance-state-name,Values=pending,running --query 'Reservations[].Instances[].InstanceId'
 ```
