@@ -95,8 +95,34 @@ const ENGINE_PY = join(REPO, '.claude/skills/analog-indexer/audio/analyze-timbre
 const WORKER_PY = join(REPO, 'scripts/timbre-warm-worker.py');
 
 // Window constants — see the header proof for why these are exact, not approximate.
+/// The engine's OWN contract rejections — the only failures that are permanent. Everything else
+/// (a decode error, an IO error, a worker hiccup) is the environment and must stay retryable, or
+/// the corpus acquires holes that no re-run can fill. Mirrors analyze-timbre.py's `fail()` reasons.
+export const PERMANENT_ERRORS = new Set(['too-short', 'silent', 'degenerate-axes', 'non-finite-axis']);
+/// 50× the ~3.5 s median. Only a desynchronised stream reaches it — see the id guard in startShard.
+export const WORKER_TIMEOUT_MS = 180000;
 export const CUT_WINDOW_SEC = 130;
 export const RANGE_BYTES = 5 * 1024 * 1024;
+
+// ── the two decisions the shard loop makes, as pure functions ──────────────────────────────────
+// Both used to be inline one-liners inside a docker-spawning closure, which is to say untested.
+// They are the two places this driver can silently corrupt or silently abandon the corpus, so
+// they are seams now: tests/unit/timbre-batch.test.mjs drives them directly.
+
+/// Does this worker line answer the task actually in flight? `pending` is the in-flight task
+/// ({ id }) or null. Returns 'resolve' | 'unmatched' | 'mismatched'.
+export function routeWorkerResponse(pending, msg) {
+  if (!pending) return 'unmatched';
+  if (msg?.id && msg.id !== pending.id) return 'mismatched';
+  return 'resolve';
+}
+
+/// What did the engine actually say? 'ok' | 'permanent' | 'transient'. The distinction is the
+/// difference between a row that must never be retried and one that must always be.
+export function classifyResult(r) {
+  if (r?.ok && r.f) return 'ok';
+  return PERMANENT_ERRORS.has(String(r?.error || '').trim()) ? 'permanent' : 'transient';
+}
 
 // ── pure: per-song segment (the song's OWN identity — never trackNumber) ────────────────────────
 export function segmentForSong(song, album) {
@@ -276,7 +302,22 @@ function startShard(i, workDir) {
       let msg;
       try { msg = JSON.parse(line); } catch { continue; }
       if (msg.ready) { shard.warmupMs = msg.warmupMs; shard.ready(); continue; }
-      if (shard.pending) { const p = shard.pending; shard.pending = null; p.resolve(msg); }
+      // THE RESPONSE MUST NAME THE SONG IT ANSWERS. The worker echoes the task id back and this
+      // driver used to ignore it, resolving whatever was in flight with whatever arrived — so a
+      // single stray or late line desynchronised the stream and every subsequent result was
+      // written under the PREVIOUS song's id. That is not a lost song, it is a POISONED corpus:
+      // a vector attributed to audio it did not come from, indistinguishable from a real one
+      // downstream, and the cloud lane runs this same driver on EC2 at scale. Four rows of a
+      // 223-song proving run came back in 2 ms (a 3.5 s workload) this way. An unmatched line is
+      // dropped and logged; the in-flight task then times out and the next run retries it,
+      // because a missing vector is recoverable and a WRONG one is not.
+      const route = routeWorkerResponse(shard.pending, msg);
+      if (route === 'unmatched') { log(`  ! [${i}] unmatched worker response for ${msg.id || '?'} — dropped`); continue; }
+      if (route === 'mismatched') {
+        log(`  ! [${i}] worker answered ${msg.id} while ${shard.pending.id} was in flight — dropped`);
+        continue;
+      }
+      const p = shard.pending; shard.pending = null; p.resolve(msg);
     }
   });
   child.stderr.on('data', (d) => { if (a.verbose) process.stderr.write(`[shard ${i}] ${d}`); });
@@ -285,7 +326,7 @@ function startShard(i, workDir) {
     shard.exited = true;
   });
   shard.analyze = (task, containerPath) => new Promise((resolveP, rejectP) => {
-    shard.pending = { resolve: resolveP, reject: rejectP };
+    shard.pending = { id: task.id, resolve: resolveP, reject: rejectP };
     child.stdin.write(JSON.stringify({ id: task.id, path: containerPath }) + '\n');
   });
   return shard;
@@ -390,20 +431,45 @@ async function main() {
       }
       const t0 = Date.now();
       try {
-        const r = await shard.analyze(cur.task, `/work/stage/${basename(cur.path)}`);
+        const r = await Promise.race([
+          shard.analyze(cur.task, `/work/stage/${basename(cur.path)}`),
+          // With the id guard above, a dropped line means the in-flight promise never settles.
+          // A shard that waits forever is worse than one that loses a song: bound it, and let the
+          // NEXT run retry (no row is recorded, so the task stays in the work list). Abandoning
+          // the slot is part of the fix — leave `pending` set and the worker's late answer would
+          // arrive while the NEXT task occupies the slot, get dropped as mismatched, and time that
+          // one out too, cascading a single hiccup down the rest of the shard.
+          new Promise((_, rej) => setTimeout(() => {
+            if (shard.pending?.id === cur.task.id) shard.pending = null;
+            rej(new Error('worker timeout'));
+          }, WORKER_TIMEOUT_MS)),
+        ]);
         const ms = Date.now() - t0;
         const row = { id: cur.task.id, v: TIMBRE_VERSION, src: cur.task.kind, atMs: Date.now(), ms };
         if (cur.task.kind === 'vinyl-cut') { row.startMs = cur.task.startMs; row.durMs = cur.task.durMs; }
-        if (r.ok && r.f) {
+        const verdict = classifyResult(r);
+        if (verdict === 'ok') {
           row.ok = true; row.f = r.f;
           if (Number.isFinite(r.durationSec)) row.durationSec = r.durationSec;
           counters.ok += 1; timings.push(ms);
           if (a.verbose) log(`  ✓ [${shard.i}] ${cur.task.id} ${ms} ms`);
-        } else {
-          // Engine ran, nothing usable (too-short / undecodable) — permanent, drain it.
-          row.ok = false; row.permanent = true; row.error = r.error || 'no vector';
+        } else if (verdict === 'permanent') {
+          // The engine ran and REJECTED the audio on its own contract. Re-running cannot change
+          // it: the cut really is under a second, really is silent, really is degenerate.
+          row.ok = false; row.permanent = true; row.error = String(r.error).trim();
           counters.failed += 1;
           log(`  ✗ [${shard.i}] ${cur.task.id} permanent: ${row.error}`);
+        } else {
+          // ANYTHING ELSE IS THE ENVIRONMENT, NOT THE AUDIO — a decode error on a staged cut that
+          // ffmpeg wrote short, an IO hiccup under six-way parallelism. This used to be recorded
+          // as `permanent: 'no vector'`, which put the song in the done-set FOREVER: a transient
+          // hiccup became a hole in the corpus no re-run could fill, and the only visible trace
+          // was a coverage number that would not move. (Every one of the four such rows in a
+          // 223-song proving run analysed CLEANLY when re-run by hand.) Dropped WITHOUT a row, so
+          // the next run simply tries it again.
+          counters.failed += 1;
+          log(`  ✗ [${shard.i}] ${cur.task.id} transient (will retry): ${JSON.stringify(r).slice(0, 200)}`);
+          continue;
         }
         appendFileSync(resultsFile, JSON.stringify(row) + '\n');
       } catch (e) {

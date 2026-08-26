@@ -20,19 +20,46 @@
 #
 # BOUNDED like analyze-one.py: same 90 s representative window from the same 5 % offset, so a
 # timbre vector and a bpm/key from the same file describe the same stretch of audio.
-import sys, json
+#
+# A capture this file cannot honestly describe is REJECTED — `too-short`, `silent`,
+# `degenerate-axes`, `non-finite-axis` — never emitted as a vector full of nulls or rail-pinned
+# zeros. Those four reasons are exactly the ones scripts/timbre-batch.mjs treats as PERMANENT;
+# anything else it sees is the environment and stays retryable.
+import sys, json, math
 
 WIN_SEC = 90
 SR = 22050
 
+# A window carrying no signal is not a quiet record, it is a FAILED capture: both axes that are
+# RATIOS (percussive share, crest factor) divide by the energy in this window, so at zero energy
+# they are undefined, `norm()` hands back None, and the row ships with null axes — a shape the
+# 14-finite-numbers contract forbids and every reader downstream then has to defend against. Two
+# rows of the shipping corpus (sng_e063cda2d69b, sng_9ed699c0dd1f) are exactly this: hpss energy
+# AND rms_mean both literally 0. Reject at the source, the way `too-short` already is.
+SILENT_RMS = 1e-4
+# …and a vector that came back mostly pinned at a rail is the same failure wearing a different
+# hat: 32 rows of the shipping corpus carry 7+ axes at exactly 0.0 and read as MUTUALLY similar
+# because they are all the same degenerate point, not because they sound alike.
+MAX_ZERO_AXES = 7
+
 
 def norm(x, lo, hi):
     """Clamp-and-scale to 0…1. lo/hi are the 1st/99th percentile of the real catalog, not the
-    theoretical range — a theoretical range compresses every real song into a sliver."""
+    theoretical range — a theoretical range compresses every real song into a sliver. Returns None
+    only for an input that is not a finite number; the contract check below then rejects the whole
+    capture rather than shipping a vector with a hole in it."""
     if x is None:
         return None
-    v = (float(x) - lo) / (hi - lo)
+    x = float(x)
+    if not math.isfinite(x):
+        return None
+    v = (x - lo) / (hi - lo)
     return round(max(0.0, min(1.0, v)), 4)
+
+
+def fail(err):
+    print(json.dumps({"ok": False, "error": err}))
+    sys.exit(1)
 
 
 def main():
@@ -46,8 +73,7 @@ def main():
         win = WIN_SEC * sr
         aw = y[off:off + win] if n > off else y
         if aw.size < sr:                       # under a second of audio — nothing to describe
-            print(json.dumps({"ok": False, "error": "too-short"}))
-            sys.exit(1)
+            fail("too-short")
 
         S = np.abs(librosa.stft(aw, n_fft=2048, hop_length=512))
 
@@ -63,6 +89,14 @@ def main():
         H, P = librosa.decompose.hpss(S)
         h_e = float(np.sum(H ** 2))
         p_e = float(np.sum(P ** 2))
+
+        # ── SILENT CAPTURE = A FAILED CAPTURE, NOT A QUIET RECORD ───────────────────────────
+        # This gate has to run BEFORE anything divides by the window's energy. It is the one place
+        # that knows the difference between "no signal" and "a vector".
+        rms_mean = float(np.mean(rms))
+        if not math.isfinite(rms_mean) or rms_mean < SILENT_RMS or (h_e + p_e) <= 0:
+            fail("silent")
+
         perc = p_e / (h_e + p_e) if (h_e + p_e) > 0 else None
 
         # Onset density — events per second, i.e. how BUSY the arrangement is, independent of tempo
@@ -72,8 +106,8 @@ def main():
         onset_rate = (len(onsets) / dur) if dur > 0 else None
 
         # Loudness dynamics — crest factor over the RMS envelope. A brickwalled master sits near 1;
-        # a record that breathes sits well above it.
-        rms_mean = float(np.mean(rms))
+        # a record that breathes sits well above it. (`rms_mean` was needed earlier, for the
+        # silence gate — the one check that has to run before any ratio divides by it.)
         rms_max = float(np.max(rms))
         crest = (rms_max / rms_mean) if rms_mean > 0 else None
 
@@ -110,6 +144,16 @@ def main():
             "m3": norm(np.mean(mf[3]), 0, 120),
             "m4": norm(np.mean(mf[4]), -55, 45),
         }
+        # ── THE CONTRACT, CHECKED HERE AND NOWHERE ELSE ─────────────────────────────────────
+        # "14 finite numbers, or nothing." A row that fails this is not a weak measurement, it is
+        # a measurement that did not happen — and it is worse than a missing row, because the
+        # corpus cannot tell the two apart and every degenerate row reads as the nearest neighbour
+        # of every other degenerate row. Rejecting leaves the song retryable-and-absent instead.
+        if any(v is None for v in f.values()):
+            fail("non-finite-axis")
+        if sum(1 for v in f.values() if v == 0.0) >= MAX_ZERO_AXES:
+            fail("degenerate-axes")
+
         out = {"ok": True, "v": 1, "durationSec": round(n / sr, 1), "f": f}
         # `--raw` dumps the pre-normalization values. This is how the lo/hi percentiles above were
         # calibrated against the real catalog, and it is the only way to RE-calibrate them without

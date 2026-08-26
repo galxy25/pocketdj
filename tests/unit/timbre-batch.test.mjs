@@ -3,7 +3,8 @@
 // ONE raw file, so the work list must give each song its OWN window (pointer.startMs) or no
 // task at all — trackNumber/audioTracks ordinals are never consulted (f2b427c5).
 import { describe, it, expect } from 'vitest';
-import { buildWorkList, segmentForSong, CUT_WINDOW_SEC, RANGE_BYTES } from '../../scripts/timbre-batch.mjs';
+import { buildWorkList, segmentForSong, CUT_WINDOW_SEC, RANGE_BYTES,
+         routeWorkerResponse, classifyResult, PERMANENT_ERRORS } from '../../scripts/timbre-batch.mjs';
 
 const BASE = '/vinyl';
 const existsAll = () => true;
@@ -107,5 +108,68 @@ describe('buildWorkList', () => {
     // analysed window is identical to a full read. These constants must keep that headroom.
     expect(CUT_WINDOW_SEC).toBeGreaterThanOrEqual(100);
     expect(RANGE_BYTES).toBeGreaterThanOrEqual((100 * 320000) / 8); // ≥100 s even at 320 kbps
+  });
+});
+
+describe('worker response attribution', () => {
+  // THE FAILURE THIS PREVENTS IS SILENT AND UNRECOVERABLE. The worker echoes the task id back;
+  // the driver used to ignore it and resolve whatever was in flight with whatever arrived. One
+  // stray or late line desynchronises the stream and EVERY subsequent vector is written under the
+  // PREVIOUS song's id — a measurement attributed to audio it did not come from, which is
+  // indistinguishable from a real row downstream. Four rows of a 223-song proving run came back
+  // in 2 ms (a 3.5 s workload) this way. The cloud lane runs this same driver on EC2 at scale.
+  it('resolves only the task actually in flight', () => {
+    expect(routeWorkerResponse({ id: 'sng_a' }, { id: 'sng_a', ok: true })).toBe('resolve');
+  });
+
+  it('DROPS a response naming a different song — the one line that poisoned the corpus', () => {
+    expect(routeWorkerResponse({ id: 'sng_a' }, { id: 'sng_b', ok: true })).toBe('mismatched');
+  });
+
+  it('drops a response arriving with nothing in flight', () => {
+    expect(routeWorkerResponse(null, { id: 'sng_a', ok: true })).toBe('unmatched');
+  });
+
+  it('an id-less line still resolves — the worker contract predates the echo, and dropping every\n'
+     + '     unlabelled line would strand a shard forever rather than lose one song', () => {
+    expect(routeWorkerResponse({ id: 'sng_a' }, { ok: true })).toBe('resolve');
+  });
+
+  it('a dropped line must not be silently swallowed into the WRONG task either', () => {
+    // Sequencing check: after a mismatch the pending task is still pending, so the next correct
+    // line resolves it. (If the driver cleared `pending` on a mismatch, the real answer would
+    // then arrive as 'unmatched' and the song would be lost, not retried.)
+    const pending = { id: 'sng_a' };
+    expect(routeWorkerResponse(pending, { id: 'sng_b' })).toBe('mismatched');
+    expect(routeWorkerResponse(pending, { id: 'sng_a' })).toBe('resolve');
+  });
+});
+
+describe('failure classification', () => {
+  // Recording an unexplained failure as permanent puts the song in the done-set FOREVER: a
+  // transient worker hiccup becomes a hole in the corpus no re-run can fill, and the only visible
+  // symptom is a coverage number that will not move. Four rows of a 223-song proving run failed
+  // this way, and all four analysed cleanly when re-run by hand.
+  it('permanence is a CLOSED list of engine verdicts, not "anything that failed"', () => {
+    expect([...PERMANENT_ERRORS].sort())
+      .toEqual(['degenerate-axes', 'non-finite-axis', 'silent', 'too-short']);
+  });
+
+  it('the engine rejecting the AUDIO on its own contract is permanent', () => {
+    for (const e of ['too-short', 'silent', 'degenerate-axes', 'non-finite-axis'])
+      expect(classifyResult({ ok: false, error: e })).toBe('permanent');
+    expect(classifyResult({ ok: false, error: '  silent  ' })).toBe('permanent');
+  });
+
+  it('anything else is the ENVIRONMENT and stays retryable', () => {
+    for (const e of ['no vector', 'NoBackendError', 'worker timeout', '', undefined, null])
+      expect(classifyResult({ ok: false, error: e })).toBe('transient');
+    expect(classifyResult({})).toBe('transient');
+    expect(classifyResult(undefined)).toBe('transient');
+  });
+
+  it('"ok" needs a VECTOR, not just an ok flag — an ok row with no `f` is not a measurement', () => {
+    expect(classifyResult({ ok: true, f: { bright: 0.5 } })).toBe('ok');
+    expect(classifyResult({ ok: true })).toBe('transient');
   });
 });
