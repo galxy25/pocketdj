@@ -192,6 +192,31 @@ const TIMBRE_AXES = ['bright', 'brightVar', 'air', 'width', 'noisy', 'fizz', 'pu
                      'dynamic', 'loud', 'm1', 'm2', 'm3', 'm4'];
 /// Below this many shared finite axes two vectors are not comparable.
 const TIMBRE_MIN_AXES = 8;
+/// At or above this many axes pinned to EXACTLY 0.0 the row is a failed capture, not a dark
+/// record. Mirrors `SimilarityFamilies.timbreMaxZeroAxes`, `scripts/lib/timbre-hygiene.mjs` and
+/// `analyze-timbre.py`'s MAX_ZERO_AXES.
+const TIMBRE_MAX_ZERO_AXES = 7;
+
+/**
+ * IS THIS ROW USABLE AT ALL? Degenerate rows — a null axis, too few axes, or 7+ axes at exactly
+ * 0.0 — are all the SAME POINT, so they read as each other's nearest neighbours and recommend
+ * each other in a little self-referential clump. That is strictly worse than a missing vector,
+ * which merely makes the term fail open. The fold quarantines them and `build-rec-features`
+ * refuses to attach them, but this is a READER and a reader must not depend on the writer's
+ * discipline — a features file built before those guards existed is still cached at the edge.
+ * Mirrors `SimilarityFamilies.isUsableTimbreRow`.
+ */
+export function isUsableTimbreRow(f) {
+  if (!f || typeof f !== 'object') return false;
+  let usable = 0; let zeros = 0;
+  for (const k of TIMBRE_AXES) {
+    if (!(k in f)) continue;
+    if (!Number.isFinite(f[k])) return false;
+    usable += 1;
+    if (f[k] === 0) zeros += 1;
+  }
+  return usable >= TIMBRE_MIN_AXES && zeros < TIMBRE_MAX_ZERO_AXES;
+}
 /// Minimum analysed members for a LIVE positive profile — a centroid of two songs is those two
 /// songs, not a sound. (The NEGATIVE profile passes 1: every 👎 is a deliberate act.)
 const TIMBRE_MIN_VECTORS = 3;
@@ -1346,9 +1371,8 @@ export function timbreDistance(a, b) {
  * `members`: [{ f, w }]. Mirrors `SimilarityFamilies.timbreProfile`.
  */
 export function timbreProfile(members, minVectors = TIMBRE_MIN_VECTORS) {
-  const usable = (members || []).filter((m) => m && m.f && typeof m.f === 'object'
-    && Number.isFinite(m.w) && m.w > 0
-    && TIMBRE_AXES.filter((k) => Number.isFinite(m.f[k])).length >= TIMBRE_MIN_AXES);
+  const usable = (members || []).filter((m) => m && Number.isFinite(m.w) && m.w > 0
+    && isUsableTimbreRow(m.f));
   if (usable.length < Math.max(1, minVectors)) return null;
   const centroid = {};
   for (const k of TIMBRE_AXES) {

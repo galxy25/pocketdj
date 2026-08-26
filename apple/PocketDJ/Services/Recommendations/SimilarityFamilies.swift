@@ -629,6 +629,43 @@ enum SimilarityFamilies {
     /// Minimum analysed members for a LIVE positive profile. A centroid of two songs is those two
     /// songs, not a sound.
     static let timbreMinVectors = 3
+
+    /// At or above this many axes pinned to EXACTLY 0.0 the row is not a dark record, it is a
+    /// failed capture. Mirrors `analyze-timbre.py`'s MAX_ZERO_AXES and the Node
+    /// `TIMBRE_MAX_ZERO_AXES`.
+    static let timbreMaxZeroAxes = 7
+
+    /// IS THIS ROW USABLE AT ALL? Three ways a row is junk, all three observed in the shipped
+    /// corpus:
+    ///   · a null / non-finite axis — 2 rows, both SILENT captures whose ratio axes (percussive
+    ///     share, crest factor) divided by zero energy and came back as JSON `null`;
+    ///   · fewer than `timbreMinSharedAxes` usable axes — not comparable to anything, by
+    ///     construction, so it can only ever contribute a `nil` distance;
+    ///   · `timbreMaxZeroAxes` or more axes at EXACTLY 0.0 — 30 rows that are all the SAME
+    ///     degenerate point. Those rows read as mutually similar to one another, so they form a
+    ///     tight fake cluster and recommend each other; a listener sees a little clump of
+    ///     unrelated songs with no explanation. That is strictly worse than a missing vector,
+    ///     which merely makes the term fail open.
+    ///
+    /// Checked HERE and not only at the fold, deliberately. The fold is the writer, but a reader
+    /// must not depend on the writer's discipline — the same rule `decode` already follows for
+    /// alias chains, and a corpus published before the fold learned this check is still out there.
+    ///
+    /// The PRESENT-but-null case is caught one level up, in `TimbreCatalog.decode`: this type
+    /// cannot represent it (a `[String: Double]` has already lost the difference between an
+    /// absent axis and a null one), and treating a stripped null as merely absent would quietly
+    /// admit a 13-axis row the fold and the Lambda both reject.
+    static func isUsableTimbreRow(_ f: TimbreVector) -> Bool {
+        var usable = 0
+        var zeros = 0
+        for axis in timbreAxes {
+            guard let v = f[axis] else { continue }
+            guard v.isFinite else { return false }
+            usable += 1
+            if v == 0 { zeros += 1 }
+        }
+        return usable >= timbreMinSharedAxes && zeros < timbreMaxZeroAxes
+    }
     /// e-fold of the fit OUTSIDE the profile's own spread, in RMS distance. At 0.05, a candidate
     /// at the typical same-genre non-member distance keeps ~79% of the term and one at the
     /// corpus' between-group mean (~0.23 against a typical spread of ~0.17) keeps ~28% — graded,
@@ -690,12 +727,11 @@ enum SimilarityFamilies {
     static func timbreProfile(_ members: [(vector: TimbreVector, weight: Double)],
                               minVectors: Int = timbreMinVectors) -> TimbreProfile? {
         // Usability counts CANONICAL axes with finite values — not raw dictionary keys, which a
-        // future extractor could pad with fields this distance never reads (the Lambda counts the
-        // same way; the parity fixture would catch a drift here).
-        let usable = members.filter { m in
-            m.weight > 0
-                && timbreAxes.filter { m.vector[$0]?.isFinite ?? false }.count >= timbreMinSharedAxes
-        }
+        // future extractor could pad with fields this distance never reads — and additionally
+        // rejects the degenerate rows (see `isUsableTimbreRow`), so a fake-similarity row can
+        // never drag a crate's centroid. The Lambda counts the same way; the parity fixture would
+        // catch a drift here.
+        let usable = members.filter { $0.weight > 0 && isUsableTimbreRow($0.vector) }
         guard usable.count >= max(1, minVectors) else { return nil }
         var centroid = TimbreVector()
         for axis in timbreAxes {

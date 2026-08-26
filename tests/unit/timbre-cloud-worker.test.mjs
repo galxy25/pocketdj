@@ -6,6 +6,7 @@ import { parseTasksFile } from '../../scripts/timbre-batch.mjs';
 import { sidecarsToRows } from '../../scripts/fold-cloud-timbre.mjs';
 import { foldTimbre } from '../../scripts/fold-timbre.mjs';
 import { TIMBRE_VERSION } from '../../scripts/lib/audio-analyze.mjs';
+import { TIMBRE_AXES } from '../../scripts/lib/timbre-hygiene.mjs';
 import { execFileSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -88,7 +89,9 @@ describe('timbre-batch --tasks — the cloud work list', () => {
 });
 
 describe('sidecarsToRows — the cloud→corpus seam', () => {
-  const f = { bright: 0.5 };
+  // All 14 axes: the fold quarantines anything below the 8-axis floor, so a one-key stand-in
+  // would be discarded before this seam's assertion could mean anything.
+  const f = Object.fromEntries(TIMBRE_AXES.map((a, i) => [a, Math.round((0.11 + i * 0.055) * 1e4) / 1e4]));
   it('produces rows the EXISTING fold accepts, with no changes to fold-timbre', () => {
     const rows = sidecarsToRows([{ id: 'sng_a', v: TIMBRE_VERSION, ok: true, f, atMs: 5, by: 'cloud' }]);
     const { songs, stats } = foldTimbre(rows, {});
@@ -103,8 +106,8 @@ describe('sidecarsToRows — the cloud→corpus seam', () => {
   });
   it('keeps the LATEST row per id (LWW by atMs) so a re-analysis replaces, never accumulates', () => {
     const rows = sidecarsToRows([
-      { id: 'sng_a', v: TIMBRE_VERSION, ok: true, f: { bright: 0.1 }, atMs: 1 },
-      { id: 'sng_a', v: TIMBRE_VERSION, ok: true, f: { bright: 0.9 }, atMs: 2 },
+      { id: 'sng_a', v: TIMBRE_VERSION, ok: true, f: { ...f, bright: 0.1 }, atMs: 1 },
+      { id: 'sng_a', v: TIMBRE_VERSION, ok: true, f: { ...f, bright: 0.9 }, atMs: 2 },
     ]);
     expect(rows).toHaveLength(1);
     expect(rows[0].f.bright).toBe(0.9);

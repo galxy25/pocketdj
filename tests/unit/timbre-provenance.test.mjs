@@ -22,10 +22,15 @@ import {
 } from '../../scripts/lib/timbre-jobs.mjs';
 import { foldTimbre, corpusShrinkGuard } from '../../scripts/fold-timbre.mjs';
 import { TIMBRE_VERSION } from '../../scripts/lib/audio-analyze.mjs';
+import { TIMBRE_AXES } from '../../scripts/lib/timbre-hygiene.mjs';
 
 const V = TIMBRE_VERSION;
 const FOLD = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'scripts', 'fold-timbre.mjs');
-const row = (id, src, atMs, extra = {}) => ({ id, v: V, src, atMs, ok: true, f: { a: 1 }, ...extra });
+/// A REALISTIC vector — all 14 axes, none of them 0. Provenance is not the only guard the fold
+/// applies any more: `isUsableTimbreRow` quarantines rows below the 8-axis floor, so a one-key
+/// stand-in would be thrown away before the rank comparison this file is about ever ran.
+const F14 = Object.fromEntries(TIMBRE_AXES.map((a, i) => [a, Math.round((0.11 + i * 0.055) * 1e4) / 1e4]));
+const row = (id, src, atMs, extra = {}) => ({ id, v: V, src, atMs, ok: true, f: F14, ...extra });
 
 describe('provenance rank', () => {
   it('ranks the burned re-encoded cut BELOW the raw-file cut and the per-song rip', () => {
@@ -132,7 +137,10 @@ describe('crossesTimbreProvenance — the gate, held even under force', () => {
 });
 
 describe('foldTimbre — provenance-ranked LWW', () => {
-  const vec = (n) => ({ centroid: n });
+  // A REALISTIC 14-axis vector, distinguishable by `n`. `{ centroid: n }` used to do, but the
+  // fold now quarantines anything below the 8-axis floor, so that stand-in would be thrown away
+  // before the provenance rank comparison this block is about ever ran.
+  const vec = (n) => Object.fromEntries(TIMBRE_AXES.map((a, i) => [a, Math.round((0.05 * n + i * 0.05) * 1e4) / 1e4]));
   const r = (id, src, atMs, f) => ({ id, v: V, src, atMs, ok: true, f });
 
   it('a NEWER s3-cut does not replace an older vinyl-cut', () => {

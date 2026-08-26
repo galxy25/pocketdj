@@ -122,14 +122,30 @@ actor TimbreCatalog {
     nonisolated static func decode(_ data: Data) -> [String: SimilarityFamilies.TimbreVector]? {
         guard let doc = try? JSONDecoder().decode(Doc.self, from: data) else { return nil }
         // OWN vectors first. Null/non-finite axes drop; the distance already treats a missing
-        // axis as "does not vote", and a vector reduced below 8 usable axes stops being
-        // comparable at all.
+        // axis as "does not vote". A row that then fails `isUsableTimbreRow` is QUARANTINED
+        // rather than admitted with `!clean.isEmpty`: a single surviving axis passed that old
+        // test, and the 32 degenerate rows the published corpus still carries are all the same
+        // point — they read as each other's nearest neighbours and recommend each other. The
+        // fold quarantines them too, but a corpus published before the fold learned to is
+        // already out there on devices, and a reader must not depend on the writer's discipline.
         var own: [String: SimilarityFamilies.TimbreVector] = [:]
         own.reserveCapacity(doc.songs.count)
         for (id, row) in doc.songs {
             guard let f = row.f else { continue }
+            // A PRESENT-but-null axis has to be caught HERE and not in the predicate, because
+            // `TimbreVector` ([String: Double]) cannot express the difference between an axis the
+            // extractor never wrote and one it wrote as `null` — and that difference is the whole
+            // verdict. `null` means the measurement was attempted and came back undefined (both
+            // ratio axes divide by the window's energy), so the 14-finite-numbers contract is
+            // violated and the row is a FAILED capture, not a partial one. Strip first and it
+            // silently degrades to a 13-axis row that passes the floor — which is exactly how the
+            // device kept two rows the fold had already quarantined.
+            let brokenAxis = SimilarityFamilies.timbreAxes.contains { axis in
+                f.keys.contains(axis) && (f[axis] ?? nil)?.isFinite != true
+            }
+            if brokenAxis { continue }
             let clean = f.compactMapValues { $0?.isFinite == true ? $0 : nil }
-            if !clean.isEmpty { own[id] = clean }
+            if SimilarityFamilies.isUsableTimbreRow(clean) { own[id] = clean }
         }
         // Aliases resolve against the OWN-vector set only — exactly ONE hop, deterministically.
         // Resolving against the accumulating output would let an alias-to-alias chain whenever

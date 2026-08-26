@@ -25,6 +25,8 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TIMBRE_VERSION } from './lib/audio-analyze.mjs';
+import { isUsableTimbreRow } from './lib/timbre-hygiene.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, '..', 'public');
@@ -141,11 +143,33 @@ async function loadIndex(name) {
 /// EXPLICIT same-recording indirections built by build-timbre-aliases.mjs — resolved here, at
 /// read time, one hop only (an alias to an alias is a build error and resolves to nothing
 /// rather than chasing a chain into a cycle).
-export function timbreMap(doc) {
+export function timbreMap(doc, { strict = false } = {}) {
   const m = new Map();
   const songs = doc?.songs && typeof doc.songs === 'object' ? doc.songs : {};
+  // ── REFUSE TO MIX CALIBRATIONS ────────────────────────────────────────────────────────────
+  // The rails are the UNITS, so a corpus written under different rails is not "slightly stale",
+  // it is a different measurement of a different quantity. Attaching it to rec-features would
+  // ship those numbers to every device and to the Lambda, where nothing could tell them apart
+  // from correct ones. So: attach NOTHING, loudly.
+  //
+  // Loudly but NOT fatally by default. A catalog deploy carries artists, albums, play counts and
+  // genres; failing the whole build over an out-of-date audio corpus would hold all of that
+  // hostage to a librosa sweep. `--strict` (CI) makes it fatal.
+  if (doc) {
+    const v = Number.isFinite(doc.timbreVersion) ? doc.timbreVersion : 1;
+    if (v !== TIMBRE_VERSION) {
+      const msg = `[rec-features] TIMBRE CORPUS REFUSED: public/timbre.json is calibration v${v}, `
+        + `this build speaks v${TIMBRE_VERSION}. No \`t\` fields attached — the timbre term will be `
+        + 'dead until the corpus is re-extracted (node scripts/timbre-batch.mjs && node scripts/fold-timbre.mjs).';
+      if (strict) throw new Error(msg);
+      console.warn(`\n${'!'.repeat(100)}\n${msg}\n${'!'.repeat(100)}\n`);
+      return m;
+    }
+  }
   for (const [id, row] of Object.entries(songs)) {
-    if (row?.f && typeof row.f === 'object') m.set(id, row.f);
+    // Same hygiene predicate the fold and the device apply — a reader must not depend on the
+    // writer's discipline, and an all-zero row is a fake similarity cluster wherever it lands.
+    if (row?.f && typeof row.f === 'object' && isUsableTimbreRow(row.f)) m.set(id, row.f);
   }
   for (const [id, row] of Object.entries(songs)) {
     if (row?.alias && !m.has(id)) {
@@ -196,6 +220,40 @@ export function reduce(index, timbre = null) {
   return rows;
 }
 
+/// ── DO NOT SILENTLY REPLACE A CORPUS WITH NOTHING ─────────────────────────────────────────────
+/// `timbreMap`'s refusal is deliberately non-fatal so an out-of-date audio corpus cannot hold a
+/// catalog deploy hostage. On its own, though, that turns the worst outcome into the QUIETEST one:
+/// the nightly runs, the corpus is a version behind, a warning scrolls past in a log nobody reads,
+/// and a rec-features.json carrying ZERO `t` fields overwrites one carrying 18,747 of them. The
+/// timbre term then dies everywhere it is read, and the only symptom is a recommendation feed that
+/// feels slightly worse.
+///
+/// So the file on disk gets a vote. Dropping a term the CURRENT artifact carries is a regression,
+/// and a regression has to be asked for by name (`--allow-timbre-loss` — for the deliberate case,
+/// e.g. retiring the corpus). Adding, growing or keeping the term is always fine, and a first run
+/// with nothing on disk is fine.
+export function assertNoTimbreRegression(doc, allowLoss = false, previous = readCurrentOutput()) {
+  const had = previous?.songs?.some?.((s) => s && s.t) === true;
+  const has = doc?.songs?.some?.((s) => s && s.t) === true;
+  if (!had || has || allowLoss) return;
+  const beforeCount = previous.songs.filter((s) => s && s.t).length;
+  throw new Error(
+    `[rec-features] REFUSING TO PUBLISH: the existing ${OUT} carries timbre vectors for `
+    + `${beforeCount} songs (calibration v${previous.timbreVersion ?? 1}) and this build would `
+    + 'attach NONE, silently killing the timbre term on every device and in the Lambda.\n'
+    + '  Rebuild the corpus first:\n'
+    + '    node scripts/timbre-batch.mjs && node scripts/fold-timbre.mjs\n'
+    + '  Or pass --allow-timbre-loss if dropping the term is what you actually mean.');
+}
+
+function readCurrentOutput() {
+  try {
+    return existsSync(OUT) ? JSON.parse(readFileSync(OUT, 'utf8')) : null;
+  } catch {
+    return null;   // unreadable/half-written: nothing to protect, and this is not the place to fail
+  }
+}
+
 async function main() {
   // Priority order for the appleMusicId dedupe: apple-music > digital > vinyl (keep first).
   const sources = [
@@ -204,8 +262,8 @@ async function main() {
     ['current-index.json', await loadIndex('current-index.json')],
   ];
   // Timbre corpus rides along when present (built by fold-timbre.mjs; absent = no `t` fields).
-  const timbre = timbreMap(await loadIndex('timbre.json'));
-  if (timbre.size) console.log(`[rec-features] timbre corpus: ${timbre.size} songs`);
+  const timbre = timbreMap(await loadIndex('timbre.json'), { strict: process.argv.includes('--strict') });
+  if (timbre.size) console.log(`[rec-features] timbre corpus: ${timbre.size} songs (calibration v${TIMBRE_VERSION})`);
   const seenAm = new Set();
   const songs = [];
   for (const [name, index] of sources) {
@@ -224,10 +282,14 @@ async function main() {
   const doc = {
     v: 1,
     generatedAt: new Date().toISOString(),
+    // Which calibration the `t` vectors below speak, or null when none were attached. A reader
+    // that finds a version it does not speak drops `t` outright rather than scoring foreign units.
+    timbreVersion: timbre.size ? TIMBRE_VERSION : null,
     counts: { songs: songs.length },
     songs,
   };
   const json = JSON.stringify(doc);
+  assertNoTimbreRegression(doc, process.argv.includes('--allow-timbre-loss'));
   writeFileSync(OUT, json);
   const mb = json.length / (1024 * 1024);
   console.log(`[rec-features] wrote ${OUT} — ${songs.length} songs, ${mb.toFixed(1)} MB`);

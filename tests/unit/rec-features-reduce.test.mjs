@@ -8,7 +8,7 @@
 // (e.g. Duran Duran "Evil Woman" carrying "Secret Oktober 31st"'s 123 bpm). The fallback must
 // key on the song's OWN segment identity: pointer.startMs === audioTracks[k].startMs.
 import { describe, it, expect } from 'vitest';
-import { reduce } from '../../scripts/build-rec-features.mjs';
+import { reduce, assertNoTimbreRegression } from '../../scripts/build-rec-features.mjs';
 
 /** Minimal analog-index shape: one album, three catalog entries, two analyzed segments. */
 function fixture() {
@@ -66,5 +66,36 @@ describe('reduce() bpm/camelot attribution', () => {
   it('recovers a fold-miss from the song\'s OWN segment (pointer.startMs identity)', () => {
     expect(byId.get('sng_foldmiss').b).toBe(152);
     expect(byId.get('sng_foldmiss').c).toBe('5B');
+  });
+});
+
+// ── THE PUBLISH GUARD ──────────────────────────────────────────────────────────────────────────
+// `timbreMap` refuses a corpus at the wrong calibration and says so loudly but NOT fatally, so an
+// out-of-date audio corpus cannot hold a catalog deploy hostage. On its own that makes the worst
+// outcome the QUIETEST one: the nightly runs, prints a warning into a log nobody reads, and
+// overwrites a rec-features.json carrying 18,705 timbre vectors with one carrying zero. The term
+// then dies on every device and in the Lambda, and the only symptom is a feed that feels slightly
+// worse. So the artifact already on disk gets a vote.
+describe('assertNoTimbreRegression', () => {
+  const withT = { timbreVersion: 1, songs: [{ i: 'a', t: { bright: 0.5 } }, { i: 'b' }] };
+  const withoutT = { timbreVersion: null, songs: [{ i: 'a' }, { i: 'b' }] };
+
+  it('REFUSES to replace a corpus-carrying artifact with one that carries none', () => {
+    expect(() => assertNoTimbreRegression(withoutT, false, withT)).toThrow(/REFUSING TO PUBLISH/);
+    // …and the message has to be actionable, because the operator has to know what to re-run.
+    expect(() => assertNoTimbreRegression(withoutT, false, withT)).toThrow(/fold-timbre/);
+  });
+
+  it('lets every non-regression through', () => {
+    expect(() => assertNoTimbreRegression(withT, false, withT)).not.toThrow();
+    expect(() => assertNoTimbreRegression(withT, false, withoutT)).not.toThrow();
+    expect(() => assertNoTimbreRegression(withoutT, false, withoutT)).not.toThrow();
+    expect(() => assertNoTimbreRegression(withT, false, null)).not.toThrow();
+    // A first run with nothing on disk has nothing to protect.
+    expect(() => assertNoTimbreRegression(withoutT, false, null)).not.toThrow();
+  });
+
+  it('can be overridden BY NAME, for the deliberate case', () => {
+    expect(() => assertNoTimbreRegression(withoutT, true, withT)).not.toThrow();
   });
 });

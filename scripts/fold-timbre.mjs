@@ -19,8 +19,15 @@
 //  · An alias whose target has no vector (yet) is DROPPED from the output and counted as
 //    pending — a dangling alias must not pretend coverage exists.
 //  · An alias for a song that has its OWN vector is ignored (own analysis always wins).
-//  · Only rows at the current TIMBRE_VERSION fold; within one id, last write (atMs) wins —
-//    a re-analysis replaces, never accumulates.
+//  · Only rows at the current TIMBRE_VERSION fold (counted as `versionDropped`, kept SEPARATE
+//    from malformed `dropped`: a big versionDropped is the healthy signal mid-sweep and says
+//    something completely different from a malformed-row count). The rails ARE the units, so a
+//    v(N) vector and a v(N-1) vector are different quantities sharing a name — folding both
+//    would publish a corpus whose own rows are not comparable to each other.
+//  · A row failing `isUsableTimbreRow` is QUARANTINED (`quarantined`) rather than folded:
+//    degenerate rows are all the same point, so they read as each other's nearest neighbours and
+//    recommend each other. That is worse than having no vector at all.
+//  · Within one id, last write (atMs) wins — a re-analysis replaces, never accumulates.
 //  · …EXCEPT ACROSS PROVENANCE. `vinyl-cut` (a stream copy of the song's window out of the raw
 //    album file) and `s3-cut` (the burned, re-encoded cut mp3 on S3) are measurements of two
 //    DIFFERENT FILES, not two runs of one measurement — and the cloud lane can only ever produce
@@ -37,6 +44,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { TIMBRE_VERSION } from './lib/audio-analyze.mjs';
 import { timbreSrcRank } from './lib/timbre-jobs.mjs';
+import { isUsableTimbreRow } from './lib/timbre-hygiene.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -44,9 +52,15 @@ const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export function foldTimbre(results, aliases = {}) {
   const songs = {};
   const best = new Map();       // id -> {atMs, rank} of the row currently folded
-  let dropped = 0; let held = 0;
+  let dropped = 0; let held = 0; let versionDropped = 0; let quarantined = 0;
   for (const r of results) {
-    if (!r || !r.id || r.v !== TIMBRE_VERSION || !r.ok || !r.f || typeof r.f !== 'object') { dropped += 1; continue; }
+    if (!r || !r.id || !r.ok || !r.f || typeof r.f !== 'object') { dropped += 1; continue; }
+    // REFUSE TO MIX CALIBRATIONS — counted apart from `dropped`, see the header.
+    if (r.v !== TIMBRE_VERSION) { versionDropped += 1; continue; }
+    // QUARANTINE the degenerate rows at the WRITER too, so the published corpus never contains
+    // the fake-similarity cluster in the first place. Checked before provenance, because a
+    // degenerate row must not win a rank comparison and displace a usable one.
+    if (!isUsableTimbreRow(r.f)) { quarantined += 1; continue; }
     const at = Number.isFinite(r.atMs) ? r.atMs : 0;
     const rank = timbreSrcRank(r.src);
     const cur = best.get(r.id);
@@ -66,7 +80,7 @@ export function foldTimbre(results, aliases = {}) {
     songs[from] = { alias: to };
     aliased += 1;
   }
-  return { songs, stats: { vectors: best.size, aliased, pending, shadowed, dropped, held } };
+  return { songs, stats: { vectors: best.size, aliased, pending, shadowed, dropped, versionDropped, quarantined, held } };
 }
 
 /// Pure: refuse a write that would DELETE coverage. Mirrors build-timbre-aliases' shrinkGuard,
