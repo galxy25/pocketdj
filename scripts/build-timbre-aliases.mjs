@@ -40,6 +40,19 @@ export const aliasKey = (artist, title) => {
   return na + '\x00' + ct;
 };
 
+/// GUARD against a SILENT COLLAPSE. The alias TARGETS come from buildWorkList(), which needs
+/// POCKETDJ_ANALOG_BASE (/Volumes/RipBurnMix) mounted: with the volume unmounted every vinyl
+/// target vanishes, the map shrinks from ~2,900 to near zero, and the fold quietly DELETES that
+/// much coverage while exiting 0. A shrink of more than `tol` versus the previous artifact's
+/// counts.audioBearing is a broken environment, not a real change — refuse and say so.
+/// Returns null when the write is fine, or a reason string when it must be refused.
+export function shrinkGuard(prevAudioBearing, nextAudioBearing, tol = 0.05) {
+  if (!Number.isFinite(prevAudioBearing) || prevAudioBearing <= 0) return null;   // no baseline yet
+  if (nextAudioBearing >= prevAudioBearing * (1 - tol)) return null;
+  return `audio-bearing targets collapsed ${prevAudioBearing} → ${nextAudioBearing} `
+    + `(> ${Math.round(tol * 100)}% shrink) — is POCKETDJ_ANALOG_BASE mounted? refusing to write`;
+}
+
 export function lengthsAgree(aMs, bMs) {
   if (!Number.isFinite(aMs) || !Number.isFinite(bMs)) return true;   // unknown → no evidence against
   const d = Math.abs(aMs - bMs);
@@ -156,6 +169,10 @@ async function main() {
     aliases: Object.fromEntries(Object.entries(aliases).sort(([x], [y]) => (x < y ? -1 : 1))),
   };
   console.error(JSON.stringify(doc.counts, null, 1));
+  let prev = null;
+  try { prev = JSON.parse(readFileSync(outPath, 'utf8'))?.counts?.audioBearing ?? null; } catch { /* first run */ }
+  const refuse = shrinkGuard(prev, targets.length, Number(arg('--shrink-tol', '0.05')));
+  if (refuse) { console.error(`[timbre-aliases] REFUSED: ${refuse}`); process.exit(1); }
   if (!dryRun) {
     mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, JSON.stringify(doc, null, 1));

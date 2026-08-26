@@ -387,6 +387,13 @@ struct PocketDJApp: App {
         let collections = CollectionsStore(fileURL: CollectionsStore.launchURL())
         let musicSync = MusicSyncClient()
         let rips = RipsStore()
+        // EVENT-DRIVEN cloud timbre: songs added to a collection get analysed so the rec engine
+        // gets smarter with use. Hung off CollectionsStore.save() (the single mutation funnel),
+        // queued on disk, drained fire-and-forget — never blocking an add, safe offline.
+        let timbreEnrollment = TimbreEnrollment(fileURL: TimbreEnrollment.launchURL())
+        timbreEnrollment.send = { [weak rips] ids in await rips?.requestTimbreAnalysis(ids) ?? false }
+        collections.timbreEnrollment = timbreEnrollment
+        timbreEnrollment.drain()          // anything queued while offline goes out at launch
         let player = PlayerEngine()
         // Lock-screen / Control Center Now Playing artwork: resolve the now-playing song id to its
         // album's cover-art candidate URLs from the loaded catalog. Whichever engine currently owns

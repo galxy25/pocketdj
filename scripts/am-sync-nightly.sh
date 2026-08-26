@@ -172,7 +172,35 @@ fi
 "$NODE" "$REPO/scripts/am-incremental-sync.mjs" --index "$INDEX" --out "$MERGED" --repo "$REPO" \
   ${SYNC_STATE_ARGS[@]+"${SYNC_STATE_ARGS[@]}"} 2>&1 | tee -a "$LOG"
 
+# ── CLOUD TIMBRE FOLD ──────────────────────────────────────────────────────────────────────────
+# public/timbre.json is a COMMITTED repo file that deploy.sh ships (and rebuilds rec-features
+# from), so the rip server — which produces the vectors but must never push to git — cannot
+# publish them. This nightly already clones/pulls/commits/pushes/deploys with AWS_PROFILE=levi
+# and the existing SSH remote, so the fold rides here rather than in a NEW launchd job with a NEW
+# credential. One git writer, honouring the unpushed-commits-clobbered-by-the-nightly lesson.
+# Best-effort: a fold failure must never block the Apple Music sync this script exists for.
+TIMBRE_CHANGED=0
+if "$NODE" "$REPO/scripts/fold-cloud-timbre.mjs" >>"$LOG" 2>&1    && "$NODE" "$REPO/scripts/build-timbre-aliases.mjs" >>"$LOG" 2>&1    && "$NODE" "$REPO/scripts/fold-timbre.mjs" >>"$LOG" 2>&1; then
+  if ! "$GIT" diff --quiet -- public/timbre.json data/timbre-aliases.json 2>/dev/null; then
+    TIMBRE_CHANGED=1
+    log "timbre corpus changed — committing"
+    run "$GIT" add public/timbre.json data/timbre-aliases.json
+    run "$GIT" commit -m "Recs: fold cloud timbre vectors $(date -u +%FT%TZ)"
+  fi
+else
+  log "timbre fold failed (non-fatal) — see log"
+fi
+
 if cmp -s "$MERGED" "$INDEX"; then
+  # NOTE the TIMBRE_CHANGED arm: without it a no-change Apple Music night exits "nothing to ship"
+  # with new vectors COMMITTED BUT NEVER DEPLOYED — the corpus would look folded and reach no device.
+  if [ "$TIMBRE_CHANGED" = 1 ]; then
+    log "no index change, but the timbre corpus grew — pushing + shipping"
+    run "$GIT" push origin main
+    ship
+    log "shipped (timbre)."
+    exit 0
+  fi
   if [ -f "$MARKER" ] && [ "$(cat "$MARKER" 2>/dev/null)" = "$(index_hash)" ]; then
     log "no change — nothing to ship"
     exit 0

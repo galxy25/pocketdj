@@ -49,6 +49,7 @@ const CFG = {
   lyricsDevice: process.env.POCKETDJ_LYRICS_DEVICE || 'cpu',
   lyricsCompute: process.env.POCKETDJ_LYRICS_COMPUTE || 'int8',
   idleSeconds: Number(process.env.POCKETDJ_STEM_IDLE_SECONDS || 300),
+  maxErrors: Number(process.env.POCKETDJ_STEM_MAX_ERRORS || 20),   // bound the error streak (see serve)
 };
 const STEM_VERSION = 1;        // keep in sync with STEMS_VERSION in scripts/lib/audio-stem.mjs
 const ANALYSIS_VERSION = 1;    // keep in sync with ANALYSIS_VERSION in scripts/lib/audio-analyze.mjs
@@ -197,7 +198,9 @@ async function doLyrics(songId, work, { dedup, localVocals } = {}) {
 
 // Process ONE job: download the source once, run the requested tasks, return the combined result.
 async function processJob(songId, srcKey, tasks, dedup) {
-  if (!/^sng_[0-9a-f]{12}$|^amrec_\d+$/.test(songId)) throw new Error(`bad songId ${songId}`);
+  // Variant ids (`sng_<12hex>_explicit`) are minted by rip-server's VARIANT_ID and keyed through
+  // the whole pipeline; rejecting them here dead-lettered those songs' stems/analysis silently.
+  if (!/^(?:sng_[0-9a-f]{12}|amrec_\d+)(?:_explicit|_clean)?$/.test(songId)) throw new Error(`bad songId ${songId}`);
   const source = srcKey || `rips/${songId}.mp3`;
   const work = join(tmpdir(), `job-${songId}`);
   rmSync(work, { recursive: true, force: true });
@@ -220,12 +223,18 @@ async function processJob(songId, srcKey, tasks, dedup) {
 
 // Receive ONE job from SQS (visibility timeout = atomic claim), process it, post the result, delete
 // the job. Failures are left un-deleted → redelivered → DLQ after the queue's maxReceiveCount.
+// Set by poll() when the receive or the job itself FAILED (as opposed to the queue simply being
+// empty). serve() must treat that as activity: returning [] for both cases let a run of failing
+// jobs read as idleness, so the worker retired holding its SQS claims and the jobs sat inflight
+// until the visibility timeout expired (observed live: two jobs stranded 24+ minutes).
+let pollFailed = false;
 async function poll() {
+  pollFailed = false;
   let out;
   try {
     out = aws('sqs', 'receive-message', '--queue-url', CFG.jobsQueue, '--max-number-of-messages', '1',
       '--wait-time-seconds', '20', '--visibility-timeout', String(CFG.visibility), '--output', 'json');
-  } catch { return []; }
+  } catch { pollFailed = true; return []; }
   const msg = ((JSON.parse(out || '{}').Messages) || [])[0];
   if (!msg) return [];
   let body = {};
@@ -245,6 +254,7 @@ async function poll() {
     return [r];
   } catch (e) {
     log(`[poll] ${songId} FAILED: ${e.message} — leaving for retry/DLQ`);
+    pollFailed = true;                 // a FAILURE is not idleness — see serve()
     return [];
   }
 }
@@ -252,11 +262,24 @@ async function poll() {
 async function serve() {
   let lastActivity = Date.now();
   let total = 0;
+  let errors = 0;
   log(`[serve] SQS consumer on ${CFG.jobsQueue.split('/').pop()}; idle-exit after ${CFG.idleSeconds}s`);
   for (;;) {
     let done = [];
-    try { done = await poll(); } catch (e) { log('[serve] poll error:', e.message); }
-    if (done.length) { total += done.length; lastActivity = Date.now(); continue; }
+    try { done = await poll(); } catch (e) { pollFailed = true; log('[serve] poll error:', e.message); }
+    if (done.length) { total += done.length; errors = 0; lastActivity = Date.now(); continue; }
+    if (pollFailed) {
+      // Errors are ACTIVITY, not idleness — retiring here dropped the SQS claims of jobs that
+      // were merely failing. But the streak MUST be bounded both ways: a worker that can never
+      // reach SQS would otherwise never retire and would bill until someone noticed, and a
+      // fast-failing receive skips the 20 s long poll, so it would also spin hot.
+      errors += 1;
+      lastActivity = Date.now();
+      if (errors >= CFG.maxErrors) { log(`[serve] ${errors} consecutive errors — retiring after ${total} job(s)`); break; }
+      await new Promise((r) => setTimeout(r, Math.min(30_000, 1000 * errors)));
+      continue;
+    }
+    errors = 0;
     if ((Date.now() - lastActivity) / 1000 >= CFG.idleSeconds) { log(`[serve] idle ${CFG.idleSeconds}s — retiring after ${total} job(s)`); break; }
   }
   return total;

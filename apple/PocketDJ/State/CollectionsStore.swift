@@ -18,6 +18,11 @@ final class CollectionsStore {
     /// MRU follows the user across devices. Kept a few deeper than the UI shows (see the cap) so a
     /// deleted collection dropping out still leaves enough resolvable entries to fill the row.
     private(set) var recentAddTargets: [AddTarget] = []
+
+    /// EVENT-DRIVEN cloud timbre enrollment (see TimbreEnrollment). Wired by the app; nil in
+    /// tests and on any surface that has no rip server. Hung off `save()` — the one funnel every
+    /// membership mutation passes through — because there is no single add() they all share.
+    var timbreEnrollment: TimbreEnrollment?
     /// How many recent targets we retain. The Recent row shows the top 3 that still resolve; the
     /// surplus is a buffer so a stale/deleted entry falling off the front doesn't empty the row.
     static let maxRecentTargets = 10
@@ -3050,8 +3055,36 @@ final class CollectionsStore {
                                       recentAddTargets: recentAddTargets.isEmpty ? nil : recentAddTargets)
         saveVersion &+= 1
         let v = saveVersion, url = fileURL, w = writer
-        Task.detached(priority: .userInitiated) { await w.write(doc, version: v, to: url) }
+        let enroller = timbreEnrollment
+        Task.detached(priority: .userInitiated) {
+            await w.write(doc, version: v, to: url)
+            // CLOUD TIMBRE ENROLLMENT — deliberately inside the DETACHED task, after the write.
+            // The membership union walks every playlist's node tree, and a source playlist can
+            // hold 26,821 tracks; doing that on the main actor for every mutation is exactly the
+            // stall the off-main document write was introduced to kill. The snapshot is already
+            // a Sendable value type here, so the walk costs the main thread nothing and only the
+            // (tiny, usually empty) diff hops back.
+            guard let enroller else { return }
+            let ids = Self.memberIdUnion(doc)
+            await MainActor.run { enroller.enroll(memberIds: ids) }
+        }
         onChange?()
+    }
+
+    /// Every song id that is a MEMBER of a pocket or playlist. Membership, not resolution:
+    /// album/pocket nodes are not expanded, matching `songIdsInNodes`. Pure + nonisolated so it
+    /// can run off the main actor on a document snapshot.
+    nonisolated static func memberIdUnion(_ doc: CollectionsDocument) -> Set<String> {
+        var out = Set<String>()
+        for p in doc.pockets { out.formUnion(p.songIds) }
+        func walk(_ ns: [PlaylistNode]) {
+            for n in ns {
+                if n.kind == .song, let id = n.songId { out.insert(id) }
+                if let kids = n.children { walk(kids) }
+            }
+        }
+        for pl in doc.playlists { walk(pl.sequences) }
+        return out
     }
 
     /// Synchronous last-chance write for the suspension seam (scenePhase `.background`) and the
