@@ -305,6 +305,23 @@ final class NowPlayingUITests: XCTestCase {
                       "…and Song details")
         XCTAssertTrue(app.buttons["Remove"].firstMatch.exists,
                       "…alongside the Remove the expanded view already had")
+
+        // Dismiss the still-open context menu by tapping its own trigger row again — the
+        // standard way a UIKit/SwiftUI context menu is cancelled without picking an item
+        // (the interaction consumes that tap for the dismiss, it never reaches the row's
+        // own tap gesture) — then collapse back to the docked panel. The resize fraction
+        // rides @AppStorage — same restore-the-default discipline as the history toggle
+        // above — so a run that stopped here would leave every LATER test launching
+        // straight into the expanded overlay instead of the docked panel it waits for.
+        queueRow.tap()
+        XCTAssertTrue(app.buttons["Move to top"].firstMatch.waitForNonExistence(timeout: 5),
+                      "tapping the trigger row again should dismiss the context menu")
+        let collapse = app.el("np-x-collapse")
+        XCTAssertTrue(collapse.waitForExistence(timeout: 5), "expanded surface offers a collapse control")
+        collapse.tap()
+        XCTAssertTrue(panel.waitForExistence(timeout: 8),
+                      "collapsing should return to the docked panel")
+        XCTAssertTrue(expanded.waitForNonExistence(timeout: 8), "…and dismiss the expanded overlay")
         #endif
     }
 
