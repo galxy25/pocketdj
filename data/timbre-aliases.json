@@ -1,10 +1,10 @@
 {
  "v": 1,
- "generatedAt": "2026-08-30T11:00:36.620Z",
+ "generatedAt": "2026-08-31T11:00:21.824Z",
  "counts": {
-  "audioBearing": 15395,
-  "candidates": 94416,
-  "aliases": 3585,
+  "audioBearing": 15422,
+  "candidates": 94446,
+  "aliases": 3579,
   "rejectedLane1": 0
  },
  "rejectedLane1": [],
@@ -215,6 +215,10 @@
   "sng_03c2993aba44": {
    "to": "sng_9bacf677a726",
    "dLenMs": 3559
+  },
+  "sng_03c965a69fa4": {
+   "to": "sng_2a718dc3889c",
+   "dLenMs": 2134
   },
   "sng_03e4e39522a0": {
    "to": "sng_818064f9ce3f",
@@ -1541,10 +1545,6 @@
    "to": "sng_7e9bb0682adc",
    "dLenMs": 5515
   },
-  "sng_1c28c822fc58": {
-   "to": "sng_244207052c82",
-   "dLenMs": 0
-  },
   "sng_1c33a6f31f1a": {
    "to": "sng_6a485a9692a4",
    "dLenMs": 63
@@ -1807,6 +1807,10 @@
   "sng_1ec14ec534e5": {
    "to": "sng_dafdc1d3b693",
    "dLenMs": 63
+  },
+  "sng_1ec59dcaf1ab": {
+   "to": "sng_0ef4e3d2e116",
+   "dLenMs": 0
   },
   "sng_1ee631d5ed29": {
    "to": "sng_84c236744153",
@@ -2389,6 +2393,10 @@
    "to": "sng_567ffde76b74",
    "dLenMs": 14040
   },
+  "sng_288af5e770e9": {
+   "to": "sng_8aabab409e00",
+   "dLenMs": 1
+  },
   "sng_288c29db6114": {
    "to": "sng_bdec4420eb9c",
    "dLenMs": 0
@@ -2841,10 +2849,6 @@
   },
   "sng_3006ee7de5b0": {
    "to": "sng_d227c52762e4",
-   "dLenMs": 0
-  },
-  "sng_300e6b7739cd": {
-   "to": "sng_cc72d64eaa23",
    "dLenMs": 0
   },
   "sng_3034d9c75704": {
@@ -3388,10 +3392,6 @@
    "to": "sng_e56fb6735f93",
    "dLenMs": 0
   },
-  "sng_39e5d18c64d2": {
-   "to": "sng_6a157e6cada4",
-   "dLenMs": 0
-  },
   "sng_39f1e9446193": {
    "to": "sng_f4f00c1b2004",
    "dLenMs": 71
@@ -3830,10 +3830,6 @@
    "to": "sng_1c4c87089f50",
    "dLenMs": 1770
   },
-  "sng_4146e78d7f7a": {
-   "to": "sng_9595d7b85182",
-   "dLenMs": 0
-  },
   "sng_414b77b5a37b": {
    "to": "sng_2d4b0cfa1537",
    "dLenMs": 0
@@ -4199,10 +4195,6 @@
   },
   "sng_489bae243ef3": {
    "to": "sng_fdfc0e4f1aa4",
-   "dLenMs": 0
-  },
-  "sng_489bf6681778": {
-   "to": "sng_36935cdbd823",
    "dLenMs": 0
   },
   "sng_48abfc711b03": {
@@ -5829,10 +5821,6 @@
    "to": "sng_8a755de1bd73",
    "dLenMs": 0
   },
-  "sng_65aae5b6b24d": {
-   "to": "sng_c9f4f4c26377",
-   "dLenMs": 0
-  },
   "sng_65b990c62e21": {
    "to": "sng_5bd719515468",
    "dLenMs": 786
@@ -6776,6 +6764,10 @@
    "to": "sng_b90d1f8cd484",
    "dLenMs": 0
   },
+  "sng_76f48e978443": {
+   "to": "sng_351cde15d7a8",
+   "dLenMs": 0
+  },
   "sng_77069b0556a1": {
    "to": "sng_b78e009c1904",
    "dLenMs": 75
@@ -6888,10 +6880,6 @@
   },
   "sng_78da13dbaae8": {
    "to": "sng_6b5adaa2ee4c",
-   "dLenMs": 0
-  },
-  "sng_78df471ae7a6": {
-   "to": "sng_602eb85e3ec5",
    "dLenMs": 0
   },
   "sng_7908872db152": {
@@ -7075,6 +7063,10 @@
    "to": "sng_8b75abc74b5a",
    "dLenMs": 1
   },
+  "sng_7bcafc814c4d": {
+   "to": "sng_fa35a36f4e09",
+   "dLenMs": 0
+  },
   "sng_7bf7a19d5e6d": {
    "to": "sng_7f8ab8306ea4",
    "dLenMs": 0
@@ -7127,10 +7119,6 @@
   },
   "sng_7c94175db3ce": {
    "to": "sng_afb4bf0bdad3",
-   "dLenMs": 0
-  },
-  "sng_7c96ee3ed56c": {
-   "to": "sng_7baaa11480f5",
    "dLenMs": 0
   },
   "sng_7ca4e1593296": {
@@ -7559,10 +7547,6 @@
   "sng_83edd0d4326c": {
    "to": "sng_4d9d51bd075f",
    "dLenMs": 24
-  },
-  "sng_84008ed4ba5d": {
-   "to": "sng_4b3d4320bb33",
-   "dLenMs": 0
   },
   "sng_8403741cee75": {
    "to": "sng_84d316d285fa",
@@ -9243,6 +9227,10 @@
    "to": "sng_c368a4a13b7e",
    "dLenMs": 0
   },
+  "sng_a01714c7c55f": {
+   "to": "sng_54e7a8434481",
+   "dLenMs": 7144
+  },
   "sng_a02a2e254c31": {
    "to": "sng_91c2b0feeda6",
    "dLenMs": 0
@@ -9774,10 +9762,6 @@
    "to": "sng_739b9e464297",
    "dLenMs": 1
   },
-  "sng_a8b615f12926": {
-   "to": "sng_3366d060d0f2",
-   "dLenMs": 0
-  },
   "sng_a8c3243a8713": {
    "to": "sng_efe66cf9f04c",
    "dLenMs": 0
@@ -9888,10 +9872,6 @@
   },
   "sng_ab58f07c776f": {
    "to": "sng_13e01e7c488f",
-   "dLenMs": 0
-  },
-  "sng_ab7160584ee0": {
-   "to": "sng_f0aef3d1c337",
    "dLenMs": 0
   },
   "sng_ab8b261ae6d7": {
@@ -14553,10 +14533,6 @@
   },
   "sng_fd0856d71896": {
    "to": "sng_ca4c8ba2cfb0",
-   "dLenMs": 0
-  },
-  "sng_fd1d5677901e": {
-   "to": "sng_0c0186a1e592",
    "dLenMs": 0
   },
   "sng_fd2c2d6dbb8d": {
