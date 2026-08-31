@@ -728,6 +728,21 @@ final class SetlistPlayer {
         persistSession()
     }
 
+    /// Insert tracks immediately before an existing upcoming row (by identity) — the Now
+    /// Playing expanded view's drop target when a "previously played" row is dragged onto
+    /// a specific Up Next slot. An unknown/played anchor (the tail shifted underneath a
+    /// slow drag) falls back to appending at the end, same as any other stale-uid Up Next op.
+    func insertInQueue(_ items: [Item], before uid: UUID) {
+        guard isRunning, !items.isEmpty else { return }
+        guard index + 1 < queue.count,
+              let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else {
+            appendToQueue(items)
+            return
+        }
+        queue.insert(contentsOf: items, at: pos)
+        persistSession()
+    }
+
     /// Insert tracks at a RANDOM slot in the upcoming tail (Jukebox Hero's "Surprise
     /// Slot"): anywhere from right after the current track to the very end, uniformly.
     /// Same contract as the other live edits — only the tail moves, never `queue[index]`.

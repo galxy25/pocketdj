@@ -33,6 +33,11 @@ struct NowPlayingExpandedView: View {
     /// a row per queued track just because the surface expanded.
     @State private var queueShown = RowWindow.page
     @State private var playedShown = RowWindow.page
+    /// `.onMove` drag handles need edit mode on iOS (macOS drags directly) — same split
+    /// as the docked panel's Up Next.
+    #if os(iOS)
+    @State private var editMode: EditMode = .inactive
+    #endif
 
     var body: some View {
         GeometryReader { geo in
@@ -110,20 +115,48 @@ struct NowPlayingExpandedView: View {
     }
 
     private func deckCluster(recordSize: CGFloat) -> some View {
-        NowPlayingDeckCluster(recordSize: recordSize,
-                              openDetail: { item in
-                                  detailSong = app.songsById[item.id]
-                                      ?? IndexSong.minimal(id: item.id, name: item.title,
-                                                           artist: item.artist)
-                              })
+        NowPlayingDeckCluster(recordSize: recordSize, openDetail: openSongDetail(for:))
             .padding(.vertical, 8)
+    }
+
+    private func openSongDetail(for item: SetlistPlayer.Item) {
+        detailSong = app.songsById[item.id]
+            ?? IndexSong.minimal(id: item.id, name: item.title, artist: item.artist)
+    }
+
+    /// A fresh Item for re-queueing a played row — never reuse the row itself: `uid` is
+    /// per-instance identity, and a duplicate would confuse every uid-keyed queue op.
+    /// Same doctrine as the docked panel's `replay(_:)`.
+    private func replay(_ item: SetlistPlayer.Item) -> SetlistPlayer.Item {
+        .init(id: item.id, title: item.title, artist: item.artist,
+              lengthMs: item.lengthMs, repeatCount: item.repeatCount)
+    }
+
+    /// Drop target for a "previously played" row dragged onto Up Next: `dropIndex` is the
+    /// ForEach position the drop landed on — the same windowed offset `.onDelete` already
+    /// bridges through `upcomingUid(atOffset:)`. A drop past the last row (or an anchor
+    /// that shifted out from under a slow drag) lands at the end of the queue instead.
+    private func insertFromPlayed(_ uidStrings: [String], atUpcomingOffset offset: Int) {
+        let items = uidStrings.compactMap { uidString -> SetlistPlayer.Item? in
+            guard let uid = UUID(uuidString: uidString),
+                  let source = sequencer.played.first(where: { $0.uid == uid }) else { return nil }
+            return replay(source)
+        }
+        guard !items.isEmpty else { return }
+        if let targetUid = sequencer.upcomingUid(atOffset: offset) {
+            sequencer.insertInQueue(items, before: targetUid)
+        } else {
+            sequencer.appendToQueue(items)
+        }
     }
 
     // MARK: - Flanks
 
-    /// Read-only "previously played" (newest first) — context, not controls; the
-    /// docked panel's ⟲ section keeps the full menu. Empty state stays blank on
-    /// purpose (a flank is padding first, content second).
+    /// "Previously played" (newest first) — no tap/context menu of its own (the docked
+    /// panel's ⟲ section keeps that full menu); the one interaction this flank offers is
+    /// dragging a row across into Up Next, which requeues a FRESH copy right where it
+    /// lands. Empty state stays blank on purpose (a flank is padding first, content
+    /// second).
     private var playedFlank: some View {
         let played = Array(sequencer.played.reversed())
         return List {
@@ -135,6 +168,9 @@ struct NowPlayingExpandedView: View {
                             Text(item.title).font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
                             Text(item.artist).font(.caption2).foregroundStyle(Theme.fgDim.opacity(0.7)).lineLimit(1)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                        .draggable(item.uid.uuidString)
                         .listRowBackground(Theme.bg)
                         .accessibilityElement(children: .combine)
                         .accessibilityIdentifier("np-x-played-\(offset)")
@@ -152,9 +188,13 @@ struct NowPlayingExpandedView: View {
         .environment(\.defaultMinListRowHeight, 30)
     }
 
-    /// The upcoming queue: tap = jump (uid-exact), swipe/context = remove. A slim
-    /// windowed list — deliberately NOT the panel's `upNextSection` (its eager
-    /// per-row 4-item context menus are the documented Shuffle-perf hazard).
+    /// The upcoming queue: tap = jump (uid-exact); drag = reorder (macOS drags directly,
+    /// iOS needs the header's Reorder toggle for handles — same split as the docked
+    /// panel's `upNextSection`); swipe/context = remove; context also offers Move to
+    /// top/bottom and Song details, matching the docked panel's menu now that this flank
+    /// windows at the same `RowWindow.page` bound that made that menu depth safe there.
+    /// Also a drop target: a "previously played" row dragged in from the other flank
+    /// lands right where it's dropped (past the last row ⇒ the end of the queue).
     private var queueFlank: some View {
         let upcoming = sequencer.upcoming
         return List {
@@ -171,6 +211,17 @@ struct NowPlayingExpandedView: View {
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
+                        Button { sequencer.moveUpcomingNext(uid: item.uid) } label: {
+                            Label("Move to top", systemImage: "arrow.up.to.line")
+                        }
+                        Button { sequencer.moveUpcomingToEnd(uid: item.uid) } label: {
+                            Label("Move to bottom", systemImage: "arrow.down.to.line")
+                        }
+                        Divider()
+                        Button { openSongDetail(for: item) } label: {
+                            Label("Song details", systemImage: "info.circle")
+                        }
+                        Divider()
                         Button(role: .destructive) {
                             sequencer.removeUpcoming(uids: [item.uid])
                         } label: {
@@ -181,6 +232,7 @@ struct NowPlayingExpandedView: View {
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("np-x-queue-\(offset)")
                 }
+                .onMove { from, to in sequencer.moveUpcoming(fromOffsets: from, toOffset: to) }
                 .onDelete { offsets in
                     // Offset→uid via the sequencer's bridge — `upcoming` is a
                     // parent-indexed slice (the docked panel's lesson).
@@ -188,13 +240,32 @@ struct NowPlayingExpandedView: View {
                         sequencer.upcomingUid(atOffset: $0)
                     }))
                 }
+                .dropDestination(for: String.self) { uidStrings, dropIndex in
+                    insertFromPlayed(uidStrings, atUpcomingOffset: dropIndex)
+                }
                 RowWindowSentinel(total: upcoming.count, shown: $queueShown)
                     .listRowBackground(Theme.bg)
             } header: {
-                Text("Up next (\(upcoming.count))")
-                    .font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
+                HStack {
+                    Text("Up next (\(upcoming.count))")
+                        .font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
+                    Spacer()
+                    #if os(iOS)
+                    // .onMove drag handles need edit mode on iOS (macOS drags directly).
+                    if !upcoming.isEmpty {
+                        Button(editMode == .active ? "Done" : "Reorder") {
+                            withAnimation { editMode = editMode == .active ? .inactive : .active }
+                        }
+                        .font(.caption2).foregroundStyle(Theme.accent).buttonStyle(.plain)
+                        .accessibilityIdentifier("np-x-reorder")
+                    }
+                    #endif
+                }
             }
         }
+        #if os(iOS)
+        .environment(\.editMode, $editMode)
+        #endif
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 30)

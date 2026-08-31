@@ -267,6 +267,47 @@ final class NowPlayingUITests: XCTestCase {
         #endif
     }
 
+    /// Fully expanding the Now Playing surface (req 7's resizable overlay, raised by
+    /// dragging the resize handle past the dock edge) must not regress to a bare-bones
+    /// queue: Up Next there offers the SAME context menu as the docked panel — Move to
+    /// top/bottom and Song details alongside Remove, not just Remove.
+    func testExpandedQueueContextMenuMatchesDockedPanel() throws {
+        #if os(macOS)
+        throw XCTSkip("resize-drag exercised on iOS (macOS UI automation unavailable headless)")
+        #else
+        app.launchEnvironment["PDJ_SEED_PLAYBACK_SESSION"] = "1"
+        app.launchEnvironment["PDJ_HOLD_PLAYBACK"] = "1"
+        app.launch()
+        let panel = app.revealNowPlayingHome()
+        XCTAssertTrue(panel.waitForExistence(timeout: 15), "deck up from the restored session")
+
+        // Drag the resize handle well past the dock threshold (40pt) to raise the
+        // expanded overlay — up on iPhone portrait (a bottom sheet growing upward).
+        let handle = app.any("np-resize-handle")
+        XCTAssertTrue(handle.waitForExistence(timeout: 8), "docked panel offers a resize handle")
+        let start = handle.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5))
+        let end = app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.05))
+        start.press(forDuration: 0.15, thenDragTo: end)
+
+        let expanded = app.any("np-expanded-panel")
+        XCTAssertTrue(expanded.waitForExistence(timeout: 8),
+                      "a big enough drag past the dock threshold should raise the expanded surface")
+        attach("np-expanded-panel")
+
+        let queueRow = app.any("np-x-queue-0")
+        XCTAssertTrue(queueRow.waitForExistence(timeout: 8), "Drift is up next in the expanded queue")
+        queueRow.press(forDuration: 0.9)
+        XCTAssertTrue(app.buttons["Move to top"].firstMatch.waitForExistence(timeout: 5),
+                      "expanded Up Next menu offers Move to top")
+        XCTAssertTrue(app.buttons["Move to bottom"].firstMatch.exists,
+                      "…and Move to bottom")
+        XCTAssertTrue(app.buttons["Song details"].firstMatch.exists,
+                      "…and Song details")
+        XCTAssertTrue(app.buttons["Remove"].firstMatch.exists,
+                      "…alongside the Remove the expanded view already had")
+        #endif
+    }
+
     /// "Play now" and "Rewind to here" are two DIFFERENT actions on a previously-played row, and
     /// this drives the distinction on a real deck. The seeded session is [Neon, Pulse, Drift] with
     /// the cursor on Pulse, so Neon is the one played row.
