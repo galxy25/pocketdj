@@ -511,6 +511,18 @@ order, wherever you chose), and **the record itself** opens the current track's 
 **song detail metadata** — closed with a Back button top-left on iPhone, or an
 always-visible **✕** on iPad and Mac (Esc still works for the keyboard-inclined).
 
+**Pull the edge and the deck goes full-size.** A thin grab handle on the panel's edge
+drags it open into a bigger, resizable Now Playing view — a bottom sheet growing up
+from the edge on iPhone portrait, a wider pane growing sideways everywhere else. However
+far you stretch it, the spinning record stays dead-center, with Previously played and Up
+next opening up as lists on either side (or above/below on a taller shape). Up next
+there works exactly like the docked version — **drag to reorder** (Reorder button on
+iPhone), **long-press or right-click** for *Move to top · Move to bottom · Song details ·
+Remove* — plus one move the docked panel doesn't have: **drag a row straight out of
+Previously played and into Up next**, and it requeues right where you drop it, a fresh
+copy that never touches what's already playing. Let go of the handle, or tap the corner
+arrows, to snap back to the compact deck.
+
 And the **sidebar wears a set of custom marks** — the **Mix** tab's two overlapping records
 (Apple Music's AutoMix symbol) are now cast in **platinum and gold**, the **Producer** piano
 keys glow with the **Pan-African flag hues** (green · gold · red) running left→right, **Collections** is a faceted,
