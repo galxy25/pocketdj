@@ -1285,12 +1285,31 @@ public SF Symbol exists).
   (offsets CLAMPED to the live tail — a track ending mid-drag must not trap),
   `removeUpcoming(uids:)` (removal by per-row `Item.uid` IDENTITY, so a ✕ tap that
   races an auto-advance still removes exactly the tapped song, never whatever
-  shifted into the slot), and `appendToQueue(_:)` (picked up by the next `advance()`;
-  no-op when idle). All three touch ONLY positions `> index` — `handleEnded`'s
-  ownership guard and jump-adoption key off `queue[index]`, so the current track
-  never restarts and `nowPlayingRevision` never bumps (no SetlistDetailView restart).
-  Note the panel renders the EPHEMERAL run — edits don't write back to the frozen
-  `set_now_playing` snapshot (same contract as §10's disabled mid-set Edit).
+  shifted into the slot), `appendToQueue(_:)` (picked up by the next `advance()`;
+  no-op when idle), and `insertInQueue(_:before:)` (splice fresh items immediately
+  before an existing upcoming row by `uid`; an anchor that's no longer in the tail —
+  played, or unknown — falls back to `appendToQueue`). All touch ONLY positions
+  `> index` — `handleEnded`'s ownership guard and jump-adoption key off `queue[index]`,
+  so the current track never restarts and `nowPlayingRevision` never bumps (no
+  SetlistDetailView restart). Note the panel renders the EPHEMERAL run — edits don't
+  write back to the frozen `set_now_playing` snapshot (same contract as §10's
+  disabled mid-set Edit).
+- **The resizable expanded view — `NowPlayingExpandedView.swift`** (req 7): the same
+  panel dragged past its dock edge (a `ResizeGrabber` handle RootView tracks) into a
+  window-level overlay — a bottom sheet on iPhone portrait, left-anchored elsewhere —
+  sized continuously by the drag and persisted per platform
+  (`NowPlayingResize.wideFractionKey`/`portraitFractionKey`). The spinning record stays
+  geometrically centered at every size, with "Previously played" and "Up next" reflowing
+  into equal flanks on either side (wide) or above/below (tall) — both windowed via
+  `RowWindow.page` like the docked panel's own Up Next. It shares the SAME `SetlistPlayer`
+  state as the docked panel (no separate truth to drift), and its Up Next carries the
+  identical context menu (`moveUpcomingNext`/`moveUpcomingToEnd`/`removeUpcoming`, Song
+  details) plus `.onMove` reorder (iOS needs the header's Reorder toggle for drag
+  handles, macOS drags directly — same split as the docked panel). New here: "Previously
+  played" rows are a `.draggable` source and Up Next a `.dropDestination(for: String.self)`
+  drop target keyed on the row's `uid` string — dragging a played row across requeues a
+  fresh copy via `insertInQueue(_:before:)`, landing at the drop index (or the end, past
+  the last row).
 - **Previously played — the history toggle**: `played` (= `queue[0..<index]`, a pure
   projection — `advanceToNext` only moves the index, so finished rows stay in the
   queue and ride every durable-session snapshot) backs the panel's ⟲ toggle
@@ -1350,8 +1369,8 @@ launch — held, never auto-playing.
   EVERY index move (auto-advance, `skipNext`/`skipPrevious`, `jumpToUpcoming`,
   now-playing **adoption**) — passing `positionMs: 0` so a kill right after an advance
   never resumes the new track at the old track's offset — and EVERY live-queue edit
-  (all seven: move/remove/append/insertNext/insertRandom/moveNext/moveToEnd — this is
-  how jukebox requests survive). Position: a ~1 Hz sampler + a play-state observation
+  (all eight: move/remove/append/insertNext/insertRandom/insertBefore/moveNext/moveToEnd
+  — this is how jukebox requests survive). Position: a ~1 Hz sampler + a play-state observation
   feed `updatePosition(ms:isPlaying:)`, which the store **throttles to ~5 s while
   playing** and passes **pause/resume transitions through immediately**; the scene
   `.background` hook calls `flush()` (synchronous write, next to `mixSessions.flush()`).

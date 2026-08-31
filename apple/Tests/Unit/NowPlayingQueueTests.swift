@@ -147,6 +147,26 @@ final class NowPlayingQueueTests: XCTestCase {
         XCTAssertTrue(seq.queue.isEmpty)
     }
 
+    /// The expanded Now Playing view's drop target: dragging a "previously played" row onto
+    /// a specific Up Next slot inserts right before that row's identity, current/history
+    /// untouched. A dropped anchor that's no longer in the tail (played, or unknown) falls
+    /// back to the end, same as any other stale-uid Up Next op.
+    func testInsertInQueueBeforeAnchorAndFallsBackToEndWhenStale() {
+        let seq = makeSequencer()
+        seq.play([item("a"), item("b"), item("c")], sourceSetlistId: "set_1")
+        let cUid = seq.upcomingUid(atOffset: 1)!                 // "c"
+        seq.insertInQueue([item("x")], before: cUid)
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "x", "c"])
+        XCTAssertEqual(seq.queue[seq.index].id, "a")             // current untouched
+
+        seq.insertInQueue([item("y")], before: UUID())           // unknown anchor ⇒ append
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "x", "c", "y"])
+
+        seq.insertInQueue([item("z")], before: seq.queue[0].uid) // "a" is played, not upcoming
+        XCTAssertEqual(seq.queue.map(\.id), ["a", "b", "x", "c", "y", "z"], "falls back to the end")
+        seq.stop()
+    }
+
     /// The history toggle's data: `played` is the already-played head (`queue[0..<index]`,
     /// oldest first), a pure projection that shrinks when ⏮ walks back and empties on stop.
     func testPlayedIsTheAlreadyPlayedHead() {
