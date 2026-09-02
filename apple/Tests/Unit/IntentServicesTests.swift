@@ -135,6 +135,43 @@ final class IntentServicesTests: XCTestCase {
         XCTAssertFalse(services.setlistPlayer.isRunning)
     }
 
+    /// The two-crate start (the CarPlay/TV Mix remote's deck A + B): per-crate order is
+    /// preserved and interleaved A0,B0,A1,… onto the engine's strict deck alternation, a song
+    /// in both crates plays ONCE (deck A's copy wins), the label names both crates, and the
+    /// downloader run tracks the UNION so late landings from either crate join the queue.
+    func testTwoCrateAutoMixInterleavesDedupsAndTracksBothCrates() async throws {
+        let (services, collections, _) = await makeServices(burnedIds: ["sng_1", "sng_2", "sng_3"])
+        services.mix.ensureEngine()
+        try XCTSkipUnless(services.mix.isReady, "no audio device on this test host")
+        let a = collections.createPocket("Crate A")
+        collections.addSong("sng_1", toPocket: a.id)
+        collections.addSong("sng_2", toPocket: a.id)      // sng_2 lives in BOTH crates
+        let b = collections.createPocket("Crate B")
+        collections.addSong("sng_2", toPocket: b.id)
+        collections.addSong("sng_3", toPocket: b.id)
+        let d = CollectionMixDownloader(engine: services.mix, burns: services.burns,
+                                        rips: services.rips, transfers: nil)
+        d.resolveRipIds = { src in
+            src == .pocket(a.id) ? ["sng_1", "sng_2"] : ["sng_2", "sng_3"]
+        }
+        d.resolveLoadables = { _ in [] }
+        services.mixDownloader = d
+
+        let (name, count) = try await services.startAutoMix(
+            deckA: .pocket(a.id), deckB: .pocket(b.id), shuffle: false)
+
+        XCTAssertEqual(name, "Crate A + Crate B")
+        XCTAssertEqual(count, 3, "the shared song plays once")
+        XCTAssertTrue(services.mix.autoMixing)
+        XCTAssertEqual(services.mix.onAirTrack?.songId, "sng_1", "A's first track opens on deck A")
+        XCTAssertEqual(services.mix.autoUpcoming.map(\.songId), ["sng_3", "sng_2"],
+                       "interleave: B0 next (B's sng_2 deduped to A's copy), then A1")
+        XCTAssertEqual(d.sources, [.pocket(a.id), .pocket(b.id)],
+                       "the download run tracks BOTH crates")
+        XCTAssertEqual(d.totalCount, 3, "…as a UNION, the shared song tracked once")
+        services.mix.stopAutoMix()
+    }
+
     // MARK: 👍 on what is playing (For You collection queue)
 
     /// The owner's contract for a collection tile's 👍 — "send positive signal AND add the song

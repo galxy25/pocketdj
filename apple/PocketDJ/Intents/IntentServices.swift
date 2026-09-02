@@ -433,6 +433,8 @@ final class IntentServices {
         // (zone/new) resolve to no target and stay pure feedback; the undo tap (landed == nil)
         // never un-adds — removal from a crate is a deliberate act, not a side effect.
         if landed == .accepted { collections.addAcceptedSong(t.songId, scopedTo: t.scope) }
+        DiagLog.shared.telemetry(
+            "action", "thumbs \(verdict == .accepted ? "up" : "down") landed=\(landed.map { "\($0)" } ?? "cleared") song=\(t.songId) scope=\(t.scope)")
         return landed
     }
 

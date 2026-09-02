@@ -295,6 +295,9 @@ struct RootView: View {
         .onChange(of: section) {
             settings.lastSection = section?.rawValue ?? ""
             settings.persist()
+            // Telemetry breadcrumb: which surface the user is looking at (the "what is
+            // presented" half; row-level content rides the action/np lines).
+            DiagLog.shared.telemetry("screen", "section=\(section?.rawValue ?? "home")")
         }
     }
 

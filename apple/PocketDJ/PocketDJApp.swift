@@ -436,9 +436,18 @@ struct PocketDJApp: App {
         // Debug capture persists across launches: a relaunch mid-repro starts a fresh session
         // immediately (the buffer is memory-only — see MixDiag / Settings ▸ Debug).
         if settings.debugLoggingEnabled { MixDiag.shared.start() }
-        // Now Playing trace → the same Settings ▸ Debug capture buffer (os_log is unconditional;
-        // this mirror only adds the lines to the exportable session while capture is on).
-        NPLog.mirror = { MixDiag.shared.append($0) }
+        // Remote telemetry persists across launches too — the store is the truth, the logger
+        // mirrors it (`DiagLog.telemetryEnabled`; the TestFlight/DEBUG gate applies inside).
+        DiagLog.shared.telemetryEnabled = settings.remoteTelemetryEnabled
+        // Now Playing trace → the Settings ▸ Debug capture buffer (os_log is unconditional;
+        // the mirror only adds lines to the exportable session while capture is on) — AND the
+        // remote telemetry stream, where the 1 Hz card writes carry exactly the pos/dur/rate
+        // facts a frozen-CarPlay-slider report needs from the field. `telemetry` is a no-op
+        // with the toggle off, so the chain costs one call when idle.
+        NPLog.mirror = {
+            MixDiag.shared.append($0)
+            DiagLog.shared.telemetry("np", $0)
+        }
         _edits = State(initialValue: edits)
         _collections = State(initialValue: collections)
         _musicSync = State(initialValue: musicSync)
@@ -1729,6 +1738,9 @@ struct PocketDJApp: App {
                         Task { storage.pruneIfDue() }
                     case .background:
                         streaming.onScenePhaseBackground()
+                        // Diag/telemetry tail: the debounce window would otherwise die with the
+                        // suspension (same doctrine as every flush below).
+                        DiagLog.shared.flushOnBackground()
                         mixSessions.flush()    // persist the latest session state before suspension
                         studio.flush()         // studio document too — same suspension-race doctrine
                         puzzleDecisions.flush() // …and any coalesced gameplay decisions

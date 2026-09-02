@@ -243,6 +243,8 @@ final class CarPlayController {
     private func pushCratePicker(deck: MixDeck, model: CarPlayModel) {
         let crates = model.mixCrates()
         func pick(_ source: MixSource?) {
+            DiagLog.shared.telemetry(
+                "car", "mix deck \(deck == .a ? "A" : "B") = \(source.flatMap { model.crateName($0) } ?? "same as A")")
             switch deck {
             case .a: mixDeckA = source
             case .b: mixDeckB = source
@@ -499,6 +501,8 @@ final class CarPlayController {
     /// the action sheet.
     private func pushSongs(title: String, rows: [CarPlayModel.Row],
                            playAll: @escaping () async -> Void, shuffleAll: @escaping () async -> Void) {
+        // Telemetry: what the head unit is presenting (list + size); taps ride `listItem`.
+        DiagLog.shared.telemetry("car", "present songs '\(title)' rows=\(rows.count)")
         pushRows(title: title, rows: rows, header: "Songs", emptyText: "No songs",
                  playAll: { await playAll() }, shuffleAll: { await shuffleAll() },
                  onSelect: { [weak self] row in self?.presentSongActions(row) })
@@ -579,7 +583,12 @@ final class CarPlayController {
                           onTap: @escaping () -> Void) -> CPListItem {
         let item = CPListItem(text: row.title, detailText: row.subtitle)
         if showsDisclosure { item.accessoryType = .disclosureIndicator }
-        item.handler = { _, completion in onTap(); completion() }
+        item.handler = { _, completion in
+            // Telemetry: every head-unit row tap, by title — the driver's actions half of
+            // "stream my CarPlay session"; template pushes below are the presented half.
+            DiagLog.shared.telemetry("car", "tap \(row.title)")
+            onTap(); completion()
+        }
         loadArtwork(albumId: row.artworkAlbumId, into: item)
         return item
     }

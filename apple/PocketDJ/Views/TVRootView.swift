@@ -79,6 +79,8 @@ struct TVRootView: View {
                 .tag(TVTab.settings)
         }
         .environment(rowSelection)
+        // Telemetry breadcrumb: TV tab changes — the TV's "what is presented" line.
+        .onChange(of: tab) { DiagLog.shared.telemetry("screen", "tv tab=\(tab.rawValue)") }
         // The app-level .tint(Theme.accent) makes tvOS draw button platters AND labels in
         // the accent (solid unreadable capsules). Resetting to nil hands the controls back
         // to the system focus chrome; the brand accent stays on explicit icons/text.
@@ -669,6 +671,18 @@ struct TVSettingsView: View {
                             if on { Task { await cloudSync.syncNow() } }
                         }))
                         .accessibilityIdentifier("tv-settings-sync-toggle")
+                    // Remote telemetry — the SAME owner-opt-in stream the phone's Debug panel
+                    // offers, reachable on TV because the TV is exactly the device with no
+                    // tethered debugging (the reason DiagLog exists). Toggle = the TVSettings
+                    // Binding+persist pattern; push into the logger mirrors DebugView.
+                    Toggle("Remote telemetry", isOn: Binding(
+                        get: { settings.remoteTelemetryEnabled },
+                        set: { on in
+                            settings.remoteTelemetryEnabled = on
+                            settings.persist()
+                            DiagLog.shared.telemetryEnabled = on
+                        }))
+                        .accessibilityIdentifier("tv-settings-telemetry-toggle")
                     if settings.cloudSyncEnabled {
                         LabeledContent("Status", value: syncStatusLine)
                             .accessibilityIdentifier("tv-settings-sync-status")

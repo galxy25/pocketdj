@@ -1184,6 +1184,7 @@ final class MixEngine {
     /// a duplicate while already paused must not clobber the pause memory or the resume intent.
     func remotePause() {
         guard isRunning || (remotePausedAt == nil && masterPausedDecks.isEmpty) else { return }
+        DiagLog.shared.telemetry("action", "mix pause (remote seam)")
         let autoWasRunning = autoMixing && !autoPaused
         if autoWasRunning {
             pauseAuto()                      // BEFORE pauseBoth — a running auto-loop would be ended by it
@@ -1203,6 +1204,7 @@ final class MixEngine {
     /// Auto-DJ, resume it too. An Auto-DJ the user paused IN-APP (hand-mixing) stays paused — the
     /// lock screen only undoes its own suspension.
     func remotePlay() {
+        DiagLog.shared.telemetry("action", "mix resume (remote seam)")
         unfreezeAutoClock()
         resumeMasterPaused()
         if resumeAutoOnRemotePlay, autoMixing, autoPaused { resumeAuto() }
@@ -1213,6 +1215,7 @@ final class MixEngine {
     /// track": un-freeze, bring the audio back, lift the machine's pause, THEN fire the transition.
     /// Skipping into a suspended machine would play one track and stall in silence at its end.
     func remoteSkip(fadeSeconds: Double) {
+        DiagLog.shared.telemetry("action", "mix skip fade=\(Int(fadeSeconds))s")
         if autoPaused {
             unfreezeAutoClock()
             resumeMasterPaused()
@@ -1919,8 +1922,14 @@ final class MixEngine {
 
     /// Toggle FX Glide / Mix Glide (the auto-mix pill). Safe to flip mid-mix: an in-flight transition
     /// finishes in the mode it began; the change applies to the NEXT transition.
-    func setFXGlide(_ on: Bool) { fxGlideEnabled = on }
-    func setMixGlide(_ on: Bool) { mixGlideEnabled = on }
+    func setFXGlide(_ on: Bool) {
+        fxGlideEnabled = on
+        DiagLog.shared.telemetry("action", "fx glide \(on ? "on" : "off")")
+    }
+    func setMixGlide(_ on: Bool) {
+        mixGlideEnabled = on
+        DiagLog.shared.telemetry("action", "audio glide \(on ? "on" : "off")")
+    }
 
     /// Whether either glide feature is armed (⇒ a transition uses the pre/post-roll machine).
     private var anyGlide: Bool { fxGlideEnabled || mixGlideEnabled }
@@ -1932,6 +1941,7 @@ final class MixEngine {
     func startAutoMix(_ items: [AutoMixItem], shuffled: Bool, lead: Double, fade: Double,
                       label: String? = nil) {
         guard !items.isEmpty else { return }
+        DiagLog.shared.telemetry("action", "auto-mix start '\(label ?? "?")' items=\(items.count) shuffled=\(shuffled)")
         ensureEngine()
         endAutoLoop()
 
@@ -1991,6 +2001,7 @@ final class MixEngine {
     }
 
     func stopAutoMix() {
+        DiagLog.shared.telemetry("action", "auto-mix stop")
         autoEndedExhausted = false   // user-initiated stop by default; exhaust sites re-set it after
         endAutoLoop()
         pauseBoth()
