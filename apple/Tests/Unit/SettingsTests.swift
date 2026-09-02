@@ -8,11 +8,14 @@ final class SettingsStoreTests: XCTestCase {
         return UserDefaults(suiteName: suite)!
     }
 
-    func testDefaultsHaveVinylSource() {
+    func testDefaultsHaveNoSource() {
+        // No shipped default catalog source — a fresh install must not seed straight into
+        // the developer's own vinyl/digital/Apple Music catalog (same reasoning as the
+        // blank rip/jukebox server URLs). The onboarding flow's `applyOnboardingSources`
+        // is where a user opts into their own sources.
         let s = SettingsStore(defaults: freshDefaults())
-        XCTAssertEqual(s.sources.count, 1)
-        XCTAssertEqual(s.sources.first?.name, "My Vinyl")
-        XCTAssertEqual(s.enabledSourceURLs.count, 1)
+        XCTAssertEqual(s.sources.count, 0)
+        XCTAssertEqual(s.enabledSourceURLs.count, 0)
     }
 
     func testDefaultRecentlyAddedDefaultsClampsAndPersists() {
@@ -69,16 +72,16 @@ final class SettingsStoreTests: XCTestCase {
         s.ripToken = "abc"
         s.ripFromCloud = true
         s.addSource()
-        s.sources[1].name = "Apple Music"
-        s.sources[1].urlString = "https://cdn.test/am.json"
+        s.sources[0].name = "Apple Music"
+        s.sources[0].urlString = "https://cdn.test/am.json"
         s.persist()
 
         let reloaded = SettingsStore(defaults: defaults)
         XCTAssertEqual(reloaded.ripServerURL, "https://example.test")
         XCTAssertEqual(reloaded.ripToken, "abc")
         XCTAssertTrue(reloaded.ripFromCloud)
-        XCTAssertEqual(reloaded.sources.count, 2)
-        XCTAssertEqual(reloaded.sources[1].name, "Apple Music")
+        XCTAssertEqual(reloaded.sources.count, 1)
+        XCTAssertEqual(reloaded.sources[0].name, "Apple Music")
     }
 
     func testRipFromCloudDefaultsOff() {
@@ -147,6 +150,7 @@ final class SettingsStoreTests: XCTestCase {
 
     func testEnabledSourceURLsSkipsDisabledAndInvalid() {
         let s = SettingsStore(defaults: freshDefaults())
+        s.addSource()
         s.sources[0].enabled = false
         s.addSource()
         s.sources[1].urlString = "https://valid.test/i.json"
@@ -160,10 +164,10 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(s.hasAppleMusic)
         s.loadAppleMusic()
         XCTAssertTrue(s.hasAppleMusic)
-        XCTAssertEqual(s.sources.count, 2)
+        XCTAssertEqual(s.sources.count, 1)
         XCTAssertEqual(s.sources.last?.name, "Apple Music (Local)")
         s.loadAppleMusic()  // idempotent — no duplicate
-        XCTAssertEqual(s.sources.count, 2)
+        XCTAssertEqual(s.sources.count, 1)
     }
 
     func testLoadMyDigitalAddsSourceOnce() {
@@ -171,11 +175,11 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertFalse(s.hasMyDigital)
         s.loadMyDigital()
         XCTAssertTrue(s.hasMyDigital)
-        XCTAssertEqual(s.sources.count, 2)
+        XCTAssertEqual(s.sources.count, 1)
         XCTAssertEqual(s.sources.last?.name, "My Digital")
         XCTAssertEqual(s.sources.last?.urlString, Config.digitalIndexURL.absoluteString)
         s.loadMyDigital()  // idempotent — no duplicate
-        XCTAssertEqual(s.sources.count, 2)
+        XCTAssertEqual(s.sources.count, 1)
     }
 
     func testResetRestoresDefaults() {
@@ -183,7 +187,7 @@ final class SettingsStoreTests: XCTestCase {
         let s = SettingsStore(defaults: defaults)
         s.ripToken = "secret"; s.ripFromCloud = true; s.addSource(); s.persist()
         s.resetEverything()
-        XCTAssertEqual(s.sources.count, 1)
+        XCTAssertEqual(s.sources.count, 0)
         XCTAssertEqual(s.ripToken, "")
         XCTAssertFalse(s.ripFromCloud)
         // and it's gone from disk

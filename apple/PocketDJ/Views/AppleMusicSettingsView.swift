@@ -935,7 +935,7 @@ struct AppleMusicSettingsView: View {
             Text("Private syncing")
         } footer: {
             Text(settings.appleMusicPrivateSync
-                ? "The sync controls above run through your own PocketDJ server and catalog (e.g. the iMac) instead of Apple's API. Same values as Settings ▸ Import server — changing them here changes them everywhere."
+                ? "The sync controls above run through your own PocketDJ server and catalog instead of Apple's API. Same values as Settings ▸ Import server — changing them here changes them everywhere."
                 : "Off: syncing talks to Apple Music directly with a token minted on this device — no server of your own. Turn on to run syncing through your own PocketDJ server instead.")
         }
     }

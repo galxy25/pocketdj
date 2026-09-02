@@ -157,7 +157,7 @@ final class OnboardingStoreTests: XCTestCase {
 
     func testApplyOnboardingSourcesReconcilesBuiltins() {
         let settings = SettingsStore(defaults: defaults)
-        XCTAssertEqual(settings.sources.map(\.name), ["My Vinyl"])   // the default blob
+        XCTAssertEqual(settings.sources.map(\.name), [])   // the default blob — no shipped source
 
         settings.applyOnboardingSources(vinyl: false, digital: true, streaming: true)
         XCTAssertEqual(Set(settings.sources.map(\.name)),
