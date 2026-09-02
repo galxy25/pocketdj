@@ -72,15 +72,20 @@ final class AlbumArtworkStoreTests: XCTestCase {
         let lows = (1...6).map { i in
             Task { await store.artworkURL(forAlbum: "low\(i)", candidates: [self.song("am:low\(i)")]) }
         }
-        // Wait until the first three actually hold slots, so the priority call genuinely queues.
-        while startOrder.count < 3 { await Task.yield() }
+        // Wait until the first three actually hold slots, so the priority call genuinely
+        // queues. Bounded so a broken gate FAILS loudly instead of hanging the suite.
+        var spins = 0
+        while startOrder.count < 3, spins < 500_000 { await Task.yield(); spins += 1 }
+        guard startOrder.count >= 3 else { return XCTFail("gate never admitted 3 resolves") }
         let pri = Task { await store.artworkURL(forAlbum: "pri", candidates: [self.song("am:pri")],
                                                 priority: true) }
         for t in lows { _ = await t.value }
         _ = await pri.value
         XCTAssertLessThanOrEqual(maxConcurrent, 3, "the gate held the stampede to 3")
-        let priAt = startOrder.firstIndex(of: "am:pri")!
-        let lastLowAt = startOrder.lastIndex { $0.hasPrefix("am:low") }!
+        guard let priAt = startOrder.firstIndex(of: "am:pri"),
+              let lastLowAt = startOrder.lastIndex(where: { $0.hasPrefix("am:low") }) else {
+            return XCTFail("expected priority + low resolves to have started: \(startOrder)")
+        }
         XCTAssertLessThan(priAt, lastLowAt, "the priority resolve started before the queue drained")
     }
 

@@ -41,18 +41,28 @@ final class AlbumArtworkStore {
     /// runs next even mid-stampede. All @MainActor, so the counters need no locking.
     private static let maxConcurrentResolves = 3
     private var activeResolves = 0
-    private var resolveWaiters: [(priority: Bool, cont: CheckedContinuation<Void, Never>)] = []
+    private var resolveWaiters: [(priority: Bool, albumId: String,
+                                  cont: CheckedContinuation<Void, Never>)] = []
 
-    private func acquireResolveSlot(priority: Bool) async {
+    private func acquireResolveSlot(priority: Bool, albumId: String) async {
         if activeResolves < Self.maxConcurrentResolves {
             activeResolves += 1
             return
         }
         await withCheckedContinuation { cont in
-            if priority { resolveWaiters.insert((true, cont), at: 0) }
-            else { resolveWaiters.append((false, cont)) }
+            if priority { resolveWaiters.insert((true, albumId, cont), at: 0) }
+            else { resolveWaiters.append((false, albumId, cont)) }
         }
         // Resumed by a release — the finishing task's slot transfers, counters untouched.
+    }
+
+    /// A `priority` request that DEDUPS onto an in-flight resolve must not inherit that row's
+    /// queue position (the card would wait for wherever its album happened to sit in the
+    /// connect stampede — ~worst-case the whole queue) — promote the in-flight task's waiter
+    /// to the front instead.
+    private func promoteWaiter(albumId: String) {
+        guard let i = resolveWaiters.firstIndex(where: { $0.albumId == albumId }), i > 0 else { return }
+        resolveWaiters.insert(resolveWaiters.remove(at: i), at: 0)
     }
 
     private func releaseResolveSlot() {
@@ -81,11 +91,14 @@ final class AlbumArtworkStore {
             missedAt[albumId] = nil               // TTL expired — eligible to retry
         }
         guard ready(), !candidates.isEmpty else { return nil }   // not ready ⇒ retry later (no miss)
-        if let task = inFlight[albumId] { return await task.value }
+        if let task = inFlight[albumId] {
+            if priority { promoteWaiter(albumId: albumId) }      // the card never queues mid-pack
+            return await task.value
+        }
 
         let resolve = self.resolve
         let task = Task { @MainActor [weak self] () -> URL? in
-            await self?.acquireResolveSlot(priority: priority)
+            await self?.acquireResolveSlot(priority: priority, albumId: albumId)
             defer { self?.releaseResolveSlot() }
             for song in candidates {
                 if let url = await resolve(song) { return url }

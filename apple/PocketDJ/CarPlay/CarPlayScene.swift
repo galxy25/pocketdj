@@ -136,11 +136,14 @@ final class CarPlayController {
             _ = mix.autoPaused
             _ = mix.autoSourceLabel
             // Track changes arrive via `autoStatus` (inequality-guarded "n / count · deck"
-            // readout) — NEVER `onAirTrack`, whose getter reads the whole DeckState stored
-            // property: glide transitions mutate that deck ~10 Hz for the full pre+post-roll,
-            // which would have stormed ~200 template rebuilds per transition (verified by
-            // probe: `mutate` fires observation on every write, changed value or not).
+            // readout). `onAirTrack` is tracked too — its getter registers the whole
+            // DeckState, which glide transitions mutate ~10 Hz for the full pre+post-roll
+            // (probed: `mutate` fires observation on every write, changed value or not), but
+            // `refreshMixTab`'s signature guard makes each over-fire a string compare, never a
+            // template push — and it's what keeps a track hand-loaded onto the live deck from
+            // the phone (reachable during a hand-mixing pause) fresh on the car's state row.
             _ = mix.autoStatus
+            _ = mix.onAirTrack?.songId
             _ = mix.fxGlideEnabled
             _ = mix.mixGlideEnabled
         } onChange: { [weak self] in
