@@ -232,13 +232,16 @@ final class TransferCoordinator: NSObject {
     /// recoverable) then create + resume a background download task for `url`. The task's real
     /// identifier overwrites the record's placeholder. Returns the live task's identifier.
     @discardableResult
-    /// A PRESIGNED S3 URL carries its auth in the query string — adding a bearer header on
-    /// top makes S3 reject the request outright (400 InvalidArgument, "Only one auth
-    /// mechanism allowed"). That 400's small XML body then used to be finalized as the
-    /// "downloaded" mp3 (the MobileOne 2026-09-01 bug: rows listed, nothing ever played).
-    /// Static + pure so the regression test pins the predicate directly.
+    /// The bearer authenticates to the rip server — it must never ride to S3, which 400s BOTH
+    /// a presigned URL carrying a second auth mechanism AND a plain public-bucket GET carrying
+    /// a non-AWS Authorization header ("Unsupported Authorization Type"). Either error's small
+    /// XML body then used to be finalized as the "downloaded" mp3 (the 2026-09-01 poisoned-
+    /// burns bug). Static + pure so the regression test pins the predicate directly.
     nonisolated static func shouldAttachBearer(to url: URL, token: String) -> Bool {
-        !token.isEmpty && url.query?.contains("X-Amz-Signature") != true
+        guard !token.isEmpty else { return false }
+        if url.query?.contains("X-Amz-Signature") == true { return false }
+        if url.host?.hasSuffix("amazonaws.com") == true { return false }
+        return true
     }
 
     func enqueueDownload(url: URL, token: String, profileId: String = "", record: TransferRecord) -> Int {
