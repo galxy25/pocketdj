@@ -874,7 +874,11 @@ struct SettingsData: Codable {
     var forYouRefreshWeekday: Int?
 
     static let `default` = SettingsData(
-        sources: [SourceConfig(name: "My Vinyl", urlString: Config.indexURL.absoluteString)],
+        // No shipped default catalog source — same reasoning as the blank rip/jukebox URLs
+        // just below: a fresh install must not seed straight into the developer's own
+        // vinyl/digital/Apple Music catalog. A new user adds their own source(s) in
+        // Settings ▸ Sources; the app shows its existing empty/no-catalog state until then.
+        sources: [],
         // #TOUPDATE: no shipped default rip/jukebox server URL — seeded BLANK so `hasServer`
         // is honestly false out of the box (server features show "No rip server configured"
         // until the user sets a URL). This also keeps the old personal-tailnet hostname out of
