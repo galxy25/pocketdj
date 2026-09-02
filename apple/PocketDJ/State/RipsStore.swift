@@ -2050,12 +2050,16 @@ final class RipsStore {
     // MARK: Helpers
 
     private func applyAuth(_ request: inout URLRequest, token: String) {
-        // NEVER bearer a presigned S3 URL: its auth lives in the query string, and S3 rejects
-        // a request carrying both ("Only one auth mechanism allowed" → 400 whose XML body then
-        // masquerades as the fetched payload). Guarded HERE at the choke point so no individual
-        // call site can reintroduce it (the MobileOne 2026-09-01 bug).
-        let presigned = request.url?.query?.contains("X-Amz-Signature") == true
-        if !token.isEmpty && !presigned { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        // The bearer authenticates to THE RIP SERVER — attach it only to requests whose host
+        // IS the rip server. Anywhere else it breaks the request outright: S3 rejects a
+        // presigned URL carrying a second mechanism ("Only one auth mechanism allowed") AND a
+        // plain public-bucket GET carrying a non-AWS Authorization header ("Unsupported
+        // Authorization Type") — both 400s whose small XML bodies then masqueraded as the
+        // fetched payload (the 2026-09-01 poisoned-burns bug, iOS presign + macOS in-process
+        // halves). Guarded HERE at the choke point so no call site can reintroduce it.
+        let serverHost = URL(string: serverUrl)?.host
+        let sameHost = serverHost != nil && request.url?.host == serverHost
+        if !token.isEmpty && sameHost { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         // Per-user identity rides alongside the shared bearer on every rip-server call.
         PDJIdentityHeaders.apply(to: &request, profileId: profileIdProvider())
     }

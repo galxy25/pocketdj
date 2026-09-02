@@ -48,14 +48,34 @@ final class PresignAuthTests: XCTestCase {
         XCTAssertNil(s3Auth, "the presigned S3 fetch must NOT carry a bearer (S3 400s double auth)")
     }
 
-    /// 2: the background-download request builder skips the bearer for presigned URLs and
-    /// keeps it for plain rip-server URLs.
+    /// 2: the background-download request builder skips the bearer for presigned URLs AND for
+    /// any S3 host (plain public-bucket GETs also 400 on a non-AWS Authorization header —
+    /// "Unsupported Authorization Type", the macOS half of the bug), and keeps it only for
+    /// rip-server URLs.
     func testEnqueueDownloadSkipsBearerForPresignedURL() {
         let presigned = URL(string: "https://bucket.s3.test/rips/x.mp3?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=abc")!
+        let plainS3 = URL(string: "https://pocketdj-rips-1.s3.us-west-2.amazonaws.com/rips/x.mp3")!
         let plain = URL(string: "https://imac.test/hls/x/index.m3u8")!
         XCTAssertFalse(TransferCoordinator.shouldAttachBearer(to: presigned, token: "t"))
+        XCTAssertFalse(TransferCoordinator.shouldAttachBearer(to: plainS3, token: "t"),
+                       "plain public S3 rejects a bearer header too (Unsupported Authorization Type)")
         XCTAssertTrue(TransferCoordinator.shouldAttachBearer(to: plain, token: "t"))
         XCTAssertFalse(TransferCoordinator.shouldAttachBearer(to: plain, token: ""), "no token, no header")
+    }
+
+    /// 2b (the macOS in-process half): `downloadDataIfCached` fetches the DIRECT ripsBase URL —
+    /// with a token configured, that request must carry no bearer (its host isn't the rip
+    /// server), while the rip-server call keeps it. Pins `applyAuth`'s host rule end-to-end.
+    func testDirectS3FetchCarriesNoBearer() async throws {
+        let rips = makeRips()
+        rips.setManifest(["sng_d": .init(key: "rips/sng_d.mp3", source: "digital")])
+        PresignStubURLProtocol.bodyByPath["/rips/sng_d.mp3"] = Data("MP3-DIRECT".utf8)
+
+        let out = try await rips.downloadDataIfCached((id: "sng_d", title: "T", artist: "A"))
+
+        XCTAssertEqual(String(decoding: out?.data ?? Data(), as: UTF8.self), "MP3-DIRECT")
+        let auth = PresignStubURLProtocol.authHeaderByPath["/rips/sng_d.mp3"] ?? nil
+        XCTAssertNil(auth, "a direct ripsBase (S3-host) fetch must not carry the rip-server bearer")
     }
 
     /// 3: a .ready item whose "audio" is S3's XML error body is pruned (record + file) by the
