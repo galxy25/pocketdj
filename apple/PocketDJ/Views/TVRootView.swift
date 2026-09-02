@@ -10,24 +10,27 @@ import SwiftUI
 /// RootView runs everywhere else — same app-scoped stores, same launch pipeline (RootView
 /// attaches `launchActions()` to this view on tvOS), different furniture.
 ///
-/// The tab set IS the TV feature set:
-///   • **Mix** — the DEFAULT tab: Auto DJ, pared down to "pick a collection, Play/Shuffle",
-///     plus an omni search bar that browses every local collection AND Discover to feed the
-///     running auto queue. No manual decks, no per-deck effects — the phone/Mac keep those.
-///   • **Browse** — the collections (playlists / pockets / set lists), pushed into the SAME
-///     detail views every platform uses (`pocketDJDestinations`), with Play/Shuffle a
-///     long-press away on every row.
+/// The tab set IS the TV feature set (reshaped by Levi's on-device pass, 2026-09-02):
+///   • **Now Playing** — the DEFAULT tab: the shared home deck (`NowPlayingPanel` whole —
+///     record, transport, Up Next, its own add-search). The old bottom NP strip is gone.
+///   • **Mix** — Auto DJ, pared down to "pick a collection, Play/Shuffle". The omni search
+///     column was removed on-device: Browse owns library search now. No manual decks.
+///   • **Browse** — the collections (playlists / pockets / set lists) in the SAME detail
+///     views every platform uses (`pocketDJDestinations`), plus a library-wide search bar
+///     (songs / artists / albums / collections). Play/Shuffle a long-press away per row.
 ///   • **For You** — the same tile grid History carries elsewhere; read-only + play.
 ///   • **Jukebox** — the HOST surface: the session QR on the big screen is the whole point
 ///     of a TV jukebox (the room scans the television).
-///   • **Settings** — minimal: profile, the iCloud sync toggle, and a READ-ONLY status of
-///     the synced connection credentials (the TV never grows a credential-typing flow —
-///     they arrive via the settings-credentials cloud doc).
+///   • **Settings** — profile, the iCloud sync toggle, and the synced connection
+///     credentials — EDITABLE here (focusable rows are also what lets tvOS scroll; the
+///     read-only LabeledContent rows were a focus trap that pinned the Form at "Sync now").
+///     Normally they just arrive via the settings-credentials cloud doc.
 ///
 /// There is deliberately NO Producer tab (owner: "NO Producer surface at all") and no
 /// History/Games — the TV is for playing music, not editing it.
 struct TVRootView: View {
     enum TVTab: String, CaseIterable, Identifiable {
+        case nowPlaying = "Now Playing"
         case mix = "Mix"
         case browse = "Browse"
         case forYou = "For You"
@@ -36,6 +39,7 @@ struct TVRootView: View {
         var id: String { rawValue }
         var icon: String {
             switch self {
+            case .nowPlaying: return "play.circle"
             case .mix:      return "wand.and.stars"
             case .browse:   return "music.note.list"
             case .forYou:   return "sparkles"
@@ -45,8 +49,9 @@ struct TVRootView: View {
         }
     }
 
-    /// Mix is the launch tab BY SPEC (the TV defaults to Auto DJ).
-    @State private var tab: TVTab = .mix
+    /// Now Playing is the launch tab (Levi, on-device 2026-09-02 — supersedes the original
+    /// Mix-default spec); the bottom NP strip is gone with it.
+    @State private var tab: TVTab = .nowPlaying
     /// Multi-select plumbing some shared rows read from the environment (CollectionSongRow
     /// etc.). The TV never drag-selects, but the environment object must exist for the
     /// shared detail views to render — one per shell, exactly like RootView's per-window one.
@@ -54,6 +59,9 @@ struct TVRootView: View {
 
     var body: some View {
         TabView(selection: $tab) {
+            TVNowPlayingView()
+                .tabItem { Label(TVTab.nowPlaying.rawValue, systemImage: TVTab.nowPlaying.icon) }
+                .tag(TVTab.nowPlaying)
             TVMixView()
                 .tabItem { Label(TVTab.mix.rawValue, systemImage: TVTab.mix.icon) }
                 .tag(TVTab.mix)
@@ -88,7 +96,42 @@ struct TVRootView: View {
 }
 
 // ============================================================================
-// MARK: - Mix (Auto DJ) — the default tab
+// MARK: - Now Playing — the default tab
+// ============================================================================
+
+/// The DEFAULT TV tab (Levi, on-device 2026-09-02): the same home Now Playing deck every
+/// other platform gets — gold record, transport, Up Next, played history, and the panel's
+/// own add-search — reused whole rather than rebuilt. `NowPlayingPanel` hides its deck
+/// machinery behind `isVisible`, so an idle app gets an honest empty state with focusable
+/// jump-offs instead of a blank screen (a TV tab must never render nothing).
+struct TVNowPlayingView: View {
+    @Environment(SetlistPlayer.self) private var sequencer
+    @Environment(MixEngine.self) private var mix
+
+    var body: some View {
+        Group {
+            if NowPlayingPanel.isVisible(sequencer: sequencer, mix: mix) || mix.autoMixing {
+                ScrollView {
+                    NowPlayingPanel()
+                        .frame(maxWidth: 1120)
+                        .padding(.vertical, 24)
+                        .frame(maxWidth: .infinity)   // center the panel column
+                }
+            } else {
+                ContentUnavailableView {
+                    Label("Nothing playing", systemImage: "play.circle")
+                } description: {
+                    Text("Start a collection from Browse, an Auto DJ mix from Mix, or a For You pick — playback lands here.")
+                }
+            }
+        }
+        .background(Theme.bg.ignoresSafeArea())
+        .accessibilityIdentifier("tv-now-playing")
+    }
+}
+
+// ============================================================================
+// MARK: - Mix (Auto DJ)
 // ============================================================================
 
 /// TV Mix = Auto DJ only. Everything rides the SAME app-scoped `MixEngine` + intent door
@@ -111,55 +154,28 @@ struct TVMixView: View {
     @State private var source: MixSource?
     @State private var startError: String?
 
-    // ── Omni search state ────────────────────────────────────────────────────
-    @State private var query = ""
-    @State private var localHits: [TVLocalHit] = []
-    @State private var discoverHits: [RipsStore.DiscoverHit] = []
-    @State private var searching = false
-    @State private var searchTask: Task<Void, Never>?
-    /// songId → first collection it was found in — built LAZILY on the first search and
-    /// cached for the view's lifetime (resolving every collection per keystroke would
-    /// re-walk pocket DAGs each time).
-    @State private var localIndex: [TVLocalHit]?
-    /// Accepted-but-not-yet-burned adds headed for the auto queue (the Jukebox's
-    /// pending-insert pattern, scoped to this surface): rip+burn kicked, insert lands
-    /// when the file exists, let go after 15 minutes or when the mix ends.
-    @State private var pending: [TVPendingAdd] = []
-    @State private var toast: String?
-    @State private var toastTask: Task<Void, Never>?
-
     var body: some View {
         NavigationStack(path: $path) {
-            HStack(alignment: .top, spacing: 48) {
-                VStack(alignment: .leading, spacing: 28) {
-                    if engine.autoMixing {
-                        liveCard
-                        upNext
-                    } else {
-                        setupCard
-                    }
-                    Spacer(minLength: 0)
+            // Single centered column — the omni-search side column was removed on Levi's
+            // on-device call (2026-09-02): Browse owns library search, the Now Playing tab's
+            // panel owns add-to-queue search, and the Mix surface stays a clean Auto DJ deck.
+            VStack(alignment: .leading, spacing: 28) {
+                if engine.autoMixing {
+                    liveCard
+                    upNext
+                } else {
+                    setupCard
                 }
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                searchColumn
-                    .frame(width: 700)
+                Spacer(minLength: 0)
             }
+            .frame(maxWidth: 1100, alignment: .topLeading)
+            .frame(maxWidth: .infinity)
             .padding(.horizontal, 64)
             .padding(.vertical, 40)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .frame(maxHeight: .infinity, alignment: .top)
             .background(Theme.bg.ignoresSafeArea())
             .navigationTitle("Mix")
             .pocketDJDestinations(path: $path)
-        }
-        // Drain loop for rip-in-flight adds: ticks while anything is pending, stops itself
-        // when the list empties (the Bool id restarts it when the first add parks).
-        .task(id: pending.isEmpty) {
-            guard !pending.isEmpty else { return }
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 5_000_000_000)
-                drainPending()
-                if pending.isEmpty { break }
-            }
         }
     }
 
@@ -336,256 +352,8 @@ struct TVMixView: View {
         }
     }
 
-    // MARK: Omni search (local collections + Discover)
-
-    private var searchColumn: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            TextField("Search your collections + Apple Music", text: $query)
-                .accessibilityIdentifier("tv-mix-search")
-                .onChange(of: query) { _, q in scheduleSearch(q) }
-                .onSubmit { scheduleSearch(query, immediate: true) }
-            if let toast {
-                Label(toast, systemImage: "checkmark.circle")
-                    .font(.callout)
-                    .foregroundStyle(Theme.accent)
-                    .accessibilityIdentifier("tv-mix-toast")
-            }
-            if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                Text(engine.autoMixing
-                     ? "Find a track anywhere — your collections or the Apple Music catalog — and add it to the queue."
-                     : "Find a track anywhere and play it. Start an Auto DJ mix to build a queue.")
-                    .font(.callout)
-                    .foregroundStyle(Theme.fgDim)
-            } else {
-                resultsList
-            }
-        }
-        .padding(28)
-        .background(Theme.bgRaised.opacity(0.6), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-    }
-
-    private var resultsList: some View {
-        List {
-            if !localHits.isEmpty {
-                Section("Your collections") {
-                    ForEach(localHits) { hit in
-                        resultRow(title: hit.song.name, subtitle: "\(hit.song.artist) · \(hit.collection)") {
-                            addLocal(hit.song, placement: .end)
-                        } menu: {
-                            placementMenu { addLocal(hit.song, placement: $0) }
-                        }
-                        .accessibilityIdentifier("tv-search-local-\(hit.song.id)")
-                    }
-                }
-            }
-            if !discoverHits.isEmpty {
-                Section("Discover — Apple Music") {
-                    ForEach(discoverHits) { hit in
-                        resultRow(title: hit.title,
-                                  subtitle: hit.album.map { "\(hit.artist) · \($0)" } ?? hit.artist) {
-                            addDiscover(hit, placement: .end)
-                        } menu: {
-                            placementMenu { addDiscover(hit, placement: $0) }
-                        }
-                        .accessibilityIdentifier("tv-search-discover-\(hit.songId)")
-                    }
-                }
-            }
-            if searching {
-                HStack { Spacer(); ProgressView(); Spacer() }
-            } else if localHits.isEmpty && discoverHits.isEmpty {
-                Text(rips.discoverError ?? "No matches.")
-                    .font(.callout)
-                    .foregroundStyle(Theme.fgDim)
-            }
-        }
-        .listStyle(.plain)
-        .scrollClipDisabled()
-    }
-
-    /// One focusable result row: press = the primary action (queue while mixing, play
-    /// otherwise); long-press = the placement menu while a mix runs.
-    private func resultRow(title: String, subtitle: String,
-                           action: @escaping () -> Void,
-                           @ViewBuilder menu: @escaping () -> some View) -> some View {
-        Button(action: action) {
-            HStack(spacing: 14) {
-                VStack(alignment: .leading, spacing: 2) {
-                    // No absolute colors on a FOCUSABLE label: the focused tvOS platter is
-                    // white, so the style's own primary/secondary must drive the contrast.
-                    Text(title).font(.callout.weight(.medium)).lineLimit(1)
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                Image(systemName: engine.autoMixing ? "text.badge.plus" : "play.fill")
-                    .foregroundStyle(Theme.accent)
-            }
-        }
-        .contextMenu { menu() }
-    }
-
-    /// Play Next / Play Last / Surprise Slot — the Jukebox's placement verbs, reused for
-    /// the DJ's own adds so guests and host share one mental model. Only offered while a
-    /// mix is running (placement is meaningless otherwise).
-    @ViewBuilder private func placementMenu(_ add: @escaping (JukeboxDecisionAction) -> Void) -> some View {
-        if engine.autoMixing {
-            Button { add(.next) } label: { Label("Play next", systemImage: "text.line.first.and.arrowtriangle.forward") }
-            Button { add(.end) } label: { Label("Play last", systemImage: "text.line.last.and.arrowtriangle.forward") }
-            Button { add(.random) } label: { Label("Surprise slot", systemImage: "dice") }
-        }
-    }
-
-    private func scheduleSearch(_ raw: String, immediate: Bool = false) {
-        searchTask?.cancel()
-        let q = raw.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else {
-            localHits = []; discoverHits = []; searching = false
-            return
-        }
-        searchTask = Task {
-            if !immediate { try? await Task.sleep(nanoseconds: 300_000_000) }
-            guard !Task.isCancelled else { return }
-            runLocalSearch(q)
-            searching = true
-            let hits = await rips.discoverSearch(q, limit: 12)
-            guard !Task.isCancelled else { return }
-            discoverHits = RipsStore.DiscoverExplicitRanking.rank(hits, preferExplicit: settings.preferExplicitVersions)
-            searching = false
-        }
-    }
-
-    /// Search EVERY local collection (playlists + pockets + set lists), first-seen wins —
-    /// the "omni" half. Matches on title + artist, all query tokens required.
-    private func runLocalSearch(_ q: String) {
-        if localIndex == nil { localIndex = buildLocalIndex() }
-        let tokens = q.lowercased().split(separator: " ").map(String.init)
-        localHits = Array((localIndex ?? []).filter { hit in
-            let hay = "\(hit.song.name) \(hit.song.artist)".lowercased()
-            return tokens.allSatisfy { hay.contains($0) }
-        }.prefix(20))
-    }
-
-    private func buildLocalIndex() -> [TVLocalHit] {
-        var seen = Set<String>()
-        var out: [TVLocalHit] = []
-        func add(_ ids: [String], from name: String) {
-            for id in ids where !seen.contains(id) {
-                guard let song = app.songsById[id] else { continue }
-                seen.insert(id)
-                out.append(TVLocalHit(song: song, collection: name))
-            }
-        }
-        for p in collections.playlists { add(collections.playableIds(forPlaylist: p.id), from: p.name) }
-        for p in collections.pockets { add(collections.playableIds(forPocket: p.id), from: p.name) }
-        for s in collections.visibleSetlists { add(collections.playableIds(forSetlist: s.id), from: s.name ?? "Set list") }
-        return out
-    }
-
-    // MARK: Adding / playing from search
-
-    private func addLocal(_ song: IndexSong, placement: JukeboxDecisionAction) {
-        let loadable = MixLoadable(songId: song.id, title: song.name, artist: song.artist,
-                                   bpm: song.bpm, camelot: song.camelot, key: song.key,
-                                   albumId: song.albumId, lengthMs: song.length)
-        if engine.autoMixing {
-            queue(loadable, appleMusicId: song.appleMusicId, placement: placement)
-        } else {
-            // No mix on air: the tap just plays it (the app-scoped Now Playing set).
-            Task { _ = try? await intents.playSong(id: song.id) }
-            toastShow("Playing “\(song.name)”")
-        }
-    }
-
-    private func addDiscover(_ hit: RipsStore.DiscoverHit, placement: JukeboxDecisionAction) {
-        if engine.autoMixing {
-            let loadable = MixLoadable(songId: hit.songId, title: hit.title, artist: hit.artist,
-                                       bpm: nil, camelot: nil, key: nil, albumId: nil,
-                                       lengthMs: hit.durationMs)
-            queue(loadable, appleMusicId: hit.appleMusicId, placement: placement)
-        } else if app.songsById[hit.songId] != nil {
-            Task { _ = try? await intents.playSong(id: hit.songId) }
-            toastShow("Playing “\(hit.title)”")
-        } else if !hit.appleMusicId.isEmpty {
-            // Apple-Music-only hit with nothing on air: stream it through the sequencer via
-            // the namespaced id — the same door a Jukebox accept uses when no mix runs.
-            let item = SetlistPlayer.Item(id: AppleMusicCatalog.namespacedSongID(hit.appleMusicId),
-                                          title: hit.title, artist: hit.artist,
-                                          lengthMs: hit.durationMs)
-            if sequencer.isRunning {
-                sequencer.appendToQueue([item])
-                toastShow("Added to Now Playing")
-            } else {
-                sequencer.play([item])
-                toastShow("Playing “\(hit.title)”")
-            }
-        }
-    }
-
-    /// Insert into the RUNNING auto queue — immediately when the burned file exists;
-    /// otherwise kick rip+burn and park the insert (the Jukebox broadcast-accept pattern).
-    private func queue(_ loadable: MixLoadable, appleMusicId: String?, placement: JukeboxDecisionAction) {
-        let durationMs = loadable.lengthMs ?? 180_000
-        if burns.localURL(forSong: loadable.songId) != nil {
-            engine.autoQueueInsert(.init(loadable: loadable, durationMs: durationMs), placement: placement)
-            toastShow("Queued “\(loadable.title)”")
-        } else {
-            burns.startRipAndBurn(songId: loadable.songId, title: loadable.title,
-                                  artist: loadable.artist, appleMusicId: appleMusicId,
-                                  lengthMs: loadable.lengthMs)
-            pending.append(TVPendingAdd(loadable: loadable, durationMs: durationMs,
-                                        placement: placement,
-                                        deadline: Date().timeIntervalSince1970 + 15 * 60))
-            toastShow("Preparing “\(loadable.title)” — it joins the queue when ready")
-        }
-    }
-
-    /// Land parked adds whose burn finished. If the mix ended while the rip ran, the add
-    /// is let go — a dead mix doesn't need a queue.
-    private func drainPending() {
-        let now = Date().timeIntervalSince1970
-        var still: [TVPendingAdd] = []
-        for p in pending {
-            if now > p.deadline { continue }
-            guard burns.localURL(forSong: p.loadable.songId) != nil else {
-                still.append(p)
-                continue
-            }
-            if engine.autoMixing {
-                engine.autoQueueInsert(.init(loadable: p.loadable, durationMs: p.durationMs),
-                                       placement: p.placement)
-                toastShow("Queued “\(p.loadable.title)”")
-            }
-        }
-        pending = still
-    }
-
-    private func toastShow(_ message: String) {
-        toast = message
-        toastTask?.cancel()
-        toastTask = Task {
-            try? await Task.sleep(nanoseconds: 4_000_000_000)
-            guard !Task.isCancelled else { return }
-            toast = nil
-        }
-    }
 }
 
-/// One omni-search hit from the local collections: the catalog song + the first
-/// collection it was found in (display context).
-private struct TVLocalHit: Identifiable {
-    let song: IndexSong
-    let collection: String
-    var id: String { song.id }
-}
-
-/// An accepted search add whose burned file doesn't exist yet (rip+burn in flight).
-private struct TVPendingAdd: Identifiable {
-    let loadable: MixLoadable
-    let durationMs: Int
-    let placement: JukeboxDecisionAction
-    let deadline: TimeInterval
-    var id: String { loadable.songId }
-}
 
 // ============================================================================
 // MARK: - Browse (collections)
@@ -599,12 +367,18 @@ private struct TVPendingAdd: Identifiable {
 struct TVBrowseView: View {
     @Environment(CollectionsStore.self) private var collections
     @Environment(IntentServices.self) private var intents
+    @Environment(AppModel.self) private var app
     @State private var path = NavigationPath()
+    /// Library-wide search (Levi, on-device 2026-09-02): songs, artists, albums, and
+    /// collections that exist in YOUR catalog — local only, no Discover here.
+    @State private var query = ""
 
     var body: some View {
         NavigationStack(path: $path) {
             Group {
-                if collections.playlists.isEmpty && collections.pockets.isEmpty
+                if !query.trimmingCharacters(in: .whitespaces).isEmpty {
+                    searchResults
+                } else if collections.playlists.isEmpty && collections.pockets.isEmpty
                     && collections.visibleSetlists.isEmpty {
                     ContentUnavailableView {
                         Label("No collections yet", systemImage: "music.note.list")
@@ -619,7 +393,100 @@ struct TVBrowseView: View {
             .navigationTitle("Browse")
             .pocketDJDestinations(path: $path)
         }
-        .safeAreaInset(edge: .bottom) { TVNowPlayingStrip() }
+        .searchable(text: $query, prompt: "Songs, artists, albums, collections")
+    }
+
+    // MARK: Library search
+
+    /// Ranked local results via the shared `NowPlayingSearch` helpers (same scorer the home
+    /// panel's add-search uses), plus name-matched collections. Everything pushes the SAME
+    /// shared detail screens; songs also offer Play from the context menu.
+    private var searchResults: some View {
+        let q = query
+        let songHits = NowPlayingSearch.songs(matching: q, in: app.songs)
+        let albumHits = NowPlayingSearch.albums(matching: q, in: app.albums)
+        let artistHits = Array(Set(songHits.map(\.artist)).union(
+            Set(albumHits.map(\.artist))).filter { $0.localizedCaseInsensitiveContains(q) })
+            .sorted().prefix(6)
+        let norm = q.lowercased()
+        let playlistHits = collections.playlists.filter { $0.name.lowercased().contains(norm) }.prefix(6)
+        let pocketHits = collections.pockets.filter { $0.name.lowercased().contains(norm) }.prefix(6)
+        let setlistHits = collections.visibleSetlists.filter { ($0.name ?? "").lowercased().contains(norm) }.prefix(6)
+        let empty = songHits.isEmpty && albumHits.isEmpty && artistHits.isEmpty
+            && playlistHits.isEmpty && pocketHits.isEmpty && setlistHits.isEmpty
+        return List {
+            if empty {
+                ContentUnavailableView.search(text: q)
+            }
+            if !playlistHits.isEmpty || !pocketHits.isEmpty || !setlistHits.isEmpty {
+                Section("Collections") {
+                    ForEach(Array(playlistHits)) { p in
+                        row(value: p, icon: "music.note.list", name: p.name,
+                            ids: { collections.playableIds(forPlaylist: p.id) })
+                    }
+                    ForEach(Array(pocketHits)) { p in
+                        row(value: p, icon: "rectangle.stack", name: p.name,
+                            ids: { collections.playableIds(forPocket: p.id) })
+                    }
+                    ForEach(Array(setlistHits)) { s in
+                        row(value: s, icon: "list.number", name: s.name ?? "Set list",
+                            ids: { collections.playableIds(forSetlist: s.id) })
+                    }
+                }
+            }
+            if !artistHits.isEmpty {
+                Section("Artists") {
+                    ForEach(Array(artistHits), id: \.self) { name in
+                        NavigationLink(value: Artist(name: name)) {
+                            HStack(spacing: 16) {
+                                Image(systemName: "music.microphone").foregroundStyle(Theme.accent)
+                                Text(name).lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                        }
+                    }
+                }
+            }
+            if !albumHits.isEmpty {
+                Section("Albums") {
+                    ForEach(albumHits) { album in
+                        NavigationLink(value: album) {
+                            HStack(spacing: 16) {
+                                Image(systemName: "square.stack").foregroundStyle(Theme.accent)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(album.name).lineLimit(1)
+                                    Text(album.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                        }
+                    }
+                }
+            }
+            if !songHits.isEmpty {
+                Section("Songs") {
+                    ForEach(songHits) { song in
+                        NavigationLink(value: song) {
+                            HStack(spacing: 16) {
+                                Image(systemName: "music.note").foregroundStyle(Theme.accent)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(song.name).lineLimit(1)
+                                    Text(song.artist).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                        }
+                        .contextMenu {
+                            Button {
+                                CollectionPlayback.start([song.id], title: song.name,
+                                                         shuffle: false, intents: intents)
+                            } label: { Label("Play", systemImage: "play.fill") }
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.grouped)
     }
 
     private var collectionList: some View {
@@ -696,7 +563,6 @@ struct TVForYouView: View {
                 .navigationTitle("For You")
                 .pocketDJDestinations(path: $path)
         }
-        .safeAreaInset(edge: .bottom) { TVNowPlayingStrip() }
     }
 }
 
@@ -733,7 +599,8 @@ struct TVSettingsView: View {
     @Environment(ProfileStore.self) private var profile
 
     var body: some View {
-        NavigationStack {
+        @Bindable var settings = settings
+        return NavigationStack {
             Form {
                 Section {
                     LabeledContent("PocketDJ name",
@@ -770,15 +637,50 @@ struct TVSettingsView: View {
                 } footer: {
                     Text("Profile, collections, history, playback sessions, and connection settings sync through your private iCloud database.")
                 }
+                // EDITABLE connection fields (Levi, on-device 2026-09-02). Two reasons this
+                // is TextFields and not LabeledContent: (1) you can actually set config on
+                // the TV when sync hasn't delivered yet; (2) tvOS scrolls BY FOCUS, and
+                // LabeledContent isn't focusable — the old read-only rows pinned the Form at
+                // "Sync now" with everything below unreachable. Edits persist on commit and
+                // ride the settings-credentials cloud doc back to every other device.
                 Section {
-                    LabeledContent("Import / rip server", value: serverStatus(settings.ripServerURL, token: settings.ripToken))
-                    LabeledContent("Jukebox server", value: serverStatus(settings.jukeboxServerURL, token: settings.jukeboxToken))
-                    LabeledContent("Online search", value: searchStatus)
-                    LabeledContent("Apple Music sync", value: settings.appleMusicPrivateSync ? "On" : "Off")
+                    TextField("Import server URL", text: $settings.ripServerURL)
+                        .onSubmit { settings.persist() }
+                        .accessibilityIdentifier("tv-settings-rip-url")
+                    SecureField("Import server token", text: $settings.ripToken)
+                        .onSubmit { settings.persist() }
+                        .accessibilityIdentifier("tv-settings-rip-token")
                 } header: {
-                    Text("Connections")
+                    Text("Import server")
                 } footer: {
-                    Text("Read-only here — these sync from the devices where you set them up.")
+                    Text(serverStatus(settings.ripServerURL, token: settings.ripToken))
+                }
+                Section {
+                    TextField("Jukebox server URL", text: $settings.jukeboxServerURL)
+                        .onSubmit { settings.persist() }
+                        .accessibilityIdentifier("tv-settings-jukebox-url")
+                    SecureField("Jukebox token", text: $settings.jukeboxToken)
+                        .onSubmit { settings.persist() }
+                        .accessibilityIdentifier("tv-settings-jukebox-token")
+                } header: {
+                    Text("Jukebox")
+                } footer: {
+                    Text(serverStatus(settings.jukeboxServerURL, token: settings.jukeboxToken))
+                }
+                Section {
+                    TextField("Search endpoint", text: $settings.searchEndpoint)
+                        .onSubmit { settings.persist() }
+                        .accessibilityIdentifier("tv-settings-search-endpoint")
+                    TextField("Search access key", text: $settings.searchAccessKeyID)
+                        .onSubmit { settings.persist() }
+                        .accessibilityIdentifier("tv-settings-search-key")
+                    SecureField("Search secret key", text: $settings.searchSecretKey)
+                        .onSubmit { settings.persist() }
+                        .accessibilityIdentifier("tv-settings-search-secret")
+                } header: {
+                    Text("Online search")
+                } footer: {
+                    Text("\(searchStatus) · Apple Music sync \(settings.appleMusicPrivateSync ? "on" : "off"). These sync across your devices through iCloud — set them anywhere once.")
                 }
                 Section("About") {
                     LabeledContent("Version", value: Self.versionLine)
@@ -819,53 +721,5 @@ struct TVSettingsView: View {
     }
 }
 
-// ============================================================================
-// MARK: - Now Playing strip (Browse / For You)
-// ============================================================================
-
-/// A slim lean-back transport for the app-scoped sequencer — visible whenever collection
-/// playback owns the audio (it yields to a running/suspended Mix exactly like the docked
-/// panel does, via the same `NowPlayingPanel.isVisible` rule). Transport routes through
-/// the panel's statics so backend ownership (Apple Music vs PlayerEngine) is identical.
-struct TVNowPlayingStrip: View {
-    @Environment(SetlistPlayer.self) private var sequencer
-    @Environment(MixEngine.self) private var mix
-    @Environment(PlayerEngine.self) private var player
-    @Environment(PlaybackCoordinator.self) private var coordinator
-
-    var body: some View {
-        if NowPlayingPanel.isVisible(sequencer: sequencer, mix: mix) {
-            HStack(spacing: 24) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(currentItem?.title ?? "—")
-                        .font(.callout.weight(.semibold)).foregroundStyle(Theme.fg).lineLimit(1)
-                        .accessibilityIdentifier("tv-np-title")
-                    Text(currentItem?.artist ?? "")
-                        .font(.caption).foregroundStyle(Theme.fgDim).lineLimit(1)
-                }
-                Spacer(minLength: 12)
-                Button { sequencer.skipPrevious() } label: { Image(systemName: "backward.fill") }
-                    .accessibilityIdentifier("tv-np-previous")
-                Button {
-                    NowPlayingPanel.togglePlayPause(sequencer: sequencer, coordinator: coordinator, player: player)
-                } label: {
-                    Image(systemName: NowPlayingPanel.isPlayingNow(coordinator: coordinator, player: player)
-                          ? "pause.fill" : "play.fill")
-                }
-                .accessibilityIdentifier("tv-np-playpause")
-                Button { sequencer.skipNext() } label: { Image(systemName: "forward.fill") }
-                    .accessibilityIdentifier("tv-np-next")
-            }
-            .padding(.horizontal, 40)
-            .padding(.vertical, 16)
-            .background(.thinMaterial)
-        }
-    }
-
-    private var currentItem: SetlistPlayer.Item? {
-        guard sequencer.isRunning, sequencer.index < sequencer.queue.count else { return nil }
-        return sequencer.queue[sequencer.index]
-    }
-}
 
 #endif
