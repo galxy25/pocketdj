@@ -134,5 +134,11 @@ extension SettingsStore {
         if let priv = doc.appleMusicPrivateSync { appleMusicPrivateSyncRaw = priv }
         if let synced = doc.sources { sources = synced }   // nil = pre-sources doc; leave local list
         persist()
+        // Presence facts only — never the values.
+        DiagLog.shared.log("credsync",
+            "applied: rip(url=\(!ripServerURL.isEmpty) tok=\(!ripToken.isEmpty)) " +
+            "jb(url=\(!jukeboxServerURL.isEmpty) tok=\(!jukeboxToken.isEmpty)) " +
+            "search(keys=\(!searchAccessKeyID.isEmpty && !searchSecretKey.isEmpty) ep=\(!searchEndpoint.isEmpty)) " +
+            "sources=\(doc.sources?.count.description ?? "nil")")
     }
 }
