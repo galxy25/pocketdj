@@ -520,7 +520,10 @@ final class AppModel {
         if let loader {
             self.loader = loader
         } else if ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil {
-            self.loader = FixtureCatalog()
+            // Honor PDJ_FIXTURE_RESOURCE here too (the App Store screenshot driver's bigger
+            // sample catalog) — this branch, not CatalogLoaderFactory, is what the app hits.
+            let resource = ProcessInfo.processInfo.environment["PDJ_FIXTURE_RESOURCE"] ?? "fixture-index"
+            self.loader = FixtureCatalog(resource: resource)
         } else {
             self.loader = nil
         }

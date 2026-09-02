@@ -1,0 +1,1349 @@
+{
+ "manifest": {
+  "source": "screenshot-sample",
+  "generatedAt": "2026-01-01T00:00:00.000Z",
+  "schemaVersion": "1.0.0",
+  "sourceType": "analog",
+  "sourceName": "My Vinyl",
+  "counts": {
+   "albums": 12,
+   "songs": 60
+  }
+ },
+ "albums": [
+  {
+   "id": "alb_1",
+   "artist": "Aria",
+   "name": "Night Drive",
+   "genre": "Electronic",
+   "year": 2020,
+   "country": "US",
+   "trackList": [
+    "sng_1",
+    "sng_2",
+    "sng_3",
+    "sng_4",
+    "sng_5"
+   ],
+   "fileType": "mp3"
+  },
+  {
+   "id": "alb_2",
+   "artist": "Velvet Meridian",
+   "name": "Slow Motion City",
+   "genre": "R&B",
+   "year": 2019,
+   "country": "US",
+   "trackList": [
+    "sng_6",
+    "sng_7",
+    "sng_8",
+    "sng_9",
+    "sng_10"
+   ],
+   "fileType": "mp3"
+  },
+  {
+   "id": "alb_3",
+   "artist": "The Paper Suns",
+   "name": "Analog Summer",
+   "genre": "Indie Rock",
+   "year": 2017,
+   "country": "US",
+   "trackList": [
+    "sng_11",
+    "sng_12",
+    "sng_13",
+    "sng_14",
+    "sng_15"
+   ],
+   "fileType": "mp3"
+  },
+  {
+   "id": "alb_4",
+   "artist": "DJ Meridian West",
+   "name": "Rooftop Sessions Vol. 2",
+   "genre": "House",
+   "year": 2022,
+   "country": "US",
+   "trackList": [
+    "sng_16",
+    "sng_17",
+    "sng_18",
+    "sng_19",
+    "sng_20"
+   ],
+   "fileType": "mp3"
+  },
+  {
+   "id": "alb_5",
+   "artist": "Luna Vale",
+   "name": "Paper Lanterns",
+   "genre": "Dream Pop",
+   "year": 2021,
+   "country": "US",
+   "trackList": [
+    "sng_21",
+    "sng_22",
+    "sng_23",
+    "sng_24",
+    "sng_25"
+   ],
+   "fileType": "mp3"
+  },
+  {
+   "id": "alb_6",
+   "artist": "Marrow & Pine",
+   "name": "The Long Field",
+   "genre": "Folk",
+   "year": 2016,
+   "country": "US",
+   "trackList": [
+    "sng_26",
+    "sng_27",
+    "sng_28",
+    "sng_29",
+    "sng_30"
+   ],
+   "fileType": "mp3"
+  },
+  {
+   "id": "alb_7",
+   "artist": "Static Bloom",
+   "name": "Voltage Garden",
+   "genre": "Synthwave",
+   "year": 2023,
+   "country": "US",
+   "trackList": [
+    "sng_31",
+    "sng_32",
+    "sng_33",
+    "sng_34",
+    "sng_35"
+   ],
+   "fileType": "mp3"
+  },
+  {
+   "id": "alb_8",
+   "artist": "Cora Jean",
+   "name": "Second Sunrise",
+   "genre": "Soul",
+   "year": 2018,
+   "country": "US",
+   "trackList": [
+    "sng_36",
+    "sng_37",
+    "sng_38",
+    "sng_39",
+    "sng_40"
+   ],
+   "fileType": "mp3"
+  },
+  {
+   "id": "alb_9",
+   "artist": "Kilo Frequency",
+   "name": "Bassline Cartography",
+   "genre": "Drum & Bass",
+   "year": 2022,
+   "country": "US",
+   "trackList": [
+    "sng_41",
+    "sng_42",
+    "sng_43",
+    "sng_44",
+    "sng_45"
+   ],
+   "fileType": "mp3"
+  },
+  {
+   "id": "alb_10",
+   "artist": "The Homely Astronauts",
+   "name": "Kitchen Table Space Program",
+   "genre": "Indie Pop",
+   "year": 2020,
+   "country": "US",
+   "trackList": [
+    "sng_46",
+    "sng_47",
+    "sng_48",
+    "sng_49",
+    "sng_50"
+   ],
+   "fileType": "mp3"
+  },
+  {
+   "id": "alb_11",
+   "artist": "Ivory Delta",
+   "name": "Riverline",
+   "genre": "Jazz",
+   "year": 2015,
+   "country": "US",
+   "trackList": [
+    "sng_51",
+    "sng_52",
+    "sng_53",
+    "sng_54",
+    "sng_55"
+   ],
+   "fileType": "mp3"
+  },
+  {
+   "id": "alb_12",
+   "artist": "Nova Scout",
+   "name": "Signal Fires",
+   "genre": "Alternative",
+   "year": 2024,
+   "country": "US",
+   "trackList": [
+    "sng_56",
+    "sng_57",
+    "sng_58",
+    "sng_59",
+    "sng_60"
+   ],
+   "fileType": "mp3"
+  }
+ ],
+ "songs": [
+  {
+   "id": "sng_1",
+   "dateAdded": 1705406400000,
+   "albumId": "alb_1",
+   "artist": "Aria",
+   "name": "Neon",
+   "trackNumber": 1,
+   "year": 2020,
+   "bpm": 119.6,
+   "key": "Ab minor",
+   "camelot": "1A",
+   "length": 222097,
+   "explicit": false,
+   "sentimentKeywords": [
+    "warm",
+    "calm",
+    "summer"
+   ]
+  },
+  {
+   "id": "sng_2",
+   "dateAdded": 1705492800000,
+   "albumId": "alb_1",
+   "artist": "Aria",
+   "name": "Afterglow",
+   "trackNumber": 2,
+   "year": 2020,
+   "bpm": 119.4,
+   "key": "B major",
+   "camelot": "1B",
+   "length": 292964,
+   "explicit": false,
+   "sentimentKeywords": [
+    "drive",
+    "late",
+    "uplift"
+   ]
+  },
+  {
+   "id": "sng_3",
+   "dateAdded": 1705579200000,
+   "albumId": "alb_1",
+   "artist": "Aria",
+   "name": "Skyline",
+   "trackNumber": 3,
+   "year": 2020,
+   "bpm": 118.4,
+   "key": "A minor",
+   "camelot": "8A",
+   "length": 207314,
+   "explicit": false,
+   "sentimentKeywords": [
+    "warm",
+    "dreamy",
+    "late"
+   ]
+  },
+  {
+   "id": "sng_4",
+   "dateAdded": 1705665600000,
+   "albumId": "alb_1",
+   "artist": "Aria",
+   "name": "Pulse",
+   "trackNumber": 4,
+   "year": 2020,
+   "bpm": 125.9,
+   "key": "A minor",
+   "camelot": "8A",
+   "length": 320363,
+   "explicit": false,
+   "sentimentKeywords": [
+    "calm",
+    "dreamy",
+    "uplift"
+   ]
+  },
+  {
+   "id": "sng_5",
+   "dateAdded": 1705752000000,
+   "albumId": "alb_1",
+   "artist": "Aria",
+   "name": "Golden Hour",
+   "trackNumber": 5,
+   "year": 2020,
+   "bpm": 124.3,
+   "key": "G major",
+   "camelot": "9B",
+   "length": 222926,
+   "explicit": false,
+   "sentimentKeywords": [
+    "night",
+    "summer",
+    "uplift"
+   ]
+  },
+  {
+   "id": "sng_6",
+   "dateAdded": 1705838400000,
+   "albumId": "alb_2",
+   "artist": "Velvet Meridian",
+   "name": "Late Bloom",
+   "trackNumber": 1,
+   "year": 2019,
+   "bpm": 78.7,
+   "key": "D major",
+   "camelot": "10B",
+   "length": 206443,
+   "explicit": false,
+   "sentimentKeywords": [
+    "moody",
+    "drive",
+    "dance"
+   ]
+  },
+  {
+   "id": "sng_7",
+   "dateAdded": 1705924800000,
+   "albumId": "alb_2",
+   "artist": "Velvet Meridian",
+   "name": "Honey Static",
+   "trackNumber": 2,
+   "year": 2019,
+   "bpm": 74.3,
+   "key": "F# minor",
+   "camelot": "11A",
+   "length": 240165,
+   "explicit": false,
+   "sentimentKeywords": [
+    "late",
+    "chill",
+    "night"
+   ]
+  },
+  {
+   "id": "sng_8",
+   "dateAdded": 1706011200000,
+   "albumId": "alb_2",
+   "artist": "Velvet Meridian",
+   "name": "Quiet Storm Rising",
+   "trackNumber": 3,
+   "year": 2019,
+   "bpm": 83.0,
+   "key": "B major",
+   "camelot": "1B",
+   "length": 182722,
+   "explicit": false,
+   "sentimentKeywords": [
+    "uplift",
+    "drive",
+    "dreamy"
+   ]
+  },
+  {
+   "id": "sng_9",
+   "dateAdded": 1706097600000,
+   "albumId": "alb_2",
+   "artist": "Velvet Meridian",
+   "name": "Blue Hour",
+   "trackNumber": 4,
+   "year": 2019,
+   "bpm": 91.9,
+   "key": "B minor",
+   "camelot": "10A",
+   "length": 312141,
+   "explicit": false,
+   "sentimentKeywords": [
+    "moody",
+    "late",
+    "warm"
+   ]
+  },
+  {
+   "id": "sng_10",
+   "dateAdded": 1706184000000,
+   "albumId": "alb_2",
+   "artist": "Velvet Meridian",
+   "name": "Silk Traffic",
+   "trackNumber": 5,
+   "year": 2019,
+   "bpm": 73.7,
+   "key": "B major",
+   "camelot": "1B",
+   "length": 323346,
+   "explicit": false,
+   "sentimentKeywords": [
+    "warm",
+    "chill",
+    "drive"
+   ]
+  },
+  {
+   "id": "sng_11",
+   "dateAdded": 1706270400000,
+   "albumId": "alb_3",
+   "artist": "The Paper Suns",
+   "name": "Cassette Days",
+   "trackNumber": 1,
+   "year": 2017,
+   "bpm": 109.3,
+   "key": "F# major",
+   "camelot": "2B",
+   "length": 176476,
+   "explicit": false,
+   "sentimentKeywords": [
+    "uplift",
+    "chill",
+    "groove"
+   ]
+  },
+  {
+   "id": "sng_12",
+   "dateAdded": 1706356800000,
+   "albumId": "alb_3",
+   "artist": "The Paper Suns",
+   "name": "Backyard Comet",
+   "trackNumber": 2,
+   "year": 2017,
+   "bpm": 133.4,
+   "key": "Ab minor",
+   "camelot": "1A",
+   "length": 192638,
+   "explicit": false,
+   "sentimentKeywords": [
+    "moody",
+    "calm",
+    "warm"
+   ]
+  },
+  {
+   "id": "sng_13",
+   "dateAdded": 1706443200000,
+   "albumId": "alb_3",
+   "artist": "The Paper Suns",
+   "name": "Warm Static",
+   "trackNumber": 3,
+   "year": 2017,
+   "bpm": 110.7,
+   "key": "Ab minor",
+   "camelot": "1A",
+   "length": 329187,
+   "explicit": false,
+   "sentimentKeywords": [
+    "dance",
+    "drive",
+    "late"
+   ]
+  },
+  {
+   "id": "sng_14",
+   "dateAdded": 1706529600000,
+   "albumId": "alb_3",
+   "artist": "The Paper Suns",
+   "name": "Marigold",
+   "trackNumber": 4,
+   "year": 2017,
+   "bpm": 106.8,
+   "key": "Ab minor",
+   "camelot": "1A",
+   "length": 214175,
+   "explicit": false,
+   "sentimentKeywords": [
+    "summer",
+    "groove",
+    "uplift"
+   ]
+  },
+  {
+   "id": "sng_15",
+   "dateAdded": 1706616000000,
+   "albumId": "alb_3",
+   "artist": "The Paper Suns",
+   "name": "Last Bus Home",
+   "trackNumber": 5,
+   "year": 2017,
+   "bpm": 139.6,
+   "key": "B minor",
+   "camelot": "10A",
+   "length": 317772,
+   "explicit": false,
+   "sentimentKeywords": [
+    "calm",
+    "dreamy",
+    "warm"
+   ]
+  },
+  {
+   "id": "sng_16",
+   "dateAdded": 1706702400000,
+   "albumId": "alb_4",
+   "artist": "DJ Meridian West",
+   "name": "Elevator to the Moon",
+   "trackNumber": 1,
+   "year": 2022,
+   "bpm": 122.6,
+   "key": "Ab minor",
+   "camelot": "1A",
+   "length": 164663,
+   "explicit": false,
+   "sentimentKeywords": [
+    "warm",
+    "night",
+    "moody"
+   ]
+  },
+  {
+   "id": "sng_17",
+   "dateAdded": 1706788800000,
+   "albumId": "alb_4",
+   "artist": "DJ Meridian West",
+   "name": "Terrace Groove",
+   "trackNumber": 2,
+   "year": 2022,
+   "bpm": 122.1,
+   "key": "F# minor",
+   "camelot": "11A",
+   "length": 205307,
+   "explicit": false,
+   "sentimentKeywords": [
+    "late",
+    "moody",
+    "warm"
+   ]
+  },
+  {
+   "id": "sng_18",
+   "dateAdded": 1706875200000,
+   "albumId": "alb_4",
+   "artist": "DJ Meridian West",
+   "name": "Midnight Lemonade",
+   "trackNumber": 3,
+   "year": 2022,
+   "bpm": 124.0,
+   "key": "Ab minor",
+   "camelot": "1A",
+   "length": 318519,
+   "explicit": false,
+   "sentimentKeywords": [
+    "groove",
+    "summer",
+    "chill"
+   ]
+  },
+  {
+   "id": "sng_19",
+   "dateAdded": 1706961600000,
+   "albumId": "alb_4",
+   "artist": "DJ Meridian West",
+   "name": "Skyline Shuffle",
+   "trackNumber": 4,
+   "year": 2022,
+   "bpm": 122.0,
+   "key": "E minor",
+   "camelot": "9A",
+   "length": 297159,
+   "explicit": false,
+   "sentimentKeywords": [
+    "dreamy",
+    "chill",
+    "late"
+   ]
+  },
+  {
+   "id": "sng_20",
+   "dateAdded": 1707048000000,
+   "albumId": "alb_4",
+   "artist": "DJ Meridian West",
+   "name": "Fifth Floor Funk",
+   "trackNumber": 5,
+   "year": 2022,
+   "bpm": 127.2,
+   "key": "F# minor",
+   "camelot": "11A",
+   "length": 254700,
+   "explicit": false,
+   "sentimentKeywords": [
+    "moody",
+    "warm",
+    "summer"
+   ]
+  },
+  {
+   "id": "sng_21",
+   "dateAdded": 1707134400000,
+   "albumId": "alb_5",
+   "artist": "Luna Vale",
+   "name": "Featherweight",
+   "trackNumber": 1,
+   "year": 2021,
+   "bpm": 94.8,
+   "key": "Db minor",
+   "camelot": "12A",
+   "length": 162351,
+   "explicit": false,
+   "sentimentKeywords": [
+    "drive",
+    "summer",
+    "dance"
+   ]
+  },
+  {
+   "id": "sng_22",
+   "dateAdded": 1707220800000,
+   "albumId": "alb_5",
+   "artist": "Luna Vale",
+   "name": "Glass Garden",
+   "trackNumber": 2,
+   "year": 2021,
+   "bpm": 100.4,
+   "key": "Eb minor",
+   "camelot": "2A",
+   "length": 306345,
+   "explicit": false,
+   "sentimentKeywords": [
+    "drive",
+    "uplift",
+    "dance"
+   ]
+  },
+  {
+   "id": "sng_23",
+   "dateAdded": 1707307200000,
+   "albumId": "alb_5",
+   "artist": "Luna Vale",
+   "name": "Sleepwalker's Waltz",
+   "trackNumber": 3,
+   "year": 2021,
+   "bpm": 109.9,
+   "key": "E major",
+   "camelot": "12B",
+   "length": 288704,
+   "explicit": false,
+   "sentimentKeywords": [
+    "chill",
+    "dreamy",
+    "night"
+   ]
+  },
+  {
+   "id": "sng_24",
+   "dateAdded": 1707393600000,
+   "albumId": "alb_5",
+   "artist": "Luna Vale",
+   "name": "Tidal",
+   "trackNumber": 4,
+   "year": 2021,
+   "bpm": 101.6,
+   "key": "Ab minor",
+   "camelot": "1A",
+   "length": 328706,
+   "explicit": false,
+   "sentimentKeywords": [
+    "dreamy",
+    "chill",
+    "moody"
+   ]
+  },
+  {
+   "id": "sng_25",
+   "dateAdded": 1707480000000,
+   "albumId": "alb_5",
+   "artist": "Luna Vale",
+   "name": "Lantern Light",
+   "trackNumber": 5,
+   "year": 2021,
+   "bpm": 88.8,
+   "key": "C major",
+   "camelot": "8B",
+   "length": 191460,
+   "explicit": false,
+   "sentimentKeywords": [
+    "groove",
+    "night",
+    "chill"
+   ]
+  },
+  {
+   "id": "sng_26",
+   "dateAdded": 1707566400000,
+   "albumId": "alb_6",
+   "artist": "Marrow & Pine",
+   "name": "Harvest Moon Road",
+   "trackNumber": 1,
+   "year": 2016,
+   "bpm": 92.9,
+   "key": "Db minor",
+   "camelot": "12A",
+   "length": 283085,
+   "explicit": false,
+   "sentimentKeywords": [
+    "drive",
+    "dance",
+    "chill"
+   ]
+  },
+  {
+   "id": "sng_27",
+   "dateAdded": 1707652800000,
+   "albumId": "alb_6",
+   "artist": "Marrow & Pine",
+   "name": "Creekbed",
+   "trackNumber": 2,
+   "year": 2016,
+   "bpm": 89.2,
+   "key": "F# major",
+   "camelot": "2B",
+   "length": 309637,
+   "explicit": false,
+   "sentimentKeywords": [
+    "warm",
+    "summer",
+    "moody"
+   ]
+  },
+  {
+   "id": "sng_28",
+   "dateAdded": 1707739200000,
+   "albumId": "alb_6",
+   "artist": "Marrow & Pine",
+   "name": "Woolgatherer",
+   "trackNumber": 3,
+   "year": 2016,
+   "bpm": 74.8,
+   "key": "Eb minor",
+   "camelot": "2A",
+   "length": 289029,
+   "explicit": false,
+   "sentimentKeywords": [
+    "night",
+    "late",
+    "moody"
+   ]
+  },
+  {
+   "id": "sng_29",
+   "dateAdded": 1707825600000,
+   "albumId": "alb_6",
+   "artist": "Marrow & Pine",
+   "name": "The Long Field",
+   "trackNumber": 4,
+   "year": 2016,
+   "bpm": 70.6,
+   "key": "A major",
+   "camelot": "11B",
+   "length": 245153,
+   "explicit": false,
+   "sentimentKeywords": [
+    "chill",
+    "warm",
+    "night"
+   ]
+  },
+  {
+   "id": "sng_30",
+   "dateAdded": 1707912000000,
+   "albumId": "alb_6",
+   "artist": "Marrow & Pine",
+   "name": "Kindling",
+   "trackNumber": 5,
+   "year": 2016,
+   "bpm": 96.3,
+   "key": "G major",
+   "camelot": "9B",
+   "length": 170645,
+   "explicit": false,
+   "sentimentKeywords": [
+    "drive",
+    "groove",
+    "calm"
+   ]
+  },
+  {
+   "id": "sng_31",
+   "dateAdded": 1707998400000,
+   "albumId": "alb_7",
+   "artist": "Static Bloom",
+   "name": "Chrome Petals",
+   "trackNumber": 1,
+   "year": 2023,
+   "bpm": 109.6,
+   "key": "Eb minor",
+   "camelot": "2A",
+   "length": 182967,
+   "explicit": false,
+   "sentimentKeywords": [
+    "summer",
+    "dance",
+    "groove"
+   ]
+  },
+  {
+   "id": "sng_32",
+   "dateAdded": 1708084800000,
+   "albumId": "alb_7",
+   "artist": "Static Bloom",
+   "name": "Night Circuit",
+   "trackNumber": 2,
+   "year": 2023,
+   "bpm": 103.0,
+   "key": "Db minor",
+   "camelot": "12A",
+   "length": 288326,
+   "explicit": false,
+   "sentimentKeywords": [
+    "late",
+    "uplift",
+    "warm"
+   ]
+  },
+  {
+   "id": "sng_33",
+   "dateAdded": 1708171200000,
+   "albumId": "alb_7",
+   "artist": "Static Bloom",
+   "name": "Magenta Rain",
+   "trackNumber": 3,
+   "year": 2023,
+   "bpm": 113.6,
+   "key": "Db minor",
+   "camelot": "12A",
+   "length": 202730,
+   "explicit": false,
+   "sentimentKeywords": [
+    "calm",
+    "chill",
+    "uplift"
+   ]
+  },
+  {
+   "id": "sng_34",
+   "dateAdded": 1708257600000,
+   "albumId": "alb_7",
+   "artist": "Static Bloom",
+   "name": "Arcade Heart",
+   "trackNumber": 4,
+   "year": 2023,
+   "bpm": 111.7,
+   "key": "Ab minor",
+   "camelot": "1A",
+   "length": 264845,
+   "explicit": false,
+   "sentimentKeywords": [
+    "dreamy",
+    "groove",
+    "drive"
+   ]
+  },
+  {
+   "id": "sng_35",
+   "dateAdded": 1708344000000,
+   "albumId": "alb_7",
+   "artist": "Static Bloom",
+   "name": "Laser Meadow",
+   "trackNumber": 5,
+   "year": 2023,
+   "bpm": 104.0,
+   "key": "G major",
+   "camelot": "9B",
+   "length": 238627,
+   "explicit": false,
+   "sentimentKeywords": [
+    "night",
+    "late",
+    "dreamy"
+   ]
+  },
+  {
+   "id": "sng_36",
+   "dateAdded": 1708430400000,
+   "albumId": "alb_8",
+   "artist": "Cora Jean",
+   "name": "Second Sunrise",
+   "trackNumber": 1,
+   "year": 2018,
+   "bpm": 92.7,
+   "key": "G major",
+   "camelot": "9B",
+   "length": 151885,
+   "explicit": false,
+   "sentimentKeywords": [
+    "drive",
+    "dance",
+    "night"
+   ]
+  },
+  {
+   "id": "sng_37",
+   "dateAdded": 1708516800000,
+   "albumId": "alb_8",
+   "artist": "Cora Jean",
+   "name": "Velvet Morning",
+   "trackNumber": 2,
+   "year": 2018,
+   "bpm": 77.0,
+   "key": "G major",
+   "camelot": "9B",
+   "length": 158234,
+   "explicit": false,
+   "sentimentKeywords": [
+    "moody",
+    "drive",
+    "dreamy"
+   ]
+  },
+  {
+   "id": "sng_38",
+   "dateAdded": 1708603200000,
+   "albumId": "alb_8",
+   "artist": "Cora Jean",
+   "name": "Patience",
+   "trackNumber": 3,
+   "year": 2018,
+   "bpm": 83.4,
+   "key": "G major",
+   "camelot": "9B",
+   "length": 277248,
+   "explicit": false,
+   "sentimentKeywords": [
+    "warm",
+    "dreamy",
+    "summer"
+   ]
+  },
+  {
+   "id": "sng_39",
+   "dateAdded": 1708689600000,
+   "albumId": "alb_8",
+   "artist": "Cora Jean",
+   "name": "Gold Thread",
+   "trackNumber": 4,
+   "year": 2018,
+   "bpm": 103.1,
+   "key": "B major",
+   "camelot": "1B",
+   "length": 299695,
+   "explicit": false,
+   "sentimentKeywords": [
+    "late",
+    "groove",
+    "warm"
+   ]
+  },
+  {
+   "id": "sng_40",
+   "dateAdded": 1708776000000,
+   "albumId": "alb_8",
+   "artist": "Cora Jean",
+   "name": "Slow Dance in the Kitchen",
+   "trackNumber": 5,
+   "year": 2018,
+   "bpm": 89.2,
+   "key": "Eb minor",
+   "camelot": "2A",
+   "length": 256708,
+   "explicit": false,
+   "sentimentKeywords": [
+    "warm",
+    "drive",
+    "dance"
+   ]
+  },
+  {
+   "id": "sng_41",
+   "dateAdded": 1708862400000,
+   "albumId": "alb_9",
+   "artist": "Kilo Frequency",
+   "name": "Map of Low End",
+   "trackNumber": 1,
+   "year": 2022,
+   "bpm": 173.4,
+   "key": "Ab minor",
+   "camelot": "1A",
+   "length": 261038,
+   "explicit": false,
+   "sentimentKeywords": [
+    "uplift",
+    "groove",
+    "night"
+   ]
+  },
+  {
+   "id": "sng_42",
+   "dateAdded": 1708948800000,
+   "albumId": "alb_9",
+   "artist": "Kilo Frequency",
+   "name": "Subsonic Atlas",
+   "trackNumber": 2,
+   "year": 2022,
+   "bpm": 175.2,
+   "key": "Ab minor",
+   "camelot": "1A",
+   "length": 319392,
+   "explicit": false,
+   "sentimentKeywords": [
+    "drive",
+    "night",
+    "uplift"
+   ]
+  },
+  {
+   "id": "sng_43",
+   "dateAdded": 1709035200000,
+   "albumId": "alb_9",
+   "artist": "Kilo Frequency",
+   "name": "Junglist Compass",
+   "trackNumber": 3,
+   "year": 2022,
+   "bpm": 172.7,
+   "key": "B major",
+   "camelot": "1B",
+   "length": 178644,
+   "explicit": false,
+   "sentimentKeywords": [
+    "warm",
+    "calm",
+    "dance"
+   ]
+  },
+  {
+   "id": "sng_44",
+   "dateAdded": 1709121600000,
+   "albumId": "alb_9",
+   "artist": "Kilo Frequency",
+   "name": "Breakbeat Meridian",
+   "trackNumber": 4,
+   "year": 2022,
+   "bpm": 173.6,
+   "key": "Db minor",
+   "camelot": "12A",
+   "length": 260593,
+   "explicit": false,
+   "sentimentKeywords": [
+    "summer",
+    "chill",
+    "groove"
+   ]
+  },
+  {
+   "id": "sng_45",
+   "dateAdded": 1709208000000,
+   "albumId": "alb_9",
+   "artist": "Kilo Frequency",
+   "name": "Deep Chart",
+   "trackNumber": 5,
+   "year": 2022,
+   "bpm": 177.0,
+   "key": "G major",
+   "camelot": "9B",
+   "length": 169761,
+   "explicit": false,
+   "sentimentKeywords": [
+    "groove",
+    "dreamy",
+    "drive"
+   ]
+  },
+  {
+   "id": "sng_46",
+   "dateAdded": 1709294400000,
+   "albumId": "alb_10",
+   "artist": "The Homely Astronauts",
+   "name": "Countdown at Dinner",
+   "trackNumber": 1,
+   "year": 2020,
+   "bpm": 114.6,
+   "key": "A minor",
+   "camelot": "8A",
+   "length": 291711,
+   "explicit": false,
+   "sentimentKeywords": [
+    "night",
+    "drive",
+    "warm"
+   ]
+  },
+  {
+   "id": "sng_47",
+   "dateAdded": 1709380800000,
+   "albumId": "alb_10",
+   "artist": "The Homely Astronauts",
+   "name": "Cardboard Rocket",
+   "trackNumber": 2,
+   "year": 2020,
+   "bpm": 107.2,
+   "key": "E minor",
+   "camelot": "9A",
+   "length": 276185,
+   "explicit": false,
+   "sentimentKeywords": [
+    "warm",
+    "uplift",
+    "night"
+   ]
+  },
+  {
+   "id": "sng_48",
+   "dateAdded": 1709467200000,
+   "albumId": "alb_10",
+   "artist": "The Homely Astronauts",
+   "name": "Orbit of You",
+   "trackNumber": 3,
+   "year": 2020,
+   "bpm": 106.4,
+   "key": "E minor",
+   "camelot": "9A",
+   "length": 252346,
+   "explicit": false,
+   "sentimentKeywords": [
+    "chill",
+    "groove",
+    "calm"
+   ]
+  },
+  {
+   "id": "sng_49",
+   "dateAdded": 1709553600000,
+   "albumId": "alb_10",
+   "artist": "The Homely Astronauts",
+   "name": "Gravity's Kitchen",
+   "trackNumber": 4,
+   "year": 2020,
+   "bpm": 115.9,
+   "key": "F# minor",
+   "camelot": "11A",
+   "length": 295691,
+   "explicit": false,
+   "sentimentKeywords": [
+    "dance",
+    "groove",
+    "summer"
+   ]
+  },
+  {
+   "id": "sng_50",
+   "dateAdded": 1709640000000,
+   "albumId": "alb_10",
+   "artist": "The Homely Astronauts",
+   "name": "Splashdown",
+   "trackNumber": 5,
+   "year": 2020,
+   "bpm": 103.9,
+   "key": "G major",
+   "camelot": "9B",
+   "length": 165331,
+   "explicit": false,
+   "sentimentKeywords": [
+    "late",
+    "dreamy",
+    "night"
+   ]
+  },
+  {
+   "id": "sng_51",
+   "dateAdded": 1709726400000,
+   "albumId": "alb_11",
+   "artist": "Ivory Delta",
+   "name": "Riverline",
+   "trackNumber": 1,
+   "year": 2015,
+   "bpm": 85.1,
+   "key": "B major",
+   "camelot": "1B",
+   "length": 163144,
+   "explicit": false,
+   "sentimentKeywords": [
+    "late",
+    "groove",
+    "dreamy"
+   ]
+  },
+  {
+   "id": "sng_52",
+   "dateAdded": 1709812800000,
+   "albumId": "alb_11",
+   "artist": "Ivory Delta",
+   "name": "Brass Current",
+   "trackNumber": 2,
+   "year": 2015,
+   "bpm": 102.5,
+   "key": "F# major",
+   "camelot": "2B",
+   "length": 164910,
+   "explicit": false,
+   "sentimentKeywords": [
+    "dreamy",
+    "drive",
+    "summer"
+   ]
+  },
+  {
+   "id": "sng_53",
+   "dateAdded": 1709899200000,
+   "albumId": "alb_11",
+   "artist": "Ivory Delta",
+   "name": "Delta Dusk",
+   "trackNumber": 3,
+   "year": 2015,
+   "bpm": 107.6,
+   "key": "C major",
+   "camelot": "8B",
+   "length": 327002,
+   "explicit": false,
+   "sentimentKeywords": [
+    "warm",
+    "uplift",
+    "drive"
+   ]
+  },
+  {
+   "id": "sng_54",
+   "dateAdded": 1709985600000,
+   "albumId": "alb_11",
+   "artist": "Ivory Delta",
+   "name": "Confluence",
+   "trackNumber": 4,
+   "year": 2015,
+   "bpm": 79.7,
+   "key": "E major",
+   "camelot": "12B",
+   "length": 305849,
+   "explicit": false,
+   "sentimentKeywords": [
+    "night",
+    "late",
+    "drive"
+   ]
+  },
+  {
+   "id": "sng_55",
+   "dateAdded": 1710072000000,
+   "albumId": "alb_11",
+   "artist": "Ivory Delta",
+   "name": "Night Ferry",
+   "trackNumber": 5,
+   "year": 2015,
+   "bpm": 112.6,
+   "key": "F# minor",
+   "camelot": "11A",
+   "length": 298170,
+   "explicit": false,
+   "sentimentKeywords": [
+    "dreamy",
+    "moody",
+    "chill"
+   ]
+  },
+  {
+   "id": "sng_56",
+   "dateAdded": 1710158400000,
+   "albumId": "alb_12",
+   "artist": "Nova Scout",
+   "name": "Signal Fires",
+   "trackNumber": 1,
+   "year": 2024,
+   "bpm": 116.8,
+   "key": "G major",
+   "camelot": "9B",
+   "length": 232361,
+   "explicit": false,
+   "sentimentKeywords": [
+    "warm",
+    "chill",
+    "uplift"
+   ]
+  },
+  {
+   "id": "sng_57",
+   "dateAdded": 1710244800000,
+   "albumId": "alb_12",
+   "artist": "Nova Scout",
+   "name": "Ridgeline",
+   "trackNumber": 2,
+   "year": 2024,
+   "bpm": 116.9,
+   "key": "E minor",
+   "camelot": "9A",
+   "length": 228642,
+   "explicit": false,
+   "sentimentKeywords": [
+    "groove",
+    "moody",
+    "drive"
+   ]
+  },
+  {
+   "id": "sng_58",
+   "dateAdded": 1710331200000,
+   "albumId": "alb_12",
+   "artist": "Nova Scout",
+   "name": "Cold Spark",
+   "trackNumber": 3,
+   "year": 2024,
+   "bpm": 108.3,
+   "key": "A minor",
+   "camelot": "8A",
+   "length": 297585,
+   "explicit": false,
+   "sentimentKeywords": [
+    "drive",
+    "calm",
+    "dreamy"
+   ]
+  },
+  {
+   "id": "sng_59",
+   "dateAdded": 1710417600000,
+   "albumId": "alb_12",
+   "artist": "Nova Scout",
+   "name": "Northern Answer",
+   "trackNumber": 4,
+   "year": 2024,
+   "bpm": 110.2,
+   "key": "G major",
+   "camelot": "9B",
+   "length": 184722,
+   "explicit": false,
+   "sentimentKeywords": [
+    "moody",
+    "drive",
+    "warm"
+   ]
+  },
+  {
+   "id": "sng_60",
+   "dateAdded": 1710504000000,
+   "albumId": "alb_12",
+   "artist": "Nova Scout",
+   "name": "The Clearing",
+   "trackNumber": 5,
+   "year": 2024,
+   "bpm": 101.4,
+   "key": "D major",
+   "camelot": "10B",
+   "length": 264867,
+   "explicit": false,
+   "sentimentKeywords": [
+    "dreamy",
+    "chill",
+    "late"
+   ]
+  }
+ ]
+}

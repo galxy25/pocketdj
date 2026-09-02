@@ -25,9 +25,13 @@ struct FixtureCatalog: CatalogLoading {
 
 enum CatalogLoaderFactory {
     /// Picks the loader from the launch environment so tests can force the fixture.
+    /// `PDJ_FIXTURE_RESOURCE` names a different bundled fixture (the App Store screenshot
+    /// driver uses `screenshot-index` — a bigger, clearly-invented sample catalog — while
+    /// every existing UI test keeps the default `fixture-index` it asserts against).
     static func make() -> CatalogLoading {
         if ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil {
-            return FixtureCatalog()
+            let resource = ProcessInfo.processInfo.environment["PDJ_FIXTURE_RESOURCE"] ?? "fixture-index"
+            return FixtureCatalog(resource: resource)
         }
         return CatalogService()
     }
