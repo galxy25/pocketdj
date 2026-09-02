@@ -699,7 +699,7 @@ final class RipsStore {
     func downloadData(_ song: (id: String, title: String, artist: String)) async throws -> Data {
         let url = try await ensureURL(song.id, allowLive: false)
         var request = URLRequest(url: url)
-        applyAuth(&request, token: token)
+        applyAuth(&request, token: token)   // presign-safe: applyAuth skips the bearer for presigned URLs
         let (data, response) = try await session.data(for: request)
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
             throw RipError.serverError(nil)
@@ -2050,7 +2050,12 @@ final class RipsStore {
     // MARK: Helpers
 
     private func applyAuth(_ request: inout URLRequest, token: String) {
-        if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        // NEVER bearer a presigned S3 URL: its auth lives in the query string, and S3 rejects
+        // a request carrying both ("Only one auth mechanism allowed" → 400 whose XML body then
+        // masquerades as the fetched payload). Guarded HERE at the choke point so no individual
+        // call site can reintroduce it (the MobileOne 2026-09-01 bug).
+        let presigned = request.url?.query?.contains("X-Amz-Signature") == true
+        if !token.isEmpty && !presigned { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         // Per-user identity rides alongside the shared bearer on every rip-server call.
         PDJIdentityHeaders.apply(to: &request, profileId: profileIdProvider())
     }

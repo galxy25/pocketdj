@@ -232,6 +232,15 @@ final class TransferCoordinator: NSObject {
     /// recoverable) then create + resume a background download task for `url`. The task's real
     /// identifier overwrites the record's placeholder. Returns the live task's identifier.
     @discardableResult
+    /// A PRESIGNED S3 URL carries its auth in the query string — adding a bearer header on
+    /// top makes S3 reject the request outright (400 InvalidArgument, "Only one auth
+    /// mechanism allowed"). That 400's small XML body then used to be finalized as the
+    /// "downloaded" mp3 (the MobileOne 2026-09-01 bug: rows listed, nothing ever played).
+    /// Static + pure so the regression test pins the predicate directly.
+    nonisolated static func shouldAttachBearer(to url: URL, token: String) -> Bool {
+        !token.isEmpty && url.query?.contains("X-Amz-Signature") != true
+    }
+
     func enqueueDownload(url: URL, token: String, profileId: String = "", record: TransferRecord) -> Int {
         guard usesRealSession else {
             // Test seam: persist the record only (no real task). Identifier kept as given.
@@ -244,7 +253,9 @@ final class TransferCoordinator: NSObject {
             return record.taskIdentifier
         }
         var request = URLRequest(url: url)
-        if !token.isEmpty { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if Self.shouldAttachBearer(to: url, token: token) {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
         // Per-user identity rides on the burn download (a rip-server fetch) too, for uniformity.
         PDJIdentityHeaders.apply(to: &request, profileId: profileId)
         let task = session.downloadTask(with: request)
@@ -408,6 +419,16 @@ extension TransferCoordinator: URLSessionDownloadDelegate {
         lock.unlock()
         guard let record else {
             // No record — finished while we had no memory of it; nothing safe to do.
+            return
+        }
+
+        // An HTTP error page must NEVER be finalized as audio: a 4xx/5xx "download" completes
+        // transport-wise with a small error body (S3's 400 XML was 536 bytes), and moving that
+        // into place poisons the item as .ready-but-unplayable — rows list, decks silently
+        // refuse to load. Fail the record honestly instead so the UI shows an error and a
+        // retry goes through the (fixed) request path.
+        if let http = downloadTask.response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+            failRecord(record, message: "download failed (HTTP \(http.statusCode))")
             return
         }
 
