@@ -172,6 +172,28 @@ final class IntentServicesTests: XCTestCase {
         services.mix.stopAutoMix()
     }
 
+    /// The remote surfaces' explicit "Resume Mix" must clear a pause that ORIGINATED in-app
+    /// (`pauseAuto`) — `remotePlay` alone no-ops on that state by design (the lock-screen ▶'s
+    /// gesture is ambiguous; a labeled Resume row is not), which made the car's row a dead
+    /// control whenever the pause came from the phone.
+    func testCarResumeClearsAnInAppPause() async throws {
+        let (services, collections, _) = await makeServices(burnedIds: ["sng_1", "sng_2"])
+        services.mix.ensureEngine()
+        try XCTSkipUnless(services.mix.isReady, "no audio device on this test host")
+        let pocket = collections.createPocket("Road Crate")
+        collections.addSong("sng_1", toPocket: pocket.id)
+        collections.addSong("sng_2", toPocket: pocket.id)
+        _ = try await services.startAutoMix(source: .pocket(pocket.id), shuffle: false)
+        XCTAssertTrue(services.mix.autoMixing)
+
+        services.mix.pauseAuto()                  // the PHONE's in-app hand-mixing pause
+        XCTAssertTrue(services.mix.autoPaused)
+
+        CarPlayModel(services: services).resumeMix()
+        XCTAssertFalse(services.mix.autoPaused, "the labeled Resume row resumes the machine")
+        services.mix.stopAutoMix()
+    }
+
     // MARK: 👍 on what is playing (For You collection queue)
 
     /// The owner's contract for a collection tile's 👍 — "send positive signal AND add the song

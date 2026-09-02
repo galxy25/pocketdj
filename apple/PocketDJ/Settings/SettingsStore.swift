@@ -717,7 +717,13 @@ final class SettingsStore {
         storageSoftCapGB = d.storageSoftCapGB
         lastStoragePruneAt = d.lastStoragePruneAt
         debugLoggingEnabled = d.debugLoggingEnabled ?? false
+        // The capture buffer follows its setting on reset, exactly as DebugView's toggle does —
+        // a nuclear reset must not leave diagnostics RUNNING while their toggles read off.
+        if MixDiag.shared.isCapturing { MixDiag.shared.stop() }
         remoteTelemetryEnabled = d.remoteTelemetryEnabled ?? false
+        // The logger mirrors the store (push model, same as the toggles) — without this push a
+        // nuclear reset left telemetry streaming until relaunch while the toggle read off.
+        DiagLog.shared.telemetryEnabled = remoteTelemetryEnabled
         samplesFolderBookmark = d.samplesFolderBookmark
         loopsFolderBookmark = d.loopsFolderBookmark
         sequencesFolderBookmark = d.sequencesFolderBookmark

@@ -151,15 +151,36 @@ final class DiagLog {
         flushNow()
     }
 
+    /// Uploads are SERIALIZED through this chain. S3 concurrent PUTs to one key are
+    /// last-writer-wins by commit time, and rotation makes the final write to a sealed part
+    /// TERMINAL — an in-flight earlier flush landing after the seal's full-body PUT would
+    /// permanently truncate that part (the pre-rotation design self-healed because every later
+    /// flush rewrote the same key; a sealed part never gets another write). Chaining keeps the
+    /// launch order the landing order while every PUT still runs detached off-main.
+    private var uploadChain: Task<Void, Never>?
+    /// Newest not-yet-uploaded body per key. Every flush of one part is a FULL rewrite, so only
+    /// the newest body matters — during a network stall the chain drains ONE PUT per part
+    /// instead of a backlog of superseded rewrites (probed: a 200 ms PUT under a 20 ms flush
+    /// cadence otherwise queued 88 redundant bodies).
+    private var pendingBodies: [String: Data] = [:]
+
+    private func enqueueUpload(key: String, body: Data) {
+        let hadPending = pendingBodies[key] != nil
+        pendingBodies[key] = body
+        guard !hadPending else { return }        // the queued PUT for this key takes the newest
+        let prev = uploadChain
+        uploadChain = Task { @MainActor [weak self] in
+            await prev?.value
+            guard let latest = self?.pendingBodies.removeValue(forKey: key) else { return }
+            await Task.detached(priority: .utility) { await Self.put(key: key, body: latest) }.value
+        }
+    }
+
     private func flushNow() {
         flushTask?.cancel(); flushTask = nil
         guard dirty > 0 else { return }
         dirty = 0
-        let body = Data((lines.joined(separator: "\n") + "\n").utf8)
-        let key = objectKey
-        Task.detached(priority: .utility) {
-            await Self.put(key: key, body: body)
-        }
+        enqueueUpload(key: objectKey, body: Data((lines.joined(separator: "\n") + "\n").utf8))
     }
 
     /// Final full-buffer upload of the current part, then start the next with a continuity
@@ -168,11 +189,7 @@ final class DiagLog {
     private func seal() {
         flushTask?.cancel(); flushTask = nil
         dirty = 0
-        let body = Data((lines.joined(separator: "\n") + "\n").utf8)
-        let key = objectKey
-        Task.detached(priority: .utility) {
-            await Self.put(key: key, body: body)
-        }
+        enqueueUpload(key: objectKey, body: Data((lines.joined(separator: "\n") + "\n").utf8))
         part += 1
         lines = ["\(Self.iso.string(from: Date())) [rotate] continues in part \(part)"]
         dirty = 1

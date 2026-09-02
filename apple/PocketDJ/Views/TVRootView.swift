@@ -341,8 +341,12 @@ struct TVMixView: View {
                 if engine.autoPaused {
                     // The lock-screen seam is the ONE pause that silences the decks and
                     // freezes the transition clock (in-app pauseAuto keeps audio running
-                    // for hand-mixing — meaningless on a TV).
-                    Button { engine.remotePlay() } label: { Label("Resume", systemImage: "play.fill") }
+                    // for hand-mixing — meaningless on a TV). An explicit "Resume" must also
+                    // clear a pause that ORIGINATED in-app, which remotePlay alone no-ops on.
+                    Button {
+                        engine.remotePlay()
+                        if engine.autoMixing, engine.autoPaused { engine.resumeAuto() }
+                    } label: { Label("Resume", systemImage: "play.fill") }
                         .accessibilityIdentifier("tv-mix-resume")
                 } else {
                     Button { engine.remotePause() } label: { Label("Pause", systemImage: "pause.fill") }

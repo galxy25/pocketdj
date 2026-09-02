@@ -415,7 +415,9 @@ struct PocketDJApp: App {
         let artworkURLsProvider: @MainActor (String) async -> [URL] = { [weak app, weak albumArt] songId in
             guard let app, let album = app.album(forSongId: songId) else { return [] }
             guard let albumArt else { return album.artCandidates }
-            return await albumArt.artURLs(for: album, app: app)
+            // priority: the card shows what's PLAYING — it must never queue behind a
+            // car-connect stampede of browse-row resolves.
+            return await albumArt.artURLs(for: album, app: app, priority: true)
         }
         player.artworkURLsProvider = artworkURLsProvider
         // Inject the shared background-transfer coordinator so Burn hands each song to a

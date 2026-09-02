@@ -118,6 +118,38 @@ final class CarPlayController {
         // the car connecting IS one showing up. Cued + suspended — never self-playing audio.
         model.materializeMixRestoreIfNeeded()
         refreshMixTab()
+        armMixObservation()
+    }
+
+    /// Re-armed observation of the MIX state the tab renders from. The now-playing fan-out
+    /// (`WidgetSync.arm`) deliberately observes ZERO MixEngine state, so relying on it left the
+    /// Mix tab frozen on engine-driven changes — a lock-screen ⏸, a phone-started mix, or a
+    /// plain track transition never re-rendered here, and the stale "⏸ Pause Mix" row's tap
+    /// then no-opped on `remotePause`'s idempotency guard (a dead control at 70 mph). This is
+    /// the standard re-arming `withObservationTracking` loop; the controller deallocating on
+    /// disconnect ends it via the weak self.
+    private func armMixObservation() {
+        guard let model else { return }
+        let mix = model.services.mix
+        withObservationTracking {
+            _ = mix.autoMixing
+            _ = mix.autoPaused
+            _ = mix.autoSourceLabel
+            // Track changes arrive via `autoStatus` (inequality-guarded "n / count · deck"
+            // readout) — NEVER `onAirTrack`, whose getter reads the whole DeckState stored
+            // property: glide transitions mutate that deck ~10 Hz for the full pre+post-roll,
+            // which would have stormed ~200 template rebuilds per transition (verified by
+            // probe: `mutate` fires observation on every write, changed value or not).
+            _ = mix.autoStatus
+            _ = mix.fxGlideEnabled
+            _ = mix.mixGlideEnabled
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.refreshMixTab()
+                self.armMixObservation()
+            }
+        }
     }
 
     // MARK: - Mix tab (two-crate Auto DJ remote)
@@ -135,11 +167,25 @@ final class CarPlayController {
         return template
     }
 
-    /// Rebuild the Mix tab's sections in place. Called after every Mix action and from the
-    /// now-playing fan-out (`refreshNowPlayingButtons`), so state changed from the phone or the
-    /// lock screen re-renders here too.
+    /// The rendered facts of the last Mix-tab build — rebuilds are skipped when nothing the
+    /// tab SHOWS changed, so an over-firing observation costs a string compare, never a
+    /// template push over the head-unit link.
+    private var lastMixSignature: String?
+
+    /// Rebuild the Mix tab's sections in place. Called after every Mix action, from the
+    /// now-playing fan-out, and from `armMixObservation`'s change loop, so state changed from
+    /// the phone or the lock screen re-renders here too.
     func refreshMixTab() {
         guard let model, let mixTemplate else { return }
+        let np = model.mixNowPlaying()
+        let sig = [model.autoMixRunning() ? "1" : "0", model.autoMixPaused() ? "1" : "0",
+                   model.autoMixLabel() ?? "", np?.title ?? "", np?.artist ?? "",
+                   model.fxGlideOn() ? "1" : "0", model.audioGlideOn() ? "1" : "0",
+                   "\(Int(model.slowSkipSeconds()))",
+                   model.crateName(mixDeckA) ?? "", model.crateName(mixDeckB) ?? ""]
+            .joined(separator: "|")
+        guard sig != lastMixSignature else { return }
+        lastMixSignature = sig
         mixTemplate.updateSections(mixSections(model))
     }
 
@@ -190,7 +236,9 @@ final class CarPlayController {
         rows.append(state)
         let pause = CPListItem(text: paused ? "▶ Resume Mix" : "⏸ Pause Mix", detailText: nil)
         pause.handler = { [weak self] _, completion in
-            paused ? model.resumeMix() : model.pauseMix()
+            // Decide at TAP time, not render time: even a momentarily-stale row must act on the
+            // engine's real state (the render-time branch made a stale row a dead control).
+            model.autoMixPaused() ? model.resumeMix() : model.pauseMix()
             self?.refreshMixTab(); completion()
         }
         rows.append(pause)
@@ -242,15 +290,19 @@ final class CarPlayController {
     /// offers "Same as Deck A" (clears the override).
     private func pushCratePicker(deck: MixDeck, model: CarPlayModel) {
         let crates = model.mixCrates()
-        func pick(_ source: MixSource?) {
+        // `[weak self]`: these closures escape into CPListItem handlers on a template this
+        // controller retains — a strong self here is a controller↔template cycle that would
+        // leak the whole CarPlay graph past disconnect.
+        let pick: (MixSource?) -> Void = { [weak self] source in
+            guard let self else { return }
             DiagLog.shared.telemetry(
                 "car", "mix deck \(deck == .a ? "A" : "B") = \(source.flatMap { model.crateName($0) } ?? "same as A")")
             switch deck {
-            case .a: mixDeckA = source
-            case .b: mixDeckB = source
+            case .a: self.mixDeckA = source
+            case .b: self.mixDeckB = source
             }
-            refreshMixTab()
-            interfaceController.popTemplate(animated: true, completion: nil)
+            self.refreshMixTab()
+            self.interfaceController.popTemplate(animated: true, completion: nil)
         }
         var sections: [CPListSection] = []
         if deck == .b {

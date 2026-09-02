@@ -323,7 +323,16 @@ final class CarPlayModel {
     /// that silences both decks AND freezes the transition wall clock (in-app `pauseBoth` would
     /// END a running Auto-DJ), and `remoteSkip` un-suspends a paused machine before sweeping.
     func pauseMix() { services.mix.remotePause() }
-    func resumeMix() { services.mix.remotePlay() }
+    func resumeMix() {
+        let m = services.mix
+        m.remotePlay()
+        // The lock-screen ▶ deliberately never resumes an IN-APP (hand-mixing) pause — its play
+        // gesture is ambiguous. This surface's row literally says "Resume Mix", so a machine
+        // still suspended after remotePlay (the phone's `pauseAuto` state, which remotePlay's
+        // three steps each no-op on) resumes explicitly; without this the row was a dead
+        // control whenever the pause originated in-app.
+        if m.autoMixing, m.autoPaused { m.resumeAuto() }
+    }
     /// FAST skip: the 5 s sweep (the lock-screen ⏭ precedent).
     func skipMixFast() { services.mix.remoteSkip(fadeSeconds: 5) }
     /// SLOW skip: the long blend (`skipFadeSeconds`, default 15 s — the lock-screen ⏮ mapping).
