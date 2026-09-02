@@ -82,7 +82,10 @@ xcodebuild \
   -allowProvisioningUpdates \
   clean archive
 
-echo "==> Writing ExportOptions.plist (app-store-connect, upload)"
+echo "==> Writing ExportOptions.plist (app-store-connect, upload, MANUAL signing)"
+# tvOS signs MANUALLY end-to-end (see project.yml [sdk=appletvos*] settings): the team
+# has no Apple TV device, so automatic/cloud signing can't archive, and the export
+# re-uses the same API-minted TVOS_APP_STORE profile instead of a cloud re-sign.
 EXPORT_PLIST="$(mktemp -t PocketDJExportOptions).plist"
 cat > "$EXPORT_PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -92,7 +95,11 @@ cat > "$EXPORT_PLIST" <<PLIST
   <key>method</key><string>app-store-connect</string>
   <key>destination</key><string>upload</string>
   <key>teamID</key><string>$TEAM_ID</string>
-  <key>signingStyle</key><string>automatic</string>
+  <key>signingStyle</key><string>manual</string>
+  <key>signingCertificate</key><string>Apple Distribution</string>
+  <key>provisioningProfiles</key><dict>
+    <key>com.levi.pocketdj</key><string>PocketDJ tvOS App Store</string>
+  </dict>
   <key>uploadSymbols</key><true/>
 </dict>
 </plist>

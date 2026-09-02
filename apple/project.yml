@@ -201,6 +201,20 @@ targets:
         # the base also covers visionOS, which has no CarPlay and would reject the key.
         "CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]": PocketDJ/PocketDJ-CarPlay.entitlements
         "CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]": PocketDJ/PocketDJ-CarPlay.entitlements
+        # tvOS: the team owns no Apple TV, so a tvOS DEVELOPMENT profile can never exist
+        # (automatic archive signing dies with "team has no devices"). The appletvos SDK
+        # therefore pins MANUAL App Store distribution signing: the API-minted
+        # "Apple Distribution: Levi Schoen" identity (pocketdj-ci keychain) + the
+        # API-created TVOS_APP_STORE profile (App Store profiles need no devices).
+        # Entitlements: manual signing has no dev→prod aps flip at export, so the tvOS
+        # file carries aps-environment=production already. Scoped to appletvos only —
+        # CLI-level overrides would leak onto SPM package targets (ZIPFoundation) and
+        # break the archive; per-SDK target settings do not. Sim builds (CODE_SIGNING_
+        # ALLOWED=NO) ignore all of this.
+        "CODE_SIGN_ENTITLEMENTS[sdk=appletvos*]": PocketDJ/PocketDJ-tvOS.entitlements
+        "CODE_SIGN_STYLE[sdk=appletvos*]": Manual
+        "CODE_SIGN_IDENTITY[sdk=appletvos*]": "Apple Distribution"
+        "PROVISIONING_PROFILE_SPECIFIER[sdk=appletvos*]": "PocketDJ tvOS App Store"
         # --- Apple Music build-time opt-in -------------------------------------
         # The flag lives in the base Info.plist (info: properties above) as
         # PocketDJAppleMusicEnabled — INFOPLIST_KEY_* can't inject custom keys.

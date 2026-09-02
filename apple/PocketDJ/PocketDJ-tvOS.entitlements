@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  PocketDJ entitlements — intentionally EMPTY.
+
+  Neither MusicKit nor ShazamKit uses a `.entitlements` key:
+  • MusicKit — enabled by the MusicKit App Service on the App ID (`com.levi.pocketdj`,
+    team EC27UF79GL) + NSAppleMusicUsageDescription.
+  • ShazamKit — needs only NSMicrophoneUsageDescription + the framework (it ships with
+    the OS); the public Shazam catalog requires no entitlement.
+  Declaring `com.apple.developer.musickit` / `com.apple.developer.shazamkit` here is
+  invalid and breaks signing ("not found and could not be included in profile") — that
+  was the original build error. Add a key only if a future capability genuinely needs one.
+-->
+<plist version="1.0">
+<dict>
+  <!-- App Group shared with the Now Playing widget extension (PocketDJWidgets) so the
+       app can write the now-playing + Up Next snapshot the widget reads. Applied to the
+       iOS-simulator/visionOS SDKs via this base file (iOS device uses the CarPlay file,
+       macOS the sandbox file — both carry the SAME group). -->
+  <key>com.apple.security.application-groups</key>
+  <array>
+    <string>group.com.levi.pocketdj</string>
+  </array>
+  <!-- CloudKit (user profiles + session-data sync, CloudSyncService). Genuinely needs
+       entitlement keys (unlike MusicKit/ShazamKit above): the ICLOUD capability is on
+       the App ID, and the container is registered by Xcode automatic signing. -->
+  <key>com.apple.developer.icloud-services</key>
+  <array>
+    <string>CloudKit</string>
+  </array>
+  <key>com.apple.developer.icloud-container-identifiers</key>
+  <array>
+    <string>iCloud.com.levi.pocketdj</string>
+  </array>
+  <!-- Universal Links (jukebox join). The Associated Domains capability is enabled on the
+       App ID (com.levi.pocketdj) and the AASA is hosted at
+       https://jukebox.pocket-dj.com/.well-known/apple-app-site-association
+       (appID EC27UF79GL.com.levi.pocketdj, components /*). `applinks:` lets a tapped
+       https://jukebox.pocket-dj.com/<id>/ open the app; PocketDJApp.onOpenURL parses it via
+       JukeboxLink and joins as a client. The `pocketdj://jukebox/<id>` custom scheme
+       (CFBundleURLTypes in project.yml) remains the fallback. Same key across all three
+       app entitlement files. -->
+  <key>com.apple.developer.associated-domains</key>
+  <array>
+    <string>applinks:jukebox.pocket-dj.com</string>
+  </array>
+  <!-- APNs (Music with Friends pushes). Like CloudKit above, this genuinely needs an
+       entitlement key: the Push Notifications capability must be enabled on the App ID
+       (com.levi.pocketdj) — a portal step at ship time. "development" here is correct
+       for local builds; the App Store/TestFlight distribution re-sign flips it to
+       "production" automatically. Same key across the iOS/visionOS app entitlement
+       files; macOS uses the com.apple.developer.-prefixed variant. -->
+  <key>aps-environment</key>
+  <string>production</string>
+</dict>
+</plist>
