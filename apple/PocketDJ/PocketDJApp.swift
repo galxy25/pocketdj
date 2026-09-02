@@ -395,17 +395,29 @@ struct PocketDJApp: App {
         collections.timbreEnrollment = timbreEnrollment
         timbreEnrollment.drain()          // anything queued while offline goes out at launch
         let player = PlayerEngine()
-        // Lock-screen / Control Center Now Playing artwork: resolve the now-playing song id to its
-        // album's cover-art candidate URLs from the loaded catalog. Whichever engine currently owns
-        // the card (PlayerEngine for normal playback, MixEngine while a Mix deck is playing — see
-        // NowPlayingArbiter) fetches the first candidate that decodes and attaches it to the card
-        // (title/artist-only when the track has no art).
-        let artworkURLsProvider: @MainActor (String) -> [URL] = { [weak app] songId in
-            app?.album(forSongId: songId)?.artCandidates ?? []
-        }
-        player.artworkURLsProvider = artworkURLsProvider
         let streaming = StreamingStore()
         let amProvider = streaming.appleMusicProvider ?? AppleMusicProvider()
+        // Lazy streaming cover art: resolve an album's art via the Apple Music provider
+        // (recognize one of its tracks by catalog id → its artwork URL). Ready only when
+        // the provider can resolve; both gated so the default build never hits the network.
+        // Built BEFORE the artwork provider closure below because it is its fallback lane.
+        let albumArt = AlbumArtworkStore(
+            ready: { amProvider.canResolve },
+            resolve: { song in await amProvider.resolve(song)?.artworkURL })
+        _albumArt = State(initialValue: albumArt)
+        // Lock-screen / Control Center Now Playing artwork: resolve the now-playing song id to its
+        // album's cover-art URLs — bundled candidates, else the SAME streaming fallback the in-app
+        // CoverImage uses (memoized per album in AlbumArtworkStore). Whichever engine currently
+        // owns the card (PlayerEngine for normal playback, MixEngine while a Mix deck is playing —
+        // see NowPlayingArbiter) fetches the first URL that decodes and attaches it to the card
+        // (title/artist-only when nothing resolves). The fallback is what puts art on the card and
+        // in CarPlay for the "Apple Music (Local)" catalog, whose albums ship NO artCandidates.
+        let artworkURLsProvider: @MainActor (String) async -> [URL] = { [weak app, weak albumArt] songId in
+            guard let app, let album = app.album(forSongId: songId) else { return [] }
+            guard let albumArt else { return album.artCandidates }
+            return await albumArt.artURLs(for: album, app: app)
+        }
+        player.artworkURLsProvider = artworkURLsProvider
         // Inject the shared background-transfer coordinator so Burn hands each song to a
         // background download task that survives suspend (nil in tests ⇒ the in-process loop).
         // macOS is NOT suspended like iOS, and the background `URLSession` (nsurlsessiond) path
@@ -449,12 +461,6 @@ struct PocketDJApp: App {
         let playbackSession = PlaybackSessionStore(fileURL: PlaybackSessionStore.launchURL())
         setlistPlayer.sessionStore = playbackSession
         _playbackSession = State(initialValue: playbackSession)
-        // Lazy streaming cover art: resolve an album's art via the Apple Music provider
-        // (recognize one of its tracks by catalog id → its artwork URL). Ready only when
-        // the provider can resolve; both gated so the default build never hits the network.
-        _albumArt = State(initialValue: AlbumArtworkStore(
-            ready: { amProvider.canResolve },
-            resolve: { song in await amProvider.resolve(song)?.artworkURL }))
         _lyrics = State(initialValue: LyricsStore())
         _demux = State(initialValue: DemuxStore())
         // App-scoped two-deck AVAudioEngine mix engine. Shares `burns` so a deck resolves the on-disk
@@ -1494,6 +1500,9 @@ struct PocketDJApp: App {
         // An intent-started auto-mix kicks the SAME collection download run MixView's ▶ does —
         // the one app-scoped downloader, never a second instance.
         intents.mixDownloader = mixDownloader
+        // CarPlay list rows resolve cover art through the ONE memoized streaming-art store —
+        // the same fallback lane CoverImage uses for albums that ship no bundled candidates.
+        intents.albumArtwork = albumArt
         // Starting ANY set retires the previous recommendation scope, so the now-playing 👍/👎
         // pair can never file a verdict against a tile the listener has already left. `playNow` is
         // the single funnel every play path in the app goes through, which is why the hook lives

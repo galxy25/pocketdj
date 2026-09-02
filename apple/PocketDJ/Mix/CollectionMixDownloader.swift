@@ -35,7 +35,12 @@ final class CollectionMixDownloader {
     /// A download run is in flight (drives the bar's visibility together with the counts).
     private(set) var isActive = false
     /// The collection being downloaded (nil ⇒ idle).
-    private(set) var source: MixSource?
+    /// The active run's crates. One entry for every surface but the two-deck remote Mix
+    /// (CarPlay/TV deck A + B), whose run tracks the UNION of both crates' tracks — the
+    /// downloader has ONE burn lane and one progress bar regardless of how many crates feed it.
+    private(set) var sources: [MixSource] = []
+    /// Compat readout: the first (or only) crate of the active run.
+    var source: MixSource? { sources.first }
     /// M — downloadable tracks in the collection (studio/profile items never download).
     private(set) var totalCount = 0
     /// N — tracks whose burned file is on disk.
@@ -161,16 +166,23 @@ final class CollectionMixDownloader {
     /// the same source is active is a no-op; after a cancel/finish it re-seeds from disk (that IS
     /// the resume path — `BurnStore.burn` skips fresh files, background tasks reconcile at launch).
     /// A DIFFERENT source cancels the old run first (collection switch).
-    func begin(source: MixSource) {
-        if isActive, self.source == source { return }
+    func begin(source: MixSource) { begin(sources: [source]) }
+
+    /// The multi-crate variant (two-deck remote Mix). Idempotent per source SET; a different
+    /// set cancels the old run first. A song in more than one crate is tracked once.
+    func begin(sources newSources: [MixSource]) {
+        if isActive, self.sources == newSources { return }
         if isActive { cancel() }
 
         // Studio (`smp_`/`lp_`/`ptn_`/`tk_`) and profile (`pdj_`) items never download — they are
-        // device-local by construction. Mirrors the ripIds funnel's own fences.
-        let ids = (resolveRipIds?(source) ?? []).filter {
-            !StudioFactory.isStudioId($0) && !ProfileSourceStore.isProfileSongId($0)
+        // device-local by construction. Mirrors the ripIds funnel's own fences. Cross-crate
+        // duplicates collapse to their first appearance.
+        var seen = Set<String>()
+        let ids = newSources.flatMap { resolveRipIds?($0) ?? [] }.filter {
+            seen.insert($0).inserted
+                && !StudioFactory.isStudioId($0) && !ProfileSourceStore.isProfileSongId($0)
         }
-        self.source = source
+        self.sources = newSources
         orderedIds = ids
         trackedIds = Set(ids)
         totalCount = ids.count
@@ -244,7 +256,7 @@ final class CollectionMixDownloader {
         appendedIds = []
         autoLabel = nil
         isActive = false
-        source = nil
+        sources = []
         totalCount = 0
         downloadedCount = 0
         rippingCount = 0
@@ -369,9 +381,11 @@ final class CollectionMixDownloader {
     /// arrivals so it continues instead of staying silent. Dedupe lives here (`appendedIds`) —
     /// the engine API is untouched.
     private func continueAutoMixIfArmed() {
-        guard autoArmed, let source, let resolve = resolveLoadables else { return }
-        let fresh = resolve(source).filter {
-            !initialAutoIds.contains($0.songId) && !appendedIds.contains($0.songId)
+        guard autoArmed, !sources.isEmpty, let resolve = resolveLoadables else { return }
+        var seen = Set<String>()
+        let fresh = sources.flatMap { resolve($0) }.filter {
+            seen.insert($0.songId).inserted
+                && !initialAutoIds.contains($0.songId) && !appendedIds.contains($0.songId)
         }
         guard !fresh.isEmpty else { return }
         if engine.autoMixing {

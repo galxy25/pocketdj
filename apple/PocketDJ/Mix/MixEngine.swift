@@ -433,6 +433,8 @@ final class MixEngine {
     @ObservationIgnored private let levelsA = MixDeckLevels()
     @ObservationIgnored private let levelsB = MixDeckLevels()
     @ObservationIgnored private var lastDiagHeartbeat: Date?
+    /// Throttles the steady-state Now Playing card rewrite to ~1 Hz inside the 10 Hz tick.
+    @ObservationIgnored private var lastCardRefresh: Date?
     @ObservationIgnored private var lastRenderingDiag: Bool?
     /// Wall-clock moment the tick watchdog first saw the engine stopped while the mix thinks it's
     /// live. Parks the auto-machine clocks (mirroring `remotePausedAt`) so a stall never burns a
@@ -533,9 +535,10 @@ final class MixEngine {
     /// One-time guard so the shared remote-command center is wired exactly once per engine.
     @ObservationIgnored private var remoteCommandsConfigured = false
 
-    /// Resolves a song id to its cover-art candidate URLs — same seam `PlayerEngine` uses,
-    /// injected once at launch from the catalog. Lets the Mix's lock-screen card show art too.
-    @ObservationIgnored var artworkURLsProvider: (@MainActor (String) -> [URL])?
+    /// Resolves a song id to its cover-art URLs — same seam `PlayerEngine` uses, injected once
+    /// at launch from the catalog (async: the streaming fallback resolves through MusicKit).
+    /// Lets the Mix's lock-screen card show art too.
+    @ObservationIgnored var artworkURLsProvider: (@MainActor (String) async -> [URL])?
     /// The now-playing card's fetched artwork + which song it belongs to. `updateSystemNowPlaying`
     /// fires on every position tick, so the fetch must be gated on the song id actually CHANGING —
     /// unlike `PlayerEngine.load`, there's no natural "track changed" call site to hook here.
@@ -3234,8 +3237,12 @@ final class MixEngine {
         nowPlayingArtwork = nil
         artworkToken += 1
         let token = artworkToken
-        guard let urls = artworkURLsProvider?(songId), !urls.isEmpty else { return }
+        guard let provider = artworkURLsProvider else { return }
         Task { @MainActor [weak self] in
+            // Provider runs inside the superseded task — its streaming fallback can hit the
+            // network, and a slow resolve for an already-ejected track must drop, not land.
+            let urls = await provider(songId)
+            guard self?.artworkToken == token, !urls.isEmpty else { return }
             guard let image = await PlayerEngine.loadFirstImage(urls) else { return }
             guard let self, self.artworkToken == token else { return }   // song changed again → drop
             self.nowPlayingArtwork = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
@@ -3558,6 +3565,21 @@ final class MixEngine {
             recoverFromEngineStop()
         }
         refreshTransport()
+        // ~1 Hz STEADY-STATE CARD REFRESH — the third engine path to learn the same CarPlay
+        // lesson (PlayerEngine's local observer and its external ticker both have it): the card's
+        // elapsed/rate were written only at discrete transport events on the assumption that "the
+        // system interpolates between", and a head unit that doesn't extrapolate showed a frozen
+        // slider for the entire mix. Rewrite once a second while a deck is audibly playing —
+        // never while paused (that would fight card scrubbing); `updateSystemNowPlaying` is
+        // arbiter-, restore- and loaded-guarded, its command enablement is diffed, and its art
+        // fetch is memoized by song id, so the periodic call is cheap and stomp-proof. This also
+        // keeps the scrubber's speed honest after a tempo change, which previously never rewrote
+        // the card's PlaybackRate at all.
+        if rendering, deckA.isPlaying || deckB.isPlaying,
+           lastCardRefresh.map({ now.timeIntervalSince($0) >= 1 }) ?? true {
+            lastCardRefresh = now
+            updateSystemNowPlaying()
+        }
         if autoMixing, rendering { autoFire() }
         // Playhead refresh into the durable session (~10 Hz call, throttled to ~5 s writes
         // while running inside the store; steady paused state writes nothing).

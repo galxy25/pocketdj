@@ -63,4 +63,20 @@ final class AlbumArtworkStore {
         if let amid = song.appleMusicId, !amid.isEmpty { return true }
         return song.id.hasPrefix("\(AppleMusicCatalog.idPrefix):")
     }
+
+    /// An album's art URLs WITH the streaming fallback — the complete answer, not just the
+    /// bundled half. Bundled `artCandidates` when the album ships any; otherwise the memoized
+    /// provider resolve above. This is the exact lane `CoverImage` walks, factored out because
+    /// the Now Playing cards (both engines) and the CarPlay list rows previously consulted ONLY
+    /// `artCandidates` — empty for the entire "Apple Music (Local)" catalog — which is why art
+    /// showed in-app but was "usually missing" in the car and on the lock screen.
+    func artURLs(for album: IndexAlbum, app: AppModel) async -> [URL] {
+        if !album.artCandidates.isEmpty { return album.artCandidates }
+        let candidates = album.trackList
+            .compactMap { app.songsById[$0] }
+            .filter { AlbumArtworkStore.hasCatalogID($0) }
+        guard !candidates.isEmpty else { return [] }
+        guard let url = await artworkURL(forAlbum: album.id, candidates: candidates) else { return [] }
+        return [url]
+    }
 }

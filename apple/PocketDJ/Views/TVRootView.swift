@@ -149,9 +149,11 @@ struct TVMixView: View {
     @Environment(SetlistPlayer.self) private var sequencer
 
     @State private var path = NavigationPath()
-    /// The chosen auto collection (pockets + set lists — the same source kinds MixView's
-    /// auto picker offers; both resolve to BURNED loadables via MixResolver).
-    @State private var source: MixSource?
+    /// The chosen crates — one per deck, mirroring the CarPlay Mix tab. Deck A is required;
+    /// Deck B nil means "same as Deck A" (the ordinary single-crate mix). Pockets + set lists,
+    /// the same source kinds MixView's auto picker offers (both resolve to BURNED loadables).
+    @State private var deckA: MixSource?
+    @State private var deckB: MixSource?
     @State private var startError: String?
 
     var body: some View {
@@ -176,6 +178,10 @@ struct TVMixView: View {
             .background(Theme.bg.ignoresSafeArea())
             .navigationTitle("Mix")
             .pocketDJDestinations(path: $path)
+            // A durable mix session restored at launch stays PARKED until a Mix surface
+            // materializes it — same contract as MixView's `.task` on the phone/Mac, honored
+            // here so a force-quit TV mix comes back cued + suspended instead of never.
+            .task { engine.materializePendingRestoreIfNeeded() }
         }
     }
 
@@ -186,27 +192,42 @@ struct TVMixView: View {
             Label("Auto DJ", systemImage: "wand.and.stars")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(Theme.fg)
-            Text("Pick a collection and press Play — PocketDJ beat-mixes it for the room.")
+            Text("Pick a crate per deck and press Start — PocketDJ shuffles both and beat-mixes them for the room.")
                 .font(.callout)
                 .foregroundStyle(Theme.fgDim)
-            Menu {
-                sourceMenuItems
-            } label: {
-                Label(sourceName ?? "Pick a collection", systemImage: "rectangle.stack")
-                    .lineLimit(1)
-            }
-            .accessibilityIdentifier("tv-mix-source")
+            // Two deck selectors, mirroring the CarPlay Mix tab: A is required, B defaults to
+            // "same as A". Menu is tvOS's picker idiom (focusable; no segmented style exists).
             HStack(spacing: 20) {
-                Button { start(shuffled: false) } label: {
-                    Label("Play", systemImage: "play.fill")
+                Menu {
+                    crateMenuItems { deckA = $0 }
+                } label: {
+                    Label("A · \(crateName(deckA) ?? "Pick a crate")", systemImage: "a.circle.fill")
+                        .lineLimit(1)
                 }
-                .disabled(source == nil)
-                .accessibilityIdentifier("tv-mix-play")
+                .accessibilityIdentifier("tv-mix-source")
+                Menu {
+                    Button("Same as Deck A") { deckB = nil }
+                    crateMenuItems { deckB = $0 }
+                } label: {
+                    Label("B · \(crateName(deckB) ?? "Same as Deck A")", systemImage: "b.circle.fill")
+                        .lineLimit(1)
+                }
+                .accessibilityIdentifier("tv-mix-source-b")
+            }
+            glideToggles
+            HStack(spacing: 20) {
                 Button { start(shuffled: true) } label: {
-                    Label("Shuffle", systemImage: "shuffle")
+                    Label("Start Mix", systemImage: "shuffle")
                 }
-                .disabled(source == nil)
+                .disabled(deckA == nil)
                 .accessibilityIdentifier("tv-mix-shuffle")
+                // The in-order start stays for a prepared set (a wedding's set list plays as
+                // written); the shuffled Start above is the room's default.
+                Button { start(shuffled: false) } label: {
+                    Label("In order", systemImage: "play.fill")
+                }
+                .disabled(deckA == nil)
+                .accessibilityIdentifier("tv-mix-play")
             }
             if let startError {
                 Label(startError, systemImage: "exclamationmark.triangle")
@@ -220,29 +241,47 @@ struct TVMixView: View {
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
-    @ViewBuilder private var sourceMenuItems: some View {
-        // Same source kinds as MixView's auto picker: pockets + set lists (the two that
-        // resolve through MixResolver into burned loadables).
+    /// FX Glide + Audio Glide — ENGINE state (persists with the durable mix session), not
+    /// settings; safe to flip mid-mix (applies from the next transition). Toggle is focusable
+    /// on tvOS (the TVSettingsView pattern); explicit Binding because the engine is the store.
+    private var glideToggles: some View {
+        HStack(spacing: 28) {
+            Toggle("FX Glide", isOn: Binding(
+                get: { engine.fxGlideEnabled },
+                set: { engine.setFXGlide($0) }))
+                .accessibilityIdentifier("tv-mix-fx-glide")
+            Toggle("Audio Glide", isOn: Binding(
+                get: { engine.mixGlideEnabled },
+                set: { engine.setMixGlide($0) }))
+                .accessibilityIdentifier("tv-mix-audio-glide")
+        }
+        .toggleStyle(.button)
+        .font(.callout)
+    }
+
+    /// Crate rows for one deck's Menu — pockets + set lists (the two kinds that resolve
+    /// through MixResolver into burned loadables), same as MixView's auto picker.
+    @ViewBuilder private func crateMenuItems(pick: @escaping (MixSource) -> Void) -> some View {
         if collections.pockets.isEmpty && collections.visibleSetlists.isEmpty {
             Text("No pockets or set lists yet — build one on iPhone, iPad, or Mac.")
         }
         if !collections.pockets.isEmpty {
             Section("Pockets") {
                 ForEach(collections.pockets) { p in
-                    Button(p.name) { source = .pocket(p.id) }
+                    Button(p.name) { pick(.pocket(p.id)) }
                 }
             }
         }
         if !collections.visibleSetlists.isEmpty {
             Section("Set lists") {
                 ForEach(collections.visibleSetlists) { s in
-                    Button(s.name ?? "Set list") { source = .setlist(s.id) }
+                    Button(s.name ?? "Set list") { pick(.setlist(s.id)) }
                 }
             }
         }
     }
 
-    private var sourceName: String? {
+    private func crateName(_ source: MixSource?) -> String? {
         switch source {
         case .pocket(let id):  return collections.pocket(id)?.name
         case .setlist(let id): return collections.setlist(id)?.name ?? "Set list"
@@ -251,11 +290,13 @@ struct TVMixView: View {
     }
 
     private func start(shuffled: Bool) {
-        guard let src = source else { return }
+        guard let a = deckA else { return }
         startError = nil
         Task {
             do {
-                _ = try await intents.startAutoMix(source: src, shuffle: shuffled)
+                // The two-crate start (deck B = A when unset) — per-crate shuffle + interleave,
+                // same path as the CarPlay Mix tab, so both remotes behave identically.
+                _ = try await intents.startAutoMix(deckA: a, deckB: deckB ?? a, shuffle: shuffled)
             } catch {
                 // The intent error strings are already user-facing ("no burned songs…").
                 startError = String(localized: (error as? PocketDJIntentError)?.localizedStringResource
@@ -305,15 +346,23 @@ struct TVMixView: View {
                     Button { engine.remotePause() } label: { Label("Pause", systemImage: "pause.fill") }
                         .accessibilityIdentifier("tv-mix-pause")
                 }
-                Button { engine.skipToNext(fadeSeconds: settings.skipFadeSeconds) } label: {
-                    Label("Skip", systemImage: "forward.fill")
+                // FAST vs SLOW skip — the lock-screen pair (⏭ 5 s sweep / ⏮ long blend), as
+                // two labeled buttons. `remoteSkip` (not `skipToNext`) so a skip pressed while
+                // the mix is PAUSED un-suspends the machine first instead of being swallowed.
+                Button { engine.remoteSkip(fadeSeconds: 5) } label: {
+                    Label("Skip · quick", systemImage: "forward.fill")
                 }
                 .accessibilityIdentifier("tv-mix-skip")
+                Button { engine.remoteSkip(fadeSeconds: settings.skipFadeSeconds) } label: {
+                    Label("Skip · blend", systemImage: "forward.end.fill")
+                }
+                .accessibilityIdentifier("tv-mix-skip-slow")
                 Button(role: .destructive) { engine.stopAutoMix() } label: {
                     Label("Stop", systemImage: "stop.fill")
                 }
                 .accessibilityIdentifier("tv-mix-stop")
             }
+            glideToggles
         }
         .padding(36)
         .frame(maxWidth: .infinity, alignment: .leading)
