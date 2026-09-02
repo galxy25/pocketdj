@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(WidgetKit)
 import WidgetKit
+#endif
 #if canImport(UIKit)
 import UIKit
 #elseif canImport(AppKit)
@@ -306,9 +308,11 @@ final class WidgetSync {
         NowPlayingShared.write(snap)
         // WidgetKit reached visionOS only in visionOS 26; the app itself targets visionOS 2.0,
         // so gate the reload there (always runs on iOS/macOS — the `*` covers them).
+        #if canImport(WidgetKit)
         if #available(visionOS 26.0, *) {
             WidgetCenter.shared.reloadAllTimelines()
         }
+        #endif
     }
 
     /// The MusicKit catalog artwork URL for `songId`, when it IS the Apple Music now-playing

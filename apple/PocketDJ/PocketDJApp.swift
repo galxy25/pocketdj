@@ -1768,7 +1768,9 @@ struct PocketDJApp: App {
         // ⌘N → New Window. Lets the user run e.g. a Performance surface in one window and the Mix
         // surface in another without switching tabs. Applies on every platform, but the command
         // registers only where a second window can actually show (macOS + iPadOS; NOT iPhone).
+        #if !os(tvOS)
         .commands { NewWindowCommands(); SongEditCommands() }
+        #endif
     }
 }
 
@@ -1780,6 +1782,7 @@ struct PocketDJApp: App {
 /// hidden then — RootView) never coexists with a live Copy binding. AppKit resolves the
 /// remaining overlap with the SYSTEM Copy/Paste items by menu order: a focused text field
 /// enables system Copy first, which is the precedence we want.
+#if !os(tvOS)
 private struct SongEditCommands: Commands {
     @FocusedValue(\.songSelectionActions) private var actions
 
@@ -1815,18 +1818,25 @@ private struct SongEditCommands: Commands {
 /// payload — the shared app-scoped stores are reached by the new RootView through `.environment(...)`
 /// exactly as the first window's is.
 private struct NewWindowCommands: Commands {
+    #if !os(tvOS)
     @Environment(\.openWindow) private var openWindow
+    #endif
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
             if supportsMultipleWindows {
-                Button("New Window") { openWindow(id: "main") }
-                    .keyboardShortcut("n", modifiers: .command)
+                Button("New Window") {
+                    #if !os(tvOS)
+                    openWindow(id: "main")
+                    #endif
+                }
+                .keyboardShortcut("n", modifiers: .command)
             }
         }
     }
 }
+#endif
 
 /// Map an engine-ended instrument take to its filed record with the default "Take <date>" name
 /// (the user renames later in the Instruments tab). One mapping shared by the auto-stop callback

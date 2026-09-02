@@ -85,8 +85,11 @@ final class OnboardingStore {
         var decision = Self.decide(marker: Self.readMarker(defaults),
                                    hadPersistedSettings: hadPersistedSettings,
                                    environment: environment)
-        #if os(visionOS)
-        // Auto-complete on visionOS while the blank-first-window bug is open (see header).
+        #if os(visionOS) || os(tvOS)
+        // Auto-complete on visionOS while the blank-first-window bug is open (see header),
+        // and on tvOS ALWAYS: the TV has no import surface (file pickers are TVCompat
+        // no-ops), so the three-stage flow can't be walked there — profile, collections,
+        // and connection credentials all arrive via the iCloud pull at launch instead.
         if case .show = decision { decision = .skipAndStamp }
         #endif
         switch decision {

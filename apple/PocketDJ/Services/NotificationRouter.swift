@@ -17,6 +17,9 @@ final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
         UNUserNotificationCenter.current().delegate = self
     }
 
+    // tvOS's UserNotifications surface has no banners or tap-through responses —
+    // the delegate installs fine but these callbacks don't exist there.
+    #if !os(tvOS)
     func userNotificationCenter(_ center: UNUserNotificationCenter,
                                 willPresent notification: UNNotification) async
         -> UNNotificationPresentationOptions {
@@ -31,4 +34,5 @@ final class NotificationRouter: NSObject, UNUserNotificationCenterDelegate {
               let sessionId = pdj["sessionId"] as? String, !sessionId.isEmpty else { return }
         onOpenMwFSession?(sessionId)
     }
+    #endif
 }

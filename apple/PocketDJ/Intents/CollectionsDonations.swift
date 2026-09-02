@@ -54,6 +54,10 @@ enum CollectionsSpotlight {
     }
 
     private static func reindex(_ collections: CollectionsStore, generation gen: Int) async {
+        #if os(tvOS)
+        // No Spotlight on tvOS — entity donation is a no-op there.
+        _ = collections
+        #else
         let playlists = PlaylistEntity.all(in: collections)
         let pockets = PocketEntity.all(in: collections)
         let index = CSSearchableIndex(name: indexName)
@@ -64,6 +68,7 @@ enum CollectionsSpotlight {
         if !playlists.isEmpty { try? await index.indexAppEntities(playlists) }
         guard gen == generation else { return }
         if !pockets.isEmpty { try? await index.indexAppEntities(pockets) }
+        #endif
     }
 
     /// Donations/indexing are real system side effects — keep fixture-driven test

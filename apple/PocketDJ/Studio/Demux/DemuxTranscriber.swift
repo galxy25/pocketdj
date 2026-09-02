@@ -1,6 +1,8 @@
 import Foundation
 import AVFoundation
+#if !os(tvOS)
 import Speech
+#endif
 
 /// ON-DEVICE speech-to-text for the Demuxer: an audio file URL → timed words (`DemuxWord`).
 /// Apple's Speech framework (`SFSpeechURLRecognitionRequest`) with `requiresOnDeviceRecognition`
@@ -34,6 +36,7 @@ enum DemuxTranscriber {
     /// Per-window ceiling: a wedged recognition callback fails the window, not the run.
     nonisolated static let chunkTimeoutSeconds: Double = 120
 
+    #if !os(tvOS)
     /// A recognizer that can run fully on device for `locale`, or nil.
     nonisolated private static func onDeviceRecognizer(_ locale: Locale) -> SFSpeechRecognizer? {
         guard let r = SFSpeechRecognizer(locale: locale) ?? SFSpeechRecognizer() else { return nil }
@@ -46,10 +49,17 @@ enum DemuxTranscriber {
     nonisolated static var isSupported: Bool {
         onDeviceRecognizer(Locale.current) != nil
     }
+    #else
+    /// tvOS has no on-device Speech recognition — the Demux transcript lane is unsupported there.
+    nonisolated static var isSupported: Bool { false }
+    #endif
 
     /// Ask for (or confirm) speech-recognition permission. Safe to call repeatedly — the system
     /// prompts only once; afterwards it resolves instantly from the recorded grant.
     static func ensureAuthorized() async -> Bool {
+        #if os(tvOS)
+        return false
+        #else
         switch SFSpeechRecognizer.authorizationStatus() {
         case .authorized: return true
         case .denied, .restricted: return false
@@ -59,6 +69,7 @@ enum DemuxTranscriber {
             }
         @unknown default: return false
         }
+        #endif
     }
 
     /// One finished window's outcome, delivered via `onWindow` as the run progresses. Words
@@ -83,6 +94,9 @@ enum DemuxTranscriber {
     static func transcribe(url: URL, locale: Locale = .current, resumeFromMs: Int = 0,
                            onWindow: (@MainActor @Sendable (WindowReport) -> Void)? = nil)
     async throws -> [DemuxWord] {
+        #if os(tvOS)
+        throw TranscribeError.unsupported
+        #else
         guard onDeviceRecognizer(locale) != nil else { throw TranscribeError.unsupported }
         guard await ensureAuthorized() else { throw TranscribeError.unauthorized }
 
@@ -121,6 +135,7 @@ enum DemuxTranscriber {
             throw TranscribeError.recognitionFailed(lastFailure)
         }
         return all.sorted { $0.startMs < $1.startMs }
+        #endif
     }
 
     /// The windows still to run given a prior run's coverage point. Pure — unit-tested.
@@ -196,6 +211,7 @@ enum DemuxTranscriber {
     /// mid-window (the deadline burned while frozen), or a transient Speech-service
     /// failure — the second attempt on a live pass routinely succeeds. Cancellation
     /// propagates; only real failures re-try.
+    #if !os(tvOS)
     private static func recognizeWindowWithRetry(_ url: URL, locale: Locale) async throws -> [DemuxWord] {
         do {
             return try await recognizeWindow(url, locale: locale)
@@ -292,4 +308,5 @@ enum DemuxTranscriber {
             return DemuxWord(text: text, startMs: start, endMs: start + dur)
         }
     }
+    #endif
 }

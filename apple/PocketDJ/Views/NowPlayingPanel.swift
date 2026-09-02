@@ -119,6 +119,8 @@ struct NowPlayingPanel: View {
                     placement: UIDevice.current.userInterfaceIdiom == .pad
                         ? .sidebar : .navigationBarDrawer(displayMode: .always),
                     prompt: "Add songs or albums")
+        #elseif os(tvOS)
+        .searchable(text: $query, prompt: "Add songs or albums")
         #else
         .searchable(text: $query, placement: .sidebar, prompt: "Add songs or albums")
         #endif

@@ -151,6 +151,7 @@ struct DemuxTimelineView: View {
         }
     }
 
+    #if !os(tvOS)
     private func scrubGesture(pxPerSec: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 0)
             .updating($scrubMs) { value, state, _ in
@@ -161,6 +162,12 @@ struct DemuxTimelineView: View {
                 onSeek(clampMs(value.location.x, pxPerSec: pxPerSec))
             }
     }
+    #else
+    /// tvOS: no touch scrubbing — an inert gesture keeps the call site shared.
+    private func scrubGesture(pxPerSec: CGFloat) -> some Gesture {
+        TapGesture()
+    }
+    #endif
 
     private func clampMs(_ x: CGFloat, pxPerSec: CGFloat) -> Int {
         min(max(0, Int(x / pxPerSec * 1_000)), durationMs)

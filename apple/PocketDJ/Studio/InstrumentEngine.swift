@@ -763,7 +763,9 @@ final class InstrumentEngine {
         if let o = mediaResetObserver { NotificationCenter.default.removeObserver(o); mediaResetObserver = nil }
         #endif
         if let o = configChangeObserver { NotificationCenter.default.removeObserver(o); configChangeObserver = nil }
+        #if !os(tvOS)
         if midiClient != 0 { MIDIClientDispose(midiClient); midiClient = 0; midiPort = 0 }
+        #endif
     }
 
     // TEST SEAMS — dead-engine transport tests (the route-change hardening contract). The
@@ -2507,6 +2509,7 @@ final class InstrumentEngine {
     /// creates NO network session and touches NO Bluetooth (out of scope; new entitlements).
     /// The client outlives audio-engine rebuilds — MIDI is independent of the render graph.
     private func setupMIDIIfNeeded() {
+        #if !os(tvOS)
         guard midiClient == 0 else { return }
         var client = MIDIClientRef()
         let status = MIDIClientCreateWithBlock("PocketDJ Instruments" as CFString, &client) { [weak self] notice in
@@ -2538,12 +2541,14 @@ final class InstrumentEngine {
         }
         midiPort = port
         connectAllMIDISources()
+        #endif
     }
 
     /// (Re)connect every present MIDI source — initial setup AND the setup-changed reconnect
     /// (plugging a keyboard in mid-session must just work). Disconnect-then-connect keeps the
     /// port single-subscribed per source across repeated setup notifications.
     private func connectAllMIDISources() {
+        #if !os(tvOS)
         guard midiPort != 0 else { return }
         var names: [String] = []
         for i in 0..<MIDIGetNumberOfSources() {
@@ -2559,11 +2564,13 @@ final class InstrumentEngine {
         }
         midiSourceNames = names
         dlog("instr: MIDI sources (\(names.count)) connected")
+        #endif
     }
 
     /// CoreMIDI-thread packet handler (`nonisolated static` — it must never touch the actor).
     /// Sound first (the bridge), log second; per-note cost is a couple of comparisons + one
     /// short lock hold.
+    #if !os(tvOS)
     nonisolated private static func handleMIDIEventList(_ listPtr: UnsafePointer<MIDIEventList>,
                                                         log: InstrumentEventLog,
                                                         rt: InstrumentRealtimeBridge) {
@@ -2603,6 +2610,7 @@ final class InstrumentEngine {
             }
         }
     }
+    #endif
 
     /// Decode one MIDI 1.0 Universal-MIDI-Packet word into the note messages the instrument
     /// handles. UMP message type 2 = MIDI 1.0 channel voice: status in bits 16–23, data bytes

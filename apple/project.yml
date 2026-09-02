@@ -28,8 +28,8 @@ settings:
 targets:
   PocketDJ:
     type: application
-    # Single multiplatform target — one app that runs on iPhone, iPad, Mac, and Vision Pro.
-    supportedDestinations: [iOS, macOS, visionOS]
+    # Single multiplatform target — one app that runs on iPhone, iPad, Mac, Vision Pro, and Apple TV.
+    supportedDestinations: [iOS, macOS, visionOS, tvOS]
     sources:
       - path: PocketDJ
       # Shared with the widget extension: the NowPlayingSnapshot model + App Group store +
@@ -127,8 +127,9 @@ targets:
               - pocketdj
     dependencies:
       - package: ZIPFoundation
-      # Embed the Now Playing widget extension into the app (all supported platforms).
+      # Embed the Now Playing widget extension into the app (no WidgetKit on tvOS).
       - target: PocketDJWidgets
+        destinationFilters: [iOS, macOS, visionOS]
       # The Mix tab's DJ engine is a first-party AVAudioEngine graph (MixEngine.swift) —
       # no third-party audio SDK. (Tempo/pitch/seek/crossfader/effects/beat-match are all
       # AVFoundation nodes; the former Switchboard/Superpowered SDK was removed.)
@@ -260,7 +261,7 @@ targets:
 
   PocketDJUITests:
     type: bundle.ui-testing
-    supportedDestinations: [iOS, macOS]
+    supportedDestinations: [iOS, macOS, visionOS]
     sources:
       - path: Tests/UI
     dependencies:

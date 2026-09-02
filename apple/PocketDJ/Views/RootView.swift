@@ -27,7 +27,9 @@ struct RootView: View {
     // System actions behind the leading "+" (open a New Window). supportsMultipleWindows is
     // false on iPhone (can't show two windows) and true on iPad/macOS/visionOS — it gates the
     // button so it self-hides exactly where ⌘N does (see NewWindowCommands in PocketDJApp).
+    #if !os(tvOS)
     @Environment(\.openWindow) private var openWindow
+    #endif
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
     // Optional selection: the non-optional List(selection:) initializer is macOS-only.
     // Launch default: HISTORY on every platform (Levi 2026-07-22). macOS and visionOS land
@@ -137,6 +139,25 @@ struct RootView: View {
     }
 
     var body: some View {
+        #if os(tvOS)
+        // Apple TV gets a focus-native TabView shell (TVRootView) instead of the split view
+        // + resizable Now Playing machinery below (pointer/touch furniture a remote can't
+        // drive). The DATA layer is identical: the TV attaches the same launchActions() the
+        // split view runs, so fixture seams, the iCloud pull, durable-session restores, and
+        // the catalog load behave exactly as on iPhone/iPad/Mac. Onboarding never presents
+        // on tvOS (OnboardingStore auto-completes there — the TV has no import surface; the
+        // profile + credentials arrive via iCloud sync instead).
+        TVRootView()
+            .task { await launchActions() }
+        #else
+        regularBody
+        #endif
+    }
+
+    /// The iPhone/iPad/Mac/Vision shell (everything RootView has always been). A separate
+    /// property purely so `body` can swap the whole shell on tvOS without fencing every
+    /// modifier below.
+    private var regularBody: some View {
         GeometryReader { geo in
             splitView
                 // Req 7 — the resizable Now Playing overlay rides the WHOLE window (it can
@@ -266,7 +287,23 @@ struct RootView: View {
         #else
         .fullScreenCover(isPresented: onboardingPresented) { OnboardingView() }
         #endif
-        .task {
+        // The launch pipeline lives in launchActions() so the tvOS shell (which
+        // renders TVRootView instead of this split view) runs the SAME actions.
+        .task { await launchActions() }
+        // Remember where the user is so the next iOS launch reopens there (nil —
+        // the home menu — persists as "" and restores as home).
+        .onChange(of: section) {
+            settings.lastSection = section?.rawValue ?? ""
+            settings.persist()
+        }
+    }
+
+    /// The launch ACTIONS (store cross-wiring happens in PocketDJApp.init; this runs the
+    /// per-launch work). Extracted from the body `.task` so BOTH shells share it: the
+    /// split view everywhere else, and the tvOS TabView shell (TVRootView), which attaches
+    /// it in `body`'s tvOS branch — the TV must reconcile burns, pull iCloud, restore the
+    /// durable sessions, and load the catalog exactly like every other platform.
+    private func launchActions() async {
             // Store cross-wiring happens in PocketDJApp.init() (so background intent
             // launches are wired too); this task runs the launch ACTIONS.
             // FIRST: hold the ENTIRE launch pipeline until onboarding resolves (returns
@@ -368,13 +405,6 @@ struct RootView: View {
             consumeIntentRoute(intents.pendingRoute)   // route parked by a cold intent launch
             consumeJukeboxOpen(jukebox.pendingOpenId)  // jukebox link tapped at cold launch
             consumeFriendsOpen(friends.pendingOpenId)  // MwF link/push tapped at cold launch
-        }
-        // Remember where the user is so the next iOS launch reopens there (nil —
-        // the home menu — persists as "" and restores as home).
-        .onChange(of: section) {
-            settings.lastSection = section?.rawValue ?? ""
-            settings.persist()
-        }
     }
 
     // MARK: - Docked panel dress (collapse chevron · builder ＋ · resize handle)
@@ -698,7 +728,11 @@ struct RootView: View {
     }
 
     private var newWindowButton: some View {
-        Button { openWindow(id: "main") } label: { Image(systemName: "plus") }
+        Button {
+            #if !os(tvOS)
+            openWindow(id: "main")
+            #endif
+        } label: { Image(systemName: "plus") }
             .help("New Window — run another surface (Mix, Producer…) alongside this one")
             .accessibilityIdentifier("new-window")
     }

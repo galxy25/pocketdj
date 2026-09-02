@@ -237,7 +237,11 @@ struct CollectorsPuzzleView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
         .frame(maxWidth: .infinity)
+        #if os(tvOS)
+        .background(.regularMaterial)
+        #else
         .background(.bar)
+        #endif
     }
 
     private var poolCountLabel: some View {

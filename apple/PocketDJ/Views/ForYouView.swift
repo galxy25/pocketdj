@@ -93,7 +93,13 @@ struct ForYouTilesView: View {
     private var isRefreshing: Bool { feed?.isRefreshing ?? fallbackRefreshing }
 
     private var columns: [GridItem] {
+        // tvOS text sizes are ~2x the phone's — the tiles scale up with them so the
+        // captions still fit (the card height does too; see ForYouTileCard).
+        #if os(tvOS)
+        [GridItem(.adaptive(minimum: 320, maximum: 460), spacing: 32)]
+        #else
         [GridItem(.adaptive(minimum: 150, maximum: 260), spacing: 12)]
+        #endif
     }
 
     var body: some View {
@@ -512,12 +518,21 @@ private struct ForYouTileCard: View {
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(12)
-        .frame(height: 116, alignment: .topLeading)
+        .padding(Self.pad)
+        .frame(height: Self.cardHeight, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
             .fill(Theme.bgRaised))
         .overlay(RoundedRectangle(cornerRadius: Theme.radius, style: .continuous)
             .strokeBorder(tile.isPinned ? tile.tint.opacity(0.55) : Theme.border, lineWidth: 1))
         .contentShape(Rectangle())
     }
+
+    // tvOS renders type ~2x the phone size; the fixed card box scales with it.
+    #if os(tvOS)
+    private static let pad: CGFloat = 20
+    private static let cardHeight: CGFloat = 210
+    #else
+    private static let pad: CGFloat = 12
+    private static let cardHeight: CGFloat = 116
+    #endif
 }
