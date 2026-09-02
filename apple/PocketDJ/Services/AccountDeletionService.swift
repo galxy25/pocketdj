@@ -47,6 +47,9 @@ final class AccountDeletionService {
         // listed here — every 👍/👎 the user ever gave survived an account deletion in his private
         // CloudKit database. "foryou-feed" is its companion (the cached ranking), added with F5.
         "rec-feedback", "foryou-feed",
+        // The synced connection/credential subset of SettingsStore (rip server, jukebox,
+        // online-search) — see SettingsCredentialsSync.swift.
+        "settings-credentials",
     ]
 
     /// Recommendation-engine wipe seams (WS-E), wired in PocketDJApp. Optional so tests that

@@ -1411,6 +1411,16 @@ struct PocketDJApp: App {
         cloudSync.register("rec-key", fileURL: recEngine.keySyncFileURL) { [weak recEngine] in
             recEngine?.reloadKeyFromDisk()   // the rec bearer key follows the Apple ID (TOFU-per-profile)
         }
+        // SYNCED SETTINGS (the credential subset): rip server, Jukebox Hero broker, and
+        // online-search credentials follow the Apple ID so they're entered ONCE (the Apple TV
+        // app never grows a credential-typing flow). SettingsStore mirrors the subset into
+        // this file only on CONTENT change, and a blank install never materializes it (adopt-
+        // don't-race) — doctrine in SettingsCredentialsSync.swift. Whole-document LWW like
+        // every doc above; device-specific settings (bookmarks, playback mode, UI prefs)
+        // never ride along.
+        cloudSync.register("settings-credentials", fileURL: settings.credentialsSyncFileURL) { [weak settings] in
+            settings?.reloadCredentialsFromDisk()
+        }
         // ONBOARDING PUSH GATE (R1): until the first-run flow resolves, no push may run —
         // a store file materialized mid-onboarding (an empty flush, an intent-written doc)
         // must never LWW-overwrite a returning user's cloud data. Pulls stay allowed (the

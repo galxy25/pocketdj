@@ -394,14 +394,21 @@ final class SettingsStore {
     private let defaults: UserDefaults
     private static let key = "pdj.settings.v1"
 
+    /// On-disk mirror of the iCloud-SYNCED credential subset (the "settings-credentials"
+    /// cloud doc) — see SettingsCredentialsSync.swift for the doctrine. Registration reads
+    /// this SAME URL (never re-derives it), the ProfileStore.syncFileURL pattern.
+    @ObservationIgnored let credentialsSyncFileURL: URL
+
     /// Whether a persisted settings blob existed when THIS store was constructed — the
     /// existing-user signal OnboardingStore's decision tree reads (an update must never
     /// show the first-run flow). Captured before anything can persist; App.init on a
     /// fresh install never persists settings (verified invariant — see OnboardingStore).
     @ObservationIgnored let hadPersistedSettings: Bool
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard,
+         credentialsFileURL: URL = SettingsStore.credentialsSyncLaunchURL()) {
         self.defaults = defaults
+        self.credentialsSyncFileURL = credentialsFileURL
         self.hadPersistedSettings = defaults.data(forKey: SettingsStore.key) != nil
         let data = SettingsStore.load(from: defaults)
         self.sources = data.sources
@@ -493,6 +500,15 @@ final class SettingsStore {
         if appleMusicPrivateSyncRaw == nil {
             appleMusicPrivateSyncRaw = !ripServerURL.isEmpty
         }
+
+        // Materialize/refresh the synced credential mirror (SettingsCredentialsSync.swift):
+        // an already-configured device materializes the doc on its first launch after the
+        // update, without waiting for the next settings edit. Content-compared, so an
+        // unchanged launch never bumps the file's mtime (no spurious cloud pushes), and an
+        // all-blank fresh install never creates the file at all (a blank local must ADOPT
+        // the cloud credentials under LWW, never race them). NOT a UserDefaults persist —
+        // the OnboardingStore fresh-install invariant (init never writes the blob) holds.
+        syncCredentialsDocumentIfChanged()
     }
 
     /// Under UI tests (PDJ_USE_FIXTURE) use an isolated, freshly-cleared store so
@@ -648,12 +664,18 @@ final class SettingsStore {
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
+        // Mirror the SYNCED credential subset to its cloud-doc file (content-compared — a
+        // lastSection tab switch persisting must not bump the doc's mtime and push it).
+        syncCredentialsDocumentIfChanged()
     }
 
     /// Wipe ALL on-device state: settings, the URL cache (covers + index), the per-source
     /// catalog disk cache, back to defaults.
     func resetEverything() {
         defaults.removeObject(forKey: SettingsStore.key)
+        // Drop the synced-credentials mirror too: a reset device must look like a fresh
+        // install to the "settings-credentials" cloud doc (blank ⇒ adopt, never race).
+        try? FileManager.default.removeItem(at: credentialsSyncFileURL)
         // Force the zero-to-hero flow on next launch. An explicit `pending` marker — NOT
         // blob-absence — because leaving the Settings tab after the reset re-persists the
         // blob via RootView's lastSection onChange, which would mask a blob-absence signal.
