@@ -51,8 +51,19 @@ struct CKCloudDocDatabase: CloudDocDatabase {
     private func recordID(_ key: String) -> CKRecord.ID { CKRecord.ID(recordName: "doc-\(key)") }
 
     func accountAvailable() async -> Bool {
-        let status = try? await CKContainer(identifier: Self.containerID).accountStatus()
-        return status == .available
+        // Capture BOTH failure shapes for remote diagnostics (the TV's "unable to
+        // authenticate" hides in one of them): a thrown error, or a non-.available status
+        // (.noAccount / .restricted / .couldNotDetermine / .temporarilyUnavailable).
+        do {
+            let status = try await CKContainer(identifier: Self.containerID).accountStatus()
+            if status != .available {
+                await DiagLog.shared.log("cloudkit", "accountStatus=\(status.rawValue) (not available)")
+            }
+            return status == .available
+        } catch {
+            await DiagLog.shared.log("error", "accountStatus threw: \((error as NSError).domain)#\((error as NSError).code) \(error.localizedDescription)")
+            return false
+        }
     }
 
     func fetchMeta(keys: [String]) async throws -> [String: Double] {

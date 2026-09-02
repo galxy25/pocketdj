@@ -296,8 +296,10 @@ final class CloudSyncService {
             lastSyncAt = Date()
             lastSummary = Self.summary(pulled: pulled, pushed: pushed)
             saveState()
+            DiagLog.shared.log("sync", "pass ok manual=\(manual) pulled=[\(pulled.joined(separator: ","))] pushed=[\(pushed.joined(separator: ","))]")
         } catch {
             lastError = error.localizedDescription
+            DiagLog.shared.log("error", "sync pass failed: \((error as NSError).domain)#\((error as NSError).code) \(error.localizedDescription)")
         }
     }
 
