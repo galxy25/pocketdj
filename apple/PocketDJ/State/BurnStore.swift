@@ -1004,10 +1004,44 @@ final class BurnStore {
             guard let (dir, scoped) = itemDir(item) else { continue }
             let url = dir.appendingPathComponent(item.audioFileName)
             let exists = FileManager.default.fileExists(atPath: url.path)
+            if !exists {
+                if scoped { dir.stopAccessingSecurityScopedResource() }
+                items[songId] = nil; changed = true
+                continue
+            }
+            // SELF-HEAL poisoned items (2026-09-01): a build shipped that finalized S3's
+            // ~536-byte "400 InvalidArgument" XML body as the downloaded mp3 — a .ready item
+            // whose file can never play (rows list, decks silently refuse). Detect by the two
+            // facts that separate it from ANY real audio: implausibly small, and starting with
+            // an XML/HTML error document. Delete both record and file so the normal download
+            // path re-fetches through the fixed request. The 4 KB floor is far below any real
+            // capture (a 1-second 256 kbps mp3 is ~32 KB) and far above the error bodies.
+            let size = (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+            var poisoned = false
+            if size < 4_096 {
+                if let fh = FileManager.default.contents(atPath: url.path) {
+                    let head = String(decoding: fh.prefix(16), as: UTF8.self)
+                    poisoned = head.hasPrefix("<?xml") || head.hasPrefix("<Error") || head.hasPrefix("<!DOCT") || head.hasPrefix("<html")
+                }
+            }
+            if poisoned {
+                try? FileManager.default.removeItem(at: url)
+                items[songId] = nil; changed = true
+            }
             if scoped { dir.stopAccessingSecurityScopedResource() }
-            if !exists { items[songId] = nil; changed = true }
         }
         if changed { save() }
+    }
+
+    /// TEST SEAM: insert a `.ready` app-storage item directly — the reconcile/self-heal tests
+    /// fabricate on-disk states (a poisoned error-body "mp3") that no real burn flow produces.
+    func injectItemForTesting(songId: String, audioFileName: String) {
+        items[songId] = BurnItem(songId: songId, title: songId, artist: "T",
+                                 audioFileName: audioFileName, sidecarFileName: "",
+                                 source: "digital", bpm: nil, musicalKey: nil, camelot: nil,
+                                 durationMs: nil, startMs: nil, bytes: 0, rippedAt: nil,
+                                 downloadedAt: Date().timeIntervalSince1970 * 1000,
+                                 state: .ready, error: nil, wasAppStorage: true)
     }
 
     // MARK: Recognizer "add to Apple Music → burn to device"
