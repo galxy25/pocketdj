@@ -746,6 +746,12 @@ private final class NPDSPStubURLProtocol: URLProtocol {
         }
         if path.hasSuffix("/manifest.json") {
             reply(200, Data("{}".utf8), json: true)
+        } else if path.hasSuffix("/rips/presign") {
+            // MUST-1: ensureURL's cached fast path now asks this first — echo back a
+            // fake-but-stub-servable URL (this same protocol answers it too, below).
+            let song = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "songId" })?.value ?? "song"
+            reply(200, Data(#"{"url":"https://rip.test/rips/\#(song).mp3"}"#.utf8), json: true)
         } else if path.hasSuffix("/rip") {
             // A job that immediately offers a live HLS stream (streamOnly) — the non-mixable path.
             let job = #"{"jobId":"j1","phase":"streaming","streamUrl":"/hls/np_stream/index.m3u8"}"#

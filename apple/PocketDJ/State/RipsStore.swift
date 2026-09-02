@@ -507,10 +507,58 @@ final class RipsStore {
     /// lands for next time. Background/download callers keep the long wait.
     static let interactivePlayWaitSeconds = 20
 
+    /// MUST-1: the rips bucket is private — a playable URL for an already-cached song
+    /// now costs one round trip to `GET /rips/presign` (bearer-gated) instead of being
+    /// built locally from `ripsBase` + the manifest key. `ttlSeconds` nil = server
+    /// default (1h, fine for interactive playback); BurnStore's background download
+    /// queue passes a longer one since a queued item can sit a while before its turn.
+    func presignedURL(for songId: String, ttlSeconds: Int? = nil) async throws -> URL {
+        guard hasServer else { throw RipError.noServer }
+        var comps = URLComponents(string: "\(serverUrl)/rips/presign")!
+        var items = [URLQueryItem(name: "songId", value: songId)]
+        if let ttlSeconds { items.append(URLQueryItem(name: "ttl", value: String(ttlSeconds))) }
+        comps.queryItems = items
+        guard let requestUrl = comps.url else { throw RipError.noServer }
+        var request = URLRequest(url: requestUrl)
+        request.timeoutInterval = 12
+        applyAuth(&request, token: token)
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw RipError.serverError(nil)
+        }
+        struct PresignResponse: Decodable { let url: String }
+        guard let presigned = try? JSONDecoder().decode(PresignResponse.self, from: data),
+              let presignedUrl = URL(string: presigned.url) else {
+            throw RipError.serverError(nil)
+        }
+        return presignedUrl
+    }
+
     @discardableResult
     func ensureURL(_ songId: String, allowLive: Bool,
                    maxWaitSeconds: Int = 1800) async throws -> URL {
-        if let cached = cachedURL(songId) { return cached }
+        // MUST-1: the rips bucket is private now, so a cached manifest entry alone isn't
+        // enough to build a playable URL (the old `ripsBase.appendingPathComponent(key)`
+        // would 403) — ask the gated endpoint for a short-TTL presigned one instead.
+        // Serverless is a legitimate degraded mode elsewhere in this file (discoverAddRip's
+        // `.noServer` case, etc.) — there's no rip-server to ask, so fall back to the old
+        // direct construction (best-effort; it 403s once the bucket is actually closed,
+        // same as any other action that needs the server and doesn't have one).
+        if let entry = manifest[songId] {
+            // A manifest key never actually points at an HLS path in production (a live
+            // capture's segments are served by the rip-server itself, never S3 — see
+            // `liveURL`); an `hls/`-prefixed key only exists in tests as a cheap stand-in
+            // for the live-stream scenario, so it isn't a private-bucket object to presign.
+            guard !entry.key.hasPrefix("hls/") else {
+                if let cached = cachedURL(songId) { return cached }
+                throw RipError.noServer
+            }
+            guard hasServer else {
+                if let cached = cachedURL(songId) { return cached }
+                throw RipError.noServer
+            }
+            return try await presignedURL(for: songId)
+        }
         // Spec §8: the play/download choke point that POSTs `/rip` — a studio id here
         // (a stale collection row, an old caller) must fail loudly, not live-search rip.
         if fencedStudioId(songId, path: "ensureURL") { throw RipError.studioItem }

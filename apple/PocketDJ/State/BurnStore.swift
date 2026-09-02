@@ -1212,9 +1212,22 @@ final class BurnStore {
             }
 
             // (2) Not-ripped short-circuit — Burn never blocks on the 30-min ensureURL.
-            guard let durableURL = rips.cachedURL(song.id), let entry = rips.manifest[song.id] else {
+            guard let entry = rips.manifest[song.id] else {
                 let why = rips.hasServer ? "not ripped — Rip first" : "not ripped (no rip server)"
                 items[song.id] = errorItem(song, message: why)
+                result.notRipped += 1
+                continue
+            }
+            // MUST-1: the rips bucket is private — a playable URL costs a presign round
+            // trip. Longer TTL than interactive playback (6h): this download may sit
+            // queued behind others in `transfers` for a while before its turn runs.
+            // Serverless falls back to the direct URL (see RipsStore.ensureURL) — there's
+            // no rip-server to presign against.
+            let presigned = rips.hasServer
+                ? try? await rips.presignedURL(for: song.id, ttlSeconds: 21_600)
+                : rips.cachedURL(song.id)
+            guard let durableURL = presigned else {
+                items[song.id] = errorItem(song, message: "couldn't get a playback URL — check the rip server")
                 result.notRipped += 1
                 continue
             }
