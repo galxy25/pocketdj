@@ -42,9 +42,10 @@ struct RecFeedbackButtons: View {
     var surface: RecFeedbackStore.Surface = .tile
     /// Glyph size. Rows keep `.caption`; the deck bumps it so the pair reads as a primary action.
     var font: Font = .caption
-    /// Run on 👍 in addition to recording it — the row's existing Add action. Optional because the
-    /// now-playing surfaces have no implicit collection to add to; there a 👍 is pure feedback,
-    /// which is exactly what the tuning loop needs it to be.
+    /// Run on 👍 in addition to recording it — the row's existing Add action. When the queue came
+    /// from a COLLECTION tile the playing scope is that collection, so every surface supplies an
+    /// add (the tile row via `accept`, the now-playing surfaces via `addAcceptedSong`); only a
+    /// scope with no implicit collection (In Da Zone, New) leaves a 👍 as pure feedback.
     var onAccept: (() -> Void)?
 
     private var verdict: RecFeedbackStore.Verdict? {
@@ -104,6 +105,7 @@ struct RecFeedbackButtons: View {
 struct NowPlayingFeedbackButtons: View {
     @Environment(SetlistPlayer.self) private var sequencer
     @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
+    @Environment(CollectionsStore.self) private var collections
     let font: Font
 
     init(font: Font = .subheadline) { self.font = font }
@@ -117,7 +119,8 @@ struct NowPlayingFeedbackButtons: View {
 
     var body: some View {
         if let t = target {
-            RecFeedbackButtons(songId: t.songId, scope: t.scope, surface: .nowPlaying, font: font)
+            RecFeedbackButtons(songId: t.songId, scope: t.scope, surface: .nowPlaying, font: font,
+                               onAccept: { collections.addAcceptedSong(t.songId, scopedTo: t.scope) })
         }
     }
 }

@@ -1902,6 +1902,24 @@ final class CollectionsStore {
         return nil
     }
 
+    /// The ADD half of a 👍 given from a NOW-PLAYING surface (deck, mini bar, CarPlay, widget,
+    /// lock screen): the running queue came from a For You collection tile, so the accept's
+    /// target is THAT collection — the same one-tap add the tile row performs, reached from the
+    /// transport instead. Membership-checked here because the single-song `addSong` is
+    /// deliberately the duplication path for playlists (the Add-to sheet's contract): an
+    /// accept → undo → accept cycle must not mint a second node. Returns whether the song was
+    /// actually added; false for a reserved scope ("zone"/"new" — no implicit collection, the
+    /// verdict stays pure feedback), a dead id, or an existing member.
+    @discardableResult
+    func addAcceptedSong(_ songId: String, scopedTo collectionId: String) -> Bool {
+        guard let target = addTargetForAnyCollection(collectionId) else { return false }
+        let members = target.kind == .pocket ? songIds(forPocket: collectionId)
+                                             : songIds(forPlaylist: collectionId)
+        guard !members.contains(songId) else { return false }
+        addSong(songId, to: target)
+        return true
+    }
+
     /// A frozen setlist's playable ids in FROZEN ORDER — studio rows included (they're
     /// snapshotted tracks like any other); only text cues (no backing item) drop out.
     func playableIds(forSetlist id: String) -> [String] {

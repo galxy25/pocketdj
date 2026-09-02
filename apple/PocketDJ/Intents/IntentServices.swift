@@ -360,10 +360,18 @@ final class IntentServices {
                                   surface: RecFeedbackStore.Surface) -> RecFeedbackStore.Verdict? {
         guard let store = recFeedback, let t = currentRecTarget() else { return nil }
         let song = app.songsById[t.songId]
-        return store.toggle(songId: t.songId, to: verdict, scope: t.scope, surface: surface,
-                            artistKey: song.map { PuzzleSimilarity.artistKey($0.artist) },
-                            genre: SimilarityFamilies.canonicalGenre(
-                                song?.albumId.flatMap { app.albumsById[$0] }?.genre))
+        let landed = store.toggle(songId: t.songId, to: verdict, scope: t.scope, surface: surface,
+                                  artistKey: song.map { PuzzleSimilarity.artistKey($0.artist) },
+                                  genre: SimilarityFamilies.canonicalGenre(
+                                      song?.albumId.flatMap { app.albumsById[$0] }?.genre))
+        // A 👍 that LANDS accepted also ADDS. The owner's contract for the tile rows — "send
+        // positive signal to the recommendation engine AND add the song to the collection" — holds
+        // unqualified, and for a collection tile the playing scope IS the target collection, so
+        // the transport surfaces (car, widget, lock screen) honour it too. Reserved scopes
+        // (zone/new) resolve to no target and stay pure feedback; the undo tap (landed == nil)
+        // never un-adds — removal from a crate is a deliberate act, not a side effect.
+        if landed == .accepted { collections.addAcceptedSong(t.songId, scopedTo: t.scope) }
+        return landed
     }
 
     /// Kick off the on-device-LLM pocket build and return immediately (the intent's

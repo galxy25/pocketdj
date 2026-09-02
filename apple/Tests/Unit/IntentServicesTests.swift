@@ -135,6 +135,59 @@ final class IntentServicesTests: XCTestCase {
         XCTAssertFalse(services.setlistPlayer.isRunning)
     }
 
+    // MARK: 👍 on what is playing (For You collection queue)
+
+    /// The owner's contract for a collection tile's 👍 — "send positive signal AND add the song
+    /// to the collection" — honoured from the TRANSPORT surfaces (deck, mini bar, CarPlay,
+    /// widget, lock screen), which all land in `recordNowPlayingFeedback`. For a collection tile
+    /// the playing scope IS the target collection id, so an accept adds the track there; the
+    /// undo never un-adds; a re-accept never duplicates.
+    func testNowPlayingThumbsUpAddsTheSongToThePlayingForYouCollection() async throws {
+        let (services, collections, _) = await makeServices()
+        let fbURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-intents-fb-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: fbURL) }
+        let store = RecFeedbackStore(fileURL: fbURL)
+        services.recFeedback = store
+        let pocket = collections.createPocket("808s and Swinging")
+        collections.addSong("sng_1", toPocket: pocket.id)
+
+        // Play a SUGGESTED track (not yet a member), scope-stamped the way every For You play
+        // path stamps it: with the tile's collection id.
+        _ = try await services.playSong(id: "sng_3")
+        store.beginPlayback(scope: pocket.id, songIds: ["sng_3"])
+
+        let landed = services.recordNowPlayingFeedback(.accepted, surface: .nowPlaying)
+        XCTAssertEqual(landed, .accepted)
+        XCTAssertEqual(collections.songIds(forPocket: pocket.id), ["sng_1", "sng_3"],
+                       "the 👍 adds the playing suggestion to the collection it was suggested for")
+
+        // The second tap is an UNDO of the verdict — never an un-add.
+        XCTAssertNil(services.recordNowPlayingFeedback(.accepted, surface: .nowPlaying))
+        XCTAssertEqual(collections.songIds(forPocket: pocket.id), ["sng_1", "sng_3"])
+
+        // A third tap re-accepts; membership is checked, so no duplicate node is minted.
+        XCTAssertEqual(services.recordNowPlayingFeedback(.accepted, surface: .nowPlaying), .accepted)
+        XCTAssertEqual(collections.songIds(forPocket: pocket.id), ["sng_1", "sng_3"])
+    }
+
+    /// Reserved scopes (In Da Zone / New) have no implicit collection — a 👍 there stays pure
+    /// feedback — and playlists (whose single-song `addSong` is deliberately the duplication
+    /// path) dedup through the same helper.
+    func testAcceptedAddIsScopeGuardedAndDedupsOnPlaylists() async {
+        let (_, collections, _) = await makeServices()
+        XCTAssertFalse(collections.addAcceptedSong("sng_1",
+                                                   scopedTo: ForYouTileRoute.Kind.zone.rawValue),
+                       "a reserved scope resolves to no collection and adds nothing")
+
+        let pl = collections.createPlaylist("Late Night")
+        collections.addSong("sng_1", toPlaylist: pl.id)
+        XCTAssertTrue(collections.addAcceptedSong("sng_2", scopedTo: pl.id))
+        XCTAssertFalse(collections.addAcceptedSong("sng_2", scopedTo: pl.id),
+                       "an accept replay must not mint a duplicate playlist node")
+        XCTAssertEqual(collections.songIds(forPlaylist: pl.id), ["sng_1", "sng_2"])
+    }
+
     // MARK: Auto-mix
 
     func testAutoMixWithNoBurnedSongsThrows() async {
