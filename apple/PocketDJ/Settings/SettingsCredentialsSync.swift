@@ -39,6 +39,12 @@ struct SettingsCredentialsDocument: Codable, Equatable {
     /// Tri-state on purpose (mirrors `appleMusicPrivateSyncRaw`): a nil from an older doc
     /// rides through decode without clobbering the receiving device's captured default.
     var appleMusicPrivateSync: Bool?
+    /// Catalog SOURCES ride along too (Levi, on-TV 2026-09-02): a fresh install ships zero
+    /// sources by design, so without this every synced collection resolves against an EMPTY
+    /// catalog — no search hits, song-less playlists, dead Shuffle. Names + index URLs only
+    /// (nothing device-specific lives in `SourceConfig`). Optional so an older device's doc
+    /// decodes without clobbering the receiver's list to nil.
+    var sources: [SourceConfig]?
 }
 
 extension SettingsStore {
@@ -72,7 +78,8 @@ extension SettingsStore {
             jukeboxTokensRequiredByDefault: jukeboxTokensRequiredByDefault,
             searchAccessKeyID: searchAccessKeyID, searchSecretKey: searchSecretKey,
             searchEndpoint: searchEndpoint,
-            appleMusicPrivateSync: appleMusicPrivateSyncRaw)
+            appleMusicPrivateSync: appleMusicPrivateSyncRaw,
+            sources: sources)
     }
 
     /// Every user-entered synced field at its fresh-install value ⇒ the doc must not
@@ -83,6 +90,7 @@ extension SettingsStore {
             && jukeboxServerURL.isEmpty && jukeboxToken.isEmpty
             && jukeboxTokensRequiredByDefault
             && searchAccessKeyID.isEmpty && searchSecretKey.isEmpty && searchEndpoint.isEmpty
+            && sources.isEmpty
     }
 
     /// Deterministic bytes (sorted keys) so equal content encodes identically on EVERY device —
@@ -124,6 +132,7 @@ extension SettingsStore {
         searchSecretKey = doc.searchSecretKey
         searchEndpoint = doc.searchEndpoint
         if let priv = doc.appleMusicPrivateSync { appleMusicPrivateSyncRaw = priv }
+        if let synced = doc.sources { sources = synced }   // nil = pre-sources doc; leave local list
         persist()
     }
 }

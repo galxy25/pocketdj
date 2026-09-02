@@ -1418,8 +1418,13 @@ struct PocketDJApp: App {
         // don't-race) — doctrine in SettingsCredentialsSync.swift. Whole-document LWW like
         // every doc above; device-specific settings (bookmarks, playback mode, UI prefs)
         // never ride along.
-        cloudSync.register("settings-credentials", fileURL: settings.credentialsSyncFileURL) { [weak settings] in
+        cloudSync.register("settings-credentials", fileURL: settings.credentialsSyncFileURL) { [weak settings, weak app] in
+            let before = settings?.sources
             settings?.reloadCredentialsFromDisk()
+            // Sources arriving/changing via the pull must re-fetch the catalog, exactly like
+            // onboarding's source choice (R7 below) — a TV that just adopted the phone's
+            // sources goes from empty catalog to full library in the same launch pass.
+            if let s = settings, s.sources != before { Task { await app?.reload() } }
         }
         // ONBOARDING PUSH GATE (R1): until the first-run flow resolves, no push may run —
         // a store file materialized mid-onboarding (an empty flush, an intent-written doc)

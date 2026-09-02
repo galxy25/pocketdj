@@ -252,6 +252,9 @@ final class SettingsCredentialsSyncTests: XCTestCase {
             "jukeboxServerURL", "jukeboxToken", "jukeboxTokensRequiredByDefault",
             "searchAccessKeyID", "searchSecretKey", "searchEndpoint",
             "appleMusicPrivateSync",
+            // Catalog sources ride along (Levi, on-TV 2026-09-02) — names + index URLs are
+            // portable; nothing device-specific lives in SourceConfig.
+            "sources",
         ]
         XCTAssertEqual(Set(json.keys), allowed,
                        "the synced doc must be exactly the credential subset — nothing device-specific")
