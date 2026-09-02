@@ -211,15 +211,39 @@ final class MacScreenshotRenderTests: XCTestCase {
         let content: (Binding<NavigationPath>) -> AnyView
         @State private var path = NavigationPath()
 
+        /// Offscreen-deterministic chrome: NavigationSplitView + List size to their IDEAL
+        /// (shrinking the borderless host window) and a sidebar List paints nothing without
+        /// a live window server — both burned the first render attempt. A hand-built HStack
+        /// sidebar + detail renders identically pixel-pinned at 1440×900.
         var body: some View {
-            NavigationSplitView(columnVisibility: .constant(.all)) {
-                List(RootView.Section.allCases, selection: .constant(Optional(selected))) { item in
-                    rowLabel(item).tag(item)
+            HStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("PocketDJ")
+                        .font(.title3.bold())
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 18)
+                        .padding(.bottom, 12)
+                    ForEach(RootView.Section.allCases) { item in
+                        rowLabel(item)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(item == selected ? Theme.accent.opacity(0.18) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 8))
+                            .foregroundStyle(item == selected ? Theme.accent : Color.primary)
+                            .padding(.horizontal, 10)
+                    }
+                    Spacer(minLength: 0)
                 }
-                .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
-            } detail: {
+                .frame(width: 225)
+                .frame(maxHeight: .infinity)
+                .background(Color(.sRGB, red: 0x11 / 255.0, green: 0x17 / 255.0, blue: 0x28 / 255.0, opacity: 1))
+                Divider()
                 NavigationStack(path: $path) { content($path) }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+            .background(Color(.sRGB, red: 0x0b / 255.0, green: 0x0f / 255.0, blue: 0x1a / 255.0, opacity: 1))
             .tint(Theme.accent)
             .preferredColorScheme(.dark)
         }
@@ -249,11 +273,26 @@ final class MacScreenshotRenderTests: XCTestCase {
     /// Host `view` in an offscreen window, settle layout, and capture a 2× opaque PNG.
     private func capture(_ view: AnyView, settleSeconds: Double = 3.0) throws -> Data {
         let host = NSHostingView(rootView: view)
+        // Never let SwiftUI drive the frame: with the default sizingOptions the hosting
+        // view imposes NavigationSplitView's min size on the borderless window, the window
+        // shrinks (~720x450), and cacheDisplay paints a quarter-size UI into the corner of
+        // the fixed 2880x1800 rep (the first broken run's exact symptom).
+        host.sizingOptions = []
+        // Render 1×, upscale after. Offscreen windows have backingScaleFactor 1 and BOTH
+        // density tricks failed here: `rep.size = pointSize` was ignored (1× into the
+        // corner of a 2× rep, white void around) and `scaleUnitSquare(2)` HALVED the
+        // effective density instead of doubling it. A 1440×900 rep that exactly matches
+        // the 1440×900 layout captures cleanly edge-to-edge every time; the final PNG is
+        // then a high-interpolation 2× resample to the 2880×1800 ASC size.
         host.frame = NSRect(origin: .zero, size: Self.pointSize)
         let window = NSWindow(contentRect: host.frame, styleMask: [.borderless],
                               backing: .buffered, defer: false)
         window.appearance = NSAppearance(named: .darkAqua)
         window.contentView = host
+        // Order the window in (no display server needed): without this the views never
+        // "appear", so .task/.onAppear pipelines (Browse catalog build, History load)
+        // never run and every surface renders empty.
+        window.orderFrontRegardless()
         Self.hosts.append(window)
 
         // SwiftUI lays out asynchronously and the surfaces run `.task` work (catalog reads,
@@ -263,39 +302,57 @@ final class MacScreenshotRenderTests: XCTestCase {
             host.layoutSubtreeIfNeeded()
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
         }
+        // Re-assert the capture geometry after settling — belt & braces against anything
+        // (AppKit or SwiftUI) having resized the window/host during the pump.
+        window.setContentSize(Self.pointSize)
+        host.frame = NSRect(origin: .zero, size: Self.pointSize)
         host.layoutSubtreeIfNeeded()
 
-        // 2×: a rep with double the pixel density of its point size. `cacheDisplay` honors
-        // the rep's resolution, so this renders crisp Retina text with no display server.
+        let w = Int(Self.pointSize.width), h = Int(Self.pointSize.height)
+        // A 1× rep that exactly matches the layout: cacheDisplay fills it edge-to-edge.
         guard let rep = NSBitmapImageRep(bitmapDataPlanes: nil,
-                                         pixelsWide: Self.pixelSize.w, pixelsHigh: Self.pixelSize.h,
+                                         pixelsWide: w, pixelsHigh: h,
                                          bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                                          isPlanar: false, colorSpaceName: .calibratedRGB,
                                          bytesPerRow: 0, bitsPerPixel: 0) else {
             throw NSError(domain: "shots", code: 1, userInfo: [NSLocalizedDescriptionKey: "rep alloc failed"])
         }
-        rep.size = Self.pointSize
         host.cacheDisplay(in: host.bounds, to: rep)
 
-        // FLATTEN onto the app background — App Store screenshots must not carry alpha.
+        // FLATTEN onto the app background at 1× — App Store screenshots must not carry alpha.
         guard let flat = NSBitmapImageRep(bitmapDataPlanes: nil,
-                                          pixelsWide: Self.pixelSize.w, pixelsHigh: Self.pixelSize.h,
+                                          pixelsWide: w, pixelsHigh: h,
                                           bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
                                           isPlanar: false, colorSpaceName: .calibratedRGB,
                                           bytesPerRow: 0, bitsPerPixel: 0),
               let ctx = NSGraphicsContext(bitmapImageRep: flat) else {
             throw NSError(domain: "shots", code: 2, userInfo: [NSLocalizedDescriptionKey: "flatten ctx failed"])
         }
-        flat.size = Self.pointSize
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = ctx
         // Theme.bg (0x0b0f1a) as the ground, then the capture over it.
         NSColor(srgbRed: 0x0b / 255.0, green: 0x0f / 255.0, blue: 0x1a / 255.0, alpha: 1).setFill()
-        NSRect(origin: .zero, size: Self.pointSize).fill()
-        rep.draw(in: NSRect(origin: .zero, size: Self.pointSize))
+        NSRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)).fill()
+        rep.draw(in: NSRect(x: 0, y: 0, width: CGFloat(w), height: CGFloat(h)))
         NSGraphicsContext.restoreGraphicsState()
 
-        guard let png = flat.representation(using: .png, properties: [:]) else {
+        // UPSCALE 2× to the exact ASC pixel size with high interpolation.
+        guard let final2x = NSBitmapImageRep(bitmapDataPlanes: nil,
+                                             pixelsWide: Self.pixelSize.w, pixelsHigh: Self.pixelSize.h,
+                                             bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                             isPlanar: false, colorSpaceName: .calibratedRGB,
+                                             bytesPerRow: 0, bitsPerPixel: 0),
+              let ctx2 = NSGraphicsContext(bitmapImageRep: final2x) else {
+            throw NSError(domain: "shots", code: 4, userInfo: [NSLocalizedDescriptionKey: "upscale ctx failed"])
+        }
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = ctx2
+        ctx2.imageInterpolation = .high
+        flat.draw(in: NSRect(x: 0, y: 0,
+                             width: CGFloat(Self.pixelSize.w), height: CGFloat(Self.pixelSize.h)))
+        NSGraphicsContext.restoreGraphicsState()
+
+        guard let png = final2x.representation(using: .png, properties: [:]) else {
             throw NSError(domain: "shots", code: 3, userInfo: [NSLocalizedDescriptionKey: "png encode failed"])
         }
         return png
@@ -322,17 +379,21 @@ final class MacScreenshotRenderTests: XCTestCase {
         let dir = outputDir()
         print("PDJ-SHOTS-DIR: \(dir.path)")
 
-        let shots: [(name: String, section: RootView.Section,
+        // Collections LAST: PlaylistsView's NSTableView once crashed the host mid-suite
+        // (reentrant delegate op) — ordering it last means a repeat crash still leaves
+        // the other three PNGs on disk (each shot writes before the next renders).
+        let shots: [(name: String, section: RootView.Section, settle: Double,
                      make: (Binding<NavigationPath>) -> AnyView)] = [
-            ("mac-01-browse", .browse, { AnyView(BrowseView(path: $0)) }),
-            ("mac-02-history", .history, { AnyView(HistoryView(path: $0)) }),
-            ("mac-03-collections", .playlists, { AnyView(PlaylistsView(path: $0)) }),
-            ("mac-04-mix", .mix, { AnyView(MixView(path: $0)) }),
+            // Browse derives its rows off-main (BrowseModel) — give it the longest settle.
+            ("mac-01-browse", .browse, 8.0, { AnyView(BrowseView(path: $0)) }),
+            ("mac-02-history", .history, 5.0, { AnyView(HistoryView(path: $0)) }),
+            ("mac-04-mix", .mix, 5.0, { AnyView(MixView(path: $0)) }),
+            ("mac-03-collections", .playlists, 5.0, { AnyView(PlaylistsView(path: $0)) }),
         ]
 
         for shot in shots {
             let shell = ShotShell(selected: shot.section, content: shot.make)
-            let png = try capture(g.inject(shell))
+            let png = try capture(g.inject(shell), settleSeconds: shot.settle)
             let url = dir.appendingPathComponent("\(shot.name).png")
             try png.write(to: url)
 
@@ -344,6 +405,18 @@ final class MacScreenshotRenderTests: XCTestCase {
             XCTAssertEqual(written.pixelsHigh, Self.pixelSize.h, "\(shot.name): wrong pixel height")
             XCTAssertGreaterThan(png.count, 50_000,
                 "\(shot.name): suspiciously small PNG (\(png.count) bytes) — likely a blank render")
+            // Coverage: every corner must be PAINTED app chrome, not uninitialized rep
+            // memory — run 1 shipped quarter-frame renders with white voids that still
+            // passed the size/bytes checks. Near-white corners fail loudly now.
+            for (cx, cy) in [(8, 8), (Self.pixelSize.w - 8, 8),
+                             (8, Self.pixelSize.h - 8),
+                             (Self.pixelSize.w - 8, Self.pixelSize.h - 8)] {
+                if let c = written.colorAt(x: cx, y: cy) {
+                    let bright = (c.redComponent + c.greenComponent + c.blueComponent) / 3
+                    XCTAssertLessThan(bright, 0.85,
+                        "\(shot.name): corner (\(cx),\(cy)) is near-white (\(bright)) — uncovered render")
+                }
+            }
             print("PDJ-SHOT: \(url.path) \(written.pixelsWide)x\(written.pixelsHigh) \(png.count) bytes")
         }
     }
