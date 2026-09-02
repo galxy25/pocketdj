@@ -34,6 +34,7 @@
 		0A048AF0DED167E8F14A121E /* DemuxMelodySwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 494A29267BF1E47AA92BE17D /* DemuxMelodySwitchTests.swift */; };
 		0A420C679FC34124D6A2F253 /* MixRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C86121DD37BEE5F5D72A8A72 /* MixRecorderTests.swift */; };
 		0B40521A2CC25682A8D73C0C /* PerfBenchmarkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 988506AA9ACE2FDEC40D6345 /* PerfBenchmarkTests.swift */; };
+		0B48D732F79662CBF99BD1F9 /* AppStoreScreenshotTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E480DED94FCA85DED537C00C /* AppStoreScreenshotTests.swift */; };
 		0B7F70B177004E3324CB86AF /* ShareText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E8B2B5E242F0301084ECB8D /* ShareText.swift */; };
 		0B98FE9F6D0AB47948463EDB /* StudioRenderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B9937C62AF0BC45009823AB /* StudioRenderTests.swift */; };
 		0CBFF3993EB761E6945C6217 /* PocketZipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 142DCFC413FBB0A93CC595D1 /* PocketZipTests.swift */; };
@@ -270,6 +271,7 @@
 		78DB341E8C25943C1D932771 /* PuzzleRecEventBridge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 22A16829C44B131DF2180318 /* PuzzleRecEventBridge.swift */; };
 		78EF1A8ECCC69029C9189883 /* PocketDJUTType.swift in Sources */ = {isa = PBXBuildFile; fileRef = A0EFFE89CB2C1EAC02850618 /* PocketDJUTType.swift */; };
 		79077DE77DA19996E79E74CE /* StudioMIDIImportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A638839E33F70B5BB606068 /* StudioMIDIImportTests.swift */; };
+		794547876D71984E56CA1D50 /* screenshot-index.json in Resources */ = {isa = PBXBuildFile; fileRef = BDA19C9A2241AAE0FA6941A6 /* screenshot-index.json */; };
 		795FD609679C7C11A4F7F170 /* StudioStepModeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C408F5E0FE5F2891C7B35D7 /* StudioStepModeTests.swift */; };
 		798E50C301DAFDD54862DFEC /* JukeboxModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 394BC3F5EEF6BB8C34A8903A /* JukeboxModels.swift */; };
 		79C3B32F7D074CD5D11AEB6B /* PlaylistsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE97BCE395E79206B4AF1156 /* PlaylistsView.swift */; };
@@ -1015,6 +1017,7 @@
 		BB997160434CBD1A83B1841A /* CleanOnlyPlaylistUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CleanOnlyPlaylistUITests.swift; sourceTree = "<group>"; };
 		BBA38A12EAEC05F7AF595018 /* OnboardingGuardsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingGuardsTests.swift; sourceTree = "<group>"; };
 		BC09231DE9985D77378914B6 /* PushRegistrationServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PushRegistrationServiceTests.swift; sourceTree = "<group>"; };
+		BDA19C9A2241AAE0FA6941A6 /* screenshot-index.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "screenshot-index.json"; sourceTree = "<group>"; };
 		BDA7605F5CBB3B63332561D4 /* NotificationRouter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationRouter.swift; sourceTree = "<group>"; };
 		BE7B549E29F1B76F09EA1985 /* MultiSelectUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiSelectUITests.swift; sourceTree = "<group>"; };
 		BE90C1896C86E7B65A2D0B03 /* PocketDJApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PocketDJApp.swift; sourceTree = "<group>"; };
@@ -1087,6 +1090,7 @@
 		E38C4DAAA5AE1961FDEF3AD6 /* DrumPatternDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DrumPatternDetectorTests.swift; sourceTree = "<group>"; };
 		E3B5DACCD80CB039B9425523 /* UpNextOriginTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UpNextOriginTests.swift; sourceTree = "<group>"; };
 		E44A42CB8C055BE3AB40D4D2 /* MixDeckSessionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixDeckSessionTests.swift; sourceTree = "<group>"; };
+		E480DED94FCA85DED537C00C /* AppStoreScreenshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreScreenshotTests.swift; sourceTree = "<group>"; };
 		E48EB821B769D436B3742E49 /* DemuxCutSampleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxCutSampleView.swift; sourceTree = "<group>"; };
 		E5A196716E1EB8FD0028BB90 /* PlayStatsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayStatsStore.swift; sourceTree = "<group>"; };
 		E7450CF7B485F7017240D18A /* MusicWithFriendsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicWithFriendsStoreTests.swift; sourceTree = "<group>"; };
@@ -1841,6 +1845,7 @@
 			isa = PBXGroup;
 			children = (
 				A693332318F7E6B5BB345407 /* fixture-index.json */,
+				BDA19C9A2241AAE0FA6941A6 /* screenshot-index.json */,
 				40CF414ED4DEBB411C60395F /* studio-fixture.m4a */,
 			);
 			path = Resources;
@@ -1921,6 +1926,7 @@
 				57FD5D6C3E3EB820307C035A /* AddToSearchUITests.swift */,
 				40E77BBED55B4E0849607B6E /* AlbumHotlinkUITests.swift */,
 				9451C3754498E1206398BF6D /* AMWriteRetryDeviceUITests.swift */,
+				E480DED94FCA85DED537C00C /* AppStoreScreenshotTests.swift */,
 				F04ED5448242835E231789D2 /* ArtistsUITests.swift */,
 				EA52B9933F53726523EEB561 /* BrowseLargeCatalogPerfTests.swift */,
 				15DA7ABA2463D35BB35322E5 /* BrowseUITests.swift */,
@@ -2164,6 +2170,7 @@
 				AEA468C5210C42CA64DF0345 /* Assets.xcassets in Resources */,
 				A7530A3AC46764BA5FD7E31F /* PrivacyInfo.xcprivacy in Resources */,
 				E9367B971DC10BBD9FB8404C /* fixture-index.json in Resources */,
+				794547876D71984E56CA1D50 /* screenshot-index.json in Resources */,
 				D4261492999A858BECDD35C0 /* studio-fixture.m4a in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -2196,6 +2203,7 @@
 				6FF4AA757935594FA7298862 /* AMWriteRetryDeviceUITests.swift in Sources */,
 				A1EB8AEA2AFD64DAC19EB732 /* AddToSearchUITests.swift in Sources */,
 				B848C36D810B2EB9E95FCE3B /* AlbumHotlinkUITests.swift in Sources */,
+				0B48D732F79662CBF99BD1F9 /* AppStoreScreenshotTests.swift in Sources */,
 				0E6E16FB639EA8B3D8C0400E /* ArtistsUITests.swift in Sources */,
 				ED7D76DBEF144599504348FF /* BrowseLargeCatalogPerfTests.swift in Sources */,
 				46B64A093FC2089D3A38B7E7 /* BrowseUITests.swift in Sources */,
