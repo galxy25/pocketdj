@@ -400,7 +400,11 @@ final class MacTreeDumpUITests: XCTestCase {
         _ = a.buttons["settings-add-source"].waitForExistence(timeout: 30)
         dump(a, "08-settings-root-top")
         for _ in 0..<10 where !a.buttons["settings-storage"].exists {
+            #if os(visionOS)
+            a.scrollViews.firstMatch.swipeUp()   // scroll(byDeltaX:) doesn't exist on visionOS
+            #else
             a.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: -160)
+            #endif
         }
         dump(a, "09-settings-scrolled")
         a.buttons["settings-storage"].tap()
@@ -413,7 +417,11 @@ final class MacTreeDumpUITests: XCTestCase {
         _ = a.buttons["settings-add-source"].waitForExistence(timeout: 30)
         let row = a.buttons["settings-apple-music"]
         for _ in 0..<10 where !row.exists {
+            #if os(visionOS)
+            a.scrollViews.firstMatch.swipeUp()   // scroll(byDeltaX:) doesn't exist on visionOS
+            #else
             a.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: -160)
+            #endif
         }
         var note = "amRow exists=\(row.exists) hittable=\(row.isHittable)\n"
         row.tap()
@@ -435,7 +443,11 @@ final class MacTreeDumpUITests: XCTestCase {
         let a = app(["PDJ_USE_FIXTURE": "1", "PDJ_START_SECTION": "Settings"])
         _ = a.buttons["settings-add-source"].waitForExistence(timeout: 30)
         for _ in 0..<10 where !a.buttons["settings-debug"].exists {
+            #if os(visionOS)
+            a.scrollViews.firstMatch.swipeUp()   // scroll(byDeltaX:) doesn't exist on visionOS
+            #else
             a.scrollViews.firstMatch.scroll(byDeltaX: 0, deltaY: -160)
+            #endif
         }
         a.buttons["settings-debug"].tap()
         Thread.sleep(forTimeInterval: 3)

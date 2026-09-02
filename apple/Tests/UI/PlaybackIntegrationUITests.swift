@@ -108,8 +108,8 @@ final class PlaybackIntegrationUITests: XCTestCase {
         var typed = false
         for _ in 0..<8 {
             app.activate()
-            app.typeKey("l", modifierFlags: .command)   // ⌘L → focus search field
-            app.typeKey("a", modifierFlags: .command)   // select-all + replace any prior text
+            app.typeKey(XCUIKeyboardKey(rawValue: "l"), modifierFlags: .command)   // ⌘L → focus search field (XCUIKeyboardKey: the String overload does not exist on visionOS)
+            app.typeKey(XCUIKeyboardKey(rawValue: "a"), modifierFlags: .command)   // select-all + replace any prior text
             app.typeKey(.delete, modifierFlags: [])
             app.typeText(songQuery)
             // Online search is debounced + a network round-trip → give it room.

@@ -8,7 +8,7 @@ final class MixDeckLayoutUITests: XCTestCase {
     override func setUp() { continueAfterFailure = false }
 
     private func launch(_ layout: String) -> XCUIApplication {
-        #if !os(macOS)
+        #if os(iOS)
         XCUIDevice.shared.orientation = .portrait        // the layouts below govern PORTRAIT — pin it
         #endif
         let app = XCUIApplication()
@@ -66,8 +66,8 @@ final class MixDeckLayoutUITests: XCTestCase {
     /// Landscape always shows the two-up board — even when the setting is Single — because the
     /// deck-layout setting governs portrait only (there's width for both decks in landscape).
     func testLandscapeForcesSideBySide() throws {
-        #if os(macOS)
-        throw XCTSkip("deck layout is an iOS-only setting")
+        #if !os(iOS)
+        throw XCTSkip("deck layout is an iOS-only setting (and rotation needs iOS)")
         #else
         let app = launch("single")
         XCTAssertTrue(el("deck-A-vu").waitForExistence(timeout: 25), "portrait single: Deck A shows")

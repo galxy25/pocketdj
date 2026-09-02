@@ -145,9 +145,9 @@ final class BrowseUITests: XCTestCase {
 
         // LANDSCAPE: the artist moves up beside the title. iOS only — `XCUIDevice.orientation`
         // lives behind `#if TARGET_OS_IPHONE`, and this target also builds for macOS, so an
-        // unguarded call breaks the macOS test bundle's COMPILE (not just its run). Same guard
-        // every other rotation in this suite uses.
-        #if !os(macOS)
+        // unguarded call breaks the macOS test bundle's COMPILE (not just its run) — and
+        // visionOS has no orientation either, so gate on iOS specifically.
+        #if os(iOS)
         XCUIDevice.shared.orientation = .landscapeLeft
         defer { XCUIDevice.shared.orientation = .portrait }
         XCTAssertTrue(app.el("row-play-sng_1").waitForExistence(timeout: 5))
