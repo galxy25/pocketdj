@@ -135,7 +135,20 @@ private final class PlaybackModeStubURLProtocol: URLProtocol {
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func stopLoading() {}
     override func startLoading() {
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
+        let url = request.url!
+        // MUST-1: ensureURL's cached fast path asks this first — echo a stub-servable URL
+        // (this same protocol answers it too, falling through to the fixed body below).
+        if url.path.hasSuffix("/rips/presign") {
+            let song = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "songId" })?.value ?? "song"
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "application/json"])!
+            client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(#"{"url":"https://imac.test/rips/\#(song).mp3"}"#.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Self.body)
         client?.urlProtocolDidFinishLoading(self)

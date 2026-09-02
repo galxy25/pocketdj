@@ -487,6 +487,12 @@ private final class DownloaderStubURLProtocol: URLProtocol {
             payload = Self.manifestBody
         } else if let b = Self.bodyByPath[path] {
             payload = b
+        } else if path.hasSuffix("/rips/presign") {
+            // MUST-1: ensureURL's cached fast path asks this first — echo a stub-servable
+            // URL (this same protocol answers it too, via the `else` fallback below).
+            let song = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "songId" })?.value ?? "song"
+            payload = Data(#"{"url":"https://imac.test/rips/\#(song).mp3"}"#.utf8)
         } else {
             payload = Data("{}".utf8)
         }

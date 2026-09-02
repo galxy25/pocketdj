@@ -682,6 +682,19 @@ function resolveVariantRow(songId) {
 }
 const findSongOrVariant = (id) => songById.get(id) || resolveVariantRow(id);
 
+// MUST-5: gate capture on PROVENANCE, not on the incidental sourceType routing (which
+// picks a processing pipeline, not a legal source — a vinyl VARIANT row is forced to
+// sourceType 'digital' by resolveVariantRow above even though it's still the user's own
+// vinyl). Only the user's own vinyl or their own uploaded digital files may ever be
+// captured. "Apple Music (Local)" is catalog metadata for streaming playback via
+// MusicKit, not a license to make a permanent copy — and an ad-hoc row (no sourceName at
+// all; see adhocRow above) exists specifically to bypass that, so it fails closed too.
+// Same strict-allowlist philosophy as STUDIO_ID/ADHOC_ID: unknown fails, not passes.
+const CAPTURE_ELIGIBLE_SOURCES = new Set(['My Vinyl', 'My Digital']);
+function isCaptureEligible(song) {
+  return !!song && CAPTURE_ELIGIBLE_SOURCES.has(song.sourceName);
+}
+
 function acceptRip(songId, ripFromCloud = false, adhoc = null) {
   let song = songId && findSongOrVariant(songId);
   // AD-HOC rip: a freshly-recognized Apple Music track (PocketDJ recognizer "add to
@@ -703,6 +716,7 @@ function acceptRip(songId, ripFromCloud = false, adhoc = null) {
   }
   if (!song) return { job: null, status: 'unknown', url: null };
   if (manifest[songId]) return { job: null, status: 'ready', url: publicUrl(manifest[songId].key) };
+  if (!isCaptureEligible(song)) return { job: null, status: 'ineligible', url: null };
   // Probe the library ONCE, here. wantCloud is the RESOLVED preference (post-probe), not
   // the raw request flag — it is what we persist + route on so persist/resume can never
   // disagree (a track later deleted from the library doesn't flip the resourceKey; it just
@@ -964,6 +978,10 @@ async function runJob(job) {
   setPhase(job, 'searching');
   const song = songById.get(job.songId);
   if (!song) return fail(job, 'unknown songId');
+  // MUST-5 defense-in-depth: acceptRip already rejects an ineligible song before a job
+  // exists, so this only fires for a job persisted before this gate landed (queueFile
+  // survives a restart — see resumePending).
+  if (!isCaptureEligible(song)) return fail(job, 'capture not available for this source');
   // Digital songs always capture from Apple Music; an analog song does too when its job
   // resolved to a cloud rip (preferCloud, set at accept time on an exact library match).
   if (song.sourceType !== 'analog' || job.preferCloud) return runDigitalJob(job, song);
@@ -2306,17 +2324,21 @@ function bearerOf(req) {
   return h.startsWith('Bearer ') ? h.slice(7) : '';
 }
 // USER tier: the global gate. The admin token is a superset credential — a client
-// configured with it (Levi's own devices) passes every gate.
+// configured with it (Levi's own devices) passes every gate. FAIL CLOSED under public
+// posture (CFG.public): a missing token denies rather than opens every endpoint to the
+// internet. Only a genuinely local/Tailnet-only deployment (CFG.public === false) keeps
+// the tokenless-dev convenience.
 function authed(req) {
-  if (!CFG.token) return true;
+  if (!CFG.token) return !CFG.public;
   const t = bearerOf(req);
   return t === CFG.token || (!!CFG.adminToken && t === CFG.adminToken);
 }
 // ADMIN tier: corpus-scale mutation + library tooling. With no dedicated admin token
 // this collapses to the global gate (Tailnet-only deployments keep today's behavior).
+// Same fail-closed rule as authed() under public posture.
 function adminAuthed(req) {
   const admin = CFG.adminToken || CFG.token;
-  if (!admin) return true; // tokenless local dev
+  if (!admin) return !CFG.public;
   return bearerOf(req) === admin;
 }
 // Per-IP sliding-window rate limiting — FEATURE-FLAGGED, default OFF (RIP_RATE_LIMIT=1
@@ -2402,6 +2424,25 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (!authed(req)) return send(res, 401, { error: 'unauthorized' });
+
+  // GET /rips/presign?songId=&ttl= — short-TTL presigned S3 URL for an already-cached
+  // song's durable mp3 (MUST-1: the rips bucket is private now, so a client can no
+  // longer build a playable URL itself from ripsBase + manifest key — it must ask this
+  // gate first). ttl is seconds, clamped [60, 21600]; default 3600 covers normal
+  // playback, BurnStore's background download queue passes a longer one since a queued
+  // item can sit a while before its turn.
+  if (path === '/rips/presign' && req.method === 'GET') {
+    const songId = url.searchParams.get('songId') || '';
+    const entry = manifest[songId];
+    if (!entry) return send(res, 404, { error: 'not cached' });
+    const ttl = Math.min(Math.max(parseInt(url.searchParams.get('ttl') || '3600', 10) || 3600, 60), 21600);
+    try {
+      const out = await aws(['s3', 'presign', `s3://${CFG.bucket}/${entry.key}`, '--expires-in', String(ttl)]);
+      return send(res, 200, { url: out.trim(), expiresAt: Date.now() + ttl * 1000 });
+    } catch (e) {
+      return send(res, 500, { error: 'presign failed' });
+    }
+  }
 
   // GET /musickit-token — mint (or serve cached) an ES256 Apple Music developer token
   // for the Android MusicKit SDK. User-tier (same posture as every app feature): tokened

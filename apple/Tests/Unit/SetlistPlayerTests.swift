@@ -229,7 +229,9 @@ final class SetlistPlayerTests: XCTestCase {
         await waitUntil("coordinator backend becomes active") { coord.activeBackend == .ripServer }
         XCTAssertNil(coord.lastErrorMessage, "a resolvable stream surfaces no error")
         XCTAssertEqual(rips.nowPlaying?.songId, "sng_s")
-        XCTAssertEqual(rips.nowPlaying?.url.absoluteString, "https://rips.test/rips/sng_s.mp3")
+        // MUST-1: the bucket is private now — the durable URL is a presigned one from
+        // `/rips/presign` (SetlistStubURLProtocol echoes the server host, not ripsBase).
+        XCTAssertEqual(rips.nowPlaying?.url.absoluteString, "https://imac.test/rips/sng_s.mp3")
         XCTAssertEqual(rips.nowPlaying?.live, false)
         seq.stop()
     }
@@ -1672,7 +1674,20 @@ private final class SetlistStubURLProtocol: URLProtocol {
     override func stopLoading() {}
 
     override func startLoading() {
-        let response = HTTPURLResponse(url: request.url!, statusCode: 200,
+        let url = request.url!
+        // MUST-1: ensureURL's cached fast path asks this first — echo a stub-servable URL
+        // (this same protocol answers it too, falling through to the fixed body below).
+        if url.path.hasSuffix("/rips/presign") {
+            let song = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "songId" })?.value ?? "song"
+            let resp = HTTPURLResponse(url: url, statusCode: 200, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "application/json"])!
+            client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(#"{"url":"https://imac.test/rips/\#(song).mp3"}"#.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+        let response = HTTPURLResponse(url: url, statusCode: 200,
                                        httpVersion: "HTTP/1.1", headerFields: nil)!
         client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client?.urlProtocol(self, didLoad: Self.body)
