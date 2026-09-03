@@ -628,6 +628,84 @@ final class MixEngineSessionTests: XCTestCase {
         e.pause(.a)
     }
 
+    // MARK: Relaunch must not consume an upcoming slot (field: TV build 1788406415)
+
+    /// The field loop: an auto-mix transition BEGINS (fade starts -> the incoming track is marked
+    /// played in the session log, which survives relaunches) and the app is KILLED mid-fade (the
+    /// durable snapshot still shows the outgoing deck live and the incoming track merely CUED).
+    /// On relaunch + Resume, the played-log re-derivation skipped the cued track and loaded one
+    /// slot further -- every relaunch consumed one upcoming song ("it skips to the next song when
+    /// you relaunch the app"). The restored cursor must win: deck B's songId stays UNCHANGED
+    /// across restore -> resume -> restore.
+    func testRelaunchResumeDoesNotConsumeAnUpcomingSlot() async throws {
+        let store = makeStore()
+        let sessURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-mix-sessions-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: sessURL) }
+        let files = ["smp_q1": try makeSineWAV(seconds: 2), "smp_q2": try makeSineWAV(seconds: 2),
+                     "smp_q3": try makeSineWAV(seconds: 2), "smp_q4": try makeSineWAV(seconds: 2)]
+        func item(_ id: String) -> MixEngine.AutoMixItem {
+            .init(loadable: MixLoadable(songId: id, title: id, artist: "Artist", bpm: 120,
+                                        camelot: "8A", key: "Am", albumId: nil, lengthMs: 2_000),
+                  durationMs: 2_000)
+        }
+
+        // Session 0: a real mix; a skip's fade BEGINS (incoming q2 marked played), then kill.
+        let sess1 = MixSessionStore(fileURL: sessURL)
+        let e1 = makeEngine(store: store)
+        e1.recorder = sess1
+        e1.ensureEngine()
+        try XCTSkipUnless(e1.isReady, "no audio device on this test host")
+        wireStudioResolve(e1, files: files)
+        e1.startAutoMix([item("smp_q1"), item("smp_q2"), item("smp_q3"), item("smp_q4")],
+                        shuffled: false, lead: 15, fade: 3)
+        XCTAssertEqual(e1.loaded(.a)?.songId, "smp_q1")
+        XCTAssertEqual(e1.loaded(.b)?.songId, "smp_q2", "on-deck next preloaded")
+        e1.skipToNext(fadeSeconds: 30)          // fade STARTS: play(B) -> q2 enters the played log
+        XCTAssertTrue(sess1.hasPlayed("smp_q2"), "fade start marks the incoming track played")
+        await waitSnapshot(store, "mid-fade state on disk") {
+            $0.deckA?.track.songId == "smp_q1" && $0.deckB?.track.songId == "smp_q2" && $0.auto != nil
+        }
+        await waitUntil("play log on disk") { MixSessionStore(fileURL: sessURL).hasPlayed("smp_q2") }
+        e1.sessionStore = nil; e1.recorder = nil   // "kill": nothing below may write through e1
+        e1.teardown()
+
+        // Session 1: relaunch -> restore -> the TV Resume (remote seam + resumeAuto tail).
+        let sess2 = MixSessionStore(fileURL: sessURL)   // reloads the still-current session's log
+        XCTAssertTrue(sess2.hasPlayed("smp_q2"), "the played log SURVIVES the relaunch")
+        let e2 = makeEngine(store: store)
+        e2.recorder = sess2
+        wireStudioResolve(e2, files: files)
+        e2.restorePersistedMixIfIdle()
+        e2.materializePendingRestoreIfNeeded()
+        XCTAssertEqual(e2.loaded(.a)?.songId, "smp_q1", "outgoing deck restores live")
+        XCTAssertEqual(e2.loaded(.b)?.songId, "smp_q2", "the cued on-deck next restores")
+        XCTAssertTrue(e2.autoPaused)
+        e2.remotePlay()
+        if e2.autoMixing, e2.autoPaused { e2.resumeAuto() }
+        XCTAssertEqual(e2.loaded(.b)?.songId, "smp_q2",
+                       "resume must keep the restored cue, not skip it as played (killed fade)")
+        XCTAssertEqual(e2.autoUpcoming.first?.songId, "smp_q2", "the cursor did not consume the slot")
+        XCTAssertTrue(e2.autoPlayed.isEmpty, "nothing was falsely retired behind the cursor")
+        await waitSnapshot(store, "resumed state persisted") { $0.deckB?.track.songId == "smp_q2" }
+        e2.sessionStore = nil; e2.recorder = nil
+        e2.teardown()
+
+        // Session 2: relaunch again -- deck B UNCHANGED across the double restore.
+        let sess3 = MixSessionStore(fileURL: sessURL)
+        let e3 = makeEngine(store: store)
+        e3.recorder = sess3
+        wireStudioResolve(e3, files: files)
+        e3.restorePersistedMixIfIdle()
+        e3.materializePendingRestoreIfNeeded()
+        XCTAssertEqual(e3.loaded(.a)?.songId, "smp_q1", "A held")
+        XCTAssertEqual(e3.loaded(.b)?.songId, "smp_q2",
+                       "deck B's songId is UNCHANGED across restore -> resume -> restore")
+        XCTAssertEqual(e3.autoUpcoming.map(\.songId), ["smp_q2", "smp_q3", "smp_q4"],
+                       "no queue slot fell out across the relaunch cycle")
+        e3.stopAutoMix()
+    }
+
     /// A session written BEFORE the loop feature (no `loopOn`/`loopUnits` keys) must still decode.
     /// The loader demands an exact `schemaVersion` match, so the loop fields had to be OPTIONAL
     /// rather than version-bumped — otherwise every saved deck session would have been discarded.

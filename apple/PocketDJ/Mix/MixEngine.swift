@@ -474,6 +474,15 @@ final class MixEngine {
     /// it and, the moment it ends, retires it, loads the next track onto it, and glides the survivor
     /// over. nil in the normal single-live-deck case.
     @ObservationIgnored private var autoResumeEndDeck: Deck?
+    /// Set by `restoreAutoSuspended`: the machine was rebuilt from a DURABLE SNAPSHOT, so the
+    /// FIRST resume must trust the restored cursor + the standby deck's cued track over a
+    /// played-log re-derivation. The session log SURVIVES relaunches (a session lasts until
+    /// Reset), and `beginAutoCrossfade` marks the incoming track played at fade START — so a
+    /// kill mid-transition leaves the still-cued on-deck track "played", and the resume's
+    /// next-unplayed scan skips it and loads one slot further, consuming one upcoming track
+    /// per relaunch (field: TV build 1788406415, "it skips to the next song when you relaunch
+    /// the app"). Consumed by the next `resumeAuto`; dies with the machine.
+    @ObservationIgnored private var autoResumeFromRestore = false
 
     // MARK: Auto-Mix — glide transition phases (FX Glide + Mix Glide)
 
@@ -2056,6 +2065,7 @@ final class MixEngine {
         autoLiveDeck = .a
         autoPaused = false
         autoResumeEndDeck = nil
+        autoResumeFromRestore = false
         resumeAutoOnRemotePlay = false
         remotePausedAt = nil
         autoFadeStartedAt = nil
@@ -2121,6 +2131,8 @@ final class MixEngine {
     /// Recorded as one `.autoResume` marker. No-op unless a mix is paused.
     func resumeAuto() {
         guard autoMixing, autoPaused else { return }
+        let fromRestore = autoResumeFromRestore
+        autoResumeFromRestore = false    // consume-once: only the FIRST resume after a restore
         unfreezeAutoClock()              // an IN-APP Resume after a lock-screen ⏸ must also unpark the
                                          // machine's frozen wall clock, or autoFire stays gated forever
         checkpointEngineStall()          // resuming mid-stall: the fresh end stamps below must only be
@@ -2157,7 +2169,20 @@ final class MixEngine {
         }
         autoLiveDeck = live
         autoResumeEndDeck = nil
-        if let k = loadNextUnplayed(onto: other(live), excludingDeck: live) {   // preload the on-deck next
+        let standby = other(live)
+        if fromRestore, let cued = state(standby).loaded,
+           cued.songId != state(live).loaded?.songId,
+           let k = autoQueue.firstIndex(where: { $0.loadable.songId == cued.songId }) {
+            // RESUMING A RESTORED MIX: the snapshot already cued the on-deck next — trust it over
+            // the played-log scan. The log outlives relaunches, and a transition that BARELY began
+            // before the kill already marked its incoming track played (`beginAutoCrossfade` →
+            // `play(to)` → `notePlayed`), so re-deriving "next unplayed" here would skip the cued
+            // track and re-load one slot further on EVERY relaunch — each restore consumed one
+            // upcoming song. Keeping the deck also preserves its restored cue point (the reload
+            // lane rewinds it to 0:00). Cursor math mirrors the load lane below.
+            autoLivePos = max(0, k - 1)
+            autoNextToLoad = k + 1
+        } else if let k = loadNextUnplayed(onto: standby, excludingDeck: live) {   // preload the on-deck next
             autoLivePos = max(0, k - 1)
             autoNextToLoad = k + 1
         } else {
@@ -2231,6 +2256,7 @@ final class MixEngine {
         pendingFadeRestore = nil
         autoPaused = false
         autoResumeEndDeck = nil
+        autoResumeFromRestore = false
         resumeAutoOnRemotePlay = false
         remotePausedAt = nil
         engineStallAt = nil     // a stale stall park must never shift the NEXT mix's fresh clocks
@@ -3171,6 +3197,7 @@ final class MixEngine {
             autoDeckDurationMs[d] = Int(duration(d) * 1000)
         }
         autoPaused = true                    // SUSPENDED — never self-resumes
+        autoResumeFromRestore = true         // first resume: restored cursor wins over the play-log
         autoMixing = true
         refreshAutoStatus()
     }
