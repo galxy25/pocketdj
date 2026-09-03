@@ -425,7 +425,12 @@ struct PocketDJApp: App {
         // macOS is NOT suspended like iOS, and the background `URLSession` (nsurlsessiond) path
         // doesn't reliably deliver downloads on Mac (burns stuck at "Burning 1 of N"). So on macOS
         // use the in-process serial loop, which runs to completion in the foreground.
-        #if os(macOS)
+        //
+        // tvOS joins macOS on the in-process lane (Levi's live TV session 2026-09-02: a 391-track
+        // zero-start mix run sat at "0 of 391" — the Mac signature exactly). tvOS's background
+        // sessions never outlive the app anyway (no out-of-process continuation there), so the
+        // background lane buys nothing on the TV, and a TV mixing IS foreground for the duration.
+        #if os(macOS) || os(tvOS)
         let burns = BurnStore(rips: rips, transfers: nil, fileURL: BurnStore.launchURL())
         #else
         let burns = BurnStore(rips: rips, transfers: .shared, fileURL: BurnStore.launchURL())

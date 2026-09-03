@@ -199,6 +199,11 @@ final class CollectionMixDownloader {
         let needsRip = remainder.filter { rips.cachedURL($0) == nil }
         rippingCount = needsRip.count
 
+        // Field diagnosability (Levi's live TV stall, "0 of 391" with no evidence trail): the
+        // partition IS the diagnosis — cached-on-disk vs burn-lane vs rip-lane, plus whether the
+        // manifest had even loaded. Telemetry-gated like every routine line.
+        DiagLog.shared.telemetry(
+            "mixdl", "begin sources=\(newSources.count) total=\(totalCount) onDisk=\(downloadedCount) burnQ=\(burnQueue.count) needsRip=\(needsRip.count) manifest=\(rips.manifest.count)")
         guard totalCount > 0, !remainder.isEmpty else {
             isActive = false        // nothing to do — everything is already on disk
             return
@@ -344,6 +349,13 @@ final class CollectionMixDownloader {
 
     private func ripAndPoll(_ ids: [String]) async {
         let rips = self.rips
+        // `error` category streams immediately and does not need telemetry mode: a rip lane
+        // that can't reach the server is exactly the fact a stalled field session must surface.
+        if !rips.hasServer {
+            DiagLog.shared.log("error", "mixdl rip lane: \(ids.count) tracks need rip but NO SERVER configured (settings.ripServerURL empty on this device)")
+        } else {
+            DiagLog.shared.telemetry("mixdl", "rip lane start ids=\(ids.count)")
+        }
         _ = await rips.ripCollection(ids)
         if Task.isCancelled { return }
         var pending = Set(ids)
@@ -370,6 +382,11 @@ final class CollectionMixDownloader {
         guard isActive, trackedIds.contains(id), !downloadedIds.contains(id) else { return }
         downloadedIds.insert(id)
         downloadedCount = downloadedIds.count
+        // First landing = the zero-start moment; then a breadcrumb every 25 so a stall's LAST
+        // GOOD position is in the stream without flooding it.
+        if downloadedCount == 1 || downloadedCount % 25 == 0 {
+            DiagLog.shared.telemetry("mixdl", "landed \(downloadedCount)/\(totalCount) rip=\(rippingCount)")
+        }
         recomputeETA()
         continueAutoMixIfArmed()
         if downloadedCount >= totalCount { finishRun() }
