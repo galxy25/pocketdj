@@ -154,6 +154,8 @@ final class CollectionMixDownloader {
     /// background landing must never seize them (the exhausted pickup's twin guard lives in the
     /// engine: manual load/play clears `autoEndedExhausted`).
     @ObservationIgnored private var armGestureGeneration = 0
+    /// Count of burn attempts that produced no file this run (field-telemetry cap counter).
+    @ObservationIgnored private var burnMisses = 0
     @ObservationIgnored private var initialAutoIds: Set<String> = []
     @ObservationIgnored private var appendedIds: Set<String> = []
     @ObservationIgnored private var autoLead: Double = 15
@@ -183,6 +185,7 @@ final class CollectionMixDownloader {
                 && !StudioFactory.isStudioId($0) && !ProfileSourceStore.isProfileSongId($0)
         }
         self.sources = newSources
+        burnMisses = 0
         orderedIds = ids
         trackedIds = Set(ids)
         totalCount = ids.count
@@ -341,6 +344,15 @@ final class CollectionMixDownloader {
             if bytes > 0 { window.add(bytes: bytes, at: now()) }
             noteDownloaded(id)
         } else {
+            // Field diagnosability (the TV "0 of 391" hunt): a burn that produced no file is a
+            // MISS whose error string names the failing step (presign / manifest / write). The
+            // first five stream verbatim, then every 25th — enough to see the shape without
+            // flooding a 375-track run.
+            burnMisses += 1
+            if burnMisses <= 5 || burnMisses % 25 == 0 {
+                DiagLog.shared.log("error",
+                    "mixdl burn MISS #\(burnMisses) \(id): \(burns.items[id]?.error ?? "no item recorded") state=\(burns.items[id]?.state.rawValue ?? "nil")")
+            }
             recomputeETA()
         }
     }
