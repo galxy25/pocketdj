@@ -350,10 +350,7 @@ struct TVMixNowPlayingCard: View {
     @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
     @State private var showPlayed = false
 
-    /// The 👍/👎 scope for a MIX queue: not a For You tile, so verdicts file under a reserved
-    /// "mix" scope — the GLOBAL taste layer reads them (that is the signal the owner wants
-    /// from the couch); scoped suppression stays confined to this scope, harmless.
-    private static let mixScope = "mix"
+
 
     var body: some View {
         ScrollView {
@@ -451,17 +448,22 @@ struct TVMixNowPlayingCard: View {
                 Label("Shuffle queue", systemImage: "shuffle")
             }
             .accessibilityIdentifier("tv-np-mix-shuffle")
-            if let feedback, let track = engine.onAirTrack {
-                let verdict = feedback.verdict(songId: track.songId, scope: Self.mixScope)
+            // 👍/👎 ONLY when the playing track is a RECOMMENDATION (owner: show them only
+            // where they actually have effect) — the same hide-when-inert rule every other
+            // surface uses (`scope(forPlaying:)` membership check). An ordinary crate mix has
+            // no rec scope, so the pair simply isn't there.
+            if let feedback, let track = engine.onAirTrack,
+               let scope = feedback.scope(forPlaying: track.songId) {
+                let verdict = feedback.verdict(songId: track.songId, scope: scope)
                 Button {
-                    _ = feedback.toggle(songId: track.songId, to: .accepted, scope: Self.mixScope,
+                    _ = feedback.toggle(songId: track.songId, to: .accepted, scope: scope,
                                         surface: .nowPlaying, artistKey: nil, genre: nil)
                 } label: {
                     Image(systemName: verdict == .accepted ? "hand.thumbsup.fill" : "hand.thumbsup")
                 }
                 .accessibilityIdentifier("tv-np-mix-thumbsup")
                 Button {
-                    _ = feedback.toggle(songId: track.songId, to: .rejected, scope: Self.mixScope,
+                    _ = feedback.toggle(songId: track.songId, to: .rejected, scope: scope,
                                         surface: .nowPlaying, artistKey: nil, genre: nil)
                 } label: {
                     Image(systemName: verdict == .rejected ? "hand.thumbsdown.fill" : "hand.thumbsdown")
