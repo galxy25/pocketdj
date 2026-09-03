@@ -304,7 +304,9 @@ final class IntentServices {
             }
             throw PocketDJIntentError.noBurnedSongs(name)
         }
-        let items = loadables.map { MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? 180_000) }
+        let items = loadables.map {
+            MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? 180_000, sourceLabel: name)
+        }
         mix.startAutoMix(items, shuffled: shuffle,
                          lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
                          label: name)
@@ -364,17 +366,24 @@ final class IntentServices {
             throw PocketDJIntentError.noBurnedSongs(name)
         }
         if shuffle { a.shuffle(); b.shuffle() }
-        var queue: [MixLoadable] = []
+        let nameB: String
+        if deckA == deckB { nameB = nameA } else { nameB = try displayName(deckB) }
+        // Interleave with per-item PROVENANCE: each row remembers which crate fed it, so the
+        // TV queue surfaces can show "— deck · crate" per row.
+        var queue: [(loadable: MixLoadable, label: String)] = []
         queue.reserveCapacity(a.count + b.count)
         for i in 0..<max(a.count, b.count) {
-            if i < a.count { queue.append(a[i]) }
-            if i < b.count { queue.append(b[i]) }
+            if i < a.count { queue.append((a[i], nameA)) }
+            if i < b.count { queue.append((b[i], nameB)) }
         }
-        let items = queue.map { MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? 180_000) }
+        let items = queue.map {
+            MixEngine.AutoMixItem(loadable: $0.loadable, durationMs: $0.loadable.lengthMs ?? 180_000,
+                                  sourceLabel: $0.label)
+        }
         mix.startAutoMix(items, shuffled: false,
                          lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
                          label: name)
-        mixDownloader?.noteAutoStarted(initialIds: Set(queue.map(\.songId)),
+        mixDownloader?.noteAutoStarted(initialIds: Set(queue.map(\.loadable.songId)),
                                        lead: settings.autoMixLeadSeconds,
                                        fade: settings.autoMixFadeSeconds, label: name)
         return (name, items.count)

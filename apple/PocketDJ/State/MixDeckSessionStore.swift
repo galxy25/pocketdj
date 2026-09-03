@@ -94,6 +94,9 @@ final class MixDeckSessionStore {
     struct AutoRow: Codable, Equatable {
         var track: TrackRef
         var durationMs: Int
+        /// Provenance: the crate (pocket/set list) name this row came from — the TV queue
+        /// surfaces show it. OPTIONAL (a schema bump discards sessions); nil for legacy rows.
+        var sourceLabel: String? = nil
     }
 
     /// The Auto-DJ machine's restorable state. The queue is stored in its FINAL order (shuffle
@@ -115,6 +118,8 @@ final class MixDeckSessionStore {
         var fadeSeconds: Double
         var fxGlide: Bool
         var mixGlide: Bool
+        /// `MixEngine.AutoRepeatMode.rawValue` — OPTIONAL (absent/legacy ⇒ off).
+        var repeatMode: String? = nil
     }
 
     struct Snapshot: Codable, Equatable {

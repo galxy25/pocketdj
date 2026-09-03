@@ -33,11 +33,12 @@ final class MixDeckSessionStoreTests: XCTestCase {
     private func snapshot() -> MixDeckSessionStore.Snapshot {
         .init(deckA: deck("sng_a"), deckB: deck("sng_b", positionMs: 7_000),
               crossfader: 0.3, leadDeck: "A",
-              auto: .init(queue: [.init(track: track("sng_a"), durationMs: 200_000),
-                                  .init(track: track("sng_b"), durationMs: 180_000),
+              auto: .init(queue: [.init(track: track("sng_a"), durationMs: 200_000, sourceLabel: "Crate A"),
+                                  .init(track: track("sng_b"), durationMs: 180_000, sourceLabel: "Crate B"),
                                   .init(track: track("sng_c", title: "C"), durationMs: 190_000)],
                           livePos: 1, nextToLoad: 2, liveDeck: "B", sourceLabel: "Warmup",
-                          leadSeconds: 12, fadeSeconds: 4, fxGlide: true, mixGlide: false),
+                          leadSeconds: 12, fadeSeconds: 4, fxGlide: true, mixGlide: false,
+                          repeatMode: "one"),
               wasRunning: true, updatedAt: 0)
     }
 
@@ -88,6 +89,9 @@ final class MixDeckSessionStoreTests: XCTestCase {
         XCTAssertEqual(auto.queue.map(\.track.songId), ["sng_a", "sng_b", "sng_c"],
                        "queue order preserved exactly")
         XCTAssertEqual(auto.queue.map(\.durationMs), [200_000, 180_000, 190_000])
+        XCTAssertEqual(auto.queue.map(\.sourceLabel), ["Crate A", "Crate B", nil],
+                       "per-row crate provenance round-trips (nil for legacy rows)")
+        XCTAssertEqual(auto.repeatMode, "one", "the repeat mode round-trips")
         XCTAssertEqual(auto.livePos, 1)
         XCTAssertEqual(auto.nextToLoad, 2)
         XCTAssertEqual(auto.liveDeck, "B")
@@ -704,6 +708,141 @@ final class MixEngineSessionTests: XCTestCase {
         XCTAssertEqual(e3.autoUpcoming.map(\.songId), ["smp_q2", "smp_q3", "smp_q4"],
                        "no queue slot fell out across the relaunch cycle")
         e3.stopAutoMix()
+    }
+
+    // MARK: Auto-mix repeat modes (task #52)
+
+    /// Repeat-one: the tick's advance replays the ON-AIR track — the standby deck re-queues the
+    /// current item and the cursor NEVER moves (no upcoming slot consumed, nothing falsely
+    /// retired into autoPlayed, the played-log untouched beyond its idempotent dedup). Turning
+    /// repeat off resumes the ordinary advance from the frozen cursor.
+    func testRepeatOneReplaysWithoutCursorDrift() async throws {
+        let store = makeStore()
+        let e = makeEngine(store: store)
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let files = ["smp_p1": try makeSineWAV(seconds: 2), "smp_p2": try makeSineWAV(seconds: 2),
+                     "smp_p3": try makeSineWAV(seconds: 2)]
+        wireStudioResolve(e, files: files)
+        func item(_ id: String) -> MixEngine.AutoMixItem {
+            .init(loadable: MixLoadable(songId: id, title: id, artist: "Artist", bpm: 120,
+                                        camelot: "8A", key: "Am", albumId: nil, lengthMs: 2_000),
+                  durationMs: 2_000)
+        }
+        e.startAutoMix([item("smp_p1"), item("smp_p2"), item("smp_p3")],
+                       shuffled: false, lead: 15, fade: 3)
+        e.setAutoRepeat(.one)
+
+        for cycle in 1...2 {                    // two replays — drift would compound
+            e.backdateAutoDeckEndForTesting(secondsLeft: 1)
+            e.autoFireForTesting()              // advance window → repeat-one transition begins
+            e.finishAutoCrossfadeForTesting()
+            XCTAssertEqual(e.onAirTrack?.songId, "smp_p1", "cycle \(cycle): the SAME track replays")
+            XCTAssertEqual(e.autoUpcoming.map(\.songId), ["smp_p2", "smp_p3"],
+                           "cycle \(cycle): the upcoming tail is untouched — zero cursor drift")
+            XCTAssertTrue(e.autoPlayed.isEmpty, "cycle \(cycle): nothing falsely retired")
+            XCTAssertTrue(e.autoMixing)
+        }
+
+        e.setAutoRepeat(.off)                   // back to normal: the next advance moves on
+        e.backdateAutoDeckEndForTesting(secondsLeft: 1)
+        e.autoFireForTesting()
+        e.finishAutoCrossfadeForTesting()
+        XCTAssertEqual(e.onAirTrack?.songId, "smp_p2", "repeat off → ordinary advance resumes")
+        XCTAssertEqual(e.autoUpcoming.map(\.songId), ["smp_p3"])
+        XCTAssertEqual(e.autoPlayed.map(\.songId), ["smp_p1"])
+        e.stopAutoMix()
+    }
+
+    /// Repeat-all: a drained queue wraps back to its head instead of ending exhausted — both on
+    /// the tick's natural end-of-runway and on an explicit last-track skip — so
+    /// `autoEndedExhausted` never arms and the downloader's exhaustion re-arm has nothing to
+    /// fight. Turning repeat off afterwards restores the ordinary exhaustion end.
+    func testRepeatAllRestartsADrainedQueue() async throws {
+        let store = makeStore()
+        let e = makeEngine(store: store)
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let files = ["smp_w1": try makeSineWAV(seconds: 2), "smp_w2": try makeSineWAV(seconds: 2)]
+        wireStudioResolve(e, files: files)
+        func item(_ id: String) -> MixEngine.AutoMixItem {
+            .init(loadable: MixLoadable(songId: id, title: id, artist: "Artist", bpm: 120,
+                                        camelot: "8A", key: "Am", albumId: nil, lengthMs: 2_000),
+                  durationMs: 2_000)
+        }
+        e.startAutoMix([item("smp_w1"), item("smp_w2")], shuffled: false, lead: 15, fade: 3)
+        e.setAutoRepeat(.all)
+        e.skipToNext(fadeSeconds: 0.5)          // onto the LAST track
+        e.finishAutoCrossfadeForTesting()
+        XCTAssertEqual(e.onAirTrack?.songId, "smp_w2")
+        XCTAssertTrue(e.autoUpcoming.isEmpty, "queue drained")
+
+        // Natural end-of-runway on the last track → WRAP, not exhaustion.
+        e.backdateAutoDeckEndForTesting(secondsLeft: 1)
+        e.autoFireForTesting()
+        e.finishAutoCrossfadeForTesting()
+        XCTAssertTrue(e.autoMixing, "the mix keeps running")
+        XCTAssertFalse(e.autoEndedExhausted, "repeat-all never arms the exhaustion pickup")
+        XCTAssertEqual(e.onAirTrack?.songId, "smp_w1", "wrapped to the queue head")
+        XCTAssertEqual(e.autoUpcoming.map(\.songId), ["smp_w2"], "the lap restarts in order")
+        XCTAssertTrue(e.autoPlayed.isEmpty, "cursor reset — nothing stuck behind it")
+
+        // Explicit skip on the last track wraps too (skip means next; next of last = head).
+        e.skipToNext(fadeSeconds: 0.5)          // onto w2 (ordinary advance)
+        e.finishAutoCrossfadeForTesting()
+        e.skipToNext(fadeSeconds: 0.5)          // last track → wrap
+        e.finishAutoCrossfadeForTesting()
+        XCTAssertTrue(e.autoMixing)
+        XCTAssertEqual(e.onAirTrack?.songId, "smp_w1", "last-track skip wraps under repeat-all")
+
+        // Repeat off → the ordinary exhaustion end (and the downloader pickup) is back.
+        e.setAutoRepeat(.off)
+        e.skipToNext(fadeSeconds: 0.5)
+        e.finishAutoCrossfadeForTesting()
+        e.backdateAutoDeckEndForTesting(secondsLeft: -1)   // expired, nothing next
+        e.autoFireForTesting()
+        XCTAssertFalse(e.autoMixing, "repeat off → the drained queue ends the mix")
+        XCTAssertTrue(e.autoEndedExhausted, "…arming the downloader's exhaustion re-arm")
+    }
+
+    /// The repeat mode and the queue rows' crate provenance both ride the durable session:
+    /// kill → restore materializes the same mode and the same per-row labels (interleave
+    /// pattern intact), with legacy-optional decoding pinned by the store round-trip test.
+    func testRepeatModeAndSourceLabelsSurviveRestore() async throws {
+        let store = makeStore()
+        let e = makeEngine(store: store)
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let files = ["smp_s1": try makeSineWAV(seconds: 2), "smp_s2": try makeSineWAV(seconds: 2),
+                     "smp_s3": try makeSineWAV(seconds: 2), "smp_s4": try makeSineWAV(seconds: 2)]
+        wireStudioResolve(e, files: files)
+        func item(_ id: String, crate: String) -> MixEngine.AutoMixItem {
+            .init(loadable: MixLoadable(songId: id, title: id, artist: "Artist", bpm: 120,
+                                        camelot: "8A", key: "Am", albumId: nil, lengthMs: 2_000),
+                  durationMs: 2_000, sourceLabel: crate)
+        }
+        // The two-crate interleave: A0,B0,A1,B1 with per-row provenance.
+        e.startAutoMix([item("smp_s1", crate: "Warmup"), item("smp_s2", crate: "Bangers"),
+                        item("smp_s3", crate: "Warmup"), item("smp_s4", crate: "Bangers")],
+                       shuffled: false, lead: 15, fade: 3, label: "Warmup + Bangers")
+        e.setAutoRepeat(.all)
+        XCTAssertEqual(e.autoUpcomingDetailed.map { $0.sourceLabel }, ["Bangers", "Warmup", "Bangers"])
+        await waitSnapshot(store, "labeled queue + mode persisted") {
+            $0.auto?.repeatMode == "all" && $0.auto?.queue.first?.sourceLabel == "Warmup"
+        }
+        e.sessionStore = nil; e.recorder = nil
+        e.teardown()
+
+        let e2 = makeEngine(store: store)
+        wireStudioResolve(e2, files: files)
+        e2.restorePersistedMixIfIdle()
+        e2.materializePendingRestoreIfNeeded()
+        XCTAssertTrue(e2.autoMixing)
+        XCTAssertEqual(e2.autoRepeat, .all, "the repeat mode survives the restore")
+        XCTAssertEqual(e2.autoUpcomingDetailed.map { $0.sourceLabel }, ["Bangers", "Warmup", "Bangers"],
+                       "per-row crate provenance survives the restore, interleave intact")
+        XCTAssertEqual(e2.autoUpcomingDetailed.map { $0.loadable.songId }, ["smp_s2", "smp_s3", "smp_s4"])
+        e2.stopAutoMix()
     }
 
     /// A session written BEFORE the loop feature (no `loopOn`/`loopUnits` keys) must still decode.
