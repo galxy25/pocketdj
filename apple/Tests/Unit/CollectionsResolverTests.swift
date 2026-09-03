@@ -86,6 +86,34 @@ final class CollectionsResolverTests: XCTestCase {
         XCTAssertEqual(Set(ids), ["sng_1", "sng_2"])
     }
 
+    /// Two multi-song pockets sharing one track resolve to the UNION of their rip ids (the
+    /// mix downloader's cross-crate dedupe) — sum minus the shared song. Guards the resolve +
+    /// union math the field "two crates → total=1" turned out NOT to be about (that was a
+    /// partial catalog dropping members before this point).
+    func testTwoMultiSongPocketsUnionToSumMinusDupes() async {
+        let s = await wiredStore()
+        let sap = s.createPocket("sap", songIds: ["sng_1", "sng_2", "sng_3"])   // alb_1 members
+        let joy = s.createPocket("joy", songIds: ["sng_3", "sng_4", "sng_5"])   // sng_3 shared
+        XCTAssertEqual(s.ripIds(forPocket: sap.id).count, 3)
+        XCTAssertEqual(s.ripIds(forPocket: joy.id).count, 3)
+        let union = Set(s.ripIds(forPocket: sap.id) + s.ripIds(forPocket: joy.id))
+        XCTAssertEqual(union.count, 5, "3 + 3 minus the one shared song = 5, not 1")
+    }
+
+    /// `declaredMemberCount` is catalog-INDEPENDENT (the diagnostic that separates an empty
+    /// crate from a partial catalog): it counts declared members even for ids the catalog
+    /// doesn't know, so it stays honest when a device's catalog is incomplete.
+    func testDeclaredMemberCountIsCatalogIndependent() async {
+        let s = await wiredStore()
+        // Two known + one id absent from the fixture catalog: resolve drops the unknown, but
+        // the DECLARED count still sees all three.
+        let p = s.createPocket("sap", songIds: ["sng_1", "sng_2", "not_in_catalog"])
+        XCTAssertEqual(s.ripIds(forPocket: p.id).count, 2, "catalog resolve drops the unknown id")
+        XCTAssertEqual(s.declaredMemberCount(for: .pocket(p.id)), 3,
+                       "declared count is the pre-catalog member total — names the partial-catalog gap")
+        XCTAssertEqual(s.declaredMemberCount(for: .pocket("nope")), 0)
+    }
+
     func testSongIdsForPocketMissingIsEmpty() async {
         let s = await wiredStore()
         XCTAssertEqual(s.songIds(forPocket: "nope"), [])

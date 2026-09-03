@@ -1812,6 +1812,23 @@ final class CollectionsStore {
         guard playlist(id)?.cleanOnly == true, let app else { return ids }
         return CleanOnly.ripIds(ids: ids, songsById: app.songsById)
     }
+    /// The DECLARED member count of a mix crate WITHOUT resolving through the catalog — a
+    /// pre-catalog lower bound (pocket: its own song ids + album refs, not recursively
+    /// expanded; setlist: its audio tracks, which are catalog-independent already). The mix
+    /// downloader logs this next to the catalog-RESOLVED `total`: a crate that declares many
+    /// members but resolves to ~0 names a PARTIAL CATALOG (unsynced per-device source / a
+    /// purged tvOS Caches catalog — task #53), not an empty crate. The field two-crate
+    /// "total=1" (device tvos-8E34293E) had no way to tell those apart.
+    func declaredMemberCount(for source: MixSource) -> Int {
+        switch source {
+        case .pocket(let id):
+            guard let p = pocket(id) else { return 0 }
+            return p.songIds.count + p.albumIds.count + p.childPocketIds.count
+        case .setlist(let id):
+            return songIds(forSetlist: id).count
+        }
+    }
+
     /// Rip/burn/stem id list for a pocket (variant-substituted under cleanOnly).
     func ripIds(forPocket id: String) -> [String] {
         let ids = songIds(forPocket: id)
