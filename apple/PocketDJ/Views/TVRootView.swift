@@ -125,6 +125,12 @@ struct TVNowPlayingView: View {
                 } description: {
                     Text("Start a collection from Browse, an Auto DJ mix from Mix, or a For You pick — playback lands here.")
                 }
+                // Field diagnosability: an empty Now Playing while audio is audible is a GATE
+                // bug — stream the gate's actual inputs so the session log names the flag.
+                .onAppear {
+                    DiagLog.shared.telemetry(
+                        "screen", "np EMPTY seq=\(sequencer.isRunning) mixRun=\(mix.isRunning) auto=\(mix.autoMixing) autoPaused=\(mix.autoPaused)")
+                }
             }
         }
         .background(Theme.bg.ignoresSafeArea())

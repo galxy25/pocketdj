@@ -70,8 +70,14 @@ struct NowPlayingPanel: View {
     /// playback running and the Mix engines not owning the audio. RootView gates
     /// the panel on it, and BrowseView yields its ⌘L to the panel's while true.
     @MainActor
+    /// The mix outranks the sequencer's panel only while it is AUDIBLE (a deck playing) or
+    /// actively auto-mixing. A restored session materializes CUED + SUSPENDED (autoMixing true,
+    /// autoPaused true, decks silent) — and since the TV/CarPlay surfaces began materializing
+    /// restores at launch, a bare `autoMixing` here let a days-old parked mix hide the panel
+    /// while the sequencer was AUDIBLY PLAYING (Levi's TV session 2026-09-02: "Voodoo Chile"
+    /// playing, Now Playing tab empty). The audible thing wins.
     static func isVisible(sequencer: SetlistPlayer, mix: MixEngine) -> Bool {
-        sequencer.isRunning && !(mix.isRunning || mix.autoMixing)
+        sequencer.isRunning && !(mix.isRunning || (mix.autoMixing && !mix.autoPaused))
     }
 
     /// iPhone landscape: too short for the record player — the panel keeps the
