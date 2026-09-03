@@ -121,6 +121,12 @@ final class CollectionMixDownloader {
     /// A source's display (crate) name — provenance for queue rows appended by the
     /// progressive-eligibility pass. Wired at app init next to `resolveLoadables`.
     @ObservationIgnored var resolveSourceName: (@MainActor (MixSource) -> String?)?
+    /// A source's DECLARED (pre-catalog) member count and the device's total catalog size —
+    /// diagnostics only (`begin`'s log), so a field "total=1 from two crates" line names its
+    /// cause: crate empty vs. catalog partial (unsynced source / purged tvOS cache). Wired at
+    /// app init; nil in tests (the line simply omits the extra fields).
+    @ObservationIgnored var declaredMemberCount: (@MainActor (MixSource) -> Int)?
+    @ObservationIgnored var catalogSongCount: (@MainActor () -> Int)?
     /// …a song's catalog length in seconds (ETA input; manifest `durationMs` is the fallback)…
     @ObservationIgnored var songLengthSeconds: (@MainActor (String) -> Double?)?
     /// …and a song's display title/artist for `BurnStore.burn`'s item tuple.
@@ -211,8 +217,21 @@ final class CollectionMixDownloader {
         // Field diagnosability (Levi's live TV stall, "0 of 391" with no evidence trail): the
         // partition IS the diagnosis — cached-on-disk vs burn-lane vs rip-lane, plus whether the
         // manifest had even loaded. Telemetry-gated like every routine line.
+        // A crate that DECLARES members but RESOLVES to far fewer is the partial-catalog
+        // signature (device tvos-8E34293E: two multi-song crates → total=1 because the TV's
+        // catalog didn't have their source loaded — NOT an empty crate). Log both so the field
+        // line is self-diagnosing instead of an investigation.
+        let declared = declaredMemberCount.map { f in newSources.reduce(0) { $0 + f($1) } }
         DiagLog.shared.telemetry(
-            "mixdl", "begin sources=\(newSources.count) total=\(totalCount) onDisk=\(downloadedCount) burnQ=\(burnQueue.count) needsRip=\(needsRip.count) manifest=\(rips.manifest.count)")
+            "mixdl", "begin sources=\(newSources.count) total=\(totalCount) onDisk=\(downloadedCount)"
+            + " burnQ=\(burnQueue.count) needsRip=\(needsRip.count) manifest=\(rips.manifest.count)"
+            + (declared.map { " declared=\($0)" } ?? "")
+            + (catalogSongCount.map { " catalog=\($0())" } ?? ""))
+        if let declared, declared > 0, totalCount < declared {
+            DiagLog.shared.log("warn",
+                "mixdl \(declared - totalCount)/\(declared) crate members unresolved — partial catalog"
+                + " (an enabled source may be missing/unloaded on this device)")
+        }
         guard totalCount > 0, !remainder.isEmpty else {
             isActive = false        // nothing to do — everything is already on disk
             return

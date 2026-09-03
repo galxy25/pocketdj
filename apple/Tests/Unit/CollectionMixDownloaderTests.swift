@@ -102,6 +102,36 @@ final class CollectionMixDownloaderTests: XCTestCase {
         XCTAssertEqual(w.bytesPerSecond(at: 41) ?? -1, 1_000_000, accuracy: 1e-6, "span floor 1 s")
     }
 
+    // MARK: two-crate resolve — union, not collapse (field: tvos-8E34293E "sources=2 total=1")
+
+    /// Two multi-song crates must resolve to the UNION of their rip ids (sum minus the
+    /// cross-crate duplicates), never collapse to one. Pins `begin(sources:)`'s dedupe: the
+    /// field "sources=2 total=1" was a PARTIAL CATALOG dropping members upstream in
+    /// `ripIds(forPocket:)`, not this math — so with the ids present, two 3-song crates sharing
+    /// one track give total=5.
+    func testTwoMultiSongCratesResolveToUnionNotOne() async throws {
+        let rips = makeRips()
+        let burns = try MixBurnFixture.burnStore(ids: [], rips: rips)
+        let engine = MixEngine(burns: burns)
+        let byCrate: [MixSource: [String]] = [
+            .pocket("sap"): ["s1", "s2", "shared"],
+            .pocket("joy"): ["j1", "j2", "shared"],
+        ]
+        let d = CollectionMixDownloader(engine: engine, burns: burns, rips: rips, transfers: nil)
+        d.resolveRipIds = { byCrate[$0] ?? [] }
+        d.resolveLoadables = { _ in [] }
+        d.songLengthSeconds = { _ in nil }
+        d.songTitleArtist = { (title: $0, artist: "A") }
+        // Declared-count seam: each crate DECLARES 3, so nothing looks partial here.
+        d.declaredMemberCount = { byCrate[$0]?.count ?? 0 }
+        d.catalogSongCount = { 100 }
+
+        d.begin(sources: [.pocket("sap"), .pocket("joy")])
+        XCTAssertEqual(d.totalCount, 5,
+                       "3 + 3 minus the one shared id = 5 — two multi-song crates do NOT collapse to 1")
+        d.cancel()
+    }
+
     // MARK: 2 — ETA excludes rip-pending ids (they surface as rippingCount)
 
     func testEtaExcludesRipPendingAndCountsRipping() async {

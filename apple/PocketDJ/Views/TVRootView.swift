@@ -116,12 +116,16 @@ struct TVNowPlayingView: View {
     var body: some View {
         Group {
             if NowPlayingPanel.isVisible(sequencer: sequencer, mix: mix) {
-                ScrollView {
-                    NowPlayingPanel()
-                        .frame(maxWidth: 1120)
-                        .padding(.vertical, 24)
-                        .frame(maxWidth: .infinity)   // center the panel column
-                }
+                // The sequencer gets the same owner-spec CARD shape the mix already has —
+                // NOT the shared NowPlayingPanel. The panel's body is a `List`, and mounting
+                // a List inside this tab's ScrollView collapses it to ZERO height on tvOS:
+                // the field "Now Playing tab blank during an external Apple Music set"
+                // (device tvos-8E34293E, build 1788407269) — isVisible TRUE, panel MOUNTED
+                // (no "np EMPTY" marker), nothing laid out. The card sources everything from
+                // the sequencer's queue + the coordinator/player clocks, so it renders the
+                // same for a burned-local set and an external AM stream (whose LOCAL engine
+                // is idle — data was never the panel's problem; layout was).
+                TVSetlistNowPlayingCard()
             } else if mix.autoMixing || mix.isRunning {
                 // The shared panel is SEQUENCER-only — mounting it for a Mix-owned session
                 // rendered a blank deck here (Levi, live TV 2026-09-02). Owner's spec for this
@@ -343,6 +347,157 @@ struct TVMixView: View {
 /// title, live position, whole-mix transport, the Up Next queue, and a toggle revealing the
 /// previously-played list. Mirrors what the shared panel gives a sequencer set, sourced from
 /// the engine instead — the tab never again renders blank while music is audibly playing.
+/// The Now Playing tab's SEQUENCER card — the owner's verbatim shape ("main title card …
+/// album art, artist and title and playback [position] … queue of up next songs and button
+/// to show the previously played songs"), for collection playback, mirroring
+/// `TVMixNowPlayingCard`. Current track = `sequencer.queue[index]` (the ephemeral run's
+/// truth on every platform); elapsed/length prefer the Apple Music coordinator clock when
+/// the stream is external, falling back to the local engine + the catalog snapshot — the
+/// `NowPlayingDeckCluster.playProgress` chain, without the List that couldn't lay out here.
+struct TVSetlistNowPlayingCard: View {
+    @Environment(SetlistPlayer.self) private var sequencer
+    @Environment(PlayerEngine.self) private var player
+    @Environment(PlaybackCoordinator.self) private var coordinator
+    @Environment(AppModel.self) private var app
+    @State private var showPlayed = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .center, spacing: 26) {
+                if let item = current {
+                    artwork(for: item)
+                    VStack(spacing: 6) {
+                        Text(item.title)
+                            .font(.system(size: 46, weight: .bold))
+                            .foregroundStyle(Theme.fg)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
+                            .accessibilityIdentifier("tv-np-set-title")
+                        Text(item.artist)
+                            .font(.title2)
+                            .foregroundStyle(Theme.fgDim)
+                            .lineLimit(1)
+                    }
+                    positionLine(for: item)
+                    transport
+                }
+                queueSection
+            }
+            .frame(maxWidth: 1100)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 64)
+            .padding(.vertical, 40)
+        }
+    }
+
+    private var current: SetlistPlayer.Item? {
+        guard sequencer.isRunning, sequencer.index < sequencer.queue.count else { return nil }
+        return sequencer.queue[sequencer.index]
+    }
+
+    /// Catalog album art first; an external Apple Music stream with no indexed album (a
+    /// jukebox/AM insert) falls back to the artwork MusicKit captured at play time.
+    @ViewBuilder private func artwork(for item: SetlistPlayer.Item) -> some View {
+        if let album = app.album(forSongId: item.id) {
+            CoverImage(album: album, corner: 20)
+                .frame(width: 420, height: 420)
+                .accessibilityIdentifier("tv-np-set-art")
+        } else if coordinator.isAppleMusicNowPlaying(item.id),
+                  let url = coordinator.appleMusic.nowPlaying?.artworkURL {
+            AsyncImage(url: url) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                RoundedRectangle(cornerRadius: 20, style: .continuous).fill(Theme.bgRaised)
+            }
+            .frame(width: 420, height: 420)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .accessibilityIdentifier("tv-np-set-art")
+        }
+    }
+
+    /// m:ss / m:ss — elapsed from whichever engine OWNS the audio (external Apple Music
+    /// streams publish via the coordinator; the local engine is idle then), length from the
+    /// catalog snapshot → decoded duration → resolved MusicKit duration, in that order.
+    private func positionLine(for item: SetlistPlayer.Item) -> some View {
+        let am = coordinator.isAppleMusicNowPlaying(item.id)
+        let elapsed = am ? coordinator.appleMusic.positionSeconds : player.currentTime
+        let length = max(item.lengthMs.map { Double($0) / 1000 } ?? 0,
+                         player.duration,
+                         am ? coordinator.appleMusic.durationSeconds : 0)
+        return Text("\(Self.mmss(elapsed))\(length > 0 ? " / \(Self.mmss(length))" : "")")
+            .font(.title3.monospacedDigit())
+            .foregroundStyle(Theme.fgDim)
+            .accessibilityIdentifier("tv-np-set-position")
+    }
+
+    private static func mmss(_ s: Double) -> String {
+        let t = max(0, Int(s.rounded()))
+        return String(format: "%d:%02d", t / 60, t % 60)
+    }
+
+    private var transport: some View {
+        HStack(spacing: 20) {
+            Button { sequencer.skipPrevious() } label: {
+                Label("Previous", systemImage: "backward.fill")
+            }
+            .accessibilityIdentifier("tv-np-set-prev")
+            Button {
+                NowPlayingPanel.togglePlayPause(sequencer: sequencer, coordinator: coordinator,
+                                                player: player)
+            } label: {
+                let playing = NowPlayingPanel.isPlayingNow(coordinator: coordinator, player: player)
+                Label(playing ? "Pause" : "Play", systemImage: playing ? "pause.fill" : "play.fill")
+            }
+            .accessibilityIdentifier("tv-np-set-toggle")
+            Button { sequencer.skipNext() } label: {
+                Label("Next", systemImage: "forward.fill")
+            }
+            .accessibilityIdentifier("tv-np-set-next")
+            Button { showPlayed.toggle() } label: {
+                Label(showPlayed ? "Up next" : "Played",
+                      systemImage: showPlayed ? "list.bullet" : "clock.arrow.circlepath")
+            }
+            .accessibilityIdentifier("tv-np-set-played")
+        }
+    }
+
+    /// Up Next by default; the Played toggle swaps in the consumed head, newest first —
+    /// the same focusable no-op rows as the mix card (tvOS scrolls by focus).
+    @ViewBuilder private var queueSection: some View {
+        let rows: [SetlistPlayer.Item] = showPlayed
+            ? sequencer.queue[..<min(sequencer.index, sequencer.queue.count)].reversed()
+            : Array(sequencer.queue.dropFirst(sequencer.index + 1))
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(showPlayed ? "Previously played" : "Up next")
+                    .font(.headline)
+                    .foregroundStyle(Theme.fgDim)
+                ForEach(Array(rows.prefix(50).enumerated()), id: \.offset) { i, item in
+                    Button {} label: {
+                        HStack(spacing: 12) {
+                            Text("\(i + 1)")
+                                .font(.callout.monospacedDigit())
+                                .foregroundStyle(Theme.fgDim)
+                                .frame(width: 36, alignment: .trailing)
+                            Text(item.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
+                            Text("· \(item.artist)").font(.callout).foregroundStyle(Theme.fgDim).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+                if rows.count > 50 {
+                    Text("+ \(rows.count - 50) more")
+                        .font(.callout)
+                        .foregroundStyle(Theme.fgDim)
+                        .padding(.leading, 48)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
 struct TVMixNowPlayingCard: View {
     @Environment(MixEngine.self) private var engine
     @Environment(SettingsStore.self) private var settings

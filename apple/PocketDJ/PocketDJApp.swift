@@ -715,6 +715,10 @@ struct PocketDJApp: App {
                 return s.name ?? "Set list"
             }
         }
+        mixDownloader.declaredMemberCount = { [weak collections] source in
+            collections?.declaredMemberCount(for: source) ?? 0
+        }
+        mixDownloader.catalogSongCount = { [weak app] in app?.songsById.count ?? 0 }
         mixDownloader.songLengthSeconds = { [weak app] id in
             (app?.songsById[id]?.length).map { Double($0) / 1000 }   // catalog length is ms
         }
