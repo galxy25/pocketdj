@@ -10,6 +10,60 @@ extension XCUIApplication {
     /// (so `waitForExistence` works for controls that appear later).
     func el(_ key: String) -> XCUIElement { buttons[key] }
 
+    /// The Now Playing panel's add-search field ("Add songs or albums"), targeted by its
+    /// placeholder so it is never confused with the Browse tab's detail-column search field on
+    /// iPad (both are `searchFields`, and `firstMatch` could resolve to either). Placed in the
+    /// navigation-bar drawer on both iPhone and iPad, so it exists without any reveal step.
+    func revealPanelSearchField() -> XCUIElement {
+        let byPrompt = searchFields["Add songs or albums"]
+        if byPrompt.waitForExistence(timeout: 6) { return byPrompt }
+        return searchFields.firstMatch
+    }
+
+    /// A list's `.searchable` field, revealing the iPad COLLAPSED variant first. Default
+    /// `.searchable` placement renders an always-open drawer field on iPhone but a COLLAPSED
+    /// magnifying-glass Button ("Search") in the navigation bar on iPad — `searchFields` stays
+    /// empty until it is tapped, and the tap also gives the field keyboard focus. Returns the
+    /// materialized search field (callers still `waitForExistence`).
+    func revealListSearchField() -> XCUIElement {
+        let field = searchFields.firstMatch
+        if !field.waitForExistence(timeout: 6) {
+            // The collapsed nav-bar search control is a BUTTON labelled "Search" (the sidebar's
+            // Browse menu icon is an `Image`, so `buttons["Search"]` never resolves to it).
+            let reveal = navigationBars.buttons["Search"].firstMatch
+            let target = reveal.exists ? reveal : buttons["Search"].firstMatch
+            if target.waitForExistence(timeout: 3) {
+                target.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            }
+        }
+        return searchFields.firstMatch
+    }
+
+    /// Dismiss the Now Playing song-detail sheet, returning whether it actually closed.
+    /// iPhone gets a nav-bar Back (`np-detail-back`); iPad/macOS get the ✕ overlay
+    /// (`np-detail-close`). On iPad the `.buttonStyle(.plain)` ✕ inside the sheet overlay can
+    /// swallow the first SYNTHETIC element tap (the button reports hittable, the tap lands, yet
+    /// `detailSong` never clears) — so drive it by a CENTER COORDINATE and retry, which
+    /// reliably fires the action a bare `.tap()` misses on the form-sheet overlay.
+    @discardableResult
+    func dismissDetailSheet() -> Bool {
+        let sheet = any("song-detail")
+        guard sheet.waitForExistence(timeout: 2) else { return true }   // already gone
+        // 1) the close control (Back on iPhone, ✕ overlay on iPad/macOS), by CENTER coordinate.
+        let back = el("np-detail-back")
+        let closer = back.waitForExistence(timeout: 2) ? back : el("np-detail-close")
+        if closer.waitForExistence(timeout: 2) {
+            closer.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
+            if sheet.waitForNonExistence(timeout: 3) { return true }
+        }
+        // 2) iPad form sheet: swipe the card down to dismiss.
+        sheet.swipeDown(velocity: .fast)
+        if sheet.waitForNonExistence(timeout: 3) { return true }
+        // 3) tap the dimmed backdrop OUTSIDE the sheet card (top-left window corner).
+        coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.04)).tap()
+        return sheet.waitForNonExistence(timeout: 3)
+    }
+
     /// Look up ANY element (button, static text, scroll view, …) by accessibility
     /// identifier. Used for non-button surfaces like the song-detail ScrollView or a
     /// song row (which is a plain view + `.onTapGesture`, not a Button).
@@ -499,5 +553,15 @@ final class MacTreeDumpUITests: XCTestCase {
         #endif
         Thread.sleep(forTimeInterval: 3)
         dump(a, "17-performance-cues")
+    }
+}
+
+extension XCUIElement {
+    /// Tap the element's CENTER via a coordinate. On iPad, XCUITest's plain `.tap()` on a
+    /// small `.buttonStyle(.plain)` control (an SF-symbol Button, a step cell) frequently
+    /// resolves as hittable yet never fires the action — a coordinate tap on the same point
+    /// reliably does. No-op difference on iPhone/macOS where `.tap()` already works.
+    func tapCenter() {
+        coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
     }
 }
