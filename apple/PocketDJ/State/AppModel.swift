@@ -409,7 +409,11 @@ final class AppModel {
     /// `state` is no longer claimed synchronously before the first `await` — this flag stops two
     /// concurrent callers (a multi-window RootView `.task` + an App-Intent launch) from both passing
     /// the state check and building the catalog twice / firing duplicate network refreshes.
-    @ObservationIgnored private var loadInFlight = false
+    /// The in-flight catalog load/reload, JOINABLE: `loadIfNeeded` awaiters arriving mid-load
+    /// await THIS task instead of returning early — an awaiter needs loaded-ness, not merely
+    /// "someone is loading" (the TV field bug 2026-09-03T02:22Z: Start pressed 18 s after cold
+    /// launch resolved both mix crates against a half-decoded catalog and errored on total=0).
+    @ObservationIgnored private var loadTask: Task<Void, Never>?
 
     /// This install's resolved catalog-owner identity (`OwnerIdentity.isOwner()`), cached here so
     /// SYNCHRONOUS read paths (e.g. `recentlyAddedSongIds`) can gate on it without a CloudKit await.
@@ -537,16 +541,21 @@ final class AppModel {
     var songCount: Int { songs.count }
 
     func loadIfNeeded() async {
-        switch state {
-        case .loaded, .loading: return
-        default: break
+        if case .loaded = state { return }
+        // SINGLE-FLIGHT THAT JOINS: a second caller awaits the first's task rather than
+        // returning early. `state` stays out of the gate (intentionally `.idle` on the seed
+        // path to avoid a loading flash); the task handle IS the gate.
+        if let loadTask {
+            await loadTask.value
+            return
         }
-        // Single-flight: the build below suspends, so claim the load with a flag (not `state`, which
-        // we intentionally leave `.idle` on the seed path to avoid a loading flash). Without this a
-        // second concurrent caller would slip past the `state` check during the first's `await`.
-        if loadInFlight { return }
-        loadInFlight = true
-        defer { loadInFlight = false }
+        let task = Task { await self.performInitialLoad() }
+        loadTask = task
+        await task.value
+        loadTask = nil
+    }
+
+    private func performInitialLoad() async {
         // OFFLINE-FIRST: render the last-good catalog from the on-disk cache — no waiting on the
         // network — fixing the cold/iOS-kill relaunch that showed an empty UI while it re-downloaded
         // a catalog it already had. The decode + merge + edit-overlay + browse-row build all run OFF
@@ -1650,14 +1659,20 @@ final class AppModel {
     /// screen and refreshes in place — never resets to `.idle`/`.loading`, so it can't blank the
     /// catalog. On a cold model with nothing loaded yet it seeds from cache first.
     func reload() async {
-        // Share loadIfNeeded's single-flight gate: reload also awaits an off-main build, so a manual
-        // reload racing the launch load (or another reload) would otherwise double-build the catalog.
-        if loadInFlight { return }
-        loadInFlight = true
-        defer { loadInFlight = false }
-        let hadData = !albums.isEmpty
-        if !hadData { _ = await seedFromCache() }
-        await performRefresh(hadData: hadData || !albums.isEmpty)
+        // Share loadIfNeeded's single-flight gate: a manual reload racing the launch load (or
+        // another reload) joins it instead of double-building the catalog.
+        if let loadTask {
+            await loadTask.value
+            return
+        }
+        let task = Task {
+            let hadData = !self.albums.isEmpty
+            if !hadData { _ = await self.seedFromCache() }
+            await self.performRefresh(hadData: hadData || !self.albums.isEmpty)
+        }
+        loadTask = task
+        await task.value
+        loadTask = nil
     }
 
     /// Per-source tagging derived alongside the merge: id→source maps + the

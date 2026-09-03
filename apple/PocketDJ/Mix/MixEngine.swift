@@ -1934,7 +1934,10 @@ final class MixEngine {
     /// Whether either glide feature is armed (⇒ a transition uses the pre/post-roll machine).
     private var anyGlide: Bool { fxGlideEnabled || mixGlideEnabled }
     /// A transition (preroll, crossfade, or postroll) is in progress.
-    private var autoTransitioning: Bool {
+    /// PUBLIC READ for remote surfaces: the TV's tempo/pitch steppers gray out while a
+    /// transition (pre-roll → fade → post-roll, incl. any glide) owns the decks — a manual
+    /// nudge mid-glide would fight the Auto DJ's own rate/pitch ramps.
+    var autoTransitioning: Bool {
         autoPrerollStartedAt != nil || autoFadeStartedAt != nil || autoPostrollStartedAt != nil
     }
 
@@ -2842,6 +2845,13 @@ final class MixEngine {
     var autoUpcoming: [MixLoadable] {
         guard autoMixing, autoLivePos + 1 < autoQueue.count else { return [] }
         return autoQueue[(autoLivePos + 1)...].map(\.loadable)
+    }
+
+    /// The auto queue's consumed head, NEWEST FIRST — the "previously played" list the TV's
+    /// unified Now Playing card reveals. Empty when not auto-mixing.
+    var autoPlayed: [MixLoadable] {
+        guard autoMixing, autoLivePos > 0 else { return [] }
+        return autoQueue[..<min(autoLivePos, autoQueue.count)].map(\.loadable).reversed()
     }
 
     /// Insert a track into the RUNNING auto queue for the jukebox request line.

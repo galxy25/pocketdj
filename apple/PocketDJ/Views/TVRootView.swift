@@ -112,13 +112,22 @@ struct TVNowPlayingView: View {
 
     var body: some View {
         Group {
-            if NowPlayingPanel.isVisible(sequencer: sequencer, mix: mix) || mix.autoMixing {
+            if NowPlayingPanel.isVisible(sequencer: sequencer, mix: mix) {
                 ScrollView {
                     NowPlayingPanel()
                         .frame(maxWidth: 1120)
                         .padding(.vertical, 24)
                         .frame(maxWidth: .infinity)   // center the panel column
                 }
+            } else if mix.autoMixing || mix.isRunning {
+                // The shared panel is SEQUENCER-only — mounting it for a Mix-owned session
+                // rendered a blank deck here (Levi, live TV 2026-09-02). Owner's spec for this
+                // tab, verbatim shape: "the main title card for the current track with the
+                // album art, artist and title and playback [position] and then the queue of up
+                // next songs and button to show the previously played songs" — ONE presentation
+                // regardless of source. The mix gets that card here; the Mix tab keeps its
+                // control-room surface.
+                TVMixNowPlayingCard()
             } else {
                 ContentUnavailableView {
                     Label("Nothing playing", systemImage: "play.circle")
@@ -170,10 +179,11 @@ struct TVMixView: View {
             // Single centered column — the omni-search side column was removed on Levi's
             // on-device call (2026-09-02): Browse owns library search, the Now Playing tab's
             // panel owns add-to-queue search, and the Mix surface stays a clean Auto DJ deck.
+            // ScrollView so the (focusable) queue tail is reachable — tvOS scrolls by focus.
+            ScrollView {
             VStack(alignment: .leading, spacing: 28) {
                 if engine.autoMixing {
-                    liveCard
-                    upNext
+                    TVMixLiveSurface()
                 } else {
                     setupCard
                 }
@@ -184,6 +194,7 @@ struct TVMixView: View {
             .padding(.horizontal, 64)
             .padding(.vertical, 40)
             .frame(maxHeight: .infinity, alignment: .top)
+            }
             .background(Theme.bg.ignoresSafeArea())
             .navigationTitle("Mix")
             .pocketDJDestinations(path: $path)
@@ -223,7 +234,7 @@ struct TVMixView: View {
                 }
                 .accessibilityIdentifier("tv-mix-source-b")
             }
-            glideToggles
+            TVGlideToggles()
             HStack(spacing: 20) {
                 Button { start(shuffled: true) } label: {
                     Label("Start Mix", systemImage: "shuffle")
@@ -264,23 +275,6 @@ struct TVMixView: View {
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
-    /// FX Glide + Audio Glide — ENGINE state (persists with the durable mix session), not
-    /// settings; safe to flip mid-mix (applies from the next transition). Toggle is focusable
-    /// on tvOS (the TVSettingsView pattern); explicit Binding because the engine is the store.
-    private var glideToggles: some View {
-        HStack(spacing: 28) {
-            Toggle("FX Glide", isOn: Binding(
-                get: { engine.fxGlideEnabled },
-                set: { engine.setFXGlide($0) }))
-                .accessibilityIdentifier("tv-mix-fx-glide")
-            Toggle("Audio Glide", isOn: Binding(
-                get: { engine.mixGlideEnabled },
-                set: { engine.setMixGlide($0) }))
-                .accessibilityIdentifier("tv-mix-audio-glide")
-        }
-        .toggleStyle(.button)
-        .font(.callout)
-    }
 
     /// Crate rows for one deck's Menu — pockets + set lists (the two kinds that resolve
     /// through MixResolver into burned loadables), same as MixView's auto picker.
@@ -331,8 +325,289 @@ struct TVMixView: View {
         }
     }
 
-    // MARK: Auto DJ — live (mix running)
 
+
+}
+
+
+
+
+// ============================================================================
+// MARK: - Unified Now Playing card (mix-owned playback)
+// ============================================================================
+
+/// The Now Playing tab's ONE presentation when the MIX owns playback: big album art, artist +
+/// title, live position, whole-mix transport, the Up Next queue, and a toggle revealing the
+/// previously-played list. Mirrors what the shared panel gives a sequencer set, sourced from
+/// the engine instead — the tab never again renders blank while music is audibly playing.
+struct TVMixNowPlayingCard: View {
+    @Environment(MixEngine.self) private var engine
+    @Environment(SettingsStore.self) private var settings
+    @Environment(AppModel.self) private var app
+    @State private var showPlayed = false
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .center, spacing: 26) {
+                if let track = engine.onAirTrack {
+                    if let albumId = track.albumId, let album = app.albumsById[albumId] {
+                        CoverImage(album: album, corner: 20)
+                            .frame(width: 420, height: 420)
+                            .accessibilityIdentifier("tv-np-mix-art")
+                    }
+                    VStack(spacing: 6) {
+                        Text(track.title)
+                            .font(.system(size: 46, weight: .bold))
+                            .foregroundStyle(Theme.fg)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
+                            .accessibilityIdentifier("tv-np-mix-title")
+                        Text(track.artist)
+                            .font(.title2)
+                            .foregroundStyle(Theme.fgDim)
+                            .lineLimit(1)
+                    }
+                    positionLine
+                    transport
+                    if let status = engine.autoStatus {
+                        Text(status).font(.callout.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    }
+                }
+                queueSection
+            }
+            .frame(maxWidth: 1100)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 64)
+            .padding(.vertical, 40)
+        }
+    }
+
+    /// m:ss / m:ss for the on-air deck. Reads the 10 Hz observable position — fine for one Text.
+    private var positionLine: some View {
+        let deck = engine.nowPlayingDeck
+        let pos = deck.map { engine.position($0) } ?? 0
+        let dur = deck.map { engine.duration($0) } ?? 0
+        return Text("\(Self.mmss(pos)) / \(Self.mmss(dur))")
+            .font(.title3.monospacedDigit())
+            .foregroundStyle(Theme.fgDim)
+    }
+
+    private static func mmss(_ s: Double) -> String {
+        let t = max(0, Int(s.rounded()))
+        return String(format: "%d:%02d", t / 60, t % 60)
+    }
+
+    private var transport: some View {
+        HStack(spacing: 20) {
+            if engine.autoPaused {
+                Button {
+                    engine.remotePlay()
+                    if engine.autoMixing, engine.autoPaused { engine.resumeAuto() }
+                } label: { Label("Resume", systemImage: "play.fill") }
+                    .accessibilityIdentifier("tv-np-mix-resume")
+            } else {
+                Button { engine.remotePause() } label: { Label("Pause", systemImage: "pause.fill") }
+                    .accessibilityIdentifier("tv-np-mix-pause")
+            }
+            Button { engine.remoteSkip(fadeSeconds: 5) } label: {
+                Label("Skip · quick", systemImage: "forward.fill")
+            }
+            Button { engine.remoteSkip(fadeSeconds: settings.skipFadeSeconds) } label: {
+                Label("Skip · blend", systemImage: "forward.end.fill")
+            }
+            Button { showPlayed.toggle() } label: {
+                Label(showPlayed ? "Up next" : "Played", systemImage: showPlayed ? "list.bullet" : "clock.arrow.circlepath")
+            }
+            .accessibilityIdentifier("tv-np-mix-played")
+        }
+    }
+
+    /// Up Next by default; the Played toggle swaps in the consumed head, newest first.
+    @ViewBuilder private var queueSection: some View {
+        let rows = showPlayed ? engine.autoPlayed : engine.autoUpcoming
+        if !rows.isEmpty {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(showPlayed ? "Previously played" : "Up next")
+                    .font(.headline)
+                    .foregroundStyle(Theme.fgDim)
+                ForEach(Array(rows.prefix(12).enumerated()), id: \.offset) { i, l in
+                    HStack(spacing: 12) {
+                        Text("\(i + 1)")
+                            .font(.callout.monospacedDigit())
+                            .foregroundStyle(Theme.fgDim)
+                            .frame(width: 36, alignment: .trailing)
+                        Text(l.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
+                        Text("· \(l.artist)").font(.callout).foregroundStyle(Theme.fgDim).lineLimit(1)
+                        Spacer(minLength: 0)
+                    }
+                }
+                if rows.count > 12 {
+                    Text("+ \(rows.count - 12) more")
+                        .font(.callout)
+                        .foregroundStyle(Theme.fgDim)
+                        .padding(.leading, 48)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+// ============================================================================
+// MARK: - Mix live surface (shared: Mix tab + Now Playing tab)
+// ============================================================================
+
+/// FX Glide + Audio Glide — ENGINE state (persists with the durable mix session), not
+/// settings; safe to flip mid-mix (applies from the next transition). A standalone view so
+/// the Mix setup card AND the shared live surface both render the one pair.
+struct TVGlideToggles: View {
+    @Environment(MixEngine.self) private var engine
+    var body: some View {
+        HStack(spacing: 28) {
+            Toggle("FX Glide", isOn: Binding(
+                get: { engine.fxGlideEnabled },
+                set: { engine.setFXGlide($0) }))
+                .accessibilityIdentifier("tv-mix-fx-glide")
+            Toggle("Audio Glide", isOn: Binding(
+                get: { engine.mixGlideEnabled },
+                set: { engine.setMixGlide($0) }))
+                .accessibilityIdentifier("tv-mix-audio-glide")
+        }
+        .toggleStyle(.button)
+        .font(.callout)
+    }
+}
+
+/// The FX / STEMS / TEMPO / PITCH row above the Auto DJ box. Every control scopes to the
+/// LEAD (currently playing) deck — the owner's tvOS call: the TV drives what the room hears;
+/// the per-deck board stays on the other platforms. Long-press (contextMenu) on an
+/// FX button offers preset strengths; on a stem button, preset volumes — the TV stand-ins for
+/// the other platforms' long-press sliders, driving the same engine setters.
+struct TVMixControlsRow: View {
+    @Environment(MixEngine.self) private var engine
+
+    private static let fxLabels: [(MixEngine.Effect, String, String)] = [
+        (.compressor, "Comp", "waveform.badge.minus"),
+        (.reverb, "Reverb", "building.columns"),
+        (.flanger, "Flanger", "water.waves"),
+        (.filter, "Filter", "slider.horizontal.3"),
+    ]
+    private static let stemLabels: [(String, String)] = [
+        ("vocals", "Vocals"), ("drums", "Drums"), ("bass", "Bass"), ("other", "Other"),
+    ]
+
+    /// The LEAD deck — every control here scopes to what the room is HEARING (owner's call:
+    /// per-deck board semantics stay on the other platforms; the TV drives the live deck).
+    private var deck: MixEngine.Deck { engine.nowPlayingDeck ?? .a }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 18) {
+                ForEach(Self.fxLabels, id: \.1) { fx, label, icon in
+                    let on = engine.isEnabled(fx, on: deck)
+                    Button {
+                        engine.setEffect(fx, enabled: !on, on: deck)
+                    } label: {
+                        Label(label, systemImage: icon)
+                            .foregroundStyle(on ? Theme.accent : Theme.fg)
+                    }
+                    .accessibilityIdentifier("tv-mix-fx-\(fx.rawValue)")
+                    .contextMenu {
+                        ForEach([0.25, 0.5, 0.75, 1.0], id: \.self) { v in
+                            Button("Strength \(Int(v * 100))%") {
+                                engine.setEffectStrength(fx, v, on: deck)
+                                if !on { engine.setEffect(fx, enabled: true, on: deck) }
+                            }
+                        }
+                    }
+                }
+                // Tempo / pitch nudges for the LEAD deck — grayed while a transition (incl.
+                // glide) owns the decks, so a manual nudge can't fight the Auto DJ's ramps.
+                let inTransition = engine.autoTransitioning
+                HStack(spacing: 8) {
+                    Button { engine.setRate(engine.rate(deck) - 0.01, on: deck) } label: {
+                        Label("Tempo −", systemImage: "minus")
+                    }
+                    .accessibilityIdentifier("tv-mix-tempo-down")
+                    Text("\(Int((engine.rate(deck) * 100).rounded()))%")
+                        .font(.callout.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    Button { engine.setRate(engine.rate(deck) + 0.01, on: deck) } label: {
+                        Label("Tempo ＋", systemImage: "plus")
+                    }
+                    .accessibilityIdentifier("tv-mix-tempo-up")
+                }
+                .disabled(inTransition)
+                HStack(spacing: 8) {
+                    Button { engine.setPitch(engine.pitch(deck) - 1, on: deck) } label: {
+                        Label("Pitch −", systemImage: "arrow.down")
+                    }
+                    .accessibilityIdentifier("tv-mix-pitch-down")
+                    Text("\(Int(engine.pitch(deck).rounded()))")
+                        .font(.callout.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    Button { engine.setPitch(engine.pitch(deck) + 1, on: deck) } label: {
+                        Label("Pitch ＋", systemImage: "arrow.up")
+                    }
+                    .accessibilityIdentifier("tv-mix-pitch-up")
+                }
+                .disabled(inTransition)
+            }
+            HStack(spacing: 18) {
+                // Stem MODE + mutes for the LEAD deck only.
+                let stemsOn = engine.stemModeOn(deck)
+                Button {
+                    engine.setStemMode(!stemsOn, on: deck)
+                } label: {
+                    Label("Stems", systemImage: "square.stack.3d.up")
+                        .foregroundStyle(stemsOn ? Theme.accent : Theme.fg)
+                }
+                .accessibilityIdentifier("tv-mix-stems")
+                ForEach(Self.stemLabels, id: \.0) { name, label in
+                    let muted = engine.isStemMuted(name, on: deck)
+                    Button {
+                        if !stemsOn { engine.setStemMode(true, on: deck) }
+                        engine.toggleStemMute(name, on: deck)
+                    } label: {
+                        Label(label, systemImage: muted ? "speaker.slash" : "speaker.wave.2")
+                            .foregroundStyle(muted ? Theme.fgDim : Theme.fg)
+                    }
+                    .accessibilityIdentifier("tv-mix-stem-\(name)")
+                    .contextMenu {
+                        ForEach([0.25, 0.5, 0.75, 1.0], id: \.self) { v in
+                            Button("Volume \(Int(v * 100))%") {
+                                engine.setStemVolume(name, v, on: deck)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .font(.callout)
+        .buttonStyle(.bordered)
+    }
+}
+
+/// The RUNNING mix's whole surface — live card (on-air, status, transport, glide, download
+/// line) + Up Next — extracted from TVMixView so the Now Playing tab renders the SAME thing
+/// when the mix owns playback (the shared NowPlayingPanel is sequencer-only and mounted
+/// blank for a Mix session; Levi, live TV 2026-09-02).
+struct TVMixLiveSurface: View {
+    @Environment(MixEngine.self) private var engine
+    @Environment(SettingsStore.self) private var settings
+    @Environment(CollectionMixDownloader.self) private var downloader
+
+    var body: some View {
+        // Owner (live TV, 2026-09-02): "above the auto DJ ui box we should have buttons for
+        // enabling the effects and toggling off or on stems, with long click triggering the
+        // sliders" — long-press (contextMenu, the proven tvOS idiom) offers preset strengths/
+        // volumes in place of sliders, which tvOS does not have (TVCompat's Slider is
+        // read-only); the presets drive the SAME setEffectStrength/setStemVolume the other
+        // platforms' sliders do.
+        TVMixControlsRow()
+        liveCard
+        upNext
+    }
+
+    
     private var liveCard: some View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(spacing: 12) {
@@ -392,7 +667,7 @@ struct TVMixView: View {
                 }
                 .accessibilityIdentifier("tv-mix-stop")
             }
-            glideToggles
+            TVGlideToggles()
             // A running mix that is still pulling its collection(s): late landings append to
             // the queue automatically — this line just says so.
             if downloader.isActive && downloader.downloadedCount < downloader.totalCount {
@@ -416,19 +691,24 @@ struct TVMixView: View {
                 Text("Up next")
                     .font(.headline)
                     .foregroundStyle(Theme.fgDim)
-                ForEach(Array(upcoming.prefix(8).enumerated()), id: \.element.songId) { i, l in
-                    HStack(spacing: 12) {
-                        Text("\(i + 1)")
-                            .font(.callout.monospacedDigit())
-                            .foregroundStyle(Theme.fgDim)
-                            .frame(width: 36, alignment: .trailing)
-                        Text(l.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
-                        Text("· \(l.artist)").font(.callout).foregroundStyle(Theme.fgDim).lineLimit(1)
-                        Spacer(minLength: 0)
+                // FOCUSABLE rows (no-op Buttons): tvOS scrolls BY FOCUS, so display-only rows
+                // capped the queue at a screenful — the owner wants to browse the whole tail.
+                ForEach(Array(upcoming.prefix(50).enumerated()), id: \.offset) { i, l in
+                    Button {} label: {
+                        HStack(spacing: 12) {
+                            Text("\(i + 1)")
+                                .font(.callout.monospacedDigit())
+                                .foregroundStyle(Theme.fgDim)
+                                .frame(width: 36, alignment: .trailing)
+                            Text(l.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
+                            Text("· \(l.artist)").font(.callout).foregroundStyle(Theme.fgDim).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
                     }
+                    .buttonStyle(.plain)
                 }
-                if upcoming.count > 8 {
-                    Text("+ \(upcoming.count - 8) more")
+                if upcoming.count > 50 {
+                    Text("+ \(upcoming.count - 50) more")
                         .font(.callout)
                         .foregroundStyle(Theme.fgDim)
                         .padding(.leading, 48)
@@ -437,9 +717,7 @@ struct TVMixView: View {
             .padding(.horizontal, 12)
         }
     }
-
 }
-
 
 // ============================================================================
 // MARK: - Browse (collections)
