@@ -135,6 +135,153 @@ final class IntentServicesTests: XCTestCase {
         XCTAssertFalse(services.setlistPlayer.isRunning)
     }
 
+    /// The two-crate start (the CarPlay/TV Mix remote's deck A + B): per-crate order is
+    /// preserved and interleaved A0,B0,A1,… onto the engine's strict deck alternation, a song
+    /// in both crates plays ONCE (deck A's copy wins), the label names both crates, and the
+    /// downloader run tracks the UNION so late landings from either crate join the queue.
+    func testTwoCrateAutoMixInterleavesDedupsAndTracksBothCrates() async throws {
+        let (services, collections, _) = await makeServices(burnedIds: ["sng_1", "sng_2", "sng_3"])
+        services.mix.ensureEngine()
+        try XCTSkipUnless(services.mix.isReady, "no audio device on this test host")
+        let a = collections.createPocket("Crate A")
+        collections.addSong("sng_1", toPocket: a.id)
+        collections.addSong("sng_2", toPocket: a.id)      // sng_2 lives in BOTH crates
+        let b = collections.createPocket("Crate B")
+        collections.addSong("sng_2", toPocket: b.id)
+        collections.addSong("sng_3", toPocket: b.id)
+        let d = CollectionMixDownloader(engine: services.mix, burns: services.burns,
+                                        rips: services.rips, transfers: nil)
+        d.resolveRipIds = { src in
+            src == .pocket(a.id) ? ["sng_1", "sng_2"] : ["sng_2", "sng_3"]
+        }
+        d.resolveLoadables = { _ in [] }
+        services.mixDownloader = d
+
+        let (name, count) = try await services.startAutoMix(
+            deckA: .pocket(a.id), deckB: .pocket(b.id), shuffle: false)
+
+        XCTAssertEqual(name, "Crate A + Crate B")
+        XCTAssertEqual(count, 3, "the shared song plays once")
+        XCTAssertTrue(services.mix.autoMixing)
+        XCTAssertEqual(services.mix.onAirTrack?.songId, "sng_1", "A's first track opens on deck A")
+        XCTAssertEqual(services.mix.autoUpcoming.map(\.songId), ["sng_3", "sng_2"],
+                       "interleave: B0 next (B's sng_2 deduped to A's copy), then A1")
+        XCTAssertEqual(d.sources, [.pocket(a.id), .pocket(b.id)],
+                       "the download run tracks BOTH crates")
+        XCTAssertEqual(d.totalCount, 3, "…as a UNION, the shared song tracked once")
+        services.mix.stopAutoMix()
+    }
+
+    /// The phone Mix tab's ZERO-START contract, reachable from TV/CarPlay via
+    /// `allowPendingStart`: an unburned collection doesn't fail — the download run arms and the
+    /// FIRST landing starts the mix. Siri's default path keeps the speakable error.
+    func testAllowPendingStartArmsZeroStartInsteadOfThrowing() async throws {
+        let (services, collections, _) = await makeServices()          // nothing burned
+        services.mix.ensureEngine()
+        try XCTSkipUnless(services.mix.isReady, "no audio device on this test host")
+        let d = CollectionMixDownloader(engine: services.mix, burns: services.burns,
+                                        rips: services.rips, transfers: nil)
+        d.resolveRipIds = { _ in ["sng_1", "sng_2"] }
+        d.resolveLoadables = { _ in [] }
+        services.mixDownloader = d
+        let pocket = collections.createPocket("Unburned Crate")
+        collections.addSong("sng_1", toPocket: pocket.id)
+        collections.addSong("sng_2", toPocket: pocket.id)
+
+        let (name, count) = try await services.startAutoMix(
+            source: .pocket(pocket.id), shuffle: true, allowPendingStart: true)
+        XCTAssertEqual(name, "Unburned Crate")
+        XCTAssertEqual(count, 0, "nothing on disk yet — nothing playing")
+        XCTAssertFalse(services.mix.autoMixing)
+        XCTAssertTrue(d.isActive, "the download run is pulling")
+        XCTAssertTrue(d.autoArmedForTesting)
+        XCTAssertTrue(d.autoStartPendingForTesting, "the FIRST landing starts the mix")
+
+        // The Siri path (default) still speaks the error rather than silently arming.
+        do {
+            _ = try await services.startAutoMix(source: .pocket(pocket.id), shuffle: true)
+            XCTFail("expected noBurnedSongs")
+        } catch let e as PocketDJIntentError {
+            if case .noBurnedSongs = e {} else { XCTFail("unexpected \(e)") }
+        } catch { XCTFail("unexpected \(error)") }
+        d.cancel()
+    }
+
+    /// The remote surfaces' explicit "Resume Mix" must clear a pause that ORIGINATED in-app
+    /// (`pauseAuto`) — `remotePlay` alone no-ops on that state by design (the lock-screen ▶'s
+    /// gesture is ambiguous; a labeled Resume row is not), which made the car's row a dead
+    /// control whenever the pause came from the phone.
+    func testCarResumeClearsAnInAppPause() async throws {
+        let (services, collections, _) = await makeServices(burnedIds: ["sng_1", "sng_2"])
+        services.mix.ensureEngine()
+        try XCTSkipUnless(services.mix.isReady, "no audio device on this test host")
+        let pocket = collections.createPocket("Road Crate")
+        collections.addSong("sng_1", toPocket: pocket.id)
+        collections.addSong("sng_2", toPocket: pocket.id)
+        _ = try await services.startAutoMix(source: .pocket(pocket.id), shuffle: false)
+        XCTAssertTrue(services.mix.autoMixing)
+
+        services.mix.pauseAuto()                  // the PHONE's in-app hand-mixing pause
+        XCTAssertTrue(services.mix.autoPaused)
+
+        CarPlayModel(services: services).resumeMix()
+        XCTAssertFalse(services.mix.autoPaused, "the labeled Resume row resumes the machine")
+        services.mix.stopAutoMix()
+    }
+
+    // MARK: 👍 on what is playing (For You collection queue)
+
+    /// The owner's contract for a collection tile's 👍 — "send positive signal AND add the song
+    /// to the collection" — honoured from the TRANSPORT surfaces (deck, mini bar, CarPlay,
+    /// widget, lock screen), which all land in `recordNowPlayingFeedback`. For a collection tile
+    /// the playing scope IS the target collection id, so an accept adds the track there; the
+    /// undo never un-adds; a re-accept never duplicates.
+    func testNowPlayingThumbsUpAddsTheSongToThePlayingForYouCollection() async throws {
+        let (services, collections, _) = await makeServices()
+        let fbURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-intents-fb-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: fbURL) }
+        let store = RecFeedbackStore(fileURL: fbURL)
+        services.recFeedback = store
+        let pocket = collections.createPocket("808s and Swinging")
+        collections.addSong("sng_1", toPocket: pocket.id)
+
+        // Play a SUGGESTED track (not yet a member), scope-stamped the way every For You play
+        // path stamps it: with the tile's collection id.
+        _ = try await services.playSong(id: "sng_3")
+        store.beginPlayback(scope: pocket.id, songIds: ["sng_3"])
+
+        let landed = services.recordNowPlayingFeedback(.accepted, surface: .nowPlaying)
+        XCTAssertEqual(landed, .accepted)
+        XCTAssertEqual(collections.songIds(forPocket: pocket.id), ["sng_1", "sng_3"],
+                       "the 👍 adds the playing suggestion to the collection it was suggested for")
+
+        // The second tap is an UNDO of the verdict — never an un-add.
+        XCTAssertNil(services.recordNowPlayingFeedback(.accepted, surface: .nowPlaying))
+        XCTAssertEqual(collections.songIds(forPocket: pocket.id), ["sng_1", "sng_3"])
+
+        // A third tap re-accepts; membership is checked, so no duplicate node is minted.
+        XCTAssertEqual(services.recordNowPlayingFeedback(.accepted, surface: .nowPlaying), .accepted)
+        XCTAssertEqual(collections.songIds(forPocket: pocket.id), ["sng_1", "sng_3"])
+    }
+
+    /// Reserved scopes (In Da Zone / New) have no implicit collection — a 👍 there stays pure
+    /// feedback — and playlists (whose single-song `addSong` is deliberately the duplication
+    /// path) dedup through the same helper.
+    func testAcceptedAddIsScopeGuardedAndDedupsOnPlaylists() async {
+        let (_, collections, _) = await makeServices()
+        XCTAssertFalse(collections.addAcceptedSong("sng_1",
+                                                   scopedTo: ForYouTileRoute.Kind.zone.rawValue),
+                       "a reserved scope resolves to no collection and adds nothing")
+
+        let pl = collections.createPlaylist("Late Night")
+        collections.addSong("sng_1", toPlaylist: pl.id)
+        XCTAssertTrue(collections.addAcceptedSong("sng_2", scopedTo: pl.id))
+        XCTAssertFalse(collections.addAcceptedSong("sng_2", scopedTo: pl.id),
+                       "an accept replay must not mint a duplicate playlist node")
+        XCTAssertEqual(collections.songIds(forPlaylist: pl.id), ["sng_1", "sng_2"])
+    }
+
     // MARK: Auto-mix
 
     func testAutoMixWithNoBurnedSongsThrows() async {

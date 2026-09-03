@@ -16,10 +16,20 @@ import CryptoKit
 ///   • Fire-and-forget: upload failures are swallowed — diagnostics must never disturb the
 ///     app, and a device that can't reach S3 simply reports nothing.
 ///
-/// Each launch owns ONE object — `diag/<platform>-<device8>/<launchStamp>.log` — rewritten
-/// with the full cumulative buffer on every flush (idempotent, ordering-proof; readers always
-/// see a complete file). Flushes: buffered ~15 s after the first new line, immediately for
-/// `error`-category lines, and on 25+ pending lines.
+/// Each launch owns ONE object family — `diag/<platform>-<device8>/<launchStamp>-b<build>.log`
+/// plus `…-p2.log`, `…-p3.log`, … as parts rotate — each part rewritten with its full buffer on
+/// every flush (idempotent, ordering-proof; readers always see complete files and concatenate
+/// the parts). Flushes: buffered ~15 s after the first new line (~3 s in telemetry mode),
+/// immediately for `error`-category lines, and on 25+ pending lines. Rotation exists because S3
+/// has no append and rewriting one ever-growing object makes upload bytes O(n²) — fine for
+/// sparse events, fatal for a telemetry stream.
+///
+/// TELEMETRY MODE (`telemetry(_:_:)`): every user action + screen presentation, streamed
+/// near-live so a CarPlay drive or a TV session can be followed from the bucket. OWNER OPT-IN
+/// via Settings ▸ Debug ▸ "Remote telemetry" (pushed here by SettingsStore — the channel gate
+/// below still applies, so App Store builds never log). Unlike `log` callers, telemetry lines
+/// MAY carry song/screen titles: the owner explicitly chose to stream their own session.
+/// Tokens, credentials, and credentialed URLs stay banned everywhere.
 @MainActor
 final class DiagLog {
     static let shared = DiagLog()
@@ -30,11 +40,34 @@ final class DiagLog {
     private static let bucketHost = "pocketdj-logs-011183829623.s3.us-west-2.amazonaws.com"
     private static let region = "us-west-2"
 
+    /// One cached formatter — a fresh `ISO8601DateFormatter` per line was measurable overhead
+    /// at telemetry rates.
+    private static let iso = ISO8601DateFormatter()
+    /// Seal the current part at this many lines (~≤64 KB a part keeps the rewrite cheap).
+    private static let partLineLimit = 500
+    /// Hard per-session ceiling (~80 parts): a runaway loop stops costing bytes, with an
+    /// explicit final marker line so the truncation is visible in the bucket.
+    private static let sessionLineLimit = 40_000
+
     private var lines: [String] = []
     private var dirty = 0
+    private var totalLines = 0
+    private var part = 1
     private var flushTask: Task<Void, Never>?
-    private let objectKey: String
+    /// `diag/<platform>-<device8>/<stamp>-b<build>` — the part suffix + ".log" complete it.
+    private let keyBase: String
+    private var objectKey: String { part == 1 ? keyBase + ".log" : keyBase + "-p\(part).log" }
     private let enabled: Bool
+
+    /// Rich-telemetry mode. Pushed by SettingsStore (launch + toggle) — a stored setting, not
+    /// read here, because this singleton can materialize before SettingsStore exists. The
+    /// transition is logged so the session file shows exactly when the stream started/stopped.
+    var telemetryEnabled = false {
+        didSet {
+            guard enabled, telemetryEnabled != oldValue else { return }
+            log("telemetry", telemetryEnabled ? "mode ON" : "mode OFF")
+        }
+    }
 
     private init() {
         #if DEBUG
@@ -42,7 +75,10 @@ final class DiagLog {
         #else
         let sandbox = Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt"
         #endif
+        // Fixture runs AND test hosts are excluded: the transport funnels now touch this
+        // singleton on every play/skip, and a unit-test process must never PUT to the bucket.
         enabled = sandbox && ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] == nil
+            && NSClassFromString("XCTestCase") == nil
 
         let defaults = UserDefaults.standard
         let deviceId: String
@@ -61,10 +97,10 @@ final class DiagLog {
         #else
         let platform = "ios"
         #endif
-        let stamp = ISO8601DateFormatter().string(from: Date())
+        let stamp = Self.iso.string(from: Date())
             .replacingOccurrences(of: ":", with: "-")
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
-        objectKey = "diag/\(platform)-\(deviceId)/\(stamp)-b\(build).log"
+        keyBase = "diag/\(platform)-\(deviceId)/\(stamp)-b\(build)"
 
         if enabled {
             log("launch", "build=\(build) platform=\(platform) device=\(deviceId)")
@@ -72,19 +108,71 @@ final class DiagLog {
     }
 
     /// Append one event line. `category == "error"` flushes immediately. NEVER pass secrets —
-    /// log presence/length/codes, not values.
+    /// log presence/length/codes, not values (titles ride ONLY the `telemetry` lane).
     func log(_ category: String, _ message: String) {
-        guard enabled else { return }
-        let ts = ISO8601DateFormatter().string(from: Date())
+        guard enabled, totalLines < Self.sessionLineLimit else { return }
+        totalLines += 1
+        let ts = Self.iso.string(from: Date())
+        if totalLines == Self.sessionLineLimit {
+            lines.append("\(ts) [telemetry] session line cap reached — logging muted")
+            dirty += 1
+            flushNow()
+            return
+        }
         lines.append("\(ts) [\(category)] \(message)")
         dirty += 1
-        if category == "error" || dirty >= 25 {
+        if lines.count >= Self.partLineLimit {
+            seal()
+        } else if category == "error" || dirty >= 25 {
             flushNow()
         } else if flushTask == nil {
+            // Telemetry mode shortens the debounce so the bucket trails a live drive by
+            // seconds, not a quarter minute.
+            let delay: UInt64 = telemetryEnabled ? 3_000_000_000 : 15_000_000_000
             flushTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 15_000_000_000)
+                try? await Task.sleep(nanoseconds: delay)
                 await MainActor.run { self?.flushNow() }
             }
+        }
+    }
+
+    /// Rich-telemetry line — user actions and screen presentations. No-op unless the owner's
+    /// "Remote telemetry" debug toggle is on (see the header's privacy contract).
+    func telemetry(_ category: String, _ message: String) {
+        guard telemetryEnabled else { return }
+        log(category, message)
+    }
+
+    /// Scene-phase hook: backgrounding would strand up to a debounce-window of tail lines
+    /// (there is no termination callback worth trusting) — push them out now. Fire-and-forget
+    /// like every other flush; iOS grants comfortably enough runway for one small PUT.
+    func flushOnBackground() {
+        guard enabled else { return }
+        flushNow()
+    }
+
+    /// Uploads are SERIALIZED through this chain. S3 concurrent PUTs to one key are
+    /// last-writer-wins by commit time, and rotation makes the final write to a sealed part
+    /// TERMINAL — an in-flight earlier flush landing after the seal's full-body PUT would
+    /// permanently truncate that part (the pre-rotation design self-healed because every later
+    /// flush rewrote the same key; a sealed part never gets another write). Chaining keeps the
+    /// launch order the landing order while every PUT still runs detached off-main.
+    private var uploadChain: Task<Void, Never>?
+    /// Newest not-yet-uploaded body per key. Every flush of one part is a FULL rewrite, so only
+    /// the newest body matters — during a network stall the chain drains ONE PUT per part
+    /// instead of a backlog of superseded rewrites (probed: a 200 ms PUT under a 20 ms flush
+    /// cadence otherwise queued 88 redundant bodies).
+    private var pendingBodies: [String: Data] = [:]
+
+    private func enqueueUpload(key: String, body: Data) {
+        let hadPending = pendingBodies[key] != nil
+        pendingBodies[key] = body
+        guard !hadPending else { return }        // the queued PUT for this key takes the newest
+        let prev = uploadChain
+        uploadChain = Task { @MainActor [weak self] in
+            await prev?.value
+            guard let latest = self?.pendingBodies.removeValue(forKey: key) else { return }
+            await Task.detached(priority: .utility) { await Self.put(key: key, body: latest) }.value
         }
     }
 
@@ -92,11 +180,19 @@ final class DiagLog {
         flushTask?.cancel(); flushTask = nil
         guard dirty > 0 else { return }
         dirty = 0
-        let body = Data((lines.joined(separator: "\n") + "\n").utf8)
-        let key = objectKey
-        Task.detached(priority: .utility) {
-            await Self.put(key: key, body: body)
-        }
+        enqueueUpload(key: objectKey, body: Data((lines.joined(separator: "\n") + "\n").utf8))
+    }
+
+    /// Final full-buffer upload of the current part, then start the next with a continuity
+    /// marker. The seal upload is fire-and-forget like every flush — a lost part costs those
+    /// lines, never the app's stability (the design invariant this file exists under).
+    private func seal() {
+        flushTask?.cancel(); flushTask = nil
+        dirty = 0
+        enqueueUpload(key: objectKey, body: Data((lines.joined(separator: "\n") + "\n").utf8))
+        part += 1
+        lines = ["\(Self.iso.string(from: Date())) [rotate] continues in part \(part)"]
+        dirty = 1
     }
 
     // MARK: SigV4 PUT (pure CryptoKit — no SDK)

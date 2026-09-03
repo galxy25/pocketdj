@@ -316,6 +316,10 @@ final class SetlistPlayer {
     /// exact sync behavior.
     func play(_ items: [Item], sourceSetlistId: String? = nil, preStamped: Bool = false) {
         guard !items.isEmpty else { return }
+        // Telemetry funnel: EVERY "start playing this set" in the app lands here (rows, intents,
+        // CarPlay, widgets), so one line captures them all — and doubles as the play-signal the
+        // rec engine's remote analysis reads.
+        DiagLog.shared.telemetry("action", "set start count=\(items.count) first=\(items.first?.title ?? "?")")
         // A fresh play over a RUNNING set is "advancing away" from its current track (the
         // replace is user-initiated); starting from idle advances away from nothing — and
         // neither does replacing the set with one that OPENS ON THE SAME SONG (replaying the
@@ -558,6 +562,7 @@ final class SetlistPlayer {
 
     /// Manually advance (used by the live-track "Next" affordance + lock-screen NEXT).
     func skipNext() {
+        DiagLog.shared.telemetry("action", "skip next from=\(queue.indices.contains(index) ? queue[index].title : "?")")
         noteAdvanceAway()
         exitHoldIfNeeded()
         advanceToNext()
@@ -567,6 +572,7 @@ final class SetlistPlayer {
     /// goes below index 0. Re-resolves + plays the (now) current track.
     func skipPrevious() {
         guard isRunning else { return }
+        DiagLog.shared.telemetry("action", "skip previous")
         exitHoldIfNeeded()
         waitingForLive = false
         if index == 0 {
@@ -785,6 +791,7 @@ final class SetlistPlayer {
     func jumpToUpcoming(uid: UUID) {
         guard isRunning, index + 1 < queue.count,
               let pos = queue[(index + 1)...].firstIndex(where: { $0.uid == uid }) else { return }
+        DiagLog.shared.telemetry("action", "jump to upcoming \(queue[pos].title)")
         // Jumping onto ANOTHER OCCURRENCE of the same song is a restart, not a skip of it.
         if !isRestartOfCurrent(queue[pos].id) { noteAdvanceAway() }
         exitHoldIfNeeded()
@@ -1163,6 +1170,8 @@ final class SetlistPlayer {
     /// skip, a dead/unresolvable source, and the end of a track's repeats.
     private func advanceToNext() {
         guard isRunning else { return }
+        // The auto-advance = the "completed a track" ML signal (vs the explicit-skip lines above).
+        DiagLog.shared.telemetry("playback", "advance from=\(queue.indices.contains(index) ? queue[index].id : "?") index=\(index)")
         waitingForLive = false
         index += 1
         if index >= queue.count {
@@ -1500,6 +1509,7 @@ final class SetlistPlayer {
     /// (NowPlayingPanel / WidgetSync) route their play-toggle here while `isHeldForResume`.
     func resumeFromHold() {
         guard isRunning, isHeldForResume else { return }
+        DiagLog.shared.telemetry("action", "resume held session")
         isHeldForResume = false
         armEngineHooks()
         startPositionTicker()

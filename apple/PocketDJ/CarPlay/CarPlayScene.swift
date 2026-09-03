@@ -50,6 +50,14 @@ final class CarPlayController {
     /// "Continue" section above them can be added/removed without rebuilding the rows.
     private var playlistsTemplate: CPListTemplate?
     private var playlistsRowSection: CPListSection?
+    /// The Mix tab, kept so its sections rebuild in place (`updateSections`) on every mix-state
+    /// change — CarPlay templates are not observed, so each action + the now-playing fan-out
+    /// re-renders it, the same discipline as the Continue row.
+    private var mixTemplate: CPListTemplate?
+    /// The car's chosen crates. Session-local (a fresh connect starts blank): the durable mix
+    /// SESSION is what survives — these two only parameterize the next Start.
+    private var mixDeckA: MixSource?
+    private var mixDeckB: MixSource?
     private lazy var nowPlayingObserver = CarPlayNowPlayingObserver(controller: self)
 
     init(interfaceController: CPInterfaceController) {
@@ -92,6 +100,7 @@ final class CarPlayController {
                             shuffleAll: { await model.playPocket(id: row.id, shuffle: true) })
         }
         let forYou = forYouTemplate(model)
+        let mixTab = mixTabTemplate(model)
 
         // NO Search tab: CarPlay's keyboard search left the app frozen in the vehicle until a
         // force-quit (the head-unit keyboard is blocked in motion and never returned control), so
@@ -99,9 +108,247 @@ final class CarPlayController {
         // tiles, built off the FROZEN feed with no catalog sweep and no network on this path, so
         // opening the tab does no work that could block the head unit. Hands-free find is available
         // via Siri / the App Intents.
-        let tabBar = CPTabBarTemplate(templates: [playlists, pockets, forYou])
+        //
+        // Mix takes the FOURTH and last slot an audio app gets on a CPTabBarTemplate — the tab
+        // budget is now spent, so the next tab idea costs one of these four.
+        let tabBar = CPTabBarTemplate(templates: [playlists, pockets, forYou, mixTab])
         interfaceController.setRootTemplate(tabBar, animated: true, completion: nil)
         configureNowPlaying()
+        // A durable mix session restored at launch stays parked until a Mix surface shows up;
+        // the car connecting IS one showing up. Cued + suspended — never self-playing audio.
+        model.materializeMixRestoreIfNeeded()
+        refreshMixTab()
+        armMixObservation()
+    }
+
+    /// Re-armed observation of the MIX state the tab renders from. The now-playing fan-out
+    /// (`WidgetSync.arm`) deliberately observes ZERO MixEngine state, so relying on it left the
+    /// Mix tab frozen on engine-driven changes — a lock-screen ⏸, a phone-started mix, or a
+    /// plain track transition never re-rendered here, and the stale "⏸ Pause Mix" row's tap
+    /// then no-opped on `remotePause`'s idempotency guard (a dead control at 70 mph). This is
+    /// the standard re-arming `withObservationTracking` loop; the controller deallocating on
+    /// disconnect ends it via the weak self.
+    private func armMixObservation() {
+        guard let model else { return }
+        let mix = model.services.mix
+        withObservationTracking {
+            _ = mix.autoMixing
+            _ = mix.autoPaused
+            _ = mix.autoSourceLabel
+            // Track changes arrive via `autoStatus` (inequality-guarded "n / count · deck"
+            // readout). `onAirTrack` is tracked too — its getter registers the whole
+            // DeckState, which glide transitions mutate ~10 Hz for the full pre+post-roll
+            // (probed: `mutate` fires observation on every write, changed value or not), but
+            // `refreshMixTab`'s signature guard makes each over-fire a string compare, never a
+            // template push — and it's what keeps a track hand-loaded onto the live deck from
+            // the phone (reachable during a hand-mixing pause) fresh on the car's state row.
+            _ = mix.autoStatus
+            _ = mix.onAirTrack?.songId
+            _ = mix.fxGlideEnabled
+            _ = mix.mixGlideEnabled
+            // The download run's progress renders on the setup card (and arms the zero-start),
+            // so its facts re-render the tab too.
+            if let d = model.services.mixDownloader {
+                _ = d.isActive
+                _ = d.downloadedCount
+                _ = d.totalCount
+            }
+        } onChange: { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.refreshMixTab()
+                self.armMixObservation()
+            }
+        }
+    }
+
+    // MARK: - Mix tab (two-crate Auto DJ remote)
+
+    /// The Mix tab: a REMOTE CONTROL for the shared `MixEngine`, not a DJ board. Setup = pick a
+    /// crate per deck + two glide toggles + one Start (always shuffled auto-mix — no manual deck
+    /// loading, no song picking in a car). Live = pause/resume the WHOLE mix, fast/slow skip,
+    /// stop. Everything routes through `CarPlayModel` → `IntentServices`/lock-screen seams, so
+    /// the phone's Mix tab, the lock screen, and the car all drive the same engine state.
+    private func mixTabTemplate(_ model: CarPlayModel) -> CPListTemplate {
+        let template = CPListTemplate(title: "Mix", sections: mixSections(model))
+        template.tabImage = UIImage(systemName: "dial.medium.fill")
+        template.tabTitle = "Mix"
+        mixTemplate = template
+        return template
+    }
+
+    /// The rendered facts of the last Mix-tab build — rebuilds are skipped when nothing the
+    /// tab SHOWS changed, so an over-firing observation costs a string compare, never a
+    /// template push over the head-unit link.
+    private var lastMixSignature: String?
+
+    /// Rebuild the Mix tab's sections in place. Called after every Mix action, from the
+    /// now-playing fan-out, and from `armMixObservation`'s change loop, so state changed from
+    /// the phone or the lock screen re-renders here too.
+    func refreshMixTab() {
+        guard let model, let mixTemplate else { return }
+        let np = model.mixNowPlaying()
+        let sig = [model.autoMixRunning() ? "1" : "0", model.autoMixPaused() ? "1" : "0",
+                   model.autoMixLabel() ?? "", np?.title ?? "", np?.artist ?? "",
+                   model.fxGlideOn() ? "1" : "0", model.audioGlideOn() ? "1" : "0",
+                   "\(Int(model.slowSkipSeconds()))",
+                   model.mixDownloadState().map { "\($0.downloaded)/\($0.total)" } ?? "",
+                   model.crateName(mixDeckA) ?? "", model.crateName(mixDeckB) ?? ""]
+            .joined(separator: "|")
+        guard sig != lastMixSignature else { return }
+        lastMixSignature = sig
+        mixTemplate.updateSections(mixSections(model))
+    }
+
+    private func mixSections(_ model: CarPlayModel) -> [CPListSection] {
+        model.autoMixRunning() ? mixLiveSections(model) : mixSetupSections(model)
+    }
+
+    private func mixSetupSections(_ model: CarPlayModel) -> [CPListSection] {
+        let deckA = CPListItem(text: "Deck A", detailText: model.crateName(mixDeckA) ?? "Choose a crate…")
+        deckA.accessoryType = .disclosureIndicator
+        deckA.handler = { [weak self] _, completion in
+            self?.pushCratePicker(deck: .a, model: model); completion()
+        }
+        let deckB = CPListItem(text: "Deck B",
+                               detailText: model.crateName(mixDeckB) ?? "Same as Deck A")
+        deckB.accessoryType = .disclosureIndicator
+        deckB.handler = { [weak self] _, completion in
+            self?.pushCratePicker(deck: .b, model: model); completion()
+        }
+        let start = CPListItem(text: "▶ Start Mix",
+                               detailText: mixDeckA == nil ? "Pick Deck A first"
+                                                          : "Shuffled auto-mix")
+        start.handler = { [weak self] _, completion in
+            guard let self, let a = self.mixDeckA else { completion(); return }
+            Task { @MainActor in
+                switch await model.startMix(deckA: a, deckB: self.mixDeckB) {
+                case .playing:              self.showNowPlaying()
+                case .downloading:          self.toast("Downloading — the mix starts when the first track lands")
+                case .failed(let error):    self.toast(error)
+                }
+                self.refreshMixTab()
+                completion()
+            }
+        }
+        var sections = [CPListSection(items: [deckA, deckB], header: "Decks", sectionIndexTitle: nil),
+                        CPListSection(items: [fxGlideItem(model), audioGlideItem(model)],
+                                      header: "Transitions", sectionIndexTitle: nil),
+                        CPListSection(items: [start])]
+        // ZERO-START state: the run is pulling and the mix starts itself on the first landing.
+        if let d = model.mixDownloadState() {
+            let row = CPListItem(text: "Downloading \(d.downloaded) of \(d.total)",
+                                 detailText: "The mix starts when the first track lands")
+            sections.append(CPListSection(items: [row]))
+        }
+        return sections
+    }
+
+    private func mixLiveSections(_ model: CarPlayModel) -> [CPListSection] {
+        var rows: [CPListItem] = []
+        let np = model.mixNowPlaying()
+        let paused = model.autoMixPaused()
+        let state = CPListItem(text: np.map { "\($0.title) — \($0.artist)" } ?? "Auto DJ",
+                               detailText: paused ? "Paused" : "Playing")
+        state.handler = { [weak self] _, completion in self?.showNowPlaying(); completion() }
+        rows.append(state)
+        let pause = CPListItem(text: paused ? "▶ Resume Mix" : "⏸ Pause Mix", detailText: nil)
+        pause.handler = { [weak self] _, completion in
+            // Decide at TAP time, not render time: even a momentarily-stale row must act on the
+            // engine's real state (the render-time branch made a stale row a dead control).
+            model.autoMixPaused() ? model.resumeMix() : model.pauseMix()
+            self?.refreshMixTab(); completion()
+        }
+        rows.append(pause)
+        let fast = CPListItem(text: "⏭ Skip — quick", detailText: "5 second sweep")
+        fast.handler = { [weak self] _, completion in
+            model.skipMixFast(); self?.refreshMixTab(); completion()
+        }
+        rows.append(fast)
+        let slow = CPListItem(text: "⏭ Skip — long blend",
+                              detailText: "\(Int(model.slowSkipSeconds())) second crossfade")
+        slow.handler = { [weak self] _, completion in
+            model.skipMixSlow(); self?.refreshMixTab(); completion()
+        }
+        rows.append(slow)
+        let stop = CPListItem(text: "⏹ Stop Mix", detailText: nil)
+        stop.handler = { [weak self] _, completion in
+            model.stopMix(); self?.refreshMixTab(); completion()
+        }
+        return [CPListSection(items: rows,
+                              header: model.autoMixLabel().map { "Auto DJ — \($0)" } ?? "Auto DJ",
+                              sectionIndexTitle: nil),
+                CPListSection(items: [fxGlideItem(model), audioGlideItem(model), stop],
+                              header: "Transitions", sectionIndexTitle: nil)]
+    }
+
+    /// FX Glide row — tap toggles; takes effect on the NEXT transition (engine contract).
+    private func fxGlideItem(_ model: CarPlayModel) -> CPListItem {
+        let on = model.fxGlideOn()
+        let item = CPListItem(text: "FX Glide", detailText: on ? "On" : "Off")
+        item.handler = { [weak self] _, completion in
+            model.setFXGlide(!on); self?.refreshMixTab(); completion()
+        }
+        return item
+    }
+
+    /// Audio Glide row (bpm + pitch harmonic glide; off = plain equal-power crossfade).
+    private func audioGlideItem(_ model: CarPlayModel) -> CPListItem {
+        let on = model.audioGlideOn()
+        let item = CPListItem(text: "Audio Glide", detailText: on ? "On" : "Off")
+        item.handler = { [weak self] _, completion in
+            model.setAudioGlide(!on); self?.refreshMixTab(); completion()
+        }
+        return item
+    }
+
+    private enum MixDeck { case a, b }
+
+    /// The crate picker for one deck: pockets + set lists (the two mixable kinds). Deck B also
+    /// offers "Same as Deck A" (clears the override).
+    private func pushCratePicker(deck: MixDeck, model: CarPlayModel) {
+        let crates = model.mixCrates()
+        // `[weak self]`: these closures escape into CPListItem handlers on a template this
+        // controller retains — a strong self here is a controller↔template cycle that would
+        // leak the whole CarPlay graph past disconnect.
+        let pick: (MixSource?) -> Void = { [weak self] source in
+            guard let self else { return }
+            DiagLog.shared.telemetry(
+                "car", "mix deck \(deck == .a ? "A" : "B") = \(source.flatMap { model.crateName($0) } ?? "same as A")")
+            switch deck {
+            case .a: self.mixDeckA = source
+            case .b: self.mixDeckB = source
+            }
+            self.refreshMixTab()
+            self.interfaceController.popTemplate(animated: true, completion: nil)
+        }
+        var sections: [CPListSection] = []
+        if deck == .b {
+            let same = CPListItem(text: "Same as Deck A", detailText: nil)
+            same.handler = { _, completion in pick(nil); completion() }
+            sections.append(CPListSection(items: [same]))
+        }
+        if !crates.pockets.isEmpty {
+            sections.append(CPListSection(items: crates.pockets.map { crate in
+                let item = CPListItem(text: crate.title, detailText: nil)
+                item.handler = { _, completion in pick(crate.source); completion() }
+                return item
+            }, header: "Pockets", sectionIndexTitle: nil))
+        }
+        if !crates.setlists.isEmpty {
+            sections.append(CPListSection(items: crates.setlists.map { crate in
+                let item = CPListItem(text: crate.title, detailText: nil)
+                item.handler = { _, completion in pick(crate.source); completion() }
+                return item
+            }, header: "Set lists", sectionIndexTitle: nil))
+        }
+        if sections.isEmpty {
+            sections = [CPListSection(items: [
+                CPListItem(text: "No pockets or set lists yet",
+                           detailText: "Build one on iPhone, iPad, or Mac")])]
+        }
+        let template = CPListTemplate(title: deck == .a ? "Deck A" : "Deck B", sections: sections)
+        interfaceController.pushTemplate(template, animated: true, completion: nil)
     }
 
     /// The one-row "Continue" section, or nil when there is nothing held to resume.
@@ -230,6 +477,9 @@ final class CarPlayController {
         // Same fan-out point covers the resume row: a set resumed/skipped from the phone stops
         // being "held", so the Continue row must stop offering it.
         refreshResumeRow()
+        // …and the Mix tab: a mix started/paused/stopped from the phone or the lock screen
+        // re-renders the car's remote too (templates aren't observed — this IS the observer).
+        refreshMixTab()
     }
 
     // MARK: - List templates
@@ -321,6 +571,8 @@ final class CarPlayController {
     /// the action sheet.
     private func pushSongs(title: String, rows: [CarPlayModel.Row],
                            playAll: @escaping () async -> Void, shuffleAll: @escaping () async -> Void) {
+        // Telemetry: what the head unit is presenting (list + size); taps ride `listItem`.
+        DiagLog.shared.telemetry("car", "present songs '\(title)' rows=\(rows.count)")
         pushRows(title: title, rows: rows, header: "Songs", emptyText: "No songs",
                  playAll: { await playAll() }, shuffleAll: { await shuffleAll() },
                  onSelect: { [weak self] row in self?.presentSongActions(row) })
@@ -401,19 +653,26 @@ final class CarPlayController {
                           onTap: @escaping () -> Void) -> CPListItem {
         let item = CPListItem(text: row.title, detailText: row.subtitle)
         if showsDisclosure { item.accessoryType = .disclosureIndicator }
-        item.handler = { _, completion in onTap(); completion() }
+        item.handler = { _, completion in
+            // Telemetry: every head-unit row tap, by title — the driver's actions half of
+            // "stream my CarPlay session"; template pushes below are the presented half.
+            DiagLog.shared.telemetry("car", "tap \(row.title)")
+            onTap(); completion()
+        }
         loadArtwork(albumId: row.artworkAlbumId, into: item)
         return item
     }
 
-    /// Resolve the first working cover-art candidate → UIImage and set it on the item.
+    /// Resolve the first working cover-art URL → UIImage and set it on the item. The URL list
+    /// resolves asynchronously (the streaming fallback goes through MusicKit for albums with no
+    /// bundled cover — most of the library); `CPListItem.setImage` after the template is already
+    /// on screen is the supported live-update path, so rows fill in as covers land.
     private func loadArtwork(albumId: String?, into item: CPListItem) {
         guard let albumId else { return }
         if let cached = artCache[albumId] { item.setImage(cached); return }
         guard let model else { return }
-        let urls = model.artCandidates(albumId: albumId)
-        guard !urls.isEmpty else { return }
         Task { [weak self] in
+            let urls = await model.artURLs(albumId: albumId)
             for url in urls {
                 if let (data, resp) = try? await URLSession.shared.data(from: url),
                    (resp as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) ?? true,

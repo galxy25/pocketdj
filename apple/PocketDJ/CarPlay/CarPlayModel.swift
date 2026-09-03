@@ -266,11 +266,106 @@ final class CarPlayModel {
     /// "Play now" on an Up Next row — shift playback to exactly that queue row.
     func jump(uid: UUID) { services.setlistPlayer.jumpToUpcoming(uid: uid) }
 
+    // MARK: - Mix (two-crate Auto DJ — the Mix tab)
+
+    /// A pickable crate for a Mix deck: pockets + set lists, the two `MixSource` kinds
+    /// (playlists must become set lists first — same rule as the phone's Mix tab).
+    struct MixCrate: Identifiable, Equatable {
+        let id: String            // MixSource.id encoding ("pocket:<id>" / "setlist:<id>")
+        let title: String
+        let source: MixSource
+    }
+
+    func mixCrates() -> (pockets: [MixCrate], setlists: [MixCrate]) {
+        (collections.pockets.map {
+            MixCrate(id: MixSource.pocket($0.id).id, title: $0.name, source: .pocket($0.id))
+        },
+         collections.visibleSetlists.map {
+            MixCrate(id: MixSource.setlist($0.id).id, title: $0.name ?? "Set list", source: .setlist($0.id))
+        })
+    }
+
+    func crateName(_ source: MixSource?) -> String? {
+        switch source {
+        case .pocket(let id):  return collections.pocket(id)?.name
+        case .setlist(let id): return collections.setlist(id)?.name ?? "Set list"
+        case nil:              return nil
+        }
+    }
+
+    // Live mix state the template renders from.
+    func autoMixRunning() -> Bool { services.mix.autoMixing }
+    func autoMixPaused() -> Bool { services.mix.autoPaused }
+    func autoMixLabel() -> String? { services.mix.autoSourceLabel }
+    func mixNowPlaying() -> (title: String, artist: String)? {
+        services.mix.onAirTrack.map { ($0.title, $0.artist) }
+    }
+    func fxGlideOn() -> Bool { services.mix.fxGlideEnabled }
+    func audioGlideOn() -> Bool { services.mix.mixGlideEnabled }
+    func setFXGlide(_ on: Bool) { services.mix.setFXGlide(on) }
+    func setAudioGlide(_ on: Bool) { services.mix.setMixGlide(on) }
+
+    enum MixStart { case playing, downloading, failed(String) }
+
+    /// Start the two-crate SHUFFLED Auto DJ (deck B nil ⇒ same crate on both decks — the
+    /// ordinary single-source mix). The car's mix is always shuffled auto-mix: no manual deck
+    /// loading, no song picking — that is the surface's contract, not a missing feature.
+    /// `.downloading` = the zero-start armed (nothing on disk yet; the first landing starts
+    /// the mix), same contract as the phone's Mix tab.
+    func startMix(deckA: MixSource, deckB: MixSource?) async -> MixStart {
+        do {
+            let (_, count) = try await services.startAutoMix(deckA: deckA, deckB: deckB ?? deckA,
+                                                             shuffle: true, allowPendingStart: true)
+            return count == 0 ? .downloading : .playing
+        } catch {
+            return .failed(String(localized: (error as? PocketDJIntentError)?.localizedStringResource
+                ?? "That can’t start a mix right now."))
+        }
+    }
+
+    /// Download-run readout for the Mix tab (nil when idle or complete).
+    func mixDownloadState() -> (downloaded: Int, total: Int)? {
+        guard let d = services.mixDownloader, d.isActive,
+              d.downloadedCount < d.totalCount else { return nil }
+        return (d.downloadedCount, d.totalCount)
+    }
+
+    /// Whole-mix transport — exclusively the lock-screen seam: `remotePause` is the ONE pause
+    /// that silences both decks AND freezes the transition wall clock (in-app `pauseBoth` would
+    /// END a running Auto-DJ), and `remoteSkip` un-suspends a paused machine before sweeping.
+    func pauseMix() { services.mix.remotePause() }
+    func resumeMix() {
+        let m = services.mix
+        m.remotePlay()
+        // The lock-screen ▶ deliberately never resumes an IN-APP (hand-mixing) pause — its play
+        // gesture is ambiguous. This surface's row literally says "Resume Mix", so a machine
+        // still suspended after remotePlay (the phone's `pauseAuto` state, which remotePlay's
+        // three steps each no-op on) resumes explicitly; without this the row was a dead
+        // control whenever the pause originated in-app.
+        if m.autoMixing, m.autoPaused { m.resumeAuto() }
+    }
+    /// FAST skip: the 5 s sweep (the lock-screen ⏭ precedent).
+    func skipMixFast() { services.mix.remoteSkip(fadeSeconds: 5) }
+    /// SLOW skip: the long blend (`skipFadeSeconds`, default 15 s — the lock-screen ⏮ mapping).
+    func skipMixSlow() { services.mix.remoteSkip(fadeSeconds: services.settings.skipFadeSeconds) }
+    /// The slow skip's length, for the row's detail text.
+    func slowSkipSeconds() -> Double { services.settings.skipFadeSeconds }
+    func stopMix() { services.mix.stopAutoMix() }
+
+    /// Surface-open hook: a durable mix session restored at launch stays PARKED until a Mix
+    /// surface materializes it (cued + suspended, never self-playing). The car is such a
+    /// surface — same contract as MixView's `.task`.
+    func materializeMixRestoreIfNeeded() { services.mix.materializePendingRestoreIfNeeded() }
+
     // MARK: - Artwork (URLs; the CarPlay adapter fetches → UIImage)
 
-    func artCandidates(albumId: String?) -> [URL] {
-        guard let albumId, let album = app.albumsById[albumId] else { return [] }
-        return album.artCandidates
+    /// Bundled candidates, else the streaming fallback through the bridge — the answer that was
+    /// missing here is exactly why covers were "usually missing" in the car: the dominant
+    /// "Apple Music (Local)" catalog ships NO `artCandidates`, and only the in-app `CoverImage`
+    /// knew the fallback lane.
+    func artURLs(albumId: String?) async -> [URL] {
+        guard let albumId else { return [] }
+        return await services.artworkURLs(forAlbumId: albumId)
     }
 
     // MARK: - Helpers

@@ -30,6 +30,12 @@ struct DebugView: View {
                      ? "Capturing — reproduce the issue, then turn this off to freeze the session for export."
                      : "Turn on, reproduce the issue, then turn off. The captured session appears below, ready to export.")
             }
+            Section {
+                Toggle("Remote telemetry", isOn: telemetryBinding)
+                    .accessibilityIdentifier("debug-telemetry-toggle")
+            } footer: {
+                Text("Streams every action and screen to PocketDJ's private diagnostic bucket while you use the app — including CarPlay — so a session can be debugged remotely. TestFlight/debug builds only; turn off when not needed.")
+            }
             sessionsSection
             // Both diagnostic values here exist to be QUOTED somewhere else — the build
             // identity into a bug report, the iCloud hash into Config.ownerICloudHashes — so
@@ -135,6 +141,17 @@ struct DebugView: View {
         #else
         UIPasteboard.general.string = s
         #endif
+    }
+
+    /// Persisted preference + live push into the logger (whose singleton may already exist);
+    /// the launch path does the same push so a relaunch resumes streaming.
+    private var telemetryBinding: Binding<Bool> {
+        Binding(get: { settings.remoteTelemetryEnabled },
+                set: { on in
+                    settings.remoteTelemetryEnabled = on
+                    settings.persist()
+                    DiagLog.shared.telemetryEnabled = on
+                })
     }
 
     /// The toggle drives BOTH the persisted preference (so a relaunch mid-repro resumes

@@ -198,6 +198,12 @@ final class SettingsStore {
     /// Settings ▸ Debug: record the mix engine's diagnostic log (`MixDiag`) so a remote tester
     /// can export it and ship it back. OFF (default) ⇒ os_log only, nothing buffered.
     var debugLoggingEnabled: Bool
+    /// Settings ▸ Debug: stream rich remote telemetry (every user action + screen presentation)
+    /// to the private diag S3 bucket while driving/testing, so a CarPlay or TV session can be
+    /// debugged from outside. OFF (default). Consumed by `DiagLog` (pushed at launch + on
+    /// toggle — the store is the truth, the logger just mirrors it); the TestFlight/DEBUG
+    /// channel gate still applies on top.
+    var remoteTelemetryEnabled: Bool
     /// Studio SAMPLES folder: a SECURITY-SCOPED bookmark to the user-picked folder rendered
     /// sample audio is written into (browsable in Finder/Files). `nil` → the app-managed
     /// Application Support `studio/samples/` dir. Mirrors `burnFolderBookmark`; see `StudioFolders`.
@@ -445,6 +451,7 @@ final class SettingsStore {
         self.storageSoftCapGB = data.storageSoftCapGB
         self.lastStoragePruneAt = data.lastStoragePruneAt
         self.debugLoggingEnabled = data.debugLoggingEnabled ?? false
+        self.remoteTelemetryEnabled = data.remoteTelemetryEnabled ?? false
         self.samplesFolderBookmark = data.samplesFolderBookmark
         self.loopsFolderBookmark = data.loopsFolderBookmark
         self.sequencesFolderBookmark = data.sequencesFolderBookmark
@@ -628,6 +635,7 @@ final class SettingsStore {
             storageSoftCapGB: storageSoftCapGB,
             lastStoragePruneAt: lastStoragePruneAt,
             debugLoggingEnabled: debugLoggingEnabled,
+            remoteTelemetryEnabled: remoteTelemetryEnabled,
             samplesFolderBookmark: samplesFolderBookmark,
             loopsFolderBookmark: loopsFolderBookmark,
             sequencesFolderBookmark: sequencesFolderBookmark,
@@ -709,6 +717,13 @@ final class SettingsStore {
         storageSoftCapGB = d.storageSoftCapGB
         lastStoragePruneAt = d.lastStoragePruneAt
         debugLoggingEnabled = d.debugLoggingEnabled ?? false
+        // The capture buffer follows its setting on reset, exactly as DebugView's toggle does —
+        // a nuclear reset must not leave diagnostics RUNNING while their toggles read off.
+        if MixDiag.shared.isCapturing { MixDiag.shared.stop() }
+        remoteTelemetryEnabled = d.remoteTelemetryEnabled ?? false
+        // The logger mirrors the store (push model, same as the toggles) — without this push a
+        // nuclear reset left telemetry streaming until relaunch while the toggle read off.
+        DiagLog.shared.telemetryEnabled = remoteTelemetryEnabled
         samplesFolderBookmark = d.samplesFolderBookmark
         loopsFolderBookmark = d.loopsFolderBookmark
         sequencesFolderBookmark = d.sequencesFolderBookmark
@@ -813,6 +828,7 @@ struct SettingsData: Codable {
     var lastStoragePruneAt: Double?
     /// Optional so older blobs still decode — Settings ▸ Debug capture toggle (nil = off).
     var debugLoggingEnabled: Bool?
+    var remoteTelemetryEnabled: Bool?
     /// Optional so older blobs still decode — Studio samples folder bookmark (nil = app-managed).
     var samplesFolderBookmark: Data?
     /// Optional so older blobs still decode — Studio loops folder bookmark (nil = app-managed).
@@ -930,6 +946,7 @@ struct SettingsData: Codable {
         storageSoftCapGB: nil,
         lastStoragePruneAt: nil,
         debugLoggingEnabled: nil,
+        remoteTelemetryEnabled: nil,
         samplesFolderBookmark: nil,
         loopsFolderBookmark: nil,
         sequencesFolderBookmark: nil,

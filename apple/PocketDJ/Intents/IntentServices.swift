@@ -73,6 +73,12 @@ final class IntentServices {
     /// bridge carries the ONE app-scoped downloader. Optional so a test host can build the bridge
     /// without it.
     var mixDownloader: CollectionMixDownloader?
+    /// Lazy streaming cover art (the `CoverImage` fallback lane). CarPlay's list rows reach it
+    /// through the bridge for the standard reason — the car scene runs outside the SwiftUI
+    /// environment — so the "Apple Music (Local)" catalog (which ships no `artCandidates`) still
+    /// gets covers on the head unit. Memoized per album in the store, so the car can never
+    /// re-resolve what the phone already did. Optional so a test host can skip it.
+    var albumArtwork: AlbumArtworkStore?
     /// Async "Create pocket" builder — kept observable so UI can surface progress later.
     let pocketBuilder: PocketBuilderService
 
@@ -257,7 +263,8 @@ final class IntentServices {
     /// does on tab-open (an intent may start a mix before the Mix tab ever opened).
     /// Returns (display name, loadable track count) for the dialog.
     @discardableResult
-    func startAutoMix(source: MixSource, shuffle: Bool) async throws -> (name: String, count: Int) {
+    func startAutoMix(source: MixSource, shuffle: Bool,
+                      allowPendingStart: Bool = false) async throws -> (name: String, count: Int) {
         try vetoDuringOnboarding()
         await ensureReady()
         let name: String
@@ -280,13 +287,91 @@ final class IntentServices {
         // starts pulling, so a retried intent finds tracks on disk.
         mixDownloader?.begin(source: source)
         let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: source)
-        guard !loadables.isEmpty else { throw PocketDJIntentError.noBurnedSongs(name) }
+        guard !loadables.isEmpty else {
+            // NOTHING ON DISK YET is not a failure for a first-party Mix surface — the phone's
+            // Mix tab arms the ZERO-START instead: the download run is already going (begin
+            // above), and noteAutoStarted with no initial ids makes the FIRST landing start
+            // the mix (with the exhaustion re-arm feeding it after). TV + CarPlay opt in for
+            // parity; Siri keeps the speakable error — a voice interaction needs an answer
+            // NOW, not a mix that starts unannounced a minute later.
+            if allowPendingStart, let d = mixDownloader, d.isActive {
+                d.noteAutoStarted(initialIds: [], lead: settings.autoMixLeadSeconds,
+                                  fade: settings.autoMixFadeSeconds, label: name)
+                return (name, 0)
+            }
+            throw PocketDJIntentError.noBurnedSongs(name)
+        }
         let items = loadables.map { MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? 180_000) }
         mix.startAutoMix(items, shuffled: shuffle,
                          lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
                          label: name)
         // Progressive eligibility: tracks that finish downloading join this mix's queue.
         mixDownloader?.noteAutoStarted(initialIds: Set(loadables.map(\.songId)),
+                                       lead: settings.autoMixLeadSeconds,
+                                       fade: settings.autoMixFadeSeconds, label: name)
+        return (name, items.count)
+    }
+
+    /// Two-crate Auto DJ — the CarPlay / TV Mix surface's deck A + deck B start. Each crate
+    /// shuffles INDEPENDENTLY (when asked), then the queue interleaves A0,B0,A1,B1,… so the
+    /// engine's strict deck alternation keeps deck A on crate A and deck B on crate B for as long
+    /// as both last. The affinity is deliberately approximate, not engine-enforced: the longer
+    /// crate's tail alternates across both decks once the shorter runs dry, and late-downloaded
+    /// tracks append at the end — the BLEND is what the surface promises, not seat assignments.
+    /// The engine's own `shuffled:` is always false here (its whole-queue shuffle would destroy
+    /// the interleave). A song in both crates plays once — deck A's copy wins. Same crate on both
+    /// decks degrades to the ordinary single-source mix.
+    @discardableResult
+    func startAutoMix(deckA: MixSource, deckB: MixSource, shuffle: Bool,
+                      allowPendingStart: Bool = false) async throws -> (name: String, count: Int) {
+        try vetoDuringOnboarding()
+        await ensureReady()
+        func displayName(_ source: MixSource) throws -> String {
+            switch source {
+            case .pocket(let id):
+                guard let p = collections.pocket(id) else { throw PocketDJIntentError.mixSourceNotFound }
+                return p.name
+            case .setlist(let id):
+                guard let s = collections.setlist(id) else { throw PocketDJIntentError.mixSourceNotFound }
+                return s.name ?? "Set list"
+            }
+        }
+        let nameA = try displayName(deckA)
+        let name = deckA == deckB ? nameA : "\(nameA) + \(try displayName(deckB))"
+        // Mirror MixView.task's settings pushes — same contract as the single-source start above.
+        mix.setCueOnRight(settings.cueOutputChannel.onRight)
+        mix.setBeatPulseEnabled(settings.beatPulseEnabled)
+        mix.setMixGlideSeconds(settings.mixGlideSeconds)
+        mix.setSkipFadeSeconds(settings.skipFadeSeconds)
+        // BEFORE the loadables guard, and registering BOTH crates: late downloads from either
+        // must join the running queue (the downloader tracks the union).
+        mixDownloader?.begin(sources: deckA == deckB ? [deckA] : [deckA, deckB])
+        let resolver = MixResolver(app: app, collections: collections, burns: burns, studio: studio)
+        var a = resolver.loadables(for: deckA)
+        var b = deckA == deckB ? [] : resolver.loadables(for: deckB)
+        let aIds = Set(a.map(\.songId))
+        b.removeAll { aIds.contains($0.songId) }
+        guard !(a.isEmpty && b.isEmpty) else {
+            // Same zero-start contract as the single-source guard above, over the union run.
+            if allowPendingStart, let d = mixDownloader, d.isActive {
+                d.noteAutoStarted(initialIds: [], lead: settings.autoMixLeadSeconds,
+                                  fade: settings.autoMixFadeSeconds, label: name)
+                return (name, 0)
+            }
+            throw PocketDJIntentError.noBurnedSongs(name)
+        }
+        if shuffle { a.shuffle(); b.shuffle() }
+        var queue: [MixLoadable] = []
+        queue.reserveCapacity(a.count + b.count)
+        for i in 0..<max(a.count, b.count) {
+            if i < a.count { queue.append(a[i]) }
+            if i < b.count { queue.append(b[i]) }
+        }
+        let items = queue.map { MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? 180_000) }
+        mix.startAutoMix(items, shuffled: false,
+                         lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
+                         label: name)
+        mixDownloader?.noteAutoStarted(initialIds: Set(queue.map(\.songId)),
                                        lead: settings.autoMixLeadSeconds,
                                        fade: settings.autoMixFadeSeconds, label: name)
         return (name, items.count)
@@ -360,10 +445,31 @@ final class IntentServices {
                                   surface: RecFeedbackStore.Surface) -> RecFeedbackStore.Verdict? {
         guard let store = recFeedback, let t = currentRecTarget() else { return nil }
         let song = app.songsById[t.songId]
-        return store.toggle(songId: t.songId, to: verdict, scope: t.scope, surface: surface,
-                            artistKey: song.map { PuzzleSimilarity.artistKey($0.artist) },
-                            genre: SimilarityFamilies.canonicalGenre(
-                                song?.albumId.flatMap { app.albumsById[$0] }?.genre))
+        let landed = store.toggle(songId: t.songId, to: verdict, scope: t.scope, surface: surface,
+                                  artistKey: song.map { PuzzleSimilarity.artistKey($0.artist) },
+                                  genre: SimilarityFamilies.canonicalGenre(
+                                      song?.albumId.flatMap { app.albumsById[$0] }?.genre))
+        // A 👍 that LANDS accepted also ADDS. The owner's contract for the tile rows — "send
+        // positive signal to the recommendation engine AND add the song to the collection" — holds
+        // unqualified, and for a collection tile the playing scope IS the target collection, so
+        // the transport surfaces (car, widget, lock screen) honour it too. Reserved scopes
+        // (zone/new) resolve to no target and stay pure feedback; the undo tap (landed == nil)
+        // never un-adds — removal from a crate is a deliberate act, not a side effect.
+        if landed == .accepted { collections.addAcceptedSong(t.songId, scopedTo: t.scope) }
+        DiagLog.shared.telemetry(
+            "action", "thumbs \(verdict == .accepted ? "up" : "down") landed=\(landed.map { "\($0)" } ?? "cleared") song=\(t.songId) scope=\(t.scope)")
+        return landed
+    }
+
+    // MARK: - Artwork (CarPlay rows)
+
+    /// Cover-art URLs for an album — bundled candidates, else the streaming fallback the in-app
+    /// `CoverImage` uses (see `AlbumArtworkStore.artURLs`). The CarPlay adapter fetches the first
+    /// URL that decodes into a `UIImage`; an empty answer means the row honestly has no cover.
+    func artworkURLs(forAlbumId albumId: String) async -> [URL] {
+        guard let album = app.albumsById[albumId] else { return [] }
+        guard let albumArtwork else { return album.artCandidates }
+        return await albumArtwork.artURLs(for: album, app: app)
     }
 
     /// Kick off the on-device-LLM pocket build and return immediately (the intent's

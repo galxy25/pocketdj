@@ -120,11 +120,16 @@ struct NowPlayingPanel: View {
                         ? .sidebar : .navigationBarDrawer(displayMode: .always),
                     prompt: "Add songs or albums")
         #elseif os(tvOS)
-        .searchable(text: $query, prompt: "Add songs or albums")
+        // NO add-search on the TV (Levi, on-device 2026-09-02): the panel is a lean-back deck
+        // there — Browse owns library search, the Jukebox owns requests. `query` stays empty so
+        // `searching` never flips and the deck/queue sections always render. `.searchFocused`
+        // rides the same fence: there is no field for it to focus.
         #else
         .searchable(text: $query, placement: .sidebar, prompt: "Add songs or albums")
         #endif
+        #if !os(tvOS)
         .searchFocused($searchFocused)
+        #endif
         // ⌘L — jump the cursor into the add-search so the whole panel is drivable
         // from the keyboard. Registered ONLY while the panel exists; BrowseView's
         // own ⌘L (its search field) yields to this one while the panel is up.

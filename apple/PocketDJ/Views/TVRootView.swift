@@ -79,6 +79,8 @@ struct TVRootView: View {
                 .tag(TVTab.settings)
         }
         .environment(rowSelection)
+        // Telemetry breadcrumb: TV tab changes — the TV's "what is presented" line.
+        .onChange(of: tab) { DiagLog.shared.telemetry("screen", "tv tab=\(tab.rawValue)") }
         // The app-level .tint(Theme.accent) makes tvOS draw button platters AND labels in
         // the accent (solid unreadable capsules). Resetting to nil hands the controls back
         // to the system focus chrome; the brand accent stays on explicit icons/text.
@@ -145,13 +147,16 @@ struct TVMixView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(IntentServices.self) private var intents
     @Environment(RipsStore.self) private var rips
+    @Environment(CollectionMixDownloader.self) private var downloader
     @Environment(BurnStore.self) private var burns
     @Environment(SetlistPlayer.self) private var sequencer
 
     @State private var path = NavigationPath()
-    /// The chosen auto collection (pockets + set lists — the same source kinds MixView's
-    /// auto picker offers; both resolve to BURNED loadables via MixResolver).
-    @State private var source: MixSource?
+    /// The chosen crates — one per deck, mirroring the CarPlay Mix tab. Deck A is required;
+    /// Deck B nil means "same as Deck A" (the ordinary single-crate mix). Pockets + set lists,
+    /// the same source kinds MixView's auto picker offers (both resolve to BURNED loadables).
+    @State private var deckA: MixSource?
+    @State private var deckB: MixSource?
     @State private var startError: String?
 
     var body: some View {
@@ -176,6 +181,10 @@ struct TVMixView: View {
             .background(Theme.bg.ignoresSafeArea())
             .navigationTitle("Mix")
             .pocketDJDestinations(path: $path)
+            // A durable mix session restored at launch stays PARKED until a Mix surface
+            // materializes it — same contract as MixView's `.task` on the phone/Mac, honored
+            // here so a force-quit TV mix comes back cued + suspended instead of never.
+            .task { engine.materializePendingRestoreIfNeeded() }
         }
     }
 
@@ -186,27 +195,42 @@ struct TVMixView: View {
             Label("Auto DJ", systemImage: "wand.and.stars")
                 .font(.title2.weight(.semibold))
                 .foregroundStyle(Theme.fg)
-            Text("Pick a collection and press Play — PocketDJ beat-mixes it for the room.")
+            Text("Pick a crate per deck and press Start — PocketDJ shuffles both and beat-mixes them for the room.")
                 .font(.callout)
                 .foregroundStyle(Theme.fgDim)
-            Menu {
-                sourceMenuItems
-            } label: {
-                Label(sourceName ?? "Pick a collection", systemImage: "rectangle.stack")
-                    .lineLimit(1)
-            }
-            .accessibilityIdentifier("tv-mix-source")
+            // Two deck selectors, mirroring the CarPlay Mix tab: A is required, B defaults to
+            // "same as A". Menu is tvOS's picker idiom (focusable; no segmented style exists).
             HStack(spacing: 20) {
-                Button { start(shuffled: false) } label: {
-                    Label("Play", systemImage: "play.fill")
+                Menu {
+                    crateMenuItems { deckA = $0 }
+                } label: {
+                    Label("A · \(crateName(deckA) ?? "Pick a crate")", systemImage: "a.circle.fill")
+                        .lineLimit(1)
                 }
-                .disabled(source == nil)
-                .accessibilityIdentifier("tv-mix-play")
+                .accessibilityIdentifier("tv-mix-source")
+                Menu {
+                    Button("Same as Deck A") { deckB = nil }
+                    crateMenuItems { deckB = $0 }
+                } label: {
+                    Label("B · \(crateName(deckB) ?? "Same as Deck A")", systemImage: "b.circle.fill")
+                        .lineLimit(1)
+                }
+                .accessibilityIdentifier("tv-mix-source-b")
+            }
+            glideToggles
+            HStack(spacing: 20) {
                 Button { start(shuffled: true) } label: {
-                    Label("Shuffle", systemImage: "shuffle")
+                    Label("Start Mix", systemImage: "shuffle")
                 }
-                .disabled(source == nil)
+                .disabled(deckA == nil)
                 .accessibilityIdentifier("tv-mix-shuffle")
+                // The in-order start stays for a prepared set (a wedding's set list plays as
+                // written); the shuffled Start above is the room's default.
+                Button { start(shuffled: false) } label: {
+                    Label("In order", systemImage: "play.fill")
+                }
+                .disabled(deckA == nil)
+                .accessibilityIdentifier("tv-mix-play")
             }
             if let startError {
                 Label(startError, systemImage: "exclamationmark.triangle")
@@ -214,35 +238,67 @@ struct TVMixView: View {
                     .foregroundStyle(Theme.danger)
                     .accessibilityIdentifier("tv-mix-error")
             }
+            // ZERO-START state: nothing was on disk, the download run is pulling, and the mix
+            // starts itself on the first landing — same contract as the phone's Mix tab.
+            if downloader.isActive && downloader.downloadedCount < downloader.totalCount {
+                Label {
+                    Text("Downloading \(downloader.downloadedCount) of \(downloader.totalCount)"
+                         + (downloader.rippingCount > 0 ? " · \(downloader.rippingCount) ripping" : "")
+                         + " — the mix starts when the first track lands")
+                        .font(.callout.monospacedDigit())
+                } icon: {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .foregroundStyle(Theme.fgDim)
+                .accessibilityIdentifier("tv-mix-downloading")
+            }
         }
         .padding(36)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 
-    @ViewBuilder private var sourceMenuItems: some View {
-        // Same source kinds as MixView's auto picker: pockets + set lists (the two that
-        // resolve through MixResolver into burned loadables).
+    /// FX Glide + Audio Glide — ENGINE state (persists with the durable mix session), not
+    /// settings; safe to flip mid-mix (applies from the next transition). Toggle is focusable
+    /// on tvOS (the TVSettingsView pattern); explicit Binding because the engine is the store.
+    private var glideToggles: some View {
+        HStack(spacing: 28) {
+            Toggle("FX Glide", isOn: Binding(
+                get: { engine.fxGlideEnabled },
+                set: { engine.setFXGlide($0) }))
+                .accessibilityIdentifier("tv-mix-fx-glide")
+            Toggle("Audio Glide", isOn: Binding(
+                get: { engine.mixGlideEnabled },
+                set: { engine.setMixGlide($0) }))
+                .accessibilityIdentifier("tv-mix-audio-glide")
+        }
+        .toggleStyle(.button)
+        .font(.callout)
+    }
+
+    /// Crate rows for one deck's Menu — pockets + set lists (the two kinds that resolve
+    /// through MixResolver into burned loadables), same as MixView's auto picker.
+    @ViewBuilder private func crateMenuItems(pick: @escaping (MixSource) -> Void) -> some View {
         if collections.pockets.isEmpty && collections.visibleSetlists.isEmpty {
             Text("No pockets or set lists yet — build one on iPhone, iPad, or Mac.")
         }
         if !collections.pockets.isEmpty {
             Section("Pockets") {
                 ForEach(collections.pockets) { p in
-                    Button(p.name) { source = .pocket(p.id) }
+                    Button(p.name) { pick(.pocket(p.id)) }
                 }
             }
         }
         if !collections.visibleSetlists.isEmpty {
             Section("Set lists") {
                 ForEach(collections.visibleSetlists) { s in
-                    Button(s.name ?? "Set list") { source = .setlist(s.id) }
+                    Button(s.name ?? "Set list") { pick(.setlist(s.id)) }
                 }
             }
         }
     }
 
-    private var sourceName: String? {
+    private func crateName(_ source: MixSource?) -> String? {
         switch source {
         case .pocket(let id):  return collections.pocket(id)?.name
         case .setlist(let id): return collections.setlist(id)?.name ?? "Set list"
@@ -251,11 +307,16 @@ struct TVMixView: View {
     }
 
     private func start(shuffled: Bool) {
-        guard let src = source else { return }
+        guard let a = deckA else { return }
         startError = nil
         Task {
             do {
-                _ = try await intents.startAutoMix(source: src, shuffle: shuffled)
+                // The two-crate start (deck B = A when unset) — per-crate shuffle + interleave,
+                // same path as the CarPlay Mix tab, so both remotes behave identically.
+                // allowPendingStart: an unburned collection kicks the download run and the mix
+                // starts on the first landing (the setup card's downloading line says so).
+                _ = try await intents.startAutoMix(deckA: a, deckB: deckB ?? a, shuffle: shuffled,
+                                                   allowPendingStart: true)
             } catch {
                 // The intent error strings are already user-facing ("no burned songs…").
                 startError = String(localized: (error as? PocketDJIntentError)?.localizedStringResource
@@ -298,21 +359,40 @@ struct TVMixView: View {
                 if engine.autoPaused {
                     // The lock-screen seam is the ONE pause that silences the decks and
                     // freezes the transition clock (in-app pauseAuto keeps audio running
-                    // for hand-mixing — meaningless on a TV).
-                    Button { engine.remotePlay() } label: { Label("Resume", systemImage: "play.fill") }
+                    // for hand-mixing — meaningless on a TV). An explicit "Resume" must also
+                    // clear a pause that ORIGINATED in-app, which remotePlay alone no-ops on.
+                    Button {
+                        engine.remotePlay()
+                        if engine.autoMixing, engine.autoPaused { engine.resumeAuto() }
+                    } label: { Label("Resume", systemImage: "play.fill") }
                         .accessibilityIdentifier("tv-mix-resume")
                 } else {
                     Button { engine.remotePause() } label: { Label("Pause", systemImage: "pause.fill") }
                         .accessibilityIdentifier("tv-mix-pause")
                 }
-                Button { engine.skipToNext(fadeSeconds: settings.skipFadeSeconds) } label: {
-                    Label("Skip", systemImage: "forward.fill")
+                // FAST vs SLOW skip — the lock-screen pair (⏭ 5 s sweep / ⏮ long blend), as
+                // two labeled buttons. `remoteSkip` (not `skipToNext`) so a skip pressed while
+                // the mix is PAUSED un-suspends the machine first instead of being swallowed.
+                Button { engine.remoteSkip(fadeSeconds: 5) } label: {
+                    Label("Skip · quick", systemImage: "forward.fill")
                 }
                 .accessibilityIdentifier("tv-mix-skip")
+                Button { engine.remoteSkip(fadeSeconds: settings.skipFadeSeconds) } label: {
+                    Label("Skip · blend", systemImage: "forward.end.fill")
+                }
+                .accessibilityIdentifier("tv-mix-skip-slow")
                 Button(role: .destructive) { engine.stopAutoMix() } label: {
                     Label("Stop", systemImage: "stop.fill")
                 }
                 .accessibilityIdentifier("tv-mix-stop")
+            }
+            glideToggles
+            // A running mix that is still pulling its collection(s): late landings append to
+            // the queue automatically — this line just says so.
+            if downloader.isActive && downloader.downloadedCount < downloader.totalCount {
+                Text("Downloading \(downloader.downloadedCount) of \(downloader.totalCount) · ~\(CollectionMixDownloader.etaLabel(downloader.etaSeconds)) left — new tracks join the queue")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(Theme.fgDim)
             }
         }
         .padding(36)
@@ -597,6 +677,7 @@ struct TVSettingsView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(CloudSyncService.self) private var cloudSync
     @Environment(ProfileStore.self) private var profile
+    @Environment(StreamingStore.self) private var streaming
 
     var body: some View {
         @Bindable var settings = settings
@@ -611,6 +692,19 @@ struct TVSettingsView: View {
                 } footer: {
                     Text("Edit your profile on iPhone, iPad, or Mac — iCloud keeps every device in step.")
                 }
+                // Apple Music lives HERE because authorization is per-device and only ever
+                // fires from an explicit tap (`MusicAuthorization.request()` is never called
+                // automatically — see AppleMusicProvider's header): without this row the TV
+                // simply never asks, and streaming + the MusicKit cover-art fallback stay dead
+                // on the one device with no other way in. The consent sheet uses the TV's
+                // signed-in Apple Account — no typing.
+                Section {
+                    appleMusicRow
+                } header: {
+                    Text("Apple Music")
+                } footer: {
+                    Text("Streaming and cover art use this Apple TV's Apple Account. Connect once per device.")
+                }
                 Section {
                     Toggle("Sync with iCloud", isOn: Binding(
                         get: { settings.cloudSyncEnabled },
@@ -620,6 +714,18 @@ struct TVSettingsView: View {
                             if on { Task { await cloudSync.syncNow() } }
                         }))
                         .accessibilityIdentifier("tv-settings-sync-toggle")
+                    // Remote telemetry — the SAME owner-opt-in stream the phone's Debug panel
+                    // offers, reachable on TV because the TV is exactly the device with no
+                    // tethered debugging (the reason DiagLog exists). Toggle = the TVSettings
+                    // Binding+persist pattern; push into the logger mirrors DebugView.
+                    Toggle("Remote telemetry", isOn: Binding(
+                        get: { settings.remoteTelemetryEnabled },
+                        set: { on in
+                            settings.remoteTelemetryEnabled = on
+                            settings.persist()
+                            DiagLog.shared.telemetryEnabled = on
+                        }))
+                        .accessibilityIdentifier("tv-settings-telemetry-toggle")
                     if settings.cloudSyncEnabled {
                         LabeledContent("Status", value: syncStatusLine)
                             .accessibilityIdentifier("tv-settings-sync-status")
@@ -687,6 +793,44 @@ struct TVSettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+        }
+    }
+
+    /// The Connect row, by provider state. Buttons throughout — tvOS scrolls BY FOCUS, and a
+    /// non-focusable row is a trap (the LabeledContent lesson this Form already carries).
+    @ViewBuilder private var appleMusicRow: some View {
+        if let am = streaming.appleMusicProvider {
+            switch am.state {
+            case .connected(let account), .linked(let account):
+                Button {
+                    am.login()      // re-runs the consent/subscription probe — a harmless refresh
+                } label: {
+                    Label(account.map { "Connected — \($0)" } ?? "Connected",
+                          systemImage: "checkmark.circle.fill")
+                }
+                .accessibilityIdentifier("tv-settings-am-connected")
+            case .authorizing:
+                Button {} label: { Label("Connecting…", systemImage: "hourglass") }
+                    .disabled(true)
+            case .failed(let message):
+                Button { am.login() } label: {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                }
+                .accessibilityIdentifier("tv-settings-am-retry")
+            case .unavailable(let reason):
+                Button {} label: { Label(reason, systemImage: "xmark.circle") }
+                    .disabled(true)
+            case .loggedOut:
+                Button { am.login() } label: {
+                    Label("Connect Apple Music", systemImage: "music.note")
+                }
+                .accessibilityIdentifier("tv-settings-am-connect")
+            }
+        } else {
+            Button {} label: {
+                Label("Apple Music is not available in this build", systemImage: "xmark.circle")
+            }
+            .disabled(true)
         }
     }
 

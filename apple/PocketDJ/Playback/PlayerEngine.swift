@@ -132,11 +132,12 @@ final class PlayerEngine {
     // Current track's lock-screen metadata (title / artist) for MPNowPlayingInfoCenter.
     private var nowPlayingTitle: String = ""
     private var nowPlayingArtist: String = ""
-    /// Resolves a song id to its cover-art candidate URLs (self-hosted CDN cover first, then any
-    /// remote iTunes cover — same order `CoverImage` tries). Injected once at launch from the
-    /// catalog (`AppModel.album(forSongId:)`); nil ⇒ no artwork is attached to the card. Kept as a
-    /// closure so the audio engine stays decoupled from the catalog model.
-    @ObservationIgnored var artworkURLsProvider: (@MainActor (String) -> [URL])?
+    /// Resolves a song id to its cover-art URLs (self-hosted CDN cover first, then any remote
+    /// iTunes cover, then the streaming fallback — same order `CoverImage` tries; async because
+    /// the fallback resolves through MusicKit). Injected once at launch from the catalog
+    /// (`AppModel.album(forSongId:)` + `AlbumArtworkStore`); nil ⇒ no artwork is attached to the
+    /// card. Kept as a closure so the audio engine stays decoupled from the catalog model.
+    @ObservationIgnored var artworkURLsProvider: (@MainActor (String) async -> [URL])?
     /// The now-playing song id (for artwork resolution) + the fetched Now-Playing-card artwork.
     /// A monotonic token supersedes an in-flight fetch when the track changes, so a slow image
     /// never lands on the wrong song's card.
@@ -704,8 +705,13 @@ final class PlayerEngine {
         nowPlayingArtwork = nil
         artworkSongId = songId
         let token = artworkToken
-        guard let songId, let urls = artworkURLsProvider?(songId), !urls.isEmpty else { return }
+        guard let songId, let provider = artworkURLsProvider else { return }
         Task { @MainActor [weak self] in
+            // The provider itself may resolve through the network (streaming fallback), so it
+            // runs inside the superseded task too — a slow resolve for a skipped track drops.
+            let urls = await provider(songId)
+            guard self?.artworkToken == token else { return }
+            guard !urls.isEmpty else { return }   // honestly no art — keep title/artist card
             guard let image = await PlayerEngine.loadFirstImage(urls) else {
                 // Failed fetch: clear the same-song memo so a LATER call for this song can
                 // retry, instead of memoizing the failure for the rest of the track.
