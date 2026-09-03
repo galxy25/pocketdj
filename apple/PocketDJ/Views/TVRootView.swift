@@ -147,6 +147,7 @@ struct TVMixView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(IntentServices.self) private var intents
     @Environment(RipsStore.self) private var rips
+    @Environment(CollectionMixDownloader.self) private var downloader
     @Environment(BurnStore.self) private var burns
     @Environment(SetlistPlayer.self) private var sequencer
 
@@ -237,6 +238,20 @@ struct TVMixView: View {
                     .foregroundStyle(Theme.danger)
                     .accessibilityIdentifier("tv-mix-error")
             }
+            // ZERO-START state: nothing was on disk, the download run is pulling, and the mix
+            // starts itself on the first landing — same contract as the phone's Mix tab.
+            if downloader.isActive && downloader.downloadedCount < downloader.totalCount {
+                Label {
+                    Text("Downloading \(downloader.downloadedCount) of \(downloader.totalCount)"
+                         + (downloader.rippingCount > 0 ? " · \(downloader.rippingCount) ripping" : "")
+                         + " — the mix starts when the first track lands")
+                        .font(.callout.monospacedDigit())
+                } icon: {
+                    Image(systemName: "arrow.down.circle")
+                }
+                .foregroundStyle(Theme.fgDim)
+                .accessibilityIdentifier("tv-mix-downloading")
+            }
         }
         .padding(36)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -298,7 +313,10 @@ struct TVMixView: View {
             do {
                 // The two-crate start (deck B = A when unset) — per-crate shuffle + interleave,
                 // same path as the CarPlay Mix tab, so both remotes behave identically.
-                _ = try await intents.startAutoMix(deckA: a, deckB: deckB ?? a, shuffle: shuffled)
+                // allowPendingStart: an unburned collection kicks the download run and the mix
+                // starts on the first landing (the setup card's downloading line says so).
+                _ = try await intents.startAutoMix(deckA: a, deckB: deckB ?? a, shuffle: shuffled,
+                                                   allowPendingStart: true)
             } catch {
                 // The intent error strings are already user-facing ("no burned songs…").
                 startError = String(localized: (error as? PocketDJIntentError)?.localizedStringResource
@@ -369,6 +387,13 @@ struct TVMixView: View {
                 .accessibilityIdentifier("tv-mix-stop")
             }
             glideToggles
+            // A running mix that is still pulling its collection(s): late landings append to
+            // the queue automatically — this line just says so.
+            if downloader.isActive && downloader.downloadedCount < downloader.totalCount {
+                Text("Downloading \(downloader.downloadedCount) of \(downloader.totalCount) · ~\(CollectionMixDownloader.etaLabel(downloader.etaSeconds)) left — new tracks join the queue")
+                    .font(.callout.monospacedDigit())
+                    .foregroundStyle(Theme.fgDim)
+            }
         }
         .padding(36)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -652,6 +677,7 @@ struct TVSettingsView: View {
     @Environment(SettingsStore.self) private var settings
     @Environment(CloudSyncService.self) private var cloudSync
     @Environment(ProfileStore.self) private var profile
+    @Environment(StreamingStore.self) private var streaming
 
     var body: some View {
         @Bindable var settings = settings
@@ -665,6 +691,19 @@ struct TVSettingsView: View {
                     Text("Profile")
                 } footer: {
                     Text("Edit your profile on iPhone, iPad, or Mac — iCloud keeps every device in step.")
+                }
+                // Apple Music lives HERE because authorization is per-device and only ever
+                // fires from an explicit tap (`MusicAuthorization.request()` is never called
+                // automatically — see AppleMusicProvider's header): without this row the TV
+                // simply never asks, and streaming + the MusicKit cover-art fallback stay dead
+                // on the one device with no other way in. The consent sheet uses the TV's
+                // signed-in Apple Account — no typing.
+                Section {
+                    appleMusicRow
+                } header: {
+                    Text("Apple Music")
+                } footer: {
+                    Text("Streaming and cover art use this Apple TV's Apple Account. Connect once per device.")
                 }
                 Section {
                     Toggle("Sync with iCloud", isOn: Binding(
@@ -754,6 +793,44 @@ struct TVSettingsView: View {
                 }
             }
             .navigationTitle("Settings")
+        }
+    }
+
+    /// The Connect row, by provider state. Buttons throughout — tvOS scrolls BY FOCUS, and a
+    /// non-focusable row is a trap (the LabeledContent lesson this Form already carries).
+    @ViewBuilder private var appleMusicRow: some View {
+        if let am = streaming.appleMusicProvider {
+            switch am.state {
+            case .connected(let account), .linked(let account):
+                Button {
+                    am.login()      // re-runs the consent/subscription probe — a harmless refresh
+                } label: {
+                    Label(account.map { "Connected — \($0)" } ?? "Connected",
+                          systemImage: "checkmark.circle.fill")
+                }
+                .accessibilityIdentifier("tv-settings-am-connected")
+            case .authorizing:
+                Button {} label: { Label("Connecting…", systemImage: "hourglass") }
+                    .disabled(true)
+            case .failed(let message):
+                Button { am.login() } label: {
+                    Label(message, systemImage: "exclamationmark.triangle")
+                }
+                .accessibilityIdentifier("tv-settings-am-retry")
+            case .unavailable(let reason):
+                Button {} label: { Label(reason, systemImage: "xmark.circle") }
+                    .disabled(true)
+            case .loggedOut:
+                Button { am.login() } label: {
+                    Label("Connect Apple Music", systemImage: "music.note")
+                }
+                .accessibilityIdentifier("tv-settings-am-connect")
+            }
+        } else {
+            Button {} label: {
+                Label("Apple Music is not available in this build", systemImage: "xmark.circle")
+            }
+            .disabled(true)
         }
     }
 

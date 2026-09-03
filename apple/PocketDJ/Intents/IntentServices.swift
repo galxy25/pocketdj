@@ -263,7 +263,8 @@ final class IntentServices {
     /// does on tab-open (an intent may start a mix before the Mix tab ever opened).
     /// Returns (display name, loadable track count) for the dialog.
     @discardableResult
-    func startAutoMix(source: MixSource, shuffle: Bool) async throws -> (name: String, count: Int) {
+    func startAutoMix(source: MixSource, shuffle: Bool,
+                      allowPendingStart: Bool = false) async throws -> (name: String, count: Int) {
         try vetoDuringOnboarding()
         await ensureReady()
         let name: String
@@ -286,7 +287,20 @@ final class IntentServices {
         // starts pulling, so a retried intent finds tracks on disk.
         mixDownloader?.begin(source: source)
         let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: source)
-        guard !loadables.isEmpty else { throw PocketDJIntentError.noBurnedSongs(name) }
+        guard !loadables.isEmpty else {
+            // NOTHING ON DISK YET is not a failure for a first-party Mix surface — the phone's
+            // Mix tab arms the ZERO-START instead: the download run is already going (begin
+            // above), and noteAutoStarted with no initial ids makes the FIRST landing start
+            // the mix (with the exhaustion re-arm feeding it after). TV + CarPlay opt in for
+            // parity; Siri keeps the speakable error — a voice interaction needs an answer
+            // NOW, not a mix that starts unannounced a minute later.
+            if allowPendingStart, let d = mixDownloader, d.isActive {
+                d.noteAutoStarted(initialIds: [], lead: settings.autoMixLeadSeconds,
+                                  fade: settings.autoMixFadeSeconds, label: name)
+                return (name, 0)
+            }
+            throw PocketDJIntentError.noBurnedSongs(name)
+        }
         let items = loadables.map { MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? 180_000) }
         mix.startAutoMix(items, shuffled: shuffle,
                          lead: settings.autoMixLeadSeconds, fade: settings.autoMixFadeSeconds,
@@ -308,7 +322,8 @@ final class IntentServices {
     /// the interleave). A song in both crates plays once — deck A's copy wins. Same crate on both
     /// decks degrades to the ordinary single-source mix.
     @discardableResult
-    func startAutoMix(deckA: MixSource, deckB: MixSource, shuffle: Bool) async throws -> (name: String, count: Int) {
+    func startAutoMix(deckA: MixSource, deckB: MixSource, shuffle: Bool,
+                      allowPendingStart: Bool = false) async throws -> (name: String, count: Int) {
         try vetoDuringOnboarding()
         await ensureReady()
         func displayName(_ source: MixSource) throws -> String {
@@ -336,7 +351,15 @@ final class IntentServices {
         var b = deckA == deckB ? [] : resolver.loadables(for: deckB)
         let aIds = Set(a.map(\.songId))
         b.removeAll { aIds.contains($0.songId) }
-        guard !(a.isEmpty && b.isEmpty) else { throw PocketDJIntentError.noBurnedSongs(name) }
+        guard !(a.isEmpty && b.isEmpty) else {
+            // Same zero-start contract as the single-source guard above, over the union run.
+            if allowPendingStart, let d = mixDownloader, d.isActive {
+                d.noteAutoStarted(initialIds: [], lead: settings.autoMixLeadSeconds,
+                                  fade: settings.autoMixFadeSeconds, label: name)
+                return (name, 0)
+            }
+            throw PocketDJIntentError.noBurnedSongs(name)
+        }
         if shuffle { a.shuffle(); b.shuffle() }
         var queue: [MixLoadable] = []
         queue.reserveCapacity(a.count + b.count)

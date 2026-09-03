@@ -146,6 +146,13 @@ final class CarPlayController {
             _ = mix.onAirTrack?.songId
             _ = mix.fxGlideEnabled
             _ = mix.mixGlideEnabled
+            // The download run's progress renders on the setup card (and arms the zero-start),
+            // so its facts re-render the tab too.
+            if let d = model.services.mixDownloader {
+                _ = d.isActive
+                _ = d.downloadedCount
+                _ = d.totalCount
+            }
         } onChange: { [weak self] in
             Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -185,6 +192,7 @@ final class CarPlayController {
                    model.autoMixLabel() ?? "", np?.title ?? "", np?.artist ?? "",
                    model.fxGlideOn() ? "1" : "0", model.audioGlideOn() ? "1" : "0",
                    "\(Int(model.slowSkipSeconds()))",
+                   model.mixDownloadState().map { "\($0.downloaded)/\($0.total)" } ?? "",
                    model.crateName(mixDeckA) ?? "", model.crateName(mixDeckB) ?? ""]
             .joined(separator: "|")
         guard sig != lastMixSignature else { return }
@@ -214,19 +222,26 @@ final class CarPlayController {
         start.handler = { [weak self] _, completion in
             guard let self, let a = self.mixDeckA else { completion(); return }
             Task { @MainActor in
-                if let error = await model.startMix(deckA: a, deckB: self.mixDeckB) {
-                    self.toast(error)
-                } else {
-                    self.showNowPlaying()
+                switch await model.startMix(deckA: a, deckB: self.mixDeckB) {
+                case .playing:              self.showNowPlaying()
+                case .downloading:          self.toast("Downloading — the mix starts when the first track lands")
+                case .failed(let error):    self.toast(error)
                 }
                 self.refreshMixTab()
                 completion()
             }
         }
-        return [CPListSection(items: [deckA, deckB], header: "Decks", sectionIndexTitle: nil),
-                CPListSection(items: [fxGlideItem(model), audioGlideItem(model)],
-                              header: "Transitions", sectionIndexTitle: nil),
-                CPListSection(items: [start])]
+        var sections = [CPListSection(items: [deckA, deckB], header: "Decks", sectionIndexTitle: nil),
+                        CPListSection(items: [fxGlideItem(model), audioGlideItem(model)],
+                                      header: "Transitions", sectionIndexTitle: nil),
+                        CPListSection(items: [start])]
+        // ZERO-START state: the run is pulling and the mix starts itself on the first landing.
+        if let d = model.mixDownloadState() {
+            let row = CPListItem(text: "Downloading \(d.downloaded) of \(d.total)",
+                                 detailText: "The mix starts when the first track lands")
+            sections.append(CPListSection(items: [row]))
+        }
+        return sections
     }
 
     private func mixLiveSections(_ model: CarPlayModel) -> [CPListSection] {

@@ -93,6 +93,31 @@ struct CollectionToolbar<MenuItems: View>: ViewModifier {
     var menuItems: () -> MenuItems
 
     func body(content: Content) -> some View {
+        #if os(tvOS)
+        // tvOS: the TabView's TOP TAB STRIP owns the top edge, and nav-bar toolbar items render
+        // UNDERNEATH it (Levi, on-device 2026-09-02: play/shuffle covered by the strip the moment
+        // a collection starts). Same controls, same ids, same order — rendered as a focusable
+        // in-content header row via `safeAreaInset`, which lays out BELOW the strip's safe area
+        // and pushes the list down instead of fighting the chrome.
+        content.safeAreaInset(edge: .top, alignment: .trailing, spacing: 0) {
+            HStack(spacing: 24) {
+                Spacer(minLength: 0)
+                PlaybackModeToggle()
+                Button { play(false) } label: { Label("Play", systemImage: "play.fill") }
+                    .disabled(!canPlay)
+                    .accessibilityIdentifier("\(idPrefix)-play")
+                Button { play(true) } label: { Label("Shuffle", systemImage: "shuffle") }
+                    .disabled(!canPlay)
+                    .accessibilityIdentifier("\(idPrefix)-shuffle")
+                if showsMenu {
+                    Menu { menuItems() } label: { Image(systemName: "ellipsis.circle") }
+                        .accessibilityIdentifier("\(idPrefix)-menu")
+                }
+            }
+            .padding(.horizontal, 48)
+            .padding(.vertical, 10)
+        }
+        #else
         content.toolbar {
             ToolbarItem(placement: .primaryAction) { PlaybackModeToggle() }
             ToolbarItem(placement: .primaryAction) {
@@ -114,6 +139,7 @@ struct CollectionToolbar<MenuItems: View>: ViewModifier {
                 }
             }
         }
+        #endif
     }
 }
 

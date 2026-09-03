@@ -172,6 +172,41 @@ final class IntentServicesTests: XCTestCase {
         services.mix.stopAutoMix()
     }
 
+    /// The phone Mix tab's ZERO-START contract, reachable from TV/CarPlay via
+    /// `allowPendingStart`: an unburned collection doesn't fail — the download run arms and the
+    /// FIRST landing starts the mix. Siri's default path keeps the speakable error.
+    func testAllowPendingStartArmsZeroStartInsteadOfThrowing() async throws {
+        let (services, collections, _) = await makeServices()          // nothing burned
+        services.mix.ensureEngine()
+        try XCTSkipUnless(services.mix.isReady, "no audio device on this test host")
+        let d = CollectionMixDownloader(engine: services.mix, burns: services.burns,
+                                        rips: services.rips, transfers: nil)
+        d.resolveRipIds = { _ in ["sng_1", "sng_2"] }
+        d.resolveLoadables = { _ in [] }
+        services.mixDownloader = d
+        let pocket = collections.createPocket("Unburned Crate")
+        collections.addSong("sng_1", toPocket: pocket.id)
+        collections.addSong("sng_2", toPocket: pocket.id)
+
+        let (name, count) = try await services.startAutoMix(
+            source: .pocket(pocket.id), shuffle: true, allowPendingStart: true)
+        XCTAssertEqual(name, "Unburned Crate")
+        XCTAssertEqual(count, 0, "nothing on disk yet — nothing playing")
+        XCTAssertFalse(services.mix.autoMixing)
+        XCTAssertTrue(d.isActive, "the download run is pulling")
+        XCTAssertTrue(d.autoArmedForTesting)
+        XCTAssertTrue(d.autoStartPendingForTesting, "the FIRST landing starts the mix")
+
+        // The Siri path (default) still speaks the error rather than silently arming.
+        do {
+            _ = try await services.startAutoMix(source: .pocket(pocket.id), shuffle: true)
+            XCTFail("expected noBurnedSongs")
+        } catch let e as PocketDJIntentError {
+            if case .noBurnedSongs = e {} else { XCTFail("unexpected \(e)") }
+        } catch { XCTFail("unexpected \(error)") }
+        d.cancel()
+    }
+
     /// The remote surfaces' explicit "Resume Mix" must clear a pause that ORIGINATED in-app
     /// (`pauseAuto`) — `remotePlay` alone no-ops on that state by design (the lock-screen ▶'s
     /// gesture is ambiguous; a labeled Resume row is not), which made the car's row a dead

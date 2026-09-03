@@ -305,18 +305,29 @@ final class CarPlayModel {
     func setFXGlide(_ on: Bool) { services.mix.setFXGlide(on) }
     func setAudioGlide(_ on: Bool) { services.mix.setMixGlide(on) }
 
+    enum MixStart { case playing, downloading, failed(String) }
+
     /// Start the two-crate SHUFFLED Auto DJ (deck B nil ⇒ same crate on both decks — the
     /// ordinary single-source mix). The car's mix is always shuffled auto-mix: no manual deck
     /// loading, no song picking — that is the surface's contract, not a missing feature.
-    /// Returns a driver-readable error sentence, nil on success.
-    func startMix(deckA: MixSource, deckB: MixSource?) async -> String? {
+    /// `.downloading` = the zero-start armed (nothing on disk yet; the first landing starts
+    /// the mix), same contract as the phone's Mix tab.
+    func startMix(deckA: MixSource, deckB: MixSource?) async -> MixStart {
         do {
-            _ = try await services.startAutoMix(deckA: deckA, deckB: deckB ?? deckA, shuffle: true)
-            return nil
+            let (_, count) = try await services.startAutoMix(deckA: deckA, deckB: deckB ?? deckA,
+                                                             shuffle: true, allowPendingStart: true)
+            return count == 0 ? .downloading : .playing
         } catch {
-            return String(localized: (error as? PocketDJIntentError)?.localizedStringResource
-                ?? "That can’t start a mix right now.")
+            return .failed(String(localized: (error as? PocketDJIntentError)?.localizedStringResource
+                ?? "That can’t start a mix right now."))
         }
+    }
+
+    /// Download-run readout for the Mix tab (nil when idle or complete).
+    func mixDownloadState() -> (downloaded: Int, total: Int)? {
+        guard let d = services.mixDownloader, d.isActive,
+              d.downloadedCount < d.totalCount else { return nil }
+        return (d.downloadedCount, d.totalCount)
     }
 
     /// Whole-mix transport — exclusively the lock-screen seam: `remotePause` is the ONE pause
