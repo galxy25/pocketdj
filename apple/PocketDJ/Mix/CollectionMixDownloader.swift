@@ -156,6 +156,8 @@ final class CollectionMixDownloader {
     @ObservationIgnored private var armGestureGeneration = 0
     /// Count of burn attempts that produced no file this run (field-telemetry cap counter).
     @ObservationIgnored private var burnMisses = 0
+    /// One-shot: the drive loop's end-of-run second sweep over missed (state=error) tracks.
+    @ObservationIgnored private var retriedMisses = false
     @ObservationIgnored private var initialAutoIds: Set<String> = []
     @ObservationIgnored private var appendedIds: Set<String> = []
     @ObservationIgnored private var autoLead: Double = 15
@@ -186,6 +188,7 @@ final class CollectionMixDownloader {
         }
         self.sources = newSources
         burnMisses = 0
+        retriedMisses = false
         orderedIds = ids
         trackedIds = Set(ids)
         totalCount = ids.count
@@ -318,8 +321,18 @@ final class CollectionMixDownloader {
             } else if ripPollTask != nil {
                 // The rip lane is still flipping songs ready — idle-wait for it to feed the queue.
                 try? await RipsStore.sleep(ms: Self.idleWaitMs)
+            } else if !retriedMisses {
+                // SECOND SWEEP: a presign-timeout victim stays state=error after its one serial
+                // shot (TV field 2026-09-03: cold funnel paths ate the 12 s timeout while warm
+                // retries flew). Re-run the misses once now that the lane is idle — structural
+                // failures just error again and stand.
+                retriedMisses = true
+                let missed = orderedIds.filter { !downloadedIds.contains($0) && burns.items[$0]?.state == .error }
+                if missed.isEmpty { break }
+                DiagLog.shared.telemetry("mixdl", "re-queue \(missed.count) missed for a second sweep")
+                burnQueue.append(contentsOf: missed)
             } else {
-                break        // queue drained and no more rips coming
+                break        // queue drained, no more rips coming, second sweep done
             }
         }
         driveTask = nil

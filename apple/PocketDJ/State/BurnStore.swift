@@ -1261,9 +1261,15 @@ final class BurnStore {
             // queued behind others in `transfers` for a while before its turn runs.
             // Serverless falls back to the direct URL (see RipsStore.ensureURL) — there's
             // no rip-server to presign against.
-            let presigned = rips.hasServer
+            var presigned = rips.hasServer
                 ? try? await rips.presignedURL(for: song.id, ttlSeconds: 21_600)
                 : rips.cachedURL(song.id)
+            // FUNNEL FLAKINESS (TV field 2026-09-03): a presign occasionally eats its full 12 s
+            // timeout on a cold ingress path while the immediate retry rides a warm one — and on
+            // this serial lane one slow track dams the whole run. One retry, then the error.
+            if presigned == nil, rips.hasServer {
+                presigned = try? await rips.presignedURL(for: song.id, ttlSeconds: 21_600)
+            }
             guard let durableURL = presigned else {
                 items[song.id] = errorItem(song, message: "couldn't get a playback URL — check the rip server")
                 result.notRipped += 1
