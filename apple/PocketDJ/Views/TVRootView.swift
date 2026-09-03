@@ -1120,6 +1120,14 @@ struct TVSettingsView: View {
     @Environment(CloudSyncService.self) private var cloudSync
     @Environment(ProfileStore.self) private var profile
     @Environment(StreamingStore.self) private var streaming
+    @Environment(StorageManager.self) private var storage
+    @Environment(BurnStore.self) private var burns
+
+    /// Burned-media footprint for the Storage section's readout (nil = not measured yet).
+    /// Measured on appear + re-measured after every prune / cap change / readout tap —
+    /// `burnedUsageBytes()` walks the burns folder, so it is never computed per-render.
+    @State private var usageBytes: Int?
+    @State private var usageSongs: Int?
 
     var body: some View {
         @Bindable var settings = settings
@@ -1230,12 +1238,144 @@ struct TVSettingsView: View {
                 } footer: {
                     Text("\(searchStatus) · Apple Music sync \(settings.appleMusicPrivateSync ? "on" : "off"). These sync across your devices through iCloud — set them anywhere once.")
                 }
+                // Auto-managed storage (task #48). The TV burns into Caches
+                // (RipsStore.burnsDirectory), so it must keep itself bounded: the toggle is
+                // the master switch (ON by default on tvOS — SettingsStore
+                // .storageAutoManageDefault), the cap picker is a Menu (tvOS's picker
+                // idiom, same as the Mix crate menus) offering size AND song-count caps —
+                // picking one kind clears the other — and every row is a focusable control
+                // (Toggle/Menu/Button): LabeledContent is a focus trap, the lesson this
+                // Form already carries twice.
+                Section {
+                    Toggle("Auto-manage storage", isOn: Binding(
+                        get: { settings.storageAutoManage },
+                        set: { on in
+                            settings.storageAutoManage = on
+                            settings.persist()
+                            // A freshly-opened gate deserves an immediate pass — don't
+                            // leave the TV over-cap for up to a day.
+                            if on { pruneAndRemeasure() }
+                        }))
+                        .accessibilityIdentifier("tv-settings-storage-automanage")
+                    if settings.storageAutoManage {
+                        Menu {
+                            Section("By size") {
+                                ForEach(Self.sizeCapChoicesGB, id: \.self) { gb in
+                                    Button { setCap(gb: gb) } label: {
+                                        if settings.storageSoftCapSongs == nil && settings.storageSoftCapGB == gb {
+                                            Label(Self.sizeLabel(gb), systemImage: "checkmark")
+                                        } else {
+                                            Text(Self.sizeLabel(gb))
+                                        }
+                                    }
+                                }
+                            }
+                            Section("By song count") {
+                                ForEach(Self.songCapChoices, id: \.self) { n in
+                                    Button { setCap(songs: n) } label: {
+                                        if settings.storageSoftCapSongs == n {
+                                            Label("\(n) songs", systemImage: "checkmark")
+                                        } else {
+                                            Text("\(n) songs")
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack {
+                                Text("Storage cap")
+                                Spacer()
+                                Text(capLabel).foregroundStyle(.secondary)
+                            }
+                        }
+                        .accessibilityIdentifier("tv-settings-storage-cap")
+                        Button { pruneAndRemeasure() } label: {
+                            Label("Prune now", systemImage: "scissors")
+                        }
+                        .accessibilityIdentifier("tv-settings-storage-prune-now")
+                        // The usage readout is a BUTTON, not LabeledContent — tvOS scrolls
+                        // by focus and a non-focusable row pins the Form. Tap = re-measure.
+                        Button { refreshUsage() } label: {
+                            HStack {
+                                Label("Downloaded", systemImage: "internaldrive")
+                                Spacer()
+                                Text(usageLine).foregroundStyle(.secondary)
+                            }
+                        }
+                        .accessibilityIdentifier("tv-settings-storage-usage")
+                    }
+                } header: {
+                    Text("Storage")
+                } footer: {
+                    Text(storageFooter)
+                }
                 Section("About") {
                     LabeledContent("Version", value: Self.versionLine)
                 }
             }
             .navigationTitle("Settings")
+            .task { refreshUsage() }
         }
+    }
+
+    // MARK: Storage section plumbing
+
+    /// The cap picker's size choices (decimal GB; 0.5 renders as "500 MB") and song-count
+    /// choices. `tvDefaultCapGB` (the no-choice default) is deliberately among the sizes.
+    static let sizeCapChoicesGB: [Double] = [0.5, 1, 2, 5, 10]
+    static let songCapChoices: [Int] = [100, 250, 500, 1000]
+    static func sizeLabel(_ gb: Double) -> String {
+        gb < 1 ? "\(Int((gb * 1000).rounded())) MB" : "\(Int(gb)) GB"
+    }
+
+    private var capLabel: String {
+        if let n = settings.storageSoftCapSongs { return "\(n) songs" }
+        if let gb = settings.storageSoftCapGB { return Self.sizeLabel(gb) }
+        return "\(Self.sizeLabel(StorageManager.tvDefaultCapGB)) (default)"
+    }
+
+    private var usageLine: String {
+        guard let bytes = usageBytes, let songs = usageSongs else { return "—" }
+        let size = ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+        return "\(songs) song\(songs == 1 ? "" : "s") · \(size)"
+    }
+
+    private var storageFooter: String {
+        var line = "Least-recently-played downloads are removed automatically to stay under the cap. Anything pruned re-downloads on its next play."
+        if let r = storage.lastResult, r.evicted > 0 {
+            line += " Last prune removed \(r.evicted) song\(r.evicted == 1 ? "" : "s")."
+        }
+        return line
+    }
+
+    /// Picking a size clears the songs cap (and vice versa) — the Menu offers ONE cap, in
+    /// two currencies. Every cap change prunes immediately (spec: prune on cap change).
+    private func setCap(gb: Double) {
+        settings.storageSoftCapGB = gb
+        settings.storageSoftCapSongs = nil
+        settings.persist()
+        pruneAndRemeasure()
+    }
+
+    private func setCap(songs: Int) {
+        settings.storageSoftCapSongs = songs
+        settings.storageSoftCapGB = nil
+        settings.persist()
+        pruneAndRemeasure()
+    }
+
+    /// Deferred past the current UI tick so the Menu/Toggle animation never waits on the
+    /// disk walk (`burnedUsageBytes` measures the burns folder file-by-file).
+    private func pruneAndRemeasure() {
+        Task {
+            storage.pruneNow()
+            refreshUsage()
+        }
+    }
+
+    private func refreshUsage() {
+        usageBytes = burns.burnedUsageBytes()
+        usageSongs = burns.readyBurnedIds.count
     }
 
     /// The Connect row, by provider state. Buttons throughout — tvOS scrolls BY FOCUS, and a

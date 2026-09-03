@@ -181,4 +181,101 @@ final class StorageManagerTests: XCTestCase {
         XCTAssertEqual(w.burns.items.count, 1)
         XCTAssertEqual(w.settings.lastStoragePruneAt, 42_000)
     }
+
+    // MARK: Songs-count cap (tvOS auto-managed storage — task #48)
+
+    /// The #-of-songs cap prunes in the SAME least-recently-played order as the byte cap:
+    /// never-played first (oldest download breaking ties), then coldest play time, stopping
+    /// the moment the ready-burn count fits.
+    func testSongsCapEvictsLeastRecentlyPlayedUntilCountFits() throws {
+        // s3 never played (goes first), s1 played long ago (goes second), s2 just played.
+        let w = try makeWorld(items: [("s1", 100), ("s2", 200), ("s3", 50)])
+        w.stats.notePlayed("s1", at: 10_000)
+        w.stats.notePlayed("s2", at: 99_000)
+        w.settings.storageSoftCapSongs = 1        // byte cap stays UNSET — songs-only mode
+        XCTAssertNil(w.settings.storageSoftCapGB)
+        let result = try XCTUnwrap(w.mgr.pruneNow(now: 100_000))
+        XCTAssertEqual(result.evicted, 2)
+        XCTAssertNil(w.burns.items["s3"], "never-played goes first")
+        XCTAssertNil(w.burns.items["s1"], "then the least-recently-played")
+        XCTAssertNotNil(w.burns.items["s2"], "most-recent survives")
+        XCTAssertEqual(result.usageSongs, 1)
+        XCTAssertEqual(result.capSongs, 1)
+        XCTAssertEqual(result.capBytes, 0, "no byte cap was in force")
+    }
+
+    /// A songs cap ALONE arms the daily gate — pruneIfDue must not still require the GB cap.
+    func testSongsCapAloneArmsTheDailyGate() throws {
+        let w = try makeWorld(items: [("s1", 1), ("s2", 2)])
+        w.settings.storageSoftCapSongs = 1
+        w.mgr.pruneIfDue(now: 7_000)
+        XCTAssertEqual(w.burns.items.count, 1, "songs cap alone must prune")
+        XCTAssertEqual(w.settings.lastStoragePruneAt, 7_000)
+    }
+
+    /// When both caps are set, BOTH are enforced: a footprint comfortably under the byte
+    /// cap still prunes down to the songs cap.
+    func testBothCapsEnforcedTogether() throws {
+        let w = try makeWorld(items: [("s1", 1), ("s2", 2), ("s3", 3)])
+        w.settings.storageSoftCapGB = gb(1_000)   // bytes: nowhere near over
+        w.settings.storageSoftCapSongs = 2
+        let result = try XCTUnwrap(w.mgr.pruneNow(now: 1_000))
+        XCTAssertEqual(result.evicted, 1)
+        XCTAssertNil(w.burns.items["s1"], "oldest never-played download goes")
+        XCTAssertEqual(result.usageSongs, 2)
+    }
+
+    /// Songs cap respects the protected (deck-loaded / now-playing) set like the byte cap.
+    func testSongsCapSkipsProtectedSongs() throws {
+        let w = try makeWorld(items: [("s1", 1), ("s2", 2), ("s3", 3)])
+        w.mgr.protectedSongIds = { ["s1", "s2"] }
+        w.settings.storageSoftCapSongs = 0        // wants everything gone…
+        let result = try XCTUnwrap(w.mgr.pruneNow(now: 1_000))
+        XCTAssertEqual(result.evicted, 1)
+        XCTAssertNotNil(w.burns.items["s1"], "an open file is never pruned")
+        XCTAssertNotNil(w.burns.items["s2"])
+        XCTAssertGreaterThan(result.usageSongs, result.capSongs,
+                             "still over cap because the protected set can't be touched")
+    }
+
+    // MARK: tvOS auto-manage gate
+
+    /// tvOS semantics (autoManageGate): the TV Settings toggle is the MASTER switch —
+    /// toggle OFF ⇒ no pruning at all, even with caps set.
+    func testAutoManageGateOffDisablesAllPruning() throws {
+        let w = try makeWorld(items: [("s1", 1), ("s2", 2)])
+        w.mgr.autoManageGate = true               // simulate tvOS from the iOS bundle
+        w.settings.storageAutoManage = false
+        w.settings.storageSoftCapGB = gb(5)
+        w.settings.storageSoftCapSongs = 1
+        XCTAssertNil(w.mgr.pruneNow(now: 1_000))
+        w.mgr.pruneIfDue(now: 1_000)
+        XCTAssertEqual(w.burns.items.count, 2, "auto-manage OFF ⇒ the TV never deletes")
+        XCTAssertNil(w.settings.lastStoragePruneAt)
+    }
+
+    /// tvOS semantics: toggle ON with NO explicit cap applies the default TV cap, so a
+    /// fresh Apple TV is bounded with zero setup (and the daily gate is armed).
+    func testAutoManageOnWithNoCapAppliesTheTVDefault() throws {
+        let w = try makeWorld(items: [("s1", 1)])
+        w.mgr.autoManageGate = true
+        w.settings.storageAutoManage = true
+        XCTAssertNil(w.settings.storageSoftCapGB)
+        XCTAssertNil(w.settings.storageSoftCapSongs)
+        let result = try XCTUnwrap(w.mgr.pruneNow(now: 9_000))
+        XCTAssertEqual(result.capBytes, Int(StorageManager.tvDefaultCapGB * StorageManager.bytesPerGB))
+        XCTAssertEqual(result.evicted, 0, "30 bytes is far under the default cap")
+        XCTAssertEqual(w.settings.lastStoragePruneAt, 9_000, "the daily gate is armed by default")
+    }
+
+    /// Off the TV (gate false — iPhone/iPad/Mac), the toggle is IGNORED: the original
+    /// cap-set ⇒ prune contract holds even while storageAutoManage reads false.
+    func testGateFalsePlatformsIgnoreTheToggle() throws {
+        let w = try makeWorld(items: [("s1", 1), ("s2", 2)])
+        XCTAssertFalse(w.mgr.autoManageGate, "iOS test bundle: the platform gate is off")
+        XCTAssertFalse(w.settings.storageAutoManage)
+        w.settings.storageSoftCapGB = gb(5)
+        _ = w.mgr.pruneNow(now: 1_000)
+        XCTAssertLessThan(w.burns.items.count, 2, "cap set ⇒ prune, toggle ignored")
+    }
 }

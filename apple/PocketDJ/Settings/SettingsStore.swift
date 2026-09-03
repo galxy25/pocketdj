@@ -195,6 +195,28 @@ final class SettingsStore {
     var storageSoftCapGB: Double?
     /// Epoch ms of the last completed daily prune (the once-a-day gate). nil = never.
     var lastStoragePruneAt: Double?
+    /// Storage manager SONGS cap — the #-of-songs twin of `storageSoftCapGB` (nil = unset).
+    /// When set, the daily prune also evicts least-recently-played burns until at most this
+    /// many burned songs remain. The TV cap picker sets exactly ONE of the two (picking a
+    /// size clears the songs cap and vice versa); the engine enforces whichever is present
+    /// (both, if both are somehow set). See `StorageManager`.
+    var storageSoftCapSongs: Int?
+    /// tvOS auto-managed storage MASTER SWITCH (TV Settings ▸ Storage). ON by default on
+    /// tvOS ONLY — TV burns live in Caches and must keep themselves bounded — and OFF (with
+    /// no UI) everywhere else, where the original cap-set ⇒ prune contract is unchanged.
+    /// While ON with no explicit cap the default TV cap applies
+    /// (`StorageManager.tvDefaultCapGB`); the gate itself lives in
+    /// `StorageManager.autoManageGate` so only tvOS pruning consults this switch.
+    var storageAutoManage: Bool
+    /// Platform default for `storageAutoManage`: tvOS manages its own storage out of the
+    /// box; every other platform stays fully user-managed until a cap is set.
+    nonisolated static var storageAutoManageDefault: Bool {
+        #if os(tvOS)
+        return true
+        #else
+        return false
+        #endif
+    }
     /// Settings ▸ Debug: record the mix engine's diagnostic log (`MixDiag`) so a remote tester
     /// can export it and ship it back. OFF (default) ⇒ os_log only, nothing buffered.
     var debugLoggingEnabled: Bool
@@ -450,6 +472,8 @@ final class SettingsStore {
         self.lastSection = data.lastSection
         self.storageSoftCapGB = data.storageSoftCapGB
         self.lastStoragePruneAt = data.lastStoragePruneAt
+        self.storageSoftCapSongs = data.storageSoftCapSongs
+        self.storageAutoManage = data.storageAutoManage ?? Self.storageAutoManageDefault
         self.debugLoggingEnabled = data.debugLoggingEnabled ?? false
         self.remoteTelemetryEnabled = data.remoteTelemetryEnabled ?? false
         self.samplesFolderBookmark = data.samplesFolderBookmark
@@ -634,6 +658,8 @@ final class SettingsStore {
             lastSection: lastSection,
             storageSoftCapGB: storageSoftCapGB,
             lastStoragePruneAt: lastStoragePruneAt,
+            storageSoftCapSongs: storageSoftCapSongs,
+            storageAutoManage: storageAutoManage,
             debugLoggingEnabled: debugLoggingEnabled,
             remoteTelemetryEnabled: remoteTelemetryEnabled,
             samplesFolderBookmark: samplesFolderBookmark,
@@ -716,6 +742,8 @@ final class SettingsStore {
         lastSection = d.lastSection
         storageSoftCapGB = d.storageSoftCapGB
         lastStoragePruneAt = d.lastStoragePruneAt
+        storageSoftCapSongs = d.storageSoftCapSongs
+        storageAutoManage = d.storageAutoManage ?? Self.storageAutoManageDefault
         debugLoggingEnabled = d.debugLoggingEnabled ?? false
         // The capture buffer follows its setting on reset, exactly as DebugView's toggle does —
         // a nuclear reset must not leave diagnostics RUNNING while their toggles read off.
@@ -826,6 +854,12 @@ struct SettingsData: Codable {
     var storageSoftCapGB: Double?
     /// Optional so older blobs still decode (nil = the daily prune has never run).
     var lastStoragePruneAt: Double?
+    /// Optional so older blobs still decode — the #-of-songs cap twin of `storageSoftCapGB`.
+    /// nil IS the meaningful default (no songs cap).
+    var storageSoftCapSongs: Int?
+    /// Optional so older blobs still decode — the tvOS auto-manage master switch (nil ⇒ the
+    /// platform default applies: ON on tvOS, OFF everywhere else).
+    var storageAutoManage: Bool?
     /// Optional so older blobs still decode — Settings ▸ Debug capture toggle (nil = off).
     var debugLoggingEnabled: Bool?
     var remoteTelemetryEnabled: Bool?
@@ -945,6 +979,8 @@ struct SettingsData: Codable {
         lastSection: nil,
         storageSoftCapGB: nil,
         lastStoragePruneAt: nil,
+        storageSoftCapSongs: nil,
+        storageAutoManage: nil,
         debugLoggingEnabled: nil,
         remoteTelemetryEnabled: nil,
         samplesFolderBookmark: nil,

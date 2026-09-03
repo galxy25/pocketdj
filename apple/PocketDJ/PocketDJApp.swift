@@ -1709,6 +1709,12 @@ struct PocketDJApp: App {
                     while !Task.isCancelled {
                         try? await Task.sleep(nanoseconds: 900 * 1_000_000_000)
                         await autoSyncIfDue()
+                        // The daily storage prune's while-active fallback. Load-bearing on
+                        // tvOS (auto-managed storage, task #48): the TV has no BGTask lane
+                        // and can sit .active for days, so the scenePhase hook below alone
+                        // would let burns grow past the cap indefinitely. Cheap: pruneIfDue
+                        // exits on its own 20 h gate (and instantly when no cap is active).
+                        storage.pruneIfDue()
                     }
                 }
                 // Cross-device freshness while the app is OPEN. Without this, a Mac that stays
@@ -1769,10 +1775,11 @@ struct PocketDJApp: App {
                         // refused earlier (no tombstone ⇒ no request; runs toggle-independent
                         // because the user asked for that data to be gone).
                         Task { await recEngine.retryPendingCloudDelete() }
-                        // Foreground fallback for the daily soft-cap prune (macOS has no
-                        // BGTaskScheduler; iOS BGTasks are best-effort). Gated inside; a
-                        // plain Task defers it past the activation tick so foregrounding
-                        // never waits on disk scans.
+                        // Foreground fallback for the daily soft-cap prune (macOS and
+                        // tvOS have no BGTaskScheduler lane here; iOS BGTasks are
+                        // best-effort). Gated inside; a plain Task defers it past the
+                        // activation tick so foregrounding never waits on disk scans. A TV
+                        // that never leaves .active is covered by the 15-min tick above.
                         Task { storage.pruneIfDue() }
                     case .background:
                         streaming.onScenePhaseBackground()

@@ -348,6 +348,57 @@ final class SettingsStoreTests: XCTestCase {
         XCTAssertNil(s.storageSoftCapGB)
         XCTAssertNil(s.lastStoragePruneAt)
     }
+
+    // MARK: Songs cap + tvOS auto-manage (task #48)
+
+    func testStorageSongsCapAndAutoManageRoundTrip() {
+        let defaults = freshDefaults()
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertNil(s.storageSoftCapSongs, "no songs cap by default")
+        XCTAssertEqual(s.storageAutoManage, SettingsStore.storageAutoManageDefault,
+                       "auto-manage defaults per platform (ON only on tvOS)")
+        s.storageSoftCapSongs = 250
+        s.storageAutoManage = true
+        s.persist()
+        let reloaded = SettingsStore(defaults: defaults)
+        XCTAssertEqual(reloaded.storageSoftCapSongs, 250)
+        XCTAssertTrue(reloaded.storageAutoManage)
+    }
+
+    /// The decode-reset trap: a pre-#48 blob lacks both new keys — it must decode (keeping
+    /// every existing setting) with the songs cap UNSET and auto-manage at the platform
+    /// default, never fail wholesale back to SettingsData.default.
+    func testLegacyBlobWithoutSongsCapOrAutoManageDecodes() {
+        let defaults = freshDefaults()
+        let legacy = """
+        {
+          "sources": [],
+          "ripServerURL": "https://legacy.test",
+          "ripToken": "",
+          "searchAccessKeyID": "",
+          "searchSecretKey": "",
+          "searchEndpoint": "",
+          "storageSoftCapGB": 32
+        }
+        """
+        defaults.set(Data(legacy.utf8), forKey: "pdj.settings.v1")
+        let s = SettingsStore(defaults: defaults)
+        XCTAssertEqual(s.ripServerURL, "https://legacy.test", "legacy settings must survive")
+        XCTAssertEqual(s.storageSoftCapGB, 32, "the GB cap rides along untouched")
+        XCTAssertNil(s.storageSoftCapSongs, "missing key decodes as UNSET")
+        XCTAssertEqual(s.storageAutoManage, SettingsStore.storageAutoManageDefault)
+    }
+
+    func testResetRestoresSongsCapAndAutoManageDefaults() {
+        let s = SettingsStore(defaults: freshDefaults())
+        s.storageSoftCapSongs = 100
+        s.storageAutoManage = !SettingsStore.storageAutoManageDefault
+        s.persist()
+        s.resetEverything()
+        XCTAssertNil(s.storageSoftCapSongs)
+        XCTAssertEqual(s.storageAutoManage, SettingsStore.storageAutoManageDefault,
+                       "a reset device behaves like a fresh install of its platform")
+    }
 }
 
 final class CatalogMergeTests: XCTestCase {
