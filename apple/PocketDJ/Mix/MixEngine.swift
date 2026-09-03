@@ -707,8 +707,16 @@ final class MixEngine {
     /// Build the two-deck graph ON FIRST USE and start the engine. Idempotent.
     func ensureEngine() {
         guard !built else { return }
-        #if os(iOS)
+        // Session activation includes tvOS (mirroring PlayerEngine's fence): without an active
+        // .playback session the TV suspends MIX audio the moment the app backgrounds — the
+        // sequencer survived (its engine already activated) while the mix died (Levi, live TV
+        // 2026-09-02). The interruption/route/media-reset observers stay iOS-only: their
+        // recovery choreography is tuned to iOS session semantics, and widening them is not
+        // tonight's bug.
+        #if canImport(UIKit) && !os(macOS)
         activateAudioSession()
+        #endif
+        #if os(iOS)
         registerInterruptionHandling()
         registerRouteChangeHandling()
         registerMediaResetHandling()
@@ -3706,7 +3714,7 @@ final class MixEngine {
         componentManufacturer: kAudioUnitManufacturer_Apple,
         componentFlags: 0, componentFlagsMask: 0)
 
-    #if os(iOS)
+    #if canImport(UIKit) && !os(macOS)
     private func activateAudioSession() {
         // Studio mic capture holds the shared session at .playAndRecord — re-arming .playback
         // here would tear the live input tap's route out from under the recorder mid-take
@@ -3717,6 +3725,9 @@ final class MixEngine {
             try AVAudioSession.sharedInstance().setActive(true)
         } catch { /* non-fatal */ }
     }
+    #endif
+
+    #if os(iOS)
 
     /// Recover from an audio-session interruption (phone call / Siri / route loss).
     ///
