@@ -140,13 +140,20 @@ final class NowPlayingUITests: XCTestCase {
                       "the album's 3 tracks should all join Up next")
         XCTAssertTrue(app.staticTexts["Drift"].exists)
 
-        // Long-press the record → the current song's detail metadata in a sheet —
-        // closed by Back (iPhone) or the always-visible ✕ (iPad/macOS).
+        // Long-press the record → its context menu → "Song details" → the current song's
+        // metadata in a sheet, closed by Back (iPhone) or the always-visible ✕ (iPad/macOS).
+        // The long-press used to open the sheet directly; F3 sharing (00da8f25) put a menu
+        // in front of it ("Song details" + "Share"), which is the idiom AlbumHotlinkUITests
+        // already drives.
         let record = app.any("np-record")
         XCTAssertTrue(record.waitForExistence(timeout: 8))
         record.press(forDuration: 0.8)
+        let recordDetails = app.buttons["Song details"].firstMatch
+        XCTAssertTrue(recordDetails.waitForExistence(timeout: 8),
+                      "long-pressing the record should raise its context menu")
+        recordDetails.tap()
         XCTAssertTrue(app.any("song-detail").waitForExistence(timeout: 8),
-                      "long-pressing the record should open the song detail")
+                      "the record menu's Song details should open the song detail")
         attach("record-song-detail")
         let back = app.el("np-detail-back")
         let closer = back.waitForExistence(timeout: 2) ? back : app.el("np-detail-close")
@@ -306,16 +313,23 @@ final class NowPlayingUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Remove"].firstMatch.exists,
                       "…alongside the Remove the expanded view already had")
 
-        // Dismiss the still-open context menu by tapping the empty top edge of the SCREEN, not
-        // the trigger row: while the menu platter is up the row underneath is not hittable
-        // (XCUITest resolves its hit point to -1,-1 and the tap throws), which aborted the test
-        // mid-expanded-panel. A raw screen coordinate needs no hit test at all. Collapsing back
-        // matters because the resize fraction rides @AppStorage — same restore-the-default
-        // discipline as the history toggle above — so a run that stopped here would leave every
-        // LATER test launching straight into the expanded overlay instead of the docked panel.
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.03)).tap()
+        // Dismiss the still-open menu through the menu ITSELF. Two earlier attempts don't work:
+        // tapping the trigger row throws (while the platter is up the row underneath resolves to
+        // hit point -1,-1), and tapping the top edge of the screen silently does nothing — a
+        // MEASURED a11y dump put the platter at y 399–629 with the whole window under a dimming
+        // backdrop, so the coordinate was outside the platter as intended, but 3% of an 874pt
+        // screen is y≈26, inside the status-bar/Dynamic-Island band that the system owns; the
+        // synthesized touch never reaches the app.
+        // "Move to top" on the FIRST upcoming row is a provable no-op — SetlistPlayer removes
+        // the item at index+1 and re-inserts it at index+1 — so it closes the platter without
+        // disturbing the queue, and the assertion below still proves the menu really closed.
+        // Collapsing back matters because the resize fraction rides @AppStorage — same
+        // restore-the-default discipline as the history toggle above — so a run that stopped
+        // here would leave every LATER test launching straight into the expanded overlay
+        // instead of the docked panel.
+        app.buttons["Move to top"].firstMatch.tap()
         XCTAssertTrue(app.buttons["Move to top"].firstMatch.waitForNonExistence(timeout: 5),
-                      "tapping the trigger row again should dismiss the context menu")
+                      "choosing a menu item should dismiss the context menu")
         let collapse = app.el("np-x-collapse")
         XCTAssertTrue(collapse.waitForExistence(timeout: 5), "expanded surface offers a collapse control")
         collapse.tap()

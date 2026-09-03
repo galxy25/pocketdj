@@ -168,16 +168,15 @@ final class LivOnboardingWalkUITests: XCTestCase {
         // navigationBars is a UIKit concept and does not exist there.
         XCTAssertTrue(app.goBack(), "the Apple Music pane must have a back control")
         // The root comes back at the offset it had when we left it (down at Private syncing),
-        // which leaves the Data-sources rows outside the lazy Form's realized window. An absent
-        // row never "appears" on its own, so scroll back to the top before waiting on them.
+        // which leaves the earlier rows outside the lazy Form's realized window, and an absent
+        // row never "appears" on its own. Scrolling UP alone can't fix it either: "Add source"
+        // is in the Data-sources section but the Apple Music row is TWO sections BELOW it, so
+        // the top of the Form realizes one and not the other. Normalize to the top, then walk
+        // back DOWN to the Apple Music row exactly the way the first visit did.
         let addSource = app.el("settings-add-source")
-        var upTries = 0
-        while !(addSource.exists && amRow.exists) && upTries < 8 {
-            scrollToTop(app, times: 1)
-            upTries += 1
-        }
+        scrollToTop(app)
         XCTAssertTrue(addSource.waitForExistence(timeout: 10))  // root settled
-        XCTAssertTrue(amRow.waitForExistence(timeout: 5))
+        XCTAssertTrue(reveal(app, amRow), "the Apple Music row should be reachable from the top")
         amRow.tap()
         let picker = app.any("am-settings-tab")
         XCTAssertTrue(picker.waitForExistence(timeout: 10))
