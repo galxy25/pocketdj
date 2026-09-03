@@ -167,7 +167,16 @@ final class LivOnboardingWalkUITests: XCTestCase {
         // (Element at index 0): No matches found for Descendants matching type NavigationBar".
         // navigationBars is a UIKit concept and does not exist there.
         XCTAssertTrue(app.goBack(), "the Apple Music pane must have a back control")
-        XCTAssertTrue(app.el("settings-add-source").waitForExistence(timeout: 10))  // root settled
+        // The root comes back at the offset it had when we left it (down at Private syncing),
+        // which leaves the Data-sources rows outside the lazy Form's realized window. An absent
+        // row never "appears" on its own, so scroll back to the top before waiting on them.
+        let addSource = app.el("settings-add-source")
+        var upTries = 0
+        while !(addSource.exists && amRow.exists) && upTries < 8 {
+            scrollToTop(app, times: 1)
+            upTries += 1
+        }
+        XCTAssertTrue(addSource.waitForExistence(timeout: 10))  // root settled
         XCTAssertTrue(amRow.waitForExistence(timeout: 5))
         amRow.tap()
         let picker = app.any("am-settings-tab")
@@ -326,6 +335,12 @@ final class LivOnboardingWalkUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'source-group-'")
         ).firstMatch.waitForExistence(timeout: 60)
         snap("23-collections-shared")
+
+        // Restore the Yours segment. The Yours|Shared mode is PERSISTED, so a run that stopped
+        // here left every later launch opening Playlists on Shared — a polluter that reads like
+        // a product bug in whatever test runs next.
+        let yours = app.segment("Yours")
+        if yours.waitForExistence(timeout: 5) { yours.tap() }
     }
 
     // MARK: 5 — Jukebox Hero: the Start-a-jukebox screen

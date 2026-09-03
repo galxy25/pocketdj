@@ -172,6 +172,7 @@
 		420EBCBCF153967E826FABF3 /* PlaylistWriteBackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F55C0256CA6578A23BC5B2E /* PlaylistWriteBackTests.swift */; };
 		42658B018DC0D88CFCB6A8F4 /* CollectionsBatchAddTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85F233B547CE674B0B4A00A5 /* CollectionsBatchAddTests.swift */; };
 		43BB757610F0F5EBEACEECDA /* PocketDJApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE90C1896C86E7B65A2D0B03 /* PocketDJApp.swift */; };
+		44BE307FBFCDD54032180E0A /* DiscoverStubServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6EA2BC888099AF42D98F507 /* DiscoverStubServer.swift */; };
 		45B417BABDCB20A2A8AA077D /* CollectionSortFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 778196F2DA5CB9658F84424A /* CollectionSortFilter.swift */; };
 		45C997C26EF0D80AB477CA50 /* RowSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EE754AA0FCC750467CFC458 /* RowSelectionTests.swift */; };
 		4661F6F6019FDEDE22724A73 /* PlayHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C17166D49C05392DF713E26 /* PlayHistoryStore.swift */; };
@@ -1109,6 +1110,7 @@
 		E480DED94FCA85DED537C00C /* AppStoreScreenshotTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppStoreScreenshotTests.swift; sourceTree = "<group>"; };
 		E48EB821B769D436B3742E49 /* DemuxCutSampleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxCutSampleView.swift; sourceTree = "<group>"; };
 		E5A196716E1EB8FD0028BB90 /* PlayStatsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayStatsStore.swift; sourceTree = "<group>"; };
+		E6EA2BC888099AF42D98F507 /* DiscoverStubServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoverStubServer.swift; sourceTree = "<group>"; };
 		E7450CF7B485F7017240D18A /* MusicWithFriendsStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicWithFriendsStoreTests.swift; sourceTree = "<group>"; };
 		E77A950E97B04B29A81DD77C /* StudioLoopsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioLoopsView.swift; sourceTree = "<group>"; };
 		E88C0F36DDCC615207DFA199 /* PocketDJ.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = PocketDJ.entitlements; sourceTree = "<group>"; };
@@ -1960,6 +1962,7 @@
 				6860EB414894C76BE5230D4C /* DemuxInstrumentalUITests.swift */,
 				73448313D1047E74B21C9E1D /* DemuxProofUITests.swift */,
 				F0045DD18A205628C2EA174A /* DiscoverAlbumPreviewUITests.swift */,
+				E6EA2BC888099AF42D98F507 /* DiscoverStubServer.swift */,
 				49405441A50015C4DF666BAA /* ExplicitPreferenceUITests.swift */,
 				5C92D6DE42A88532A8A9C69B /* FavoritesUITests.swift */,
 				5ADFCE1569FADF3754E562AB /* ForYouTilesUITests.swift */,
@@ -2240,6 +2243,7 @@
 				0F45C8939F63858E6C6B8C69 /* DemuxInstrumentalUITests.swift in Sources */,
 				84AA1EDEB7E3AD97401196B8 /* DemuxProofUITests.swift in Sources */,
 				A09C17B34136AE33CFE2600F /* DiscoverAlbumPreviewUITests.swift in Sources */,
+				44BE307FBFCDD54032180E0A /* DiscoverStubServer.swift in Sources */,
 				E9AD701216E6F6027724130A /* ExplicitPreferenceUITests.swift in Sources */,
 				FB72A5D2314453C415C94E83 /* FavoritesUITests.swift in Sources */,
 				CE2DB79CA7677CA460A8E199 /* ForYouTilesUITests.swift in Sources */,

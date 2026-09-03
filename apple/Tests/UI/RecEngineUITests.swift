@@ -36,7 +36,12 @@ final class RecEngineUITests: XCTestCase {
         let want = on ? "1" : "0"
         guard (toggle.value as? String) != want else { return }
         toggle.tap()
-        if (toggle.value as? String) != want {
+        // The switch ANIMATES: read `.value` on the very next line and it still reports the old
+        // state, so the fallback used to fire on every successful flip and toggle it straight
+        // back. Give the value up to ~2 s to settle; only reach for the thumb if it never does.
+        let settled = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "value == %@", want), object: toggle)
+        if XCTWaiter().wait(for: [settled], timeout: 2) != .completed {
             toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
         }
     }

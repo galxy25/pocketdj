@@ -31,11 +31,13 @@ final class DemuxProofUITests: XCTestCase {
         if lyrics { app.launchEnvironment["PDJ_DEMUX_LYRICS"] = "1" }
         app.launchEnvironment["PDJ_START_SECTION"] = "Performance"
         app.launch()
-        // Sub-tab 5 = Demuxer (coordinate tap — compact segments carry no per-item ids;
-        // the PerformanceUITests idiom).
+        // Demuxer = segment index 5 of SEVEN (samples, loops, sequencer, instruments, cues,
+        // demuxer, tracks). Tracks joined the picker in 3d95171d, so the old 5.5/6.0 centre now
+        // lands on Tracks. Coordinate tap because the compact segments carry no per-item ids
+        // (the PerformanceUITests idiom).
         let seg = app.segmentedControls.firstMatch
         XCTAssertTrue(seg.waitForExistence(timeout: 10), "studio sub-tab picker up")
-        seg.coordinate(withNormalizedOffset: CGVector(dx: 5.5 / 6.0, dy: 0.5)).tap()
+        seg.coordinate(withNormalizedOffset: CGVector(dx: 5.5 / 7.0, dy: 0.5)).tap()
         // Source groups are collapsed by default — expand "Imported audio" if the fixture isn't
         // already visible (its expansion persists across runs, so tolerate either state).
         if !app.any("demux-file-row-dmx_fixture").waitForExistence(timeout: 3) {

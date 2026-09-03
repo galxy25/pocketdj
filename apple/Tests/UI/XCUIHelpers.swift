@@ -53,6 +53,19 @@ extension XCUIApplication {
     @discardableResult
     func revealNowPlayingHome() -> XCUIElement {
         let panel = any("now-playing-panel")
+        // A LEAKED expanded overlay (`np-expanded-panel`, raised by the resize handle and
+        // persisted through @AppStorage) covers the docked deck, so the pop-back loop below
+        // would walk the whole detail stack and still never surface the panel. Collapse it
+        // first. The short wait is deliberate: the overlay is restored a beat after launch,
+        // and 1 s of slack on the calls that DON'T have one up is cheaper than a false failure.
+        let expanded = any("np-expanded-panel")
+        if expanded.waitForExistence(timeout: 1) {
+            let collapse = el("np-x-collapse")
+            if collapse.waitForExistence(timeout: 3) {
+                collapse.tap()
+                _ = expanded.waitForNonExistence(timeout: 5)
+            }
+        }
         #if os(iOS)
         if UIDevice.current.userInterfaceIdiom == .phone {
             for _ in 0..<6 where !panel.exists {

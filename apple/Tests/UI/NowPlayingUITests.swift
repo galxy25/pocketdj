@@ -306,14 +306,14 @@ final class NowPlayingUITests: XCTestCase {
         XCTAssertTrue(app.buttons["Remove"].firstMatch.exists,
                       "…alongside the Remove the expanded view already had")
 
-        // Dismiss the still-open context menu by tapping its own trigger row again — the
-        // standard way a UIKit/SwiftUI context menu is cancelled without picking an item
-        // (the interaction consumes that tap for the dismiss, it never reaches the row's
-        // own tap gesture) — then collapse back to the docked panel. The resize fraction
-        // rides @AppStorage — same restore-the-default discipline as the history toggle
-        // above — so a run that stopped here would leave every LATER test launching
-        // straight into the expanded overlay instead of the docked panel it waits for.
-        queueRow.tap()
+        // Dismiss the still-open context menu by tapping the empty top edge of the SCREEN, not
+        // the trigger row: while the menu platter is up the row underneath is not hittable
+        // (XCUITest resolves its hit point to -1,-1 and the tap throws), which aborted the test
+        // mid-expanded-panel. A raw screen coordinate needs no hit test at all. Collapsing back
+        // matters because the resize fraction rides @AppStorage — same restore-the-default
+        // discipline as the history toggle above — so a run that stopped here would leave every
+        // LATER test launching straight into the expanded overlay instead of the docked panel.
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.03)).tap()
         XCTAssertTrue(app.buttons["Move to top"].firstMatch.waitForNonExistence(timeout: 5),
                       "tapping the trigger row again should dismiss the context menu")
         let collapse = app.el("np-x-collapse")
