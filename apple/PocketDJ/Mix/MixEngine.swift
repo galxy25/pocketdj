@@ -532,6 +532,19 @@ final class MixEngine {
     /// stays true across a pause — letting `play()` resume vs. reschedule correctly.
     @ObservationIgnored private var stemsScheduled: [Deck: Bool] = [:]
 
+    /// Per-deck flag: does the MAIN player node hold a schedule we can TRUST? Set by every real
+    /// scheduling site (`loadFile` / `seek` / `restart` / `scheduleLoopPasses` / the stem-mode-off
+    /// re-prime / `rescheduleFile`), cleared by `stopActiveNodes` — and marked UNTRUSTED where the
+    /// OS may drop a schedule behind our back: a materialized session restore (tvOS flushes the
+    /// never-rendered cues when the first `engine.start()` renegotiates the output — field session
+    /// tvos-95F9E8D4: Resume rendered 10 s of "playing" silence until a skip's fresh load healed
+    /// it) and an `.AVAudioEngineConfigurationChange` (the engine uninitializes). A `pause()`
+    /// keeps the schedule, so a normal pause→resume stays trusted and never restart-glitches.
+    @ObservationIgnored private var fileScheduled: [Deck: Bool] = [:]
+    /// Count of ensure-triggered re-arms (`ensureDeckScheduled` actually rebuilding a schedule) —
+    /// never counts a load/seek/restart's own scheduling. Test seam for the silent-resume guard.
+    @ObservationIgnored private(set) var deckRescheduleCountForTesting = 0
+
     /// One-time guard so the shared remote-command center is wired exactly once per engine.
     @ObservationIgnored private var remoteCommandsConfigured = false
 
@@ -882,6 +895,21 @@ final class MixEngine {
     func autoDeckDurationMsForTesting(_ deck: Deck) -> Int? { autoDeckDurationMs[deck] }
     /// Drive one tick's park-heal pass directly (the watchdog path a test can't wait for).
     func healParkedPlayersForTesting() { healParkedPlayers() }
+    // tvOS silent-resume seams: reproduce the OS dropping every node's never-rendered schedule
+    // behind the engine's back (the first-start output renegotiation / an engine uninit) —
+    // `stop()` flushes each node's queue WITHOUT updating the engine's bookkeeping, exactly
+    // like the field event. Pair with `deckRescheduleCountForTesting` / `fileScheduledForTesting`.
+    func flushNodeSchedulesForTesting() {
+        for d in Deck.allCases {
+            players[d]?.stop()
+            for n in (stemPlayers[d] ?? [:]).values { n.stop() }
+        }
+    }
+    /// Does the engine trust this deck's MAIN-file schedule to be live?
+    func fileScheduledForTesting(_ deck: Deck) -> Bool { fileScheduled[deck] == true }
+    /// Drive the `.AVAudioEngineConfigurationChange` observer body directly (the real
+    /// notification is posted by the private engine instance, which tests can't post as).
+    func simulateConfigChangeForTesting() { handleEngineConfigurationChange() }
     /// The next-unplayed loader with its drop-the-unloadable behaviour — the resume-handoff and
     /// re-establish paths run it where a wall-clock deck end can't be waited out.
     @discardableResult
@@ -1001,6 +1029,7 @@ final class MixEngine {
         segmentStartSeconds[deck] = 0          // segment begins at source 0:00 (true-playhead base)
         player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(count),
                                at: nil, completionHandler: nil)
+        fileScheduled[deck] = true
         if leadDeck == deck { leadDeck = nil }   // load resets this deck's lead role + tempo/pitch
         mutate(deck) {
             $0.loaded = meta
@@ -1064,8 +1093,8 @@ final class MixEngine {
     /// state without touching the schedule, so the deck resumes from where it stopped.
     private func resumePlayingDecks() {
         for d in Deck.allCases where state(d).isPlaying {
+            ensureDeckScheduled(d)   // an engine uninit DROPS schedules — re-arm before re-priming
             if stemActive(d) {
-                ensureStemsScheduled(d)
                 for n in (stemPlayers[d] ?? [:]).values where n.isPlaying { n.pause() }
                 startStems(d)
             } else if let p = players[d] {
@@ -1092,9 +1121,54 @@ final class MixEngine {
                 }
             } else if let p = players[d], !p.isPlaying {
                 dlog("heal: re-kick deck \(d.rawValue)")
+                ensureDeckScheduled(d)
                 p.play()
             }
         }
+    }
+
+    /// Re-arm THIS deck's voices from the current playhead IF their schedule can't be trusted —
+    /// the single-file (and loop-aware) twin of `ensureStemsScheduled`. The tvOS silent-resume
+    /// field bug (session tvos-95F9E8D4/2026-09-03): a materialize-restored deck was CUED on a
+    /// never-started engine; the first `engine.start()` (Resume) reconfigured the output and
+    /// dropped the never-rendered schedules, so the bare `play()` ran the deck "playing" into an
+    /// empty queue — a state neither the zombie re-prime (pause/play keeps the schedule it assumes
+    /// is intact) nor `healParkedPlayers` (the node CLAIMS playing) could see; only a skip's fresh
+    /// load healed it. A trusted schedule is left untouched, so a normal pause→resume (segments
+    /// alive) never restart-glitches. Never starts a voice itself — the caller owns play().
+    private func ensureDeckScheduled(_ deck: Deck) {
+        guard state(deck).loaded != nil else { return }
+        if loopWindow(deck) != nil {          // a live loop re-arms as a LOOP, not a linear tail
+            let trusted = stemActive(deck) ? stemsScheduled[deck] == true : fileScheduled[deck] == true
+            if !trusted {
+                deckRescheduleCountForTesting += 1
+                dlog("ensure: re-arm LOOP deck \(deck.rawValue) @\(String(format: "%.2f", position(deck)))")
+                _ = armLoop(deck, resumeAt: position(deck))
+            }
+            return
+        }
+        if stemActive(deck) { ensureStemsScheduled(deck); return }
+        guard fileScheduled[deck] != true else { return }
+        deckRescheduleCountForTesting += 1
+        dlog("ensure: re-arm deck \(deck.rawValue) @\(String(format: "%.2f", position(deck)))")
+        rescheduleFile(deck, fromSeconds: position(deck))
+    }
+
+    /// Stop + schedule the deck's single file from `sec` — `seek`'s scheduling tail WITHOUT its
+    /// gesture side effects (no recorder event, no card write, no persist, no auto re-time).
+    private func rescheduleFile(_ deck: Deck, fromSeconds sec: Double) {
+        guard built, let file = files[deck], let player = players[deck], let sr = sampleRates[deck],
+              let start = startFrames[deck], let end = endFrames[deck] else { return }
+        let clamped = min(max(0, sec), duration(deck))
+        let frame = min(max(start, start + AVAudioFramePosition(clamped * sr)), end)
+        let count = end - frame
+        player.stop()
+        segmentStartSeconds[deck] = clamped
+        setPosition(deck, clamped)
+        guard count > 0 else { return }       // cued at the very end — nothing schedulable
+        player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
+                               at: nil, completionHandler: nil)
+        fileScheduled[deck] = true
     }
 
     func play(_ deck: Deck) {
@@ -1108,7 +1182,8 @@ final class MixEngine {
         // deck is still marked playing — that's the INTENT the watchdog restores; only the
         // uncatchable play()-on-a-dead-engine call is skipped.
         if startEngineIfNeeded() {
-            if stemActive(deck) { ensureStemsScheduled(deck); startStems(deck) } else { players[deck]?.play() }
+            ensureDeckScheduled(deck)   // tvOS silent-resume: an untrusted/dropped schedule re-arms BEFORE play
+            if stemActive(deck) { startStems(deck) } else { players[deck]?.play() }
         }
         setPlaying(deck, true)
         refreshTransport()
@@ -1144,7 +1219,8 @@ final class MixEngine {
         suppressStickyUpdates = true; defer { suppressStickyUpdates = false }   // batch — see the flag
         for d in Deck.allCases where state(d).loaded != nil {
             if engineUp {
-                if stemActive(d) { ensureStemsScheduled(d); startStems(d) } else { players[d]?.play() }
+                ensureDeckScheduled(d)   // see play(): re-arm anything whose schedule was dropped
+                if stemActive(d) { startStems(d) } else { players[d]?.play() }
             }
             setPlaying(d, true)
         }
@@ -1261,6 +1337,7 @@ final class MixEngine {
             player.stop()
             player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(end - start),
                                    at: nil, completionHandler: nil)
+            fileScheduled[deck] = true
             segmentStartSeconds[deck] = 0       // rewound to source 0:00
             setPosition(deck, 0)
             if was {
@@ -1362,6 +1439,7 @@ final class MixEngine {
                 player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
                                        at: nil, completionHandler: nil)
             }
+            fileScheduled[deck] = count > 0
             segmentStartSeconds[deck] = clamped   // the new segment begins `clamped` s into the source
             setPosition(deck, clamped)
             if was, count > 0 {
@@ -1610,6 +1688,7 @@ final class MixEngine {
             player.scheduleSegment(file, startingFrame: f0, frameCount: AVAudioFrameCount(count),
                                    at: nil, completionHandler: nil)
         }
+        fileScheduled[deck] = true
         return true
     }
 
@@ -2690,6 +2769,7 @@ final class MixEngine {
             // SILENT (both main stopped AND stems unscheduled) until you toggled stem mode back off.
             guard scheduleStems(deck, fromSeconds: min(pos, maxStemSeconds(deck))) else { return }
             players[deck]?.stop()                    // only NOW silence the single mixed file
+            fileScheduled[deck] = false
             mutate(deck) { $0.stemMode = true }
             rec(.stemMode, deck, flag: true)
             applyStemGains(deck)
@@ -2705,6 +2785,7 @@ final class MixEngine {
             let count = end - frame
             player.stop()
             segmentStartSeconds[deck] = pos    // the single file resumes `pos` s in (true-playhead base)
+            fileScheduled[deck] = count > 0
             if count > 0 {
                 player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
                                        at: nil, completionHandler: nil)
@@ -2828,6 +2909,7 @@ final class MixEngine {
     private func stopActiveNodes(_ deck: Deck) {
         players[deck]?.stop()
         for n in (stemPlayers[deck] ?? [:]).values { n.stop() }
+        fileScheduled[deck] = false
         stemsScheduled[deck] = false
     }
 
@@ -2991,6 +3073,14 @@ final class MixEngine {
             setLoopUnits(deck, ds.loopUnits ?? 2)
             setLoop(deck, on: true)
         }
+        // Everything above was cued on a not-yet-started engine, and tvOS drops exactly such
+        // never-rendered schedules when the first `engine.start()` (the user's Resume)
+        // renegotiates the output format — the field silent-resume: 10 s of "playing" into a
+        // flushed queue, healed only by a skip's fresh load. Mark the cues UNTRUSTED so the
+        // first play re-arms them from the cued position via `ensureDeckScheduled` (a no-op
+        // rebuild of the identical schedule when nothing was actually dropped).
+        fileScheduled[deck] = false
+        stemsScheduled[deck] = false
     }
 
     /// Rebuild the Auto-DJ machine SUSPENDED (`autoPaused` — the exact state the lock-screen ⏸
@@ -3838,18 +3928,24 @@ final class MixEngine {
         if let o = configChangeObserver { NotificationCenter.default.removeObserver(o) }
         configChangeObserver = NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.dlog("CONFIG CHANGE: run=\(self.engine.isRunning ? 1 : 0)"
-                          + " nodeA=\((self.players[.a]?.isPlaying ?? false) ? 1 : 0)"
-                          + " nodeB=\((self.players[.b]?.isPlaying ?? false) ? 1 : 0)"
-                          + " out=\(Int(self.engine.outputNode.outputFormat(forBus: 0).sampleRate))Hz")
-                // A config change means the engine WAS stopped/reconfigured — even if it (or the
-                // watchdog) already restarted it between ticks, playing nodes may be zombies.
-                self.engineDownWhileLive = true
-                self.recoverFromEngineStop()
-            }
+            MainActor.assumeIsolated { self?.handleEngineConfigurationChange() }
         }
+    }
+
+    private func handleEngineConfigurationChange() {
+        dlog("CONFIG CHANGE: run=\(engine.isRunning ? 1 : 0)"
+             + " nodeA=\((players[.a]?.isPlaying ?? false) ? 1 : 0)"
+             + " nodeB=\((players[.b]?.isPlaying ?? false) ? 1 : 0)"
+             + " out=\(Int(engine.outputNode.outputFormat(forBus: 0).sampleRate))Hz")
+        // A config change means the engine WAS stopped/reconfigured — even if it (or the
+        // watchdog) already restarted it between ticks, playing nodes may be zombies. And the
+        // uninit can DROP never-rendered schedules outright (the tvOS silent-resume field bug):
+        // mark every deck's schedule untrusted so the recovery re-ARMS from the tracked
+        // positions instead of bare-replaying empty queues.
+        fileScheduled = [:]
+        stemsScheduled = [:]
+        engineDownWhileLive = true
+        recoverFromEngineStop()
     }
 }
 
