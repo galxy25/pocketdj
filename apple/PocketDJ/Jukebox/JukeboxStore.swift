@@ -109,6 +109,12 @@ final class JukeboxStore {
         self.defaults = defaults
     }
 
+    /// Every live session on the broker (host bearer) — the TV/CarPlay "pick a session →
+    /// show its QR" surfaces read through the store so the client stays private.
+    func listSessions() async throws -> [JukeboxClient.SessionRow] {
+        try await client.listSessions()
+    }
+
     private var client: JukeboxClient {
         JukeboxClient(baseURL: settings?.jukeboxServerURL ?? "",
                       token: settings?.jukeboxToken ?? "",

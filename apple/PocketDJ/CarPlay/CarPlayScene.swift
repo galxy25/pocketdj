@@ -241,7 +241,60 @@ final class CarPlayController {
                                  detailText: "The mix starts when the first track lands")
             sections.append(CPListSection(items: [row]))
         }
+        sections.append(jukeboxSection(model))
         return sections
+    }
+
+    /// The car's share-to-join surface (owner: "similar to Apple's SharePlay in CarPlay"):
+    /// a Jukebox row → the account's live sessions → a template showing the picked session's
+    /// QR at CarPlay's largest image-row size + the guest URL as text (a passenger scans the
+    /// head unit, or types the short link). The car never hosts or decides — display only.
+    private func jukeboxSection(_ model: CarPlayModel) -> CPListSection {
+        let row = CPListItem(text: "Jukebox", detailText: "Show a session's join code")
+        row.accessoryType = .disclosureIndicator
+        row.handler = { [weak self] _, completion in
+            self?.pushJukeboxSessions(model); completion()
+        }
+        return CPListSection(items: [row], header: "Party", sectionIndexTitle: nil)
+    }
+
+    private func pushJukeboxSessions(_ model: CarPlayModel) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let sessions = await model.jukeboxSessions()
+            let items: [CPListItem]
+            if let sessions, !sessions.isEmpty {
+                items = sessions.map { s in
+                    let item = CPListItem(text: s.name, detailText: s.timeless == true ? "Timeless" : "Live")
+                    item.accessoryType = .disclosureIndicator
+                    item.handler = { [weak self] _, completion in
+                        self?.pushJukeboxQR(s); completion()
+                    }
+                    return item
+                }
+            } else {
+                items = [CPListItem(text: sessions == nil ? "Couldn't reach the jukebox server"
+                                                          : "No live sessions",
+                                    detailText: "Host one from iPhone or the TV")]
+            }
+            let template = CPListTemplate(title: "Jukebox", sections: [CPListSection(items: items)])
+            self.interfaceController.pushTemplate(template, animated: true, completion: nil)
+            DiagLog.shared.telemetry("car", "present jukebox sessions rows=\(items.count)")
+        }
+    }
+
+    private func pushJukeboxQR(_ session: JukeboxClient.SessionRow) {
+        var rowItems: [CPListTemplateItem] = []
+        if let cg = CarPlayModel.jukeboxQR(for: session.url) {
+            let image = UIImage(cgImage: cg)
+            let qrRow = CPListImageRowItem(text: session.name, images: [image])
+            rowItems.append(qrRow)
+        }
+        let urlRow = CPListItem(text: session.url.absoluteString, detailText: "Scan or type to join")
+        rowItems.append(urlRow)
+        let template = CPListTemplate(title: session.name, sections: [CPListSection(items: rowItems)])
+        interfaceController.pushTemplate(template, animated: true, completion: nil)
+        DiagLog.shared.telemetry("car", "present jukebox QR \(session.jukeboxId)")
     }
 
     private func mixLiveSections(_ model: CarPlayModel) -> [CPListSection] {

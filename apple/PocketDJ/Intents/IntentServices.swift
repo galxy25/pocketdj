@@ -73,6 +73,9 @@ final class IntentServices {
     /// bridge carries the ONE app-scoped downloader. Optional so a test host can build the bridge
     /// without it.
     var mixDownloader: CollectionMixDownloader?
+    /// The jukebox host store — CarPlay's session-list → QR surface reads through the bridge
+    /// (the car scene has no SwiftUI environment). Optional so a test host can skip it.
+    var jukebox: JukeboxStore?
     /// Lazy streaming cover art (the `CoverImage` fallback lane). CarPlay's list rows reach it
     /// through the bridge for the standard reason — the car scene runs outside the SwiftUI
     /// environment — so the "Apple Music (Local)" catalog (which ships no `artCandidates`) still

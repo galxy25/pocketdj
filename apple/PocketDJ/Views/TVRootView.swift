@@ -72,7 +72,9 @@ struct TVRootView: View {
                 .tabItem { Label(TVTab.forYou.rawValue, systemImage: TVTab.forYou.icon) }
                 .tag(TVTab.forYou)
             TVJukeboxView()
-                .tabItem { Label(TVTab.jukebox.rawValue, systemImage: TVTab.jukebox.icon) }
+                // The PRIDE JUKEBOX (the iOS sidebar's mark, multicolor when a session is
+                // live) instead of the generic qrcode glyph — owner's call, 2026-09-02.
+                .tabItem { Label { Text(TVTab.jukebox.rawValue) } icon: { JukeboxIcon(mode: .staticIcon) } }
                 .tag(TVTab.jukebox)
             TVSettingsView()
                 .tabItem { Label(TVTab.settings.rawValue, systemImage: TVTab.settings.icon) }
@@ -344,7 +346,14 @@ struct TVMixNowPlayingCard: View {
     @Environment(MixEngine.self) private var engine
     @Environment(SettingsStore.self) private var settings
     @Environment(AppModel.self) private var app
+    @Environment(FavoritesStore.self) private var favorites
+    @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
     @State private var showPlayed = false
+
+    /// The 👍/👎 scope for a MIX queue: not a For You tile, so verdicts file under a reserved
+    /// "mix" scope — the GLOBAL taste layer reads them (that is the signal the owner wants
+    /// from the couch); scoped suppression stays confined to this scope, harmless.
+    private static let mixScope = "mix"
 
     var body: some View {
         ScrollView {
@@ -369,6 +378,7 @@ struct TVMixNowPlayingCard: View {
                     }
                     positionLine
                     transport
+                    secondStrip
                     if let status = engine.autoStatus {
                         Text(status).font(.callout.monospacedDigit()).foregroundStyle(Theme.fgDim)
                     }
@@ -422,6 +432,46 @@ struct TVMixNowPlayingCard: View {
         }
     }
 
+    /// Second strip (owner's spec): ♥ · shuffle the queue · 👍 · 👎. Repeat modes need the
+    /// engine's advance path to learn them first — tracked separately, not faked here.
+    private var secondStrip: some View {
+        HStack(spacing: 20) {
+            if let track = engine.onAirTrack {
+                let fav = favorites.isFavorite(track.songId)
+                Button {
+                    _ = favorites.toggle(track.songId,
+                                         appleMusicId: app.songsById[track.songId]?.appleMusicId)
+                } label: {
+                    Label(fav ? "Loved" : "Love", systemImage: fav ? "heart.fill" : "heart")
+                        .foregroundStyle(fav ? Theme.accent : Theme.fg)
+                }
+                .accessibilityIdentifier("tv-np-mix-heart")
+            }
+            Button { engine.autoQueueShuffleUpcoming() } label: {
+                Label("Shuffle queue", systemImage: "shuffle")
+            }
+            .accessibilityIdentifier("tv-np-mix-shuffle")
+            if let feedback, let track = engine.onAirTrack {
+                let verdict = feedback.verdict(songId: track.songId, scope: Self.mixScope)
+                Button {
+                    _ = feedback.toggle(songId: track.songId, to: .accepted, scope: Self.mixScope,
+                                        surface: .nowPlaying, artistKey: nil, genre: nil)
+                } label: {
+                    Image(systemName: verdict == .accepted ? "hand.thumbsup.fill" : "hand.thumbsup")
+                }
+                .accessibilityIdentifier("tv-np-mix-thumbsup")
+                Button {
+                    _ = feedback.toggle(songId: track.songId, to: .rejected, scope: Self.mixScope,
+                                        surface: .nowPlaying, artistKey: nil, genre: nil)
+                } label: {
+                    Image(systemName: verdict == .rejected ? "hand.thumbsdown.fill" : "hand.thumbsdown")
+                }
+                .accessibilityIdentifier("tv-np-mix-thumbsdown")
+            }
+        }
+        .font(.callout)
+    }
+
     /// Up Next by default; the Played toggle swaps in the consumed head, newest first.
     @ViewBuilder private var queueSection: some View {
         let rows = showPlayed ? engine.autoPlayed : engine.autoUpcoming
@@ -430,19 +480,48 @@ struct TVMixNowPlayingCard: View {
                 Text(showPlayed ? "Previously played" : "Up next")
                     .font(.headline)
                     .foregroundStyle(Theme.fgDim)
-                ForEach(Array(rows.prefix(12).enumerated()), id: \.offset) { i, l in
-                    HStack(spacing: 12) {
-                        Text("\(i + 1)")
-                            .font(.callout.monospacedDigit())
-                            .foregroundStyle(Theme.fgDim)
-                            .frame(width: 36, alignment: .trailing)
-                        Text(l.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
-                        Text("· \(l.artist)").font(.callout).foregroundStyle(Theme.fgDim).lineLimit(1)
-                        Spacer(minLength: 0)
+                // FOCUSABLE rows (no-op Buttons) — tvOS scrolls by focus, so display-only
+                // rows capped the list at a screenful (owner: both queues must scroll).
+                let locked = engine.autoUpcomingLockedCount
+                ForEach(Array(rows.prefix(50).enumerated()), id: \.offset) { i, l in
+                    Button {} label: {
+                        HStack(spacing: 12) {
+                            Text("\(i + 1)")
+                                .font(.callout.monospacedDigit())
+                                .foregroundStyle(Theme.fgDim)
+                                .frame(width: 36, alignment: .trailing)
+                            Text(l.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
+                            Text("· \(l.artist)").font(.callout).foregroundStyle(Theme.fgDim).lineLimit(1)
+                            Spacer(minLength: 0)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    // Long-press (owner's spec): play next / play last / remove (up-next only).
+                    // Committed rows (a deck holds them) omit the menu — moving them is the
+                    // in-mix-precedence violation autoQueueInsert documents.
+                    .contextMenu {
+                        if showPlayed {
+                            Button("Play next") {
+                                engine.autoQueueInsert(
+                                    MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? 180_000),
+                                    placement: .next)
+                            }
+                            Button("Play last") {
+                                engine.autoQueueInsert(
+                                    MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? 180_000),
+                                    placement: .end)
+                            }
+                        } else if i >= locked {
+                            Button("Play next") { engine.autoQueueMoveUpcoming(offset: i, toEnd: false) }
+                            Button("Play last") { engine.autoQueueMoveUpcoming(offset: i, toEnd: true) }
+                            Button("Remove from queue", role: .destructive) {
+                                engine.autoQueueRemoveUpcoming(offset: i)
+                            }
+                        }
                     }
                 }
-                if rows.count > 12 {
-                    Text("+ \(rows.count - 12) more")
+                if rows.count > 50 {
+                    Text("+ \(rows.count - 50) more")
                         .font(.callout)
                         .foregroundStyle(Theme.fgDim)
                         .padding(.leading, 48)
@@ -934,17 +1013,93 @@ struct TVForYouView: View {
 // MARK: - Jukebox (host surface)
 // ============================================================================
 
-/// The TV is the ideal Jukebox HOST: the session QR lives on the big screen where the whole
-/// room can scan it, with the live queue + request inbox beside it. The shared JukeboxView
-/// already renders exactly that (QR section, mode, now playing, requests), so the TV wraps
-/// it unchanged — same store, same server, same decisions.
+/// The TV Jukebox tab, reshaped to the owner's live-session spec (2026-09-02): a LIST of the
+/// account's live jukebox sessions (from the broker's host-authed GET /sessions), and picking
+/// one shows that session's QR FULL-SCREEN — the room scans the television; the phone stays
+/// the hosting/management surface (queue, requests, decisions). A Start row creates a session
+/// through the same store the phone uses.
 struct TVJukeboxView: View {
-    @State private var path = NavigationPath()
+    @Environment(JukeboxStore.self) private var jukebox
+    @State private var rows: [JukeboxClient.SessionRow] = []
+    @State private var loadError: String?
+    @State private var fullScreen: JukeboxClient.SessionRow?
 
     var body: some View {
-        NavigationStack(path: $path) {
-            JukeboxView()
-                .pocketDJDestinations(path: $path)
+        Group {
+            if let s = fullScreen {
+                // FULL-SCREEN QR: the tab's whole point. Any remote press returns to the list.
+                Button { fullScreen = nil } label: {
+                    VStack(spacing: 24) {
+                        JukeboxQRView(text: s.url.absoluteString)
+                            .frame(width: 640, height: 640)
+                        Text(s.name).font(.title2.weight(.semibold)).foregroundStyle(Theme.fg)
+                        Text(s.url.absoluteString).font(.callout).foregroundStyle(Theme.fgDim)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("tv-jukebox-fullscreen")
+            } else {
+                sessionList
+            }
+        }
+        .background(Theme.bg.ignoresSafeArea())
+        .task { await refresh() }
+    }
+
+    private var sessionList: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(spacing: 16) {
+                // The pride jukebox, big, as the landing mark — live-colored while a session
+                // runs (same mode rule as the iOS sidebar row).
+                JukeboxIcon(mode: JukeboxIconMode.resolve(sessionActive: jukebox.session != nil, isPlaying: false))
+                    .frame(width: 44, height: 56)
+                Text("Jukebox sessions")
+                    .font(.title2.weight(.semibold)).foregroundStyle(Theme.fg)
+            }
+            if let loadError {
+                Label(loadError, systemImage: "exclamationmark.triangle")
+                    .font(.callout).foregroundStyle(Theme.danger)
+            }
+            ForEach(rows) { s in
+                Button { fullScreen = s } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: "qrcode")
+                        Text(s.name).lineLimit(1)
+                        Spacer()
+                        Text(s.timeless == true ? "Timeless" : "Live")
+                            .font(.callout).foregroundStyle(Theme.fgDim)
+                    }
+                }
+                .accessibilityIdentifier("tv-jukebox-session-\(s.jukeboxId)")
+            }
+            if rows.isEmpty && loadError == nil {
+                Text("No live sessions.")
+                    .font(.callout).foregroundStyle(Theme.fgDim)
+            }
+            Button {
+                Task {
+                    await jukebox.start(name: "Living Room")
+                    await refresh()
+                }
+            } label: {
+                Label("Start a session", systemImage: "plus.circle")
+            }
+            .accessibilityIdentifier("tv-jukebox-start")
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: 900, alignment: .topLeading)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 64)
+        .padding(.vertical, 40)
+    }
+
+    private func refresh() async {
+        do {
+            rows = try await jukebox.listSessions()
+            loadError = nil
+        } catch {
+            loadError = "Couldn't reach the jukebox server — check Settings."
         }
     }
 }
