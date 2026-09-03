@@ -2014,8 +2014,18 @@ final class RipsStore {
     /// these are app-managed offline files the future offline player / live-mixer reads).
     /// Mirrors `documentsDirectory()` but in Application Support, under `burns/`.
     nonisolated static func burnsDirectory() throws -> URL {
+        // tvOS: Application Support is NOT writable app storage — Caches is the platform's
+        // home for large re-downloadable media, which burned audio exactly is (purge =
+        // re-download; the storage manager prunes by least-recently-played anyway). Field
+        // evidence 2026-09-02: every burn of a 391-track TV mix missed inside one second with
+        // "no item recorded" — the folder resolve/probe died before a single download ran.
+        #if os(tvOS)
+        let base = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask,
+                                               appropriateFor: nil, create: true)
+        #else
         let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
                                                appropriateFor: nil, create: true)
+        #endif
         let dir = base.appendingPathComponent("burns", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir
