@@ -2010,22 +2010,50 @@ final class RipsStore {
         return (data, entry)
     }
 
+    /// ONE platform truth for "app-managed PocketDJ state lives in Caches, not Application
+    /// Support" — true on tvOS only. Field evidence 2026-09-02: on Apple TV hardware the
+    /// App-Support folder resolve/probe FAILED outright (every burn of a 391-track TV mix
+    /// missed inside one second with "no item recorded"), and Caches is tvOS's mandated home
+    /// for large purgeable media anyway. Consumed by `burnsDirectory()` (the media),
+    /// `BurnStore.defaultURL` (the ledger — task #53), and `CatalogService.cacheDirectory`
+    /// (the offline catalog cache — task #53); exposed as a `preferCaches` default argument
+    /// at each site so the tvOS branch stays unit-testable from the iOS bundle.
+    nonisolated static var platformStoresInCaches: Bool {
+        #if os(tvOS)
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    /// tvOS field diagnostic (task #53): ONE launch-time probe of whether Application
+    /// Support is actually writable on this device. The cloud-registered JSON stores keep
+    /// their App-Support paths (their launch pull self-heals a tmp fallback), but hardware
+    /// should TELL us which installs are running on the fallback — the simulator hides this
+    /// class of failure entirely. Probe-write + delete; any throw ⇒ not writable.
+    nonisolated static func probeAppSupportWritable() -> Bool {
+        guard let base = try? FileManager.default.url(for: .applicationSupportDirectory,
+                                                      in: .userDomainMask, appropriateFor: nil,
+                                                      create: true) else { return false }
+        let probe = base.appendingPathComponent(".pdj-write-probe")
+        do {
+            try Data("ok".utf8).write(to: probe, options: .atomic)
+            try? FileManager.default.removeItem(at: probe)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// App-managed storage for burned audio + sidecars (NOT user-visible Documents —
     /// these are app-managed offline files the future offline player / live-mixer reads).
-    /// Mirrors `documentsDirectory()` but in Application Support, under `burns/`.
-    nonisolated static func burnsDirectory() throws -> URL {
-        // tvOS: Application Support is NOT writable app storage — Caches is the platform's
-        // home for large re-downloadable media, which burned audio exactly is (purge =
-        // re-download; the storage manager prunes by least-recently-played anyway). Field
-        // evidence 2026-09-02: every burn of a 391-track TV mix missed inside one second with
-        // "no item recorded" — the folder resolve/probe died before a single download ran.
-        #if os(tvOS)
-        let base = try FileManager.default.url(for: .cachesDirectory, in: .userDomainMask,
-                                               appropriateFor: nil, create: true)
-        #else
-        let base = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
-                                               appropriateFor: nil, create: true)
-        #endif
+    /// Mirrors `documentsDirectory()` but under `burns/` in Application Support — or in
+    /// Caches where the platform demands it (`platformStoresInCaches`): Caches is the right
+    /// semantics for re-downloadable media anyway (purge = re-download; the storage manager
+    /// prunes by least-recently-played).
+    nonisolated static func burnsDirectory(preferCaches: Bool = platformStoresInCaches) throws -> URL {
+        let base = try FileManager.default.url(for: preferCaches ? .cachesDirectory : .applicationSupportDirectory,
+                                               in: .userDomainMask, appropriateFor: nil, create: true)
         let dir = base.appendingPathComponent("burns", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir

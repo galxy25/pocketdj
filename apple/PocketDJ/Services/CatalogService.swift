@@ -81,14 +81,19 @@ struct CatalogService: Sendable {
 
     // MARK: Offline disk cache (per source URL)
 
-    /// The cache directory (`Application Support/catalog-cache/`). A `dir` override is the
-    /// unit-test seam (a temp dir), so the round-trip can be tested without Application Support.
-    static func cacheDirectory(_ dir: URL? = nil) -> URL? {
+    /// The cache directory (`catalog-cache/` under Application Support — or under Caches
+    /// where the platform stores in Caches: tvOS refuses App-Support writes on hardware
+    /// (the burns-dir lesson, 316cc3cd), and without this cache every TV launch is a full
+    /// network catalog load; it IS a cache, so Caches purging it is by-design, task #53).
+    /// A `dir` override is the unit-test seam (a temp dir), so the round-trip can be
+    /// tested without Application Support; `preferCaches` is the tvOS-branch seam.
+    static func cacheDirectory(_ dir: URL? = nil,
+                               preferCaches: Bool = RipsStore.platformStoresInCaches) -> URL? {
         if let dir {
             try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
             return dir
         }
-        guard let base = try? FileManager.default.url(for: .applicationSupportDirectory,
+        guard let base = try? FileManager.default.url(for: preferCaches ? .cachesDirectory : .applicationSupportDirectory,
                                                       in: .userDomainMask, appropriateFor: nil, create: true)
         else { return nil }
         let d = base.appendingPathComponent("catalog-cache", isDirectory: true)

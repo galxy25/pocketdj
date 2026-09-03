@@ -472,6 +472,28 @@ struct PocketDJApp: App {
         // Remote telemetry persists across launches too — the store is the truth, the logger
         // mirrors it (`DiagLog.telemetryEnabled`; the TestFlight/DEBUG gate applies inside).
         DiagLog.shared.telemetryEnabled = settings.remoteTelemetryEnabled
+        #if os(tvOS)
+        // tvOS storage recovery + field diagnostics (task #53).
+        // 1) Ledger adoption: the pre-#53 ledger lived in App Support (unwritable on TV
+        //    hardware) while the media lives in Caches — rebuild ledger entries for any
+        //    burned files a lost ledger left orphaned. A healthy launch scans one directory
+        //    listing and touches nothing.
+        //    Fixture runs skip it: the UI-test ledger is a throwaway (`launchURL`), and a
+        //    scan against the real sim burns dir would adopt leftover files into it.
+        let adoptedBurns = ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] == nil
+            ? burns.adoptOrphanedBurns() : 0
+        if adoptedBurns > 0 {
+            DiagLog.shared.log("storage", "adopted \(adoptedBurns) orphaned burned song(s) from the Caches burns dir")
+        }
+        // 2) ONE write probe of App Support, so hardware TELLS us when the App-Support JSON
+        //    stores (collections/play-stats/sessions/… — cloud-registered, self-healing)
+        //    are actually running on their tmp fallback. The simulator hides this entirely.
+        if !RipsStore.probeAppSupportWritable() {
+            DiagLog.shared.log("storage",
+                "App-Support write probe FAILED — App-Support JSON stores fall back to tmp this launch " +
+                "(cloud-registered docs re-pull at launch; burn ledger + catalog cache live in Caches)")
+        }
+        #endif
         // Now Playing trace → the Settings ▸ Debug capture buffer (os_log is unconditional;
         // the mirror only adds lines to the exportable session while capture is on) — AND the
         // remote telemetry stream, where the 1 Hz card writes carry exactly the pos/dur/rate

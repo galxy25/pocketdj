@@ -260,6 +260,22 @@ final class CatalogServiceCacheTests: XCTestCase {
         XCTAssertNotNil(CatalogService.cacheFileURL(for: url, in: dir))
     }
 
+    /// Task #53: on tvOS (`preferCaches`) the offline catalog cache lives under Caches —
+    /// App Support is unwritable on TV hardware, and without this cache every TV launch is
+    /// a full network catalog load. Everywhere else it stays in Application Support.
+    func testCacheDirectoryFollowsThePlatformStorageHome() {
+        let caches = CatalogService.cacheDirectory(nil, preferCaches: true)
+        XCTAssertEqual(caches?.lastPathComponent, "catalog-cache")
+        XCTAssertTrue(caches?.path.contains("/Caches/") == true,
+                      "tvOS catalog cache home is Caches: \(caches?.path ?? "nil")")
+        var isDir: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: caches!.path, isDirectory: &isDir) && isDir.boolValue,
+                      "the directory is actually created")
+        let support = CatalogService.cacheDirectory(nil, preferCaches: false)
+        XCTAssertTrue(support?.path.contains("/Application Support/") == true)
+        XCTAssertEqual(support?.lastPathComponent, "catalog-cache")
+    }
+
     func testWriteCachePersistsAndLoadsValidator() {
         let dir = tempDir()
         let url = URL(string: "https://cdn.test/current-index.json")!

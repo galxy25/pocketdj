@@ -272,4 +272,143 @@ final class BurnStoreStorageTests: XCTestCase {
         XCTAssertEqual(store.readyBurnedIds(in: ["s1", "s2", "s3", "nope"]).sorted(), ["s1", "s2"])
         XCTAssertEqual(store.approximateBytes(forSongs: ["s1", "s2"]), 100)
     }
+
+    // MARK: Ledger location (task #53 — tvOS ledger lives WITH the media, in Caches)
+
+    func testDefaultURLFollowsThePlatformStorageHome() {
+        let caches = BurnStore.defaultURL(preferCaches: true)
+        XCTAssertTrue(caches.path.contains("/Caches/"), "tvOS ledger home is Caches: \(caches.path)")
+        XCTAssertEqual(caches.lastPathComponent, "pocketdj-burns.json")
+        let support = BurnStore.defaultURL(preferCaches: false)
+        XCTAssertTrue(support.path.contains("/Application Support/"),
+                      "everywhere else the ledger stays in App Support: \(support.path)")
+        XCTAssertEqual(support.lastPathComponent, "pocketdj-burns.json")
+    }
+
+    func testLegacyLedgerURLExistsOnlyWhereTheHomeMoved() {
+        XCTAssertNil(BurnStore.legacyLedgerURL(preferCaches: false),
+                     "no migration source where the location didn't change")
+        let legacy = BurnStore.legacyLedgerURL(preferCaches: true)
+        XCTAssertTrue(legacy?.path.contains("/Application Support/") == true)
+        XCTAssertEqual(legacy?.lastPathComponent, "pocketdj-burns.json")
+    }
+
+    func testLegacyLedgerMigratesOnceToTheNewHome() throws {
+        let legacyURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-legacy-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: legacyURL) }
+        let doc = BurnStore.Document(items: [item("s1", audio: "a-s1.mp3", bytes: 10)])
+        try JSONEncoder().encode(doc).write(to: legacyURL)
+
+        // Nothing at the NEW path + a legacy ledger => adopt it and re-persist at the new home.
+        let store = BurnStore(rips: RipsStore(), fileURL: indexURL, legacyFileURL: legacyURL)
+        XCTAssertEqual(store.items.count, 1)
+        XCTAssertNotNil(store.items["s1"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: indexURL.path),
+                      "the migrated ledger is re-persisted at the NEW home immediately")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: legacyURL.path),
+                      "read-only migration — a rollback build still finds its ledger")
+
+        // A ledger at the new path WINS — legacy is only ever a fallback.
+        let doc2 = BurnStore.Document(items: [item("s2", audio: "a-s2.mp3", bytes: 20)])
+        try JSONEncoder().encode(doc2).write(to: indexURL)
+        let store2 = BurnStore(rips: RipsStore(), fileURL: indexURL, legacyFileURL: legacyURL)
+        XCTAssertNotNil(store2.items["s2"])
+        XCTAssertNil(store2.items["s1"], "legacy must not merge over a live ledger")
+    }
+
+    // MARK: Orphan ADOPTION (task #53 — rebuild the ledger from burned files on disk)
+
+    /// A REAL digital burn's on-disk pair (sidecar built by `buildSidecar` itself, so the
+    /// round-trip is against exactly what the burn path writes), no ledger => the scan
+    /// rebuilds the entry: id from the filename suffix, title/artist from the sidecar's
+    /// first line, bpm/key/camelot from its Raw JSON manifestEntry.
+    func testAdoptionRebuildsADigitalBurnFromItsSidecar() throws {
+        let entry = RipsStore.ManifestEntry(key: "rips/sng_abc.mp3", source: "digital",
+                                            durationMs: 200_000, bpm: 120.5,
+                                            musicalKey: "A min", camelot: "8A")
+        let sidecar = BurnStore.buildSidecar(
+            songId: "sng_abc",
+            fallback: (id: "sng_abc", title: "The Song", artist: "The Artist"),
+            song: nil, album: nil, entry: entry)
+        try Data(sidecar.utf8).write(to: dir.appendingPathComponent("The Artist-The Song-sng_abc.txt"))
+        try Data(repeating: 0, count: 10).write(to: dir.appendingPathComponent("The Artist-The Song-sng_abc.mp3"))
+
+        let store = BurnStore(rips: RipsStore(), fileURL: indexURL)   // ledger file absent
+        store.appBurnsDirOverride = dir
+        XCTAssertEqual(store.adoptOrphanedBurns(), 1)
+        let it = try XCTUnwrap(store.items["sng_abc"])
+        XCTAssertEqual(it.title, "The Song")
+        XCTAssertEqual(it.artist, "The Artist")
+        XCTAssertEqual(it.audioFileName, "The Artist-The Song-sng_abc.mp3")
+        XCTAssertEqual(it.sidecarFileName, "The Artist-The Song-sng_abc.txt")
+        XCTAssertEqual(it.state, .ready)
+        XCTAssertEqual(it.bytes, 10)
+        XCTAssertEqual(it.source, "digital")
+        XCTAssertEqual(it.bpm, 120.5)
+        XCTAssertEqual(it.camelot, "8A")
+        XCTAssertEqual(it.durationMs, 200_000)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: indexURL.path),
+                      "an adoption persists the rebuilt ledger")
+        // The adopted item counts like any other burn (usage sees it).
+        XCTAssertEqual(store.burnedUsageBytes(), 10 + sidecar.utf8.count)
+    }
+
+    /// ANALOG: the playback source is the SHARED album file (via the manifest key's
+    /// basename) with the seek offset from the Raw JSON — the per-song cut (which carries
+    /// the same `-<songId>` suffix a digital file would) is recorded as the CUT, never
+    /// adopted as the audio.
+    func testAdoptionRecoversAnalogViaTheSharedAlbumFileNotTheCut() throws {
+        let entry = RipsStore.ManifestEntry(key: "rips/alb_9.mp3", source: "analog",
+                                            startMs: 62_000, durationMs: 180_000)
+        let sidecar = BurnStore.buildSidecar(
+            songId: "sng_a1",
+            fallback: (id: "sng_a1", title: "Side A Cut", artist: "Vinyl Artist"),
+            song: nil, album: nil, entry: entry)
+        try Data(sidecar.utf8).write(to: dir.appendingPathComponent("Vinyl Artist-Side A Cut-sng_a1.txt"))
+        try Data(repeating: 0, count: 30).write(to: dir.appendingPathComponent("Vinyl Artist-Album-1975-alb_9.mp3"))
+        try Data(repeating: 0, count: 12).write(to: dir.appendingPathComponent("Vinyl Artist-Side A Cut-sng_a1.mp3"))
+
+        let store = BurnStore(rips: RipsStore(), fileURL: indexURL)
+        store.appBurnsDirOverride = dir
+        XCTAssertEqual(store.adoptOrphanedBurns(), 1)
+        let it = try XCTUnwrap(store.items["sng_a1"])
+        XCTAssertEqual(it.source, "analog")
+        XCTAssertEqual(it.audioFileName, "Vinyl Artist-Album-1975-alb_9.mp3",
+                       "the shared album file is the playback source")
+        XCTAssertEqual(it.startMs, 62_000, "the analog seek offset survives via the Raw JSON")
+        XCTAssertEqual(it.cutFileName, "Vinyl Artist-Side A Cut-sng_a1.mp3",
+                       "the per-song cut is filed as the cut, not the audio")
+        XCTAssertEqual(it.bytes, 30)
+    }
+
+    /// Old/seeded naming (`<songId>.mp3` + `<songId>.txt`, no descriptive prefix) adopts
+    /// too — the whole basename IS the id, and a header-only sidecar still yields
+    /// title/artist from its first line.
+    func testAdoptionHandlesBareSuffixNamesAndHeaderOnlySidecars() throws {
+        try Data("Old Artist \u{2014} Old Song\n".utf8).write(to: dir.appendingPathComponent("sng_old.txt"))
+        try Data(repeating: 0, count: 7).write(to: dir.appendingPathComponent("sng_old.mp3"))
+        let store = BurnStore(rips: RipsStore(), fileURL: indexURL)
+        store.appBurnsDirOverride = dir
+        XCTAssertEqual(store.adoptOrphanedBurns(), 1)
+        let it = try XCTUnwrap(store.items["sng_old"])
+        XCTAssertEqual(it.artist, "Old Artist")
+        XCTAssertEqual(it.title, "Old Song")
+        XCTAssertEqual(it.audioFileName, "sng_old.mp3")
+    }
+
+    /// Safety rails: a ledgered song is NEVER overwritten by adoption, a sidecar with no
+    /// locatable audio adopts nothing (conservative — the song just re-burns), and a
+    /// healthy store's scan is a no-op.
+    func testAdoptionNeverOverwritesAndSkipsAudiolessSidecars() throws {
+        let store = try makeStore([item("s1", audio: "a-s1.mp3", bytes: 10)])
+        // Orphan sidecar with NO audio anywhere on disk.
+        try Data("Ghost \u{2014} Ghost\n".utf8).write(to: dir.appendingPathComponent("Ghost-Ghost-sng_ghost.txt"))
+        // A rogue sidecar for the ALREADY-LEDGERED song under a different name.
+        try Data("Impostor \u{2014} Impostor\n".utf8).write(to: dir.appendingPathComponent("Impostor-s1.txt"))
+        XCTAssertEqual(store.adoptOrphanedBurns(), 0)
+        XCTAssertEqual(store.items.count, 1)
+        XCTAssertEqual(store.items["s1"]?.title, "T-s1", "the ledgered record is untouched")
+        XCTAssertNil(store.items["sng_ghost"])
+    }
 }

@@ -170,7 +170,9 @@ final class BurnStore {
     /// (all existing tests), `burn(...)` uses today's in-process serial loop unchanged.
     let transfers: TransferCoordinator?
 
-    init(rips: RipsStore, transfers: TransferCoordinator? = nil, fileURL: URL = BurnStore.defaultURL()) {
+    init(rips: RipsStore, transfers: TransferCoordinator? = nil,
+         fileURL: URL = BurnStore.defaultURL(),
+         legacyFileURL: URL? = BurnStore.legacyLedgerURL()) {
         self.rips = rips
         self.transfers = transfers
         self.fileURL = fileURL
@@ -179,6 +181,18 @@ final class BurnStore {
             items = Dictionary(doc.items.map { ($0.songId, $0) }, uniquingKeysWith: { first, _ in first })
             pendingAfterRip = Dictionary((doc.pendingAfterRip ?? []).map { ($0.songId, $0) },
                                          uniquingKeysWith: { first, _ in first })
+        } else if let legacyFileURL,
+                  let data = try? Data(contentsOf: legacyFileURL),
+                  let doc = try? JSONDecoder().decode(Document.self, from: data) {
+            // Ledger re-home (task #53): nothing at the new (Caches) path but a pre-#53
+            // ledger exists in App Support (tvOS SIMULATOR installs; any TV whose App
+            // Support happened to work) — adopt it once and re-persist at the new home.
+            // The legacy file is deliberately left in place (read-only migration: if this
+            // build is rolled back, the old build still finds its ledger).
+            items = Dictionary(doc.items.map { ($0.songId, $0) }, uniquingKeysWith: { first, _ in first })
+            pendingAfterRip = Dictionary((doc.pendingAfterRip ?? []).map { ($0.songId, $0) },
+                                         uniquingKeysWith: { first, _ in first })
+            save()
         }
         // Wire the coordinator's finalize hooks back to this store (the delegate calls these on
         // the main actor when a background download finishes / fails). `wireTransfers()` also
@@ -272,11 +286,28 @@ final class BurnStore {
         // resolves the destination purely from `record.burnFolderBookmark` with no main-actor hop.
     }
 
-    nonisolated static func defaultURL() -> URL {
-        let dir = (try? FileManager.default.url(for: .applicationSupportDirectory,
+    /// The burn LEDGER's home. It must live WITH the media it indexes: tvOS media moved to
+    /// Caches (316cc3cd) while the ledger stayed in App Support — which is exactly the dir
+    /// tvOS hardware refuses to write — so every TV relaunch dropped the ledger to the tmp
+    /// fallback and the burned files in Caches went invisible/orphaned (task #53). Same
+    /// `preferCaches` seam as `RipsStore.burnsDirectory` so the tvOS branch is testable
+    /// from the iOS bundle.
+    nonisolated static func defaultURL(preferCaches: Bool = RipsStore.platformStoresInCaches) -> URL {
+        let dir = (try? FileManager.default.url(for: preferCaches ? .cachesDirectory : .applicationSupportDirectory,
                                                 in: .userDomainMask, appropriateFor: nil, create: true))
             ?? FileManager.default.temporaryDirectory
         return dir.appendingPathComponent("pocketdj-burns.json")
+    }
+
+    /// The pre-#53 ledger location (Application Support) — a READ-ONCE migration source on
+    /// the platforms whose ledger moved to Caches, nil where the location didn't change (no
+    /// migration to do). `create: false`: a migration probe must never mutate the filesystem
+    /// (App-Support creation is the very thing that fails on TV hardware).
+    nonisolated static func legacyLedgerURL(preferCaches: Bool = RipsStore.platformStoresInCaches) -> URL? {
+        guard preferCaches else { return nil }
+        let dir = try? FileManager.default.url(for: .applicationSupportDirectory,
+                                               in: .userDomainMask, appropriateFor: nil, create: false)
+        return dir?.appendingPathComponent("pocketdj-burns.json")
     }
 
     /// UI tests get an isolated, fresh burn index (mirrors CollectionsStore.launchURL).
@@ -785,6 +816,137 @@ final class BurnStore {
     /// should go before any real burned song is evicted.
     func sweepOrphanAuxFiles() {
         sweepAuxFiles { self.items[$0] == nil }
+    }
+
+    // MARK: Orphan ADOPTION (tvOS ledger recovery — task #53)
+
+    /// Rebuild ledger entries for burned files found in the app-managed burns dir with NO
+    /// ledger record. The tvOS failure mode this heals: media lives in Caches (316cc3cd)
+    /// but the pre-#53 ledger lived in App Support — the dir TV hardware refuses to write —
+    /// so a relaunch lost the ledger while every burned file survived. Wired at tvOS launch
+    /// (PocketDJApp); a healthy launch touches nothing (every sidecar is ledger-claimed, so
+    /// the scan is one directory listing and zero file reads).
+    ///
+    /// Recovery sources, per the burn write path's own contract:
+    ///   • songId — the sidecar filename's stable id suffix (`…-<songId>.txt`, task
+    ///     CRITIC-A: the descriptive prefix is sanitized so "-" never appears inside a
+    ///     token; older/seeded burns are bare `<songId>.txt`).
+    ///   • title/artist — the sidecar's first line ("Artist — Title", `buildSidecar`).
+    ///   • bpm/key/camelot/duration/startMs/source — the sidecar's "-- Raw JSON --"
+    ///     `manifestEntry` block, when present.
+    ///   • audio file — digital: the `…-<songId>.mp3` twin; analog: the shared album file
+    ///     via the manifest key's basename (`…-<albumId>.mp3`), with the per-song cut
+    ///     (also suffixed `-<songId>.mp3`) recorded as `cutFileName`, never as the audio.
+    /// CONSERVATIVE by design: a sidecar with no locatable audio adopts nothing (the song
+    /// simply re-burns), and an id already in the ledger is never overwritten. Returns the
+    /// number of songs adopted.
+    @discardableResult
+    func adoptOrphanedBurns() -> Int {
+        guard let dir = appBurnsDir(),
+              let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return 0 }
+        // Audio candidates by their stable id suffix. Stems ("stem-<id>-<part>.mp3") can
+        // never collide with a songId suffix, but exclude them anyway — belt and braces.
+        var audioBySuffix: [String: String] = [:]
+        for name in names where (name.hasSuffix(".mp3") || name.hasSuffix(".wav")) && !name.hasPrefix("stem-") {
+            let base = (name as NSString).deletingPathExtension
+            // First writer wins — identical suffixes should not exist; determinism matters more.
+            let suffix = Self.stableIdSuffix(ofBaseName: base)
+            if audioBySuffix[suffix] == nil { audioBySuffix[suffix] = name }
+        }
+        let claimedSidecars = Set(items.values.map(\.sidecarFileName))
+        var adopted = 0
+        for name in names where name.hasSuffix(".txt") {
+            guard !claimedSidecars.contains(name) else { continue }
+            let songId = Self.stableIdSuffix(ofBaseName: (name as NSString).deletingPathExtension)
+            guard !songId.isEmpty, items[songId] == nil else { continue }
+            guard let text = try? String(contentsOf: dir.appendingPathComponent(name), encoding: .utf8)
+            else { continue }
+            let parsed = Self.parseSidecarForAdoption(text)
+            let entry = parsed.entry
+            let source = entry?.source ?? "digital"
+            var audioName: String?
+            var cutName: String?
+            if source == "analog", let entry {
+                // The playback source is the SHARED album file (seek via startMs) — the
+                // per-song cut is export-only and must not be adopted as the audio.
+                let albumToken = ((entry.key as NSString).lastPathComponent as NSString).deletingPathExtension
+                if !albumToken.isEmpty { audioName = audioBySuffix[albumToken] }
+                if audioBySuffix[songId] != audioName { cutName = audioBySuffix[songId] }
+            } else {
+                audioName = audioBySuffix[songId]
+            }
+            guard let audioName else { continue }
+            let audioURL = dir.appendingPathComponent(audioName)
+            let attrs = try? FileManager.default.attributesOfItem(atPath: audioURL.path)
+            let bytes = (attrs?[.size] as? Int) ?? 0
+            guard bytes > 0 else { continue }
+            let downloadedMs = ((attrs?[.modificationDate] as? Date)?.timeIntervalSince1970).map { $0 * 1000 } ?? now
+            items[songId] = BurnItem(
+                songId: songId,
+                title: parsed.title ?? songId, artist: parsed.artist ?? "",
+                audioFileName: audioName, sidecarFileName: name,
+                source: source,
+                bpm: entry?.bpm, musicalKey: entry?.musicalKey, camelot: entry?.camelot,
+                durationMs: entry?.durationMs,
+                startMs: source == "analog" ? entry?.startMs : nil,
+                bytes: bytes, rippedAt: entry?.rippedAt,
+                downloadedAt: downloadedMs, state: .ready, error: nil,
+                wasAppStorage: true,
+                cutFileName: cutName,
+                // The true S3 Last-Modified is gone with the ledger; the file's own mtime
+                // keeps the "re-pull when S3 is newer" comparison working (a genuinely
+                // newer remote cut still re-downloads on the next burn pass).
+                cutDownloadedAt: cutName == nil ? nil : downloadedMs)
+            adopted += 1
+        }
+        if adopted > 0 { save() }
+        return adopted
+    }
+
+    /// The stable id token a burned filename ends in: everything after the LAST "-" of the
+    /// basename — safe because `sanitizeToken` strips "-" INSIDE descriptive tokens (a value
+    /// containing "-" can't fake extra tokens) — or the whole basename for suffix-only names
+    /// (`<songId>.mp3`, older burns + seeded fixtures).
+    nonisolated static func stableIdSuffix(ofBaseName base: String) -> String {
+        if let r = base.range(of: "-", options: .backwards) { return String(base[r.upperBound...]) }
+        return base
+    }
+
+    /// What `adoptOrphanedBurns` recovers from one sidecar. Header parse only — the ledger
+    /// stays the machine contract; this is disaster recovery, not a data path.
+    struct AdoptedSidecar {
+        var artist: String?
+        var title: String?
+        var entry: RipsStore.ManifestEntry?
+    }
+
+    /// Parse a sidecar for adoption: first line "Artist — Title" (the em-dash separator
+    /// `buildSidecar` writes; split on the FIRST occurrence so a title containing " — "
+    /// survives) + the trailing "-- Raw JSON --" block's `manifestEntry` (bpm/key/camelot/
+    /// startMs/source), which `buildSidecar` embeds precisely so header and JSON agree.
+    nonisolated static func parseSidecarForAdoption(_ text: String) -> AdoptedSidecar {
+        var out = AdoptedSidecar()
+        if let first = text.split(separator: "\n", omittingEmptySubsequences: false).first {
+            let line = String(first)
+            if let r = line.range(of: " — ") {
+                let artist = String(line[..<r.lowerBound]).trimmingCharacters(in: .whitespaces)
+                let title = String(line[r.upperBound...]).trimmingCharacters(in: .whitespaces)
+                out.artist = artist.isEmpty || artist == "—" ? nil : artist
+                out.title = title.isEmpty || title == "—" ? nil : title
+            }
+        }
+        if let marker = text.range(of: "-- Raw JSON --") {
+            let jsonText = String(text[marker.upperBound...])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if let data = jsonText.data(using: .utf8),
+               let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+               let entryObj = obj["manifestEntry"],
+               JSONSerialization.isValidJSONObject(entryObj),
+               let entryData = try? JSONSerialization.data(withJSONObject: entryObj) {
+                out.entry = try? JSONDecoder().decode(RipsStore.ManifestEntry.self, from: entryData)
+            }
+        }
+        return out
     }
 
     /// Total on-disk bytes of burned media (audio + sidecars + cuts + stems + beat grids)
