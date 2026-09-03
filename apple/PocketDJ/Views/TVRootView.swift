@@ -946,6 +946,16 @@ struct TVMixLiveSurface: View {
                 }
                 .accessibilityIdentifier("tv-mix-skip-slow")
                 TVRepeatButton(a11yId: "tv-mix-repeat")
+                // A restored/parked session claims this card the instant it materializes
+                // (autoMixing flips true before anything is loaded — MixEngine.
+                // restoreAutoSuspended), with no LABELED way back to the deck pickers: "Stop"
+                // does it mechanically (stopping flips engine.autoMixing false and the setup
+                // card re-renders), but a stop button doesn't read as "pick a different
+                // collection" (Levi's CarPlay report, 2026-09-03 — same card shape, same gap).
+                Button { engine.stopAutoMix() } label: {
+                    Label("New Mix", systemImage: "shuffle")
+                }
+                .accessibilityIdentifier("tv-mix-new")
                 Button(role: .destructive) { engine.stopAutoMix() } label: {
                     Label("Stop", systemImage: "stop.fill")
                 }

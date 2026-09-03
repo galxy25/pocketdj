@@ -305,6 +305,18 @@ final class CarPlayController {
                                detailText: paused ? "Paused" : "Playing")
         state.handler = { [weak self] _, completion in self?.showNowPlaying(); completion() }
         rows.append(state)
+        // A restored/parked session claims this tab the instant it materializes (autoMixing
+        // flips true before anything is loaded — MixEngine.restoreAutoSuspended), which had NO
+        // labeled way back to the Deck A/B picker: "Stop Mix" does it mechanically (stopping
+        // flips autoMixRunning() false and the setup card re-renders), but nobody reads a stop
+        // button as "pick a different collection" (Levi, 2026-09-03: "wouldn't let me select
+        // any collection for deck A" — he was looking at THIS card, not a broken picker).
+        let newMix = CPListItem(text: "🔀 New Mix", detailText: "Pick a different collection")
+        newMix.handler = { [weak self] _, completion in
+            DiagLog.shared.telemetry("car", "mix new-mix tapped (was \(paused ? "paused" : "playing"))")
+            model.stopMix(); self?.refreshMixTab(); completion()
+        }
+        rows.append(newMix)
         let pause = CPListItem(text: paused ? "▶ Resume Mix" : "⏸ Pause Mix", detailText: nil)
         pause.handler = { [weak self] _, completion in
             // Decide at TAP time, not render time: even a momentarily-stale row must act on the
@@ -361,6 +373,13 @@ final class CarPlayController {
     /// offers "Same as Deck A" (clears the override).
     private func pushCratePicker(deck: MixDeck, model: CarPlayModel) {
         let crates = model.mixCrates()
+        // Field diagnosability (Levi, 2026-09-03: "wouldn't let me select any collection for
+        // deck A" — the picker itself logged NOTHING, so a genuinely empty list was
+        // indistinguishable from a tap that didn't land). The picker only ever lists pockets +
+        // set lists (never playlists, task #61) — streaming the counts here means the next
+        // report proves which case it was in one line.
+        DiagLog.shared.telemetry(
+            "car", "present deck \(deck == .a ? "A" : "B") picker pockets=\(crates.pockets.count) setlists=\(crates.setlists.count)")
         // `[weak self]`: these closures escape into CPListItem handlers on a template this
         // controller retains — a strong self here is a controller↔template cycle that would
         // leak the whole CarPlay graph past disconnect.

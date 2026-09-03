@@ -167,12 +167,26 @@ final class DiscoverLibraryWriteOutcomeTests: XCTestCase {
             return XCTFail("unauthorized must be .skipped, got \(outcome)")
         }
         XCTAssertTrue(lib.albumWrites.isEmpty, "no write may be attempted unauthorized")
-        XCTAssertTrue(reason.contains("authorized"), reason)
         XCTAssertEqual(adds.albums.first?.libraryWrite, outcome.storageToken)
+        #if os(macOS)
+        // macOS has NO in-app MusicKit library write: `canAddToLibrary` is structurally
+        // false here, so an "unauthorized contributor" is indistinguishable from the
+        // platform's normal state. The skip names the open-in-Music fallback, and NO error
+        // is surfaced because opening Music.app IS the resolution — `RipsStore
+        // .surfaceLibraryWriteOutcome` returns early for a `.skipped` on macOS. The
+        // authorization-heal below is an iOS/visionOS-only contract.
+        XCTAssertTrue(reason.contains("Mac"), reason)
+        XCTAssertNil(rips.discoverError,
+                     "the Mac fallback opens Music.app; a skip there is not an error: \(rips.discoverError ?? "nil")")
+        #else
+        // iOS/visionOS: canAddToLibrary == an authorized MusicKit session, so the skip
+        // names the auth heal and the tap surfaces the actionable Settings message.
+        XCTAssertTrue(reason.contains("authorized"), reason)
         XCTAssertTrue(rips.discoverError?.contains("authorized") == true,
                       "the tap must surface the auth heal: \(rips.discoverError ?? "nil")")
         XCTAssertTrue(rips.discoverError?.contains("Settings") == true,
                       "\(rips.discoverError ?? "nil")")
+        #endif
     }
 
     /// SUCCESS: the write returns AND the membership probe confirms → "confirmed" token,

@@ -108,6 +108,16 @@ final class PuzzleMacLayoutTests: XCTestCase {
         let window = NSWindow(contentRect: host.frame, styleMask: [.titled, .resizable],
                               backing: .buffered, defer: false)
         window.contentView = host
+        // Order the window in (no display server needed): without this an offscreen
+        // `NSHostingView` never "appears" in the headless GUI-runner host, so SwiftUI never
+        // builds the platform ACCESSIBILITY tree and the walk below finds ZERO ids — every
+        // assertion failed "… is not in the layout at all — ids: []" the first time the macOS
+        // suite ran in CI. An interactive/Aqua session happened to build the tree without
+        // this, which is why it passed when first written. `MacScreenshotRenderTests` learned
+        // the identical lesson for its offscreen render.
+        window.orderFrontRegardless()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
         Self.hosts.append(window)
         // SwiftUI lays out asynchronously and the screen's `.task` loads the draft settings;
         // pump the run loop until it settles.
@@ -119,7 +129,25 @@ final class PuzzleMacLayoutTests: XCTestCase {
 
         var found: [String: CGRect] = [:]
         walk(host as AnyObject, into: &found, host: host)
+        if found.isEmpty {
+            print("PDJ-DIAG: host=\(host) subviews=\(host.subviews.count) isHiddenOrHasHiddenAncestor=\(host.isHiddenOrHasHiddenAncestor) window=\(String(describing: host.window)) windowNumber=\(host.window?.windowNumber ?? -999) isVisible=\(host.window?.isVisible ?? false)")
+            dumpTree(host as AnyObject, depth: 0)
+        }
         return found
+    }
+
+    /// DIAGNOSTIC ONLY: dump every node's class + role + identifier + child count regardless
+    /// of whether it carries an identifier, to see whether the walk reaches real content at all.
+    private func dumpTree(_ element: AnyObject, depth: Int) {
+        guard depth < 6 else { return }
+        let cls = String(describing: type(of: element))
+        let role = (element as? NSAccessibility)?.accessibilityRole()?.rawValue ?? "?"
+        let id = element.accessibilityIdentifier?() ?? "(nil)"
+        let kids = element.accessibilityChildren?() ?? []
+        print("PDJ-DIAG:\(String(repeating: "  ", count: depth))[\(cls)] role=\(role) id=\(id) kids=\(kids.count)")
+        for child in kids {
+            dumpTree(child as AnyObject, depth: depth + 1)
+        }
     }
 
     /// Depth-first walk of the hosted view's accessibility tree, keeping the FIRST frame seen
