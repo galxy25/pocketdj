@@ -72,9 +72,10 @@ struct TVRootView: View {
                 .tabItem { Label(TVTab.forYou.rawValue, systemImage: TVTab.forYou.icon) }
                 .tag(TVTab.forYou)
             TVJukeboxView()
-                // The PRIDE JUKEBOX (the iOS sidebar's mark, multicolor when a session is
-                // live) instead of the generic qrcode glyph — owner's call, 2026-09-02.
-                .tabItem { Label { Text(TVTab.jukebox.rawValue) } icon: { JukeboxIcon(mode: .staticIcon) } }
+                // tabItem honors only Text/Image — the custom pride-jukebox VIEW rendered as a
+                // BLANK tab (Levi, live 2026-09-02). The tab keeps the qrcode symbol; the pride
+                // jukebox lives on the landing page, where a real view context renders it.
+                .tabItem { Label(TVTab.jukebox.rawValue, systemImage: TVTab.jukebox.icon) }
                 .tag(TVTab.jukebox)
             TVSettingsView()
                 .tabItem { Label(TVTab.settings.rawValue, systemImage: TVTab.settings.icon) }
