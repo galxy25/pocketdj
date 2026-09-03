@@ -556,6 +556,78 @@ final class MixEngineSessionTests: XCTestCase {
         e.stopAutoMix()
     }
 
+    // MARK: tvOS silent resume (field session tvos-95F9E8D4/2026-09-03)
+
+    /// The field fingerprint: cold launch → restore parked → materialize (decks CUED, nothing
+    /// playing) → the OS drops the never-rendered schedules (tvOS: the first `engine.start()`
+    /// renegotiates the output format and flushes them) → the user's Resume (the remote seam).
+    /// Pre-fix the deck went "playing" into an empty queue — 1 Hz card writes, 10 s of silence,
+    /// healed only by a skip's fresh load. The resume must re-ARM a real schedule from the cued
+    /// position before play.
+    func testMaterializedRestoreResumesWithARealScheduleAfterTheOSDroppedTheCues() async throws {
+        let store = makeStore()
+        let e = makeEngine(store: store)
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        wireStudioResolve(e, files: ["smp_r1": try makeSineWAV(seconds: 2),
+                                     "smp_r2": try makeSineWAV(seconds: 2),
+                                     "smp_r3": try makeSineWAV(seconds: 2)])
+        store.save(fidelitySnapshot())
+        await waitUntil("snapshot on disk") { store.load() != nil }
+        e.restorePersistedMixIfIdle()
+        e.materializePendingRestoreIfNeeded()
+
+        e.flushNodeSchedulesForTesting()    // the OS flushed the cued segments behind our back
+        e.remotePlay()                      // TV Resume: "[action] mix resume (remote seam)"
+        if e.autoMixing, e.autoPaused { e.resumeAuto() }   // TVRootView's Resume button tail
+
+        XCTAssertTrue(e.isPlaying(.a), "resume starts the restored now-playing deck")
+        XCTAssertTrue(e.playerNodeIsPlayingForTesting(.a))
+        XCTAssertTrue(e.fileScheduledForTesting(.a),
+                      "the resume re-armed a REAL schedule — not a bare play() into a flushed queue")
+        XCTAssertGreaterThanOrEqual(e.deckRescheduleCountForTesting, 1, "the re-arm path actually ran")
+        XCTAssertGreaterThanOrEqual(e.position(.a), 0.49, "re-armed FROM the cued position, not 0:00")
+        e.stopAutoMix()
+    }
+
+    /// The guard on the fix: a NORMAL pause→resume keeps its live schedule and the ensure path
+    /// must leave it alone — re-scheduling there would restart-glitch every ordinary resume.
+    func testNormalPauseResumeDoesNotReschedule() async throws {
+        let store = makeStore()
+        let e = makeEngine(store: store)
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        e.loadFile(try makeSineWAV(seconds: 2), release: nil, startMs: nil, meta: meta("sng_n"), on: .a)
+        e.play(.a)
+        e.pause(.a)
+        e.play(.a)
+        XCTAssertEqual(e.deckRescheduleCountForTesting, 0,
+                       "segments stay alive across pause() — resume must not stop()+reschedule")
+        XCTAssertTrue(e.playerNodeIsPlayingForTesting(.a))
+        e.pause(.a)
+    }
+
+    /// An `.AVAudioEngineConfigurationChange` uninit can drop node schedules with it: the
+    /// recovery lane must re-arm from the tracked position rather than bare-replaying (pause/
+    /// play re-prime, heal re-kick) into empty queues.
+    func testConfigChangeRecoveryReArmsDroppedSchedules() async throws {
+        let store = makeStore()
+        let e = makeEngine(store: store)
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        e.loadFile(try makeSineWAV(seconds: 2), release: nil, startMs: nil, meta: meta("sng_c"), on: .a)
+        e.play(.a)
+        XCTAssertTrue(e.playerNodeIsPlayingForTesting(.a))
+
+        e.flushNodeSchedulesForTesting()    // the uninit flushed the queues…
+        e.simulateConfigChangeForTesting()  // …and the observer fires
+
+        XCTAssertTrue(e.isPlaying(.a), "the playing intent survives")
+        XCTAssertTrue(e.playerNodeIsPlayingForTesting(.a), "recovery restarted the node")
+        XCTAssertTrue(e.fileScheduledForTesting(.a), "…on a re-armed schedule, not an empty queue")
+        e.pause(.a)
+    }
+
     /// A session written BEFORE the loop feature (no `loopOn`/`loopUnits` keys) must still decode.
     /// The loader demands an exact `schemaVersion` match, so the loop fields had to be OPTIONAL
     /// rather than version-bumped — otherwise every saved deck session would have been discarded.
