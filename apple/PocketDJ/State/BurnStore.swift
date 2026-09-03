@@ -1186,6 +1186,9 @@ final class BurnStore {
         // security-scoped when set, else Application Support). Bracket scoped access around
         // the entire loop; re-persist a stale bookmark on this (write) path.
         guard let folder = resolveBurnFolder(allowRePersist: true) else {
+            // A run that dies HERE records no items — invisible in the UI beyond a frozen
+            // counter (the TV "0 of 391" hunt). Name it in the stream.
+            DiagLog.shared.log("error", "burn run: NO writable burn folder — \(unique.count) songs dropped")
             result.failed = unique.count; return result
         }
         let dir = folder.url
@@ -1209,6 +1212,7 @@ final class BurnStore {
             try? FileManager.default.removeItem(at: sentinel)
         } catch {
             try? FileManager.default.removeItem(at: sentinel)
+            DiagLog.shared.log("error", "burn run: folder probe write failed — \(error.localizedDescription)")
             result.folderUnavailable = true
             return result
         }
