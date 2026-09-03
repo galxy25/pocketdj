@@ -121,9 +121,16 @@ struct NowPlayingPanel: View {
         // where the user asked for it.
         #if os(iOS)
         .environment(\.editMode, $editMode)
-        .searchable(text: $query,
-                    placement: UIDevice.current.userInterfaceIdiom == .pad
-                        ? .sidebar : .navigationBarDrawer(displayMode: .always),
+        // ALL iOS (iPhone AND iPad) place the field in the navigation-bar drawer. iPad used to
+        // ask for `.sidebar` to mirror macOS, but on iPad that produced NO reachable search field
+        // at all — the panel is nested (menu List + panel) in the split view's sidebar column, and
+        // `.sidebar` there hoists nothing into the a11y tree, so the add-search was unreachable on
+        // iPad (searchFields.count == 0 with the panel fully visible). The macOS toolbar-crash that
+        // drove `.sidebar` is macOS-ONLY ("iOS never crashed because each nav bar hosts its own
+        // field" — see above), and on iPad the Browse tab's field lives in the DETAIL column's nav
+        // bar while this one lives in the SIDEBAR column's, so they never collide. `.always` keeps
+        // the field visible without a scroll-to-top.
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always),
                     prompt: "Add songs or albums")
         #elseif os(tvOS)
         // NO add-search on the TV (Levi, on-device 2026-09-02): the panel is a lean-back deck

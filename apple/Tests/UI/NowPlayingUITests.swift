@@ -94,7 +94,10 @@ final class NowPlayingUITests: XCTestCase {
         // Add via the NATIVE search control (same UI as the Browser tab) — the
         // field rides the bar at the top, so the keyboard never covers it and the
         // results list stays visible while typing.
-        let field = app.searchFields.firstMatch
+        // The panel's add-search field is the navigation-bar drawer on both iPhone and iPad now
+        // (iPad's old `.searchable(.sidebar)` surfaced NO reachable field — see NowPlayingPanel);
+        // target it by placeholder so it is never confused with the Browse tab's detail search.
+        let field = app.revealPanelSearchField()
         XCTAssertTrue(field.waitForExistence(timeout: 8), "native search field should be in the bar")
         field.tap()
         // iPad's sidebar-placed field sometimes needs a second tap to take
@@ -155,12 +158,7 @@ final class NowPlayingUITests: XCTestCase {
         XCTAssertTrue(app.any("song-detail").waitForExistence(timeout: 8),
                       "the record menu's Song details should open the song detail")
         attach("record-song-detail")
-        let back = app.el("np-detail-back")
-        let closer = back.waitForExistence(timeout: 2) ? back : app.el("np-detail-close")
-        XCTAssertTrue(closer.waitForExistence(timeout: 4), "a visible close control must exist")
-        closer.tap()
-        XCTAssertFalse(app.any("song-detail").waitForExistence(timeout: 2),
-                       "the close control should dismiss the detail sheet")
+        XCTAssertTrue(app.dismissDetailSheet(), "the close control should dismiss the detail sheet")
         #endif
     }
 
@@ -395,10 +393,7 @@ final class NowPlayingUITests: XCTestCase {
 
     /// Close the song-detail sheet (iPhone Back / iPad+macOS ✕ overlay — the panel's per-platform close).
     private func dismissSongDetail() {
-        let back = app.el("np-detail-back")
-        let closer = back.waitForExistence(timeout: 3) ? back : app.el("np-detail-close")
-        XCTAssertTrue(closer.waitForExistence(timeout: 3), "the song-detail sheet is open")
-        closer.tap()
+        XCTAssertTrue(app.dismissDetailSheet(), "the song-detail sheet should dismiss")
     }
 
     func testCollapseToMiniBarAndExpandBack() throws {

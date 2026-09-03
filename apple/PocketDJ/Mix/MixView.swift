@@ -64,10 +64,13 @@ struct MixView: View {
     #if os(iOS)
     /// Single-deck layout only (`MixDeckLayout.single`): which deck (A/B) is currently showing.
     @State private var visibleDeck: MixEngine.Deck = .a
-    /// iPhone landscape (compact height) always shows the two decks side-by-side — there's width for
-    /// the two-up board — so the Deck-layout setting only governs portrait. See `deckArea`.
-    @Environment(\.verticalSizeClass) private var vSizeClass
     #endif
+    /// LANDSCAPE (width > height) always shows the two decks side-by-side — there's width for the
+    /// two-up board — so the Deck-layout setting governs PORTRAIT only (matching the Settings
+    /// footer's promise). Derived from real geometry, not the vertical size class: iPad landscape
+    /// is `.regular` height, so a size-class proxy only ever caught iPhone landscape and left iPad
+    /// landscape honoring the single/stacked setting against the documented contract. See `deckArea`.
+    @State private var isLandscape = false
 
     var body: some View {
         ScrollView {                                   // scrolls on iPhone-portrait; roomy on Mac/iPad
@@ -86,6 +89,9 @@ struct MixView: View {
             .frame(maxWidth: .infinity)                 // ...centered in a wide window
         }
         .background(Theme.bg)
+        // Track orientation from the container's real geometry (rotation-reactive on every
+        // device) so the landscape → side-by-side override fires on iPad too, not just iPhone.
+        .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { isLandscape = $0 }
         // Collection download progress — pinned to the BOTTOM of the Mix screen (floats over the
         // scroll, content scrolls above it). Renders only while a run is short of complete.
         .safeAreaInset(edge: .bottom) { downloadBar }
@@ -167,13 +173,13 @@ struct MixView: View {
     // MARK: Deck layout (iOS "view mode" — Settings ▸ Mix ▸ Deck layout)
 
     /// The two decks, arranged per the iOS Deck-layout setting: side-by-side, stacked, or a single
-    /// deck at a time with ‹ › switchers. Landscape (compact height = iPhone landscape) always uses
+    /// deck at a time with ‹ › switchers. Landscape (width > height, ANY device) always uses
     /// side-by-side — there's width for the two-up board, so the setting governs PORTRAIT only. macOS
     /// is always side-by-side (there's room; the setting is hidden). The engine is app-scoped, so
     /// single mode's HIDDEN deck keeps playing — only its view is unmounted, never its audio.
     @ViewBuilder private var deckArea: some View {
         #if os(iOS)
-        if vSizeClass == .compact {                     // iPhone landscape → always the two-up board
+        if isLandscape {                                // any-device landscape → always the two-up board
             sideBySideDecks
         } else {
             switch settings.mixDeckLayout {

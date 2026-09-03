@@ -199,7 +199,9 @@ final class PlaylistsUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["BBQ Ribs"].waitForExistence(timeout: 5))
 
         // Search "seeded" (case-insensitive) → only "Seeded Set" remains.
-        let field = app.searchFields.firstMatch
+        // iPad collapses a default-placement `.searchable` to a nav-bar Search button — reveal it
+        // (which also focuses the field, so typeText no longer races keyboard-focus synthesis).
+        let field = app.revealListSearchField()
         XCTAssertTrue(field.waitForExistence(timeout: 8), "native search field should be in the bar")
         field.tap()
         if !app.keyboards.firstMatch.waitForExistence(timeout: 2) { field.tap() }
@@ -208,19 +210,30 @@ final class PlaylistsUITests: XCTestCase {
         XCTAssertFalse(app.staticTexts["BBQ Ribs"].waitForExistence(timeout: 2),
                        "a non-matching playlist is filtered out")
 
+        // Re-type a fresh query. On iPad the nav-bar search collapses back to its button after
+        // Clear, so the captured `field` query goes stale — re-reveal (and re-focus) each time.
+        func retype(_ text: String) {
+            var f = app.revealListSearchField()
+            if f.buttons["Clear text"].exists { f.buttons["Clear text"].tap() }
+            f = app.revealListSearchField()
+            XCTAssertTrue(f.waitForExistence(timeout: 6), "search field re-reveals for a new query")
+            f.tap()
+            if !app.keyboards.firstMatch.waitForExistence(timeout: 2) { f.tap() }
+            f.typeText(text)
+        }
+
         // Swap the query → the other one shows, the first is gone.
-        field.buttons["Clear text"].tap()
-        field.typeText("ribs")
+        retype("ribs")
         XCTAssertTrue(app.staticTexts["BBQ Ribs"].waitForExistence(timeout: 5))
         XCTAssertFalse(app.staticTexts["Seeded Set"].waitForExistence(timeout: 2))
 
         // A no-match query shows the empty-results placeholder.
-        field.buttons["Clear text"].tap()
-        field.typeText("zzzznope")
+        retype("zzzznope")
         XCTAssertTrue(app.any("playlists-search-empty").waitForExistence(timeout: 5))
 
         // Clearing the field restores the full, unfiltered list.
-        field.buttons["Clear text"].tap()
+        let f = app.revealListSearchField()
+        if f.buttons["Clear text"].exists { f.buttons["Clear text"].tap() }
         XCTAssertTrue(app.staticTexts["Seeded Set"].waitForExistence(timeout: 5))
         XCTAssertTrue(app.staticTexts["BBQ Ribs"].waitForExistence(timeout: 5))
     }
