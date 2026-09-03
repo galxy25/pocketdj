@@ -213,6 +213,9 @@ struct PocketDJApp: App {
     /// Lazily resolves streaming cover art (Apple Music) for albums lacking a bundled
     /// cover, keyed off the indexer's catalog id — fetched ONLY when an album is on-screen.
     @State private var albumArt: AlbumArtworkStore
+    /// The one UserDefaults every @AppStorage in the scene reads (see init) — ephemeral suite
+    /// under the fixture seams, `.standard` in production.
+    private let launchDefaultsInstance: UserDefaults
     /// On-demand lyrics: fetches `{catalogBase}/lyrics/<songId>.txt` when a song detail
     /// opens and caches the text on disk for instant + offline re-opens.
     @State private var lyrics: LyricsStore
@@ -372,11 +375,34 @@ struct PocketDJApp: App {
     #endif
 
     init() {
+        // FIXTURE MEDIA SEAM: the JSON stores are per-launch ephemeral (every store's
+        // launchURL), but the app-managed MEDIA folders were not — a leftover
+        // sample-smp_fixture.m4a in the durable studio root gets re-adopted by
+        // recoverOrphans() every fixture launch (the fixture-wiped StudioStore forgets its
+        // ids), auto-filed into the Pocket DJ profile source, and minted as a fresh pdj_
+        // catalog row dated NOW — which topped the Collection Timeline and grew Browse's
+        // "select all" universe in UI runs (the 2026-09-02 44-failure sweep). Both override
+        // seams already existed for unit tests; a fixture launch now uses them too, pointed
+        // at a wiped temp root, so container files can never leak into a fixture catalog.
+        if ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil {
+            let base = FileManager.default.temporaryDirectory
+                .appendingPathComponent("pdj-uitest-media", isDirectory: true)
+            try? FileManager.default.removeItem(at: base)
+            StudioFolders.appRootOverride = base.appendingPathComponent("studio", isDirectory: true)
+            ProfileAudioFolders.rootOverride = base.appendingPathComponent("profile", isDirectory: true)
+        }
         let app = AppModel()
         // ONE UserDefaults instance shared by settings + onboarding: launchDefaults()
         // re-wipes the fixture suite on EVERY call, so a second call would erase
         // whatever the first store persisted between the two constructions.
         let sharedDefaults = SettingsStore.launchDefaults()
+        // Held for the scene: `.defaultAppStorage(sharedDefaults)` routes EVERY @AppStorage
+        // key (pdj.playlists.mode, collapse states, …) through this same instance — fixture
+        // launches get the ephemeral suite, production gets .standard unchanged. Without it,
+        // @AppStorage read UserDefaults.standard even under PDJ_USE_FIXTURE, so one test
+        // tapping the Playlists "Shared" tab poisoned every later launch in the run (the
+        // Yours-only seeded rows never rendered — ~24 of the 44 sweep failures).
+        launchDefaultsInstance = sharedDefaults
         let settings = SettingsStore(defaults: sharedDefaults)
         // ── Zero-to-hero onboarding (first install / reinstall) ── decided ONCE,
         // HERE, before any store can persist: the decision reads the settings blob's
@@ -1555,6 +1581,9 @@ struct PocketDJApp: App {
         // is required — without it openWindow(id:) has nothing to match and silently no-ops.
         WindowGroup(id: "main") {
             RootView()
+                // Every @AppStorage key resolves in the launch defaults — the fixture seam's
+                // missing half (see init). Production: this IS .standard; zero change.
+                .defaultAppStorage(launchDefaultsInstance)
                 .environment(app)
                 .environment(settings)
                 .environment(edits)
