@@ -1,4 +1,5 @@
 import Foundation
+import CoreGraphics
 
 /// The template-agnostic heart of the CarPlay app: it turns the shared stores into the row lists
 /// CarPlay browses (Playlists / Pockets / For You → songs) and routes
@@ -356,6 +357,21 @@ final class CarPlayModel {
     /// surface materializes it (cued + suspended, never self-playing). The car is such a
     /// surface — same contract as MixView's `.task`.
     func materializeMixRestoreIfNeeded() { services.mix.materializePendingRestoreIfNeeded() }
+
+    // MARK: - Jukebox (session list → QR, the CarPlay share-to-join surface)
+
+    /// Live sessions from the broker — nil on failure (the row then says so). The car never
+    /// hosts or decides; it only DISPLAYS a session's QR so passengers can scan to join,
+    /// SharePlay-style.
+    func jukeboxSessions() async -> [JukeboxClient.SessionRow]? {
+        guard let jukebox = services.jukebox else { return nil }
+        return try? await jukebox.listSessions()
+    }
+
+    /// The QR image for a session's guest URL, sized for CarPlay's largest image row.
+    nonisolated static func jukeboxQR(for url: URL) -> CGImage? {
+        JukeboxQRView.qrImage(for: url.absoluteString)
+    }
 
     // MARK: - Artwork (URLs; the CarPlay adapter fetches → UIImage)
 

@@ -1545,6 +1545,8 @@ struct PocketDJApp: App {
         // CarPlay list rows resolve cover art through the ONE memoized streaming-art store —
         // the same fallback lane CoverImage uses for albums that ship no bundled candidates.
         intents.albumArtwork = albumArt
+        // …and the car's jukebox QR surface reads the ONE host store (never a second client).
+        intents.jukebox = jukebox
         // Starting ANY set retires the previous recommendation scope, so the now-playing 👍/👎
         // pair can never file a verdict against a tile the listener has already left. `playNow` is
         // the single funnel every play path in the app goes through, which is why the hook lives

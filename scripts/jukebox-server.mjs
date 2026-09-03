@@ -1033,6 +1033,22 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, { ok: true, service: 'jukebox', version: VERSION, host: hostname(), bucket: CFG.bucket, sessions: sessions.size, auth: !!CFG.token, mwf: true, apns: apns.enabled() });
   }
 
+  // ---- Host session list (tvOS/CarPlay "pick a session → show its QR" surfaces). Host
+  // bearer only — the list carries every live session's guest URL, which admits anyone who
+  // scans it, so it is exactly as sensitive as create. NEVER includes hostKeys.
+  if (path === '/sessions' && req.method === 'GET') {
+    if (!tokenOk(req)) return send(res, 401, { error: 'unauthorized' });
+    const rows = [...sessions.values()]
+      .filter((s) => !s.ended)
+      .map((s) => ({
+        jukeboxId: s.id, name: s.name || 'Jukebox', url: guestUrl(s.id),
+        timeless: !!s.timeless, expiresAt: s.timeless ? null : s.expiresAt,
+        createdAt: s.createdAt || null,
+      }))
+      .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+    return send(res, 200, { sessions: rows });
+  }
+
   // ---- Music with Friends dispatch (BEFORE the jukebox id matcher; "mwf" is 3 chars
   // so that matcher could never swallow these, but explicit order documents it).
   if (path === '/mwf' && req.method === 'POST') {

@@ -88,6 +88,26 @@ struct JukeboxClient {
             as: JukeboxSessionInfo.self)
     }
 
+    /// One row of the host's live-session list (GET /sessions — host bearer). Carries the
+    /// guest URL (the QR payload); never a hostKey.
+    struct SessionRow: Decodable, Identifiable, Equatable {
+        let jukeboxId: String
+        let name: String
+        let url: URL
+        let timeless: Bool?
+        let expiresAt: Double?
+        var id: String { jukeboxId }
+    }
+
+    /// Every live session on the broker, newest first — the TV/CarPlay "pick a session →
+    /// show its QR" surfaces.
+    func listSessions() async throws -> [SessionRow] {
+        struct Page: Decodable { let sessions: [SessionRow] }
+        return try await run(
+            try request("/sessions", method: "GET", bearer: token, timeout: 15),
+            as: Page.self).sessions
+    }
+
     /// The lifecycle fields `POST …/config` returns after a timeless flip.
     struct Lifecycle: Decodable {
         let timeless: Bool?

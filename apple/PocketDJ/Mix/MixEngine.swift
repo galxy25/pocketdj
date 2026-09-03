@@ -2855,6 +2855,54 @@ final class MixEngine {
         return autoQueue[(autoLivePos + 1)...].map(\.loadable)
     }
 
+    /// Shuffle the auto queue's not-yet-committed tail (the TV card's 🔀). The low bound is
+    /// `autoNextToLoad` — the in-flight transition and the preloaded on-deck track always win
+    /// (the same in-mix-precedence rule `autoQueueInsert` documents).
+    func autoQueueShuffleUpcoming() {
+        guard autoMixing else { return }
+        let lo = min(max(autoNextToLoad, autoLivePos + 1), autoQueue.count)
+        guard autoQueue.count - lo > 1 else { return }
+        autoQueue[lo...].shuffle()
+        refreshAutoStatus()
+        persistMixDeckSession()
+        DiagLog.shared.telemetry("action", "mix shuffle upcoming (\(autoQueue.count - lo) tracks)")
+    }
+
+    /// Remove a not-yet-committed upcoming row (offset into `autoUpcoming`). No-op for rows a
+    /// deck has already committed to (below `autoNextToLoad` — the in-mix-precedence rule
+    /// `autoQueueInsert` documents) and for out-of-range offsets.
+    func autoQueueRemoveUpcoming(offset: Int) {
+        guard autoMixing else { return }
+        let idx = autoLivePos + 1 + offset
+        let lo = min(max(autoNextToLoad, autoLivePos + 1), autoQueue.count)
+        guard idx >= lo, idx < autoQueue.count else { return }
+        autoQueue.remove(at: idx)
+        refreshAutoStatus()
+        persistMixDeckSession()
+        DiagLog.shared.telemetry("action", "mix queue remove upcoming #\(offset)")
+    }
+
+    /// Move a not-yet-committed upcoming row to NEXT (right after the committed head) or END.
+    /// Same precedence bound as removal.
+    func autoQueueMoveUpcoming(offset: Int, toEnd: Bool) {
+        guard autoMixing else { return }
+        let idx = autoLivePos + 1 + offset
+        let lo = min(max(autoNextToLoad, autoLivePos + 1), autoQueue.count)
+        guard idx >= lo, idx < autoQueue.count else { return }
+        let item = autoQueue.remove(at: idx)
+        autoQueue.insert(item, at: toEnd ? autoQueue.count : lo)
+        refreshAutoStatus()
+        persistMixDeckSession()
+        DiagLog.shared.telemetry("action", "mix queue move upcoming #\(offset) → \(toEnd ? "end" : "next")")
+    }
+
+    /// How many of `autoUpcoming`'s leading rows are COMMITTED (a deck holds them) and so
+    /// cannot be moved/removed — the TV queue menus disable themselves on those.
+    var autoUpcomingLockedCount: Int {
+        guard autoMixing else { return 0 }
+        return max(0, min(autoNextToLoad, autoQueue.count) - (autoLivePos + 1))
+    }
+
     /// The auto queue's consumed head, NEWEST FIRST — the "previously played" list the TV's
     /// unified Now Playing card reveals. Empty when not auto-mixing.
     var autoPlayed: [MixLoadable] {
