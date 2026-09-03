@@ -14,6 +14,12 @@ import XCTest
 final class MixSapReproUITests: XCTestCase {
 
     override func setUpWithError() throws {
+        // OPT-IN ONLY. This launches WITHOUT the fixture seam, against whatever state the
+        // host device/simulator happens to carry, so in a normal suite run it is neither
+        // deterministic nor meaningful — it only earns its keep when you are deliberately
+        // reproducing the bug on the affected device.
+        try XCTSkipUnless(ProcessInfo.processInfo.environment["PDJ_SAP_REPRO"] == "1",
+                          "device-only real-state diagnostic — launches without the fixture seam; opt in with PDJ_SAP_REPRO=1")
         continueAfterFailure = true   // capture everything even when a step disappoints
     }
 

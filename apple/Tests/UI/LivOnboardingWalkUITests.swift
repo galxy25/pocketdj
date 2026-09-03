@@ -167,8 +167,16 @@ final class LivOnboardingWalkUITests: XCTestCase {
         // (Element at index 0): No matches found for Descendants matching type NavigationBar".
         // navigationBars is a UIKit concept and does not exist there.
         XCTAssertTrue(app.goBack(), "the Apple Music pane must have a back control")
-        XCTAssertTrue(app.el("settings-add-source").waitForExistence(timeout: 10))  // root settled
-        XCTAssertTrue(amRow.waitForExistence(timeout: 5))
+        // The root comes back at the offset it had when we left it (down at Private syncing),
+        // which leaves the earlier rows outside the lazy Form's realized window, and an absent
+        // row never "appears" on its own. Scrolling UP alone can't fix it either: "Add source"
+        // is in the Data-sources section but the Apple Music row is TWO sections BELOW it, so
+        // the top of the Form realizes one and not the other. Normalize to the top, then walk
+        // back DOWN to the Apple Music row exactly the way the first visit did.
+        let addSource = app.el("settings-add-source")
+        scrollToTop(app)
+        XCTAssertTrue(addSource.waitForExistence(timeout: 10))  // root settled
+        XCTAssertTrue(reveal(app, amRow), "the Apple Music row should be reachable from the top")
         amRow.tap()
         let picker = app.any("am-settings-tab")
         XCTAssertTrue(picker.waitForExistence(timeout: 10))
@@ -326,6 +334,12 @@ final class LivOnboardingWalkUITests: XCTestCase {
             NSPredicate(format: "identifier BEGINSWITH 'source-group-'")
         ).firstMatch.waitForExistence(timeout: 60)
         snap("23-collections-shared")
+
+        // Restore the Yours segment. The Yours|Shared mode is PERSISTED, so a run that stopped
+        // here left every later launch opening Playlists on Shared — a polluter that reads like
+        // a product bug in whatever test runs next.
+        let yours = app.segment("Yours")
+        if yours.waitForExistence(timeout: 5) { yours.tap() }
     }
 
     // MARK: 5 — Jukebox Hero: the Start-a-jukebox screen

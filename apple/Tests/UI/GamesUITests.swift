@@ -134,8 +134,14 @@ final class GamesUITests: XCTestCase {
                       "seeded puzzle best is 9 (5/9/7)")
         XCTAssertTrue(app.any("games-best-musicWithFriends").label.contains("4"),
                       "seeded MwF best is 4")
-        XCTAssertTrue(app.any("games-run-collectorsPuzzle-0").exists, "recent run rows render")
-        XCTAssertTrue(app.any("games-run-musicWithFriends-0").exists)
+        // These are the LAST rows of a lazy List — off-screen means genuinely absent from the
+        // a11y tree, so scroll to them the way the sibling scoreboard tests do.
+        let puzzleRun = app.any("games-run-collectorsPuzzle-0")
+        XCTAssertTrue(app.swipeTo(puzzleRun), "the recent-run row never came into view")
+        XCTAssertTrue(puzzleRun.exists, "recent run rows render")
+        let mwfRun = app.any("games-run-musicWithFriends-0")
+        XCTAssertTrue(app.swipeTo(mwfRun), "the MwF recent-run row never came into view")
+        XCTAssertTrue(mwfRun.exists)
     }
 
     // MARK: - The puzzle setup screen

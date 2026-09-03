@@ -366,8 +366,17 @@ final class PerformanceUITests: XCTestCase {
         app.any("tracks-bounce-menu").tap()
         let all = app.buttons["Bounce all tracks"]
         XCTAssertTrue(all.waitForExistence(timeout: 5)); all.tap()
-        XCTAssertTrue(app.staticTexts["Master"].waitForExistence(timeout: 25),
-                      "a Master track should appear holding the bounce")
+        // 885770b8 replaced the auto-appended "Master" track with a DATED ARTIFACT filed under the
+        // arrangement in the Tracks HOME browser (a "Bounces (n)" disclosure group, id
+        // `tracks-artifacts-<arrId>-bounce`). The bake runs behind a modal "Bouncing…" scrim that
+        // eats taps, so let it finish before going back.
+        _ = app.any("tracks-baking").waitForNonExistence(timeout: 60)
+        let home = app.any("tracks-home-back")
+        XCTAssertTrue(home.waitForExistence(timeout: 10)); home.tap()
+        let bounces = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier BEGINSWITH 'tracks-artifacts-' AND identifier ENDSWITH '-bounce'")).firstMatch
+        XCTAssertTrue(bounces.waitForExistence(timeout: 25),
+                      "a Bounces group should appear holding the bounce")
         snap("tracks-bounced")
         #endif
     }
@@ -417,8 +426,15 @@ final class PerformanceUITests: XCTestCase {
         XCTAssertTrue(rec.waitForExistence(timeout: 5)); rec.tap()   // start play + record
         wait(for: [expectation(for: NSPredicate(format: "value == 'recording'"), evaluatedWith: rec)], timeout: 8)
         rec.tap()                                                    // stop → bake
-        XCTAssertTrue(app.staticTexts["Master"].waitForExistence(timeout: 25),
-                      "stopping a master recording should bake a Master track")
+        // Same 885770b8 change as the bounce test: the bake lands a dated .recording ARTIFACT in
+        // the Tracks home browser (`tracks-artifacts-<arrId>-recording`), not a "Master" track.
+        _ = app.any("tracks-baking").waitForNonExistence(timeout: 60)
+        let home = app.any("tracks-home-back")
+        XCTAssertTrue(home.waitForExistence(timeout: 10)); home.tap()
+        let recordings = app.descendants(matching: .any).matching(NSPredicate(
+            format: "identifier BEGINSWITH 'tracks-artifacts-' AND identifier ENDSWITH '-recording'")).firstMatch
+        XCTAssertTrue(recordings.waitForExistence(timeout: 25),
+                      "stopping a master recording should bake a Recordings artifact")
         snap("tracks-record-master")
         #endif
     }

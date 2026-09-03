@@ -10,23 +10,49 @@ import XCTest
 ///   • the hotlink, where it did render, pushed onto a stack with no destination and
 ///     painted black.
 ///
-/// Runs against a local stub rip server (plain HTTP on loopback — NOT blocked by ATS from
-/// the simulator), so it is deterministic and needs no Apple Music subscription. The host
-/// starts the stub and passes its URL in `PDJ_STUB_URL`.
+/// Runs against a stub rip server started IN THIS PROCESS (`DiscoverStubServer` — plain HTTP
+/// on loopback, which ATS doesn't block, on an OS-assigned port), so it is deterministic,
+/// hermetic, and needs no Apple Music subscription. Its URL reaches the app through the
+/// `PDJ_RIP_SERVER_URL` launch-environment seam that SettingsStore reads into `ripServerURL`.
+/// Setting `PDJ_STUB_URL` on the host overrides it with a server of your own (a real import
+/// server, say); nothing needs to be started by hand for a normal run.
 final class DiscoverAlbumPreviewUITests: XCTestCase {
     private var app: XCUIApplication!
+    private var stub: DiscoverStubServer?
 
-    override func setUp() {
+    /// The fixture the stub serves, so the assertions below and the payloads that produce
+    /// them cannot drift apart.
+    private typealias Fixture = DiscoverStubServer.Fixture
+
+    override func setUpWithError() throws {
         continueAfterFailure = false
+        let base: String
+        if let external = ProcessInfo.processInfo.environment["PDJ_STUB_URL"], !external.isEmpty {
+            base = external
+        } else {
+            let server = try DiscoverStubServer.start()
+            stub = server
+            base = server.baseURL
+        }
         app = XCUIApplication()
         app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
         app.launchEnvironment["PDJ_START_SECTION"] = "Browser"
         app.launchEnvironment["PDJ_DISABLE_CLOUD_SYNC"] = "1"
-        app.launchEnvironment["PDJ_RIP_SERVER_URL"] =
-            ProcessInfo.processInfo.environment["PDJ_STUB_URL"] ?? "http://127.0.0.1:8799"
+        app.launchEnvironment["PDJ_RIP_SERVER_URL"] = base
     }
 
-    override func tearDown() { app?.terminate(); app = nil }
+    override func tearDown() {
+        // What the app actually asked the stub for — the difference between "Discover never
+        // searched" and "it searched and the row didn't render".
+        if let stub, !stub.served.isEmpty {
+            let served = XCTAttachment(string: stub.served.joined(separator: "\n"))
+            served.name = "stub-requests"
+            served.lifetime = .keepAlways
+            add(served)
+        }
+        app?.terminate(); app = nil
+        stub?.stop(); stub = nil
+    }
 
     // MARK: helpers
 
@@ -79,8 +105,8 @@ final class DiscoverAlbumPreviewUITests: XCTestCase {
         let kindSongs = app.buttons.matching(identifier: "Songs").element(boundBy: 0)
         XCTAssertTrue(kindSongs.waitForExistence(timeout: 15))
         kindSongs.tap()
-        retype("Blue in Green")
-        let title = app.staticTexts["Blue in Green"].firstMatch
+        retype(Fixture.trackTitle)
+        let title = app.staticTexts[Fixture.trackTitle].firstMatch
         XCTAssertTrue(title.waitForExistence(timeout: 20),
                       "the added song never appeared in the on-device catalog")
         title.tap()
@@ -96,7 +122,7 @@ final class DiscoverAlbumPreviewUITests: XCTestCase {
         // 1) The added song now KNOWS its album — this is what didn't exist at all before.
         let hotlink = app.el("album-hotlink")
         assertUsable(hotlink, "album hotlink on a Discover-added song")
-        XCTAssertTrue(app.staticTexts["Kind of Blue"].firstMatch.exists,
+        XCTAssertTrue(app.staticTexts[Fixture.albumTitle].firstMatch.exists,
                       "the album's name must be on the detail screen")
 
         // 2) Tapping it opens the PREVIEW — the screen Levi asked for.
@@ -108,7 +134,7 @@ final class DiscoverAlbumPreviewUITests: XCTestCase {
         assertUsable(app.el("album-preview-add"), "the giant ＋")
         XCTAssertTrue(app.any("album-preview-track-0").waitForExistence(timeout: 20),
                       "the preview must show the album's tracks")
-        XCTAssertTrue(app.staticTexts["So What"].firstMatch.exists,
+        XCTAssertTrue(app.staticTexts[Fixture.otherTrackTitle].firstMatch.exists,
                       "a track the user does NOT own yet must still be listed")
 
         // 4) The ＋ pulls in the whole album and reports live progress against its tracks —
@@ -127,8 +153,8 @@ final class DiscoverAlbumPreviewUITests: XCTestCase {
         app.el("album-preview-open").tap()
         XCTAssertTrue(app.any("album-detail").waitForExistence(timeout: 20),
                       "the added album must open as a real album")
-        XCTAssertTrue(app.staticTexts["Kind of Blue"].firstMatch.waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["1959"].firstMatch.exists,
+        XCTAssertTrue(app.staticTexts[Fixture.albumTitle].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts[String(Fixture.year)].firstMatch.exists,
                       "the album must carry its year — 'fully populate the metadata'")
     }
 
@@ -175,13 +201,13 @@ final class DiscoverAlbumPreviewUITests: XCTestCase {
 
         // Back to the on-device catalog: the provisional album is browsable…
         app.buttons.matching(identifier: "Albums").element(boundBy: 0).tap()
-        retype("Kind of Blue")
-        let card = app.el("album-amrec_album_268443788")
+        retype(Fixture.albumTitle)
+        let card = app.el("album-\(Fixture.albumId)")        // album-amrec_album_268443788
         XCTAssertTrue(card.waitForExistence(timeout: 30), "the added album never reached the catalog")
         card.tap()
 
         // …and opening one of its tracks gives a hotlink back to the album we just added.
-        let track = app.el("track-amrec_1440857781")
+        let track = app.el("track-\(Fixture.trackSongId)")   // track-amrec_1440857781
         XCTAssertTrue(track.waitForExistence(timeout: 20), "the album's tracks must be listed")
         track.tap()
         XCTAssertTrue(app.any("song-detail").waitForExistence(timeout: 15))
@@ -190,6 +216,6 @@ final class DiscoverAlbumPreviewUITests: XCTestCase {
         hotlink.tap()
         XCTAssertTrue(app.any("album-detail").waitForExistence(timeout: 15),
                       "a track of an added album must link back to that album")
-        XCTAssertTrue(app.staticTexts["Kind of Blue"].firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts[Fixture.albumTitle].firstMatch.waitForExistence(timeout: 10))
     }
 }
