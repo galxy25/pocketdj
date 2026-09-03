@@ -180,6 +180,22 @@ final class MixEngine {
     struct AutoMixItem: Equatable {
         let loadable: MixLoadable
         let durationMs: Int
+        /// WHERE the track came from — the crate (pocket/set list) name a queue surface shows
+        /// next to the row (two-crate Auto DJ provenance). nil for manual/legacy queue entries.
+        let sourceLabel: String?
+        init(loadable: MixLoadable, durationMs: Int, sourceLabel: String? = nil) {
+            self.loadable = loadable
+            self.durationMs = durationMs
+            self.sourceLabel = sourceLabel
+        }
+    }
+
+    /// Auto-DJ repeat: `.one` replays the on-air track (the next load slot re-queues the current
+    /// item; the cursor never moves), `.all` wraps a drained queue back to its head instead of
+    /// ending exhausted. Engine-scoped like the glide toggles (survives across mixes in-process)
+    /// and persisted with the durable auto session.
+    enum AutoRepeatMode: String, CaseIterable {
+        case off, one, all
     }
 
     // MARK: Tunable ranges
@@ -457,7 +473,16 @@ final class MixEngine {
     @ObservationIgnored private var autoQueue: [AutoMixItem] = []
     @ObservationIgnored private var autoLivePos = 0
     @ObservationIgnored private var autoNextToLoad = 0
-    @ObservationIgnored private var autoLiveDeck: Deck = .a
+    @ObservationIgnored private(set) var autoLiveDeck: Deck = .a
+    /// The repeat mode (observable — the TV toggle renders it). See `AutoRepeatMode`.
+    private(set) var autoRepeat: AutoRepeatMode = .off
+    /// Transition-scoped: the in-flight crossfade was begun by the repeat-one lane — its finish
+    /// must FREEZE the cursor (no livePos/nextToLoad advance; the mix replays the same slot).
+    /// Stamped at begin so a mid-fade mode change can't desync the finish from what's loaded.
+    @ObservationIgnored private var autoTransitionRepeatOne = false
+    /// Transition-scoped twin for repeat-all: the crossfade wraps into queue[0] — its finish
+    /// resets the cursor to the head instead of advancing.
+    @ObservationIgnored private var autoTransitionWrap = false
     @ObservationIgnored private var autoDeckEndsAt: [Deck: Date] = [:]
     @ObservationIgnored private var autoDeckDurationMs: [Deck: Int] = [:]
     @ObservationIgnored private var autoFadeStartedAt: Date?
@@ -904,6 +929,14 @@ final class MixEngine {
     func autoDeckDurationMsForTesting(_ deck: Deck) -> Int? { autoDeckDurationMs[deck] }
     /// Drive one tick's park-heal pass directly (the watchdog path a test can't wait for).
     func healParkedPlayersForTesting() { healParkedPlayers() }
+    /// Drive one `autoFire` pass directly (the tick's advance decision, which a unit test
+    /// can't wall-clock-wait for) — pair with `backdateAutoDeckEndForTesting`.
+    func autoFireForTesting() { autoFire() }
+    /// Re-stamp the LIVE deck's end clock to `secondsLeft` from now, so the next
+    /// `autoFireForTesting` sees an advance window (or an expired track).
+    func backdateAutoDeckEndForTesting(secondsLeft: Double) {
+        autoDeckEndsAt[autoLiveDeck] = Date().addingTimeInterval(secondsLeft)
+    }
     // tvOS silent-resume seams: reproduce the OS dropping every node's never-rendered schedule
     // behind the engine's back (the first-start output renegotiation / an engine uninit) —
     // `stop()` flushes each node's queue WITHOUT updating the engine's bookkeeping, exactly
@@ -2066,6 +2099,8 @@ final class MixEngine {
         autoPaused = false
         autoResumeEndDeck = nil
         autoResumeFromRestore = false
+        autoTransitionRepeatOne = false
+        autoTransitionWrap = false
         resumeAutoOnRemotePlay = false
         remotePausedAt = nil
         autoFadeStartedAt = nil
@@ -2201,6 +2236,15 @@ final class MixEngine {
         // freed == other(autoLiveDeck). A vanished burn here must not crossfade into the deck's
         // RETIRED track (the defect class the auto-queue append fix closed elsewhere).
         guard let k = loadNextUnplayed(onto: freed, excludingDeck: autoLiveDeck) else {
+            // REPEAT ALL: everything is played/unloadable by the log's lights — wrap to the
+            // queue head instead of ending (`ensureWrapPreloaded` targets `other(autoLiveDeck)`,
+            // which IS `freed` here).
+            if autoRepeat == .all, ensureWrapPreloaded() {
+                autoTransitionWrap = true
+                if anyGlide { beginGlideTransition(now: now, preroll: 0) }
+                else { beginAutoCrossfade(now: now) }
+                return
+            }
             stopAutoMix()
             autoEndedExhausted = true   // resume-handoff with nothing loadable = exhausted too
             return
@@ -2257,6 +2301,8 @@ final class MixEngine {
         autoPaused = false
         autoResumeEndDeck = nil
         autoResumeFromRestore = false
+        autoTransitionRepeatOne = false
+        autoTransitionWrap = false
         resumeAutoOnRemotePlay = false
         remotePausedAt = nil
         engineStallAt = nil     // a stale stall park must never shift the NEXT mix's fresh clocks
@@ -2287,6 +2333,74 @@ final class MixEngine {
     /// order: PRE-ROLL (glide only — ramp the effect/pitch in on the outgoing deck) → CROSSFADE (the
     /// volume sweep) → POST-ROLL (glide only — ramp the incoming deck back to natural). With no glide
     /// feature on, only the crossfade phase is ever entered, so the behavior is unchanged.
+    func setAutoRepeat(_ mode: AutoRepeatMode) {
+        guard autoRepeat != mode else { return }
+        autoRepeat = mode
+        DiagLog.shared.telemetry("action", "mix repeat \(mode.rawValue)")
+        persistMixDeckSession()          // survives a kill with the auto session
+        refreshAutoStatus()
+    }
+
+    /// The TV/remote toggle: off → all → one → off (standard transport cycling).
+    func cycleAutoRepeat() {
+        switch autoRepeat {
+        case .off: setAutoRepeat(.all)
+        case .all: setAutoRepeat(.one)
+        case .one: setAutoRepeat(.off)
+        }
+    }
+
+    /// The item repeat-one replays: the live queue slot when it still matches the on-air track
+    /// (queue edits keep indices < livePos+1 stable), else a rebuilt item from the deck itself
+    /// (belt for drift after drops) — nil only when the live deck is empty.
+    private func repeatOneItem() -> AutoMixItem? {
+        if autoLivePos < autoQueue.count,
+           autoQueue[autoLivePos].loadable.songId == state(autoLiveDeck).loaded?.songId {
+            return autoQueue[autoLivePos]
+        }
+        guard let l = state(autoLiveDeck).loaded else { return nil }
+        return AutoMixItem(loadable: MixLoadable(songId: l.songId, title: l.title, artist: l.artist,
+                                                 bpm: l.bpm, camelot: l.camelot, key: l.key,
+                                                 albumId: l.albumId, lengthMs: nil),
+                           durationMs: autoDeckDurationMs[autoLiveDeck] ?? Self.autoFallbackDurationMs)
+    }
+
+    /// Repeat-one preload: the NEXT load slot (the standby deck) re-queues the CURRENT item.
+    /// Deliberately touches neither cursor (`autoLivePos`/`autoNextToLoad` stay frozen) nor the
+    /// queue, so nothing is ever falsely retired into `autoPlayed` and the played-log's dedup
+    /// keeps `notePlayed` a no-op on the replays. The dup-deck path mirrors
+    /// `ensureNextPreloaded`'s: `beginAutoCrossfade` re-schedules via `restart`, so a
+    /// fully-consumed player replays.
+    private func ensureRepeatOnePreloaded() -> Bool {
+        guard let item = repeatOneItem() else { return false }
+        let deck = other(autoLiveDeck)
+        if state(deck).loaded?.songId == item.loadable.songId {
+            autoDeckDurationMs[deck] = item.durationMs
+            return true
+        }
+        return loadAuto(item, onto: deck)
+    }
+
+    /// Repeat-all preload: the wrap target is queue[0]. Unloadable heads (purged burns) are
+    /// dropped exactly like `startAutoMix`'s leading-drop — with the cursor shifted down so the
+    /// live slot keeps pointing at the on-air track. False when nothing at the head can load
+    /// (the tick then degrades to the ordinary exhaustion end).
+    private func ensureWrapPreloaded() -> Bool {
+        let deck = other(autoLiveDeck)
+        while !autoQueue.isEmpty {
+            let item = autoQueue[0]
+            if state(deck).loaded?.songId == item.loadable.songId {
+                autoDeckDurationMs[deck] = item.durationMs
+                return true
+            }
+            if loadAuto(item, onto: deck) { return true }
+            autoQueue.removeFirst()
+            if autoLivePos > 0 { autoLivePos -= 1 }
+            if autoNextToLoad > 0 { autoNextToLoad -= 1 }
+        }
+        return false
+    }
+
     private func autoFire() {
         guard autoEnabled, autoMixing, isReady else { return }
         // REMOTE-FROZEN: the decks are silent and every armed timestamp is parked (remotePlay shifts
@@ -2334,38 +2448,58 @@ final class MixEngine {
             guard !state(autoLiveDeck).loopOn else { return }
             guard let endsAt = autoDeckEndsAt[autoLiveDeck] else { return }
             let secondsLeft = endsAt.timeIntervalSince(now)
-            if autoLivePos + 1 < autoQueue.count {
+            if secondsLeft <= autoLeadSeconds, autoRepeat == .one, ensureRepeatOnePreloaded() {
+                // REPEAT ONE: replay the on-air track — the standby deck holds the SAME item and
+                // the finish freezes the cursor. A failed re-preload (file purged mid-mix) falls
+                // through to the ordinary lanes below, so the mix degrades instead of stalling.
+                autoTransitionRepeatOne = true
+                beginAdvanceTransition(now: now, secondsLeft: secondsLeft)
+            } else if autoLivePos + 1 < autoQueue.count {
                 // `ensureNextPreloaded` (not just the count check): a progressive append — a
                 // collection-download landing or jukebox insert — can arrive while the LAST queued
                 // track is live, AFTER all preloading already ran, so the idle deck holds a retired
                 // (or no) track. Transitioning into it would double-play the old track or fade to
                 // silence. On failure the unloadable tail was dropped; the natural end takes over.
                 if secondsLeft <= autoLeadSeconds, ensureNextPreloaded() {
-                    // Cap the fade to the runway left: if you slid a track to (say) 2 s from its end,
-                    // crossfade over ~2 s instead of the full length so it completes before it runs out.
-                    if secondsLeft < autoFadeSeconds, pendingFadeRestore == nil {
-                        pendingFadeRestore = autoFadeSeconds
-                        autoFadeSeconds = max(0.5, secondsLeft)
-                    }
-                    if anyGlide {
-                        // Fit the preroll into what's left after the (possibly capped) fade + a margin.
-                        // Mix Glide bends the OUTGOING deck's tempo up to +10%, so it consumes audio
-                        // faster than wall-clock — divide the runway by that headroom so the fading deck
-                        // can't reach end-of-audio before the crossfade completes.
-                        let headroom = mixGlideEnabled ? 1.12 : 1.0
-                        let preroll = max(0, min(mixGlideSeconds,
-                                                 secondsLeft / headroom - autoFadeSeconds - 0.3))
-                        beginGlideTransition(now: now, preroll: preroll)
-                    } else {
-                        beginAutoCrossfade(now: now)
-                    }
+                    beginAdvanceTransition(now: now, secondsLeft: secondsLeft)
                 }
+            } else if secondsLeft <= autoLeadSeconds, autoRepeat == .all, !autoQueue.isEmpty,
+                      ensureWrapPreloaded() {
+                // REPEAT ALL: the LAST track wraps back into queue[0] instead of ending
+                // exhausted — `autoEndedExhausted` never arms, so the downloader's exhaustion
+                // re-arm (`continueAutoMixIfArmed`) has nothing to fight: while the mix runs its
+                // late landings keep appending to the queue END, which simply extends the lap.
+                autoTransitionWrap = true
+                beginAdvanceTransition(now: now, secondsLeft: secondsLeft)
             } else if secondsLeft <= 0 {
                 stopAutoMix()
                 autoEndedExhausted = true   // natural end — a late-landing download may continue it
             }
         }
         refreshAutoStatus()
+    }
+
+    /// Begin the tick-driven advance transition into the already-preloaded standby deck — the
+    /// fade-cap + glide-fitting tail shared by the normal, repeat-one, and repeat-all lanes.
+    private func beginAdvanceTransition(now: Date, secondsLeft: Double) {
+        // Cap the fade to the runway left: if you slid a track to (say) 2 s from its end,
+        // crossfade over ~2 s instead of the full length so it completes before it runs out.
+        if secondsLeft < autoFadeSeconds, pendingFadeRestore == nil {
+            pendingFadeRestore = autoFadeSeconds
+            autoFadeSeconds = max(0.5, secondsLeft)
+        }
+        if anyGlide {
+            // Fit the preroll into what's left after the (possibly capped) fade + a margin.
+            // Mix Glide bends the OUTGOING deck's tempo up to +10%, so it consumes audio
+            // faster than wall-clock — divide the runway by that headroom so the fading deck
+            // can't reach end-of-audio before the crossfade completes.
+            let headroom = mixGlideEnabled ? 1.12 : 1.0
+            let preroll = max(0, min(mixGlideSeconds,
+                                     secondsLeft / headroom - autoFadeSeconds - 0.3))
+            beginGlideTransition(now: now, preroll: preroll)
+        } else {
+            beginAutoCrossfade(now: now)
+        }
     }
 
     /// Manual SKIP: immediately advance to the next queued track, crossfading over `fadeSeconds`.
@@ -2376,18 +2510,25 @@ final class MixEngine {
     /// a one-off fast skip never shortens the next AUTOMATIC crossfade.
     func skipToNext(fadeSeconds: Double) {
         guard autoEnabled, autoMixing, isReady, !autoTransitioning else { return }
-        guard autoLivePos + 1 < autoQueue.count else {                          // last track → end
+        // An explicit skip OVERRIDES repeat-one (next means next — the universal transport
+        // convention); repeat-ALL turns the last-track skip into a wrap to the queue head.
+        var wrapping = false
+        if autoLivePos + 1 < autoQueue.count {
+            // Late-append safety (see the tick): the incoming deck must actually hold the next
+            // queue item before a transition fires into it. All-unloadable tail ⇒ last track.
+            guard ensureNextPreloaded() else {
+                stopAutoMix()
+                autoEndedExhausted = true
+                return
+            }
+        } else if autoRepeat == .all, !autoQueue.isEmpty, ensureWrapPreloaded() {
+            wrapping = true
+        } else {                                                                // last track → end
             stopAutoMix()
             autoEndedExhausted = true   // skip-exhausted twin of the natural end above
             return
         }
-        // Late-append safety (see the tick): the incoming deck must actually hold the next queue
-        // item before a transition fires into it. All-unloadable tail ⇒ same as the last track.
-        guard ensureNextPreloaded() else {
-            stopAutoMix()
-            autoEndedExhausted = true
-            return
-        }
+        autoTransitionWrap = wrapping
         if anyGlide {
             // A manual skip glides too, but with NO preroll (skip = advance now); it still applies the
             // effect / pitch offset on the incoming deck + rolls it back off in the postroll.
@@ -2420,7 +2561,18 @@ final class MixEngine {
         applyCrossfader(from == .a ? 1 : 0)
         silence(from)           // retire the outgoing deck WITHOUT ending the auto-mix we're inside
         autoLiveDeck = to
-        autoLivePos += 1
+        let repeatedOne = autoTransitionRepeatOne
+        if autoTransitionRepeatOne {
+            // Repeat-one: the mix replays the same slot — cursor FROZEN (no advance, nothing
+            // retired into autoPlayed, autoNextToLoad unconsumed).
+        } else if autoTransitionWrap {
+            autoLivePos = 0         // repeat-all wrap: the head is live again
+            autoNextToLoad = 1
+        } else {
+            autoLivePos += 1
+        }
+        autoTransitionRepeatOne = false
+        autoTransitionWrap = false
         autoFadeStartedAt = nil
         if let restore = pendingFadeRestore { autoFadeSeconds = restore; pendingFadeRestore = nil }
         // Glide: the OUTGOING deck is retired + about to be reused for the next queued track — restore
@@ -2432,10 +2584,14 @@ final class MixEngine {
         }
         // Preload the next LOADABLE queue item, advancing past entries whose file vanished (a
         // failed load returns false and must not burn the next transition on a stale/empty deck).
-        while autoNextToLoad < autoQueue.count {
-            let ok = loadAuto(autoQueue[autoNextToLoad], onto: from)
-            autoNextToLoad += 1
-            if ok { break }
+        // Repeat-one skips this: consuming `autoNextToLoad` here would drift the cursor, and the
+        // retired deck already holds the replayed track — the next advance re-preloads it.
+        if !repeatedOne {
+            while autoNextToLoad < autoQueue.count {
+                let ok = loadAuto(autoQueue[autoNextToLoad], onto: from)
+                autoNextToLoad += 1
+                if ok { break }
+            }
         }
         updateSystemNowPlaying()      // the now-playing deck just switched → refresh the card
         if autoTransitionIsGlide {
@@ -2963,6 +3119,21 @@ final class MixEngine {
         return autoQueue[(autoLivePos + 1)...].map(\.loadable)
     }
 
+    /// `autoUpcoming` with per-row provenance (the crate the track came from) — the TV queue
+    /// surfaces render "— deck · crate" from it. The plain [MixLoadable] contract above stays
+    /// for existing callers.
+    var autoUpcomingDetailed: [(loadable: MixLoadable, sourceLabel: String?)] {
+        guard autoMixing, autoLivePos + 1 < autoQueue.count else { return [] }
+        return autoQueue[(autoLivePos + 1)...].map { ($0.loadable, $0.sourceLabel) }
+    }
+
+    /// `autoPlayed`'s provenance twin (consumed head, newest first).
+    var autoPlayedDetailed: [(loadable: MixLoadable, sourceLabel: String?)] {
+        guard autoMixing, autoLivePos > 0 else { return [] }
+        return autoQueue[..<min(autoLivePos, autoQueue.count)]
+            .map { ($0.loadable, $0.sourceLabel) }.reversed()
+    }
+
     /// Shuffle the auto queue's not-yet-committed tail (the TV card's 🔀). The low bound is
     /// `autoNextToLoad` — the in-flight transition and the preloaded on-deck track always win
     /// (the same in-mix-precedence rule `autoQueueInsert` documents).
@@ -3171,8 +3342,9 @@ final class MixEngine {
                                               artist: $0.track.artist, bpm: $0.track.bpm,
                                               camelot: $0.track.camelot, key: $0.track.key,
                                               albumId: $0.track.albumId, lengthMs: $0.track.lengthMs),
-                        durationMs: $0.durationMs)
+                        durationMs: $0.durationMs, sourceLabel: $0.sourceLabel)
         }
+        autoRepeat = auto.repeatMode.flatMap(AutoRepeatMode.init(rawValue:)) ?? .off
         autoEnabled = true
         autoSourceLabel = auto.sourceLabel
         autoLeadSeconds = max(1, auto.leadSeconds)
@@ -3185,6 +3357,7 @@ final class MixEngine {
         // Fresh machine internals — no in-flight transition, no frozen clocks, no stale intents.
         autoFadeStartedAt = nil; autoPrerollStartedAt = nil; autoPostrollStartedAt = nil
         autoTransitionIsGlide = false; glideCtx = nil
+        autoTransitionRepeatOne = false; autoTransitionWrap = false
         pendingFadeRestore = nil
         autoResumeEndDeck = nil
         resumeAutoOnRemotePlay = false
@@ -3232,12 +3405,14 @@ final class MixEngine {
         if autoMixing, !autoQueue.isEmpty {
             auto = MixDeckSessionStore.AutoSnapshot(
                 queue: autoQueue.map {
-                    MixDeckSessionStore.AutoRow(track: trackRef($0.loadable), durationMs: $0.durationMs)
+                    MixDeckSessionStore.AutoRow(track: trackRef($0.loadable), durationMs: $0.durationMs,
+                                                sourceLabel: $0.sourceLabel)
                 },
                 livePos: autoLivePos, nextToLoad: autoNextToLoad,
                 liveDeck: autoLiveDeck.rawValue, sourceLabel: autoSourceLabel,
                 leadSeconds: autoLeadSeconds, fadeSeconds: pendingFadeRestore ?? autoFadeSeconds,
-                fxGlide: fxGlideEnabled, mixGlide: mixGlideEnabled)
+                fxGlide: fxGlideEnabled, mixGlide: mixGlideEnabled,
+                repeatMode: autoRepeat == .off ? nil : autoRepeat.rawValue)
         }
         guard a != nil || b != nil || auto != nil else { return nil }
         return MixDeckSessionStore.Snapshot(

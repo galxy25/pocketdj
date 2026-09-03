@@ -118,6 +118,9 @@ final class CollectionMixDownloader {
     @ObservationIgnored var resolveRipIds: (@MainActor (MixSource) -> [String])?
     /// …the collection's currently LOADABLE tracks (`MixResolver.loadables(for:)`)…
     @ObservationIgnored var resolveLoadables: (@MainActor (MixSource) -> [MixLoadable])?
+    /// A source's display (crate) name — provenance for queue rows appended by the
+    /// progressive-eligibility pass. Wired at app init next to `resolveLoadables`.
+    @ObservationIgnored var resolveSourceName: (@MainActor (MixSource) -> String?)?
     /// …a song's catalog length in seconds (ETA input; manifest `durationMs` is the fallback)…
     @ObservationIgnored var songLengthSeconds: (@MainActor (String) -> Double?)?
     /// …and a song's display title/artist for `BurnStore.burn`'s item tuple.
@@ -424,20 +427,28 @@ final class CollectionMixDownloader {
     /// the engine API is untouched.
     private func continueAutoMixIfArmed() {
         guard autoArmed, !sources.isEmpty, let resolve = resolveLoadables else { return }
+        // Per-source pass (not a flatMap) so each appended row carries ITS crate's name; the
+        // cross-source dedup keeps the flatMap's first-source-wins order.
         var seen = Set<String>()
-        let fresh = sources.flatMap { resolve($0) }.filter {
-            seen.insert($0.songId).inserted
-                && !initialAutoIds.contains($0.songId) && !appendedIds.contains($0.songId)
+        var fresh: [(loadable: MixLoadable, label: String?)] = []
+        for source in sources {
+            let label = resolveSourceName?(source)
+            for l in resolve(source) where seen.insert(l.songId).inserted
+                && !initialAutoIds.contains(l.songId) && !appendedIds.contains(l.songId) {
+                fresh.append((l, label))
+            }
         }
         guard !fresh.isEmpty else { return }
         if engine.autoMixing {
             autoStartPending = false                                    // a mix is running — nothing pending
             guard engine.autoSourceLabel == autoLabel else { return }   // someone else's mix
-            for l in fresh {
+            for f in fresh {
                 engine.autoQueueInsert(
-                    MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? Self.fallbackDurationMs),
+                    MixEngine.AutoMixItem(loadable: f.loadable,
+                                          durationMs: f.loadable.lengthMs ?? Self.fallbackDurationMs,
+                                          sourceLabel: f.label),
                     placement: .end)
-                appendedIds.insert(l.songId)
+                appendedIds.insert(f.loadable.songId)
             }
         } else if engine.autoEndedExhausted || autoStartPending {
             // A DJ hand-mixing owns the decks — a background landing must never seize them.
@@ -450,9 +461,11 @@ final class CollectionMixDownloader {
                 return
             }
             autoStartPending = false
-            for l in fresh { appendedIds.insert(l.songId) }
+            for f in fresh { appendedIds.insert(f.loadable.songId) }
             engine.startAutoMix(
-                fresh.map { MixEngine.AutoMixItem(loadable: $0, durationMs: $0.lengthMs ?? Self.fallbackDurationMs) },
+                fresh.map { MixEngine.AutoMixItem(loadable: $0.loadable,
+                                                  durationMs: $0.loadable.lengthMs ?? Self.fallbackDurationMs,
+                                                  sourceLabel: $0.label) },
                 shuffled: false, lead: autoLead, fade: autoFade, label: autoLabel)
         }
     }

@@ -423,6 +423,7 @@ struct TVMixNowPlayingCard: View {
             Button { engine.remoteSkip(fadeSeconds: settings.skipFadeSeconds) } label: {
                 Label("Skip · blend", systemImage: "forward.end.fill")
             }
+            TVRepeatButton(a11yId: "tv-np-mix-repeat")
             Button { showPlayed.toggle() } label: {
                 Label(showPlayed ? "Up next" : "Played", systemImage: showPlayed ? "list.bullet" : "clock.arrow.circlepath")
             }
@@ -430,8 +431,8 @@ struct TVMixNowPlayingCard: View {
         }
     }
 
-    /// Second strip (owner's spec): ♥ · shuffle the queue · 👍 · 👎. Repeat modes need the
-    /// engine's advance path to learn them first — tracked separately, not faked here.
+    /// Second strip (owner's spec): ♥ · shuffle the queue · 👍 · 👎. The repeat toggle lives
+    /// on the transport row above (`TVRepeatButton` — engine-backed, task #52).
     private var secondStrip: some View {
         HStack(spacing: 20) {
             if let track = engine.onAirTrack {
@@ -477,7 +478,7 @@ struct TVMixNowPlayingCard: View {
 
     /// Up Next by default; the Played toggle swaps in the consumed head, newest first.
     @ViewBuilder private var queueSection: some View {
-        let rows = showPlayed ? engine.autoPlayed : engine.autoUpcoming
+        let rows = showPlayed ? engine.autoPlayedDetailed : engine.autoUpcomingDetailed
         if !rows.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text(showPlayed ? "Previously played" : "Up next")
@@ -486,7 +487,8 @@ struct TVMixNowPlayingCard: View {
                 // FOCUSABLE rows (no-op Buttons) — tvOS scrolls by focus, so display-only
                 // rows capped the list at a screenful (owner: both queues must scroll).
                 let locked = engine.autoUpcomingLockedCount
-                ForEach(Array(rows.prefix(50).enumerated()), id: \.offset) { i, l in
+                ForEach(Array(rows.prefix(50).enumerated()), id: \.offset) { i, row in
+                    let l = row.loadable
                     Button {} label: {
                         HStack(spacing: 12) {
                             Text("\(i + 1)")
@@ -495,6 +497,11 @@ struct TVMixNowPlayingCard: View {
                                 .frame(width: 36, alignment: .trailing)
                             Text(l.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
                             Text("· \(l.artist)").font(.callout).foregroundStyle(Theme.fgDim).lineLimit(1)
+                            Text(tvQueueProvenance(index: i, liveDeck: engine.autoLiveDeck,
+                                                   sourceLabel: row.sourceLabel))
+                                .font(.callout)
+                                .foregroundStyle(Theme.fgDim)
+                                .lineLimit(1)
                             Spacer(minLength: 0)
                         }
                     }
@@ -538,6 +545,45 @@ struct TVMixNowPlayingCard: View {
 // ============================================================================
 // MARK: - Mix live surface (shared: Mix tab + Now Playing tab)
 // ============================================================================
+
+/// The Auto-DJ repeat toggle — ENGINE state (`MixEngine.autoRepeat`, persisted with the
+/// durable auto session), cycling off → all → one on each press (standard transport
+/// convention, standard glyphs: `repeat` / `repeat.1`). One view, two surfaces (the Now
+/// Playing card's second strip + the live surface's transport row) — the a11y id tells
+/// them apart for UI tests.
+struct TVRepeatButton: View {
+    @Environment(MixEngine.self) private var engine
+    let a11yId: String
+    var body: some View {
+        Button { engine.cycleAutoRepeat() } label: {
+            Label(title, systemImage: engine.autoRepeat == .one ? "repeat.1" : "repeat")
+                .foregroundStyle(engine.autoRepeat == .off ? Theme.fgDim : Theme.accent)
+        }
+        .accessibilityIdentifier(a11yId)
+    }
+    private var title: String {
+        switch engine.autoRepeat {
+        case .off: "Repeat"
+        case .all: "Repeat · all"
+        case .one: "Repeat · one"
+        }
+    }
+}
+
+/// One queue row's provenance suffix: "— A · Crate name" (deck letter + the crate the row
+/// came from). The deck letter is derived in the VIEW from strict alternation: row i of
+/// EITHER list lands on `i % 2 == 0 ? standby : live` — upcoming[i] = queue[livePos+1+i]
+/// and played[j] = queue[livePos-1-j] sit at the same parity distance from the live slot.
+/// BEST-EFFORT by design: it drifts after unloadable drops, which is accepted (the crate
+/// name is the load-bearing half).
+private func tvQueueProvenance(index: Int, liveDeck: MixEngine.Deck,
+                               sourceLabel: String?) -> String {
+    let live = liveDeck.rawValue
+    let standby = liveDeck == .a ? "B" : "A"
+    let letter = index % 2 == 0 ? standby : live
+    guard let sourceLabel, !sourceLabel.isEmpty else { return "— \(letter)" }
+    return "— \(letter) · \(sourceLabel)"
+}
 
 /// FX Glide + Audio Glide — ENGINE state (persists with the durable mix session), not
 /// settings; safe to flip mid-mix (applies from the next transition). A standalone view so
@@ -744,6 +790,7 @@ struct TVMixLiveSurface: View {
                     Label("Skip · blend", systemImage: "forward.end.fill")
                 }
                 .accessibilityIdentifier("tv-mix-skip-slow")
+                TVRepeatButton(a11yId: "tv-mix-repeat")
                 Button(role: .destructive) { engine.stopAutoMix() } label: {
                     Label("Stop", systemImage: "stop.fill")
                 }
@@ -767,7 +814,7 @@ struct TVMixLiveSurface: View {
     /// the search column; showing ~8 rows + a "+N more" line avoids trapping TV focus in a
     /// list with no actions).
     @ViewBuilder private var upNext: some View {
-        let upcoming = engine.autoUpcoming
+        let upcoming = engine.autoUpcomingDetailed
         if !upcoming.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Up next")
@@ -775,7 +822,8 @@ struct TVMixLiveSurface: View {
                     .foregroundStyle(Theme.fgDim)
                 // FOCUSABLE rows (no-op Buttons): tvOS scrolls BY FOCUS, so display-only rows
                 // capped the queue at a screenful — the owner wants to browse the whole tail.
-                ForEach(Array(upcoming.prefix(50).enumerated()), id: \.offset) { i, l in
+                ForEach(Array(upcoming.prefix(50).enumerated()), id: \.offset) { i, row in
+                    let l = row.loadable
                     Button {} label: {
                         HStack(spacing: 12) {
                             Text("\(i + 1)")
@@ -784,6 +832,11 @@ struct TVMixLiveSurface: View {
                                 .frame(width: 36, alignment: .trailing)
                             Text(l.title).font(.callout).foregroundStyle(Theme.fg).lineLimit(1)
                             Text("· \(l.artist)").font(.callout).foregroundStyle(Theme.fgDim).lineLimit(1)
+                            Text(tvQueueProvenance(index: i, liveDeck: engine.autoLiveDeck,
+                                                   sourceLabel: row.sourceLabel))
+                                .font(.callout)
+                                .foregroundStyle(Theme.fgDim)
+                                .lineLimit(1)
                             Spacer(minLength: 0)
                         }
                     }

@@ -684,6 +684,15 @@ struct PocketDJApp: App {
             return MixResolver(app: app, collections: collections, burns: burns, studio: studio)
                 .loadables(for: source)
         }
+        mixDownloader.resolveSourceName = { [weak collections] source in
+            guard let collections else { return nil }
+            switch source {
+            case .pocket(let id):  return collections.pocket(id)?.name
+            case .setlist(let id):
+                guard let s = collections.setlist(id) else { return nil }
+                return s.name ?? "Set list"
+            }
+        }
         mixDownloader.songLengthSeconds = { [weak app] id in
             (app?.songsById[id]?.length).map { Double($0) / 1000 }   // catalog length is ms
         }
