@@ -52,6 +52,14 @@ final class CollectionMixDownloader {
     private(set) var etaSeconds: Double?
     /// The downloaded subset, published progressively (the eligibility set).
     private(set) var downloadedIds: Set<String> = []
+    /// Non-nil exactly when this run's crates DECLARED more members than resolved (declared >
+    /// `totalCount`) — the partial-catalog signature (an enabled source unsynced/still loading
+    /// on THIS device), never a collection that genuinely has fewer resolvable tracks. Computed
+    /// once at `begin()` alongside the declared=/catalog= diagnostics line — a start-time
+    /// snapshot like `totalCount`/`downloadedCount`: a mix that starts AFTER the catalog catches
+    /// up gets a fresh (nil) reading on its own `begin()`, but THIS run's reading is never
+    /// hot-updated. Drives the UI surfaces' "Only N of M songs available…" line.
+    private(set) var catalogShortfall: (declared: Int, total: Int)?
 
     // MARK: Tunables (test-dialable, mirroring CollectionRipBurnController)
 
@@ -222,6 +230,12 @@ final class CollectionMixDownloader {
         // catalog didn't have their source loaded — NOT an empty crate). Log both so the field
         // line is self-diagnosing instead of an investigation.
         let declared = declaredMemberCount.map { f in newSources.reduce(0) { $0 + f($1) } }
+        // Levi's "ship everything" call on tonight's TV field work: a shortfall is INFORMATION,
+        // not silence — declared > total means real crate members got dropped for a catalog
+        // reason (device mid-load / source still syncing), not legitimate filtering, so publish
+        // it for the UI surfaces below `guard` to render even when nothing ends up downloadable
+        // this run (e.g. the resolvable subset is already fully on disk).
+        catalogShortfall = declared.flatMap { $0 > totalCount ? (declared: $0, total: totalCount) : nil }
         DiagLog.shared.telemetry(
             "mixdl", "begin sources=\(newSources.count) total=\(totalCount) onDisk=\(downloadedCount)"
             + " burnQ=\(burnQueue.count) needsRip=\(needsRip.count) manifest=\(rips.manifest.count)"
@@ -295,6 +309,7 @@ final class CollectionMixDownloader {
         rippingCount = 0
         etaSeconds = nil
         downloadedIds = []
+        catalogShortfall = nil
         orderedIds = []
         trackedIds = []
         burnQueue = []
