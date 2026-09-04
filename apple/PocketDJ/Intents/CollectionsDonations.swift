@@ -115,7 +115,8 @@ enum IntentDonations {
         guard CollectionsSpotlight.donationsEnabled else { return }
         let entity: AutoMixSourceEntity?
         switch source {
-        case .pocket(let id):  entity = collections.pocket(id).map(AutoMixSourceEntity.init(pocket:))
+        case .pocket(let id):   entity = collections.pocket(id).map(AutoMixSourceEntity.init(pocket:))
+        case .playlist(let id): entity = collections.playlist(id).map(AutoMixSourceEntity.init(playlist:))
         case .setlist(let id):
             // The reserved Now Playing scratch setlist is auto-mixable from the Mix tab
             // but filtered from every entity query — donating it would teach Siri a

@@ -269,17 +269,21 @@ final class CarPlayModel {
 
     // MARK: - Mix (two-crate Auto DJ — the Mix tab)
 
-    /// A pickable crate for a Mix deck: pockets + set lists, the two `MixSource` kinds
-    /// (playlists must become set lists first — same rule as the phone's Mix tab).
+    /// A pickable crate for a Mix deck: pockets + playlists + set lists, the three `MixSource`
+    /// kinds (task #61 — a playlist resolves through the same catalog walk a pocket/setlist
+    /// does, so it needs no conversion before it can be picked here).
     struct MixCrate: Identifiable, Equatable {
-        let id: String            // MixSource.id encoding ("pocket:<id>" / "setlist:<id>")
+        let id: String            // MixSource.id encoding ("pocket:<id>" / "playlist:<id>" / "setlist:<id>")
         let title: String
         let source: MixSource
     }
 
-    func mixCrates() -> (pockets: [MixCrate], setlists: [MixCrate]) {
+    func mixCrates() -> (pockets: [MixCrate], playlists: [MixCrate], setlists: [MixCrate]) {
         (collections.pockets.map {
             MixCrate(id: MixSource.pocket($0.id).id, title: $0.name, source: .pocket($0.id))
+        },
+         collections.playlists.map {
+            MixCrate(id: MixSource.playlist($0.id).id, title: $0.name, source: .playlist($0.id))
         },
          collections.visibleSetlists.map {
             MixCrate(id: MixSource.setlist($0.id).id, title: $0.name ?? "Set list", source: .setlist($0.id))
@@ -288,9 +292,10 @@ final class CarPlayModel {
 
     func crateName(_ source: MixSource?) -> String? {
         switch source {
-        case .pocket(let id):  return collections.pocket(id)?.name
-        case .setlist(let id): return collections.setlist(id)?.name ?? "Set list"
-        case nil:              return nil
+        case .pocket(let id):   return collections.pocket(id)?.name
+        case .playlist(let id): return collections.playlist(id)?.name
+        case .setlist(let id):  return collections.setlist(id)?.name ?? "Set list"
+        case nil:               return nil
         }
     }
 

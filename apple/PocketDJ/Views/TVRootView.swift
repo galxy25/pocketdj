@@ -194,8 +194,9 @@ struct TVMixView: View {
 
     @State private var path = NavigationPath()
     /// The chosen crates — one per deck, mirroring the CarPlay Mix tab. Deck A is required;
-    /// Deck B nil means "same as Deck A" (the ordinary single-crate mix). Pockets + set lists,
-    /// the same source kinds MixView's auto picker offers (both resolve to BURNED loadables).
+    /// Deck B nil means "same as Deck A" (the ordinary single-crate mix). Pockets + playlists +
+    /// set lists, the same source kinds MixView's auto picker offers (all three resolve to
+    /// BURNED loadables).
     @State private var deckA: MixSource?
     @State private var deckB: MixSource?
     @State private var startError: String?
@@ -309,16 +310,23 @@ struct TVMixView: View {
     }
 
 
-    /// Crate rows for one deck's Menu — pockets + set lists (the two kinds that resolve
-    /// through MixResolver into burned loadables), same as MixView's auto picker.
+    /// Crate rows for one deck's Menu — pockets + playlists + set lists (the three kinds that
+    /// resolve through MixResolver into burned loadables), same as MixView's auto picker.
     @ViewBuilder private func crateMenuItems(pick: @escaping (MixSource) -> Void) -> some View {
-        if collections.pockets.isEmpty && collections.visibleSetlists.isEmpty {
-            Text("No pockets or set lists yet — build one on iPhone, iPad, or Mac.")
+        if collections.pockets.isEmpty && collections.playlists.isEmpty && collections.visibleSetlists.isEmpty {
+            Text("No pockets, playlists, or set lists yet — build one on iPhone, iPad, or Mac.")
         }
         if !collections.pockets.isEmpty {
             Section("Pockets") {
                 ForEach(collections.pockets) { p in
                     Button(p.name) { pick(.pocket(p.id)) }
+                }
+            }
+        }
+        if !collections.playlists.isEmpty {
+            Section("Playlists") {
+                ForEach(collections.playlists) { p in
+                    Button(p.name) { pick(.playlist(p.id)) }
                 }
             }
         }
@@ -333,9 +341,10 @@ struct TVMixView: View {
 
     private func crateName(_ source: MixSource?) -> String? {
         switch source {
-        case .pocket(let id):  return collections.pocket(id)?.name
-        case .setlist(let id): return collections.setlist(id)?.name ?? "Set list"
-        case nil:              return nil
+        case .pocket(let id):   return collections.pocket(id)?.name
+        case .playlist(let id): return collections.playlist(id)?.name
+        case .setlist(let id):  return collections.setlist(id)?.name ?? "Set list"
+        case nil:               return nil
         }
     }
 

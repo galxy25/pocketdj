@@ -114,6 +114,26 @@ final class CollectionsResolverTests: XCTestCase {
         XCTAssertEqual(s.declaredMemberCount(for: .pocket("nope")), 0)
     }
 
+    /// The `.playlist` arm of `declaredMemberCount` (task #61 — added alongside `MixSource`'s
+    /// new `.playlist` case): counts every song/album/pocket LEAF node across the default
+    /// chapter AND nested sub-chapters, excluding text cues, catalog-INDEPENDENT (mirrors the
+    /// pocket case above) — so a partial catalog can't hide behind a playlist crate either.
+    func testDeclaredMemberCountForPlaylistWalksNestedChaptersAndIsCatalogIndependent() async {
+        let s = await wiredStore()
+        let pl = s.createPlaylist("Set")
+        s.addSong("sng_1", toPlaylist: pl.id)
+        s.addSong("not_in_catalog", toPlaylist: pl.id)   // unknown to the catalog — still declared
+        s.addAlbum("alb_2", toPlaylist: pl.id)            // ONE leaf here (not catalog-expanded)
+        s.addText("mic break", toPlaylist: pl.id)         // excluded — never a member
+        var sub = CollectionsFactory.makeSequence("Encore")
+        sub.children = [PlaylistNode(nodeId: CollectionsFactory.newNodeId(), kind: .song, songId: "sng_9")]
+        s.addNode(sub, toPlaylist: pl.id)                 // nested sub-chapter leaf — must be walked
+
+        XCTAssertEqual(s.declaredMemberCount(for: .playlist(pl.id)), 4,
+                       "sng_1 + not_in_catalog + alb_2 + the nested sub-chapter's sng_9 = 4; the text cue never counts")
+        XCTAssertEqual(s.declaredMemberCount(for: .playlist("nope")), 0)
+    }
+
     func testSongIdsForPocketMissingIsEmpty() async {
         let s = await wiredStore()
         XCTAssertEqual(s.songIds(forPocket: "nope"), [])

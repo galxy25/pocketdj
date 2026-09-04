@@ -392,17 +392,17 @@ final class CarPlayController {
 
     private enum MixDeck { case a, b }
 
-    /// The crate picker for one deck: pockets + set lists (the two mixable kinds). Deck B also
-    /// offers "Same as Deck A" (clears the override).
+    /// The crate picker for one deck: pockets + playlists + set lists (the three mixable
+    /// kinds — task #61 added playlists, which previously needed converting to a pocket
+    /// first). Deck B also offers "Same as Deck A" (clears the override).
     private func pushCratePicker(deck: MixDeck, model: CarPlayModel) {
         let crates = model.mixCrates()
         // Field diagnosability (Levi, 2026-09-03: "wouldn't let me select any collection for
         // deck A" — the picker itself logged NOTHING, so a genuinely empty list was
-        // indistinguishable from a tap that didn't land). The picker only ever lists pockets +
-        // set lists (never playlists, task #61) — streaming the counts here means the next
-        // report proves which case it was in one line.
+        // indistinguishable from a tap that didn't land). Streaming the counts here means the
+        // next report proves which case it was in one line.
         DiagLog.shared.telemetry(
-            "car", "present deck \(deck == .a ? "A" : "B") picker pockets=\(crates.pockets.count) setlists=\(crates.setlists.count)")
+            "car", "present deck \(deck == .a ? "A" : "B") picker pockets=\(crates.pockets.count) playlists=\(crates.playlists.count) setlists=\(crates.setlists.count)")
         // `[weak self]`: these closures escape into CPListItem handlers on a template this
         // controller retains — a strong self here is a controller↔template cycle that would
         // leak the whole CarPlay graph past disconnect.
@@ -430,6 +430,13 @@ final class CarPlayController {
                 return item
             }, header: "Pockets", sectionIndexTitle: nil))
         }
+        if !crates.playlists.isEmpty {
+            sections.append(CPListSection(items: crates.playlists.map { crate in
+                let item = CPListItem(text: crate.title, detailText: nil)
+                item.handler = { _, completion in pick(crate.source); completion() }
+                return item
+            }, header: "Playlists", sectionIndexTitle: nil))
+        }
         if !crates.setlists.isEmpty {
             sections.append(CPListSection(items: crates.setlists.map { crate in
                 let item = CPListItem(text: crate.title, detailText: nil)
@@ -439,7 +446,7 @@ final class CarPlayController {
         }
         if sections.isEmpty {
             sections = [CPListSection(items: [
-                CPListItem(text: "No pockets or set lists yet",
+                CPListItem(text: "No pockets, playlists, or set lists yet",
                            detailText: "Build one on iPhone, iPad, or Mac")])]
         }
         let template = CPListTemplate(title: deck == .a ? "Deck A" : "Deck B", sections: sections)

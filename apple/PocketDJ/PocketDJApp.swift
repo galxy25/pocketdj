@@ -697,8 +697,9 @@ struct PocketDJApp: App {
         mixDownloader.resolveRipIds = { [weak collections] source in
             guard let collections else { return [] }
             switch source {
-            case .pocket(let id):  return collections.ripIds(forPocket: id)
-            case .setlist(let id): return collections.ripIds(forSetlist: id)
+            case .pocket(let id):   return collections.ripIds(forPocket: id)
+            case .playlist(let id): return collections.ripIds(forPlaylist: id)
+            case .setlist(let id):  return collections.ripIds(forSetlist: id)
             }
         }
         mixDownloader.resolveLoadables = { [weak app, weak collections, weak burns, weak studio] source in
@@ -709,7 +710,8 @@ struct PocketDJApp: App {
         mixDownloader.resolveSourceName = { [weak collections] source in
             guard let collections else { return nil }
             switch source {
-            case .pocket(let id):  return collections.pocket(id)?.name
+            case .pocket(let id):   return collections.pocket(id)?.name
+            case .playlist(let id): return collections.playlist(id)?.name
             case .setlist(let id):
                 guard let s = collections.setlist(id) else { return nil }
                 return s.name ?? "Set list"

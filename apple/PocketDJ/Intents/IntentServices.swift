@@ -261,7 +261,7 @@ final class IntentServices {
 
     // MARK: - Auto-mix
 
-    /// Start an Auto-DJ mix from a pocket or setlist — the same path as MixView's
+    /// Start an Auto-DJ mix from a pocket, playlist, or setlist — the same path as MixView's
     /// ▶/🔀 (resolver → AutoMixItems → engine), including the Settings pushes MixView
     /// does on tab-open (an intent may start a mix before the Mix tab ever opened).
     /// Returns (display name, loadable track count) for the dialog.
@@ -275,6 +275,9 @@ final class IntentServices {
         case .pocket(let id):
             guard let p = collections.pocket(id) else { throw PocketDJIntentError.mixSourceNotFound }
             name = p.name
+        case .playlist(let id):
+            guard let pl = collections.playlist(id) else { throw PocketDJIntentError.mixSourceNotFound }
+            name = pl.name
         case .setlist(let id):
             guard let s = collections.setlist(id) else { throw PocketDJIntentError.mixSourceNotFound }
             name = s.name ?? "Set list"
@@ -336,6 +339,9 @@ final class IntentServices {
             case .pocket(let id):
                 guard let p = collections.pocket(id) else { throw PocketDJIntentError.mixSourceNotFound }
                 return p.name
+            case .playlist(let id):
+                guard let pl = collections.playlist(id) else { throw PocketDJIntentError.mixSourceNotFound }
+                return pl.name
             case .setlist(let id):
                 guard let s = collections.setlist(id) else { throw PocketDJIntentError.mixSourceNotFound }
                 return s.name ?? "Set list"
@@ -520,7 +526,7 @@ enum PocketDJIntentError: Error, CustomLocalizedStringResourceConvertible {
         case .songOnlyAction:
             return "That works on individual songs, not playlists or pockets."
         case .mixSourceNotFound:
-            return "I couldn't find that pocket or set list in PocketDJ."
+            return "I couldn't find that pocket, playlist, or set list in PocketDJ."
         case .emptyCollection(let name):
             return "\(name) has no playable songs yet."
         case .setupIncomplete:

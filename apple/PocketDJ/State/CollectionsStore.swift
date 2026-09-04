@@ -1814,19 +1814,40 @@ final class CollectionsStore {
     }
     /// The DECLARED member count of a mix crate WITHOUT resolving through the catalog — a
     /// pre-catalog lower bound (pocket: its own song ids + album refs, not recursively
-    /// expanded; setlist: its audio tracks, which are catalog-independent already). The mix
-    /// downloader logs this next to the catalog-RESOLVED `total`: a crate that declares many
-    /// members but resolves to ~0 names a PARTIAL CATALOG (unsynced per-device source / a
-    /// purged tvOS Caches catalog — task #53), not an empty crate. The field two-crate
-    /// "total=1" (device tvos-8E34293E) had no way to tell those apart.
+    /// expanded; playlist: every song/album/pocket LEAF node across every chapter + nested
+    /// sub-chapter, same non-expanded counting; setlist: its audio tracks, which are
+    /// catalog-independent already). The mix downloader logs this next to the catalog-RESOLVED
+    /// `total`: a crate that declares many members but resolves to ~0 names a PARTIAL CATALOG
+    /// (unsynced per-device source / a purged tvOS Caches catalog — task #53), not an empty
+    /// crate. The field two-crate "total=1" (device tvos-8E34293E) had no way to tell those apart.
     func declaredMemberCount(for source: MixSource) -> Int {
         switch source {
         case .pocket(let id):
             guard let p = pocket(id) else { return 0 }
             return p.songIds.count + p.albumIds.count + p.childPocketIds.count
+        case .playlist(let id):
+            guard let pl = playlist(id) else { return 0 }
+            return declaredLeafCount(pl.sequences)
         case .setlist(let id):
             return songIds(forSetlist: id).count
         }
+    }
+
+    /// Recursive leaf count behind the `.playlist` arm of `declaredMemberCount(for:)`: every
+    /// song/album/pocket node across every chapter + nested sub-chapter, NOT catalog-resolved
+    /// (an album/pocket ref counts as ONE member here — the catalog expansion only happens in
+    /// `playableIds(forPlaylist:)`). `.sequence`/`.text` nodes never count themselves, but a
+    /// sequence's `children` are still walked.
+    private func declaredLeafCount(_ nodes: [PlaylistNode]) -> Int {
+        var count = 0
+        for n in nodes {
+            switch n.kind {
+            case .song, .album, .pocket: count += 1
+            case .text, .sequence: break
+            }
+            if let kids = n.children { count += declaredLeafCount(kids) }
+        }
+        return count
     }
 
     /// Rip/burn/stem id list for a pocket (variant-substituted under cleanOnly).
