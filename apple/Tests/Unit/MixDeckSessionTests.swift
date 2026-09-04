@@ -594,6 +594,53 @@ final class MixEngineSessionTests: XCTestCase {
         e.stopAutoMix()
     }
 
+    // MARK: CarPlay cold-resume (field report, Levi, 2026-09-04)
+
+    /// The NEW variant the tvOS fix above didn't cover on paper: a session parked over an hour
+    /// with the engine NEVER touched this launch, then materialize + the resume tap land in ONE
+    /// synchronous burst — no intervening tick, no separate warm-up call, `remotePlay()` firing
+    /// the FIRST time this engine instance has ever been asked to do anything. `e` is deliberately
+    /// left untouched (a `probe` engine proves the host has a working audio device instead of
+    /// pre-building `e`) so `built` transitions false → true entirely inside the resume path,
+    /// exactly like the field session (cold launch 16:31 → CarPlay connect/materialize/resume all
+    /// landing together at 17:40:52 with zero prior engine contact). Asserts the deck ends up
+    /// GENUINELY scheduled and rendering-ready — not just a software `isPlaying` flag with the
+    /// tick ticking its position forward into silence.
+    func testColdNeverTouchedSessionResumesWithARealScheduleInOneSynchronousBurst() async throws {
+        let probe = makeEngine(store: makeStore())
+        probe.ensureEngine()
+        try XCTSkipUnless(probe.isReady, "no audio device on this test host")
+
+        let store = makeStore()
+        let e = makeEngine(store: store)
+        wireStudioResolve(e, files: ["smp_r1": try makeSineWAV(seconds: 2),
+                                     "smp_r2": try makeSineWAV(seconds: 2),
+                                     "smp_r3": try makeSineWAV(seconds: 2)])
+        store.save(fidelitySnapshot())
+        await waitUntil("snapshot on disk") { store.load() != nil }
+        XCTAssertFalse(e.isReady, "engine genuinely untouched before the resume gesture")
+
+        e.restorePersistedMixIfIdle()          // launch task: parks — must not build the engine
+        XCTAssertFalse(e.isReady, "parking alone must not touch the engine")
+
+        // The resume gesture, back to back with zero intervening ticks/calls — CarPlay's
+        // materialize (Mix surface appearing) immediately followed by the remote-seam resume.
+        e.materializePendingRestoreIfNeeded()
+        e.remotePlay()                         // "[action] mix resume (remote seam)"
+        if e.autoMixing, e.autoPaused { e.resumeAuto() }   // CarPlayModel.resumeMix()'s tail
+
+        XCTAssertTrue(e.isReady, "the resume path itself built the engine — its first touch")
+        XCTAssertTrue(e.isPlaying(.a), "resume starts the restored now-playing deck")
+        XCTAssertTrue(e.playerNodeIsPlayingForTesting(.a),
+                      "genuinely rendering-ready, not just the software isPlaying flag")
+        XCTAssertTrue(e.fileScheduledForTesting(.a),
+                      "the deck holds a REAL schedule — ensureDeckScheduled saw it as untrusted "
+                      + "(restoreDeck marks it false) and re-armed it before play(), even though "
+                      + "ensureEngine()/materialize/play all ran in the same synchronous call chain")
+        XCTAssertGreaterThanOrEqual(e.position(.a), 0.49, "resumed FROM the cued position, not 0:00")
+        e.stopAutoMix()
+    }
+
     /// The guard on the fix: a NORMAL pause→resume keeps its live schedule and the ensure path
     /// must leave it alone — re-scheduling there would restart-glitch every ordinary resume.
     func testNormalPauseResumeDoesNotReschedule() async throws {
