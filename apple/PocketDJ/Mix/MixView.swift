@@ -3,16 +3,24 @@ import SwiftUI
 import AppKit
 #endif
 
-/// A deck's playback SOURCE — a pocket or a set list. UI-only value; `MixResolver.loadables(for:)`
-/// expands it to the loadable local tracks the loader lists. Two decks can share one source OR
-/// each point at its own.
+/// A deck's playback SOURCE — a pocket, a playlist, or a set list. UI-only value;
+/// `MixResolver.loadables(for:)` expands it to the loadable local tracks the loader lists. Two
+/// decks can share one source OR each point at its own.
+///
+/// `.playlist` (task #61): a playlist resolves through the SAME `playableIds(forPlaylist:)`
+/// catalog walk the playlist tab already uses for playback — no materialization into a pocket
+/// or setlist needed. Before this case existed, a user had to duplicate/convert a playlist
+/// into a pocket before Mix would accept it as a crate; that conversion step is the friction
+/// this case removes.
 enum MixSource: Hashable, Identifiable {
     case pocket(String)
+    case playlist(String)
     case setlist(String)
     var id: String {
         switch self {
-        case .pocket(let id):  return "pocket:\(id)"
-        case .setlist(let id): return "setlist:\(id)"
+        case .pocket(let id):   return "pocket:\(id)"
+        case .playlist(let id): return "playlist:\(id)"
+        case .setlist(let id):  return "setlist:\(id)"
         }
     }
 }
@@ -387,12 +395,17 @@ struct MixView: View {
     }
 
     @ViewBuilder private var autoSourceMenuItems: some View {
-        if collections.pockets.isEmpty && collections.visibleSetlists.isEmpty {
-            Text("No pockets or set lists yet")
+        if collections.pockets.isEmpty && collections.playlists.isEmpty && collections.visibleSetlists.isEmpty {
+            Text("No pockets, playlists, or set lists yet")
         }
         if !collections.pockets.isEmpty {
             Section("Pockets") {
                 ForEach(collections.pockets) { p in Button(p.name) { autoSource = .pocket(p.id) } }
+            }
+        }
+        if !collections.playlists.isEmpty {
+            Section("Playlists") {
+                ForEach(collections.playlists) { p in Button(p.name) { autoSource = .playlist(p.id) } }
             }
         }
         if !collections.visibleSetlists.isEmpty {
@@ -404,9 +417,10 @@ struct MixView: View {
 
     private var autoSourceName: String? {
         switch autoSource {
-        case .pocket(let id):  return collections.pocket(id)?.name
-        case .setlist(let id): return collections.setlist(id)?.name ?? "Set list"
-        case nil:              return nil
+        case .pocket(let id):   return collections.pocket(id)?.name
+        case .playlist(let id): return collections.playlist(id)?.name
+        case .setlist(let id):  return collections.setlist(id)?.name ?? "Set list"
+        case nil:               return nil
         }
     }
 
@@ -839,13 +853,20 @@ private struct DeckView: View {
 
     private var sourceMenu: some View {
         Menu {
-            if collections.pockets.isEmpty && collections.visibleSetlists.isEmpty {
-                Text("No pockets or set lists yet")
+            if collections.pockets.isEmpty && collections.playlists.isEmpty && collections.visibleSetlists.isEmpty {
+                Text("No pockets, playlists, or set lists yet")
             }
             if !collections.pockets.isEmpty {
                 Section("Pockets") {
                     ForEach(collections.pockets) { p in
                         Button(p.name) { source = .pocket(p.id) }
+                    }
+                }
+            }
+            if !collections.playlists.isEmpty {
+                Section("Playlists") {
+                    ForEach(collections.playlists) { p in
+                        Button(p.name) { source = .playlist(p.id) }
                     }
                 }
             }
@@ -1151,9 +1172,10 @@ private struct DeckView: View {
 
     private var sourceName: String? {
         switch source {
-        case .pocket(let id):  return collections.pocket(id)?.name
-        case .setlist(let id): return collections.setlist(id)?.name ?? "Set list"
-        case nil:              return nil
+        case .pocket(let id):   return collections.pocket(id)?.name
+        case .playlist(let id): return collections.playlist(id)?.name
+        case .setlist(let id):  return collections.setlist(id)?.name ?? "Set list"
+        case nil:               return nil
         }
     }
 }
@@ -2165,7 +2187,7 @@ private struct TrackLoaderSheet: View {
     @ViewBuilder private func content(_ items: [MixLoadable]) -> some View {
         if source == nil {
             ContentUnavailableView("Pick a source", systemImage: "rectangle.stack",
-                                   description: Text("Choose a pocket or set list to load tracks from."))
+                                   description: Text("Choose a pocket, playlist, or set list to load tracks from."))
         } else if items.isEmpty {
             ContentUnavailableView("No loadable tracks", systemImage: "waveform.slash",
                                    description: Text("Only burned (on-device) songs can be mixed. Burn this collection first."))
@@ -2215,6 +2237,11 @@ private struct TrackLoaderSheet: View {
                     ForEach(collections.pockets) { p in Button(p.name) { source = .pocket(p.id) } }
                 }
             }
+            if !collections.playlists.isEmpty {
+                Section("Playlists") {
+                    ForEach(collections.playlists) { p in Button(p.name) { source = .playlist(p.id) } }
+                }
+            }
             if !collections.visibleSetlists.isEmpty {
                 Section("Set lists") {
                     ForEach(collections.visibleSetlists) { s in Button(s.name ?? "Set list") { source = .setlist(s.id) } }
@@ -2235,9 +2262,10 @@ private struct TrackLoaderSheet: View {
 
     private var sourceName: String? {
         switch source {
-        case .pocket(let id):  return collections.pocket(id)?.name
-        case .setlist(let id): return collections.setlist(id)?.name ?? "Set list"
-        case nil:              return nil
+        case .pocket(let id):   return collections.pocket(id)?.name
+        case .playlist(let id): return collections.playlist(id)?.name
+        case .setlist(let id):  return collections.setlist(id)?.name ?? "Set list"
+        case nil:               return nil
         }
     }
 }

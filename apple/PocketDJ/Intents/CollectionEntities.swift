@@ -94,18 +94,18 @@ struct PocketEntityQuery: EntityQuery, EntityStringQuery {
     }
 }
 
-// MARK: - Auto-mix source (a pocket OR a set list, one speakable parameter)
+// MARK: - Auto-mix source (a pocket, a playlist, OR a set list, one speakable parameter)
 
-/// Auto-mix's source is `MixSource` (pocket | setlist). Siri phrases can carry only ONE
-/// parameter, so both kinds are folded into a single entity whose id reuses
-/// `MixSource.id`'s exact encoding ("pocket:<id>" / "setlist:<id>").
+/// Auto-mix's source is `MixSource` (pocket | playlist | setlist). Siri phrases can carry only
+/// ONE parameter, so all three kinds are folded into a single entity whose id reuses
+/// `MixSource.id`'s exact encoding ("pocket:<id>" / "playlist:<id>" / "setlist:<id>").
 struct AutoMixSourceEntity: AppEntity {
     static let typeDisplayRepresentation = TypeDisplayRepresentation(name: "Mix Source")
     static let defaultQuery = AutoMixSourceQuery()
 
     let id: String
     let name: String
-    let kindLabel: String   // "Pocket" / "Set list"
+    let kindLabel: String   // "Pocket" / "Playlist" / "Set list"
 
     var displayRepresentation: DisplayRepresentation {
         DisplayRepresentation(title: "\(name)",
@@ -117,6 +117,7 @@ struct AutoMixSourceEntity: AppEntity {
     var mixSource: MixSource? { Self.mixSource(from: id) }
     static func mixSource(from id: String) -> MixSource? {
         if id.hasPrefix("pocket:") { return .pocket(String(id.dropFirst("pocket:".count))) }
+        if id.hasPrefix("playlist:") { return .playlist(String(id.dropFirst("playlist:".count))) }
         if id.hasPrefix("setlist:") { return .setlist(String(id.dropFirst("setlist:".count))) }
         return nil
     }
@@ -126,20 +127,26 @@ struct AutoMixSourceEntity: AppEntity {
         self.name = pocket.name
         self.kindLabel = "Pocket"
     }
+    init(playlist: Playlist) {
+        self.id = MixSource.playlist(playlist.id).id
+        self.name = playlist.name
+        self.kindLabel = "Playlist"
+    }
     init(setlist: Setlist) {
         self.id = MixSource.setlist(setlist.id).id
         self.name = setlist.name ?? "Set list"
         self.kindLabel = "Set list"
     }
 
-    /// Pockets first (the primary auto-mix source), then setlist history — the same
-    /// two groups the Mix tab's collection picker offers. Now Playing filtered.
+    /// Pockets first (the primary auto-mix source), then playlists, then setlist history —
+    /// the same groups the Mix tab's collection picker offers. Now Playing filtered.
     @MainActor static func all(in collections: CollectionsStore) -> [AutoMixSourceEntity] {
         let pockets = collections.pockets.map(AutoMixSourceEntity.init(pocket:))
+        let playlists = collections.playlists.map(AutoMixSourceEntity.init(playlist:))
         let setlists = collections.setlists
             .filter { $0.id != nowPlayingSetlistId }
             .map(AutoMixSourceEntity.init(setlist:))
-        return pockets + setlists
+        return pockets + playlists + setlists
     }
     @MainActor static func matching(_ string: String, in collections: CollectionsStore) -> [AutoMixSourceEntity] {
         all(in: collections).filter { $0.name.localizedCaseInsensitiveContains(string) }
@@ -148,6 +155,7 @@ struct AutoMixSourceEntity: AppEntity {
         ids.compactMap { id in
             switch mixSource(from: id) {
             case .pocket(let pid):  return collections.pocket(pid).map(AutoMixSourceEntity.init(pocket:))
+            case .playlist(let plid): return collections.playlist(plid).map(AutoMixSourceEntity.init(playlist:))
             case .setlist(let sid):
                 guard sid != nowPlayingSetlistId else { return nil }
                 return collections.setlist(sid).map(AutoMixSourceEntity.init(setlist:))

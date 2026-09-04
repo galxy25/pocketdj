@@ -28,13 +28,16 @@ struct MixResolver {
     /// BurnStore file, into loadable decks with their on-device beat grid + detected key.
     let studio: StudioStore
 
-    /// Ordered LOADABLE items for a deck source. Pocket → DAG-resolved song ids; setlist →
-    /// frozen tracks (snapshot metadata). Keeps ONLY ids whose burned file (or studio file) exists
-    /// on disk (drops notes/text/un-burned). Deduped by songId, first-seen wins.
+    /// Ordered LOADABLE items for a deck source. Pocket → DAG-resolved song ids; playlist →
+    /// catalog-resolved song ids (albums/pockets expanded, same walk playback already uses —
+    /// task #61: no materialization into a pocket/setlist needed); setlist → frozen tracks
+    /// (snapshot metadata). Keeps ONLY ids whose burned file (or studio file) exists on disk
+    /// (drops notes/text/un-burned). Deduped by songId, first-seen wins.
     func loadables(for source: MixSource) -> [MixLoadable] {
         switch source {
-        case .pocket(let id):  return loadables(songIds: collections.playableIds(forPocket: id))
-        case .setlist(let id): return setlistLoadables(id)
+        case .pocket(let id):   return loadables(songIds: collections.playableIds(forPocket: id))
+        case .playlist(let id): return loadables(songIds: collections.playableIds(forPlaylist: id))
+        case .setlist(let id):  return setlistLoadables(id)
         }
     }
 

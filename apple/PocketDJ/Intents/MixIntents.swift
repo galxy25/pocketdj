@@ -9,11 +9,11 @@ import AppIntents
 struct StartAutoMixIntent: AudioPlaybackIntent {
     static let title: LocalizedStringResource = "Auto-Mix"
     static let description = IntentDescription("""
-        Starts an Auto-DJ mix from a pocket or set list, with timed crossfades. \
+        Starts an Auto-DJ mix from a pocket, playlist, or set list, with timed crossfades. \
         Auto-mix plays songs burned onto this device.
         """)
 
-    @Parameter(title: "Pocket or Set List", requestValueDialog: "Which pocket or set list?")
+    @Parameter(title: "Pocket, Playlist, or Set List", requestValueDialog: "Which pocket, playlist, or set list?")
     var source: AutoMixSourceEntity
     @Parameter(title: "Shuffle", default: false)
     var shuffle: Bool

@@ -132,6 +132,78 @@ final class CollectionMixDownloaderTests: XCTestCase {
         d.cancel()
     }
 
+    /// A `.pocket` crate and a `.playlist` crate side by side must union exactly like two
+    /// pockets do (task #61: `MixSource` gained a `.playlist` case so a playlist can be a Mix
+    /// deck source directly, with no convert-to-pocket step first). Pins `MixSource.playlist`'s
+    /// `Hashable`/dictionary-key behavior and that the downloader's generic machinery treats it
+    /// identically to the existing two kinds — no special-casing anywhere in `begin(sources:)`.
+    func testPocketAndPlaylistCratesUnionLikeTwoPockets() async throws {
+        let rips = makeRips()
+        let burns = try MixBurnFixture.burnStore(ids: [], rips: rips)
+        let engine = MixEngine(burns: burns)
+        let byCrate: [MixSource: [String]] = [
+            .pocket("sap"): ["s1", "s2", "shared"],
+            .playlist("pls_joy"): ["j1", "j2", "shared"],
+        ]
+        let d = CollectionMixDownloader(engine: engine, burns: burns, rips: rips, transfers: nil)
+        d.resolveRipIds = { byCrate[$0] ?? [] }
+        d.resolveLoadables = { _ in [] }
+        d.songLengthSeconds = { _ in nil }
+        d.songTitleArtist = { (title: $0, artist: "A") }
+        d.declaredMemberCount = { byCrate[$0]?.count ?? 0 }
+        d.catalogSongCount = { 100 }
+
+        d.begin(sources: [.pocket("sap"), .playlist("pls_joy")])
+        XCTAssertEqual(d.totalCount, 5,
+                       "a pocket + a playlist union exactly like two pockets — 3 + 3 minus 1 shared = 5")
+        d.cancel()
+    }
+
+    // MARK: playlist crate resolves through the SAME catalog walk a pocket/setlist does (task #61)
+
+    /// A REAL playlist (not a stubbed source) resolves through `MixResolver.loadables(for:)`
+    /// exactly like a pocket: catalog-resolved, burned-file-only, in PLAYLIST order, deduped.
+    /// Before `.playlist` existed on `MixSource`, a user had to duplicate/convert a playlist
+    /// into a pocket before Mix would accept it as a crate (the field "sap"/"joy" investigation
+    /// that filed task #61); this pins the direct path — no conversion, no materialization.
+    func testPlaylistSourceResolvesBurnedTracksInPlaylistOrder() async throws {
+        let app = AppModel(loader: TestData.StubLoader())
+        await app.loadIfNeeded()
+        let collectionsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-mixdl-playlist-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: collectionsURL) }
+        let collections = CollectionsStore(fileURL: collectionsURL)
+        collections.app = app
+
+        let rips = makeRips()
+        // sng_3 is deliberately NEVER burned — it must drop out of the resolved loadables
+        // exactly like an un-burned pocket member does.
+        let burns = try MixBurnFixture.burnStore(ids: ["sng_1", "sng_2"], rips: rips)
+        let studioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-mixdl-playlist-studio-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: studioURL) }
+        let studio = StudioStore(fileURL: studioURL)
+
+        let pl = collections.createPlaylist("Evening Set")
+        collections.addSong("sng_1", toPlaylist: pl.id)
+        collections.addSong("sng_2", toPlaylist: pl.id)
+        collections.addSong("sng_3", toPlaylist: pl.id)   // never burned
+
+        let resolver = MixResolver(app: app, collections: collections, burns: burns, studio: studio)
+        let loadables = resolver.loadables(for: .playlist(pl.id))
+
+        XCTAssertEqual(loadables.map(\.songId), ["sng_1", "sng_2"],
+                       "burned-only, in PLAYLIST order — the un-burned sng_3 drops out")
+        XCTAssertEqual(loadables.first?.title, "Neon")
+        XCTAssertEqual(loadables.first?.artist, "Aria")
+
+        // The pre-catalog declared count sees all 3 nodes regardless of burn state — mirrors
+        // how a pocket's declaredMemberCount is catalog-independent (task #53's diagnostic).
+        XCTAssertEqual(collections.declaredMemberCount(for: .playlist(pl.id)), 3)
+        XCTAssertEqual(collections.declaredMemberCount(for: .playlist("pls_missing")), 0,
+                       "an unknown playlist id declares zero, same as an unknown pocket/setlist")
+    }
+
     // MARK: catalogShortfall — the partial-catalog banner's source (follow-up to task #56)
 
     /// `catalogShortfall` is the field "two crates → total=1" signature turned into published
