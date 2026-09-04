@@ -1143,21 +1143,62 @@ final class PerformanceUITests: XCTestCase {
         XCTAssertTrue(step.waitForExistence(timeout: 8), "the 16-step grid should be present")
         // Seeded pattern lights steps 0/4/8/12, so step 0 starts ON. Toggling flips it off.
         XCTAssertTrue(step.isSelected, "seeded step 0-0 starts on")
-        // Tapping a step must MUTATE the pattern (toggle a pad). We assert the on-step SET
-        // changes rather than that this exact cell flips: on iPad the tiny step cells' hit
-        // regions are skewed ~one cell from their reported a11y frames (both `.tap()` and a
-        // center-coordinate tap land on the neighbour), so pinning cell 0-0 specifically is
-        // unreliable there — but the interaction (a tap edits the grid) is exactly what this
-        // verifies. Suspected app-side a11y/hit skew in the nested-HStack step grid; filed as a
-        // follow-up. On iPhone the same tap flips 0-0 itself.
-        let onSteps = NSPredicate(format: "identifier BEGINSWITH 'seq-step-0-' AND isSelected == true")
-        let onBefore = app.buttons.matching(onSteps).count
-        XCTAssertGreaterThan(onBefore, 0, "the seeded lane has lit steps")
+        // Tapping a step must MUTATE exactly THAT pad — pinned tight (task #60: this used to be a
+        // tolerant "some step in the row changed" assertion because iPad's step cells had a
+        // confirmed a11y hit-frame skew, tapping identifier N toggled column N+1 instead. Root
+        // cause: `.overlay(alignment:) { if cond { View() } }` badges on the cell — the loop/span
+        // indicators — built a `_ConditionalContent` whose case flipped per cell, and that broke
+        // the tap→cell mapping for the whole row. Fixed in StudioSequencerView.stepCell by making
+        // the badge content unconditional (shown/hidden via `.opacity` instead). See
+        // `testSequencerStepToggleTargetsExactColumn` for a dedicated regression covering an
+        // OFF column, which is what actually exposed the skew.
         step.tapCenter()
-        let mutated = expectation(for: NSPredicate(format: "count != %d", onBefore),
-                                  evaluatedWith: app.buttons.matching(onSteps))
-        wait(for: [mutated], timeout: 5)
+        let becameOff = expectation(for: NSPredicate(format: "isSelected == false"), evaluatedWith: step)
+        wait(for: [becameOff], timeout: 5)
         snap("sequencer-editor")
+        #endif
+    }
+
+    /// Regression (task #60): tapping an OFF step must turn ON that exact column and no other —
+    /// this is the case that exposed the iPad step-cell a11y hit-frame skew (tapping identifier
+    /// `seq-step-0-1` was toggling column 2 instead, confirmed via a from-scratch minimal
+    /// reproduction; root cause + fix are in `StudioSequencerView.stepCell`/`decorationLayer`).
+    /// Covers a column at a beat-group boundary too (col 3, the last column before the wider
+    /// inter-group spacing — where the skew's undershoot/overshoot behavior varied most across
+    /// devices/simulators during investigation).
+    func testSequencerStepToggleTargetsExactColumn() throws {
+        #if os(macOS)
+        throw XCTSkip("macOS: existence smoke only — sequencer flows exercised on iOS")
+        #else
+        launchPerformance()
+        switchTab(2)
+        let pattern = app.el("seq-pattern-ptn_fixture")
+        XCTAssertTrue(pattern.waitForExistence(timeout: 15))
+        pattern.tap()
+        XCTAssertTrue(app.el("seq-step-0-0").waitForExistence(timeout: 10), "the 16-step grid")
+
+        func onCols() -> Set<Int> {
+            var result = Set<Int>()
+            for c in 0..<16 where app.el("seq-step-0-\(c)").isSelected { result.insert(c) }
+            return result
+        }
+        // Seeded pattern lights steps 0/4/8/12 — everything else starts OFF.
+        let seeded = onCols()
+        XCTAssertEqual(seeded, [0, 4, 8, 12], "seeded on-set")
+
+        for testCol in [1, 3] {
+            let target = app.el("seq-step-0-\(testCol)")
+            XCTAssertFalse(target.isSelected, "col \(testCol) starts off")
+            target.tap()
+            let turnedOn = expectation(for: NSPredicate(format: "isSelected == true"), evaluatedWith: target)
+            wait(for: [turnedOn], timeout: 5)
+            XCTAssertEqual(onCols(), seeded.union([testCol]),
+                           "tapping col \(testCol) must turn ON exactly that column, no neighbour")
+            target.tap()   // restore to baseline for the next iteration
+            let turnedOff = expectation(for: NSPredicate(format: "isSelected == false"), evaluatedWith: target)
+            wait(for: [turnedOff], timeout: 5)
+            XCTAssertEqual(onCols(), seeded, "restored to the seeded baseline")
+        }
         #endif
     }
 
