@@ -71,6 +71,16 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// our own `seek(to:)` so an in-app scrub can never read as a restart.
     @ObservationIgnored private var monitorMaxPlaybackTime: Double = 0
 
+    /// The `playbackTime` observed on the PREVIOUS poll — the self-heal baseline (see
+    /// `advancedDespiteReportedPause`). `playbackStatus` can get stuck reporting NOT-`.playing`
+    /// while the audio session keeps genuinely rendering (a known MusicKit staleness class,
+    /// confirmed by a CarPlay field report: session ios-3712BFDE, 2026-09-04 — a rapid
+    /// pause→resume→pause left the reported status glued to `.paused` for 3+ minutes while
+    /// the track was audibly still playing, freezing the CarPlay/lock-screen card on
+    /// `playing=false`). Reset alongside `monitorMaxPlaybackTime` on `tryPlay`/`seek` so a
+    /// fresh track or an in-app scrub can never read as spurious advancement.
+    @ObservationIgnored private var lastPollPlaybackTime: Double = 0
+
     /// True while the CURRENT paused state was requested through OUR OWN pause paths
     /// (`pausePlayback` / `togglePlayPause` — which is where every in-app and
     /// impersonated-card pause lands). The end-monitor needs it because a pause in the first
@@ -172,6 +182,65 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     nonisolated static func trackRestarted(playbackTime: Double, maxObserved: Double) -> Bool {
         playbackTime < 2.0 && maxObserved > 10.0
     }
+
+    /// Below this much movement (seconds) across one ~400 ms poll, a `playbackTime` re-read
+    /// is noise — the SAME underlying value re-observed. At/above it, real audio has
+    /// unambiguously kept advancing: a poll interval's worth of genuine playback is ~0.4 s,
+    /// so this sits comfortably below that while staying well clear of rounding jitter.
+    private static let selfHealEpsilonSeconds: Double = 0.25
+
+    /// Ground truth for the self-heal check: ONLY real, ongoing playback can advance
+    /// `playbackTime` — a genuinely paused/stopped player holds it still. So if
+    /// `playbackStatus` reports NOT `.playing` but the position keeps moving anyway, the
+    /// reported status — not the position — is the stale one.
+    nonisolated static func advancedDespiteReportedPause(playbackTime: Double, lastPollPlaybackTime: Double) -> Bool {
+        playbackTime - lastPollPlaybackTime > selfHealEpsilonSeconds
+    }
+
+    /// One tick of `startStateMonitor`'s play/pause reconciliation, extracted pure (like
+    /// `trackEnded`/`endReason`/`trackRestarted` above) so the self-heal fix is unit-testable
+    /// without a live MusicKit player.
+    ///
+    /// CONFIRMED FIELD BUG (session ios-3712BFDE, 2026-09-04): Levi streamed a 4,011-song
+    /// collection over CarPlay; a rapid pause→resume→pause (system/CarPlay-originated, not
+    /// one of our own action paths) left `player.state.playbackStatus` glued to reporting
+    /// `.paused` for 3+ minutes — a known MusicKit staleness class — while the track was
+    /// audibly still playing. The monitor mirrored that stale status into `isPlaying` with no
+    /// cross-check, freezing the CarPlay/lock-screen card on `playing=false` until Levi
+    /// manually paused/resumed to "retrigger it to be alive". `reallyPlaying` below is the
+    /// fix: trust `playbackTime` actually advancing over a status that says otherwise.
+    struct PollVerdict: Equatable {
+        /// What `isPlaying` should become after this poll.
+        var isPlaying: Bool
+        /// Set only on a TRANSITION (`isPlaying` flipping) — nil on a steady-state poll,
+        /// mirroring the monitor's original `if !self.isPlaying { … }` / `else if … self.isPlaying`
+        /// guards, which only touch the clock/log on a change, never on every poll.
+        var transition: Transition?
+        /// The wall-clock anchor (seconds) to re-base the position clock from. Set exactly
+        /// when `transition` is non-nil.
+        var anchorTime: Double?
+        enum Transition: Equatable {
+            /// `selfHealed == true` ⇒ this is the frozen-false field bug self-correcting
+            /// (status said NOT-playing, position proved otherwise); `false` ⇒ an ordinary
+            /// external resume (status genuinely flipped to `.playing`).
+            case resumed(selfHealed: Bool)
+            case paused
+        }
+    }
+
+    nonisolated static func reconcilePoll(reportedPlaying: Bool, currentlyPlaying: Bool,
+                                          playbackTime: Double, lastPollPlaybackTime: Double) -> PollVerdict {
+        // The self-heal check PREEMPTS the ordinary paused-status read: a status that claims
+        // "paused" while the position keeps moving is the one that's wrong.
+        let reallyPlaying = reportedPlaying ||
+            advancedDespiteReportedPause(playbackTime: playbackTime, lastPollPlaybackTime: lastPollPlaybackTime)
+        guard reallyPlaying != currentlyPlaying else {
+            return PollVerdict(isPlaying: currentlyPlaying, transition: nil, anchorTime: nil)
+        }
+        return reallyPlaying
+            ? PollVerdict(isPlaying: true, transition: .resumed(selfHealed: !reportedPlaying), anchorTime: playbackTime)
+            : PollVerdict(isPlaying: false, transition: .paused, anchorTime: playbackTime)
+    }
 }
 
 // ============================================================================
@@ -272,6 +341,7 @@ extension AppleMusicPlaybackProvider {
             isPlaying = true
             startPositionClock(from: atMs.map { Double($0) / 1000 } ?? 0)
             monitorMaxPlaybackTime = atMs.map { Double($0) / 1000 } ?? 0
+            lastPollPlaybackTime = monitorMaxPlaybackTime
             durationSeconds = catalogSong.duration ?? 0
             // Capture the catalog artwork URL — the app's own now-playing surfaces (home deck +
             // widget) can't get a cover from our art-less AM-Local catalog, so this is it.
@@ -330,6 +400,10 @@ extension AppleMusicPlaybackProvider {
         // Re-base the ⏮-restart baseline: OUR OWN backward scrub must never read as a
         // system-⏮ backward jump (which would spuriously step the set back).
         monitorMaxPlaybackTime = max(0, seconds)
+        // Re-base the self-heal baseline too: OUR OWN scrub jumps `playbackTime` by more than
+        // one poll's worth in a single step, which — left unbased — the very next poll would
+        // misread as "advanced despite reported pause" and wrongly self-heal a real pause.
+        lastPollPlaybackTime = max(0, seconds)
     }
 
     func stop() {
@@ -342,13 +416,17 @@ extension AppleMusicPlaybackProvider {
     }
 
     /// Poll `ApplicationMusicPlayer` — the SINGLE reconciliation loop for the streaming track.
-    /// Three jobs, all needed because MusicKit is an OS-level player other UIs can drive:
+    /// Four jobs, all needed because MusicKit is an OS-level player other UIs can drive:
     ///  1. STATE SYNC: the user can pause/resume from MusicKit's OWN system card (the macOS
     ///     menu-bar entry), which never calls our methods — so our `isPlaying` mirror and the
     ///     wall-clock position MUST follow the real `playbackStatus`, not just our own calls.
-    ///  2. END-OF-TRACK: the single-item queue finishes as `.stopped` (with a played-past-
+    ///  2. SELF-HEAL: `playbackStatus` can itself get STUCK reporting NOT-`.playing` while the
+    ///     audio session keeps genuinely rendering — see `reconcilePoll`/`PollVerdict` for the
+    ///     confirmed field bug this corrects (session ios-3712BFDE, 2026-09-04: the CarPlay
+    ///     card froze on `playing=false` for 3+ minutes of audible playback).
+    ///  3. END-OF-TRACK: the single-item queue finishes as `.stopped` (with a played-past-
     ///     duration backstop) → fire `onTrackEnded` ONCE so the setlist advances.
-    ///  3. CLOCK ANCHORING: `playbackTime` is accurate ON state changes — re-anchor the smooth
+    ///  4. CLOCK ANCHORING: `playbackTime` is accurate ON state changes — re-anchor the smooth
     ///     wall-clock there so an externally-driven pause/resume can't drift the position.
     /// Superseded on the next `tryPlay`, cancelled on `stop`; ~0.4 s cadence is imperceptible.
     private func startStateMonitor() {
@@ -361,22 +439,41 @@ extension AppleMusicPlaybackProvider {
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 guard let self, !Task.isCancelled else { return }
                 let status = player.state.playbackStatus
-                if status == .playing {
-                    everPlayed = true
-                    if !self.isPlaying {              // resumed from OUTSIDE (MusicKit's card)
-                        NPLog.trace("AM monitor: external RESUME at \(Int(player.playbackTime))s")
-                        self.isPlaying = true
-                        self.pauseWasIntentional = false   // the pause it marked is over
-                        self.startPositionClock(from: player.playbackTime)
-                    }
-                } else if everPlayed, status == .paused, self.isPlaying {
-                    NPLog.trace("AM monitor: external PAUSE at \(Int(player.playbackTime))s")
-                    self.isPlaying = false            // paused from OUTSIDE — freeze at the
-                    self.positionBase = player.playbackTime   // exact (state-change) position
-                    self.positionStartWall = nil
-                }
-                guard everPlayed else { continue }   // ignore the pre-roll before audio starts
                 let t = player.playbackTime
+                let reportedPlaying = status == .playing
+                if reportedPlaying { everPlayed = true }
+                // `reallyPlaying` mirrors what `isPlaying` should be after this poll — either
+                // the ordinary reported status, or (once we've genuinely played at least once)
+                // the self-heal override when `playbackTime` keeps moving despite a reported
+                // pause. `guard everPlayed` below preserves the original pre-roll behavior: do
+                // nothing until the FIRST real `.playing` observation.
+                var reallyPlaying = self.isPlaying
+                if everPlayed {
+                    let verdict = Self.reconcilePoll(reportedPlaying: reportedPlaying, currentlyPlaying: self.isPlaying,
+                                                      playbackTime: t, lastPollPlaybackTime: self.lastPollPlaybackTime)
+                    reallyPlaying = verdict.isPlaying
+                    if let transition = verdict.transition, let anchor = verdict.anchorTime {
+                        switch transition {
+                        case .resumed(let selfHealed):
+                            if selfHealed {
+                                NPLog.trace("AM monitor: self-heal — playbackTime advanced " +
+                                    "\(String(format: "%.1f", t - self.lastPollPlaybackTime))s while reported paused, correcting")
+                            } else {
+                                NPLog.trace("AM monitor: external RESUME at \(Int(anchor))s")
+                            }
+                            self.isPlaying = true
+                            self.pauseWasIntentional = false   // the pause it marked is over
+                            self.startPositionClock(from: anchor)
+                        case .paused:
+                            NPLog.trace("AM monitor: external PAUSE at \(Int(anchor))s")
+                            self.isPlaying = false             // paused from OUTSIDE — freeze at
+                            self.positionBase = anchor         // the exact (state-change) position
+                            self.positionStartWall = nil
+                        }
+                    }
+                }
+                self.lastPollPlaybackTime = t
+                guard everPlayed else { continue }   // ignore the pre-roll before audio starts
                 if t > self.monitorMaxPlaybackTime { self.monitorMaxPlaybackTime = t }
                 // System remote ⏮ also lands in MusicKit (never our handler): it rewinds its
                 // one-song queue to 0:00 while STAYING .playing — no state change to observe,
@@ -392,8 +489,13 @@ extension AppleMusicPlaybackProvider {
                 }
                 // `trackEnded` covers .stopped, played-past-duration, AND the system-skip
                 // artifact (lock-screen/CarPlay ⏭ goes to MusicKit, which exhausts its
-                // one-song queue and parks PAUSED at ~0 / the end — see the func doc).
-                if let reason = Self.endReason(stopped: status == .stopped, paused: status == .paused,
+                // one-song queue and parks PAUSED at ~0 / the end — see the func doc). A
+                // self-healed poll is proven to still be playing (`reallyPlaying`), so it must
+                // NOT feed the raw (stale) `.paused`/`.stopped` status into this verdict — that
+                // would misread genuine ongoing playback near the top of a track as a system
+                // skip.
+                if let reason = Self.endReason(stopped: status == .stopped && !reallyPlaying,
+                                               paused: status == .paused && !reallyPlaying,
                                                playbackTime: t, expectedDuration: expected,
                                                maxObserved: self.monitorMaxPlaybackTime,
                                                intentionalPause: self.pauseWasIntentional) {
