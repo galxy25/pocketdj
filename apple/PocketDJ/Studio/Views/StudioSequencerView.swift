@@ -1370,6 +1370,17 @@ private struct PatternRowCard: View {
                 }
             }
         }
+        // Task #60 fix: the downbeat border + loop/span badges used to live as THREE stacked
+        // `.overlay()` modifiers directly on each tappable step cell. On iPad (16 cells sharing
+        // one HStack) that broke the tap→cell a11y mapping — tapping the identifier for column N
+        // toggled column N+1 instead (confirmed with a from-scratch minimal reproduction: ANY
+        // second view composited onto the per-cell shape reproduced it, whether via `.overlay`
+        // or `ZStack`, conditional or unconditional content — so it's not about `_ConditionalContent`
+        // specifically, it's the extra per-cell view composition itself). Fix: keep each step
+        // Button a SINGLE plain shape, and render the border/badges in their own non-interactive
+        // overlay pass instead — the same architecture `markerLayer` already uses for the cursor
+        // and loop-window band, which never exhibited the skew.
+        .overlay { decorationLayer(cols) }
         .overlay { markerLayer(cols) }          // SEQ5: static loop-window band + playhead cursor
         .overlay {
             TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !playingThis)) { _ in
@@ -1443,6 +1454,44 @@ private struct PatternRowCard: View {
         .allowsHitTesting(false)
     }
 
+    /// Task #60: the downbeat border + loop/span badges, moved OUT of the per-cell Button (see
+    /// `stepCell`) into their own non-interactive layer — mirrors `markerLayer`'s exact
+    /// group/cell geometry so it stays pixel-aligned, and never eats a pad tap.
+    private func decorationLayer(_ cols: Range<Int>) -> some View {
+        let groups = beatGroups(cols)
+        return HStack(spacing: Self.groupSpacing) {
+            ForEach(groups, id: \.lowerBound) { group in
+                HStack(spacing: Self.cellSpacing) {
+                    ForEach(group, id: \.self) { col in
+                        let on = row.steps.indices.contains(col) && row.steps[col]
+                        let loops = on && row.loopSteps.indices.contains(col) && row.loopSteps[col]
+                        let span = on && row.stepSpans.indices.contains(col) ? row.stepSpans[col] : 0
+                        RoundedRectangle(cornerRadius: Self.cellRadius, style: .continuous)
+                            // Downbeat columns get a brighter border — the at-a-glance 4/4 anchor.
+                            .strokeBorder(col % 4 == 0 ? Theme.fgDim.opacity(0.55) : Theme.border, lineWidth: 1)
+                            .frame(height: Self.cellHeight)
+                            .frame(maxWidth: .infinity)
+                            .overlay(alignment: .topTrailing) {
+                                Image(systemName: "repeat")
+                                    .font(.system(size: 8, weight: .bold))
+                                    .foregroundStyle(Theme.bg)
+                                    .padding(2)
+                                    .opacity(loops ? 1 : 0)
+                            }
+                            .overlay(alignment: .bottomLeading) {
+                                Text("×\(span)")
+                                    .font(.system(size: 8, weight: .bold)).monospacedDigit()
+                                    .foregroundStyle(Theme.bg)
+                                    .padding(2)
+                                    .opacity(span > 0 ? 1 : 0)
+                            }
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
     /// Split a column range into beat groups of 4 — the visual beat-group separators are the
     /// WIDER `groupSpacing` between these groups.
     private func beatGroups(_ cols: Range<Int>) -> [Range<Int>] {
@@ -1472,6 +1521,11 @@ private struct PatternRowCard: View {
         let loops = on && row.loopSteps.indices.contains(col) && row.loopSteps[col]
         let span = on && row.stepSpans.indices.contains(col) ? row.stepSpans[col] : 0
         let covered = !on && coverage.indices.contains(col) && coverage[col]
+        // Task #60 fix: this Button's label is now a SINGLE plain shape — no per-cell `.overlay`
+        // stack. The downbeat border + loop/span badges moved to `decorationLayer`, a shared
+        // non-interactive pass over the whole line (see that function's doc for why: compositing
+        // a second view onto the tappable shape — via `.overlay` OR `ZStack`, conditional or not —
+        // was breaking the tap→cell a11y mapping on iPad).
         return Button {
             studio.setPatternStep(patternId, row: rowIndex, col: col, on: !on)
             if sequencerLive, playingThis { engine.updateLiveStep(row: rowIndex, col: col, on: !on) }
@@ -1483,28 +1537,9 @@ private struct PatternRowCard: View {
                 // off-cells carry a faint wash (the stretch footprint).
                 .fill(on ? Theme.accent.opacity(missing ? 0.35 : 1)
                          : (covered ? Theme.accent.opacity(0.16) : Theme.bgOverlay))
-                .overlay(RoundedRectangle(cornerRadius: Self.cellRadius, style: .continuous)
-                    // Downbeat columns get a brighter border — the at-a-glance 4/4 anchor.
-                    .strokeBorder(col % 4 == 0 ? Theme.fgDim.opacity(0.55) : Theme.border, lineWidth: 1))
-                .overlay(alignment: .topTrailing) {
-                    if loops {
-                        Image(systemName: "repeat")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundStyle(Theme.bg)
-                            .padding(2)
-                    }
-                }
-                .overlay(alignment: .bottomLeading) {
-                    if span > 0 {
-                        Text("×\(span)")
-                            .font(.system(size: 8, weight: .bold)).monospacedDigit()
-                            .foregroundStyle(Theme.bg)
-                            .padding(2)
-                    }
-                }
                 .frame(height: Self.cellHeight)
                 .frame(maxWidth: .infinity)
-                .contentShape(RoundedRectangle(cornerRadius: Self.cellRadius, style: .continuous))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Step \(col + 1)")
