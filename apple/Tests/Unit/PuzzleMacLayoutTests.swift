@@ -141,7 +141,7 @@ final class PuzzleMacLayoutTests: XCTestCase {
     private func dumpTree(_ element: AnyObject, depth: Int) {
         guard depth < 6 else { return }
         let cls = String(describing: type(of: element))
-        let role = (element as? NSAccessibility)?.accessibilityRole()?.rawValue ?? "?"
+        let role = element.accessibilityRole?()?.rawValue ?? "?"
         let id = element.accessibilityIdentifier?() ?? "(nil)"
         let kids = element.accessibilityChildren?() ?? []
         print("PDJ-DIAG:\(String(repeating: "  ", count: depth))[\(cls)] role=\(role) id=\(id) kids=\(kids.count)")
