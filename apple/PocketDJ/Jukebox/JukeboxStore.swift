@@ -165,6 +165,41 @@ final class JukeboxStore {
         }
     }
 
+    /// Adopt one of the account's OTHER live sessions (GET /sessions/:id, account bearer)
+    /// and become ITS active publisher from now on — the fix for "I shared a QR for a
+    /// session I started on my phone, and the TV showing it has no hostKey, so nothing
+    /// ever posts state to it." Fetches the full session (this time carrying the real
+    /// `hostKey`), adopts it as `session`, resets exactly what `start()` resets, and starts
+    /// the loop — so THIS device now publishes its own now-playing/up-next to that session.
+    ///
+    /// Same guard shape as `start()` (never clobbers an already-active session) EXCEPT one
+    /// case: adopting the session this device is already actively hosting is a harmless
+    /// no-op success (nothing to do — it's already the publisher). Adopting a DIFFERENT
+    /// session while one is active is refused by the guard; callers that want to switch
+    /// must `end()` the current session first (mirrors the app's only other lifecycle
+    /// transition — there is no in-place session swap).
+    func adopt(jukeboxId: String) async {
+        if let s = session, s.jukeboxId == jukeboxId { return }   // already the publisher — no-op
+        guard session == nil, !starting else { return }
+        starting = true
+        defer { starting = false }
+        lastError = nil
+        do {
+            let s = try await client.sessionInfo(jukeboxId: jukeboxId)
+            session = s
+            persistSession()
+            hearEnabled = false   // adopting starts this device's publishing fresh, view-only
+            seq = 0
+            inbox = []
+            decided = []
+            lastPostedState = nil
+            pickModel = makePickModel()
+            startLoop()
+        } catch {
+            lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
     /// End the session: the server publishes a final `ended: true` state (guest pages
     /// sign off) and this store tears down its loop. The local session clears even when
     /// the end POST fails (an unreachable server must not trap the host in a dead party).

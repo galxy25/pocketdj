@@ -1229,11 +1229,22 @@ struct TVForYouView: View {
 /// one shows that session's QR FULL-SCREEN — the room scans the television; the phone stays
 /// the hosting/management surface (queue, requests, decisions). A Start row creates a session
 /// through the same store the phone uses.
+///
+/// Picking a LISTED session first ADOPTS it (`JukeboxStore.adopt`, added same night as this
+/// spec): only the device that STARTED a session holds its `hostKey` and publishes state, so
+/// sharing a session's QR from a device that didn't create it — e.g. Levi's phone started a
+/// party, then he showed its QR off the TV — published nothing and guests saw a dead page.
+/// Adoption fetches the session's real hostKey (host-authed GET /sessions/:id) and makes THIS
+/// Apple TV its active publisher from that moment on, ending whatever it was hosting before
+/// (never two publish loops at once).
 struct TVJukeboxView: View {
     @Environment(JukeboxStore.self) private var jukebox
     @State private var rows: [JukeboxClient.SessionRow] = []
     @State private var loadError: String?
     @State private var fullScreen: JukeboxClient.SessionRow?
+    /// The row currently mid-adopt (end-previous + fetch-hostKey + start loop) — disables the
+    /// list and shows a spinner in place of that row's status text.
+    @State private var adoptingId: String?
 
     var body: some View {
         Group {
@@ -1245,6 +1256,13 @@ struct TVJukeboxView: View {
                             .frame(width: 640, height: 640)
                         Text(s.name).font(.title2.weight(.semibold)).foregroundStyle(Theme.fg)
                         Text(s.url.absoluteString).font(.callout).foregroundStyle(Theme.fgDim)
+                        if jukebox.session?.jukeboxId == s.jukeboxId {
+                            Label("Hosting from this Apple TV", systemImage: "antenna.radiowaves.left.and.right")
+                                .font(.callout).foregroundStyle(Theme.accent)
+                        } else if let err = jukebox.lastError {
+                            Label(err, systemImage: "wifi.exclamationmark")
+                                .font(.caption).foregroundStyle(Theme.danger)
+                        }
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -1268,20 +1286,30 @@ struct TVJukeboxView: View {
                 Text("Jukebox sessions")
                     .font(.title2.weight(.semibold)).foregroundStyle(Theme.fg)
             }
+            Text("Pick a session to host it from this Apple TV and show its QR.")
+                .font(.callout).foregroundStyle(Theme.fgDim)
             if let loadError {
                 Label(loadError, systemImage: "exclamationmark.triangle")
                     .font(.callout).foregroundStyle(Theme.danger)
             }
             ForEach(rows) { s in
-                Button { fullScreen = s } label: {
+                Button { Task { await select(s) } } label: {
                     HStack(spacing: 14) {
                         Image(systemName: "qrcode")
                         Text(s.name).lineLimit(1)
                         Spacer()
-                        Text(s.timeless == true ? "Timeless" : "Live")
-                            .font(.callout).foregroundStyle(Theme.fgDim)
+                        if jukebox.session?.jukeboxId == s.jukeboxId {
+                            Label("Hosting here", systemImage: "checkmark.circle.fill")
+                                .font(.callout).foregroundStyle(Theme.accent)
+                        } else if adoptingId == s.jukeboxId {
+                            ProgressView()
+                        } else {
+                            Text("Host & show QR")
+                                .font(.callout).foregroundStyle(Theme.fgDim)
+                        }
                     }
                 }
+                .disabled(adoptingId != nil)
                 .accessibilityIdentifier("tv-jukebox-session-\(s.jukeboxId)")
             }
             if rows.isEmpty && loadError == nil {
@@ -1303,6 +1331,21 @@ struct TVJukeboxView: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 64)
         .padding(.vertical, 40)
+    }
+
+    /// Picking a session makes THIS Apple TV its host from now on. If it's already the one
+    /// this device is hosting, `adopt` below is a no-op and this just re-shows the QR. If the
+    /// TV is hosting a DIFFERENT session, end that one first — `adopt`'s guard (mirroring
+    /// `start()`) refuses to clobber an active session, and the point is one publish loop at
+    /// a time, never two.
+    private func select(_ s: JukeboxClient.SessionRow) async {
+        adoptingId = s.jukeboxId
+        defer { adoptingId = nil }
+        if let active = jukebox.session, active.jukeboxId != s.jukeboxId {
+            await jukebox.end()
+        }
+        await jukebox.adopt(jukeboxId: s.jukeboxId)
+        fullScreen = s
     }
 
     private func refresh() async {

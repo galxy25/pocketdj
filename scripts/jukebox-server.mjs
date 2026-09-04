@@ -1049,6 +1049,25 @@ const server = http.createServer(async (req, res) => {
     return send(res, 200, { sessions: rows });
   }
 
+  // ---- Host session ADOPTION lookup: same account bearer as /sessions above, but this
+  // one DOES carry the hostKey — a device that wants to become a listed session's active
+  // publisher (e.g. the TV picking up a session originally started on the phone) needs the
+  // key to POST /state. /sessions itself stays hostKey-free (a passive list is only as
+  // sensitive as the guest URLs it carries); this is a separate, explicit, single-session
+  // lookup so "list" call sites can never leak a key by accident. Matched BEFORE the
+  // generic `/:id` matcher below (same reasoning as the /mwf dispatch: "sessions" would
+  // otherwise parse as a session id with rest=/<id>).
+  const sessM = path.match(/^\/sessions\/([a-z2-7]{4,32})$/);
+  if (sessM && req.method === 'GET') {
+    if (!tokenOk(req)) return send(res, 401, { error: 'unauthorized' });
+    const s = sessions.get(sessM[1]);
+    if (!s || s.ended) return send(res, 404, { error: 'unknown jukebox' });
+    return send(res, 200, {
+      jukeboxId: s.id, hostKey: s.hostKey, name: s.name || 'Jukebox', url: guestUrl(s.id),
+      timeless: !!s.timeless, expiresAt: s.timeless ? null : s.expiresAt,
+    });
+  }
+
   // ---- Music with Friends dispatch (BEFORE the jukebox id matcher; "mwf" is 3 chars
   // so that matcher could never swallow these, but explicit order documents it).
   if (path === '/mwf' && req.method === 'POST') {

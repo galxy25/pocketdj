@@ -125,6 +125,8 @@ Durable session state under `~/.pocketdj/jukebox/<id>/` (`session.json`,
 |---|---|---|
 | `GET /health` | anyone | `{ ok, service: "jukebox", version }` |
 | `POST /jukebox` | host (token) | `{ name, timeless }` → `{ jukeboxId, hostKey, url, timeless, expiresAt }`; renders + uploads page, seeds state.json |
+| `GET /sessions` | host (token) | `{ sessions: [{ jukeboxId, name, url, timeless, expiresAt, createdAt }] }` — every live session, newest first; **never** a hostKey (the tvOS/CarPlay "pick a session" list) |
+| `GET /sessions/:id` | host (token) | `{ jukeboxId, hostKey, name, url, timeless, expiresAt }` — the **adoption** lookup: same account bearer as `/sessions`, but this one carries the real hostKey, so a device that didn't create the session (e.g. the TV, showing a QR for a session started on the phone) can fetch it and become its active publisher (`JukeboxStore.adopt`) |
 | `POST /jukebox/:id/config` | host key | `{ timeless }` → `{ timeless, expiresAt }` — flips the lifecycle mode |
 | `POST /jukebox/:id/end` | host key | marks ended, publishes final state (`ended: true`) |
 | `POST /jukebox/:id/state` | host key | player snapshot `{ nowPlaying, upNext }` → merged with request statuses, written to S3 (debounced ≥1 s) |
