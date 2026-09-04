@@ -236,4 +236,151 @@ final class AppleMusicMonitorTests: XCTestCase {
             stopped: false, paused: true, playbackTime: 199.8, expectedDuration: 200,
             maxObserved: 199.8, intentionalPause: true), .natural)
     }
+
+    // MARK: - Self-heal: a stuck-.paused `playbackStatus` while audio genuinely keeps playing
+    //
+    // FIELD BUG (session ios-3712BFDE, 2026-09-04): Levi streamed "Potential" (4,011 songs)
+    // over CarPlay via Apple Music. A rapid pause→resume→pause (no [action] telemetry fired
+    // immediately before it — a system/CarPlay-originated remote command or MusicKit's own
+    // internal churn) left `player.state.playbackStatus` glued to reporting `.paused` for
+    // 3+ minutes: the CarPlay/lock-screen card froze on `playing=false pos=5` every second
+    // while the track was audibly still playing. Manually pausing/resuming "retriggered it to
+    // be alive" — proof the underlying audio session was fine and only the reported status
+    // (and our blind mirror of it) was stuck.
+
+    func testAdvancingPlaybackTimeWhileReportedPausedIsDetected() {
+        // ~0.4 s poll cadence, real playback advancing — the exact shape from the field log.
+        XCTAssertTrue(AppleMusicPlaybackProvider.advancedDespiteReportedPause(
+            playbackTime: 5.4, lastPollPlaybackTime: 5.0))
+    }
+
+    func testStaticPlaybackTimeWhileReportedPausedIsNotAdvancement() {
+        // A genuine pause: the SAME value re-read poll after poll.
+        XCTAssertFalse(AppleMusicPlaybackProvider.advancedDespiteReportedPause(
+            playbackTime: 5.0, lastPollPlaybackTime: 5.0))
+    }
+
+    func testTinyJitterIsNotAdvancement() {
+        // Below the epsilon — a rounding-level re-read, not real playback continuing.
+        XCTAssertFalse(AppleMusicPlaybackProvider.advancedDespiteReportedPause(
+            playbackTime: 5.1, lastPollPlaybackTime: 5.0))
+    }
+
+    func testBackwardPlaybackTimeIsNotAdvancement() {
+        XCTAssertFalse(AppleMusicPlaybackProvider.advancedDespiteReportedPause(
+            playbackTime: 4.5, lastPollPlaybackTime: 5.0))
+    }
+
+    // MARK: - reconcilePoll: the state monitor's per-poll play/pause reconciliation
+    //
+    // Extracted pure from `startStateMonitor`'s loop (mirroring `trackEnded`/`endReason`/
+    // `trackRestarted` above) because the loop itself is a live `Task` polling a real
+    // MusicKit player and can't run headless.
+
+    /// THE bug, reproduced exactly: status reports NOT-playing while `playbackTime` keeps
+    /// moving poll after poll — must self-heal to `isPlaying == true`, anchoring the position
+    /// clock from the ADVANCED time (not the stale one), and must NOT re-fire the transition
+    /// (or re-log) on every subsequent poll once healed — matching the original monitor's
+    /// "only touch the clock/log on a change" behavior.
+    func testReconcilePollFieldSequenceSelfHeals() {
+        // Poll 1 of the stuck period: just landed on "external PAUSE at 5s" (isPlaying just
+        // went false); the next poll finds playbackTime has moved 5.0 → 5.4 despite the
+        // reported .paused status.
+        var verdict = AppleMusicPlaybackProvider.reconcilePoll(
+            reportedPlaying: false, currentlyPlaying: false,
+            playbackTime: 5.4, lastPollPlaybackTime: 5.0)
+        XCTAssertTrue(verdict.isPlaying)
+        XCTAssertEqual(verdict.transition, .resumed(selfHealed: true))
+        XCTAssertEqual(verdict.anchorTime, 5.4)   // anchors from the ADVANCED time, not the stale 5.0
+
+        // Poll 2: status STILL reports .paused (the underlying staleness persists), time keeps
+        // moving — steady state now that we've healed: no repeat transition/re-anchor.
+        verdict = AppleMusicPlaybackProvider.reconcilePoll(
+            reportedPlaying: false, currentlyPlaying: true,
+            playbackTime: 5.8, lastPollPlaybackTime: 5.4)
+        XCTAssertTrue(verdict.isPlaying)
+        XCTAssertNil(verdict.transition)
+        XCTAssertNil(verdict.anchorTime)
+
+        // Poll 3, well into the "3+ minutes" window: still healed, still no re-transition.
+        verdict = AppleMusicPlaybackProvider.reconcilePoll(
+            reportedPlaying: false, currentlyPlaying: true,
+            playbackTime: 96.2, lastPollPlaybackTime: 95.8)
+        XCTAssertTrue(verdict.isPlaying)
+        XCTAssertNil(verdict.transition)
+    }
+
+    /// Negative case: playbackStatus genuinely `.paused` AND `playbackTime` is NOT
+    /// advancing — must NOT self-heal. A real listener pause must stay paused.
+    func testReconcilePollGenuinePauseDoesNotSelfHeal() {
+        let verdict = AppleMusicPlaybackProvider.reconcilePoll(
+            reportedPlaying: false, currentlyPlaying: true,
+            playbackTime: 5.0, lastPollPlaybackTime: 5.0)
+        XCTAssertFalse(verdict.isPlaying)
+        XCTAssertEqual(verdict.transition, .paused)
+        XCTAssertEqual(verdict.anchorTime, 5.0)
+    }
+
+    /// The negative case held across many polls (the position genuinely never moves) — no
+    /// false self-heal fires at any point during an extended real pause.
+    func testReconcilePollGenuinePauseAcrossManyPollsStaysPaused() {
+        var isPlaying = true
+        let frozenAt = 42.0
+        for _ in 0..<10 {
+            let verdict = AppleMusicPlaybackProvider.reconcilePoll(
+                reportedPlaying: false, currentlyPlaying: isPlaying,
+                playbackTime: frozenAt, lastPollPlaybackTime: frozenAt)
+            XCTAssertFalse(verdict.isPlaying)
+            isPlaying = verdict.isPlaying
+        }
+    }
+
+    /// An ordinary external resume (status genuinely flips to `.playing`) must be labeled
+    /// as such, not mislabeled as a self-heal.
+    func testReconcilePollOrdinaryExternalResumeIsNotSelfHealed() {
+        let verdict = AppleMusicPlaybackProvider.reconcilePoll(
+            reportedPlaying: true, currentlyPlaying: false,
+            playbackTime: 5.0, lastPollPlaybackTime: 5.0)
+        XCTAssertEqual(verdict, AppleMusicPlaybackProvider.PollVerdict(
+            isPlaying: true, transition: .resumed(selfHealed: false), anchorTime: 5.0))
+    }
+
+    /// Steady-state playing (status genuinely `.playing`, already believed playing) is a
+    /// complete no-op — no transition, no anchor — matching the original monitor's
+    /// per-poll-while-already-correct silence.
+    func testReconcilePollSteadyStatePlayingIsNoOp() {
+        let verdict = AppleMusicPlaybackProvider.reconcilePoll(
+            reportedPlaying: true, currentlyPlaying: true,
+            playbackTime: 91.0, lastPollPlaybackTime: 90.6)
+        XCTAssertEqual(verdict, AppleMusicPlaybackProvider.PollVerdict(
+            isPlaying: true, transition: nil, anchorTime: nil))
+    }
+
+    /// Steady-state paused (status genuinely `.paused`, already believed paused, no
+    /// advancement) is also a complete no-op.
+    func testReconcilePollSteadyStatePausedIsNoOp() {
+        let verdict = AppleMusicPlaybackProvider.reconcilePoll(
+            reportedPlaying: false, currentlyPlaying: false,
+            playbackTime: 42.0, lastPollPlaybackTime: 42.0)
+        XCTAssertEqual(verdict, AppleMusicPlaybackProvider.PollVerdict(
+            isPlaying: false, transition: nil, anchorTime: nil))
+    }
+
+    /// The symmetric recovery: once healed `true`, a REAL pause (advancement genuinely
+    /// stops) must still be detected and flip back to `false` — the self-heal must not
+    /// permanently pin `isPlaying` regardless of what happens next.
+    func testReconcilePollSelfHealedThenGenuinePauseRecovers() {
+        var verdict = AppleMusicPlaybackProvider.reconcilePoll(
+            reportedPlaying: false, currentlyPlaying: false,
+            playbackTime: 5.4, lastPollPlaybackTime: 5.0)
+        XCTAssertEqual(verdict.transition, .resumed(selfHealed: true))
+
+        // Advancement genuinely stops (still reported .paused) — must now recognize the real
+        // pause and flip back, not stay stuck self-healed forever.
+        verdict = AppleMusicPlaybackProvider.reconcilePoll(
+            reportedPlaying: false, currentlyPlaying: true,
+            playbackTime: 5.4, lastPollPlaybackTime: 5.4)
+        XCTAssertFalse(verdict.isPlaying)
+        XCTAssertEqual(verdict.transition, .paused)
+    }
 }
