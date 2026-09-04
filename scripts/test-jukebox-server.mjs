@@ -315,6 +315,35 @@ test('timeless create has no expiry; config flips the lifecycle mode', async () 
   assert.equal(unauth.status, 401);
 });
 
+test('GET /sessions lists live sessions with the account bearer, never a hostKey', async () => {
+  const unauth = await req('GET', '/sessions');
+  assert.equal(unauth.status, 401);
+  const r = await req('GET', '/sessions', { token: TOKEN });
+  assert.equal(r.status, 200);
+  const row = r.json.sessions.find((x) => x.jukeboxId === jb.jukeboxId);
+  assert.ok(row, 'the live lifecycle jukebox should be listed');
+  assert.equal(row.name, jb.name);
+  assert.ok(row.url.endsWith(`/${jb.jukeboxId}/`));
+  assert.equal('hostKey' in row, false, '/sessions must never carry a hostKey');
+});
+
+test('GET /sessions/:id is the host-keyed adoption lookup — bearer-gated, carries hostKey', async () => {
+  const unauth = await req('GET', `/sessions/${jb.jukeboxId}`);
+  assert.equal(unauth.status, 401, 'the account bearer is required, same as /sessions');
+  const r = await req('GET', `/sessions/${jb.jukeboxId}`, { token: TOKEN });
+  assert.equal(r.status, 200);
+  assert.equal(r.json.jukeboxId, jb.jukeboxId);
+  assert.equal(r.json.hostKey, jb.hostKey, 'adoption needs the real hostKey to publish state');
+  assert.equal(r.json.name, jb.name);
+  assert.ok(r.json.url.endsWith(`/${jb.jukeboxId}/`));
+  // A per-session hostKey does NOT satisfy this route — it's the account bearer's lookup.
+  const wrongAuth = await req('GET', `/sessions/${jb.jukeboxId}`, { hostKey: jb.hostKey });
+  assert.equal(wrongAuth.status, 401);
+  // Unknown id → 404 (mirrors the /:id/... host routes).
+  const missing = await req('GET', '/sessions/zzzzzzzz', { token: TOKEN });
+  assert.equal(missing.status, 404);
+});
+
 test('end marks the jukebox ended in state.json', async () => {
   const r = await req('POST', `/jukebox/${jb.jukeboxId}/end`, { hostKey: jb.hostKey });
   assert.equal(r.status, 200);

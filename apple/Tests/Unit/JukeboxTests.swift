@@ -371,4 +371,182 @@ final class JukeboxTests: XCTestCase {
         XCTAssertEqual(store.pendingOpenId, "qrstuv67")
         XCTAssertEqual(store.joinedSessions.first?.id, "qrstuv67")
     }
+
+    // MARK: - Adoption (a device other than the one that STARTED a session becomes its
+    // active publisher — the TV "pick a listed session → host it here" fix, 2026-09-02)
+
+    /// Wires `store.settings` (an absolute broker base, so `JukeboxClient`'s `request(_:)`
+    /// builds real URLs the stub can intercept by path) and `store.urlSession` onto a fresh
+    /// `JukeboxAdoptStub`-backed `URLSession` — the DiscoverStoreTests/MwFURLProtocol shape,
+    /// no real network.
+    private func wireAdoptTransport(_ store: JukeboxStore) {
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: "test.jukeboxadopt.\(UUID().uuidString)")!)
+        settings.jukeboxServerURL = "https://broker.test"
+        settings.jukeboxToken = "tok"
+        store.settings = settings
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [JukeboxAdoptStub.self]
+        store.urlSession = URLSession(configuration: config)
+    }
+
+    private func sessionInfoJSON(id: String, hostKey: String, name: String = "Living Room") -> Data {
+        Data("""
+        {"jukeboxId":"\(id)","hostKey":"\(hostKey)","name":"\(name)",
+         "url":"https://jukebox.pocket-dj.com/\(id)/","timeless":false,"expiresAt":1234}
+        """.utf8)
+    }
+
+    /// With nothing active, `adopt` fetches the FULL session (the real hostKey — the whole
+    /// point) via the host-authed GET /sessions/:id lookup, adopts it, and starts the loop:
+    /// its very first tick publishes THIS device's state using that hostKey. That publish —
+    /// not just `session` being non-nil — is the proof adoption actually works, since a
+    /// stale/placeholder hostKey would set `session` too but never successfully post.
+    func testAdoptWithNoActiveSessionFetchesHostKeyAndStartsPublishing() async throws {
+        JukeboxAdoptStub.reset()
+        let app = await makeApp()
+        let store = makeStore(app, makeStack())
+        wireAdoptTransport(store)
+        JukeboxAdoptStub.bodyByPath["/sessions/erjjo4jn"] = sessionInfoJSON(id: "erjjo4jn", hostKey: "realhostkey123")
+
+        await store.adopt(jukeboxId: "erjjo4jn")
+
+        XCTAssertEqual(store.session?.jukeboxId, "erjjo4jn")
+        XCTAssertEqual(store.session?.hostKey, "realhostkey123",
+                       "adoption must carry the SESSION'S real hostKey, not a placeholder")
+        XCTAssertNil(store.lastError)
+        XCTAssertFalse(store.hearEnabled, "adopting resets the same state start() resets")
+        XCTAssertTrue(store.inbox.isEmpty)
+
+        // Let startLoop's background Task actually run its first tick.
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertGreaterThan(JukeboxAdoptStub.count(path: "/jukebox/erjjo4jn/state"), 0,
+                             "startLoop must have fired — this device now publishes to the adopted session")
+        XCTAssertEqual(JukeboxAdoptStub.last(path: "/jukebox/erjjo4jn/state")?
+                        .value(forHTTPHeaderField: "Authorization"), "Bearer realhostkey123",
+                       "the publish must ride the ADOPTED session's real hostKey")
+    }
+
+    /// Re-adopting the session THIS device already hosts is a harmless no-op success: no
+    /// second GET /sessions/:id round trip, `session` is left exactly as it was.
+    func testAdoptingTheSessionAlreadyHostingIsANoOp() async throws {
+        JukeboxAdoptStub.reset()
+        let app = await makeApp()
+        let store = makeStore(app, makeStack())
+        wireAdoptTransport(store)
+        JukeboxAdoptStub.bodyByPath["/sessions/erjjo4jn"] = sessionInfoJSON(id: "erjjo4jn", hostKey: "realhostkey123")
+
+        await store.adopt(jukeboxId: "erjjo4jn")
+        XCTAssertEqual(JukeboxAdoptStub.count(path: "/sessions/erjjo4jn"), 1)
+        let sessionBefore = store.session
+
+        await store.adopt(jukeboxId: "erjjo4jn")
+
+        XCTAssertEqual(JukeboxAdoptStub.count(path: "/sessions/erjjo4jn"), 1,
+                       "adopting the session already being hosted must not re-fetch it")
+        XCTAssertEqual(store.session, sessionBefore)
+    }
+
+    /// The same guard shape as `start()`: with a DIFFERENT session already active, `adopt`
+    /// refuses outright (no network call at all) rather than clobbering it. Switching is the
+    /// CALLER's job (end the old one first) — see TVJukeboxView.select.
+    func testAdoptRefusesToClobberADifferentActiveSession() async throws {
+        JukeboxAdoptStub.reset()
+        let app = await makeApp()
+        let store = makeStore(app, makeStack())
+        wireAdoptTransport(store)
+        JukeboxAdoptStub.bodyByPath["/jukebox"] = sessionInfoJSON(id: "aaaa2222", hostKey: "ownkey", name: "Mine")
+        await store.start(name: "Mine")
+        XCTAssertEqual(store.session?.jukeboxId, "aaaa2222")
+
+        JukeboxAdoptStub.bodyByPath["/sessions/bbbb3333"] = sessionInfoJSON(id: "bbbb3333", hostKey: "otherkey", name: "Someone Else's")
+        await store.adopt(jukeboxId: "bbbb3333")
+
+        XCTAssertEqual(store.session?.jukeboxId, "aaaa2222",
+                       "adopt must not clobber an already-active DIFFERENT session")
+        XCTAssertEqual(JukeboxAdoptStub.count(path: "/sessions/bbbb3333"), 0,
+                       "the guard must refuse before any network call")
+    }
+
+    /// Two overlapping lifecycle calls for the SAME id: the first's fetch is gated open, so
+    /// while it sits mid-flight (`starting == true`, `session` still nil) a second `adopt`
+    /// call for that id must be refused by the guard — NOT quietly routed through the
+    /// "already hosting" no-op, since there is no session to already be hosting yet.
+    func testAdoptGuardedWhileAnotherCallIsStarting() async throws {
+        JukeboxAdoptStub.reset()
+        let app = await makeApp()
+        let store = makeStore(app, makeStack())
+        wireAdoptTransport(store)
+        JukeboxAdoptStub.gatedPaths = ["/sessions/erjjo4jn"]
+        JukeboxAdoptStub.bodyByPath["/sessions/erjjo4jn"] = sessionInfoJSON(id: "erjjo4jn", hostKey: "realhostkey123")
+
+        let first = Task { await store.adopt(jukeboxId: "erjjo4jn") }
+        // Wait for the first call's synchronous prefix (`starting = true`) to land before its
+        // gated network fetch resolves. Bounded so a broken guard fails loudly, not by hanging.
+        var spins = 0
+        while !store.starting, spins < 500_000 { await Task.yield(); spins += 1 }
+        guard store.starting else { return XCTFail("first adopt never reached `starting`") }
+        XCTAssertNil(store.session, "still mid-flight — no session yet")
+
+        await store.adopt(jukeboxId: "erjjo4jn")
+        XCTAssertNil(store.session, "the guarded concurrent call must not have raced ahead")
+
+        JukeboxAdoptStub.releaseGate()
+        await first.value
+        XCTAssertEqual(store.session?.jukeboxId, "erjjo4jn", "the first call completes normally once released")
+        XCTAssertEqual(JukeboxAdoptStub.count(path: "/sessions/erjjo4jn"), 1,
+                       "the guarded second call made no network request of its own")
+    }
+}
+
+/// Scriptable, request-recording URLProtocol standing in for the broker's host-authed
+/// GET /sessions/:id (adoption) + the loop's POST …/state and GET …/requests — the
+/// DiscoverStoreTests/MwFURLProtocol shape, sized for the JukeboxStore.adopt() tests.
+/// `gatedPaths` lets a test hold a response open (a semaphore, released on another thread —
+/// `startLoading()` runs off the URLSession's private queue, never MainActor) so it can
+/// observe a lifecycle call mid-flight without a flaky Task.yield race.
+private final class JukeboxAdoptStub: URLProtocol {
+    nonisolated(unsafe) static var bodyByPath: [String: Data] = [:]
+    nonisolated(unsafe) static var statusCodeByPath: [String: Int] = [:]
+    nonisolated(unsafe) static var gatedPaths: Set<String> = []
+
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var requests: [URLRequest] = []
+    nonisolated(unsafe) private static var gate = DispatchSemaphore(value: 0)
+
+    static func reset() {
+        lock.lock(); defer { lock.unlock() }
+        bodyByPath = [:]; statusCodeByPath = [:]; gatedPaths = []; requests = []
+        gate = DispatchSemaphore(value: 0)
+    }
+    static func releaseGate() { gate.signal() }
+    static func count(path: String) -> Int {
+        lock.lock(); defer { lock.unlock() }
+        return requests.filter { $0.url?.path == path }.count
+    }
+    static func last(path: String) -> URLRequest? {
+        lock.lock(); defer { lock.unlock() }
+        return requests.last { $0.url?.path == path }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+    override func startLoading() {
+        let path = request.url?.path ?? ""
+        Self.lock.lock()
+        Self.requests.append(request)
+        let blocks = Self.gatedPaths.contains(path)
+        let status = Self.statusCodeByPath[path] ?? 200
+        // Default covers BOTH the state-post Ack (`ok`) and the requests-poll page
+        // (`requests`/`seq`) so the loop's other calls don't error while a test only cares
+        // about the adoption lookup.
+        let payload = Self.bodyByPath[path] ?? Data("{\"ok\":true,\"requests\":[],\"seq\":0}".utf8)
+        Self.lock.unlock()
+        if blocks { Self.gate.wait() }
+        let response = HTTPURLResponse(url: request.url!, statusCode: status,
+                                       httpVersion: "HTTP/1.1", headerFields: nil)!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: payload)
+        client?.urlProtocolDidFinishLoading(self)
+    }
 }

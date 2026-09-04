@@ -108,6 +108,17 @@ struct JukeboxClient {
             as: Page.self).sessions
     }
 
+    /// One listed session's FULL info, including its `hostKey` — the "adoption" lookup
+    /// (GET /sessions/:id, account bearer). Unlike `listSessions()`, this carries the key a
+    /// device needs to become the session's active publisher (`JukeboxStore.adopt`), so it
+    /// is a separate, explicitly-named call rather than a field on `SessionRow` — a list
+    /// call site can never leak a key by accident.
+    func sessionInfo(jukeboxId: String) async throws -> JukeboxSessionInfo {
+        try await run(
+            try request("/sessions/\(jukeboxId)", method: "GET", bearer: token, timeout: 15),
+            as: JukeboxSessionInfo.self)
+    }
+
     /// The lifecycle fields `POST …/config` returns after a timeless flip.
     struct Lifecycle: Decodable {
         let timeless: Bool?
