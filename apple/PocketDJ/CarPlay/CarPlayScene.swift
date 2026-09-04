@@ -193,6 +193,7 @@ final class CarPlayController {
                    model.fxGlideOn() ? "1" : "0", model.audioGlideOn() ? "1" : "0",
                    "\(Int(model.slowSkipSeconds()))",
                    model.mixDownloadState().map { "\($0.downloaded)/\($0.total)" } ?? "",
+                   model.mixCatalogShortfall().map { "\($0.declared)/\($0.total)" } ?? "",
                    model.crateName(mixDeckA) ?? "", model.crateName(mixDeckB) ?? ""]
             .joined(separator: "|")
         guard sig != lastMixSignature else { return }
@@ -241,8 +242,24 @@ final class CarPlayController {
                                  detailText: "The mix starts when the first track lands")
             sections.append(CPListSection(items: [row]))
         }
+        // Same exposure as the TV (Levi, "ship everything"): a crate can declare more members
+        // than the car's on-device catalog currently resolves (mid-load / a still-syncing
+        // source) — say so instead of quietly starting a smaller mix. Independent of the
+        // download row above so the "nothing left to download, catalog just never had them"
+        // case still surfaces.
+        if let shortfall = model.mixCatalogShortfall() {
+            sections.append(catalogShortfallSection(shortfall))
+        }
         sections.append(jukeboxSection(model))
         return sections
+    }
+
+    /// The partial-catalog row shared by the setup and live Mix sections — non-interactive
+    /// (informational, mirrors the TV's non-alarming banner).
+    private func catalogShortfallSection(_ shortfall: (declared: Int, total: Int)) -> CPListSection {
+        let row = CPListItem(text: "Only \(shortfall.total) of \(shortfall.declared) songs available",
+                             detailText: "Catalog still loading on this device")
+        return CPListSection(items: [row])
     }
 
     /// The car's share-to-join surface (owner: "similar to Apple's SharePlay in CarPlay"):
@@ -340,11 +357,17 @@ final class CarPlayController {
         stop.handler = { [weak self] _, completion in
             model.stopMix(); self?.refreshMixTab(); completion()
         }
-        return [CPListSection(items: rows,
-                              header: model.autoMixLabel().map { "Auto DJ — \($0)" } ?? "Auto DJ",
-                              sectionIndexTitle: nil),
-                CPListSection(items: [fxGlideItem(model), audioGlideItem(model), stop],
-                              header: "Transitions", sectionIndexTitle: nil)]
+        var sections = [CPListSection(items: rows,
+                                      header: model.autoMixLabel().map { "Auto DJ — \($0)" } ?? "Auto DJ",
+                                      sectionIndexTitle: nil)]
+        // Persists for the life of this run (start-time snapshot, not hot-updated) — the same
+        // notice the setup screen showed before Start, still visible while the smaller mix runs.
+        if let shortfall = model.mixCatalogShortfall() {
+            sections.append(catalogShortfallSection(shortfall))
+        }
+        sections.append(CPListSection(items: [fxGlideItem(model), audioGlideItem(model), stop],
+                                      header: "Transitions", sectionIndexTitle: nil))
+        return sections
     }
 
     /// FX Glide row — tap toggles; takes effect on the NEXT transition (engine contract).

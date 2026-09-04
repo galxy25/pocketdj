@@ -331,6 +331,14 @@ final class CarPlayModel {
         return (d.downloadedCount, d.totalCount)
     }
 
+    /// Partial-catalog readout for the Mix tab (nil when nothing was dropped for catalog
+    /// reasons) — the same `CollectionMixDownloader.catalogShortfall` snapshot the TV surfaces
+    /// read. The car hits the exact same partial-catalog exposure as the TV (both are
+    /// remote-only, no local decks), so it gets the same notice.
+    func mixCatalogShortfall() -> (declared: Int, total: Int)? {
+        services.mixDownloader?.catalogShortfall
+    }
+
     /// Whole-mix transport — exclusively the lock-screen seam: `remotePause` is the ONE pause
     /// that silences both decks AND freezes the transition wall clock (in-app `pauseBoth` would
     /// END a running Auto-DJ), and `remoteSkip` un-suspends a paused machine before sweeping.

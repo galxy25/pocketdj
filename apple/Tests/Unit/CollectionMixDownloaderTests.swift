@@ -132,6 +132,56 @@ final class CollectionMixDownloaderTests: XCTestCase {
         d.cancel()
     }
 
+    // MARK: catalogShortfall — the partial-catalog banner's source (follow-up to task #56)
+
+    /// `catalogShortfall` is the field "two crates → total=1" signature turned into published
+    /// state: non-nil exactly when the crates DECLARED more members than resolved (an enabled
+    /// source unsynced/still loading on this device), nil whenever `totalCount` already covers
+    /// what was declared — a collection that legitimately has fewer resolvable tracks (or a
+    /// stale/inconsistent declared reading below `totalCount`) must NOT trip the banner. Cancel
+    /// resets it, matching `totalCount`/`downloadedCount`'s own reset.
+    func testCatalogShortfallReflectsPartialCatalogAndClearsOnCancel() throws {
+        let rips = makeRips()
+        let burns = try MixBurnFixture.burnStore(ids: [], rips: rips)
+        let engine = MixEngine(burns: burns)
+        let d = CollectionMixDownloader(engine: engine, burns: burns, rips: rips, transfers: nil)
+        d.resolveRipIds = { _ in ["s1", "s2", "s3"] }
+        d.resolveLoadables = { _ in [] }
+        d.songLengthSeconds = { _ in nil }
+        d.songTitleArtist = { (title: $0, artist: "A") }
+        d.catalogSongCount = { 100 }
+
+        // declared > total: 2 of a declared 5 members resolved — a genuine catalog gap.
+        d.declaredMemberCount = { _ in 5 }
+        d.begin(sources: [.pocket("sap")])
+        XCTAssertEqual(d.totalCount, 3)
+        let shortfall = d.catalogShortfall
+        XCTAssertEqual(shortfall?.declared, 5, "declared > total ⇒ non-nil, names the declared count")
+        XCTAssertEqual(shortfall?.total, 3, "…and the resolved count")
+        d.cancel()
+        XCTAssertNil(d.catalogShortfall, "cancel resets the run's telemetry, shortfall included")
+
+        // declared == total exactly: nothing was dropped for catalog reasons.
+        d.declaredMemberCount = { _ in 3 }
+        d.begin(sources: [.pocket("sap")])
+        XCTAssertNil(d.catalogShortfall, "declared == total ⇒ nothing missing, no banner")
+        d.cancel()
+
+        // declared < total: a resolver seam reading LOWER than what actually resolved (stale
+        // cache) must never announce a false-positive shortfall either.
+        d.declaredMemberCount = { _ in 1 }
+        d.begin(sources: [.pocket("sap")])
+        XCTAssertNil(d.catalogShortfall, "declared < total never counts as a shortfall")
+        d.cancel()
+
+        // No declaredMemberCount seam at all (nil in production tests / an unwired app path):
+        // never fabricate a shortfall from an absent diagnostic.
+        d.declaredMemberCount = nil
+        d.begin(sources: [.pocket("sap")])
+        XCTAssertNil(d.catalogShortfall, "no declared-count seam ⇒ no opinion, no banner")
+        d.cancel()
+    }
+
     // MARK: 2 — ETA excludes rip-pending ids (they surface as rippingCount)
 
     func testEtaExcludesRipPendingAndCountsRipping() async {

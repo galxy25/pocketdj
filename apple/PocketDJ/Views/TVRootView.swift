@@ -158,6 +158,25 @@ struct TVNowPlayingView: View {
 // MARK: - Mix (Auto DJ)
 // ============================================================================
 
+/// The partial-catalog banner (Levi, "ship everything" — the field-work call on tonight's
+/// two-crate TV stall): `CollectionMixDownloader.catalogShortfall` is non-nil exactly when the
+/// crates declared more members than the DEVICE's catalog could resolve at start time (mid-load
+/// launch / a still-syncing source), so this surfaces instead of the mix silently running
+/// smaller. One shape shared by every TV surface that reads it — non-alarming, expected
+/// transient state, not an error.
+private struct TVCatalogShortfallLabel: View {
+    let shortfall: (declared: Int, total: Int)
+    var a11yId: String
+
+    var body: some View {
+        Label("Only \(shortfall.total) of \(shortfall.declared) songs available on this device — catalog still loading",
+              systemImage: "arrow.triangle.2.circlepath")
+            .font(.callout)
+            .foregroundStyle(Theme.fgDim)
+            .accessibilityIdentifier(a11yId)
+    }
+}
+
 /// TV Mix = Auto DJ only. Everything rides the SAME app-scoped `MixEngine` + intent door
 /// (`IntentServices.startAutoMix`) the phone uses, so a mix started on the TV persists,
 /// snapshots, and honors lead/fade settings identically. The manual two-deck board is
@@ -275,6 +294,13 @@ struct TVMixView: View {
                 }
                 .foregroundStyle(Theme.fgDim)
                 .accessibilityIdentifier("tv-mix-downloading")
+            }
+            // Independent of the download bar above — this stays visible even once whatever's
+            // resolvable finishes landing (e.g. the resolvable subset was already on disk), so
+            // the "two crates → total=1" field case (nothing left to download, catalog just
+            // never had the members) is never silent.
+            if let shortfall = downloader.catalogShortfall {
+                TVCatalogShortfallLabel(shortfall: shortfall, a11yId: "tv-mix-catalog-shortfall")
             }
         }
         .padding(36)
@@ -504,6 +530,7 @@ struct TVMixNowPlayingCard: View {
     @Environment(AppModel.self) private var app
     @Environment(FavoritesStore.self) private var favorites
     @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
+    @Environment(CollectionMixDownloader.self) private var downloader
     @State private var showPlayed = false
 
 
@@ -534,6 +561,11 @@ struct TVMixNowPlayingCard: View {
                     secondStrip
                     if let status = engine.autoStatus {
                         Text(status).font(.callout.monospacedDigit()).foregroundStyle(Theme.fgDim)
+                    }
+                    // Same start-time snapshot the Mix tab shows — the Now Playing tab is where
+                    // a TV viewer actually watches a running mix, so it gets the notice too.
+                    if let shortfall = downloader.catalogShortfall {
+                        TVCatalogShortfallLabel(shortfall: shortfall, a11yId: "tv-np-mix-catalog-shortfall")
                     }
                 }
                 queueSection
@@ -968,6 +1000,12 @@ struct TVMixLiveSurface: View {
                 Text("Downloading \(downloader.downloadedCount) of \(downloader.totalCount) · ~\(CollectionMixDownloader.etaLabel(downloader.etaSeconds)) left — new tracks join the queue")
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(Theme.fgDim)
+            }
+            // Independent of the line above — persists once whatever's resolvable finishes
+            // landing, so a crate that never got its full membership past the catalog this
+            // run isn't silently mixing fewer songs than it declared.
+            if let shortfall = downloader.catalogShortfall {
+                TVCatalogShortfallLabel(shortfall: shortfall, a11yId: "tv-mix-catalog-shortfall")
             }
         }
         .padding(36)

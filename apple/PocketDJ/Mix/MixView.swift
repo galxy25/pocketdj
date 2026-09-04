@@ -620,6 +620,11 @@ struct MixView: View {
                     ProgressView(value: Double(downloader.downloadedCount),
                                  total: Double(max(downloader.totalCount, 1)))
                         .tint(Theme.accent)
+                    // Same device (an iPhone/iPad catalog is usually complete, so this is rare
+                    // here) but the same partial-catalog signature the TV/CarPlay surfaces show.
+                    if let shortfall = downloader.catalogShortfall {
+                        catalogShortfallCaption(shortfall)
+                    }
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("mix-dl-bar")
@@ -642,7 +647,30 @@ struct MixView: View {
             .transition(.move(edge: .bottom).combined(with: .opacity))
             // NO accessibilityIdentifier on the outer HStack: a button-container id would merge the
             // children and hide mix-dl-cancel from the a11y tree (toolbar-overflow lesson).
+        } else if let shortfall = downloader.catalogShortfall {
+            // Independent of the branch above: the resolvable subset can finish landing (or
+            // never need a download at all) while STILL short of what the crates declared — the
+            // "two crates → total=1" field case, minus the cancel control since nothing is
+            // running. No accessibilityElement combine needed — one line, nothing interactive.
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.2.circlepath").foregroundStyle(Theme.fgDim)
+                catalogShortfallCaption(shortfall)
+            }
+            .padding(10)
+            .background(Theme.bgRaised, in: RoundedRectangle(cornerRadius: Theme.radius, style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.bottom, 6)
+            .frame(maxWidth: 900)
+            .accessibilityIdentifier("mix-catalog-shortfall")
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
+    }
+
+    /// Shared copy for the partial-catalog notice (Levi, "ship everything" — the field-work
+    /// call on tonight's TV two-crate stall): non-alarming, expected transient state.
+    private func catalogShortfallCaption(_ shortfall: (declared: Int, total: Int)) -> some View {
+        Text("Only \(shortfall.total) of \(shortfall.declared) songs available on this device — catalog still loading")
+            .font(.caption).foregroundStyle(Theme.fgDim).lineLimit(2)
     }
 
     /// The single bottom Play/Pause — starts/stops BOTH decks (and the engine). Mirrors the
