@@ -1290,11 +1290,49 @@ final class MixEngine {
         let remembered = masterPausedDecks.filter { state($0).loaded != nil }
         masterPausedDecks = []
         guard !remembered.isEmpty else {
-            if let d = nowPlayingDeck { play(d) }
+            if let d = nowPlayingDeck {
+                // Field report (Levi, CarPlay, 2026-09-04): a cold-launch session parked over an
+                // hour (engine never touched) resumed via THIS exact fallback — the card showed
+                // playing=true with the playhead advancing, but no audible output. `play(d)` below
+                // is provably correct on paper (ensureEngine → ensureDeckScheduled re-arm → play,
+                // all synchronous), so the doubt is HARDWARE truth, not software state — sample it.
+                let cold = !built
+                let rearmedBefore = deckRescheduleCountForTesting
+                play(d)
+                logResumeHealth(d, cold: cold, rearmed: deckRescheduleCountForTesting > rearmedBefore)
+            }
             return
         }
         suppressStickyUpdates = true; defer { suppressStickyUpdates = false }   // batch — see the flag
         for d in Deck.allCases where remembered.contains(d) { play(d) }
+    }
+
+    /// Hardware-truth telemetry for the now-playing-fallback resume above: the software model
+    /// (`isPlaying`, tick-advanced position) can look perfectly healthy while nothing renders —
+    /// see `MixTapPulse`'s doc. Two samples: immediately (engine/node state right after `play()`)
+    /// and ~400 ms later (one house-sum tap has had time to fire at least once, so `tapPulse`'s
+    /// ages are meaningful) — always shipped in TestFlight/Debug (never gated behind the owner's
+    /// telemetry opt-in; this fires once per resume gesture, never per tick, so the rate cost is
+    /// negligible). If this recurs, the +400ms line proves definitively which layer is silent:
+    /// `run=0` → the engine itself died; `node=0` → the player node isn't playing; `tapAge` large →
+    /// the render graph isn't even being pulled; `sigAge` large with `tapAge` small → the graph
+    /// renders but carries no signal (a real software bug); everything fresh → real PCM is
+    /// reaching the output node and the fault is a route/session issue outside this engine.
+    private func logResumeHealth(_ deck: Deck, cold: Bool, rearmed: Bool) {
+        DiagLog.shared.log("mix", "resume-health deck=\(deck.rawValue) cold=\(cold ? 1 : 0) "
+            + "rearmed=\(rearmed ? 1 : 0) run0=\(engine.isRunning ? 1 : 0) "
+            + "node0=\((players[deck]?.isPlaying ?? false) ? 1 : 0)")
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            guard let self, self.isPlaying(deck) else { return }   // a real pause/skip beat us here
+            let t = Date().timeIntervalSinceReferenceDate
+            let tapAge = self.tapPulse.lastTapAt == 0 ? -1 : t - self.tapPulse.lastTapAt
+            let sigAge = self.tapPulse.lastAudibleAt == 0 ? -1 : t - self.tapPulse.lastAudibleAt
+            DiagLog.shared.log("mix", "resume-health+400ms deck=\(deck.rawValue) "
+                + "run=\(self.engine.isRunning ? 1 : 0) "
+                + "node=\((self.players[deck]?.isPlaying ?? false) ? 1 : 0) "
+                + "tapAge=\(String(format: "%.2f", tapAge)) sigAge=\(String(format: "%.2f", sigAge))")
+        }
     }
 
     /// Set by `remotePause` when it suspended a RUNNING Auto-DJ, so the matching `remotePlay`
@@ -4000,7 +4038,22 @@ final class MixEngine {
         // Engine survived (or auto-recovered — macOS does this on some device switches) but the
         // PLAYER nodes may have been parked by the reconfigure: silence renders into the house
         // sum (and an open take) while everything claims to be live. Re-kick them.
-        if engine.isRunning { unparkEngineStall(); healParkedPlayers(); return }
+        //
+        // UNCONDITIONAL re-prime (`resumePlayingDecks`, not the cheap `healParkedPlayers`): this
+        // branch only runs off a genuine route/config-change NOTIFICATION (never every tick — the
+        // tick's own per-frame safety net stays on `healParkedPlayers`), and `isPlaying` is exactly
+        // the signal `handleEngineConfigurationChange`'s own comment warns can lie ("playing nodes
+        // may be zombies") — `healParkedPlayers`'s `!p.isPlaying` gate trusted that lie and would
+        // silently skip re-priming a node that claims to be playing but isn't actually rendering.
+        // Bounded cost: one pause+play blip per real recovery event, not per tick.
+        if engine.isRunning {
+            unparkEngineStall()
+            let rearmedBefore = deckRescheduleCountForTesting
+            resumePlayingDecks()
+            DiagLog.shared.log("mix", "recover: engine survived — re-primed A=\(deckA.isPlaying ? 1 : 0) "
+                + "B=\(deckB.isPlaying ? 1 : 0) rearmed=\(deckRescheduleCountForTesting > rearmedBefore ? 1 : 0)")
+            return
+        }
         guard anyDeckPlaying || autoMixing else { return }
         // While remote-frozen the auto clocks are ALREADY parked — a stall park stacked on top
         // would shift them twice on resume. Recover the audio without the stall bookkeeping.
@@ -4012,10 +4065,15 @@ final class MixEngine {
         lastEngineRecoveryAttempt = Date()
         let ok = startEngineIfNeeded()
         dlog("recover: engine.start → \(ok ? "OK" : "FAILED")")
-        guard ok else { return }
+        guard ok else {
+            DiagLog.shared.log("mix", "recover: engine restart FAILED")
+            return
+        }
         unparkEngineStall()
         resumePlayingDecks()             // re-primes (pause+play) — a bare play() no-ops on zombies
         engineDownWhileLive = false      // re-primed here; the tick needn't do it again
+        DiagLog.shared.log("mix", "recover: engine restarted — re-primed A=\(deckA.isPlaying ? 1 : 0) "
+            + "B=\(deckB.isPlaying ? 1 : 0)")
     }
 
     /// Shift every armed auto-machine timestamp past the stall (mirrors `unfreezeAutoClock`) so
