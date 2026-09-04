@@ -1,10 +1,10 @@
 {
  "v": 1,
- "generatedAt": "2026-09-03T11:00:26.662Z",
+ "generatedAt": "2026-09-04T11:00:23.968Z",
  "counts": {
-  "audioBearing": 15495,
-  "candidates": 94432,
-  "aliases": 3556,
+  "audioBearing": 15500,
+  "candidates": 94435,
+  "aliases": 3553,
   "rejectedLane1": 0
  },
  "rejectedLane1": [],
@@ -1630,10 +1630,6 @@
   "sng_1cd4fe2acaf5": {
    "to": "sng_f3b2d4cd4172",
    "dLenMs": 0
-  },
-  "sng_1cd81fd1b3e8": {
-   "to": "sng_286de8338071",
-   "dLenMs": 2547
   },
   "sng_1ce30cec17c4": {
    "to": "sng_d373e8fd5ec2",
@@ -4612,7 +4608,10 @@
   },
   "sng_50371d0f203f": {
    "to": "sng_c2bb90b8514d",
-   "dLenMs": 0
+   "dLenMs": 0,
+   "alternatives": [
+    "sng_517891dee50c"
+   ]
   },
   "sng_50614d7d3589": {
    "to": "sng_f657d41adca5",
@@ -4708,10 +4707,6 @@
   "sng_515f0e6cbdc5": {
    "to": "sng_27c4523bd150",
    "dLenMs": 0
-  },
-  "sng_517891dee50c": {
-   "to": "sng_c2bb90b8514d",
-   "dLenMs": 40
   },
   "sng_5188a3dfbfc1": {
    "to": "sng_0e45e966d6de",
@@ -5318,7 +5313,10 @@
   },
   "sng_5cccaba4fd62": {
    "to": "sng_286de8338071",
-   "dLenMs": 640
+   "dLenMs": 640,
+   "alternatives": [
+    "sng_1cd81fd1b3e8"
+   ]
   },
   "sng_5cd241491bc8": {
    "to": "sng_0be2b29c450d",
@@ -5517,10 +5515,6 @@
   "sng_6111ace29286": {
    "to": "sng_821141c6dcad",
    "dLenMs": 0
-  },
-  "sng_612a1855fd62": {
-   "to": "sng_536d195fb9a6",
-   "dLenMs": 68
   },
   "sng_6139802a7135": {
    "to": "sng_9733625c3b10",
@@ -6058,7 +6052,10 @@
   },
   "sng_6b443646ae8f": {
    "to": "sng_35fd3f1be657",
-   "dLenMs": 1733
+   "dLenMs": 1733,
+   "alternatives": [
+    "sng_8bc482ef7386"
+   ]
   },
   "sng_6b48c98d6aa7": {
    "to": "sng_2e99d34e296e",
@@ -7957,10 +7954,6 @@
    "to": "sng_3fb1007bc6e7",
    "dLenMs": 0
   },
-  "sng_8bc482ef7386": {
-   "to": "sng_35fd3f1be657",
-   "dLenMs": 0
-  },
   "sng_8bcb4ab7eeaf": {
    "to": "sng_319d9e0030b5",
    "dLenMs": 0,
@@ -8583,8 +8576,11 @@
    "dLenMs": 0
   },
   "sng_96461776acf3": {
-   "to": "sng_286de8338071",
-   "dLenMs": 2082
+   "to": "sng_1cd81fd1b3e8",
+   "dLenMs": 465,
+   "alternatives": [
+    "sng_286de8338071"
+   ]
   },
   "sng_964635b7bf91": {
    "to": "sng_0394b5c76211",
@@ -10548,6 +10544,10 @@
    "to": "sng_340d39093177",
    "dLenMs": 1
   },
+  "sng_b84e717f6640": {
+   "to": "sng_1680a3013ed6",
+   "dLenMs": 23
+  },
   "sng_b8537b7b2e5f": {
    "to": "sng_b8b3db7e3004",
    "dLenMs": 0
@@ -10928,7 +10928,10 @@
   },
   "sng_bfe877e829d1": {
    "to": "sng_c2bb90b8514d",
-   "dLenMs": 21867
+   "dLenMs": 21867,
+   "alternatives": [
+    "sng_517891dee50c"
+   ]
   },
   "sng_c00008dd8871": {
    "to": "sng_6d0328afac5d",
@@ -11374,7 +11377,10 @@
   },
   "sng_c744264de2e4": {
    "to": "sng_536d195fb9a6",
-   "dLenMs": 1
+   "dLenMs": 1,
+   "alternatives": [
+    "sng_612a1855fd62"
+   ]
   },
   "sng_c77711405c6a": {
    "to": "sng_3c37cf17305a",
@@ -11528,7 +11534,10 @@
   },
   "sng_cab2d3055d94": {
    "to": "sng_286de8338071",
-   "dLenMs": 734
+   "dLenMs": 734,
+   "alternatives": [
+    "sng_1cd81fd1b3e8"
+   ]
   },
   "sng_cab82d456f06": {
    "to": "sng_5584a3c77861",
@@ -13244,7 +13253,10 @@
   },
   "sng_e5e42deeac01": {
    "to": "sng_286de8338071",
-   "dLenMs": 0
+   "dLenMs": 0,
+   "alternatives": [
+    "sng_1cd81fd1b3e8"
+   ]
   },
   "sng_e5eafbeae695": {
    "to": "sng_dd8b74edd832",
