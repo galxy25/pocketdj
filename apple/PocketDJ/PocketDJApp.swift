@@ -472,6 +472,18 @@ struct PocketDJApp: App {
         // Remote telemetry persists across launches too — the store is the truth, the logger
         // mirrors it (`DiagLog.telemetryEnabled`; the TestFlight/DEBUG gate applies inside).
         DiagLog.shared.telemetryEnabled = settings.remoteTelemetryEnabled
+        #if os(macOS)
+        // RECOVERY/DEMO seam: rebuild ledger entries from sidecar+audio pairs already in the
+        // app-storage burns dir, on explicit request only (PDJ_ADOPT_ORPHANS=1). Same machinery
+        // as the tvOS launch recovery below; macOS keeps it opt-in because a normal launch
+        // must never adopt leftovers from an old test run. The demo-video walk seeds REAL
+        // burned files by hardlink and relies on this to make them loadable.
+        if ProcessInfo.processInfo.environment["PDJ_ADOPT_ORPHANS"] == "1",
+           ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] == nil {
+            let adoptedMac = burns.adoptOrphanedBurns()
+            DiagLog.shared.log("storage", "PDJ_ADOPT_ORPHANS: adopted \(adoptedMac) orphaned burned song(s)")
+        }
+        #endif
         #if os(tvOS)
         // tvOS storage recovery + field diagnostics (task #53).
         // 1) Ledger adoption: the pre-#53 ledger lived in App Support (unwritable on TV
