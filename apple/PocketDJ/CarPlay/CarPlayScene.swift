@@ -185,24 +185,44 @@ final class CarPlayController {
     /// Rebuild the Mix tab's sections in place. Called after every Mix action, from the
     /// now-playing fan-out, and from `armMixObservation`'s change loop, so state changed from
     /// the phone or the lock screen re-renders here too.
+    ///
+    /// MUST list every mutable fact a Mix-tab row displays: the FX/Tempo/Pitch/Stems rows added
+    /// alongside `TVMixControlsRow` parity are included below for exactly that reason — a control
+    /// whose live state isn't in this list renders correctly on first appearance (the section
+    /// builder always reads live state) but goes stale after its own tap, because the unchanged
+    /// signature skips the very `updateSections` call that would show the new value/state.
     func refreshMixTab() {
         guard let model, let mixTemplate else { return }
         let np = model.mixNowPlaying()
+        let fx = MixEngine.Effect.allCases.map { model.isEnabled($0) ? "1" : "0" }.joined()
+        let stemMutes = Self.mixStemLabels.map { model.isStemMuted($0.name) ? "1" : "0" }.joined()
         let sig = [model.autoMixRunning() ? "1" : "0", model.autoMixPaused() ? "1" : "0",
                    model.autoMixLabel() ?? "", np?.title ?? "", np?.artist ?? "",
                    model.fxGlideOn() ? "1" : "0", model.audioGlideOn() ? "1" : "0",
                    "\(Int(model.slowSkipSeconds()))",
                    model.mixDownloadState().map { "\($0.downloaded)/\($0.total)" } ?? "",
                    model.mixCatalogShortfall().map { "\($0.declared)/\($0.total)" } ?? "",
-                   model.crateName(mixDeckA) ?? "", model.crateName(mixDeckB) ?? ""]
+                   model.crateName(mixDeckA) ?? "", model.crateName(mixDeckB) ?? "",
+                   fx, "\(model.mixRate())", "\(model.mixPitch())",
+                   model.mixInTransition() ? "1" : "0",
+                   model.stemModeOn() ? "1" : "0", stemMutes]
             .joined(separator: "|")
         guard sig != lastMixSignature else { return }
         lastMixSignature = sig
         mixTemplate.updateSections(mixSections(model))
     }
 
+    /// Dispatches to the setup or live section builder, then appends the Jukebox/QR section to
+    /// EITHER — owner, verbatim: "in carplay you should always have a button that shows the
+    /// jukebox session qr code for passengers to scan". Before this, `jukeboxSection` was only
+    /// appended inside `mixSetupSections`, so the QR-sharing row vanished the instant a mix
+    /// started (the tab switches to `mixLiveSections`, which never called it). One shared append
+    /// here means the row is in both screens by construction — no way for a future setup/live
+    /// section change to silently drop it again.
     private func mixSections(_ model: CarPlayModel) -> [CPListSection] {
-        model.autoMixRunning() ? mixLiveSections(model) : mixSetupSections(model)
+        var sections = model.autoMixRunning() ? mixLiveSections(model) : mixSetupSections(model)
+        sections.append(jukeboxSection(model))
+        return sections
     }
 
     private func mixSetupSections(_ model: CarPlayModel) -> [CPListSection] {
@@ -250,7 +270,6 @@ final class CarPlayController {
         if let shortfall = model.mixCatalogShortfall() {
             sections.append(catalogShortfallSection(shortfall))
         }
-        sections.append(jukeboxSection(model))
         return sections
     }
 
@@ -367,7 +386,95 @@ final class CarPlayController {
         }
         sections.append(CPListSection(items: [fxGlideItem(model), audioGlideItem(model), stop],
                                       header: "Transitions", sectionIndexTitle: nil))
+        // Owner, verbatim: "add buttons to the now playing to turn on or off stems, enable
+        // disable effects, speed up or down tempo, increase or decrease pitch... these extra
+        // controls should be at the bottom of the mix screen when the mix is active" — CarPlay
+        // parity with tvOS's `TVMixControlsRow` (see that struct for the reference behavior:
+        // every control scopes to the LEAD deck, tempo/pitch disable mid-transition). APPENDED
+        // LAST, after Auto DJ + Transitions, per "at the bottom".
+        sections.append(mixFXSection(model))
+        sections.append(mixTempoSection(model))
+        sections.append(mixPitchSection(model))
+        sections.append(mixStemsSection(model))
         return sections
+    }
+
+    /// The 4 stem names + their CarPlay row labels — same set as TV's
+    /// `TVMixControlsRow.stemLabels`.
+    private static let mixStemLabels: [(name: String, label: String)] = [
+        ("vocals", "Vocals"), ("drums", "Drums"), ("bass", "Bass"), ("other", "Other"),
+    ]
+
+    /// One toggle row per per-deck effect (compressor/reverb/flanger/filter) — base on/off only,
+    /// no long-press strength preset (CarPlay has no context-menu idiom; the owner asked only for
+    /// the toggle here).
+    private func mixFXSection(_ model: CarPlayModel) -> CPListSection {
+        let items = MixEngine.Effect.allCases.map { fx -> CPListItem in
+            let on = model.isEnabled(fx)
+            let item = CPListItem(text: fx.label, detailText: on ? "On" : "Off")
+            item.handler = { [weak self] _, completion in
+                model.setEffect(fx, enabled: !on); self?.refreshMixTab(); completion()
+            }
+            return item
+        }
+        return CPListSection(items: items, header: "FX", sectionIndexTitle: nil)
+    }
+
+    /// Tempo −/+ rows (0.01 step, same as TV's trio), showing the lead deck's current rate in
+    /// both rows' detail text. Disabled mid-transition — same guard TV's row uses — so a manual
+    /// nudge can't fight the Auto DJ's own crossfade ramp.
+    private func mixTempoSection(_ model: CarPlayModel) -> CPListSection {
+        let pct = "\(Int((model.mixRate() * 100).rounded()))%"
+        let enabled = !model.mixInTransition()
+        let down = CPListItem(text: "Tempo −", detailText: pct)
+        down.isEnabled = enabled
+        down.handler = { [weak self] _, completion in
+            model.setMixRate(model.mixRate() - 0.01); self?.refreshMixTab(); completion()
+        }
+        let up = CPListItem(text: "Tempo ＋", detailText: pct)
+        up.isEnabled = enabled
+        up.handler = { [weak self] _, completion in
+            model.setMixRate(model.mixRate() + 0.01); self?.refreshMixTab(); completion()
+        }
+        return CPListSection(items: [down, up], header: "Tempo", sectionIndexTitle: nil)
+    }
+
+    /// Pitch −/+ rows (1-semitone step, same as TV's trio). Disabled mid-transition, same guard
+    /// as tempo.
+    private func mixPitchSection(_ model: CarPlayModel) -> CPListSection {
+        let semis = "\(Int(model.mixPitch().rounded()))"
+        let enabled = !model.mixInTransition()
+        let down = CPListItem(text: "Pitch −", detailText: semis)
+        down.isEnabled = enabled
+        down.handler = { [weak self] _, completion in
+            model.setMixPitch(model.mixPitch() - 1); self?.refreshMixTab(); completion()
+        }
+        let up = CPListItem(text: "Pitch ＋", detailText: semis)
+        up.isEnabled = enabled
+        up.handler = { [weak self] _, completion in
+            model.setMixPitch(model.mixPitch() + 1); self?.refreshMixTab(); completion()
+        }
+        return CPListSection(items: [down, up], header: "Pitch", sectionIndexTitle: nil)
+    }
+
+    /// A stems-MODE toggle + 4 per-stem mute toggles — CarPlay parity with TV's stems row.
+    /// Tapping a mute while stems mode is off turns stems mode on first (model-level behavior,
+    /// matching TV's exact one-tap semantics — see `CarPlayModel.toggleStemMute`).
+    private func mixStemsSection(_ model: CarPlayModel) -> CPListSection {
+        let stemsOn = model.stemModeOn()
+        let mode = CPListItem(text: "Stems", detailText: stemsOn ? "On" : "Off")
+        mode.handler = { [weak self] _, completion in
+            model.setStemMode(!stemsOn); self?.refreshMixTab(); completion()
+        }
+        let mutes = Self.mixStemLabels.map { name, label -> CPListItem in
+            let muted = model.isStemMuted(name)
+            let item = CPListItem(text: label, detailText: muted ? "Muted" : "Unmuted")
+            item.handler = { [weak self] _, completion in
+                model.toggleStemMute(name); self?.refreshMixTab(); completion()
+            }
+            return item
+        }
+        return CPListSection(items: [mode] + mutes, header: "Stems", sectionIndexTitle: nil)
     }
 
     /// FX Glide row — tap toggles; takes effect on the NEXT transition (engine contract).
