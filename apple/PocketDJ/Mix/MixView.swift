@@ -97,6 +97,7 @@ struct MixView: View {
             .frame(maxWidth: .infinity)                 // ...centered in a wide window
         }
         .background(Theme.bg)
+        .background { mixShortcuts }                   // ⇧⌘R record · ⇧⌘A Auto/Manual (window-toolbar seams)
         // Track orientation from the container's real geometry (rotation-reactive on every
         // device) so the landscape → side-by-side override fires on iPad too, not just iPhone.
         .onGeometryChange(for: Bool.self) { $0.size.width > $0.size.height } action: { isLandscape = $0 }
@@ -304,6 +305,21 @@ struct MixView: View {
         Button { path.append(MixSessionsRoute()) } label: {
             Label("All Sessions…", systemImage: "clock.arrow.circlepath")
         }
+    }
+
+    /// Hidden buttons binding keyboard commands to the WINDOW-TOOLBAR controls that macOS
+    /// XCUITests can't tap (the BrowseView.kindShortcuts pattern — toolbar buttons resolve but
+    /// don't fire there): ⇧⌘R toggles the mix recording, ⇧⌘A flips Manual/Auto. Handy in normal
+    /// use too. "-shadow" labels keep them distinct from the real controls in XCUITest queries.
+    private var mixShortcuts: some View {
+        Group {
+            Button("Record-shadow") { recorder.toggle() }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+            Button("AutoMode-shadow") { engine.setAutoEnabled(!engine.autoEnabled) }
+                .keyboardShortcut("a", modifiers: [.command, .shift])
+        }
+        .frame(width: 1, height: 1)
+        .opacity(0.01)
     }
 
     /// Leading toolbar: the discrete Sessions (history) + Reset (X) buttons. Leading keeps them off

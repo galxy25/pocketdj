@@ -110,7 +110,7 @@ matrix, and the macOS targeting note.
 > It self-checks at startup (captures a real screenshot) and refuses to pretend: if it
 > reports `gui: false` it was started in the wrong session. Two interfaces on
 > `127.0.0.1:8791` — **MCP** at `/mcp` (registered in `.mcp.json`, so Claude Code picks
-> up `mac_health` / `mac_run_tests` / `mac_job_status` / `mac_screenshot` as tools) and
+> up `mac_health` / `mac_run_tests` / `mac_record_demo` / `mac_job_status` / `mac_screenshot` as tools) and
 > plain REST (`GET /health`, `POST /run`, `GET /jobs/:id`). Logs land in
 > `index-out/gui-runner/` on the shared filesystem, so the agent can read the full
 > xcodebuild output directly. Always call `mac_health` first.
