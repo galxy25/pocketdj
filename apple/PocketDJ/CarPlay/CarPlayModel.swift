@@ -311,6 +311,48 @@ final class CarPlayModel {
     func setFXGlide(_ on: Bool) { services.mix.setFXGlide(on) }
     func setAudioGlide(_ on: Bool) { services.mix.setMixGlide(on) }
 
+    // MARK: - Mix FX / tempo / pitch / stems (CarPlay parity with tvOS's `TVMixControlsRow`)
+    //
+    // Owner, verbatim: "add buttons to the now playing to turn on or off stems, enable disable
+    // effects, speed up or down tempo, increase or decrease pitch, these extra controls should be
+    // at the bottom of the mix screen when the mix is active" — CarPlay's "now playing"/"mix
+    // screen" IS the live Mix tab (`mixLiveSections`), so these thin wrappers are what its new
+    // bottom sections call. Every control scopes to the LEAD deck (`nowPlayingDeck ?? .a`), same
+    // as TV's row — CarPlay has no per-deck switcher for these (only Start's Deck A/B crate
+    // pickers, a different thing). CPListItem has no long-press context menu, so unlike TV this
+    // covers only base toggle/±/mode — no strength/volume presets (owner didn't ask for those here).
+
+    /// The deck every control below reads/writes — same rule as `TVMixControlsRow.deck`.
+    private var mixLeadDeck: MixEngine.Deck { services.mix.nowPlayingDeck ?? .a }
+
+    /// True while a transition (crossfade or glide) owns the decks. Tempo/pitch rows disable
+    /// while this is true so a manual nudge can't fight the Auto DJ's own ramp — the same guard
+    /// TV's tempo/pitch trio uses (`.disabled(inTransition)`).
+    func mixInTransition() -> Bool { services.mix.autoTransitioning }
+
+    func isEnabled(_ fx: MixEngine.Effect) -> Bool { services.mix.isEnabled(fx, on: mixLeadDeck) }
+    func setEffect(_ fx: MixEngine.Effect, enabled: Bool) {
+        services.mix.setEffect(fx, enabled: enabled, on: mixLeadDeck)
+    }
+
+    /// Tempo multiplier (1.0 = normal speed), stepped by 0.01 — same step TV's trio uses.
+    func mixRate() -> Double { services.mix.rate(mixLeadDeck) }
+    func setMixRate(_ rate: Double) { services.mix.setRate(rate, on: mixLeadDeck) }
+
+    /// Pitch shift in semitones, stepped by 1 — same step TV's trio uses.
+    func mixPitch() -> Double { services.mix.pitch(mixLeadDeck) }
+    func setMixPitch(_ pitch: Double) { services.mix.setPitch(pitch, on: mixLeadDeck) }
+
+    func stemModeOn() -> Bool { services.mix.stemModeOn(mixLeadDeck) }
+    func setStemMode(_ on: Bool) { services.mix.setStemMode(on, on: mixLeadDeck) }
+    func isStemMuted(_ name: String) -> Bool { services.mix.isStemMuted(name, on: mixLeadDeck) }
+    /// Tapping a mute while stems mode is off turns stems mode on first — the exact one-tap
+    /// behavior TV's row gives (`if !stemsOn { engine.setStemMode(true, on: deck) }`).
+    func toggleStemMute(_ name: String) {
+        if !stemModeOn() { setStemMode(true) }
+        services.mix.toggleStemMute(name, on: mixLeadDeck)
+    }
+
     enum MixStart { case playing, downloading, failed(String) }
 
     /// Start the two-crate SHUFFLED Auto DJ (deck B nil ⇒ same crate on both decks — the

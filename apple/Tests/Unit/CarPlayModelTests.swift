@@ -330,4 +330,73 @@ final class CarPlayModelTests: XCTestCase {
         XCTAssertNil(model.addSong("sng_1", toTargetId: "pkt:nonexistent"))   // unknown target
         XCTAssertNil(model.addSong("sng_1", toTargetId: "garbage"))
     }
+
+    // MARK: Mix FX / tempo / pitch / stems (CarPlay parity with tvOS's TVMixControlsRow)
+    //
+    // Every wrapper here just forwards to `services.mix` scoped to the lead deck
+    // (`nowPlayingDeck ?? .a`); with nothing loaded on either deck `nowPlayingDeck` is nil, so
+    // these all resolve to Deck A — asserted directly against `services.mix` below so a wrapper
+    // that silently drifted to the wrong deck would fail here even though `model`'s own getter
+    // still round-trips.
+
+    func testMixEffectTogglePassesThroughToTheLeadDeck() async {
+        let (model, services, _) = await makeModel()
+        XCTAssertFalse(model.isEnabled(.reverb))
+        model.setEffect(.reverb, enabled: true)
+        XCTAssertTrue(model.isEnabled(.reverb))
+        XCTAssertTrue(services.mix.isEnabled(.reverb, on: .a), "nothing loaded ⇒ lead deck is A")
+        XCTAssertFalse(model.isEnabled(.filter), "each effect toggles independently")
+
+        model.setEffect(.reverb, enabled: false)
+        XCTAssertFalse(model.isEnabled(.reverb))
+    }
+
+    /// The clamp lives in `MixEngine` (`rateRange`/`pitchRange`); this only proves the CarPlay
+    /// wrapper passes the raw value through rather than re-clamping (or mis-clamping) itself.
+    func testMixTempoAndPitchRoundTripThroughTheEngineAndClamp() async {
+        let (model, services, _) = await makeModel()
+        XCTAssertEqual(model.mixRate(), 1.0, accuracy: 1e-9)
+        model.setMixRate(1.25)
+        XCTAssertEqual(model.mixRate(), 1.25, accuracy: 1e-9)
+        XCTAssertEqual(services.mix.rate(.a), 1.25, accuracy: 1e-9)
+        model.setMixRate(9.0)
+        XCTAssertEqual(model.mixRate(), 2.0, accuracy: 1e-9, "clamped to MixEngine.rateRange's top")
+
+        XCTAssertEqual(model.mixPitch(), 0, accuracy: 1e-9)
+        model.setMixPitch(4)
+        XCTAssertEqual(model.mixPitch(), 4, accuracy: 1e-9)
+        model.setMixPitch(99)
+        XCTAssertEqual(model.mixPitch(), 12, accuracy: 1e-9, "clamped to MixEngine.pitchRange's top")
+    }
+
+    /// No auto-mix transition is running fresh out of `makeModel()` — proves the wrapper reads
+    /// the SAME `autoTransitioning` the engine computes, not a stale/local copy. The true-while-
+    /// transitioning half is exercised end-to-end in `MixEngineTests` (driving a real transition
+    /// needs the auto-mix machinery this model-level test deliberately stays free of).
+    func testMixInTransitionReflectsTheEngineAtRest() async {
+        let (model, _, _) = await makeModel()
+        XCTAssertFalse(model.mixInTransition())
+    }
+
+    /// Stems: no track is loaded on the lead deck, so `setStemMode(true)` is a no-op (the SAME
+    /// no-track guard `MixEngineTests.testSetStemModeWithoutTrackStaysOff` exercises directly on
+    /// the engine) — but `toggleStemMute` still flips the per-stem flag regardless (the engine's
+    /// mute toggle carries no loaded-track guard), which is what makes "tap a mute while stems
+    /// are off" a safe one-tap action instead of a dead control.
+    func testStemMuteTogglesPerStemAndScopesToTheLeadDeck() async {
+        let (model, services, _) = await makeModel()
+        XCTAssertFalse(model.stemModeOn())
+        XCTAssertFalse(model.isStemMuted("vocals"))
+
+        model.setStemMode(true)
+        XCTAssertFalse(model.stemModeOn(), "no loaded track ⇒ entering stem mode stays a no-op")
+
+        model.toggleStemMute("vocals")            // attempts stem-mode-on first, then mutes
+        XCTAssertTrue(model.isStemMuted("vocals"))
+        XCTAssertTrue(services.mix.isStemMuted("vocals", on: .a), "scoped to the lead deck (A when idle)")
+        XCTAssertFalse(model.isStemMuted("drums"), "mute is per-stem")
+
+        model.toggleStemMute("vocals")
+        XCTAssertFalse(model.isStemMuted("vocals"))
+    }
 }
