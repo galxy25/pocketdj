@@ -17,21 +17,44 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { freePort } from './helpers/free-port.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const PORT = 8811;                       // NOT 8787 — that is the live rip daemon
-const base = `http://localhost:${PORT}`;
+// ALLOCATED, not hand-picked (see helpers/free-port.mjs). A constant port is global state: a
+// second run of this file — another agent in this checkout, a watch window — puts two servers
+// on one number, and because rip-server does its whole startup BEFORE listen(), the loser logs
+// a clean boot and only dies at the end while the winner answers our health probe with a
+// byte-identical /health. The suite then drives the STRANGER and asserts on our own tmpdir.
+let base;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The REAL production posture (see rip-timbre-reconcile-e2e.test.mjs, which models the same
+// thing). Since the MUST-1 gate landed, authed() fails CLOSED under the default public posture:
+// a tokenless public server 401s every endpoint except /health. /health sitting ahead of the gate
+// is why a token-less harness still sails through the boot probe below and then fails 30s later
+// on an assertion that says nothing about auth — so the tokens are load-bearing here.
+const USER = 'user-token-for-the-app-tier';
+const ADMIN = 'admin-token-for-the-admin-tier';
+const AUTH = { authorization: `Bearer ${USER}` };
 
 const WEDGED_ONCE = 'sng_wedged_once';   // wedged, then captures once Music is relaunched
 const WEDGED_ALWAYS = 'sng_wedged_always'; // wedged on every attempt (the gate must bound it)
 
-let work, srv, serverLog = '', healFlag, rigLog, countsDir;
+let work, srv, serverLog = '', srvExit = null, healFlag, rigLog, countsDir;
 
 const rig = () => (existsSync(rigLog) ? readFileSync(rigLog, 'utf8') : '');
 const countOf = (s, needle) => s.split(needle).length - 1;
 const attempts = (songId) => { try { return readFileSync(join(countsDir, `${songId}.log`), 'utf8').length; } catch { return 0; } };
-const getStatus = async (songId) => (await fetch(`${base}/status/${songId}`)).json();
+const getStatus = async (songId) => (await fetch(`${base}/status/${songId}`, { headers: AUTH })).json();
+const postRip = async (songId) => (await fetch(`${base}/rip`, {
+  method: 'POST', headers: { 'content-type': 'application/json', ...AUTH }, body: JSON.stringify({ songId }),
+})).json();
+// Every gate that can silently swallow a rip (401 unauthorized, MUST-5 capture-ineligible →
+// `200 null`) shows up here as a missing jobId. Assert it AT THE ENQUEUE so a future gate change
+// fails by name instead of as a 30s poll that ends in `expected undefined to be true`.
+const expectAccepted = (r, songId) => {
+  expect(r && r.jobId, `POST /rip ${songId} did not enqueue — got ${JSON.stringify(r)}\n${serverLog}`).toBeTruthy();
+};
 
 beforeAll(async () => {
   work = mkdtempSync(join(tmpdir(), 'pdj-heal-e2e-'));
@@ -54,7 +77,12 @@ beforeAll(async () => {
 
   const catalog = join(work, 'digital.json');
   writeFileSync(catalog, JSON.stringify({
-    manifest: { sourceType: 'digital', sourceName: 'Test' },
+    // sourceName MUST be a real capture-eligible source. The MUST-5 provenance gate
+    // (CAPTURE_ELIGIBLE_SOURCES = My Vinyl | My Digital) is a strict allowlist: any other name
+    // makes acceptRip return 'ineligible', which /rip reports as a bare `200 null` — the rip is
+    // refused with no job, no worker, and no log line. "My Digital" is the user's own uploaded
+    // files, which is exactly the provenance the digital capture path here serves.
+    manifest: { sourceType: 'digital', sourceName: 'My Digital' },
     albums: [{ id: 'alb_d', artist: 'Digi', name: 'D', trackList: [WEDGED_ONCE, WEDGED_ALWAYS] }],
     songs: [
       { id: WEDGED_ONCE, albumId: 'alb_d', artist: 'Digi', name: 'Wedged Once', length: 3000 },
@@ -87,11 +115,15 @@ if (SONG === ${JSON.stringify(WEDGED_ONCE)} && relaunched) {
     ...process.env,
     PATH: `${shimDir}:${dirname(process.execPath)}:/usr/bin:/bin`,
     HOME: join(work, 'home'),            // isolates CFG.tmp from the LIVE daemon's queue
-    RIP_PORT: String(PORT),
     RIP_BUCKET: 'pocketdj-test-bucket',
     RIP_SOURCES: catalog,
     RIP_WORKER: worker,
     RIP_PUBLIC_FOLD: '0',
+    // Public posture (the default, behind the Funnel) + both tiers, exactly as deployed. Without
+    // these a tokenless public server fails closed and 401s /rip and /status, so the heal path
+    // this file exists to pin would never be reached at all.
+    RIP_TOKEN: USER,
+    RIP_ADMIN_TOKEN: ADMIN,
     POCKETDJ_STEM_OFFLOAD: '0',
     POCKETDJ_AUTO_STEM_ON_RIP: '0',
     POCKETDJ_ANALYSIS_OFFLOAD: '0',
@@ -99,6 +131,11 @@ if (SONG === ${JSON.stringify(WEDGED_ONCE)} && relaunched) {
     PDJ_FAKE_MODE: 'wedged-then-healthy',
     PDJ_FAKE_HEAL_FLAG: healFlag,
     PDJ_FAKE_LOG: rigLog,
+    // The play-position counter the fake advances once Music is "healthy". It defaults to
+    // $TMPDIR/pdj-fake-counter — one file shared by every run on the machine — and this is the
+    // only rip e2e whose mode ever reaches the branch that writes it. Scope it to our work dir
+    // so two concurrent runs cannot interleave writes to the same file.
+    PDJ_FAKE_COUNTER: join(work, 'fake-counter'),
     // shrink the ladder + the heal so the whole cycle runs in seconds
     RIP_TEST_DIGITAL_BUFFER_MS: '2000',
     RIP_TEST_DIGITAL_FLOOR_MS: '2000',
@@ -108,12 +145,30 @@ if (SONG === ${JSON.stringify(WEDGED_ONCE)} && relaunched) {
     RIP_TEST_HEAL_RELAUNCH_MS: '5000',
     // cooldown stays long (default 20 min) ON PURPOSE: the second wedged song must be REFUSED
   };
-  srv = spawn(process.execPath, [join(REPO, 'scripts/rip-server.mjs')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-  srv.stdout.on('data', (d) => { serverLog += d; });
-  srv.stderr.on('data', (d) => { serverLog += d; });
-  for (let i = 0; i < 80; i++) {
-    try { if ((await fetch(`${base}/health`)).ok) break; } catch { /* not up yet */ }
-    await sleep(200);
+  // Boot on an allocated port and wait on READINESS, not on a fixed iteration count. Watch the
+  // child's own exit as well: freePort() releases its probe socket before rip-server binds, and
+  // rip-server does all of its startup BEFORE listen(), so a lost race looks like a perfectly
+  // healthy boot in the log and only surfaces as an EADDRINUSE exit at the very end. Take a
+  // fresh port and try again; never let a test run against a server that is not ours.
+  for (let attempt = 1; ; attempt++) {
+    const port = await freePort();
+    base = `http://127.0.0.1:${port}`;
+    serverLog = ''; srvExit = null;
+    srv = spawn(process.execPath, [join(REPO, 'scripts/rip-server.mjs')],
+      { env: { ...env, RIP_PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+    srv.stdout.on('data', (d) => { serverLog += d; });
+    srv.stderr.on('data', (d) => { serverLog += d; });
+    srv.on('exit', (code, sig) => { srvExit = sig || code; });
+
+    let up = false;
+    for (let i = 0; i < 300 && srvExit === null && !up; i++) {   // ≤30s of readiness polling
+      try { up = (await fetch(`${base}/health`)).ok; } catch { /* not up yet */ }
+      if (!up) await sleep(100);
+    }
+    if (up) break;
+    try { srv.kill('SIGKILL'); } catch { /* already gone */ }
+    if (srvExit !== null && /EADDRINUSE/.test(serverLog) && attempt < 5) continue;  // lost the race
+    throw new Error(`rip-server never became healthy on ${base} (exit=${srvExit})\n${serverLog}`);
   }
 }, 60_000);
 
@@ -124,7 +179,7 @@ afterAll(() => {
 
 describe('rip server heals a wedged Music.app', () => {
   it('(b) restarts Music.app and retries ONCE — and the retry only succeeds BECAUSE of the restart', async () => {
-    await fetch(`${base}/rip`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ songId: WEDGED_ONCE }) });
+    expectAccepted(await postRip(WEDGED_ONCE), WEDGED_ONCE);
     const end = Date.now() + 30_000;
     let st = null;
     while (Date.now() < end) { st = await getStatus(WEDGED_ONCE); if (st.ready) break; await sleep(150); }
@@ -141,7 +196,7 @@ describe('rip server heals a wedged Music.app', () => {
 
   it('(c) the cooldown refuses a second heal — a dead Mac cannot become a quit/relaunch loop', async () => {
     const quitsBefore = countOf(rig(), 'music-quit');
-    await fetch(`${base}/rip`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ songId: WEDGED_ALWAYS }) });
+    expectAccepted(await postRip(WEDGED_ALWAYS), WEDGED_ALWAYS);
     const end = Date.now() + 30_000;
     while (Date.now() < end) { const s = await getStatus(WEDGED_ALWAYS); if (!s.ready && !s.job) break; await sleep(200); }
 

@@ -16,15 +16,27 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TIMBRE_VERSION } from '../../scripts/lib/audio-analyze.mjs';
+import { freePort } from './helpers/free-port.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const PORT = 8815;                        // NOT 8787 — that is the live rip daemon
-const base = `http://localhost:${PORT}`;
+// PORT IS ALLOCATED, NEVER HARDCODED. A fixed port made this file collide with whichever sibling
+// e2e vitest happened to schedule alongside it (they all spawn a real rip-server, and two of them
+// had independently picked 8815) — the loser died of EADDRINUSE *after* logging a clean boot, so
+// every HTTP assertion failed with `undefined` and nothing named the port. Ask the OS for a free
+// one, and if the child still loses a race to it, boot again on a different port.
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const JOBS_Q = 'https://sqs.test/pocketdj-timbre-jobs';
 const RES_Q = 'https://sqs.test/pocketdj-timbre-results';
+// The server has been fail-closed under PUBLIC posture since the MUST-1 auth gate (602a30f4): a
+// tokenless public server 401s every user-tier route. Provision the tokens the way
+// setup-rip-funnel.sh does — a user token that the app sends, and a DISTINCT admin token it does
+// not — so this file drives the real shipped posture and would still catch /analyze-timbre being
+// promoted into ADMIN_PATHS (it would 403 rather than quietly keep passing).
+const USER_TOKEN = 'test-user-token';
+const ADMIN_TOKEN = 'test-admin-token';
+const AUTH = { authorization: `Bearer ${USER_TOKEN}` };
 
-let work, srv, sqsDir, manifestPath, serverLog = '';
+let work, srv, sqsDir, manifestPath, base, serverLog = '';
 
 /// Poll until the spool holds `n` song ids. The sweep sends its batches CONCURRENTLY through the
 /// bounded dispatcher, so "at least one message exists" says nothing about the rest having landed
@@ -47,7 +59,8 @@ const deleted = () => {
   const f = join(sqsDir, 'pocketdj-timbre-results.deleted.ndjson');
   return existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter(Boolean) : [];
 };
-const post = (p, body) => fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
+const post = (p, body) => fetch(base + p, { method: 'POST', headers: { ...AUTH, 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
+const health = () => fetch(`${base}/health`, { headers: AUTH });
 
 // A manifest with three shapes: analysable, ALREADY analysed, and no-audio-yet.
 const SEED = {
@@ -79,10 +92,11 @@ beforeAll(async () => {
     ...process.env,
     PATH: `${shimDir}:${dirname(process.execPath)}:/usr/bin:/bin`,
     HOME: join(work, 'home'),
-    RIP_PORT: String(PORT),
     RIP_BUCKET: 'pocketdj-test-bucket',
     RIP_SOURCES: catalog,
     RIP_PUBLIC_FOLD: '0',
+    RIP_TOKEN: USER_TOKEN,               // public posture is fail-closed without one
+    RIP_ADMIN_TOKEN: ADMIN_TOKEN,        // distinct, and deliberately never sent below
     POCKETDJ_STEM_OFFLOAD: '0',
     POCKETDJ_AUTO_STEM_ON_RIP: '0',
     POCKETDJ_ANALYSIS_OFFLOAD: '0',
@@ -95,12 +109,30 @@ beforeAll(async () => {
     FAKE_AWS_MANIFEST: manifestPath,     // load AND save round-trip through this file
     FAKE_AWS_SQS_DIR: sqsDir,
   };
-  srv = spawn(process.execPath, [join(REPO, 'scripts/rip-server.mjs')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-  srv.stdout.on('data', (d) => { serverLog += d; });
-  srv.stderr.on('data', (d) => { serverLog += d; });
-  for (let i = 0; i < 80; i++) {
-    try { if ((await fetch(`${base}/health`)).ok) break; } catch { /* not up yet */ }
-    await sleep(200);
+  // Boot until /health answers. A dead child is distinguished from a slow one: rip-server does its
+  // whole startup (manifest load, backstop sweep) BEFORE it listens, so a lost port race looks
+  // exactly like a healthy boot in the log and only shows up as an unhandled EADDRINUSE exit. Re-
+  // boot on a fresh port when that happens, and THROW — never let the suite proceed against a
+  // server that is not there, which is what turned one port collision into eight `undefined`s.
+  for (let attempt = 1; ; attempt++) {
+    const port = await freePort();
+    base = `http://127.0.0.1:${port}`;
+    serverLog = '';
+    srv = spawn(process.execPath, [join(REPO, 'scripts/rip-server.mjs')],
+      { env: { ...env, RIP_PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let dead = false;
+    srv.on('exit', () => { dead = true; });
+    srv.stdout.on('data', (d) => { serverLog += d; });
+    srv.stderr.on('data', (d) => { serverLog += d; });
+    let up = false;
+    for (let i = 0; i < 200 && !dead && !up; i++) {
+      try { up = (await health()).ok; } catch { /* not up yet */ }
+      if (!up) await sleep(100);
+    }
+    if (up) break;
+    try { srv.kill('SIGKILL'); } catch { /* already gone */ }
+    if (dead && /EADDRINUSE/.test(serverLog) && attempt < 5) continue;   // lost the port race — retry
+    throw new Error(`rip-server never came up on ${base}\n--- server log ---\n${serverLog}`);
   }
 }, 60_000);
 
@@ -135,7 +167,7 @@ describe('rip server → cloud timbre lane', () => {
   });
 
   it('/health reports the freeze signal so silence is never mistaken for health', async () => {
-    const h = await (await fetch(`${base}/health`)).json();
+    const h = await (await health()).json();
     expect(h.timbre.offload).toBe(true);
     expect(h.timbre.analysed).toBe(1);                    // only sng_cccccccccccc is stamped
     expect(h.timbre.outstanding).toBe(3);

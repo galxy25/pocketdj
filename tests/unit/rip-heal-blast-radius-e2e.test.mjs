@@ -20,33 +20,62 @@
 //      a decision.
 //
 // Safety, non-negotiable in this file: an isolated HOME (never the live daemon's queue), a
-// private port (the live daemon owns 8787; the sibling e2es own 8809/8811), a fake `aws`, a fake
+// private OS-allocated port (never the live daemon's 8787, and never a sibling's), a fake `aws`, a fake
 // `osascript` — and a shimmed `pkill`, because the heal escalates to `pkill -x Music` and the
 // real one would kill the Music.app the LIVE rip daemon is capturing from right now.
+//
+// The harness must also satisfy the two production gates that stand in FRONT of the heal path,
+// or none of the above is ever reached (see the boot probe and `expectAccepted` below):
+//   · MUST-1 auth  — authed() fails CLOSED under the default public posture, so a tokenless
+//     server 401s everything except /health. This file therefore runs the deployed posture:
+//     public, both token tiers set, bearer on every request.
+//   · MUST-5 provenance — acceptRip refuses any song whose sourceName is outside
+//     CAPTURE_ELIGIBLE_SOURCES ('My Vinyl' | 'My Digital'), answering a bare `{jobId: null}`.
+// Both are silent at the HTTP edge: the rip is simply never enqueued, so every assertion below
+// would time out saying nothing about why. Hence the named checks rather than bare polls.
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { freePort } from './helpers/free-port.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const PORT = 8813;                    // NOT 8787 (live daemon), NOT 8809/8811 (sibling e2es)
-const base = `http://localhost:${PORT}`;
+// The port is ALLOCATED, never hand-picked. A constant is global state: a second run of this
+// same file (another agent in this checkout, a stray watch window) binds the same number, the
+// loser dies of EADDRINUSE *after* logging a clean boot, and the winner answers the probe with
+// a byte-identical /health — so the suite runs happily against the STRANGER'S server while
+// asserting on OUR tmpdir. Measured: two concurrent runs of this file, one green in 10.6s, one
+// failing all four in 50.5s with an empty rig log. See helpers/free-port.mjs.
+let base;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LAUNCH_MS = 4000;               // how long the fake Music.app takes to come back
 
 const SLOW = 'sng_slow_heal';         // used for the responsiveness measurement
 const STOPPED = 'sng_stop_mid_heal';  // canceled while Music is restarting
 
-let work, srv, serverLog = '', healFlag, rigLog, countsDir;
+// Distinct tiers, exactly as deployed — collapsing them would quietly make every request admin.
+const USER = 'blast-user-token';
+const ADMIN = 'blast-admin-token';
+const AUTH = { authorization: `Bearer ${USER}` };
+
+let work, srv, serverLog = '', srvExit = null, healFlag, rigLog, countsDir;
 
 const rig = () => (existsSync(rigLog) ? readFileSync(rigLog, 'utf8') : '');
 const countOf = (s, needle) => s.split(needle).length - 1;
 const attempts = (songId) => { try { return readFileSync(join(countsDir, `${songId}.log`), 'utf8').length; } catch { return 0; } };
-const post = (path, body) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-const getStatus = async (songId) => (await fetch(`${base}/status/${songId}`)).json();
+const post = (path, body) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json', ...AUTH }, body: JSON.stringify(body) });
+const getStatus = async (songId) => (await fetch(`${base}/status/${songId}`, { headers: AUTH })).json();
 const waitFor = async (pred, ms) => { const end = Date.now() + ms; while (Date.now() < end) { if (await pred()) return true; await sleep(25); } return false; };
+// A rip that is REFUSED at the edge (401 unauthorized, or MUST-5 → `jobId: null`) spawns no
+// worker and writes no log line, so every downstream poll expires on a condition that never
+// becomes true. Assert acceptance at the enqueue, and carry the server's own log into the
+// message, so a future gate fails by name in one second instead of anonymously in thirty.
+const expectAccepted = async (res, songId) => {
+  const body = await res.json().catch(() => null);
+  expect(body && body.jobId, `POST /rip ${songId} was not enqueued — HTTP ${res.status} ${JSON.stringify(body)}\n${serverLog}`).toBeTruthy();
+};
 
 beforeAll(async () => {
   work = mkdtempSync(join(tmpdir(), 'pdj-heal-blast-'));
@@ -65,7 +94,10 @@ beforeAll(async () => {
 
   const catalog = join(work, 'digital.json');
   writeFileSync(catalog, JSON.stringify({
-    manifest: { sourceType: 'digital', sourceName: 'Test' },
+    // sourceName must be one of CAPTURE_ELIGIBLE_SOURCES (MUST-5) or acceptRip returns
+    // 'ineligible' and /rip answers `{jobId: null}` — no job, no worker, no heal. "My Digital"
+    // is the user's own uploaded files, which is the provenance this digital capture path serves.
+    manifest: { sourceType: 'digital', sourceName: 'My Digital' },
     albums: [{ id: 'alb_d', artist: 'Digi', name: 'D', trackList: [SLOW, STOPPED] }],
     songs: [
       { id: SLOW, albumId: 'alb_d', artist: 'Digi', name: 'Slow Heal', length: 3000 },
@@ -91,11 +123,17 @@ console.log('RESULT ' + JSON.stringify({ ok: false, error, reason: 'play-not-sta
     ...process.env,
     PATH: `${shimDir}:${dirname(process.execPath)}:/usr/bin:/bin`,
     HOME: join(work, 'home'),          // isolates CFG.tmp from the LIVE daemon's queue
-    RIP_PORT: String(PORT),
     RIP_BUCKET: 'pocketdj-test-bucket',
     RIP_SOURCES: catalog,
     RIP_WORKER: worker,
     RIP_PUBLIC_FOLD: '0',
+    // The deployed posture: public (the default, behind the Funnel) with BOTH tiers provisioned.
+    // Setting them explicitly is also what makes this harness hermetic — `...process.env` above
+    // would otherwise let an ambient RIP_TOKEN/RIP_ADMIN_TOKEN from the operator's shell or a
+    // sibling run decide whether our bearer is accepted.
+    RIP_TOKEN: USER,
+    RIP_ADMIN_TOKEN: ADMIN,
+    RIP_RATE_LIMIT: '0',               // ditto: never let an ambient `=1` 429 the user tier here
     POCKETDJ_STEM_OFFLOAD: '0',
     POCKETDJ_AUTO_STEM_ON_RIP: '0',
     POCKETDJ_ANALYSIS_OFFLOAD: '0',
@@ -113,13 +151,43 @@ console.log('RESULT ' + JSON.stringify({ ok: false, error, reason: 'play-not-sta
     RIP_TEST_HEAL_MAX_PER_HOUR: '50',
     RIP_TEST_HEAL_MAX_INEFFECTIVE: '0', // …and the breaker is pinned by unit tests, not here
   };
-  srv = spawn(process.execPath, [join(REPO, 'scripts/rip-server.mjs')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-  srv.stdout.on('data', (d) => { serverLog += d; });
-  srv.stderr.on('data', (d) => { serverLog += d; });
-  for (let i = 0; i < 80; i++) {
-    try { if ((await fetch(`${base}/health`)).ok) break; } catch { /* not up yet */ }
-    await sleep(200);
+  // Boot on an OS-allocated port, and wait on a READINESS SIGNAL — not a fixed iteration count.
+  // Watch the child's own `exit` too: freePort() closes its probe socket before rip-server binds,
+  // so there is a small window in which we can still lose the port, and rip-server does all of
+  // its startup BEFORE listen() — meaning a lost race looks like a perfectly healthy boot in the
+  // log right up to the EADDRINUSE. Take a fresh port and try again when that happens.
+  let health = null;
+  for (let attempt = 1; ; attempt++) {
+    const port = await freePort();
+    base = `http://127.0.0.1:${port}`;
+    serverLog = ''; srvExit = null; health = null;
+    srv = spawn(process.execPath, [join(REPO, 'scripts/rip-server.mjs')],
+      { env: { ...env, RIP_PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+    srv.stdout.on('data', (d) => { serverLog += d; });
+    srv.stderr.on('data', (d) => { serverLog += d; });
+    srv.on('exit', (code, sig) => { srvExit = sig || code; });
+
+    await waitFor(async () => {
+      if (srvExit !== null) return true;             // dead child: stop polling, decide below
+      try {
+        const r = await fetch(`${base}/health`);
+        if (!r.ok) return false;
+        health = await r.json();
+        return true;
+      } catch { return false; }                      // not up yet
+    }, 40_000);
+    if (health && srvExit === null) break;
+    try { srv.kill('SIGKILL'); } catch { /* already gone */ }
+    if (srvExit !== null && /EADDRINUSE/.test(serverLog) && attempt < 5) continue;  // lost the race
+    throw new Error(`rip-server never became healthy on ${base} (exit=${srvExit})\n--- server log ---\n${serverLog}`);
   }
+  // Name at BOOT the two things whose absence would otherwise surface 20 seconds later as a poll
+  // that never comes true: the fixture the server actually loaded, and the auth posture it came
+  // up in. (A public server with no token 401s every endpoint that matters while /health, which
+  // sits ahead of the gate, still answers 200 — that is what made this file's failure so quiet.)
+  expect(health.catalog?.songs, `server did not load OUR 2-song catalog\n${serverLog}`).toBe(2);
+  expect(health.bucket, `server did not load OUR bucket\n${serverLog}`).toBe('pocketdj-test-bucket');
+  expect(health.auth, `server booted tokenless — every /rip and /status would 401\n${serverLog}`).toBe(true);
 }, 60_000);
 
 afterAll(() => {
@@ -129,7 +197,7 @@ afterAll(() => {
 
 describe('healing a wedged Music.app must not take the rip server down with it', () => {
   it('the server keeps answering HTTP while Music.app is being restarted', async () => {
-    await post('/rip', { songId: SLOW });
+    await expectAccepted(await post('/rip', { songId: SLOW }), SLOW);
     // The fake logs `music-launch` BEFORE it blocks, so this is the start of the relaunch window.
     expect(await waitFor(async () => /music-launch/.test(rig()), 20_000)).toBe(true);
 
@@ -149,7 +217,7 @@ describe('healing a wedged Music.app must not take the rip server down with it',
 
   it('a Stop pressed DURING the heal is honoured — no capture runs after the restart', async () => {
     const quitsBefore = countOf(rig(), 'music-quit');
-    await post('/rip', { songId: STOPPED });
+    await expectAccepted(await post('/rip', { songId: STOPPED }), STOPPED);
     expect(await waitFor(async () => attempts(STOPPED) === 1, 30_000)).toBe(true);
     // wait until THIS song's relaunch is in flight (a new quit is the marker)
     expect(await waitFor(async () => countOf(rig(), 'music-quit') > quitsBefore, 20_000)).toBe(true);
@@ -163,7 +231,15 @@ describe('healing a wedged Music.app must not take the rip server down with it',
 
     // The heal runs to completion (it is not abortable mid-relaunch, and quitting halfway would
     // be worse) — but the capture that used to follow it must NOT run.
-    await sleep(LAUNCH_MS + 1500);
+    //
+    // Wait on the DECISION, not on a stopwatch. `sleep(LAUNCH_MS + 1500)` assumed the relaunch
+    // costs exactly its configured delay; on a loaded machine the measured cost was 7464ms
+    // against a 5500ms sleep ("HEAL-OK music.app relaunched and answering in 7464ms"), so the
+    // assertion below ran while the heal was still in flight and read a log that had not yet
+    // been written. Both outcomes are observable and mutually exclusive — the code either
+    // abandons the retry (HEAL-ABANDONED) or runs it (a second capture) — so race them and
+    // settle the instant either lands. A regression still fails, and fails fast.
+    expect(await waitFor(async () => attempts(STOPPED) === 2 || /HEAL-ABANDONED/.test(serverLog), 40_000)).toBe(true);
     expect(attempts(STOPPED)).toBe(1);                 // ← one capture, not two
     expect(serverLog).toMatch(/HEAL-ABANDONED sng_stop_mid_heal/);
     const st = await getStatus(STOPPED);

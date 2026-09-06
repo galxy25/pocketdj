@@ -26,7 +26,10 @@ import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const PORT = 8817;                    // not 8787 (live rip daemon), not any sibling e2e's port
+// ALLOCATED by the OS in startFakeServer(), not hand-picked. A constant is global state shared
+// with every other run of this suite on the machine; here a squatted number would make listen()
+// emit an unhandled 'error' and take the worker down rather than fail by name.
+let PORT = 0;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const HOUR = 3_600_000;
 const SONGS = ['sng_a', 'sng_b', 'sng_c'];
@@ -59,7 +62,7 @@ function startFakeServer() {
       if (url.startsWith('/status/')) return send(200, { ready: false });
       send(404, { error: 'nope' });
     });
-    server.listen(PORT, '127.0.0.1', res);
+    server.listen(0, '127.0.0.1', () => { PORT = server.address().port; res(); });
   });
 }
 
@@ -108,7 +111,19 @@ async function runDriver(dir, { hoursSinceSuccess, deferMax, cycles, songs = SON
   ], { stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, RIP_TEST_MIN_POLL_SEC: String(POLL_SEC) } });
   p.stdout.on('data', (d) => { out += d; });
   p.stderr.on('data', (d) => { out += d; });
-  await sleep(cycles * CYCLE_MS - CYCLE_MS / 2); // stop mid-sleep of the last cycle
+  // Stop after `cycles` PASSES, counted from the driver's own output — not from a stopwatch.
+  // The driver emits exactly one `HEARTBEAT {json}` at the end of every pass, immediately
+  // before its poll sleep, so counting them is the same stopping point the old
+  // `sleep(cycles * CYCLE_MS - CYCLE_MS / 2)` was aiming at ("mid-sleep of the last cycle") —
+  // except it cannot be outrun. On a loaded machine a pass costs more than its 1s poll interval,
+  // so the stopwatch cut the driver off after fewer passes than the test had asked for and the
+  // work of the last pass simply never happened: `finalState.failed.sng_a` came back undefined.
+  // The settle keeps the old margin between the heartbeat and the SIGTERM, so the saveState()
+  // that follows the heartbeat in the driver's loop still lands.
+  const seen = () => out.split('HEARTBEAT ').length - 1;
+  const deadline = Date.now() + Math.max(30_000, cycles * CYCLE_MS * 10);
+  while (seen() < cycles && Date.now() < deadline && p.exitCode === null) await sleep(50);
+  await sleep(CYCLE_MS / 2);
   p.kill('SIGTERM');
   await new Promise((res) => { p.on('close', res); setTimeout(res, 5000); });
   const finalState = JSON.parse(readFileSync(statePath, 'utf8'));
