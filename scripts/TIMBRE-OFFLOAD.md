@@ -121,7 +121,8 @@ node scripts/timbre-parity-check.mjs                # exits 1 on FAIL
 # BACKFILL
 node scripts/timbre-backfill.mjs --manifest s3 --dry-run
 node scripts/timbre-backfill.mjs --manifest s3
-node scripts/stem-autoscaler.mjs --lane timbre      # repeat until the queue drains
+node scripts/stem-autoscaler.mjs --lane timbre      # one reconcile by hand; normally unnecessary —
+                                                    # com.pocketdj.timbre-autoscaler drives this every 60s
 
 # FOLD (order matters: aliases BEFORE the fold — analysed songs flip from alias source to target)
 node scripts/fold-cloud-timbre.mjs
@@ -150,6 +151,24 @@ a worker that dies during boot terminates itself and leaves an empty EC2 console
 | T3 | backstop sweep, 6 h + at startup | `rip-server.mjs` `sweepTimbre()` |
 | T4 | publish the corpus | `am-sync-nightly.sh` fold step |
 | T5 | freeze signal | `/health.timbre`, the backlog log line, `timbre-coverage.mjs` |
+| C1 | **drain** the queue, every 60 s | `com.pocketdj.timbre-autoscaler` LaunchAgent → `stem-autoscaler.mjs --lane timbre` |
+
+C1 is in this table because for a while it was in nobody's: T1–T5 are all PRODUCERS, the lane was
+documented as hand-run, and the plist shipped in the same commit as the cloud worker but was never
+installed. The result (found 2026-09-06) was 295 messages and **zero receives in six days** — and
+because `timbreCandidates()` filters on the manifest stamp and the `timbreDone` corpus, neither of
+which advances while nothing drains, T3's 6-hourly sweep re-enqueued the SAME candidates forever.
+An un-consumed queue with a scheduled producer does not look broken from either end: the sweep logs
+success, the queue never errors, the DLQ stays empty, and the corpus silently stops growing. If this
+row ever goes away again, that is the failure it comes back as.
+
+Install it the same way as the stem lane:
+
+```sh
+cp scripts/launchd/com.pocketdj.timbre-autoscaler.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.pocketdj.timbre-autoscaler.plist
+# check:  launchctl list | grep timbre   ·   logs: ~/.pocketdj/timbre-autoscaler.log
+```
 
 T3 lives **inside the rip server** — already running, already holding the manifest and its
 credentials — deliberately. `install-rec-audio-nightly.sh` was never run and its job is a no-op
