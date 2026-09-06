@@ -1,8 +1,11 @@
 #!/usr/bin/env node
 // e2e of the PUBLIC auth surface (Tailscale Funnel promotion) — no S3, no worker.
-// Public posture is the server's DEFAULT (beta doctrine: always boots; tokens enforced
-// when provided; rate limiting is a feature flag, default OFF). Asserts: posture
-// defaults (public on by default, RIP_PUBLIC=0 opt-out, tokenless boot allowed) · the
+// Public posture is the server's DEFAULT (beta doctrine: always boots; rate limiting is
+// a feature flag, default OFF) — but since MUST-1 a public server with NO token FAILS
+// CLOSED: it boots, and then 401s every endpoint except /health. Only RIP_PUBLIC=0 (a
+// genuinely local/Tailnet-only deployment) keeps the tokenless-dev convenience.
+// Asserts: posture defaults (public on by default, RIP_PUBLIC=0 opt-out, tokenless boot
+// allowed but fail-closed while public, open while private) · the
 // tier map (health open · user endpoints 401 without / 200-404 with the user token ·
 // admin endpoints 403 at user tier, 200 at admin tier) · rate limiting OFF by default
 // even past the POST cap, and tripping only under RIP_RATE_LIMIT=1 (admin exempt).
@@ -25,17 +28,31 @@ let fail = 0;
 const ok = (c, m) => { console.log(`${c ? '  ✓' : '  ✗'} ${m}`); if (!c) fail++; };
 
 const work = mkdtempSync(join(tmpdir(), 'pdj-auth-'));
+// TWO sources, so the MUST-5 provenance gate has something to refuse AND something to
+// contrast it against. Deliberately NO capture-eligible song here: an eligible /rip would
+// spawn the real digital worker, which drives the operator's actual Music.app — this script
+// has no osascript shim. The negative is still non-vacuous because acceptRip answers the two
+// refusals differently (unknown song → 404; known-but-ineligible → 200 with a null job), so
+// the assertion below proves the row was FOUND and then refused on provenance.
 const catalog = join(work, 'catalog.json');
 writeFileSync(catalog, JSON.stringify({
   manifest: { sourceType: 'digital', sourceName: 'Test' },
   albums: [], songs: [],
+}));
+// "Apple Music (Local)" is catalog metadata for streaming playback, NOT a licence to make a
+// permanent copy — the exact source MUST-5 exists to keep out of the capture path.
+const streamCatalog = join(work, 'catalog-streaming.json');
+writeFileSync(streamCatalog, JSON.stringify({
+  manifest: { sourceType: 'digital', sourceName: 'Apple Music (Local)' },
+  albums: [{ id: 'alb_am', artist: 'A', name: 'B', trackList: ['sng_streaming'] }],
+  songs: [{ id: 'sng_streaming', albumId: 'alb_am', artist: 'A', name: 'Not Ours', length: 60_000 }],
 }));
 
 const baseEnv = {
   ...process.env,
   RIP_PORT: String(PORT),
   RIP_BUCKET: 'pocketdj-test-nonexistent-bucket-xyz', // loadManifest fails → empty manifest, no real S3
-  RIP_SOURCES: catalog,
+  RIP_SOURCES: `${catalog},${streamCatalog}`,
   HOME: join(work, 'home'), // isolate ~/.pocketdj (incl. any real rip-server.env)
   RIP_RL_WINDOW_MS: '60000',
   RIP_RL_POST_MAX: '5', // tiny so the rate-limit assertions are fast
@@ -86,14 +103,24 @@ try {
     ok(health && health.public === true, 'public posture is the DEFAULT (no RIP_PUBLIC set)');
     ok(health && health.auth === false && health.rateLimit === false,
       'tokenless default: auth off, rate limit off');
-    // /health is unauthenticated even when auth is ON — prove openness on a REAL
-    // endpoint (user-tier POST that would 401 under auth).
+    // MUST-1: a PUBLIC server with NO token FAILS CLOSED. This used to assert the
+    // opposite (tokenless = every endpoint open), which is precisely the posture the
+    // legal gate exists to forbid — a Funnel-promoted host with no token would have
+    // been open to the internet. Prove it on a REAL user-tier endpoint, because /health
+    // is served AHEAD of the gate and answers 200 either way (that exemption is what
+    // made this drift invisible to every harness that only probed /health).
     const r = await fetch(`${base}/rip-cancel`, { method: 'POST',
       headers: { 'content-type': 'application/json' }, body: JSON.stringify({ songIds: [] }) });
-    ok(r.status === 200, 'tokenless: unauthenticated POST reaches the real handler (200)');
+    ok(r.status === 401, 'tokenless + PUBLIC fails CLOSED: unauthenticated POST → 401');
   });
   await withServer({ ...baseEnv, RIP_PUBLIC: '0' }, async (health) => {
     ok(health && health.public === false, 'RIP_PUBLIC=0 opts out of public posture');
+    // …and only there does the tokenless-dev convenience survive. This is the
+    // counterweight that keeps the 401 above non-vacuous: it proves the refusal is
+    // driven by the PUBLIC posture, not by the endpoint being broken or unreachable.
+    const r = await fetch(`${base}/rip-cancel`, { method: 'POST',
+      headers: { 'content-type': 'application/json' }, body: JSON.stringify({ songIds: [] }) });
+    ok(r.status === 200, 'tokenless + RIP_PUBLIC=0 stays open: unauthenticated POST → 200');
   });
 
   console.log('tier map + search + rate-limit-off (default boot, both tokens)…');
@@ -107,6 +134,16 @@ try {
     ok(r.status === 401, 'POST /rip without token → 401');
     r = await fetch(`${base}/rip`, { method: 'POST', headers: asUser, body: JSON.stringify({ songId: 'sng_x' }) });
     ok(r.status === 404, 'POST /rip with user token passes auth (404 unknown song)');
+
+    // MUST-5: PROVENANCE, not authentication. A fully authenticated user still may not capture a
+    // source that is only licensed for streaming playback. The 404 above is the counterweight —
+    // it proves an unknown id looks DIFFERENT, so this song really was found and then refused.
+    // (This is the gate that silently swallowed every rip in the heal e2es when their fixtures
+    // still said sourceName 'Test'; nothing in the vitest suite pins it, so it lives here.)
+    r = await fetch(`${base}/rip`, { method: 'POST', headers: asUser, body: JSON.stringify({ songId: 'sng_streaming' }) });
+    const inel = await r.json().catch(() => 'unparseable');
+    ok(r.status === 200 && !(inel && inel.jobId),
+      `MUST-5: a streaming-only source is NEVER captured — no job (got ${r.status} ${JSON.stringify(inel)})`);
 
     r = await fetch(`${base}/ingest-digital`, { method: 'POST', headers: asUser, body: JSON.stringify({ entries: [] }) });
     ok(r.status === 403, 'admin endpoint at user tier → 403');

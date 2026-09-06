@@ -8,7 +8,7 @@ import { foldTimbre } from '../../scripts/fold-timbre.mjs';
 import { TIMBRE_VERSION } from '../../scripts/lib/audio-analyze.mjs';
 import { TIMBRE_AXES } from '../../scripts/lib/timbre-hygiene.mjs';
 import { execFileSync } from 'node:child_process';
-import { writeFileSync } from 'node:fs';
+import { writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -74,16 +74,23 @@ describe('timbre-batch --tasks — the cloud work list', () => {
     // failure, not a slow path. Point --manifest at a file that cannot exist — the run must
     // still reach the dry-run summary.
     const tasks = join(tmpdir(), `pdj-tasks-${Date.now()}.json`);
+    const stateDir = join(tmpdir(), `pdj-st-${Date.now()}`);
     writeFileSync(tasks, JSON.stringify([{ id: 'sng_aaaaaaaaaaaa', key: 'rips/a.mp3' }]));
     try {
       const out = execFileSync(process.execPath,
         [join(REPO, 'scripts/timbre-batch.mjs'), '--tasks', tasks, '--dry-run',
-         '--manifest', '/definitely/not/a/file.json', '--state-dir', join(tmpdir(), `pdj-st-${Date.now()}`)],
+         '--manifest', '/definitely/not/a/file.json', '--state-dir', stateDir],
         { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
       expect(out + '').toBeDefined();
     } catch (e) {
       // A non-zero exit here means the driver touched the manifest path anyway.
       expect(`timbre-batch --tasks read the manifest: ${e.stderr || e.message}`).toBe('');
+    } finally {
+      // Both artifacts used to be left behind — every run of the suite dropped a `pdj-tasks-*.json`
+      // and a `pdj-st-*/` in $TMPDIR forever (174 of them had piled up on this machine). Unique
+      // names meant it never caused a failure, which is exactly why nobody noticed.
+      rmSync(tasks, { force: true });
+      rmSync(stateDir, { recursive: true, force: true });
     }
   });
 });

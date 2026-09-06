@@ -20,16 +20,24 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { captureWithHeal, createHealGate } from '../../scripts/lib/music-health.mjs';
+import { freePort } from './helpers/free-port.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
-const PORT = 8815;                       // NOT 8787 (live daemon), NOT 8809/8811 (branch's own tests)
-const base = `http://localhost:${PORT}`;
+// ALLOCATED, not hand-picked — see helpers/free-port.mjs. This file used to sit on 8815, the
+// same constant rip-timbre-offload-e2e.test.mjs had independently chosen; two servers on one
+// port means the loser dies of EADDRINUSE after a clean-looking boot while the winner answers
+// the health probe, so the suite silently drives someone else's server and someone else's tmpdir.
+let base;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LAUNCH_MS = 4000;                  // how long the fake Music.app takes to relaunch
 
 const WEDGE = 'sng_wedge';
 
-let work, srv, healFlag, rigLog, countsDir;
+// The server's USER-tier bearer. Under the shipped PUBLIC posture a tokenless server fails
+// closed (see the env block below), so this file drives it the way the app does: with a token.
+const USER_TOKEN = 'blast-radius-user-token';
+
+let work, srv, healFlag, rigLog, countsDir, serverLog = '';
 
 const rig = () => (existsSync(rigLog) ? readFileSync(rigLog, 'utf8') : '');
 const attempts = (songId) => { try { return readFileSync(join(countsDir, `${songId}.log`), 'utf8').length; } catch { return 0; } };
@@ -69,7 +77,13 @@ console.log('');
 
   const catalog = join(work, 'digital.json');
   writeFileSync(catalog, JSON.stringify({
-    manifest: { sourceType: 'digital', sourceName: 'Test' },
+    // sourceName MUST be a capture-eligible source. rip-server's MUST-5 gate
+    // (isCaptureEligible / CAPTURE_ELIGIBLE_SOURCES) only ever captures the user's own
+    // vinyl or their own uploaded digital files; every other sourceName — including a
+    // made-up one — is refused at acceptRip with status 'ineligible' and no job is created.
+    // A fixture named 'Test' therefore never reaches the capture path at all, so the heal
+    // this file exists to exercise never runs.
+    manifest: { sourceType: 'digital', sourceName: 'My Digital' },
     albums: [{ id: 'alb_d', artist: 'Digi', name: 'D', trackList: [WEDGE] }],
     songs: [{ id: WEDGE, albumId: 'alb_d', artist: 'Digi', name: 'Wedge', length: 60_000 }], // ~92s deadline
   }));
@@ -90,11 +104,16 @@ console.log('RESULT ' + JSON.stringify({ ok: false, error, reason: 'play-not-sta
     ...process.env,
     PATH: `${shimDir}:${dirname(process.execPath)}:/usr/bin:/bin`,
     HOME: join(work, 'home'),            // isolates CFG.tmp from the LIVE daemon's queue
-    RIP_PORT: String(PORT),
     RIP_BUCKET: 'pocketdj-test-bucket',
     RIP_SOURCES: catalog,
     RIP_WORKER: worker,
     RIP_PUBLIC_FOLD: '0',
+    // The shipped production posture: PUBLIC (behind the Tailscale Funnel) with the user tier
+    // gated by RIP_TOKEN. A public server with NO token now fails CLOSED — authed() returns
+    // !CFG.public — so every endpoint except /health 401s. /health being exempt is what makes
+    // that failure so quiet here: the boot wait below still succeeds, POST /rip is silently
+    // refused, and the only symptom is a heal that never happens. Drive the real posture.
+    RIP_TOKEN: USER_TOKEN,
     POCKETDJ_STEM_OFFLOAD: '0',
     POCKETDJ_AUTO_STEM_ON_RIP: '0',
     POCKETDJ_ANALYSIS_OFFLOAD: '0',
@@ -104,12 +123,32 @@ console.log('RESULT ' + JSON.stringify({ ok: false, error, reason: 'play-not-sta
     RIP_TEST_HEAL_COOLDOWN_MS: '0',
     RIP_TEST_HEAL_MAX_PER_HOUR: '50',
   };
-  srv = spawn(process.execPath, [join(REPO, 'scripts/rip-server.mjs')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-  srv.stdout.on('data', () => {});
-  srv.stderr.on('data', () => {});
-  for (let i = 0; i < 80; i++) {
-    try { if ((await fetch(`${base}/health`)).ok) break; } catch { /* not up yet */ }
-    await sleep(200);
+  // Boot on an allocated port, and wait on a READINESS SIGNAL rather than a fixed iteration
+  // count. Keep the server's own log too: when something here goes wrong it is almost always
+  // the server refusing the request for a reason it printed at boot, and a swallowed log turns
+  // that into an unattributable timeout 15 seconds later. freePort() closes its probe socket
+  // before rip-server binds, so a lost race is still possible — rip-server does all of its
+  // startup before listen(), so that looks like a clean boot right up to the EADDRINUSE exit.
+  // Re-boot on a fresh port when that happens; never let a test run against no server.
+  for (let attempt = 1; ; attempt++) {
+    const port = await freePort();
+    base = `http://127.0.0.1:${port}`;
+    serverLog = '';
+    srv = spawn(process.execPath, [join(REPO, 'scripts/rip-server.mjs')],
+      { env: { ...env, RIP_PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+    let dead = false;
+    srv.on('exit', () => { dead = true; });
+    srv.stdout.on('data', (d) => { serverLog += d; });
+    srv.stderr.on('data', (d) => { serverLog += d; });
+    let up = false;
+    for (let i = 0; i < 300 && !dead && !up; i++) {
+      try { up = (await fetch(`${base}/health`)).ok; } catch { /* not up yet */ }
+      if (!up) await sleep(100);
+    }
+    if (up) break;
+    try { srv.kill('SIGKILL'); } catch { /* already gone */ }
+    if (dead && /EADDRINUSE/.test(serverLog) && attempt < 5) continue;   // lost the port race
+    throw new Error(`rip-server never became ready on ${base}\n--- server log ---\n${serverLog}`);
   }
 }, 60_000);
 
@@ -143,7 +182,18 @@ describe('blast radius of the wedged-Music heal', () => {
   // loop for the duration of every AppleScript, taking a live HTTP daemon off the air for the
   // whole quit+relaunch — no longer applies to the heal path.
   it('the server keeps answering HTTP while Music.app is being restarted', async () => {
-    await fetch(`${base}/rip`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ songId: WEDGE }) });
+    const r = await fetch(`${base}/rip`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${USER_TOKEN}` },
+      body: JSON.stringify({ songId: WEDGE }),
+    });
+    // Assert the rip was ACCEPTED — i.e. a JOB EXISTS — before waiting on the heal. Both ways
+    // this request can be refused are quiet: 401 under the fail-closed public posture, and the
+    // MUST-5 capture gate, which answers an ineligible song with HTTP 200 and a literal `null`
+    // body (jobView(null)). Either way the only downstream symptom is a heal that never happens,
+    // i.e. a 15-second wait that expires and blames the event loop for a rejected request.
+    const body = await r.json().catch(() => null);
+    expect(`${r.status} ${JSON.stringify(body)}`).toMatch(/^200 .*"jobId"/);
     expect(await waitFor(() => /music-launch/.test(rig()), 15_000)).toBe(true); // heal in flight
     const t0 = Date.now();
     await fetch(`${base}/health`);
