@@ -14,14 +14,17 @@
 // Job body: {songId, srcKey, tasks:["stems"|"analysis"|"lyrics"...]}  (tasks defaults to ["stems"])
 // Modes:
 //   node stem-worker.mjs <songId>        one-shot stems (digital rips/<id>.mp3), print result
-//   node stem-worker.mjs --serve         long-running SQS consumer; idle-exit → self-terminate
+//   node stem-worker.mjs --serve         long-running SQS consumer; idle-exit → self-terminate;
+//                                        watches IMDS for a SPOT reclaim notice (see below)
 //   node stem-worker.mjs --poll          process at most one SQS message, then exit
 //
 // Env: POCKETDJ_RIPS_BUCKET, AWS_REGION, POCKETDJ_STEM_JOBS_QUEUE, POCKETDJ_STEM_RESULTS_QUEUE,
 //   POCKETDJ_DEMUCS_MODEL, POCKETDJ_STEM_DEVICE(cpu|cuda|mps), POCKETDJ_STEM_FORMAT/_BITRATE,
 //   POCKETDJ_STEM_VENV, POCKETDJ_STEM_PY, POCKETDJ_ANALYZE_PY, POCKETDJ_BEATGRID_PY,
 //   POCKETDJ_TRANSCRIBE_PY, POCKETDJ_LYRICS_MODEL(small), POCKETDJ_LYRICS_DEVICE(cpu),
-//   POCKETDJ_LYRICS_COMPUTE(int8), POCKETDJ_STEM_VISIBILITY, POCKETDJ_STEM_IDLE_SECONDS.
+//   POCKETDJ_LYRICS_COMPUTE(int8), POCKETDJ_STEM_VISIBILITY, POCKETDJ_STEM_IDLE_SECONDS,
+//   POCKETDJ_STEM_SPOT_POLL_MS(5000), POCKETDJ_STEM_SPOT_MAX_REQUEUES(3),
+//   POCKETDJ_STEM_SPOT_ARM_TRIES(3).
 //   AWS creds via the instance role.
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdirSync, rmSync, copyFileSync, existsSync, statSync, writeFileSync, readFileSync } from 'node:fs';
@@ -50,6 +53,9 @@ const CFG = {
   lyricsCompute: process.env.POCKETDJ_LYRICS_COMPUTE || 'int8',
   idleSeconds: Number(process.env.POCKETDJ_STEM_IDLE_SECONDS || 300),
   maxErrors: Number(process.env.POCKETDJ_STEM_MAX_ERRORS || 20),   // bound the error streak (see serve)
+  spotPollMs: Number(process.env.POCKETDJ_STEM_SPOT_POLL_MS || 5000),        // IMDS reclaim-notice poll
+  spotMaxRequeues: Number(process.env.POCKETDJ_STEM_SPOT_MAX_REQUEUES || 3), // bound the re-send (see releasePlan)
+  spotArmTries: Number(process.env.POCKETDJ_STEM_SPOT_ARM_TRIES || 3),       // IMDS tries before standing down
 };
 const STEM_VERSION = 1;        // keep in sync with STEMS_VERSION in scripts/lib/audio-stem.mjs
 const ANALYSIS_VERSION = 1;    // keep in sync with ANALYSIS_VERSION in scripts/lib/audio-analyze.mjs
@@ -79,15 +85,18 @@ function runPyJson(scriptPath, mp3, env) {
   });
 }
 
-// Are all 4 current stems already on S3? Returns their keys + total bytes, else null. This is the
-// worker-level song-id DEDUP: a duplicate job (the same song enqueued N times) skips Demucs and
-// just re-posts a result reconstructed from the existing stems.
-function existingStems(songId) {
-  const ext = CFG.format === 'flac' ? 'flac' : 'mp3';
-  let out;
-  try { out = aws('s3', 'ls', `s3://${CFG.bucket}/rips/stems/${songId}/`); } catch { return null; }
+/// Pure: read an `aws s3 ls rips/stems/<id>/` listing into the dedup answer — all 4 current stems
+/// with their keys + total bytes, else null.
+///
+/// ALL-OR-NOTHING IS THE SPOT SAFETY PROPERTY. doStems uploads the 4 stems one `s3 cp` at a time,
+/// so a reclaimed instance can leave 1–3 of them on S3. This gate is what stops that half-set from
+/// reading as a finished job: a missing name returns null, the redelivered job re-runs Demucs and
+/// overwrites. (A single stem cannot be TRUNCATED either — under the multipart threshold `s3 cp` is
+/// one atomic PutObject, and above it the object only materialises at CompleteMultipartUpload. A
+/// zero-byte object would be falsy here and read as missing, which is also the answer we want.)
+export function stemsFromListing(out, songId, ext = 'mp3') {
   const sizes = {};
-  for (const line of out.split('\n')) {
+  for (const line of String(out || '').split('\n')) {
     const m = line.trim().match(/^\S+\s+\S+\s+(\d+)\s+(\S+\.\w+)$/);
     if (m) sizes[m[2]] = Number(m[1]);
   }
@@ -98,6 +107,16 @@ function existingStems(songId) {
     bytes += sizes[`${name}.${ext}`];
   }
   return { stems, bytes };
+}
+
+// Are all 4 current stems already on S3? Returns their keys + total bytes, else null. This is the
+// worker-level song-id DEDUP: a duplicate job (the same song enqueued N times) skips Demucs and
+// just re-posts a result reconstructed from the existing stems.
+function existingStems(songId) {
+  const ext = CFG.format === 'flac' ? 'flac' : 'mp3';
+  let out;
+  try { out = aws('s3', 'ls', `s3://${CFG.bucket}/rips/stems/${songId}/`); } catch { return null; }
+  return stemsFromListing(out, songId, ext);
 }
 
 // stems task: separate → upload (or, if already present, reconstruct without re-running Demucs).
@@ -221,6 +240,170 @@ async function processJob(songId, srcKey, tasks, dedup) {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// SPOT INTERRUPTION. The fleet runs on spot instances, so EC2 can reclaim the box under us: it
+// publishes a ~2-minute notice at IMDS /latest/meta-data/spot/instance-action, then kills it.
+// Unwatched, the message this worker is holding stays INVISIBLE for the remainder of its
+// visibility timeout before anyone can retry it — a job stalls for up to 30 minutes AND has
+// already spent one of its 3 deliveries toward the DLQ. Watching costs one curl every 5s and
+// hands the job back in seconds.
+//
+// INERT EVERYWHERE ELSE. An on-demand instance answers 404 forever (the fallback worker runs this
+// same code and never notices), and a laptop has no IMDS at all, so the watch never arms — a local
+// one-shot run neither hangs nor forks curl on a timer.
+const IMDS = 'http://169.254.169.254';
+
+/// Pure: read the IMDS spot/instance-action body. NOT-INTERRUPTED is the hot path — a long-running
+/// worker asks thousands of times per lifetime and gets a 404 every time — so a 404 page, an empty
+/// read, or a token fetch that failed (undefined) all land there, quietly. It must never THROW:
+/// this runs on a timer while an SQS claim is held, and an exception would kill the worker still
+/// holding that claim, which is precisely the stall the watch exists to prevent.
+export function parseSpotInterruption(body) {
+  const none = { interrupted: false, action: null, time: null, atMs: null };
+  if (typeof body !== 'string') return none;
+  const text = body.trim();
+  if (!text || text[0] !== '{') return none;              // 404 HTML page / empty read = healthy
+  let j = null;
+  try { j = JSON.parse(text); } catch { return none; }
+  if (!j || typeof j !== 'object' || typeof j.action !== 'string' || !j.action) return none;
+  const time = typeof j.time === 'string' && j.time ? j.time : null;
+  const ms = time ? Date.parse(time) : NaN;
+  return { interrupted: true, action: j.action, time, atMs: Number.isFinite(ms) ? ms : null };
+}
+
+// IMDSv2 needs a PUT token first (the launch template requires it) — the whoAmI() pattern from
+// timbre-worker.mjs. Bounded hard on every hop: off EC2 the link-local address is a black hole and
+// nothing in --serve may block on it. The token is cached and re-minted well inside its TTL.
+let imdsTok = null;
+let imdsTokAt = 0;
+function imdsToken() {
+  if (imdsTok && Date.now() - imdsTokAt < 240_000) return imdsTok;
+  try {
+    imdsTok = execFileSync('curl', ['-sf', '-X', 'PUT', `${IMDS}/latest/api/token`,
+      '-H', 'X-aws-ec2-metadata-token-ttl-seconds: 300', '--connect-timeout', '1', '--max-time', '2'],
+      { encoding: 'utf8', timeout: 3000 }).trim() || null;
+    imdsTokAt = Date.now();
+  } catch { imdsTok = null; }
+  return imdsTok;
+}
+
+// One reclaim check. `curl -s` (no -f) so a 404 comes back as a BODY the pure parser can judge,
+// rather than as an exception we would have to guess about; a connection failure still throws and
+// reads as healthy.
+function spotCheck() {
+  const tok = imdsToken();
+  if (!tok) return parseSpotInterruption(null);
+  let out;
+  try {
+    out = execFileSync('curl', ['-s', `${IMDS}/latest/meta-data/spot/instance-action`,
+      '-H', `X-aws-ec2-metadata-token: ${tok}`, '--connect-timeout', '1', '--max-time', '2'],
+      { encoding: 'utf8', timeout: 3000 });
+  } catch { return parseSpotInterruption(null); }
+  return parseSpotInterruption(out);
+}
+
+/// Pure: what to do with the in-flight SQS message when EC2 reclaims the box.
+///
+/// THE DELIVERY-ATTEMPT PROBLEM. ChangeMessageVisibility(0) hands the job back instantly, but the
+/// receive it already consumed is gone — SQS exposes no way to decrement ApproximateReceiveCount,
+/// and there is no "return unread" call. With maxReceiveCount=3, a song unlucky enough to be
+/// reclaimed three times would be dead-lettered with nothing whatsoever wrong with it. So the
+/// release RE-SENDS the job as a NEW message — a fresh receive count is the only reset SQS
+/// actually offers — and deletes the old one. Send BEFORE delete at the call site: a failed delete
+/// costs a duplicate (existingStems/existingLyrics dedup it, and folding a duplicate result is
+/// idempotent), while a failed send after a delete would LOSE the job outright.
+///
+/// The hop count rides in the body and is BOUNDED. Re-sending forever would hide a message that
+/// keeps getting released from the DLQ, so past the cap we fall back to visibility-0: the job still
+/// comes back at once, but its receive count resumes climbing and the DLQ stays reachable.
+///
+/// A job whose RESULT was already posted is simply deleted — it is finished, and requeueing it
+/// would buy a pointless duplicate separation.
+export function releasePlan({ body, resultPosted } = {}, { maxRequeues = 3 } = {}) {
+  if (resultPosted) return { action: 'delete', reason: 'result already posted' };
+  let parsed = null;
+  try { parsed = JSON.parse(body); } catch { /* malformed — nothing to re-send */ }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { action: 'release', reason: 'unparseable body' };
+  // A body with no songId would spread into a NEW queue message that poll() just deletes on
+  // receipt — self-cleaning, but there is no sense minting a junk job to find that out.
+  if (!parsed.songId || typeof parsed.songId !== 'string') return { action: 'release', reason: 'no songId to re-send' };
+  const prior = parsed.spotRequeues === undefined ? 0 : Number(parsed.spotRequeues);
+  if (!Number.isFinite(prior) || prior < 0) return { action: 'release', reason: 'unreadable hop counter' };
+  const hops = prior + 1;
+  if (hops > maxRequeues) return { action: 'release', reason: `spot-requeue cap ${maxRequeues}` };
+  return { action: 'requeue', requeues: hops, reason: 'fresh delivery attempts',
+    body: JSON.stringify({ ...parsed, spotRequeues: hops }) };
+}
+
+// The message this worker currently holds. Set SYNCHRONOUSLY the instant SQS hands it over: the
+// watcher fires from a timer, so a claim recorded after an await could be missed by a notice that
+// lands in between, and the whole point is that no claim is ever left holding.
+let inflight = null;
+let spotNotice = null;                       // the reclaim action once EC2 has told us; null = healthy
+
+function releaseInflight() {
+  const m = inflight;
+  if (!m) return 'nothing in flight';
+  inflight = null;
+  const plan = releasePlan(m, { maxRequeues: CFG.spotMaxRequeues });
+  const del = () => aws('sqs', 'delete-message', '--queue-url', CFG.jobsQueue, '--receipt-handle', m.handle);
+  const hand = () => aws('sqs', 'change-message-visibility', '--queue-url', CFG.jobsQueue,
+    '--receipt-handle', m.handle, '--visibility-timeout', '0');
+  try {
+    if (plan.action === 'delete') { del(); return `${m.songId} deleted (${plan.reason})`; }
+    if (plan.action === 'requeue') {
+      aws('sqs', 'send-message', '--queue-url', CFG.jobsQueue, '--message-body', plan.body);   // send FIRST
+      del();                                                                                  // then drop the old one
+      return `${m.songId} requeued with a fresh delivery count (spot hop ${plan.requeues}/${CFG.spotMaxRequeues})`;
+    }
+    hand();
+    return `${m.songId} released via visibility-0 (${plan.reason})`;
+  } catch (e) {
+    // Whatever failed, the job must not sit invisible for the rest of the visibility timeout.
+    // After a successful send this makes the original visible too — a duplicate, which dedup eats.
+    try { hand(); return `${m.songId} released via visibility-0 after ${plan.action} failed: ${e.message}`; }
+    catch (e2) { return `${m.songId} STRANDED (${e2.message}) — redelivers after the ${CFG.visibility}s visibility timeout`; }
+  }
+}
+
+function onSpotTick() {
+  if (spotNotice) return;
+  const n = spotCheck();
+  if (!n.interrupted) return;
+  spotNotice = n.action;
+  if (spotTimer) clearInterval(spotTimer);   // the answer cannot change back; stop asking
+  log(`[spot] EC2 reclaim notice (${n.action}${n.time ? ` at ${n.time}` : ''}) — no new jobs; releasing in-flight work`);
+  const held = !!inflight;
+  log(`[spot] ${releaseInflight()}`);
+  // Two minutes is nowhere near a Demucs run and the box is going away regardless, so when a job
+  // was in flight we exit NOW — the awaited python child can't be unwound, and userdata's
+  // `shutdown -h now` should start while EC2 is still waiting. The child dies with the instance;
+  // its partial output never reached S3, and a partial stem SET can't read as done (stemsFromListing).
+  if (held) { log('[spot] retiring'); process.exit(0); }
+  // Idle: no claim to lose, so let serve() break out through its normal path and report its count.
+}
+
+let spotTimer = null;
+// ARM ON A RETRY, NOT ON ONE SHOT. Arming is a once-per-instance decision made in the first second
+// of boot, and a single IMDS miss there disabled the entire interruption path for the whole life of
+// a real spot worker — logging "not an EC2 instance" on an EC2 instance, which is the shape of bug
+// nobody goes looking for. IMDS does rate-limit (503) and cloud-init can beat the network up, and
+// the token fetch is bounded at `--connect-timeout 1 --max-time 2`, so a miss is entirely possible.
+// Three tries with a second between them cost ~2 s of startup on a laptop (no route: curl fails at
+// once) and buy back the difference between a seconds-long handback and a 1800 s stall.
+async function armSpotWatch() {
+  for (let i = 0; i < CFG.spotArmTries; i += 1) {
+    if (imdsToken()) {
+      spotTimer = setInterval(onSpotTick, CFG.spotPollMs);
+      spotTimer.unref?.();                   // never keeps the process alive on its own
+      log(`[serve] spot-interruption watch armed (every ${CFG.spotPollMs}ms; inert on on-demand)`);
+      return;
+    }
+    if (i + 1 < CFG.spotArmTries) await new Promise((r) => setTimeout(r, 1000));
+  }
+  log(`[serve] no IMDS after ${CFG.spotArmTries} tries — spot watch off (not an EC2 instance?)`);
+}
+
 // Receive ONE job from SQS (visibility timeout = atomic claim), process it, post the result, delete
 // the job. Failures are left un-deleted → redelivered → DLQ after the queue's maxReceiveCount.
 // Set by poll() when the receive or the job itself FAILED (as opposed to the queue simply being
@@ -230,6 +413,7 @@ async function processJob(songId, srcKey, tasks, dedup) {
 let pollFailed = false;
 async function poll() {
   pollFailed = false;
+  if (spotNotice) return [];                 // reclaimed: take nothing new (serve() is on its way out)
   let out;
   try {
     out = aws('sqs', 'receive-message', '--queue-url', CFG.jobsQueue, '--max-number-of-messages', '1',
@@ -245,10 +429,15 @@ async function poll() {
     try { aws('sqs', 'delete-message', '--queue-url', CFG.jobsQueue, '--receipt-handle', msg.ReceiptHandle); } catch { /* ignore */ }
     return [];
   }
+  // Record the claim BEFORE the first await: the spot watcher runs on a timer, and a claim it
+  // cannot see is a claim it cannot hand back. Nothing between here and the delete yields.
+  const claim = { handle: msg.ReceiptHandle, body: msg.Body, songId, resultPosted: false };
+  inflight = claim;
   try {
     const r = await processJob(songId, body.srcKey, tasks, body.dedup);
     execFileSync('aws', ['sqs', 'send-message', '--queue-url', CFG.resultsQueue,
       '--message-body', JSON.stringify(r), '--region', CFG.region], { stdio: 'ignore' });
+    claim.resultPosted = true;         // past this point a reclaim deletes rather than requeues
     aws('sqs', 'delete-message', '--queue-url', CFG.jobsQueue, '--receipt-handle', msg.ReceiptHandle);
     log(`[poll] ${songId} [${tasks.join('+')}] done in ${r.workerSeconds}s`);
     return [r];
@@ -256,6 +445,12 @@ async function poll() {
     log(`[poll] ${songId} FAILED: ${e.message} — leaving for retry/DLQ`);
     pollFailed = true;                 // a FAILURE is not idleness — see serve()
     return [];
+  } finally {
+    // Drop the claim either way. On the failure path that is deliberate: the job failed on its own
+    // merits, so it must keep marching toward the DLQ on its normal receive count — a spot requeue
+    // would reset that and let a poison job cycle forever. RESIDUAL: such a job still waits out the
+    // full visibility timeout before redelivery, exactly as it did before spot.
+    if (inflight === claim) inflight = null;
   }
 }
 
@@ -264,7 +459,22 @@ async function serve() {
   let total = 0;
   let errors = 0;
   log(`[serve] SQS consumer on ${CFG.jobsQueue.split('/').pop()}; idle-exit after ${CFG.idleSeconds}s`);
+  await armSpotWatch();                      // awaited: arming RETRIES, and the loop must not start
+                                             // claiming jobs while the watch is still standing up.
   for (;;) {
+    // YIELD TO THE TIMERS PHASE, once per pass, before anything else. Without this the idle loop
+    // is pure MICROTASKS: poll() returns [] from `if (!msg) return []` without ever awaiting real
+    // I/O, so `await poll()` resolves as a microtask, Node drains the microtask queue forever, and
+    // the event loop never reaches the timers phase — armSpotWatch's setInterval NEVER FIRES on an
+    // idle worker. Measured before this line: 0 IMDS polls in a 20 s idle serve at a 2 s interval,
+    // so `spotNotice` stayed null, the guard below never tripped, and poll() kept CLAIMING NEW JOBS
+    // through the whole ~2-minute reclaim notice — the one thing the notice exists to stop.
+    // A setTimeout (not setImmediate) is deliberate: it is the timers phase itself that must run,
+    // and any interval already due fires in that same pass. Once per ~20 s long poll, so free.
+    await new Promise((r) => setTimeout(r, 0));
+    // The watcher exits the process outright when it releases a job mid-flight; this is the idle
+    // case, where there is nothing to hand back and we can retire through the normal door.
+    if (spotNotice) { log(`[serve] spot ${spotNotice} notice — retiring after ${total} job(s)`); break; }
     let done = [];
     try { done = await poll(); } catch (e) { pollFailed = true; log('[serve] poll error:', e.message); }
     if (done.length) { total += done.length; errors = 0; lastActivity = Date.now(); continue; }
@@ -293,4 +503,9 @@ async function main() {
   console.log(JSON.stringify(await processJob(arg, undefined, ['stems'])));
 }
 
-main().catch((e) => { log('FATAL', e.message); console.log(JSON.stringify({ ok: false, error: e.message })); process.exit(1); });
+// Entrypoint guard: parseSpotInterruption / releasePlan / stemsFromListing are imported by tests,
+// and an unguarded main() would run the CLI — and exit(2) on the missing arg — the moment a test
+// imported this file, taking the runner with it. Same guard, same reason, as stem-autoscaler.mjs.
+if (process.argv[1] && /stem-worker\.mjs$/.test(process.argv[1])) {
+  main().catch((e) => { log('FATAL', e.message); console.log(JSON.stringify({ ok: false, error: e.message })); process.exit(1); });
+}
