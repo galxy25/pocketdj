@@ -192,6 +192,65 @@ final class RecFeedbackTests: XCTestCase {
     }
 
     // ========================================================================
+    // MARK: - An accept removes too, but it never expires
+    // ========================================================================
+
+    /// The 👍 twin of `activeTombstones` — but with no seven-day parole. A reject's cooldown gives
+    /// a mis-tap time to walk itself back before the row disappears for good; an accept has no
+    /// equivalent upside, so once given it stays off THIS list indefinitely.
+    func testAcceptedInScopeNeverExpires() {
+        let s = makeStore()
+        s.record(songId: "a", scope: crateA, verdict: .accepted, surface: .tile, at: 0)
+
+        XCTAssertNotNil(s.acceptedInScope(crateA)["a"])
+        // Contrast `testTheTombstoneExpiresButTheVerdictAndTheUndoDoNot`: a reject's sink lapses
+        // after seven days. An accept's removal has no clock to check against at all.
+        XCTAssertNotNil(s.acceptedInScope(crateA)["a"], "still present a year on — no expiry check exists")
+    }
+
+    /// An accept in one list must not remove the song's OFFER in another — the same scoping rule
+    /// a reject follows.
+    func testAnAcceptInOneListDoesNotRemoveItFromAnother() {
+        let s = makeStore()
+        s.record(songId: "a", scope: crateA, verdict: .accepted, surface: .tile, at: 0)
+
+        XCTAssertNotNil(s.acceptedInScope(crateA)["a"])
+        XCTAssertNil(s.acceptedInScope(crateB)["a"], "another crate's offer is untouched")
+        XCTAssertNil(s.acceptedInScope(zone)["a"], "nor In Da Zone")
+    }
+
+    /// The undo: tapping the lit thumbs-up again clears the accept the same way it clears a
+    /// reject, and the song is offered in this scope again immediately.
+    func testUndoingAnAcceptPutsTheSongBackInThisScope() {
+        let s = makeStore()
+        XCTAssertEqual(s.toggle(songId: "a", to: .accepted, scope: crateA, surface: .tile, at: 1),
+                       .accepted)
+        XCTAssertNotNil(s.acceptedInScope(crateA)["a"])
+
+        XCTAssertNil(s.toggle(songId: "a", to: .accepted, scope: crateA, surface: .tile, at: 2),
+                     "the second tap is the undo")
+        XCTAssertNil(s.acceptedInScope(crateA)["a"], "…and the song is offered here again")
+    }
+
+    /// `zoneFeedback` folds an accept into the SAME `suppressed` set a reject tombstone uses, so
+    /// the engine drops it from the very next refresh's candidate pool — the mechanism that
+    /// actually frees a slot for a new suggestion, as opposed to the render-time filter alone
+    /// (which would just hide the same song again every time it got ranked back in).
+    func testZoneFeedbackFoldsAnAcceptIntoSuppressed() {
+        let s = makeStore()
+        s.record(songId: "a", scope: crateA, verdict: .accepted, surface: .tile, at: 0)
+        s.record(songId: "b", scope: crateA, verdict: .rejected, surface: .tile, at: 0)
+
+        let fb = s.zoneFeedback(scope: crateA, nowMs: 0)
+        XCTAssertTrue(fb.suppressed.contains("a"), "the accept is suppressed from re-ranking here")
+        XCTAssertTrue(fb.suppressed.contains("b"), "…same as the reject tombstone")
+        XCTAssertNotNil(fb.accepted["a"], "and it still feeds the positive taste profile")
+
+        // Scoped exactly like a reject: a DIFFERENT list's feedback must not inherit it.
+        XCTAssertFalse(s.zoneFeedback(scope: crateB, nowMs: 0).suppressed.contains("a"))
+    }
+
+    // ========================================================================
     // MARK: - One decision model behind every entry point
     // ========================================================================
 
@@ -550,6 +609,7 @@ final class RecFeedbackTests: XCTestCase {
         assertRedraws("verdict") { _ = $0.verdict(songId: "s1", scope: self.crateA) }
         assertRedraws("anyVerdict") { _ = $0.anyVerdict(songId: "s1") }
         assertRedraws("activeTombstones") { _ = $0.activeTombstones(scope: self.crateA) }
+        assertRedraws("acceptedInScope") { _ = $0.acceptedInScope(self.crateA) }
         assertRedraws("isSuppressed") { _ = $0.isSuppressed(songId: "s1", scope: self.crateA) }
         assertRedraws("partition") { _ = $0.partition(["s1", "s2"], scope: self.crateA) }
         assertRedraws("visibleCount") { _ = $0.visibleCount(["s1", "s2"], scope: self.crateA) }

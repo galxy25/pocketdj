@@ -36,6 +36,17 @@ import os
 /// what makes a mis-tap recoverable indefinitely instead of only while it is still doing damage:
 /// tap the lit thumb and the row is neutral again (a `cleared` row, not a deletion — see `toggle`).
 ///
+/// ── AN ACCEPT REMOVES TOO, AND ON A DIFFERENT CLOCK ──────────────────────────────────────────
+/// A 👍 that lands in a collection removes itself the ordinary way — it just added the song, so
+/// `suggestionsExcludingMembers` drops it as a member on the next read. But In Da Zone and New
+/// have no collection to land in, and a 👍 there would otherwise sit on screen forever wearing a
+/// filled-in thumb. So an accept with nothing to join is ALSO a removal (`acceptedInScope`) — but
+/// never a tombstone: there is no seven-day point at which re-offering the identical song the
+/// listener already endorsed becomes useful again, so it stays off that one list for good. It
+/// feeds the SAME engine-side exclusion a reject's tombstone does (see `zoneFeedback`), so the
+/// next refresh actually fills the freed slot rather than ranking the same song straight back
+/// into it.
+///
 /// ── WHY EXPIRY IS EVALUATED AT READ TIME ─────────────────────────────────────────────────────
 /// Never by a scheduled sweep. This app can go weeks between launches, and a sweep that never
 /// fires leaves every rejected item buried forever — a silent, permanent exclusion, which is
@@ -294,6 +305,11 @@ final class RecFeedbackStore {
         var acceptedAt: [String: Double] = [:]
         /// scope → the songs tombstoned in it, with the stamp (expiry applied at read time).
         var rejectedByScope: [String: [String: Double]] = [:]
+        /// scope → the songs ACCEPTED in it, with the stamp. Unlike `rejectedByScope`, never
+        /// expiry-gated at read time: a 👍 with no collection to land in (In Da Zone, New) has
+        /// nothing else to make the suggestion disappear, so the removal is permanent rather than
+        /// a seven-day cooldown. See `acceptedInScope`.
+        var acceptedByScope: [String: [String: Double]] = [:]
     }
 
     /// OBSERVED, deliberately — and it is the *whole* reason a 👎 redraws.
@@ -343,6 +359,7 @@ final class RecFeedbackStore {
             s.byScope[k] = v
             s.atByScope[k] = d.at
             if v == .rejected { s.rejectedByScope[d.scope, default: [:]][d.songId] = d.at }
+            if v == .accepted { s.acceptedByScope[d.scope, default: [:]][d.songId] = d.at }
         }
         // The GLOBAL taste opinion is the latest verdict for the song in ANY scope. Rejecting a
         // song in one crate and accepting it in another is a real thing a listener can do; the
@@ -383,6 +400,16 @@ final class RecFeedbackStore {
         // A FUTURE stamp (clock skew, a peer a few hours ahead) is kept rather than dropped: the
         // listener really did reject it, and the window simply reads as full length.
         return rows.filter { nowMs - $0.value < Self.tombstoneMs }
+    }
+
+    /// songId → accept stamp, for songs ALREADY ACCEPTED in `scope`. The 👍 twin of
+    /// `activeTombstones`, and deliberately not gated by `nowMs`: a reject's seven days give a
+    /// mis-tap time to cool off before the song is offered again, but an accept has no equivalent
+    /// upside — re-offering a song the listener already said "more like this" to is not a nudge,
+    /// it is noise. So once accepted here it stays off THIS list until the listener says
+    /// otherwise (rejecting it, which is a different opinion, never a clock running out).
+    func acceptedInScope(_ scope: String) -> [String: Double] {
+        derived.acceptedByScope[scope] ?? [:]
     }
 
     func isSuppressed(songId: String, scope: String,
@@ -449,11 +476,21 @@ final class RecFeedbackStore {
 
     /// The `ZoneEngine` projection for one list. Built HERE so every caller gets the same three
     /// maps and nobody re-derives "what does a reject mean" in a view.
+    ///
+    /// `suppressed` carries TWO different reasons a song must not rank here, folded into one set
+    /// because the engine only ever needs the answer "is this id still in play", never why: the
+    /// still-cooling-down 7-day reject tombstone (`activeTombstones`), and every song already
+    /// ACCEPTED in this exact scope (`acceptedInScope`), which never expires. Without the second
+    /// half a scheduled refresh could rank a 👍'd song straight back into the top of its own list
+    /// — the render-time filter (`ForYouGrid.excludingAccepted`) would hide it again immediately,
+    /// but the slot it should have freed for something new would never actually open up.
     func zoneFeedback(scope: String,
                       nowMs: Double = Date().timeIntervalSince1970 * 1000) -> ZoneEngine.Feedback {
-        ZoneEngine.Feedback(accepted: weights(.accepted, nowMs: nowMs),
-                            rejected: weights(.rejected, nowMs: nowMs),
-                            suppressed: Set(activeTombstones(scope: scope, nowMs: nowMs).keys))
+        var suppressed = Set(activeTombstones(scope: scope, nowMs: nowMs).keys)
+        if let accepted = derived.acceptedByScope[scope] { suppressed.formUnion(accepted.keys) }
+        return ZoneEngine.Feedback(accepted: weights(.accepted, nowMs: nowMs),
+                                   rejected: weights(.rejected, nowMs: nowMs),
+                                   suppressed: suppressed)
     }
 
     // ========================================================================

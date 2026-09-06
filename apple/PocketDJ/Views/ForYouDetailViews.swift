@@ -38,8 +38,8 @@ struct NewReleasesView: View {
     var body: some View {
         // OUT NOW first: it is the part he can act on. COMING SOON is real news but nothing can
         // be played from it, so it sits underneath rather than at the top.
-        let outNow = sunkLast(releaseFeed?.outNow() ?? [])
-        let soon = sunkLast(releaseFeed?.comingSoon() ?? [])
+        let outNow = sunkLast(offered(releaseFeed?.outNow() ?? []))
+        let soon = sunkLast(offered(releaseFeed?.comingSoon() ?? []))
         // The LIVE half, computed ONCE and used by both the rows and the transport's enabled state
         // — deriving it twice is how ▶ ended up lit over a queue ▶ itself would refuse to start.
         let liveOutNow = live(outNow)
@@ -156,6 +156,17 @@ struct NewReleasesView: View {
             // `deviceQueueUnplayable` banner has a screen to land on. See `ReleaseStreaming.runTag`.
             sequencer.play(queue, sourceSetlistId: ReleaseStreaming.runTag)
         }
+    }
+
+    /// Releases already thumbed up, taken off entirely. There is no add here for a 👍 to hide
+    /// behind (see the comment on the row's `RecFeedbackButtons` below) — a New release needs its
+    /// own permanent removal the same way Zone does (`RecFeedbackStore.acceptedInScope`). Applied
+    /// BEFORE `sunkLast`, so an accepted release never even reaches the sunk tail.
+    private func offered(_ items: [ReleaseFeedItem]) -> [ReleaseFeedItem] {
+        guard let feedback else { return items }
+        let accepted = feedback.acceptedInScope(scope)
+        guard !accepted.isEmpty else { return items }
+        return items.filter { accepted[$0.feedbackId] == nil }
     }
 
     /// A rejected release SINKS to the bottom of its section — the same rule every other
@@ -566,7 +577,11 @@ struct ForYouSongListView: View {
             if route.kind == .collection, let cid = route.collectionId {
                 songIds = collections.suggestionsExcludingMembers(frozen, ofCollection: cid)
             } else {
-                songIds = frozen
+                // Zone has no collection to hide an accept behind — the same permanent filter the
+                // tile card counts by (`ForYouGrid.excludingAccepted`), so the screen that opens
+                // cannot show a row the card has already stopped counting.
+                songIds = ForYouGrid.excludingAccepted(frozen, scope: route.feedbackContext,
+                                                       feedback: feedback)
             }
             if route.kind == .zone {
                 let buried = Set(feed?.snapshot.zoneBuriedIds ?? [])

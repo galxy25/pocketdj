@@ -133,15 +133,17 @@ extension CarPlayModel {
                            collections: services.collections, feedback: feedback, nowMs: nowMs)
     }
 
-    /// The New tile's rows: out now, still being offered (the thumbed-down tail removed), newest
-    /// first. A pre-order is deliberately absent — there is no audio behind it, and a row that
-    /// cannot play has no business on a car screen.
+    /// The New tile's rows: out now, still being offered (the thumbed-down tail and anything
+    /// already thumbed up removed), newest first. A pre-order is deliberately absent — there is no
+    /// audio behind it, and a row that cannot play has no business on a car screen.
     private func newReleaseItems(nowMs: Double) -> [ReleaseFeedItem] {
         let items = services.releaseFeed?.outNow(nowMs: nowMs) ?? []
         guard let feedback else { return items }
-        let sunk = feedback.activeTombstones(scope: ForYouTileRoute.Kind.new.rawValue, nowMs: nowMs)
-        guard !sunk.isEmpty else { return items }
-        return items.filter { sunk[$0.feedbackId] == nil }
+        let scope = ForYouTileRoute.Kind.new.rawValue
+        let sunk = feedback.activeTombstones(scope: scope, nowMs: nowMs)
+        let accepted = feedback.acceptedInScope(scope)
+        guard !sunk.isEmpty || !accepted.isEmpty else { return items }
+        return items.filter { sunk[$0.feedbackId] == nil && accepted[$0.feedbackId] == nil }
     }
 
     // ========================================================================
