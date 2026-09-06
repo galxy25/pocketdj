@@ -16,11 +16,14 @@ import Foundation
 /// a catalog sweep. The RANKING still happens only in `ForYouFeedStore.refresh`.
 ///
 /// ── WHAT IS "LIVE" AND WHY IT IS APPLIED HERE RATHER THAN FROZEN IN ──────────────────────────
-/// Three filters sit between the frozen ranking and the card, and every one of them is the OWNER
+/// Four filters sit between the frozen ranking and the card, and every one of them is the OWNER
 /// ACTING, not the engine changing its mind — so they are evaluated at read and never baked in:
 ///  · a 👎 sinks a row (`RecFeedbackStore.partition`), and its undo must take effect at once;
 ///  · an ADD removes a suggestion from its crate (`suggestionsExcludingMembers`) — including the
 ///    add a 👍 just made from this very tile;
+///  · a 👍 with nowhere to add to (Zone, New) removes itself the same way, permanently
+///    (`RecFeedbackStore.acceptedInScope`) — an accept there has no collection membership to hide
+///    behind, so it needs its own filter to disappear at all;
 ///  · a collection switched off, or deleted, must lose its tile on the next frame rather than at
 ///    the next refresh.
 @MainActor
@@ -99,11 +102,25 @@ enum ForYouGrid {
         }
     }
 
-    /// The thumbed-down tail taken off. `nil` feedback ⇒ nothing is suppressed, which is the honest
-    /// answer for a host that has no verdict log.
+    /// Ids in `ids` already ACCEPTED in `scope`, taken off — permanently, no tombstone clock. A
+    /// collection tile never needs this (an accept there is also an add, so
+    /// `suggestionsExcludingMembers` below already drops it); Zone and New have no collection to
+    /// land in, so this is the only thing that makes their 👍 rows disappear. Exposed rather than
+    /// `private` so `ForYouSongListView` reads the frozen crate through the SAME rule instead of
+    /// growing a second copy of "what does an accept remove" — see the type doc.
+    static func excludingAccepted(_ ids: [String], scope: String,
+                                  feedback: RecFeedbackStore?) -> [String] {
+        guard let feedback else { return ids }
+        let accepted = feedback.acceptedInScope(scope)
+        return accepted.isEmpty ? ids : ids.filter { accepted[$0] == nil }
+    }
+
+    /// The thumbed-down tail taken off, AND anything already thumbed up. `nil` feedback ⇒ nothing
+    /// is suppressed, which is the honest answer for a host that has no verdict log.
     private static func live(_ ids: [String], scope: String,
                              feedback: RecFeedbackStore?, nowMs: Double) -> [String] {
-        feedback?.partition(ids, scope: scope, nowMs: nowMs).live ?? ids
+        let offered = excludingAccepted(ids, scope: scope, feedback: feedback)
+        return feedback?.partition(offered, scope: scope, nowMs: nowMs).live ?? offered
     }
 
     /// One crate's offer: sunk rows off, then anything already IN the collection off. The second

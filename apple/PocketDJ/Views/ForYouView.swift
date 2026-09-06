@@ -405,7 +405,8 @@ struct ForYouTilesView: View {
             let releases = releaseFeed?.outNow() ?? []
             let scope = ForYouTileRoute.Kind.new.rawValue
             let sunk = feedback?.activeTombstones(scope: scope) ?? [:]
-            let live = releases.filter { sunk[$0.feedbackId] == nil }
+            let accepted = feedback?.acceptedInScope(scope) ?? [:]
+            let live = releases.filter { sunk[$0.feedbackId] == nil && accepted[$0.feedbackId] == nil }
             Button { startReleases(live, shuffle: false) } label: {
                 Label("Play", systemImage: "play.fill")
             }
@@ -417,15 +418,16 @@ struct ForYouTilesView: View {
             .disabled(live.isEmpty || startingReleases)
             .accessibilityIdentifier("foryou-tile-\(tile.id)-shuffle")
         } else {
-            let ids = playableIds(for: tile.route)
+            let scope = tile.route.feedbackContext
+            let ids = ForYouGrid.excludingAccepted(playableIds(for: tile.route), scope: scope,
+                                                    feedback: feedback)
             // The LIVE half only. The sunk tail still renders on the tile's own screen, where its
             // lit 👎 can be undone — it is a record of a verdict, never a queue.
-            let live = feedback?.partition(ids, scope: tile.route.feedbackContext).live ?? ids
+            let live = feedback?.partition(ids, scope: scope).live ?? ids
             CollectionPlayMenuItems(title: tile.title, songIds: live,
                                     idPrefix: "foryou-tile-\(tile.id)",
                                     onStarted: { queue in
-                                        feedback?.beginPlayback(scope: tile.route.feedbackContext,
-                                                                songIds: queue)
+                                        feedback?.beginPlayback(scope: scope, songIds: queue)
                                     })
             if let collectionId = tile.route.collectionId {
                 Divider()

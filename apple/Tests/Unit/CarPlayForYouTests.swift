@@ -169,6 +169,41 @@ final class CarPlayForYouTests: XCTestCase {
                        "the row and the number move together — a card cannot promise 3 and open on 2")
     }
 
+    /// A 👍 with no collection to land in (In Da Zone) removes the row and the count together too
+    /// — the twin of `testThumbsDownRemovesTheRowAndTheCountTogether` — but UNLIKE a reject it
+    /// never comes back: there is no seven-day parole for an accept.
+    func testThumbsUpInZoneRemovesTheRowAndNeverComesBack() async {
+        let rig = await makeRig()
+        seedFeed(rig, zone: ["sng_1", "sng_2", "sng_3"])
+        XCTAssertEqual(rig.model.forYouRows(tileId: "zone").count, 3)
+
+        rig.feedback.record(songId: "sng_2", scope: "zone", verdict: .accepted, surface: .carPlay)
+
+        XCTAssertEqual(rig.model.forYouRows(tileId: "zone").map(\.id), ["sng_1", "sng_3"])
+        XCTAssertEqual(rig.model.forYouTiles()[1].subtitle?.hasPrefix("2 songs · "), true,
+                       "the row and the number move together, same as a reject")
+
+        // A reject's tombstone would let this row back after 7 days; an accept never does.
+        let farFuture = 400 * 86_400_000.0
+        XCTAssertEqual(rig.model.forYouRows(tileId: "zone", nowMs: farFuture).map(\.id),
+                       ["sng_1", "sng_3"], "an accept has no tombstone clock to expire")
+    }
+
+    /// New has no collection either, so its 👍 needs the same permanent removal — the row the
+    /// owner already endorsed disappears from the car's list and its count, same as Zone's.
+    func testThumbsUpOnANewReleaseRemovesItFromTheCarAndItsCount() async {
+        let rig = await makeRig()
+        let now = 1_000_000_000_000.0
+        rig.releases.seedForTesting(ReleaseFeedService.uiFixtureEntries(nowMs: now))  // 2 out now + 1 pre-order
+        XCTAssertEqual(rig.model.forYouRows(tileId: "new", nowMs: now).count, 2)
+
+        rig.feedback.record(songId: "rel:9000000001", scope: "new", verdict: .accepted, surface: .carPlay)
+
+        let rows = rig.model.forYouRows(tileId: "new", nowMs: now)
+        XCTAssertEqual(rows.map(\.id), ["rel:9000000002"],
+                       "the accepted release is gone, the other out-now release is unaffected")
+    }
+
     /// A collection tile offers only what is NOT already in the collection. Adding a suggestion —
     /// which is exactly what a 👍 does — must take it off the car's list on the next read, without
     /// waiting for the next refresh.
