@@ -422,11 +422,17 @@ final class IntentServices {
     /// when the running queue did not come from one, or when the current track is not one of that
     /// list's rows. Every SYNC surface hides its controls on nil rather than guessing at a scope,
     /// which is the honest answer: there is no tile to sink it in.
+    ///
+    /// `isNowPlayingOwner` is checked alongside `isRunning` because Mix plays through its own
+    /// engine and never touches this player when a deck starts — without it, switching to a Mix
+    /// session playing a plain collection would keep showing 👍/👎 (and let a verdict be filed)
+    /// for whatever recommendation was running before, since nothing here would know the audible
+    /// owner had changed.
     @MainActor
     func currentRecTarget() -> (songId: String, scope: String)? {
         guard let recFeedback else { return nil }
         let p = setlistPlayer
-        guard p.isRunning, p.index < p.queue.count else { return nil }
+        guard p.isRunning, p.isNowPlayingOwner, p.index < p.queue.count else { return nil }
         let songId = p.queue[p.index].id
         guard let scope = recFeedback.scope(forPlaying: songId) else { return nil }
         return (songId, scope)

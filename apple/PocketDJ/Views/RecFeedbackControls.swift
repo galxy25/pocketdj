@@ -111,7 +111,12 @@ struct NowPlayingFeedbackButtons: View {
     init(font: Font = .subheadline) { self.font = font }
 
     private var target: (songId: String, scope: String)? {
-        guard sequencer.isRunning, sequencer.index < sequencer.queue.count else { return nil }
+        // `isNowPlayingOwner`, not just `isRunning`: Mix plays through its own engine and never
+        // touches this player when a deck starts, so after switching to a Mix session this
+        // queue/index would otherwise still read as the last recommendation that was running —
+        // showing 👍/👎 for a song that stopped sounding the moment Mix took over.
+        guard sequencer.isRunning, sequencer.isNowPlayingOwner,
+              sequencer.index < sequencer.queue.count else { return nil }
         let id = sequencer.queue[sequencer.index].id
         guard let scope = feedback?.scope(forPlaying: id) else { return nil }
         return (id, scope)

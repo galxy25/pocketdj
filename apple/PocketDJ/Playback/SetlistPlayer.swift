@@ -107,6 +107,18 @@ final class SetlistPlayer {
     /// Index into `queue` (NOT track.id — a song can repeat in a setlist).
     private(set) var index = 0
     private(set) var isRunning = false
+    /// True while THIS player's engine actually owns the system Now Playing card
+    /// (`NowPlayingArbiter`) — the "is `queue`/`index` really what's audible" check.
+    ///
+    /// `isRunning` alone is not proof of that: Mix plays through its own engine entirely, and
+    /// never touches this player's `isRunning`/`queue`/`index` when a deck starts — the two
+    /// engines are that separate. So after switching to a Mix session, `isRunning` and the old
+    /// recommendation `queue` can sit stale for as long as the app stays open, and every SYNC
+    /// surface reading them directly (the deck, the mini bar, CarPlay's Now Playing card, the
+    /// widgets) would keep showing 👍/👎 — and filing a verdict — against a song that stopped
+    /// sounding the moment Mix took over. Gate on this alongside `isRunning` wherever "what's
+    /// playing right now" has to mean audibly, not just "this queue hasn't been torn down yet".
+    var isNowPlayingOwner: Bool { NowPlayingArbiter.shared.isActive(player) }
     /// The id of the COLLECTION currently playing (a setlist id) — so a detail screen knows
     /// whether IT is the one playing (vs. another set playing in the background after the user
     /// navigated away). nil when idle. This is what makes playback survive navigation: the
