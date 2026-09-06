@@ -238,7 +238,11 @@ final class WidgetSync {
     }
 
     private func currentBase() -> Base {
-        if setlist.isRunning, setlist.index < setlist.queue.count {
+        // `isNowPlayingOwner`, not just `isRunning`: Mix plays through its own engine and never
+        // touches this player when a deck starts, so without this check the widget would keep
+        // showing (and offering 👍/👎 on) whatever recommendation was running before a Mix
+        // session took over — a song that stopped sounding the moment it did.
+        if setlist.isRunning, setlist.isNowPlayingOwner, setlist.index < setlist.queue.count {
             let it = setlist.queue[setlist.index]
             let up = setlist.upcoming.prefix(6).map {
                 NowPlayingSnapshot.Track(id: $0.uid.uuidString, songId: $0.id, title: $0.title, artist: $0.artist)

@@ -265,6 +265,83 @@ final class IntentServicesTests: XCTestCase {
         XCTAssertEqual(collections.songIds(forPocket: pocket.id), ["sng_1", "sng_3"])
     }
 
+    /// Mix plays through its own engine and never touches the SetlistPlayer when a deck starts —
+    /// so `isRunning` alone is not proof this queue is what's audible. Once Mix claims the system
+    /// Now Playing card (`NowPlayingArbiter`), the thumbs must hide and a tap must not file a
+    /// verdict against a song that stopped sounding the moment Mix took over. Regression for the
+    /// bug where switching to a Mix session playing a plain collection left CarPlay's Now Playing
+    /// card (and the deck/mini-bar/widget surfaces, which read the same state) still showing
+    /// 👍/👎 for whatever recommendation was running before.
+    ///
+    /// Built on a DEDICATED rig, not `makeServices()`: this test needs the raw `PlayerEngine` so
+    /// it can assert a genuine "this player owns the card" baseline directly. `makeServices()`'s
+    /// bare fixture has no resolvable audio (no burns, and `rips.test`/MusicKit both fail to
+    /// resolve in a test process) — real playback never actually claims the arbiter there, which
+    /// is a PRE-EXISTING fixture gap (unrelated to this fix) that `isRunning`-only checks never
+    /// surfaced. Claiming directly sidesteps it and tests exactly the property this fix adds.
+    func testCurrentRecTargetHidesOnceMixClaimsTheCard() async throws {
+        let app = AppModel(loader: TestData.StubLoader())
+        await app.loadIfNeeded()
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-intents-mixfix-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let collections = CollectionsStore(fileURL: url)
+        collections.app = app
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: "test.\(UUID())")!)
+        let rips = RipsStore(ripsBase: URL(string: "https://rips.test")!,
+                             session: URLSession(configuration: .ephemeral))
+        let player = PlayerEngine()
+        let burnsURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-intents-mixfix-burns-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: burnsURL) }
+        let burns = BurnStore(rips: rips, fileURL: burnsURL)
+        let coordinator = PlaybackCoordinator(
+            ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
+            appleMusic: AppleMusicPlaybackProvider(provider: AppleMusicProvider()))
+        let sequencer = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coordinator)
+        let mix = MixEngine(burns: burns)
+        let studioURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-intents-mixfix-studio-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: studioURL) }
+        let studio = StudioStore(fileURL: studioURL)
+        let favURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-intents-mixfix-fav-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: favURL) }
+        let favorites = FavoritesStore(fileURL: favURL)
+        let services = IntentServices(app: app, settings: settings, collections: collections,
+                                      setlistPlayer: sequencer, mix: mix, burns: burns,
+                                      studio: studio, rips: rips, favorites: favorites)
+        let fbURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-intents-fb-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: fbURL) }
+        let store = RecFeedbackStore(fileURL: fbURL)
+        services.recFeedback = store
+
+        _ = try await services.playSong(id: "sng_3")
+        store.beginPlayback(scope: "zone", songIds: ["sng_3"])
+        // GIVEN this player genuinely owns the card (what a real successful play does; that
+        // claim is `EngineTests`' job to verify, not this one's) —
+        NowPlayingArbiter.shared.claim(player)
+        XCTAssertNotNil(services.currentRecTarget(), "a running recommendation queue has a target")
+
+        // Mix claims the card (mirrors a deck starting) — held strongly, the arbiter's own ref
+        // is weak, so an unretained token would vanish and silently hand ownership back.
+        let mixLike: AnyObject = NSObject()
+        NowPlayingArbiter.shared.claim(mixLike)
+
+        XCTAssertNil(services.currentRecTarget(),
+                     "the SetlistPlayer's queue is stale the moment Mix owns the card")
+        XCTAssertNil(services.recordNowPlayingFeedback(.accepted, surface: .nowPlaying),
+                     "a verdict cannot be filed against a queue that is not audible")
+
+        // Mix relinquishes the card (mirrors ending its session) — ownership reverts to
+        // unowned, and the arbiter's own contract ("no one owns it yet" ⇒ anyone may write)
+        // means the target is back without needing another play() call to force a reclaim.
+        NowPlayingArbiter.shared.resign(mixLike)
+        XCTAssertNotNil(services.currentRecTarget(), "relinquishing the card restores the target")
+        withExtendedLifetime(mixLike) {}
+    }
+
     /// Reserved scopes (In Da Zone / New) have no implicit collection — a 👍 there stays pure
     /// feedback — and playlists (whose single-song `addSong` is deliberately the duplication
     /// path) dedup through the same helper.
