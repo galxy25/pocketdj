@@ -207,11 +207,18 @@ const CFG = {
   // The on-demand default stays at the repo's long-standing 56 rather than the raw L-1216C47A 64:
   // that 8 vCPU of headroom is one c7g.2xlarge of room for an unrelated launch, and a quota refusal
   // is all-or-nothing, so trading a little throughput for never tripping it is the right side to err
-  // on. Re-read both after any quota increase — a stale POCKETDJ_SPOT_VCPU_CAP shows up as
-  // MaxSpotInstanceCountExceeded on every tick, not as a silent slowdown:
+  // on. The spot ceiling is DISCOVERED at run time (see spotQuotaCap) rather than trusted from this
+  // default, because the failure it prevents is silent in the expensive direction: a quota raised to
+  // 64 that nobody mirrored here caps the lane at 16 forever and quietly tops the rest up on-demand,
+  // which reads as "spot is capacity-starved" rather than as a stale constant. This value is the
+  // floor used before the first successful lookup and whenever the lookup fails.
   //   aws service-quotas get-service-quota --service-code ec2 --quota-code L-34B43A08   (spot)
   //   aws service-quotas get-service-quota --service-code ec2 --quota-code L-1216C47A   (on-demand)
   spotVcpuCap: Number(process.env.POCKETDJ_SPOT_VCPU_CAP || 32),
+  // An EXPLICIT cap is an operator pinning the value (reproducing a capacity report, throttling a
+  // lane by hand); discovery must not argue with it. Unset means "go and look".
+  spotVcpuCapPinned: process.env.POCKETDJ_SPOT_VCPU_CAP !== undefined
+    && process.env.POCKETDJ_SPOT_VCPU_CAP !== '',
   onDemandVcpuCap: Number(process.env.POCKETDJ_ONDEMAND_VCPU_CAP || process.env.POCKETDJ_TOTAL_VCPU_CAP || 56),
   // DEFAULT ON. `bool()` alone would read "unset" as false and silently cap every spot lane at the
   // spot ceiling — the opposite of the tested behaviour, and a throughput cut nobody asked for. Only
@@ -505,6 +512,51 @@ export function runInstancesArgs({ template, count, market, subnetId, netMode })
 // handler and the deploy script quietly refuses forever, which is the safe direction.
 const SPOT_AWARE_MARKER = 'spot/instance-action';
 const WORKER_CHECK_TTL_MS = laneNum('PREFLIGHT_TTL_S', 600) * 1000;
+
+/// The Service Quotas code for the spot vCPU bucket this lane's instance families spend.
+const SPOT_QUOTA_CODE = 'L-34B43A08';
+const SPOT_QUOTA_TTL_MS = laneNum('SPOT_QUOTA_TTL_S', 21600) * 1000;
+
+/// Pure: the spot ceiling to plan against, given a cached lookup and the configured floor.
+///
+/// Discovery may only RAISE the floor, never lower it. A lookup that comes back smaller than the
+/// configured value is far more likely to be a wrong answer (a throttled call parsed as a number, a
+/// quota renamed under us) than a genuine reduction — and believing it would cap the fleet on bad
+/// data. Believing a larger value costs at worst one MaxSpotInstanceCountExceeded, which the
+/// capacity fallback already handles.
+export function spotCapFrom(cached, floor) {
+  const v = Number(cached);
+  return Number.isFinite(v) && v > floor ? v : floor;
+}
+
+/// The live spot vCPU quota, cached on disk.
+///
+/// This exists because the alternative is a constant that has to be hand-edited the day a quota
+/// request is approved, and the symptom of forgetting is not an error — it is the lane silently
+/// capping at the old ceiling and topping the difference up on-demand at 2.7x, which looks exactly
+/// like spot capacity being tight. A quota changes a few times a year, so the TTL is hours, not
+/// minutes: four calls a day to never be wrong about the number that decides how much of the fleet
+/// is cheap.
+///
+/// Never throws and never blocks a launch: any failure keeps the last known value, and failing that
+/// the configured floor. A reconcile that cannot reach Service Quotas still scales the fleet.
+function spotQuotaCap(state, now) {
+  const floor = CFG.spotVcpuCap;
+  if (CFG.spotVcpuCapPinned) return floor;
+  const c = slot(state, 'spotQuota');
+  if (c.checkedAtMs && now - c.checkedAtMs < SPOT_QUOTA_TTL_MS) return spotCapFrom(c.vcpu, floor);
+  try {
+    const q = parseJson(aws('service-quotas', 'get-service-quota', '--service-code', 'ec2',
+      '--quota-code', SPOT_QUOTA_CODE, '--output', 'json'), null);
+    const v = Number(q?.Quota?.Value);
+    if (Number.isFinite(v) && v > 0) { c.vcpu = v; c.checkedAtMs = now; }
+  } catch {
+    // Throttling, no network, a principal without servicequotas:GetServiceQuota. Stamp the attempt
+    // so a hard-down endpoint is retried on the TTL rather than on every 60s tick.
+    c.checkedAtMs = now;
+  }
+  return spotCapFrom(c.vcpu, floor);
+}
 
 /// Pure: is the worker code a booting instance will actually run spot-aware?
 ///
@@ -839,9 +891,13 @@ function reconcile({ dryRun }) {
           : `!! [${CFG.lane}] SPOT HELD, launching on-demand at ~2.7×: ${gate.reason}`, !gate.ok);
     }
 
+    // Resolved ONCE and threaded through both the plan and every line that reports it. Reading the
+    // configured floor in the log while the plan used the discovered ceiling is how an operator ends
+    // up debugging a fleet size the logs say is impossible.
+    const spotCap = spotQuotaCap(state, now);
     const plan = launchPlan({
       visible, fleetSize: own.length, maxWorkers: CFG.maxWorkers, jobsPerWorker: CFG.jobsPerWorker,
-      vcpu: CFG.vcpu, market, spotVcpuCap: CFG.spotVcpuCap, usedSpotVcpu,
+      vcpu: CFG.vcpu, market, spotVcpuCap: spotCap, usedSpotVcpu,
       onDemandVcpuCap: CFG.onDemandVcpuCap, usedOnDemandVcpu, onDemandTopup: CFG.onDemandTopup,
     });
 
@@ -849,11 +905,11 @@ function reconcile({ dryRun }) {
     // Log shape preserved for the operators (and greps) that read it; the bucket breakdown is
     // appended, never spliced in. `vcpu=` reports the bucket this lane is spending.
     const used = market === 'spot' ? usedSpotVcpu : usedOnDemandVcpu;
-    const cap = market === 'spot' ? CFG.spotVcpuCap : CFG.onDemandVcpuCap;
+    const cap = market === 'spot' ? spotCap : CFG.onDemandVcpuCap;
     const byQuota = market === 'spot' ? plan.bySpotQuota : plan.byOnDemandQuota;
     console.log(`[${CFG.lane}] queue: visible=${visible} inflight=${inflight} | fleet=${own.length}/${CFG.maxWorkers} `
       + `desired=${plan.desired} vcpu=${used}/${cap} (quota allows ${byQuota}) launch=${plan.toLaunch} market=${market}`
-      + `${held ? ' (spot held)' : ''} [spot ${usedSpotVcpu}/${CFG.spotVcpuCap} · on-demand ${usedOnDemandVcpu}/${CFG.onDemandVcpuCap}]`);
+      + `${held ? ' (spot held)' : ''} [spot ${usedSpotVcpu}/${spotCap} · on-demand ${usedOnDemandVcpu}/${CFG.onDemandVcpuCap}]`);
 
     // The spot ceiling binding below the lane cap is normal, not an error — but an operator staring
     // at fleet=16/30 deserves to be told why, with the knob that changes it. Only ever announced for
@@ -865,7 +921,7 @@ function reconcile({ dryRun }) {
     const capped = market === 'spot' && plan.shortfall > 0;
     if (capped || state.notices?.['spot-ceiling']?.value === 'capped') {
       notice(state, 'spot-ceiling', capped ? 'capped' : 'clear',
-        capped ? `[${CFG.lane}] SPOT vCPU ceiling (${CFG.spotVcpuCap}) caps this lane at ${own.length + plan.spot}/${CFG.maxWorkers} `
+        capped ? `[${CFG.lane}] SPOT vCPU ceiling (${spotCap}) caps this lane at ${own.length + plan.spot}/${CFG.maxWorkers} `
           + `workers; the remaining ${plan.shortfall} ${plan.onDemand > 0
             ? `come from the METERED on-demand budget`
             : `are NOT being bought (POCKETDJ_ONDEMAND_TOPUP=0) — the queue drains at ${own.length + plan.spot} workers`}`
