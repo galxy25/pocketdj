@@ -241,7 +241,17 @@ async function main() {
   const aws = (args) => execFileSync('aws', [...args, '--profile', ARGS.profile, '--region', ARGS.region], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
   const s3size = (key, bucket) => { try { const o = JSON.parse(aws(['s3api', 'head-object', '--bucket', bucket, '--key', key])); return Number(o.ContentLength) || 0; } catch { return -1; } };
 
-  for (const alb of [...albums.values()].sort((a, b) => `${a.artist}|${a.name}`.localeCompare(`${b.artist}|${b.name}`))) {
+  // A per-album heartbeat plus a line at the START of each transcode (the one slow, real-CPU step
+  // in this loop — everything else here is a stat/HEAD check). Without these, a nightly run sits
+  // silent between "walk: N audio file(s)" and the final summary for however long ffmpeg takes on
+  // whatever is actually new, which reads identically to a hang from the log alone — the two are
+  // indistinguishable without shelling in to inspect the live process tree.
+  const sortedAlbums = [...albums.values()].sort((a, b) => `${a.artist}|${a.name}`.localeCompare(`${b.artist}|${b.name}`));
+  const totalAlbums = sortedAlbums.length;
+  let albumIndex = 0;
+  for (const alb of sortedAlbums) {
+    albumIndex++;
+    console.error(`  [${albumIndex}/${totalAlbums}] ${alb.artist} — ${alb.name} (${alb.tracks.length} track(s))`);
     // --- album art ---
     let coverArt = null;
     const artOut = join(W, 'art', `${alb.id}.jpg`);
@@ -269,6 +279,7 @@ async function main() {
       const mp3 = join(W, 'audio', `${t.songId}.mp3`);
       // --- transcode → 256k mp3 (skip if already produced) ---
       if (!ARGS.dryRun && !(existsSync(mp3) && statSync(mp3).size > 0)) {
+        console.error(`    ⚙ transcoding: ${t.songArtist} — ${t.title} (new file, this is the slow step)`);
         try {
           execFileSync('ffmpeg', ['-y', '-i', t.srcPath, '-map', '0:a:0', '-map_metadata', '-1',
             '-codec:a', 'libmp3lame', '-b:a', '256k',
