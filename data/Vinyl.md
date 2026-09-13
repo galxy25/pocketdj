@@ -1372,3 +1372,7 @@ ZhanePronouncedJah-NayRaw.mp3
 ZhiggeTossItUpRaw.mp3  
 boweatsdrummacboomboxxxRaw.mp3  
   
+JamillaWoodsHEAVNRaw.aiff  
+JamillaWoodsLegacyRaw.aiff  
+JamillaWoodsWaterMadeUsRaw.aiff  
+LauraNyro&PattiLabelleGonnaTakeAMiracleRaw.aiff  
