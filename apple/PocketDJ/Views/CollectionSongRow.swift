@@ -971,7 +971,35 @@ private struct InlinePlayerExpanded: View {
                     // play/pause · chevron · ✕" bug — proven by a UI test toggle-count
                     // probe). `WaveformView` loads the bytes once via URLSession and shows
                     // the result with a single state update, so the controls stay live.
+                    //
+                    // iOS: the waveform is SEEKABLE — tap or drag maps x → position and
+                    // seeks the live audio (Levi, 2026-09-12: the strip looks tappable but
+                    // `WaveformView` is hit-test-disabled, so "jumping to a different part
+                    // of the song" silently did nothing; the thin slider was the only seek).
+                    // The gesture lives on an OVERLAY of this subview only — the image view
+                    // itself stays non-interactive, and the panel's control buttons are
+                    // untouched. macOS keeps the strip inert: the documented ScrollView+
+                    // LazyVStack hit-test fragility there forbids new interactive layers,
+                    // and the pointer makes the slider precise anyway.
+                    #if os(iOS)
                     WaveformView(url: wave)
+                        .overlay {
+                            GeometryReader { geo in
+                                Color.clear
+                                    .contentShape(Rectangle())
+                                    .gesture(DragGesture(minimumDistance: 0).onEnded { v in
+                                        let width = max(geo.size.width, 1)
+                                        let frac = min(max(v.location.x / width, 0), 1)
+                                        let dur = player.duration
+                                        guard dur.isFinite, dur > 0, !now.live else { return }
+                                        player.seek(to: frac * dur)
+                                    })
+                            }
+                        }
+                        .accessibilityIdentifier("player-wave-seek")
+                    #else
+                    WaveformView(url: wave)
+                    #endif
                 }
                 scrubber
             }
