@@ -43,6 +43,41 @@ if (addPath) {
   }
 }
 
+// --replace-batch <mini>: for EVERY album in the mini index, find the live album sharing
+// its pointer.originalFilename and replace it (audioTracks transplant + per-song bpm/key/
+// startMs/endMs by trackNumber, exactly like the single --replace path). Skips a mini album
+// whose live counterpart already has the same id (already folded) and refuses to replace a
+// live album that has rips in flight — the caller checks the rip manifest separately.
+const replaceBatchPath = arg('--replace-batch');
+if (replaceBatchPath) {
+  const mini = JSON.parse(readFileSync(replaceBatchPath, 'utf8'));
+  const byFile = new Map(idx.albums.filter(a => a.pointer?.originalFilename)
+    .map(a => [a.pointer.originalFilename, a]));
+  for (const newAlbum of mini.albums) {
+    const fn = newAlbum.pointer?.originalFilename;
+    const oldAlbum = fn && byFile.get(fn);
+    if (!oldAlbum) { console.error(`  MISS no live album for ${fn}`); continue; }
+    if (oldAlbum.id === newAlbum.id) { console.error(`  SKIP ${fn}: already folded (${newAlbum.id})`); continue; }
+    const newSongs = mini.songs.filter(s => s.albumId === newAlbum.id);
+    if (oldAlbum.audioTracks?.length) {
+      newAlbum.audioTracks = oldAlbum.audioTracks;
+      for (const s of newSongs) {
+        const seg = oldAlbum.audioTracks.find(t => t.trackNumber === s.trackNumber);
+        if (!seg) continue;
+        s.bpm = seg.bpm; s.key = seg.key; s.camelot = seg.camelot;
+        s.pointer = { ...(s.pointer || {}), startMs: seg.startMs, endMs: seg.endMs };
+      }
+    }
+    const oldSongIds = new Set(oldAlbum.trackList || []);
+    idx.albums = idx.albums.filter(a => a.id !== oldAlbum.id);
+    idx.songs = idx.songs.filter(s => !(oldSongIds.has(s.id) || s.albumId === oldAlbum.id));
+    albumIds.delete(oldAlbum.id); oldSongIds.forEach(id => songIds.delete(id));
+    addAlbum(newAlbum, newSongs);
+    replaced++;
+    console.error(`  ~ ${oldAlbum.id} ("${oldAlbum.artist} — ${oldAlbum.name}") → ${newAlbum.id} ("${newAlbum.artist} — ${newAlbum.name}")`);
+  }
+}
+
 if (replacePath && replaceOldId) {
   const mini = JSON.parse(readFileSync(replacePath, 'utf8'));
   const oldAlbum = idx.albums.find(a => a.id === replaceOldId);
