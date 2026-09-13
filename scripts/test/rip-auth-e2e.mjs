@@ -144,6 +144,25 @@ try {
     const inel = await r.json().catch(() => 'unparseable');
     ok(r.status === 200 && !(inel && inel.jobId),
       `MUST-5: a streaming-only source is NEVER captured — no job (got ${r.status} ${JSON.stringify(inel)})`);
+    // …and the refusal must be a DECODABLE Job view, never a bare `null` body: the Swift
+    // client's Job decoder throws on `null`, which read as an opaque decode failure on
+    // device (found 2026-09-12). phase 'error' + a human error string → RipError.didNotStart
+    // surfaces the text as-is.
+    ok(inel && inel.phase === 'error' && typeof inel.error === 'string' && inel.error.length > 0,
+      `ineligible /rip answers in Job shape with a message, not null (got ${JSON.stringify(inel)})`);
+
+    // /rip-PREFIXED paths dispatch as if unprefixed (a client whose base URL is
+    // https://<host>/rip — the film-room TV during the 443 path-mount era — reaches the
+    // root mount with the prefix intact once the funnel mount is gone). Bare /rip is the
+    // rip endpoint itself; /rips/... must NOT be stripped.
+    r = await fetch(`${base}/rip/health`);
+    ok(r.status === 200 && (await r.json()).ok === true, 'GET /rip/health strips the mount prefix → /health');
+    r = await fetch(`${base}/rip/rip`, { method: 'POST', headers: asUser, body: JSON.stringify({ songId: 'sng_nope' }) });
+    ok(r.status === 404 && (await r.json()).error === 'unknown songId',
+      'POST /rip/rip dispatches to the rip handler (404 unknown song, not the fallback)');
+    r = await fetch(`${base}/rips/presign?songId=sng_nope`, { headers: asUser });
+    ok(r.status === 404 && (await r.json()).error === 'not cached',
+      '/rips/presign is NOT mistaken for a /rip prefix');
 
     r = await fetch(`${base}/ingest-digital`, { method: 'POST', headers: asUser, body: JSON.stringify({ entries: [] }) });
     ok(r.status === 403, 'admin endpoint at user tier → 403');
