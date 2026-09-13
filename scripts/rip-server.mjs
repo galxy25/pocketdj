@@ -2404,7 +2404,26 @@ async function readJson(req, maxBytes = 32 * 1024 * 1024) {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
-  const path = url.pathname;
+  let path = url.pathname;
+  // Clients whose configured base URL carries a `/rip` path prefix (the film-room TV was
+  // pointed at https://<host>/rip while a tailscale-serve path mount existed on 443; the
+  // mount is gone — it STRIPPED the prefix in transit, which rewrote root-base clients'
+  // POST /rip into POST / and 404'd every single-song rip, 2026-09-12) dispatch here with
+  // the prefix intact. Strip ONE leading /rip segment, mirroring jukebox-server's /jukebox
+  // strip, so both base styles work against the plain root mount. Only `/rip/<more>` is a
+  // mount artifact — bare `/rip` IS the rip endpoint itself and must never be stripped
+  // (and `/rips/...`, `/rip-collection`, `/rip-cancel` don't match `/rip/`).
+  if (path.startsWith('/rip/')) path = path.slice('/rip'.length);
+  // Every non-2xx answer logs one line. The 2026-09-12 "Rip failed" incident cost a day
+  // because the failing requests left ZERO server-side trace (the fallback 404 below is
+  // silent) — a refused request must be as visible as a failed job. 2xx stays quiet
+  // (HLS segments + 2s job polls are chatty by design).
+  res.on('finish', () => {
+    if (res.statusCode >= 300) {
+      const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '?').split(',')[0].trim();
+      console.error(`  ✗ ${res.statusCode} ${req.method} ${path} ip=${ip} ua=${String(req.headers['user-agent'] || '-').slice(0, 60)}`);
+    }
+  });
   if (req.method === 'OPTIONS') return send(res, 204, '');
   if (CFG.rateLimit && !adminAuthed(req) && rateLimited(req)) return send(res, 429, { error: 'rate limited' });
 
@@ -2622,6 +2641,14 @@ const server = http.createServer(async (req, res) => {
     const r = acceptRip(songId, ripFromCloud, adhoc);
     if (r.status === 'unknown') return send(res, 404, { error: 'unknown songId' });
     if (r.status === 'ready') return send(res, 200, { jobId: null, songId, phase: 'ready', url: r.url });
+    // Capture-ineligible source (not My Vinyl / My Digital): r.job is null, and
+    // jobView(null) returns null — a 200 with body `null` that the Swift client's
+    // Job decoder chokes on. Answer in the Job shape the client already decodes
+    // (phase 'error' + message, no jobId → RipError.didNotStart surfaces the text).
+    if (r.status === 'ineligible') {
+      return send(res, 200, { jobId: null, songId, phase: 'error', message: null, url: null,
+        error: 'This song’s source is streaming-only — it has no file the import server can capture.' });
+    }
     return send(res, 200, jobView(r.job));
   }
   // POST /rip-collection {songIds:[...]} — Feature 2 RIP. Batch-enqueue every song in
