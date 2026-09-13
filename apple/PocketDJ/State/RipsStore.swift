@@ -469,6 +469,14 @@ final class RipsStore {
 
     enum RipError: LocalizedError {
         case noServer, ripFailed(Int), didNotStart(String?), serverError(String?), timedOut
+        /// The bounded INTERACTIVE wait expired while the job was still genuinely working
+        /// (queued/ripping/uploading) — an analog whole-album transcode takes minutes, the
+        /// ▶ path waits 20 s by design. NOT a failure: the rip continues server-side and
+        /// `pollToReady` keeps watching, so the row flips playable when it lands. Distinct
+        /// from `.timedOut` (job state unknown / genuinely stuck) so the user isn't told a
+        /// healthy rip "timed out" (Levi, 2026-09-12: played a fresh vinyl album, saw
+        /// "Rip timed out", and the album finished ripping fine two minutes later).
+        case stillRipping
         /// A studio-namespaced id reached a rip path (spec §8) — these play from their own
         /// local files and must NEVER hit the import server (defense-in-depth; the server
         /// rejects them too). Surfacing an explicit error beats a confusing server 4xx.
@@ -485,6 +493,7 @@ final class RipsStore {
             case .didNotStart(let m): return m ?? "Rip did not start."
             case .serverError(let m): return m ?? "Rip failed."
             case .timedOut:           return "Rip timed out."
+            case .stillRipping:       return "Still ripping — this track will be playable in a few minutes."
             case .studioItem:         return "Studio items play from their own files — they can’t be ripped."
             }
         }
@@ -604,6 +613,16 @@ final class RipsStore {
                 pollToReady(songId: songId, jobId: jobId); return live
             }
             if v.phase == .error { throw RipError.serverError(v.error) }
+        }
+        // The wait expired with the job still WORKING (every terminal phase returned or
+        // threw above). Keep watching it — pollToReady refreshes the manifest + fires
+        // `onRipReady` when the capture lands, so the row flips playable without another
+        // tap-and-wait — and tell the user the truth: this is a rip in progress, not a
+        // failure. `.timedOut` remains for the no-job path (didNotStart already covers a
+        // rejected accept, so reaching here without a jobId means the server went dark).
+        if let jobId = view.jobId {
+            pollToReady(songId: songId, jobId: jobId)
+            throw RipError.stillRipping
         }
         throw RipError.timedOut
     }

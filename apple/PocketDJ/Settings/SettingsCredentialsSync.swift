@@ -115,22 +115,55 @@ extension SettingsStore {
         try? data.write(to: credentialsSyncFileURL, options: .atomic)
     }
 
+    /// EMPTY-SECRET GUARD (2026-09-12 incident): a pulled doc whose secret is EMPTY while its
+    /// paired server URL is UNCHANGED does not overwrite this device's non-empty secret. On
+    /// 09-08 a doc with `rip(url=true tok=false)` LWW-clobbered the rip token fleet-wide —
+    /// every device then 401'd ("Rip failed." on every song) until the token was re-typed by
+    /// hand. Same-URL + empty secret is the signature of an accidental wipe (a device that
+    /// materialized the doc before its token was ever entered — e.g. a dev-build container),
+    /// not of intent: pointing at a DIFFERENT server (URL changed) adopts wholesale, tokenless
+    /// servers included, and clearing the URL clears the pair. The kept secret makes this
+    /// device's doc differ from the pull, so `persist()` re-materializes and pushes it back —
+    /// the guard doesn't just protect this device, it HEALS the fleet. `true` = keep local.
+    private static func keepLocalSecret(localSecret: String, pulledSecret: String,
+                                        localURL: String, pulledURL: String) -> Bool {
+        pulledSecret.isEmpty && !localSecret.isEmpty && !pulledURL.isEmpty && pulledURL == localURL
+    }
+
     /// Re-decode the on-disk doc after `CloudSyncService` pulled a newer cloud copy, apply it
     /// to the live store, and re-persist so the UserDefaults blob agrees with the pull.
-    /// Whole-document apply — the pull already won LWW. The nested `persist()` re-encodes
-    /// byte-identical content, so the file's mtime stays the pull's (no push-back loop).
+    /// Whole-document apply — the pull already won LWW — EXCEPT the empty-secret guard above.
+    /// The nested `persist()` re-encodes byte-identical content when nothing was guarded, so
+    /// the file's mtime stays the pull's (no push-back loop); a guarded apply deliberately
+    /// differs and pushes back.
     func reloadCredentialsFromDisk() {
         guard let data = try? Data(contentsOf: credentialsSyncFileURL),
               let doc = try? JSONDecoder().decode(SettingsCredentialsDocument.self, from: data)
         else { return }
+        let keptRipToken = Self.keepLocalSecret(localSecret: ripToken, pulledSecret: doc.ripToken,
+                                                localURL: ripServerURL, pulledURL: doc.ripServerURL)
+        let keptJukeboxToken = Self.keepLocalSecret(localSecret: jukeboxToken, pulledSecret: doc.jukeboxToken,
+                                                    localURL: jukeboxServerURL, pulledURL: doc.jukeboxServerURL)
+        // The search pair guards BOTH key fields together on the endpoint (which may be empty
+        // on both sides — "same place" still holds): half-adopting a key pair would mint a
+        // mismatched credential worse than either whole one.
+        let keptSearchKeys = (doc.searchAccessKeyID.isEmpty && doc.searchSecretKey.isEmpty)
+            && !(searchAccessKeyID.isEmpty && searchSecretKey.isEmpty)
+            && doc.searchEndpoint == searchEndpoint
         ripServerURL = doc.ripServerURL
-        ripToken = doc.ripToken
+        if !keptRipToken { ripToken = doc.ripToken }
         jukeboxServerURL = doc.jukeboxServerURL
-        jukeboxToken = doc.jukeboxToken
+        if !keptJukeboxToken { jukeboxToken = doc.jukeboxToken }
         jukeboxTokensRequiredByDefault = doc.jukeboxTokensRequiredByDefault
-        searchAccessKeyID = doc.searchAccessKeyID
-        searchSecretKey = doc.searchSecretKey
+        if !keptSearchKeys {
+            searchAccessKeyID = doc.searchAccessKeyID
+            searchSecretKey = doc.searchSecretKey
+        }
         searchEndpoint = doc.searchEndpoint
+        if keptRipToken || keptJukeboxToken || keptSearchKeys {
+            DiagLog.shared.log("credsync",
+                "guarded empty-secret wipe: kept rip=\(keptRipToken) jb=\(keptJukeboxToken) search=\(keptSearchKeys)")
+        }
         if let priv = doc.appleMusicPrivateSync { appleMusicPrivateSyncRaw = priv }
         if let synced = doc.sources { sources = synced }   // nil = pre-sources doc; leave local list
         persist()
