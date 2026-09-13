@@ -289,6 +289,100 @@ final class SettingsCredentialsSyncTests: XCTestCase {
         XCTAssertEqual(saves, 0, "adopting must not push anything back up")
     }
 
+    // MARK: - Empty-secret guard (the 2026-09-08 token-wipe incident)
+
+    /// A NEWER cloud doc whose secrets are EMPTY while the paired server URLs are UNCHANGED
+    /// must not wipe this device's non-empty secrets — that exact doc (`rip(url=true
+    /// tok=false)`) LWW-clobbered the rip token fleet-wide on 2026-09-08 and every device
+    /// 401'd until the token was re-typed. The guarded device keeps its secrets AND pushes
+    /// them back up, healing the cloud copy for the rest of the fleet.
+    func testEmptySecretSameURLPullDoesNotWipeLocalSecrets() async throws {
+        let db = MemoryDB()
+        let store = makeStore("guarded")
+        configure(store)
+        setMtime(store.credentialsSyncFileURL, ms: 1_000_000)   // cloud doc is strictly newer
+        let wipe = SettingsCredentialsDocument(
+            ripServerURL: "https://rip.example.ts.net", ripToken: "",
+            jukeboxServerURL: "https://jb.example.ts.net/jukebox", jukeboxToken: "",
+            jukeboxTokensRequiredByDefault: false,
+            searchAccessKeyID: "", searchSecretKey: "",
+            searchEndpoint: "https://search.example.aoss.amazonaws.com",
+            appleMusicPrivateSync: nil)
+        await db.seed("settings-credentials", payload: try JSONEncoder().encode(wipe),
+                      modifiedAtMs: Date().timeIntervalSince1970 * 1000)
+
+        let svc = makeService(db: db)
+        register(store, with: svc)
+        await svc.syncNow()
+
+        XCTAssertEqual(store.ripToken, "rip-secret", "same-URL empty token must not wipe the local one")
+        XCTAssertEqual(store.jukeboxToken, "jb-secret")
+        XCTAssertEqual(store.searchAccessKeyID, "AKIAEXAMPLE")
+        XCTAssertEqual(store.searchSecretKey, "search-s3cr3t")
+        XCTAssertEqual(store.ripServerURL, "https://rip.example.ts.net", "non-secret fields still adopt")
+
+        // The heal: the kept secrets make the local doc newer than the pull, so the next
+        // push publishes them back — the fleet recovers instead of re-pulling the wipe.
+        await svc.pushDirty()
+        let doc = await db.docs["settings-credentials"]
+        let healed = try JSONDecoder().decode(SettingsCredentialsDocument.self, from: XCTUnwrap(doc).payload)
+        XCTAssertEqual(healed.ripToken, "rip-secret", "the guarded device must heal the cloud doc")
+        XCTAssertEqual(healed.jukeboxToken, "jb-secret")
+    }
+
+    /// The guard is scoped to SAME-URL wipes only: a newer doc pointing at a DIFFERENT
+    /// server with no token is a real reconfiguration (tokenless servers are legal) and
+    /// adopts wholesale — including the empty token.
+    func testChangedURLWithEmptyTokenAdoptsWholesale() async throws {
+        let db = MemoryDB()
+        let store = makeStore("moved")
+        configure(store)
+        setMtime(store.credentialsSyncFileURL, ms: 1_000_000)
+        let moved = SettingsCredentialsDocument(
+            ripServerURL: "https://tokenless.example.ts.net", ripToken: "",
+            jukeboxServerURL: "https://jb.example.ts.net/jukebox", jukeboxToken: "jb-secret",
+            jukeboxTokensRequiredByDefault: false,
+            searchAccessKeyID: "AKIAEXAMPLE", searchSecretKey: "search-s3cr3t",
+            searchEndpoint: "https://search.example.aoss.amazonaws.com",
+            appleMusicPrivateSync: nil)
+        await db.seed("settings-credentials", payload: try JSONEncoder().encode(moved),
+                      modifiedAtMs: Date().timeIntervalSince1970 * 1000)
+
+        let svc = makeService(db: db)
+        register(store, with: svc)
+        await svc.syncNow()
+
+        XCTAssertEqual(store.ripServerURL, "https://tokenless.example.ts.net")
+        XCTAssertEqual(store.ripToken, "", "a changed URL adopts its empty token (tokenless server)")
+        XCTAssertEqual(store.jukeboxToken, "jb-secret", "untouched pairs still adopt normally")
+    }
+
+    /// Clearing a server PAIR (URL and token together) on another device is a legitimate
+    /// removal and must still propagate — the guard requires a non-empty pulled URL, so a
+    /// cleared pair adopts (matches the LWW blank-edit doctrine above).
+    func testClearedServerPairStillPropagates() async throws {
+        let db = MemoryDB()
+        let store = makeStore("cleared")
+        configure(store)
+        setMtime(store.credentialsSyncFileURL, ms: 1_000_000)
+        let cleared = SettingsCredentialsDocument(
+            ripServerURL: "", ripToken: "",
+            jukeboxServerURL: "https://jb.example.ts.net/jukebox", jukeboxToken: "jb-secret",
+            jukeboxTokensRequiredByDefault: false,
+            searchAccessKeyID: "AKIAEXAMPLE", searchSecretKey: "search-s3cr3t",
+            searchEndpoint: "https://search.example.aoss.amazonaws.com",
+            appleMusicPrivateSync: nil)
+        await db.seed("settings-credentials", payload: try JSONEncoder().encode(cleared),
+                      modifiedAtMs: Date().timeIntervalSince1970 * 1000)
+
+        let svc = makeService(db: db)
+        register(store, with: svc)
+        await svc.syncNow()
+
+        XCTAssertEqual(store.ripServerURL, "", "a deliberately cleared pair must propagate")
+        XCTAssertEqual(store.ripToken, "")
+    }
+
     /// Registered with CloudSyncService as "settings-credentials", so it MUST be in
     /// `AccountDeletionService.cloudDocKeys` — otherwise the user's rip/jukebox/search
     /// credentials would survive an account deletion in their private CloudKit DB
