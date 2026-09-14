@@ -49,16 +49,25 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
     /// those cues up front via `canCueSeek`; this is the after-the-fact backstop).
     func tryPlay(_ song: IndexSong, atMs: Int?) async -> Bool {
         lastCueDropped = false
+        // SILENT-PARK INSTRUMENTATION (2026-09-13): the outermost bracket around the whole
+        // resolve. Field signature to look for in the `ripreq` lane: a `tryPlay start` with
+        // NO `tryPlay ok/fail` after it = the resolve parked somewhere the inner presign/
+        // rip-post brackets don't cover; `fail` lines carry the real error domain#code the
+        // UI toast flattens away. Ids only, no titles.
+        let t0 = Date()
+        DiagLog.shared.telemetry("ripreq", "tryPlay start song=\(song.id)")
         do {
             let now = try await rips.play((id: song.id, title: song.name, artist: song.artist),
                                           startMs: nil, atMs: atMs)
             if atMs != nil, now.live { lastCueDropped = true }
             player.load(url: now.url, live: now.live, startMs: now.seekMs ?? now.startMs,
                         title: now.title, artist: now.artist, songId: now.songId)
+            DiagLog.shared.telemetry("ripreq", "tryPlay ok song=\(song.id) live=\(now.live) elapsedMs=\(Int(-t0.timeIntervalSinceNow * 1000))")
             return true
         } catch {
             // Stash so the coordinator can surface it; still "handled" by this terminal
             // provider, so the cycle stops here rather than reporting "no provider".
+            DiagLog.shared.telemetry("ripreq", "tryPlay fail song=\(song.id) elapsedMs=\(Int(-t0.timeIntervalSinceNow * 1000)) err=\((error as NSError).domain)#\((error as NSError).code) \(String(describing: (error as? RipsStore.RipError)))")
             lastError = error
             return false
         }

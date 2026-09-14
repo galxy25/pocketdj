@@ -531,8 +531,22 @@ final class RipsStore {
         var request = URLRequest(url: requestUrl)
         request.timeoutInterval = 12
         applyAuth(&request, token: token)
-        let (data, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+        // SILENT-PARK INSTRUMENTATION (2026-09-13): plays occasionally hang with no error
+        // and no advance despite the 12 s request timeout (Cameo 02:24Z / Weston 02:42Z —
+        // both healed on retry once the phone's route to the server recovered). A start
+        // line with NO matching end/fail line in field telemetry = the await itself parked;
+        // an end line with a big elapsed = timeout misbehaving. Ids only, no titles.
+        let t0 = Date()
+        DiagLog.shared.telemetry("ripreq", "presign start song=\(songId)")
+        let data: Data, response: URLResponse
+        do { (data, response) = try await session.data(for: request) }
+        catch {
+            DiagLog.shared.telemetry("ripreq", "presign FAIL song=\(songId) elapsedMs=\(Int(-t0.timeIntervalSinceNow * 1000)) err=\((error as NSError).domain)#\((error as NSError).code)")
+            throw error
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+        DiagLog.shared.telemetry("ripreq", "presign end song=\(songId) status=\(status) elapsedMs=\(Int(-t0.timeIntervalSinceNow * 1000))")
+        guard (200..<300).contains(status) else {
             throw RipError.serverError(nil)
         }
         struct PresignResponse: Decodable { let url: String }
@@ -586,8 +600,19 @@ final class RipsStore {
         applyAuth(&post, token: tok)
         let body: [String: Any] = ripFromCloud ? ["songId": songId, "ripFromCloud": true] : ["songId": songId]
         post.httpBody = try JSONSerialization.data(withJSONObject: body)
-        let (data, response) = try await session.data(for: post)
+        // SILENT-PARK INSTRUMENTATION — see presignedURL. Same start/end/fail bracket
+        // around the POST /rip await; the two calls are the only network awaits the
+        // interactive ▶ path can park in ahead of the bounded poll loop below.
+        let t0 = Date()
+        DiagLog.shared.telemetry("ripreq", "rip-post start song=\(songId)")
+        let data: Data, response: URLResponse
+        do { (data, response) = try await session.data(for: post) }
+        catch {
+            DiagLog.shared.telemetry("ripreq", "rip-post FAIL song=\(songId) elapsedMs=\(Int(-t0.timeIntervalSinceNow * 1000)) err=\((error as NSError).domain)#\((error as NSError).code)")
+            throw error
+        }
         guard let http = response as? HTTPURLResponse else { throw RipError.ripFailed(0) }
+        DiagLog.shared.telemetry("ripreq", "rip-post end song=\(songId) status=\(http.statusCode) elapsedMs=\(Int(-t0.timeIntervalSinceNow * 1000))")
         guard (200..<300).contains(http.statusCode) else { throw RipError.ripFailed(http.statusCode) }
 
         var view = try JSONDecoder().decode(Job.self, from: data)
