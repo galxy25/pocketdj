@@ -1936,24 +1936,34 @@ private struct FXSlotChip: View {
         .accessibilityAddTraits(isOn ? .isSelected : [])
     }
 
-    // iPad / macOS — roomy enough for the pickers, steppers and slider in one row.
+    // iPad / macOS — TWO rows (owner feedback 2026-09-18): the pickers up top, the strength
+    // slider on its OWN full-width line below with the live percent visible, so the slider has
+    // real travel to drag/click and the value is never squeezed out by the menus.
     private var sliderFace: some View {
-        HStack(spacing: 5) {
-            effectMenu
-            StepButton(dir: .dec, value: slot.strength, range: 0...1, step: 0.05,
-                       a11y: "\(a11y)-strength", onChange: setStrength,
-                       onInteract: { interaction += 1 })
-            Slider(value: Binding(get: { slot.strength }, set: { setStrength($0); interaction += 1 }),
-                   in: 0...1)
-                .controlSize(.small)
-                .accessibilityIdentifier("\(a11y)-strength")
-            StepButton(dir: .inc, value: slot.strength, range: 0...1, step: 0.05,
-                       a11y: "\(a11y)-strength", onChange: setStrength,
-                       onInteract: { interaction += 1 })
-            variantMenu
+        VStack(spacing: 6) {
+            HStack(spacing: 5) {
+                effectMenu
+                Spacer(minLength: 8)
+                variantMenu
+            }
+            HStack(spacing: 5) {
+                StepButton(dir: .dec, value: slot.strength, range: 0...1, step: 0.05,
+                           a11y: "\(a11y)-strength", onChange: setStrength,
+                           onInteract: { interaction += 1 })
+                Slider(value: Binding(get: { slot.strength }, set: { setStrength($0); interaction += 1 }),
+                       in: 0...1)
+                    .controlSize(.small)
+                    .accessibilityIdentifier("\(a11y)-strength")
+                StepButton(dir: .inc, value: slot.strength, range: 0...1, step: 0.05,
+                           a11y: "\(a11y)-strength", onChange: setStrength,
+                           onInteract: { interaction += 1 })
+                Text("\(Int((slot.strength * 100).rounded()))%")
+                    .font(.caption2.monospacedDigit())
+                    .frame(width: 34, alignment: .trailing)
+            }
         }
         .font(.caption.weight(.medium))
-        .frame(maxWidth: .infinity, minHeight: 18)
+        .frame(maxWidth: .infinity)
         .padding(.vertical, 7).padding(.horizontal, 8)
         .background(Theme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Theme.accent, lineWidth: 1))
