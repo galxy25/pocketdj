@@ -1,0 +1,207 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 1540" font-family="Menlo, SF Mono, Consolas, monospace">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0b1020"/><stop offset="1" stop-color="#101830"/>
+    </linearGradient>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7fb4ff"/>
+    </marker>
+    <marker id="arrTap" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#f0b429"/>
+    </marker>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1180" height="1540" fill="url(#bg)"/>
+  <text x="40" y="52" fill="#e8eefc" font-size="26" font-weight="bold">PocketDJ · Mix tab audio graph</text>
+  <text x="40" y="78" fill="#8ea3c8" font-size="13">Built once by MixEngine.ensureEngine() — never rewired. FX changes are bypass flips. Everything below inputMixer is pinned 44.1 kHz stereo.</text>
+
+  <!-- ============ DECK A frame ============ -->
+  <rect x="30" y="100" width="1120" height="880" rx="14" fill="#121a33" stroke="#2a3a63" stroke-width="1.5"/>
+  <text x="52" y="130" fill="#7fb4ff" font-size="16" font-weight="bold">DECK A</text>
+  <text x="130" y="130" fill="#5a6d96" font-size="12">(Deck B is identical; both merge at the house bus below)</text>
+
+  <!-- sources -->
+  <g font-size="12">
+    <rect x="60" y="160" width="170" height="46" rx="8" fill="#1a2547" stroke="#3d5a9e"/>
+    <text x="145" y="180" fill="#dfe8fb" text-anchor="middle" font-weight="bold">player</text>
+    <text x="145" y="196" fill="#8ea3c8" text-anchor="middle" font-size="10">AVAudioPlayerNode · main file</text>
+
+    <rect x="60" y="222" width="170" height="88" rx="8" fill="#1a2547" stroke="#3d5a9e"/>
+    <text x="145" y="242" fill="#dfe8fb" text-anchor="middle" font-weight="bold">stem players ×4</text>
+    <text x="145" y="258" fill="#8ea3c8" text-anchor="middle" font-size="10">vocals · drums · bass · other</text>
+    <text x="145" y="272" fill="#8ea3c8" text-anchor="middle" font-size="10">sum into the same input,</text>
+    <text x="145" y="286" fill="#8ea3c8" text-anchor="middle" font-size="10">so stems ride the whole chain</text>
+
+    <!-- inputMixer -->
+    <rect x="300" y="186" width="180" height="70" rx="8" fill="#16305a" stroke="#4d78c9" filter="url(#glow)"/>
+    <text x="390" y="210" fill="#eaf1ff" text-anchor="middle" font-weight="bold">inputMixer</text>
+    <text x="390" y="226" fill="#9db4de" text-anchor="middle" font-size="10">format normalizer → 44.1k stereo</text>
+    <text x="390" y="240" fill="#f0b429" text-anchor="middle" font-size="10">only player→here reconnects per load</text>
+
+    <!-- timePitch -->
+    <rect x="540" y="186" width="160" height="70" rx="8" fill="#16305a" stroke="#4d78c9"/>
+    <text x="620" y="210" fill="#eaf1ff" text-anchor="middle" font-weight="bold">timePitch</text>
+    <text x="620" y="226" fill="#9db4de" text-anchor="middle" font-size="10">tempo 0.5–2.0× · pitch ±12 st</text>
+    <text x="620" y="240" fill="#7ee2a8" text-anchor="middle" font-size="10">last pre-FX point (untapped)</text>
+
+    <!-- edges: sources → inputMixer → timePitch -->
+    <line x1="230" y1="183" x2="300" y2="210" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+    <line x1="230" y1="266" x2="300" y2="236" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+    <line x1="480" y1="221" x2="540" y2="221" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+  </g>
+
+  <!-- ============ FX RACK ============ -->
+  <rect x="60" y="320" width="1050" height="290" rx="12" fill="#101a38" stroke="#31477c" stroke-dasharray="6 4"/>
+  <text x="82" y="348" fill="#b48cff" font-size="14" font-weight="bold">FX RACK — 4 positional slots, in series</text>
+  <text x="82" y="366" fill="#8ea3c8" font-size="11">each slot pre-allocates ALL four effect types; at most ONE un-bypassed · duplicates across slots legal · swap = bypass flips (16 FX nodes/deck)</text>
+
+  <!-- slot template ×4 -->
+  <g font-size="11">
+    <!-- slot boxes -->
+    <g>
+      <rect x="90"  y="386" width="220" height="190" rx="10" fill="#182350" stroke="#5b4a9e"/>
+      <rect x="350" y="386" width="220" height="190" rx="10" fill="#182350" stroke="#5b4a9e"/>
+      <rect x="610" y="386" width="220" height="190" rx="10" fill="#182350" stroke="#5b4a9e"/>
+      <rect x="870" y="386" width="220" height="190" rx="10" fill="#182350" stroke="#5b4a9e"/>
+    </g>
+    <g fill="#cdb8ff" font-weight="bold" text-anchor="middle" font-size="13">
+      <text x="200" y="410">SLOT 0</text><text x="460" y="410">SLOT 1</text>
+      <text x="720" y="410">SLOT 2</text><text x="980" y="410">SLOT 3</text>
+    </g>
+    <!-- inner nodes for each slot -->
+    <g text-anchor="middle" fill="#dfe8fb">
+      <g id="slotNodes0">
+        <rect x="110" y="424" width="180" height="26" rx="5" fill="#22305f" stroke="#41598f"/><text x="200" y="441">comp · DynamicsProcessor</text>
+        <rect x="110" y="458" width="180" height="26" rx="5" fill="#22305f" stroke="#41598f"/><text x="200" y="475">filter · 1-band EQ</text>
+        <rect x="110" y="492" width="180" height="26" rx="5" fill="#22305f" stroke="#41598f"/><text x="200" y="509">reverb · AVAudioUnitReverb</text>
+        <rect x="110" y="526" width="180" height="26" rx="5" fill="#22305f" stroke="#41598f"/><text x="200" y="543">mod · AVAudioUnitDelay</text>
+      </g>
+      <use href="#slotNodes0" x="260"/>
+      <use href="#slotNodes0" x="520"/>
+      <use href="#slotNodes0" x="780"/>
+    </g>
+    <g fill="#8ea3c8" text-anchor="middle" font-size="10">
+      <text x="200" y="566">one un-bypassed, rest bypassed</text>
+      <text x="460" y="566">one un-bypassed, rest bypassed</text>
+      <text x="720" y="566">one un-bypassed, rest bypassed</text>
+      <text x="980" y="566">one un-bypassed, rest bypassed</text>
+    </g>
+    <!-- slot chain edges -->
+    <line x1="310" y1="481" x2="350" y2="481" stroke="#b48cff" stroke-width="2" marker-end="url(#arr)"/>
+    <line x1="570" y1="481" x2="610" y2="481" stroke="#b48cff" stroke-width="2" marker-end="url(#arr)"/>
+    <line x1="830" y1="481" x2="870" y2="481" stroke="#b48cff" stroke-width="2" marker-end="url(#arr)"/>
+  </g>
+
+  <!-- timePitch → rack, rack → eq3 -->
+  <path d="M 620 256 L 620 300 L 90 300 L 90 481" fill="none" stroke="#7fb4ff" stroke-width="2"/>
+  <line x1="90" y1="481" x2="90" y2="481" stroke="#7fb4ff"/>
+  <line x1="88" y1="479" x2="90" y2="481" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+  <path d="M 1090 481 L 1120 481 L 1120 640 L 480 640" fill="none" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+
+  <!-- eq3 + trim -->
+  <g font-size="12">
+    <rect x="300" y="612" width="180" height="58" rx="8" fill="#16305a" stroke="#4d78c9"/>
+    <text x="390" y="634" fill="#eaf1ff" text-anchor="middle" font-weight="bold">eq3 — 3-band EQ</text>
+    <text x="390" y="650" fill="#9db4de" text-anchor="middle" font-size="10">Low/Mid/High knobs · always active</text>
+    <text x="390" y="662" fill="#9db4de" text-anchor="middle" font-size="10">NOT part of the rack</text>
+
+    <rect x="300" y="700" width="180" height="66" rx="8" fill="#16305a" stroke="#f0b429"/>
+    <text x="390" y="722" fill="#eaf1ff" text-anchor="middle" font-weight="bold">trim</text>
+    <text x="390" y="738" fill="#9db4de" text-anchor="middle" font-size="10">band bypassed — carries the</text>
+    <text x="390" y="752" fill="#f0b429" text-anchor="middle" font-size="10">&gt;100% boost as globalGain (+6 dB max)</text>
+
+    <line x1="390" y1="670" x2="390" y2="700" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+
+    <!-- pre-fader tap -->
+    <line x1="480" y1="733" x2="600" y2="733" stroke="#f0b429" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrTap)"/>
+    <rect x="604" y="712" width="240" height="44" rx="7" fill="#241f10" stroke="#f0b429"/>
+    <text x="724" y="730" fill="#f7d675" text-anchor="middle" font-size="11">VU tap · "pre-fader" (really post-FX)</text>
+    <text x="724" y="746" fill="#c9b06a" text-anchor="middle" font-size="10">4096 frames ≈10 Hz → MixDeckLevels</text>
+
+    <!-- split -->
+    <rect x="180" y="820" width="180" height="58" rx="8" fill="#16305a" stroke="#4d78c9"/>
+    <text x="270" y="842" fill="#eaf1ff" text-anchor="middle" font-weight="bold">mainGain</text>
+    <text x="270" y="858" fill="#9db4de" text-anchor="middle" font-size="10">vol(≤1) × equal-power crossfade</text>
+
+    <rect x="480" y="820" width="180" height="58" rx="8" fill="#16305a" stroke="#4d78c9"/>
+    <text x="570" y="842" fill="#eaf1ff" text-anchor="middle" font-weight="bold">cueGain</text>
+    <text x="570" y="858" fill="#9db4de" text-anchor="middle" font-size="10">PFL send · cueVol · boost divided out</text>
+
+    <path d="M 390 766 L 390 796 L 270 796 L 270 820" fill="none" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+    <path d="M 390 796 L 570 796 L 570 820" fill="none" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+
+    <!-- post-fader tap -->
+    <line x1="180" y1="849" x2="120" y2="849" stroke="#f0b429" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrTap)"/>
+    <rect x="60" y="900" width="300" height="40" rx="7" fill="#241f10" stroke="#f0b429"/>
+    <text x="210" y="917" fill="#f7d675" text-anchor="middle" font-size="11">VU tap · post-fader → MixDeckLevels</text>
+    <text x="210" y="931" fill="#c9b06a" text-anchor="middle" font-size="10">peak + RMS ballistics on the tap thread</text>
+    <line x1="120" y1="849" x2="120" y2="900" stroke="#f0b429" stroke-width="1.5" stroke-dasharray="4 3"/>
+  </g>
+
+  <!-- ============ HOUSE / MASTER ============ -->
+  <g font-size="12">
+    <rect x="300" y="1030" width="200" height="64" rx="8" fill="#0f2c22" stroke="#3ba776" filter="url(#glow)"/>
+    <text x="400" y="1054" fill="#d8f7e7" text-anchor="middle" font-weight="bold">houseSum</text>
+    <text x="400" y="1070" fill="#8fd3b2" text-anchor="middle" font-size="10">deck A main + deck B main</text>
+    <text x="400" y="1084" fill="#8fd3b2" text-anchor="middle" font-size="10">the clean stereo house mix</text>
+
+    <!-- recording tap -->
+    <line x1="500" y1="1062" x2="620" y2="1062" stroke="#f0b429" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrTap)"/>
+    <rect x="624" y="1038" width="290" height="48" rx="7" fill="#241f10" stroke="#f0b429"/>
+    <text x="769" y="1057" fill="#f7d675" text-anchor="middle" font-size="11">RECORDING tap (installed once, ever)</text>
+    <text x="769" y="1073" fill="#c9b06a" text-anchor="middle" font-size="10">pre-pan → captures stay stereo during PFL</text>
+
+    <rect x="300" y="1128" width="200" height="58" rx="8" fill="#0f2c22" stroke="#3ba776"/>
+    <text x="400" y="1150" fill="#d8f7e7" text-anchor="middle" font-weight="bold">housePan</text>
+    <text x="400" y="1166" fill="#8fd3b2" text-anchor="middle" font-size="10">hard L/R only while a deck is cued</text>
+
+    <rect x="300" y="1220" width="200" height="52" rx="8" fill="#0f2c22" stroke="#3ba776"/>
+    <text x="400" y="1242" fill="#d8f7e7" text-anchor="middle" font-weight="bold">mainMixerNode</text>
+    <text x="400" y="1258" fill="#8fd3b2" text-anchor="middle" font-size="10">house + both cue sends merge</text>
+
+    <rect x="300" y="1306" width="200" height="56" rx="8" fill="#33121a" stroke="#e05a6d"/>
+    <text x="400" y="1328" fill="#ffd9de" text-anchor="middle" font-weight="bold">limiter · PeakLimiter</text>
+    <text x="400" y="1344" fill="#dfa0aa" text-anchor="middle" font-size="10">2 decks × 200% + makeup can't clip</text>
+
+    <rect x="300" y="1396" width="200" height="48" rx="8" fill="#1a2547" stroke="#3d5a9e"/>
+    <text x="400" y="1416" fill="#dfe8fb" text-anchor="middle" font-weight="bold">outputNode</text>
+    <text x="400" y="1432" fill="#8ea3c8" text-anchor="middle" font-size="10">the device</text>
+
+    <!-- deck feeds into house -->
+    <path d="M 270 878 L 270 990 L 360 990 L 360 1030" fill="none" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+    <text x="150" y="994" fill="#5a6d96" font-size="11">deck B mainGain ↴</text>
+    <path d="M 250 1000 L 340 1010 L 350 1030" fill="none" stroke="#41598f" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+
+    <!-- cue direct to mainMixer -->
+    <path d="M 570 878 L 570 1246 L 500 1246" fill="none" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+    <text x="585" y="1120" fill="#5a6d96" font-size="11" transform="rotate(90 585 1120)">cue sends bypass the house bus</text>
+
+    <!-- vertical spine -->
+    <line x1="400" y1="1094" x2="400" y2="1128" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+    <line x1="400" y1="1186" x2="400" y2="1220" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+    <line x1="400" y1="1272" x2="400" y2="1306" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+    <line x1="400" y1="1362" x2="400" y2="1396" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
+  </g>
+
+  <!-- legend / limitations -->
+  <g font-size="11">
+    <rect x="700" y="1150" width="430" height="300" rx="10" fill="#121a33" stroke="#2a3a63"/>
+    <text x="722" y="1178" fill="#e8eefc" font-size="13" font-weight="bold">Known limitations</text>
+    <text x="722" y="1202" fill="#9db4de">· Graph is write-once — no runtime attach/detach/reconnect;</text>
+    <text x="734" y="1218" fill="#9db4de">new taps/nodes must be added at build time</text>
+    <text x="722" y="1240" fill="#9db4de">· One tap per node bus (trim + mainGain already taken)</text>
+    <text x="722" y="1262" fill="#9db4de">· "Pre-fader" VU tap is POST-FX — unusable as an</text>
+    <text x="734" y="1278" fill="#9db4de">envelope-follower source (feedback); pre-FX = timePitch out</text>
+    <text x="722" y="1300" fill="#9db4de">· All param changes are host-rate one-shot sets — fast</text>
+    <text x="734" y="1316" fill="#9db4de">delayTime modulation zippers (Flanger/Chorus = static combs)</text>
+    <text x="722" y="1338" fill="#9db4de">· No custom RT node here; custom AUAudioUnit FAILED on</text>
+    <text x="734" y="1354" fill="#9db4de">device once (Studio, "only gain worked") — don't retry it</text>
+    <text x="722" y="1376" fill="#9db4de">· loadFactoryPreset rebuilds the reverb tail — never per tick</text>
+    <text x="722" y="1398" fill="#9db4de">· Beat grids partial: sidecar-download gated on Beat pulse;</text>
+    <text x="734" y="1414" fill="#9db4de">profile items have catalog BPM only (lattice fallback needed)</text>
+    <text x="722" y="1436" fill="#5a6d96">Source: docs/design/mix-audio-graph.md</text>
+  </g>
+</svg>
