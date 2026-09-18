@@ -93,6 +93,8 @@ final class MixDeckSessionStore {
         var eqLow: Double? = nil
         var eqMid: Double? = nil
         var eqHigh: Double? = nil
+        /// Filter FX mode rawValue ("lowPass"/"highPass"). OPTIONAL (schema-safe); absent ⇒ lowPass.
+        var filterMode: String? = nil
     }
 
     /// One Auto-DJ queue row — a `MixEngine.AutoMixItem` (loadable + known length).

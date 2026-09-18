@@ -42,6 +42,8 @@ enum MixEventKind: Codable, Hashable, Sendable {
     case effectToggle, effectStrength
     /// A 3-band EQ knob move. `param` names the band ("low"/"mid"/"high").
     case eq
+    /// Filter FX mode flip. `param` is the new mode ("lowPass"/"highPass").
+    case filterMode
     case stemMode, stemMute, stemVolume
     case lead, sync, resetDeck
     /// Auto-mix PAUSE / RESUME (the DJ steps away, takes over the decks by hand, then hands control
@@ -58,6 +60,7 @@ enum MixEventKind: Codable, Hashable, Sendable {
         "load": .load, "play": .play, "pause": .pause, "seek": .seek,
         "tempo": .tempo, "pitch": .pitch, "volume": .volume, "crossfader": .crossfader,
         "effectToggle": .effectToggle, "effectStrength": .effectStrength, "eq": .eq,
+        "filterMode": .filterMode,
         "stemMode": .stemMode, "stemMute": .stemMute, "stemVolume": .stemVolume,
         "lead": .lead, "sync": .sync, "resetDeck": .resetDeck, "glide": .glide,
         "autoPause": .autoPause, "autoResume": .autoResume,
@@ -71,6 +74,7 @@ enum MixEventKind: Codable, Hashable, Sendable {
         case .volume: return "volume";        case .crossfader: return "crossfader"
         case .effectToggle: return "effectToggle"; case .effectStrength: return "effectStrength"
         case .eq: return "eq"
+        case .filterMode: return "filterMode"
         case .stemMode: return "stemMode";    case .stemMute: return "stemMute"
         case .stemVolume: return "stemVolume"; case .lead: return "lead"
         case .sync: return "sync";            case .resetDeck: return "resetDeck"

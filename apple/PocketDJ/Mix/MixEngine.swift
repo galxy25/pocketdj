@@ -151,6 +151,14 @@ final class MixEngine {
         }
     }
 
+    /// Which cutoff shape the "Filter" FX sweeps — LOW-pass (strength cuts highs, classic DJ
+    /// build-down) or HIGH-pass (strength cuts bass, classic DJ build-up). Toggled via the small
+    /// LP/HP chip alongside the strength control; the effect's on/off + strength stay as they were.
+    enum FilterMode: String, Codable, CaseIterable {
+        case lowPass, highPass
+        var label: String { self == .lowPass ? "LP" : "HP" }
+    }
+
     /// The 3-band deck EQ (low shelf / mid peak / high shelf), always active — unlike `Effect` it
     /// has no on/off toggle, just a gain per band. `bandIndex` matches the fixed band order the
     /// per-deck `AVAudioUnitEQ(numberOfBands: 3)` is configured with once at build (see `ensureEngine`).
@@ -260,6 +268,8 @@ final class MixEngine {
         var loopUnits: Double = 2
         /// 3-band EQ gain in dB, always active (no on/off — 0 is flat/no-op).
         var eqLow: Double = 0, eqMid: Double = 0, eqHigh: Double = 0
+        /// Which cutoff shape the "Filter" FX sweeps. Independent of `filter`'s on/off + strength.
+        var filterMode: FilterMode = .lowPass
 
         func eqGain(_ b: EQBand) -> Double {
             switch b { case .low: return eqLow; case .mid: return eqMid; case .high: return eqHigh }
@@ -1471,6 +1481,7 @@ final class MixEngine {
             $0.compressor = false; $0.reverb = false; $0.flanger = false; $0.filter = false
             $0.compStrength = 0.5; $0.reverbStrength = 0.5; $0.flangerStrength = 0.5; $0.filterStrength = 0.5
             $0.eqLow = 0; $0.eqMid = 0; $0.eqHigh = 0
+            $0.filterMode = .lowPass
             $0.stemMuted = []     // un-mute + re-level every stem (keeps stem mode itself)
             $0.stemVol = [:]
         }
@@ -1959,6 +1970,16 @@ final class MixEngine {
         applyEQ(band, on: deck)
         rec(.eq, deck, param: "\(band)", value: state(deck).eqGain(band))
         persistMixDeckSession(debounced: true)   // knob surface — one write per burst
+    }
+
+    // MARK: - Filter mode (low-pass / high-pass)
+
+    func filterMode(_ deck: Deck) -> FilterMode { state(deck).filterMode }
+    func setFilterMode(_ mode: FilterMode, on deck: Deck) {
+        mutate(deck) { $0.filterMode = mode }
+        applyEffect(.filter, on: deck)
+        rec(.filterMode, deck, param: mode.rawValue)
+        persistMixDeckSession()                  // discrete tap — persist immediately
     }
 
     /// Designate (or clear) the Lead deck for beat-matching. Tapping the current lead clears it.
@@ -3387,6 +3408,7 @@ final class MixEngine {
         setEqGain(.low, ds.eqLow ?? 0, on: deck)
         setEqGain(.mid, ds.eqMid ?? 0, on: deck)
         setEqGain(.high, ds.eqHigh ?? 0, on: deck)
+        setFilterMode(ds.filterMode.flatMap(FilterMode.init(rawValue:)) ?? .lowPass, on: deck)
         if ds.stemMode {
             setStemMode(true, on: deck)     // stems no longer burned → stays single-file (graceful)
             if stemActive(deck) {
@@ -3522,7 +3544,8 @@ final class MixEngine {
             flangerStrength: s.flangerStrength, filterStrength: s.filterStrength,
             stemMode: s.stemMode, stemMuted: Array(s.stemMuted).sorted(), stemVol: s.stemVol,
             loopOn: s.loopOn, loopUnits: s.loopUnits,
-            eqLow: s.eqLow, eqMid: s.eqMid, eqHigh: s.eqHigh)
+            eqLow: s.eqLow, eqMid: s.eqMid, eqHigh: s.eqHigh,
+            filterMode: s.filterMode.rawValue)
     }
 
     private func trackRef(_ l: MixLoadable) -> MixDeckSessionStore.TrackRef {
@@ -3876,9 +3899,18 @@ final class MixEngine {
             n.wetDryMix = s * 100; n.bypass = !on
         case .filter:
             guard let n = filters[deck], let band = n.bands.first else { return }
-            band.filterType = .resonantLowPass
-            // Strength sweeps the cutoff log-down from ~18 kHz (subtle) to ~250 Hz (heavy).
-            band.frequency = Float(18_000 * pow(250.0 / 18_000.0, Double(s)))
+            switch state(deck).filterMode {
+            case .lowPass:
+                band.filterType = .resonantLowPass
+                // Strength sweeps the cutoff log-down from ~18 kHz (subtle) to ~250 Hz (heavy) —
+                // classic DJ build-DOWN (cuts highs as strength rises).
+                band.frequency = Float(18_000 * pow(250.0 / 18_000.0, Double(s)))
+            case .highPass:
+                band.filterType = .resonantHighPass
+                // Strength sweeps the cutoff log-up from ~30 Hz (subtle) to ~2 kHz (heavy) —
+                // classic DJ build-UP (cuts bass as strength rises).
+                band.frequency = Float(30.0 * pow(2_000.0 / 30.0, Double(s)))
+            }
             band.bandwidth = 0.5
             band.bypass = !on
             // The EQ NODE stays active (band-bypass alone gates the filter EFFECT) so its

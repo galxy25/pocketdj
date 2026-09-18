@@ -1164,7 +1164,9 @@ private struct DeckView: View {
                              strength: engine.strength(fx, on: deck),
                              a11y: "\(a11y)-fx-\(fx.rawValue)",
                              onToggle: { engine.setEffect(fx, enabled: !engine.isEnabled(fx, on: deck), on: deck) },
-                             onStrength: { engine.setEffectStrength(fx, $0, on: deck) })
+                             onStrength: { engine.setEffectStrength(fx, $0, on: deck) },
+                             filterMode: fx == .filter ? engine.filterMode(deck) : nil,
+                             onFilterMode: fx == .filter ? { engine.setFilterMode($0, on: deck) } : nil)
             }
         }
     }
@@ -1772,6 +1774,10 @@ struct EffectButton: View {
     let a11y: String
     let onToggle: () -> Void
     let onStrength: (Double) -> Void
+    /// Low-pass/high-pass toggle — Filter FX only (nil for the other 3 effects). Rendered as a small
+    /// LP/HP chip alongside the strength control wherever it's revealed.
+    var filterMode: MixEngine.FilterMode? = nil
+    var onFilterMode: ((MixEngine.FilterMode) -> Void)? = nil
 
     /// In-place flip (landscape / iPad / macOS): showing the strength slider vs the labelled button.
     @State private var editing = false
@@ -1802,9 +1808,15 @@ struct EffectButton: View {
             if !Task.isCancelled { editing = false }
         }
         .popover(isPresented: $showPopover, arrowEdge: .top) {
-            ChipStrengthPopover(title: effect.label, systemImage: effect.icon, tint: Theme.accent,
-                                value: strength, step: 0.05, a11y: "\(a11y)-strength",
-                                presented: $showPopover, onChange: onStrength)
+            VStack(spacing: 0) {
+                if let filterMode, let onFilterMode {
+                    HStack { Spacer(); FilterModeToggle(mode: filterMode, a11y: "\(a11y)-mode", onChange: onFilterMode) }
+                        .padding(.horizontal, 16).padding(.top, 12)
+                }
+                ChipStrengthPopover(title: effect.label, systemImage: effect.icon, tint: Theme.accent,
+                                    value: strength, step: 0.05, a11y: "\(a11y)-strength",
+                                    presented: $showPopover, onChange: onStrength)
+            }
         }
     }
 
@@ -1843,6 +1855,9 @@ struct EffectButton: View {
     private var sliderFace: some View {
         HStack(spacing: 5) {
             Image(systemName: effect.icon)
+            if let filterMode, let onFilterMode {
+                FilterModeToggle(mode: filterMode, a11y: "\(a11y)-mode", onChange: onFilterMode)
+            }
             StepButton(dir: .dec, value: strength, range: 0...1, step: 0.05, a11y: "\(a11y)-strength",
                        onChange: onStrength, onInteract: { interaction += 1 })
             Slider(value: Binding(get: { strength }, set: { onStrength($0); interaction += 1 }), in: 0...1)
@@ -1865,6 +1880,32 @@ struct EffectButton: View {
         if !isOn { onToggle() }     // dialling strength should be audible → enable on reveal
         if useChipPopover { showPopover = true }       // fixed-width popover (compact iPhone)
         else { editing = true; interaction += 1 }      // in-place flip (iPad / macOS)
+    }
+}
+
+/// LP/HP compact chip — tap flips the Filter FX's cutoff shape. Lives beside the strength control
+/// wherever it's revealed (in-place flip + iPhone popover); independent of the on/off + strength.
+private struct FilterModeToggle: View {
+    let mode: MixEngine.FilterMode
+    let a11y: String
+    let onChange: (MixEngine.FilterMode) -> Void
+
+    var body: some View {
+        Button {
+            onChange(mode == .lowPass ? .highPass : .lowPass)
+        } label: {
+            Text(mode.label)
+                .font(.caption2.weight(.bold))
+                .frame(width: 26, height: 18)
+                .background(Theme.bgOverlay, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(Theme.accent)
+        .help(mode == .lowPass ? "Low-pass (cuts highs) — tap for high-pass" : "High-pass (cuts bass) — tap for low-pass")
+        .accessibilityIdentifier(a11y)
+        .accessibilityLabel("Filter mode")
+        .accessibilityValue(mode == .lowPass ? "Low-pass" : "High-pass")
     }
 }
 
