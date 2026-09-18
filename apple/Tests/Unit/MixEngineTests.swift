@@ -1860,6 +1860,86 @@ final class MixEngineTests: XCTestCase {
         e.teardown()
     }
 
+    // MARK: - FX modulation: the mod tick
+
+    /// A beat-synced LFO on a playing deck must actually MOVE the node parameter — and the user's
+    /// stored strength must never move with it (the modulator writes nodes, not state).
+    func testLFOModulatesTheNodeButNeverTheStoredStrength() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let a = try makeSineWAV(seconds: 4)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+
+        e.setSlotEffect(.filter, slot: 0, on: .a)
+        e.setSlot(0, enabled: true, on: .a)
+        e.setSlotStrength(0, 0.5, on: .a)
+        // 1/4-note LFO at 120 catalog BPM (no measured grid → synthesized lattice), full depth.
+        e.setSlotMod(SlotMod(source: .lfo, rate: .quarter, depth: 1.0, shape: .sine), slot: 0, on: .a)
+        e.play(.a)
+
+        // Sample the filter band frequency over ~0.8 s (≈1.6 LFO cycles) — it must move.
+        var seen: Set<Int> = []
+        for _ in 0..<12 {
+            try await Task.sleep(nanoseconds: 70_000_000)
+            if let f = e.slotFilterFrequencyForTesting(0, on: .a) { seen.insert(Int(f)) }
+        }
+        XCTAssertGreaterThan(seen.count, 3, "the cutoff must sweep, not sit still — saw \(seen)")
+        XCTAssertEqual(e.slot(0, on: .a)?.strength ?? 0, 0.5, accuracy: 1e-9,
+                       "the STORED strength is the user's setting — the LFO must never write it")
+        XCTAssertTrue(e.isReady, "the tick must never destabilize the graph")
+        e.teardown()
+    }
+
+    /// Snap-back: stopping the deck mid-wobble must land the node exactly on the user's base value.
+    func testStoppingTheDeckSnapsNodesBackToTheStoredStrength() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let a = try makeSineWAV(seconds: 4)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.setSlotEffect(.filter, slot: 0, on: .a)
+        e.setSlot(0, enabled: true, on: .a)
+        e.setSlotStrength(0, 0.5, on: .a)
+        let baseFreq = e.slotFilterFrequencyForTesting(0, on: .a)
+        e.setSlotMod(SlotMod(source: .lfo, rate: .quarter, depth: 1.0, shape: .sine), slot: 0, on: .a)
+        e.play(.a)
+        try await Task.sleep(nanoseconds: 400_000_000)     // let it wobble
+
+        e.pause(.a)
+        try await Task.sleep(nanoseconds: 200_000_000)     // give the tick a chance to snap back
+
+        XCTAssertEqual(e.slotFilterFrequencyForTesting(0, on: .a) ?? -1, baseFreq ?? -2,
+                       accuracy: 1, "a stopped deck's node must sit exactly on the user's value")
+        e.teardown()
+    }
+
+    /// Turning the source off mid-play restores the base immediately via the normal setter path.
+    func testTurningModOffRestoresTheBaseValue() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let a = try makeSineWAV(seconds: 4)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.setSlotEffect(.filter, slot: 0, on: .a)
+        e.setSlot(0, enabled: true, on: .a)
+        e.setSlotStrength(0, 0.5, on: .a)
+        let baseFreq = e.slotFilterFrequencyForTesting(0, on: .a)
+        e.setSlotMod(SlotMod(source: .lfo, rate: .quarter, depth: 1.0, shape: .square), slot: 0, on: .a)
+        e.play(.a)
+        try await Task.sleep(nanoseconds: 300_000_000)
+
+        e.setSlotMod(SlotMod(), slot: 0, on: .a)           // source off
+        try await Task.sleep(nanoseconds: 100_000_000)
+
+        XCTAssertEqual(e.slotFilterFrequencyForTesting(0, on: .a) ?? -1, baseFreq ?? -2,
+                       accuracy: 1, "mod off ⇒ the node returns to the stored strength")
+        e.teardown()
+    }
+
     /// The engine must STAMP the rack position on every slot-driven event — without it, a replay of
     /// a rack holding duplicates can't tell which of two filters the DJ actually moved.
     func testSlotEventsCarryTheirRackPosition() {

@@ -445,6 +445,24 @@ final class MixEngine {
     /// nil/0 ⇒ identity, so this refactor is behaviour-neutral.
     @ObservationIgnored private var modPhaseMirror: [Deck: [Double?]] = [:]
     @ObservationIgnored private var envMirror: [Deck: Double] = [:]
+    /// The ~60 Hz modulation driver — a SECOND task, deliberately separate from the 10 Hz
+    /// `tickTask` (which also persists, recovers, and runs the Auto-DJ; none of that belongs at
+    /// 60 Hz). Self-terminating like its sibling: exits when no rendering deck has a live
+    /// modulated slot, restarted by the same sites that start the main tick plus `setSlotMod`.
+    @ObservationIgnored private var modTask: Task<Void, Never>?
+    /// Last strength actually written per (deck, slot) — the dead-band that keeps a idle LFO
+    /// (depth 0 / flat envelope) from spamming identical AU writes. -1 = never written.
+    @ObservationIgnored private var modLastWritten: [Deck: [Double]] = [:]
+    /// Per-deck phase-clock state for the mod tick: `truePlayhead` is sample-accurate but nil in
+    /// stem mode / while paused, and the 10 Hz `position` accumulator alone would quantize the LFO
+    /// phase (~21% of a beat at 128 BPM). Between position changes we extrapolate wall-clock ×
+    /// rate, clamped to a little over one main-tick period so a stalled engine can't run away.
+    @ObservationIgnored private var modClockLastPos: [Deck: Double] = [:]
+    @ObservationIgnored private var modClockStamp: [Deck: Double] = [:]
+    /// True while the tick has live modulated values on a deck — the snap-back flag: when the deck
+    /// stops or its last modulated slot turns off, one `applyAllSlots` lands the nodes exactly on
+    /// the user's stored strengths (otherwise they'd freeze mid-wobble).
+    @ObservationIgnored private var modWasActive: [Deck: Bool] = [:]
     /// Per-deck TRIM — a 1-band EQ whose band is permanently bypassed, used ONLY as a `globalGain`
     /// carrier for the >unity volume boost (`applyBoost`). Pre-rack that gain rode the deck's filter
     /// EQ, which can't work once "filter" is a swappable slot effect that may not be in the rack at
@@ -1007,6 +1025,11 @@ final class MixEngine {
     /// state: engine renders on, node silently stopped).
     func parkPlayerNodeForTesting(_ deck: Deck) { players[deck]?.pause() }
     func playerNodeIsPlayingForTesting(_ deck: Deck) -> Bool { players[deck]?.isPlaying ?? false }
+    /// The LIVE filter-band frequency on a slot's filter node — lets a modulation test assert the
+    /// LFO actually moves the graph (and snaps back) without reaching into AVAudio.
+    func slotFilterFrequencyForTesting(_ i: Int, on deck: Deck) -> Float? {
+        slotNodes[deck]?[safe: i]?.filter.bands.first?.frequency
+    }
 
     // Auto-mix queue introspection (auto-reset + collection-downloader progressive-append tests).
     var autoQueueCountForTesting: Int { autoQueue.count }
@@ -1050,6 +1073,7 @@ final class MixEngine {
         endAutoLoop()
         stopRecording()                 // finalize any in-progress capture (the file stays on disk)
         tickTask?.cancel(); tickTask = nil
+        modTask?.cancel(); modTask = nil
         pauseBoth()
         if built { engine.stop() }
         releases[.a]?(); releases[.a] = nil
@@ -2211,6 +2235,7 @@ final class MixEngine {
         guard let s = state(deck).slots[safe: i], s.enabled != enabled else { return }
         mutate(deck) { $0.slots[i].enabled = enabled }
         applySlot(i, on: deck)
+        startModTickIfNeeded()                   // an enabled modulated slot may now need the tick
         rec(.effectToggle, deck, param: s.effect.rawValue, flag: enabled, slot: i)
         persistMixDeckSession()                  // discrete tap — persist immediately
     }
@@ -2249,6 +2274,7 @@ final class MixEngine {
         }
         rec(.effectMod, deck, param: "\(mod.source.rawValue):\(mod.rate.rawValue):\(mod.shape.rawValue)",
             value: mod.depth, slot: i)
+        startModTickIfNeeded()                   // may have just become worth ticking
         persistMixDeckSession()                  // discrete config change — persist immediately
     }
 
@@ -4148,6 +4174,110 @@ final class MixEngine {
         for i in 0..<DeckState.slotCount { applySlot(i, on: deck) }
     }
 
+    // MARK: - The modulation tick (~60 Hz)
+
+    /// Whether ANY rendering deck currently has a slot worth modulating.
+    private var modWanted: Bool {
+        Deck.allCases.contains { d in
+            state(d).isPlaying && state(d).slots.contains {
+                $0.enabled && $0.mod.source != .off && FXParams.modulates($0.effect) != nil
+            }
+        }
+    }
+
+    private func startModTickIfNeeded() {
+        guard modTask == nil, modWanted else { return }
+        modTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 16_000_000)   // ~60 Hz
+                if Task.isCancelled { break }
+                guard let self, self.modFire() else { break }
+            }
+        }
+    }
+
+    /// One modulation step. Reads the phase clock, computes each live modulated slot's current
+    /// value, and writes ONLY node parameters + private mirrors — nothing observable, nothing
+    /// persisted, nothing recorded (the PlayerClock doctrine). Phase is DERIVED from the playhead
+    /// each tick, never integrated, so tick jitter cannot accumulate into drift.
+    /// Returns false (and clears `modTask`) when nothing needs modulating — the task self-exits.
+    private func modFire() -> Bool {
+        guard built else { modTask = nil; return false }
+        var anyLive = false
+        let now = Date().timeIntervalSinceReferenceDate
+        for d in Deck.allCases {
+            let slots = state(d).slots
+            let liveIdx = slots.indices.filter {
+                slots[$0].enabled && slots[$0].mod.source != .off
+                    && FXParams.modulates(slots[$0].effect) != nil
+            }
+            guard state(d).isPlaying, !liveIdx.isEmpty else {
+                // SNAP-BACK: the deck stopped (or its modulated slots turned off) mid-wobble —
+                // land every node back on the user's stored strengths exactly once.
+                if modWasActive[d] == true {
+                    modWasActive[d] = false
+                    modPhaseMirror[d] = nil
+                    modLastWritten[d] = nil
+                    applyAllSlots(d)
+                }
+                continue
+            }
+            anyLive = true
+            modWasActive[d] = true
+            let atMs = modClockPosition(d, now: now) * 1000
+            let t = state(d).loaded
+            var phases = modPhaseMirror[d] ?? Array(repeating: nil, count: DeckState.slotCount)
+            var written = modLastWritten[d] ?? Array(repeating: -1, count: DeckState.slotCount)
+            for i in liveIdx {
+                let slot = slots[i]
+                var phase: Double?
+                if slot.mod.source == .lfo, let t {
+                    phase = BeatMath.cyclePhase(atMs: atMs,
+                                                beatsMs: t.beatsMs, downbeatsMs: t.downbeatsMs,
+                                                bpm: (t.gridBpm ?? t.bpm) ?? 0,
+                                                firstDownbeatMs: t.firstDownbeatMs ?? 0,
+                                                cycleBeats: slot.mod.rate.beats,
+                                                offset: slot.mod.phase)
+                }
+                phases[i] = phase
+                modPhaseMirror[d] = phases
+                let eff = effectiveStrength(i, on: d)
+                // Dead-band: skip the AU write when the value hasn't meaningfully moved (an idle
+                // envelope / zero-depth LFO costs nothing).
+                if abs(eff - written[i]) >= 0.002 {
+                    writeSlotParams(i, on: d, slot: slot, strength: eff)
+                    written[i] = eff
+                }
+            }
+            modLastWritten[d] = written
+        }
+        if !anyLive, Deck.allCases.allSatisfy({ modWasActive[$0] != true }) {
+            modTask = nil
+            return false
+        }
+        return true
+    }
+
+    /// The deck's CURRENT source position (seconds) for phase derivation: the sample-accurate
+    /// `truePlayhead` when the render clock serves (loop-folded), else the 10 Hz `position`
+    /// accumulator EXTRAPOLATED by wall-clock × rate since it last changed — clamped to a little
+    /// over one main-tick period so a stalled engine can't run the phase away.
+    private func modClockPosition(_ deck: Deck, now: Double) -> Double {
+        if let tp = truePlayhead(deck) {
+            modClockLastPos[deck] = tp
+            modClockStamp[deck] = now
+            return tp
+        }
+        let p = position(deck)
+        if modClockLastPos[deck] != p {
+            modClockLastPos[deck] = p
+            modClockStamp[deck] = now
+            return p
+        }
+        let elapsed = min(now - (modClockStamp[deck] ?? now), 0.15)
+        return p + max(elapsed, 0) * state(deck).rate
+    }
+
     /// Push every slot holding `effect` — the bridge for the effect-keyed shims (`setEffect`,
     /// `setEffectStrength`, the Auto-DJ glide), which address a family rather than a position.
     /// With duplicates in the rack, one family write legitimately touches several slots.
@@ -4234,6 +4364,7 @@ final class MixEngine {
     // MARK: - Tick (playhead + auto-mix)
 
     private func startTickIfNeeded() {
+        startModTickIfNeeded()   // playback (re)starting is also the mod tick's wake signal
         guard tickTask == nil else { return }
         lastTickAt = Date()
         tickTask = Task { [weak self] in
@@ -4534,6 +4665,7 @@ final class MixEngine {
         endAutoLoop()
         pauseBoth()
         tickTask?.cancel(); tickTask = nil
+        modTask?.cancel(); modTask = nil
         unwireStems(.a); unwireStems(.b)
         if let o = configChangeObserver { NotificationCenter.default.removeObserver(o); configChangeObserver = nil }
         engine.stop()
