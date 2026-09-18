@@ -33,6 +33,20 @@ final class MixDeckLevels: @unchecked Sendable {
     var updatedAt: Double = 0
 }
 
+/// Per-deck ENVELOPE-FOLLOWER mirror for the FX modulation's audio-reactive source — the same
+/// non-observable doctrine as `MixDeckLevels`. Written on the realtime tap thread from a tap on the
+/// deck's `inputMixer` (PRE-FX, so a filter driven by this envelope can never hear itself and
+/// feed back; post-stem-merge, so stem mode works for free), read by the ~60 Hz mod tick.
+/// Ballistics are TIME-CONSTANT based (`FXParams.ballisticsCoef`, ~8 ms attack / 180 ms release) —
+/// deliberately NOT the VU taps' per-callback constants, so the envelope's speed is independent of
+/// whatever buffer size the host actually delivers.
+final class MixDeckEnvelope: @unchecked Sendable {
+    /// 0…1 modulation drive (`FXParams.envelopeCurve` over −40…0 dBFS), ballistics applied.
+    var value: Float = 0
+    /// Last tap write (0 = never) — a stale mirror (taps parked) reads as silence.
+    var updatedAt: Double = 0
+}
+
 /// The in-app DEBUG-SESSION log behind Settings ▸ Debug: turn capture ON, reproduce the issue,
 /// turn it OFF, export the session (a remote TestFlight tester ships the file back via iCloud).
 /// Every `MixEngine` diagnostic line goes to os_log unconditionally; while capturing it is ALSO
@@ -444,7 +458,6 @@ final class MixEngine {
     /// observable truth. Empty until the mod tick lands (commit 5) — `effectiveStrength` reads
     /// nil/0 ⇒ identity, so this refactor is behaviour-neutral.
     @ObservationIgnored private var modPhaseMirror: [Deck: [Double?]] = [:]
-    @ObservationIgnored private var envMirror: [Deck: Double] = [:]
     /// The ~60 Hz modulation driver — a SECOND task, deliberately separate from the 10 Hz
     /// `tickTask` (which also persists, recovers, and runs the Auto-DJ; none of that belongs at
     /// 60 Hz). Self-terminating like its sibling: exits when no rendering deck has a live
@@ -541,6 +554,9 @@ final class MixEngine {
     /// re-installed onto fresh nodes but keep writing these same objects).
     @ObservationIgnored private let levelsA = MixDeckLevels()
     @ObservationIgnored private let levelsB = MixDeckLevels()
+    /// Envelope-follower mirrors (pre-FX inputMixer taps) — see `MixDeckEnvelope`.
+    @ObservationIgnored private let envA = MixDeckEnvelope()
+    @ObservationIgnored private let envB = MixDeckEnvelope()
     @ObservationIgnored private var lastDiagHeartbeat: Date?
     /// Throttles the steady-state Now Playing card rewrite to ~1 Hz inside the 10 Hz tick.
     @ObservationIgnored private var lastCardRefresh: Date?
@@ -993,6 +1009,23 @@ final class MixEngine {
                     lv.postPeak = max(p, lv.postPeak * Self.vuPeakDecay)
                     lv.postRMS += (r - lv.postRMS) * (r > lv.postRMS ? Self.vuRmsAttack : Self.vuRmsRelease)
                     lv.updatedAt = Date().timeIntervalSinceReferenceDate
+                }
+            }
+            // ENVELOPE-FOLLOWER tap for the audio-reactive FX modulation — on the deck's
+            // `inputMixer`: PRE-FX (a filter driven by this can never hear itself and feed back),
+            // post-stem-merge (stem mode works for free), and the bus is otherwise tap-free.
+            // Smaller buffers than the VU taps (~23 ms → responsive), with TIME-CONSTANT
+            // ballistics so the delivered buffer size — which is the host's choice, not ours —
+            // cannot change the envelope's speed.
+            let env = d == .a ? envA : envB
+            if let im = inputMixers[d] {
+                im.installTap(onBus: 0, bufferSize: 1024, format: im.outputFormat(forBus: 0)) { buffer, _ in
+                    let (_, r) = Self.vuMeter(buffer)
+                    let drive = Float(FXParams.envelopeCurve(rms: r))
+                    let dt = Double(buffer.frameLength) / buffer.format.sampleRate
+                    let tau = drive > env.value ? 0.008 : 0.18   // fast attack, musical release
+                    env.value += (drive - env.value) * FXParams.ballisticsCoef(dt: dt, tau: tau)
+                    env.updatedAt = Date().timeIntervalSinceReferenceDate
                 }
             }
         }
@@ -4125,10 +4158,24 @@ final class MixEngine {
     /// families `FXParams.modulates` scopes out.
     private func effectiveStrength(_ i: Int, on deck: Deck) -> Double {
         guard let slot = state(deck).slots[safe: i] else { return 0.5 }
-        guard slot.mod.source != .off, FXParams.modulates(slot.effect) != nil else { return slot.strength }
+        // Modulation is live ONLY while the deck plays: a paused deck's nodes sit exactly on the
+        // user's stored values (this is also what makes the tick's snap-back deterministic — at
+        // the moment it fires the envelope mirror may not be stale yet, and without this gate the
+        // snap-back would freeze the still-pushed value onto the node).
+        guard state(deck).isPlaying,
+              slot.mod.source != .off, FXParams.modulates(slot.effect) != nil else { return slot.strength }
         return FXParams.modulated(base: slot.strength, mod: slot.mod,
                                   phase01: modPhaseMirror[deck]?[safe: i] ?? nil,
-                                  env: envMirror[deck] ?? 0)
+                                  env: envelopeDrive(deck))
+    }
+
+    /// The deck's live envelope drive (0…1) — the tap mirror, read as SILENCE when stale (taps
+    /// parked by a route change / interruption / engine stop), so a wedged tap can never hold an
+    /// effect pinned open.
+    private func envelopeDrive(_ deck: Deck) -> Double {
+        let env = deck == .a ? envA : envB
+        guard Date().timeIntervalSinceReferenceDate - env.updatedAt < 0.5 else { return 0 }
+        return Double(env.value)
     }
 
     /// Pure node VALUE writes for one live slot — no bypass churn, no preset loads, no allocation.

@@ -1940,6 +1940,36 @@ final class MixEngineTests: XCTestCase {
         e.teardown()
     }
 
+    /// The audio-reactive source: a playing deck's signal must PUSH the effect away from its base
+    /// (fast attack), and pausing must let it fall back (stale mirror reads as silence).
+    func testEnvelopeFollowerPushesAndReleases() async throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        let a = try makeSineWAV(seconds: 4)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.setSlotEffect(.filter, slot: 0, on: .a)
+        e.setSlot(0, enabled: true, on: .a)
+        e.setSlotStrength(0, 0.2, on: .a)
+        let baseFreq = e.slotFilterFrequencyForTesting(0, on: .a)
+        e.setSlotMod(SlotMod(source: .envelope, depth: 1.0), slot: 0, on: .a)
+        e.play(.a)
+
+        try await Task.sleep(nanoseconds: 700_000_000)     // let the follower settle on the sine
+        let pushed = e.slotFilterFrequencyForTesting(0, on: .a)
+        XCTAssertNotEqual(pushed ?? -1, baseFreq ?? -2, accuracy: 50,
+                          "a steady signal must push the cutoff well away from the base")
+        XCTAssertEqual(e.slot(0, on: .a)?.strength ?? 0, 0.2, accuracy: 1e-9,
+                       "the stored strength never moves")
+
+        e.pause(.a)
+        try await Task.sleep(nanoseconds: 800_000_000)     // taps park → mirror stale → silence
+        XCTAssertEqual(e.slotFilterFrequencyForTesting(0, on: .a) ?? -1, baseFreq ?? -2,
+                       accuracy: 1, "paused ⇒ envelope reads silent ⇒ the node sits on base")
+        e.teardown()
+    }
+
     /// The engine must STAMP the rack position on every slot-driven event — without it, a replay of
     /// a rack holding duplicates can't tell which of two filters the DJ actually moved.
     func testSlotEventsCarryTheirRackPosition() {
