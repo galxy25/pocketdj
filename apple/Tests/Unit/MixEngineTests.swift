@@ -1491,9 +1491,10 @@ final class MixEngineTests: XCTestCase {
             rackEvents.append((kind, param, slot))
         }
         func logGlide(deck: String?, param: String, songId: String?, title: String?, artist: String?,
-                      from: Double, to: Double, rate: Double, posMs: Int?) {
+                      from: Double, to: Double, rate: Double, posMs: Int?, slot: Int?) {
             glides.append((param: param, deck: deck, from: from, to: to, rate: rate))
             events.append((.glide, deck, to))
+            rackEvents.append((.glide, param, slot))
         }
         func notePlayed(songId: String) { played.append(songId) }
         func hasPlayed(_ songId: String) -> Bool { played.contains(songId) }
@@ -1772,6 +1773,91 @@ final class MixEngineTests: XCTestCase {
         XCTAssertEqual(back.count, 1)
         XCTAssertNil(back[0].slot, "a pre-rack event has no slot")
         XCTAssertEqual(back[0].kind, .effectToggle)
+    }
+
+    // MARK: - FX rack: Auto-DJ glide targeting
+
+    /// The FX-glide pool + texture roll are pure and UNCHANGED by the rack — only the resolution of
+    /// a rolled effect to a slot is new. This pins the pool so the determinism contract holds.
+    func testGlidePoolIsUnchangedByTheRack() {
+        XCTAssertEqual(MixEngine.fxGlidePool.count, 3)
+        XCTAssertFalse(MixEngine.fxGlidePool.contains(.compressor),
+                       "compressor is a dynamics tool, not a sweep — it stays out of the pool")
+    }
+
+    /// A glide sweeps whatever the DJ put in the rack: it rides the slot's OWN variety rather than
+    /// imposing a default (put Cathedral in a slot and the Auto-DJ sweeps Cathedral), and it must
+    /// never rewrite the slot's family or variety.
+    func testGlideSweepsTheSlotsOwnVarietyWithoutChangingIt() throws {
+        let e = makeEngine()
+        let q = [MixEngine.AutoMixItem(loadable: loadable("a", bpm: 120, lengthMs: 180_000), durationMs: 180_000),
+                 MixEngine.AutoMixItem(loadable: loadable("b", bpm: 120, lengthMs: 180_000), durationMs: 180_000)]
+        e.setFXGlide(true)
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        for d in [MixEngine.Deck.a, .b] {
+            e.setSlotEffect(.reverb, slot: 0, on: d)
+            e.setSlotVariant(.cathedral, slot: 0, on: d)
+        }
+
+        e.skipToNext(fadeSeconds: 5)
+
+        for d in [MixEngine.Deck.a, .b] {
+            XCTAssertEqual(e.slot(0, on: d)?.effect, .reverb, "a glide must not rewrite the family")
+            XCTAssertEqual(e.slot(0, on: d)?.variant, .cathedral, "…nor the variety")
+        }
+        e.teardown()
+    }
+
+    /// A rack with NOTHING sweepable (all compressors) is a legitimate user choice — the glide must
+    /// sit that deck out silently rather than forcing an effect in or logging a phantom sweep.
+    func testGlideSitsOutARackWithNothingSweepable() throws {
+        let e = makeEngine()
+        let q = [MixEngine.AutoMixItem(loadable: loadable("a", bpm: 120, lengthMs: 180_000), durationMs: 180_000),
+                 MixEngine.AutoMixItem(loadable: loadable("b", bpm: 120, lengthMs: 180_000), durationMs: 180_000)]
+        e.setFXGlide(true)
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        for d in [MixEngine.Deck.a, .b] {
+            for i in 0..<MixEngine.fxSlotCount { e.setSlotEffect(.compressor, slot: i, on: d) }
+        }
+        let rec = MockRecorder()
+        e.recorder = rec                      // attach AFTER the rack setup, so only the glide logs
+
+        e.skipToNext(fadeSeconds: 5)
+
+        XCTAssertTrue(e.slots(.a).allSatisfy { $0.effect == .compressor }, "the rack is untouched")
+        XCTAssertTrue(e.slots(.a).allSatisfy { !$0.enabled },
+                      "no compressor was force-engaged by the glide")
+        XCTAssertTrue(rec.glides.allSatisfy { $0.param != "filter" && $0.param != "reverb" && $0.param != "flanger" },
+                      "no phantom FX-glide node for a rack that can't sweep")
+        e.teardown()
+    }
+
+    /// Glide events must name the rack POSITION they swept, so replaying a rack with duplicates is
+    /// unambiguous — and the resolver must skip past a non-sweepable slot to find one it can use.
+    func testGlideResolvesPastNonSweepableSlotsAndStampsThePosition() throws {
+        let e = makeEngine()
+        let q = [MixEngine.AutoMixItem(loadable: loadable("a", bpm: 120, lengthMs: 180_000), durationMs: 180_000),
+                 MixEngine.AutoMixItem(loadable: loadable("b", bpm: 120, lengthMs: 180_000), durationMs: 180_000)]
+        e.setFXGlide(true)
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        // Every slot a compressor EXCEPT the last — the glide must find that one.
+        for d in [MixEngine.Deck.a, .b] {
+            for i in 0..<(MixEngine.fxSlotCount - 1) { e.setSlotEffect(.compressor, slot: i, on: d) }
+            e.setSlotEffect(.reverb, slot: MixEngine.fxSlotCount - 1, on: d)
+        }
+        let rec = MockRecorder()
+        e.recorder = rec
+
+        e.skipToNext(fadeSeconds: 5)
+
+        let fxGlides = rec.rackEvents.filter { $0.kind == .glide && $0.slot != nil }
+        XCTAssertFalse(fxGlides.isEmpty, "an FX glide should have been logged")
+        XCTAssertTrue(fxGlides.allSatisfy { $0.slot == MixEngine.fxSlotCount - 1 },
+                      "the glide must resolve to the only sweepable slot and stamp its position")
+        e.teardown()
     }
 
     /// The engine must STAMP the rack position on every slot-driven event — without it, a replay of

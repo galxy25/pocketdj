@@ -187,7 +187,7 @@ protocol MixSessionRecorder: AnyObject {
     /// A compact `.glide` ramp (auto-mix machine sweep). `deck`/`posMs` are nil for a global param
     /// (the crossfader).
     func logGlide(deck: String?, param: String, songId: String?, title: String?, artist: String?,
-                  from: Double, to: Double, rate: Double, posMs: Int?)
+                  from: Double, to: Double, rate: Double, posMs: Int?, slot: Int?)
     func notePlayed(songId: String)
     /// Whether `songId` has already started playing this session — lets the auto-mix machine pick the
     /// next UNPLAYED collection track when resuming after a manual interlude.

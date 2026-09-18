@@ -617,10 +617,17 @@ final class MixEngine {
         let from: Deck, to: Deck
         // FX Glide
         let fxOn: Bool
+        /// The rolled texture — kept for the timeline (`param`), not for addressing a node.
         let fxEffect: Effect
+        /// The RACK SLOT the glide sweeps on each deck. Resolved per-deck at transition time, so the
+        /// two decks can differ (their racks are independent), and nil when that deck's rack holds
+        /// nothing sweepable — a rack of four compressors is a legitimate choice, not a bug, and
+        /// simply means no FX glide on that deck.
+        let fxSlotFrom: Int?
+        let fxSlotTo: Int?
         let fxPeak: Double
-        let savedFrom: (on: Bool, strength: Double)   // outgoing deck's pre-glide state for fxEffect
-        let savedTo: (on: Bool, strength: Double)      // incoming deck's pre-glide state for fxEffect
+        let savedFrom: (on: Bool, strength: Double)   // outgoing deck's pre-glide state for its slot
+        let savedTo: (on: Bool, strength: Double)      // incoming deck's pre-glide state for its slot
         // Mix Glide (1.0 rate / 0 pitch ⇒ no harmonic glide on that deck)
         let mixOn: Bool
         let outRate: Double, outPitch: Double          // outgoing target (held across the crossfade)
@@ -2511,8 +2518,8 @@ final class MixEngine {
     /// effect back to its pre-glide state + tempo/pitch to natural. No-op when no glide is in flight.
     private func abortGlide() {
         guard let c = glideCtx else { return }
-        setGlideEffect(c.fxEffect, enabled: c.savedFrom.on, strength: c.savedFrom.strength, on: c.from)
-        setGlideEffect(c.fxEffect, enabled: c.savedTo.on, strength: c.savedTo.strength, on: c.to)
+        setGlideSlot(c.fxSlotFrom, enabled: c.savedFrom.on, strength: c.savedFrom.strength, on: c.from)
+        setGlideSlot(c.fxSlotTo, enabled: c.savedTo.on, strength: c.savedTo.strength, on: c.to)
         setGlideRate(1.0, on: c.from); setGlidePitch(0.0, on: c.from)
         setGlideRate(1.0, on: c.to);   setGlidePitch(0.0, on: c.to)
         glideCtx = nil
@@ -2768,7 +2775,7 @@ final class MixEngine {
         // its forced effect (a load doesn't clear effects) + natural tempo/pitch BEFORE the load, then
         // hand off to the postroll that eases the now-live INCOMING deck back to natural.
         if autoTransitionIsGlide, let c = glideCtx {
-            setGlideEffect(c.fxEffect, enabled: c.savedFrom.on, strength: c.savedFrom.strength, on: from)
+            setGlideSlot(c.fxSlotFrom, enabled: c.savedFrom.on, strength: c.savedFrom.strength, on: from)
             setGlideRate(1.0, on: from); setGlidePitch(0.0, on: from)
         }
         // Preload the next LOADABLE queue item, advancing past entries whose file vanished (a
@@ -2862,11 +2869,17 @@ final class MixEngine {
                                      toCamelot: state(to).loaded?.camelot,
                                      fromBPM: matchBPM(from), toBPM: matchBPM(to))
                   : (1, 0, 1, 0)
+        // Resolve the rolled texture to a RACK SLOT per deck (each deck has its own rack), and save
+        // that slot's pre-glide state so the restore paths put back exactly what the DJ had.
+        let slotFrom = glideSlot(for: tex.effect, on: from)
+        let slotTo = glideSlot(for: tex.effect, on: to)
+        let savedFrom = slotFrom.flatMap { state(from).slots[safe: $0] }
+        let savedTo = slotTo.flatMap { state(to).slots[safe: $0] }
         glideCtx = GlideContext(
             from: from, to: to,
-            fxOn: fxOn, fxEffect: tex.effect, fxPeak: tex.peak,
-            savedFrom: (state(from).isEnabled(tex.effect), state(from).strength(tex.effect)),
-            savedTo: (state(to).isEnabled(tex.effect), state(to).strength(tex.effect)),
+            fxOn: fxOn, fxEffect: tex.effect, fxSlotFrom: slotFrom, fxSlotTo: slotTo, fxPeak: tex.peak,
+            savedFrom: (savedFrom?.enabled ?? false, savedFrom?.strength ?? 0.5),
+            savedTo: (savedTo?.enabled ?? false, savedTo?.strength ?? 0.5),
             mixOn: mixOn,
             outRate: mp.outRate, outPitch: mp.outPitch, inRate: mp.inRate, inPitch: mp.inPitch)
         autoTransitionIsGlide = true
@@ -2878,7 +2891,7 @@ final class MixEngine {
             glideInSecondsActive = preroll
             autoPrerollStartedAt = now
             emitOutgoingGlideEvents(span: preroll)     // one compact .glide node per outgoing ramp
-            if fxOn { setGlideEffect(tex.effect, enabled: true, strength: 0, on: from) }  // engage at 0
+            if fxOn { setGlideSlot(slotFrom, enabled: true, strength: 0, on: from) }  // engage at 0
             applyOutgoingGlide(0)
         } else {                                        // no runway / skip → snap + straight to fade
             glideInSecondsActive = 0
@@ -2892,7 +2905,7 @@ final class MixEngine {
     /// PRE-ROLL step (progress `p` 0→1): ramp the texture effect + tempo/pitch IN on the outgoing deck.
     private func applyOutgoingGlide(_ p: Double) {
         guard let c = glideCtx else { return }
-        if c.fxOn { setGlideEffect(c.fxEffect, enabled: true, strength: p * c.fxPeak, on: c.from) }
+        if c.fxOn { setGlideSlot(c.fxSlotFrom, enabled: true, strength: p * c.fxPeak, on: c.from) }
         if c.mixOn {
             setGlideRate(1 + (c.outRate - 1) * p, on: c.from)
             setGlidePitch(c.outPitch * p, on: c.from)
@@ -2904,8 +2917,8 @@ final class MixEngine {
     private func startGlideCrossfade() {
         guard let c = glideCtx else { return }
         if c.fxOn {
-            setGlideEffect(c.fxEffect, enabled: true, strength: c.fxPeak, on: c.from)
-            setGlideEffect(c.fxEffect, enabled: true, strength: c.fxPeak, on: c.to)
+            setGlideSlot(c.fxSlotFrom, enabled: true, strength: c.fxPeak, on: c.from)
+            setGlideSlot(c.fxSlotTo, enabled: true, strength: c.fxPeak, on: c.to)
         }
         if c.mixOn {
             setGlideRate(c.outRate, on: c.from); setGlidePitch(c.outPitch, on: c.from)
@@ -2938,7 +2951,7 @@ final class MixEngine {
     /// natural (the crossfade already fully favours it).
     private func applyIncomingGlide(_ p: Double) {
         guard let c = glideCtx else { return }
-        if c.fxOn { setGlideEffect(c.fxEffect, enabled: true, strength: (1 - p) * c.fxPeak, on: c.to) }
+        if c.fxOn { setGlideSlot(c.fxSlotTo, enabled: true, strength: (1 - p) * c.fxPeak, on: c.to) }
         if c.mixOn {
             setGlideRate(c.inRate + (1 - c.inRate) * p, on: c.to)
             setGlidePitch(c.inPitch * (1 - p), on: c.to)
@@ -2950,7 +2963,7 @@ final class MixEngine {
     private func finishGlide() {
         autoPostrollStartedAt = nil
         if let c = glideCtx {
-            setGlideEffect(c.fxEffect, enabled: c.savedTo.on, strength: c.savedTo.strength, on: c.to)
+            setGlideSlot(c.fxSlotTo, enabled: c.savedTo.on, strength: c.savedTo.strength, on: c.to)
             if c.mixOn { setGlideRate(1.0, on: c.to); setGlidePitch(0.0, on: c.to) }
         }
         glideCtx = nil
@@ -2983,20 +2996,39 @@ final class MixEngine {
         mutate(deck) { $0.pitch = min(max(semitones, Self.pitchRange.lowerBound), Self.pitchRange.upperBound) }
         applyPitch(deck)
     }
-    private func setGlideEffect(_ effect: Effect, enabled: Bool, strength: Double, on deck: Deck) {
-        mutate(deck) { $0.set(effect, enabled); $0.setStrength(effect, min(max(strength, 0), 1)) }
-        applyEffect(effect, on: deck)
+    /// Sweep ONE rack slot. Deliberately never touches the slot's effect/variant — the glide rides
+    /// whatever the DJ put there (put Plate in slot 2 and the Auto-DJ sweeps Plate), it doesn't
+    /// impose its own. A nil slot (nothing sweepable in that rack) is a silent no-op.
+    private func setGlideSlot(_ i: Int?, enabled: Bool, strength: Double, on deck: Deck) {
+        guard let i, state(deck).slots[safe: i] != nil else { return }
+        mutate(deck) {
+            $0.slots[i].enabled = enabled
+            $0.slots[i].setStrength(strength)
+        }
+        applySlot(i, on: deck)
+    }
+
+    /// Which slot an FX glide should sweep on `deck`: the first slot holding the rolled texture
+    /// effect, else the first holding ANY sweepable (pool) effect — so a rack without, say, a filter
+    /// still glides on its reverb instead of silently doing nothing. nil ⇒ that rack has nothing
+    /// worth sweeping (e.g. all compressors), and the deck simply sits the glide out.
+    private func glideSlot(for effect: Effect, on deck: Deck) -> Int? {
+        let slots = state(deck).slots
+        if let i = slots.firstIndex(where: { $0.effect == effect }) { return i }
+        return slots.firstIndex { Self.fxGlidePool.contains($0.effect) }
     }
 
     /// Emit ONE compact `.glide` timeline event for a ramp: `param` from→to over `span` seconds, with
     /// the average rate of change. Skips a no-op ramp (from ≈ to), so an identical-key / no-preroll
     /// segment doesn't log a phantom node. Deck playhead + loaded track are stamped for the corpus.
-    private func recGlide(_ param: String, deck: Deck?, from: Double, to: Double, span: Double) {
+    private func recGlide(_ param: String, deck: Deck?, from: Double, to: Double, span: Double,
+                          slot: Int? = nil) {
         guard let recorder, abs(to - from) > 1e-6 else { return }
         let l = deck.flatMap { state($0).loaded }
         recorder.logGlide(deck: deck?.rawValue, param: param, songId: l?.songId, title: l?.title,
                           artist: l?.artist, from: from, to: to,
-                          rate: (to - from) / max(0.05, span), posMs: deck.map { Int(position($0) * 1000) })
+                          rate: (to - from) / max(0.05, span),
+                          posMs: deck.map { Int(position($0) * 1000) }, slot: slot)
     }
 
     /// The OUTGOING deck's glide ramps (tempo/pitch bend up-toward + effect sweep-in) — logged once as
@@ -3007,7 +3039,11 @@ final class MixEngine {
             recGlide("tempo", deck: c.from, from: 1.0, to: c.outRate, span: span)
             recGlide("pitch", deck: c.from, from: 0.0, to: c.outPitch, span: span)
         }
-        if c.fxOn { recGlide(c.fxEffect.rawValue, deck: c.from, from: 0.0, to: c.fxPeak, span: span) }
+        // Only log an FX ramp that actually happened: a rack with nothing sweepable resolves to no
+        // slot, and must not leave a phantom "filter swept" node in the corpus.
+        if c.fxOn, let i = c.fxSlotFrom {
+            recGlide(c.fxEffect.rawValue, deck: c.from, from: 0.0, to: c.fxPeak, span: span, slot: i)
+        }
     }
 
     /// The INCOMING deck's glide ramps (tempo/pitch settle-to-natural + effect sweep-out) — logged
@@ -3019,7 +3055,9 @@ final class MixEngine {
             recGlide("tempo", deck: c.to, from: c.inRate, to: 1.0, span: span)
             recGlide("pitch", deck: c.to, from: c.inPitch, to: 0.0, span: span)
         }
-        if c.fxOn { recGlide(c.fxEffect.rawValue, deck: c.to, from: c.fxPeak, to: 0.0, span: span) }
+        if c.fxOn, let i = c.fxSlotTo {
+            recGlide(c.fxEffect.rawValue, deck: c.to, from: c.fxPeak, to: 0.0, span: span, slot: i)
+        }
     }
 
     // MARK: Glide math (pure — testable)

@@ -155,7 +155,7 @@ final class MixSessionStore: MixSessionRecorder {
     }
 
     func logGlide(deck: String?, param: String, songId: String?, title: String?, artist: String?,
-                  from: Double, to: Double, rate: Double, posMs: Int?) {
+                  from: Double, to: Double, rate: Double, posMs: Int?, slot: Int? = nil) {
         anchorOnFirstActivity()
         let tMs = max(0, Int(nowMs - recStartedAt))
         guard recEvents.count < Self.maxEvents else { return }
@@ -163,7 +163,7 @@ final class MixSessionStore: MixSessionRecorder {
         recEvents.append(MixSessionEvent(id: "e\(recSeq)", tMs: tMs, kind: .glide, deck: deck,
                                          songId: songId, title: title, artist: artist, bpm: nil,
                                          camelot: nil, param: param, value: to, flag: nil, posMs: posMs,
-                                         fromValue: from, rate: rate))
+                                         fromValue: from, rate: rate, slot: slot))
         saveNow()   // discrete + high-value → persist immediately
     }
 
