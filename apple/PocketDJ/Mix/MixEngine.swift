@@ -3485,18 +3485,20 @@ final class MixEngine {
         setVolume(ds.volume, on: deck)
         setRate(ds.rate, on: deck)
         setPitch(ds.pitch, on: deck)
-        setEffect(.compressor, enabled: ds.compressor, on: deck)
-        setEffect(.reverb, enabled: ds.reverb, on: deck)
-        setEffect(.flanger, enabled: ds.flanger, on: deck)
-        setEffect(.filter, enabled: ds.filter, on: deck)
-        setEffectStrength(.compressor, ds.compStrength, on: deck)
-        setEffectStrength(.reverb, ds.reverbStrength, on: deck)
-        setEffectStrength(.flanger, ds.flangerStrength, on: deck)
-        setEffectStrength(.filter, ds.filterStrength, on: deck)
+        // Restore the whole FX rack in ONE state write, then push it to the graph. `resolvedSlots`
+        // hands back the lossless `fxSlots` when present and migrates a pre-rack session (flat
+        // fields + filterMode → the default layout) when it isn't, so an upgrading user's deck comes
+        // back exactly as they left it.
+        let restored = ds.resolvedSlots.map { s -> FXSlot in
+            let effect = Effect(rawValue: s.effect) ?? .compressor
+            return FXSlot(effect, variant: EffectVariant(rawValue: s.variant),
+                          enabled: s.on, strength: s.strength)
+        }
+        mutate(deck) { $0.slots = restored }
+        applyAllSlots(deck)
         setEqGain(.low, ds.eqLow ?? 0, on: deck)
         setEqGain(.mid, ds.eqMid ?? 0, on: deck)
         setEqGain(.high, ds.eqHigh ?? 0, on: deck)
-        setFilterMode(ds.filterMode.flatMap(FilterMode.init(rawValue:)) ?? .lowPass, on: deck)
         if ds.stemMode {
             setStemMode(true, on: deck)     // stems no longer burned → stays single-file (graceful)
             if stemActive(deck) {
@@ -3637,7 +3639,14 @@ final class MixEngine {
             stemMode: s.stemMode, stemMuted: Array(s.stemMuted).sorted(), stemVol: s.stemVol,
             loopOn: s.loopOn, loopUnits: s.loopUnits,
             eqLow: s.eqLow, eqMid: s.eqMid, eqHigh: s.eqHigh,
-            filterMode: filterMode(deck).rawValue)
+            filterMode: filterMode(deck).rawValue,
+            // The rack's LOSSLESS form — duplicates, varieties, and per-slot state that the flat
+            // fields above can't express.
+            fxSlots: s.slots.map {
+                MixDeckSessionStore.FXSlotSnapshot(effect: $0.effect.rawValue,
+                                                   variant: $0.variant.rawValue,
+                                                   on: $0.enabled, strength: $0.strength)
+            })
     }
 
     private func trackRef(_ l: MixLoadable) -> MixDeckSessionStore.TrackRef {
