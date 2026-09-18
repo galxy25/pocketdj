@@ -194,7 +194,11 @@ final class CarPlayController {
     func refreshMixTab() {
         guard let model, let mixTemplate else { return }
         let np = model.mixNowPlaying()
-        let fx = MixEngine.Effect.allCases.map { model.isEnabled($0) ? "1" : "0" }.joined()
+        // The rack's full identity — effect AND variety AND on/off per slot. On/off alone would
+        // skip the redraw after a swap, leaving CarPlay showing an effect the rack no longer holds.
+        let fx = model.mixSlots()
+            .map { "\($0.effect.rawValue):\($0.variant.rawValue):\($0.enabled ? 1 : 0)" }
+            .joined(separator: "|")
         let stemMutes = Self.mixStemLabels.map { model.isStemMuted($0.name) ? "1" : "0" }.joined()
         let sig = [model.autoMixRunning() ? "1" : "0", model.autoMixPaused() ? "1" : "0",
                    model.autoMixLabel() ?? "", np?.title ?? "", np?.artist ?? "",
@@ -405,15 +409,17 @@ final class CarPlayController {
         ("vocals", "Vocals"), ("drums", "Drums"), ("bass", "Bass"), ("other", "Other"),
     ]
 
-    /// One toggle row per per-deck effect (compressor/reverb/flanger/filter) — base on/off only,
-    /// no long-press strength preset (CarPlay has no context-menu idiom; the owner asked only for
-    /// the toggle here).
+    /// One toggle row per FX-RACK SLOT of the lead deck — base on/off only, no strength preset and
+    /// no effect/variety swapping (CarPlay has no context-menu idiom, and building a rack isn't a
+    /// car-safe task; that lives on the Mix deck). Rows follow whatever the rack holds, so a rack
+    /// with two filters lists both and each toggles independently.
     private func mixFXSection(_ model: CarPlayModel) -> CPListSection {
-        let items = MixEngine.Effect.allCases.map { fx -> CPListItem in
-            let on = model.isEnabled(fx)
-            let item = CPListItem(text: fx.label, detailText: on ? "On" : "Off")
+        let items = model.mixSlots().enumerated().map { i, slot -> CPListItem in
+            let on = slot.enabled
+            let item = CPListItem(text: "\(slot.effect.label) · \(slot.variant.label)",
+                                  detailText: on ? "On" : "Off")
             item.handler = { [weak self] _, completion in
-                model.setEffect(fx, enabled: !on); self?.refreshMixTab(); completion()
+                model.setMixSlot(i, enabled: !on); self?.refreshMixTab(); completion()
             }
             return item
         }

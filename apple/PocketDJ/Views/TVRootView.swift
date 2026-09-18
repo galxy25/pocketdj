@@ -810,12 +810,6 @@ struct TVGlideToggles: View {
 struct TVMixControlsRow: View {
     @Environment(MixEngine.self) private var engine
 
-    private static let fxLabels: [(MixEngine.Effect, String, String)] = [
-        (.compressor, "Comp", "waveform.badge.minus"),
-        (.reverb, "Reverb", "building.columns"),
-        (.flanger, "Flanger", "water.waves"),
-        (.filter, "Filter", "slider.horizontal.3"),
-    ]
     private static let stemLabels: [(String, String)] = [
         ("vocals", "Vocals"), ("drums", "Drums"), ("bass", "Bass"), ("other", "Other"),
     ]
@@ -827,20 +821,24 @@ struct TVMixControlsRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 18) {
-                ForEach(Self.fxLabels, id: \.1) { fx, label, icon in
-                    let on = engine.isEnabled(fx, on: deck)
+                // One button per FX-RACK SLOT of the lead deck, following whatever the rack holds
+                // (a rack with two filters shows both, each toggling independently). Building the
+                // rack stays on the Mix deck — the TV drives the live board, it doesn't wire it.
+                ForEach(Array(engine.slots(deck).enumerated()), id: \.offset) { i, slot in
+                    let on = slot.enabled
                     Button {
-                        engine.setEffect(fx, enabled: !on, on: deck)
+                        engine.setSlot(i, enabled: !on, on: deck)
                     } label: {
-                        Label(label, systemImage: icon)
+                        Label("\(slot.effect.label) · \(slot.variant.label)",
+                              systemImage: slot.effect.icon)
                             .foregroundStyle(on ? Theme.accent : Theme.fg)
                     }
-                    .accessibilityIdentifier("tv-mix-fx-\(fx.rawValue)")
+                    .accessibilityIdentifier("tv-mix-fx-slot-\(i)")
                     .contextMenu {
                         ForEach([0.25, 0.5, 0.75, 1.0], id: \.self) { v in
                             Button("Strength \(Int(v * 100))%") {
-                                engine.setEffectStrength(fx, v, on: deck)
-                                if !on { engine.setEffect(fx, enabled: true, on: deck) }
+                                engine.setSlotStrength(i, v, on: deck)
+                                if !on { engine.setSlot(i, enabled: true, on: deck) }
                             }
                         }
                     }

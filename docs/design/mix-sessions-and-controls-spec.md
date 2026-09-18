@@ -25,7 +25,41 @@ Tempo/Pitch/Vol sliders carry steppers inline; the effect/stem chips show steppe
 **reveal** surface — the in-place flip on iPad/macOS (regular width) and the fixed-width **popover**
 on **all** compact iPhone widths (portrait *and* landscape, so the cramped landscape chip never hosts
 an in-place slider). Each stepper tap also restarts the chip/popover's 3 s idle-revert timer so
-careful stepping never dismisses mid-adjust.
+careful stepping never dismisses mid-adjust — except where the reveal hosts more than a slider (the
+FX rack's two menus, below), where browsing reads as idle and the timer is opt-out (`autoDismiss:
+false`); those close on an outside tap.
+
+### 1a. The FX rack (4 slots)
+
+The deck's 2×2 FX grid is a **rack of four positional slots**, not four fixed effects. Each slot
+holds any effect FAMILY plus a VARIETY of it, and **duplicates are legal** — a low-pass in one slot
+and a high-pass in another, or two compressors, is a valid board.
+
+| Family | Varieties |
+|--------|-----------|
+| Filter | Low-pass · High-pass · Band-pass |
+| Reverb | Room · Hall · Plate · Cathedral |
+| Modulation (`flanger`) | Flanger · Chorus · Echo |
+| Compressor | Punch · Glue · Limit |
+
+- **Default layout** = the pre-rack grid (Comp, Reverb, Flanger, Filter) at the varieties that
+  reproduce the pre-rack sound exactly (Punch / Hall / Flanger / Low-pass), so nothing changes for an
+  existing user until they touch it.
+- **UI**: the chip shows icon + variety ("Hall", "HP", "Glue"). Tap toggles. Long-press /
+  right-click reveals the strength control flanked by the **effect** menu (left) and the **variety**
+  menu (right).
+- **Audio**: every slot pre-allocates one node of every effect type and un-bypasses only the one it
+  holds, so a swap is a bypass flip — the graph is wired once at build and **never** rewired, and
+  changing effects mid-mix can't gap playback. Cost: 16 FX nodes per deck (≈ +14 MB with both decks
+  fully engaged).
+- **↺ Reset** silences the rack (every slot off, strength re-centred) but **keeps its layout** — the
+  board is configuration, like the loaded track and the Lead role.
+- **Other surfaces** (CarPlay, TV, Now Playing mini-panel) follow whatever the rack holds — on/off
+  (and strength where they had it) per slot — but don't build it; swapping lives on the Mix deck.
+  Their effect-keyed calls resolve **first-match** within a family.
+- **Auto-DJ FX glide** resolves its rolled texture to a slot per deck (first of that family, else the
+  first sweepable one, else none — an all-compressor rack sits the glide out) and sweeps only that
+  slot's on/off + strength, never its family or variety.
 
 ## 2. Gain boost to 200%
 
@@ -34,13 +68,14 @@ source nodes and adds the **>unity** portion as a separate gain stage:
 
 - `deckGain` clamps the deck volume to `min(v, 1.0)` × the equal-power crossfade factor — the shared
   value feeding both the main `player.volume` and every stem node, so neither exceeds 1.0.
-- `applyBoost(deck)` puts the boost on the deck's filter `AVAudioUnitEQ.globalGain` =
-  `20·log10(max(v, 1.0))` dB (0 dB at ≤100%, +6 dB at 200%). The EQ sits downstream of the deck's
-  `inputMixer`, so the boost lifts the main file **and** all four stems uniformly. The filter EQ
-  **node** is now always active (only its *band* is bypassed when the Filter effect is off), so
-  `globalGain` keeps applying; at unity + filter-off it's a transparent passthrough. `applyBoost`
-  runs on volume-change / reset / build only — **never** the crossfader path — so an equal-power fade
-  doesn't re-write the boost.
+- `applyBoost(deck)` puts the boost on the deck's dedicated **trim** node's `AVAudioUnitEQ.globalGain`
+  = `20·log10(max(v, 1.0))` dB (0 dB at ≤100%, +6 dB at 200%). Trim sits downstream of the deck's
+  `inputMixer`, so the boost lifts the main file **and** all four stems uniformly, and UPSTREAM of the
+  main/cue split, so the cue monitor's boost divide-out stays valid. Its single band is permanently
+  bypassed — the node exists purely to carry this gain. `applyBoost` runs on volume-change / reset /
+  build only — **never** the crossfader path — so an equal-power fade doesn't re-write the boost.
+  *(Pre-FX-rack this rode the deck's filter EQ; once "filter" became a swappable slot effect that a
+  rack may not contain at all, the boost needed a node that is always present.)*
 - A master **`AVAudioUnitEffect(PeakLimiter)`** sits on the output bus (`mainMixer → limiter →
   output`) so two decks at 200% (plus the compressor's makeup gain) can't hard-clip the device.
 
@@ -62,7 +97,8 @@ app-side and are browsable + replayable on a Sessions screen.
   for training — a `.load` carries the track's bpm/camelot, and every deck event carries the deck's
   playhead at that instant.
 - `MixEventKind`: `load, play, pause, seek, tempo, pitch, volume, crossfader, effectToggle,
-  effectStrength, stemMode, stemMute, stemVolume, lead, sync, resetDeck` + an `unknown(raw)`
+  effectStrength, eq, effectSlot, effectVariant, stemMode, stemMute, stemVolume, lead, sync,
+  resetDeck` (+ legacy `filterMode`, decoded but no longer emitted) + an `unknown(raw)`
   lenient-decode sink (a future build's kind never throws away the corpus). It **carries** the original
   rawValue, so an older build that loads then re-saves a newer file preserves that kind rather than
   flattening it to `"unknown"`.

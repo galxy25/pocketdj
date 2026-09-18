@@ -1480,17 +1480,21 @@ final class MixEngineTests: XCTestCase {
     /// Captures the engine's emitted session events without any persistence (test double).
     private final class MockRecorder: MixSessionRecorder {
         var events: [(kind: MixEventKind, deck: String?, value: Double?)] = []
+        /// FX-rack events keep their (param, slot) so a test can assert WHICH slot was touched.
+        var rackEvents: [(kind: MixEventKind, param: String?, slot: Int?)] = []
         var glides: [(param: String, deck: String?, from: Double, to: Double, rate: Double)] = []
         var played: [String] = []
         func logEvent(_ kind: MixEventKind, deck: String?, songId: String?, title: String?,
                       artist: String?, bpm: Double?, camelot: String?, param: String?,
-                      value: Double?, flag: Bool?, posMs: Int?) {
+                      value: Double?, flag: Bool?, posMs: Int?, slot: Int?) {
             events.append((kind, deck, value))
+            rackEvents.append((kind, param, slot))
         }
         func logGlide(deck: String?, param: String, songId: String?, title: String?, artist: String?,
-                      from: Double, to: Double, rate: Double, posMs: Int?) {
+                      from: Double, to: Double, rate: Double, posMs: Int?, slot: Int?) {
             glides.append((param: param, deck: deck, from: from, to: to, rate: rate))
             events.append((.glide, deck, to))
+            rackEvents.append((.glide, param, slot))
         }
         func notePlayed(songId: String) { played.append(songId) }
         func hasPlayed(_ songId: String) -> Bool { played.contains(songId) }
@@ -1531,5 +1535,365 @@ final class MixEngineTests: XCTestCase {
     private func loadable(_ id: String, bpm: Double?, lengthMs: Int?) -> MixLoadable {
         MixLoadable(songId: id, title: "T", artist: "A", bpm: bpm,
                     camelot: nil, key: nil, albumId: nil, lengthMs: lengthMs)
+    }
+
+    // MARK: - FX rack: the graph contract
+
+    /// THE load-bearing invariant of the rack design: changing effects NEVER rewires the audio
+    /// graph, so it can't stop the engine or interrupt playback. Hammer every effect on both decks
+    /// while both are playing and assert the engine stays running the whole way — if a future change
+    /// reintroduces attach/detach/reconnect on this path, this test catches it as a dead engine.
+    func testEffectChangesNeverStopTheEngineMidPlayback() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 3)
+        let b = try makeSineWAV(seconds: 3)
+        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 128), on: .b)
+        e.playBoth()
+        XCTAssertTrue(e.isRunning)
+
+        for round in 0..<12 {
+            for fx in MixEngine.Effect.allCases {
+                let deck: MixEngine.Deck = round.isMultiple(of: 2) ? .a : .b
+                e.setEffect(fx, enabled: true, on: deck)
+                e.setEffectStrength(fx, Double(round % 5) / 4.0, on: deck)
+                e.setFilterMode(round.isMultiple(of: 3) ? .highPass : .lowPass, on: deck)
+                XCTAssertTrue(e.isReady, "the engine died swapping \(fx) on \(deck) (round \(round))")
+            }
+        }
+        XCTAssertTrue(e.isReady, "the graph must survive the whole sweep")
+        XCTAssertTrue(e.isRunning, "playback must never be interrupted by an FX change")
+        XCTAssertNotNil(e.loaded(.a)); XCTAssertNotNil(e.loaded(.b))
+    }
+
+    /// The >unity volume boost used to ride the deck's FILTER EQ, which the rack can now swap away
+    /// from entirely — it moved to a dedicated always-present trim node. Boosting past 100% with no
+    /// filter anywhere in the signal path must still work (and not crash the graph).
+    func testVolumeBoostSurvivesWithTheFilterEffectOff() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.setEffect(.filter, enabled: false, on: .a)      // nothing filter-shaped is active
+        e.play(.a)
+
+        e.setVolume(1.8, on: .a)                          // +5.1 dB of boost, carried by trim
+        XCTAssertEqual(e.volume(.a), 1.8, accuracy: 1e-9)
+        XCTAssertTrue(e.isReady, "boosting with the filter off must not break the graph")
+        XCTAssertTrue(e.isRunning)
+
+        e.setVolume(1.0, on: .a)
+        XCTAssertEqual(e.volume(.a), 1.0, accuracy: 1e-9)
+        XCTAssertTrue(e.isReady)
+    }
+
+    // MARK: - FX rack: slot API + duplicate semantics
+
+    /// The rack ships in the pre-rack grid order so nothing moves for an existing user.
+    func testDefaultRackLayoutMatchesThePreRackGrid() {
+        let e = makeEngine()
+        XCTAssertEqual(e.slots(.a).map(\.effect), [.compressor, .reverb, .flanger, .filter])
+        XCTAssertEqual(e.slots(.a).map(\.variant), [.punch, .hall, .flange, .lowPass])
+        XCTAssertTrue(e.slots(.a).allSatisfy { !$0.enabled })
+        XCTAssertEqual(MixEngine.fxSlotCount, 4)
+    }
+
+    /// The headline capability: the SAME effect family in two slots at once, independently
+    /// controlled — e.g. a low-pass and a high-pass filter running together.
+    func testRackHoldsDuplicateEffectsIndependently() {
+        let e = makeEngine()
+        e.setSlotEffect(.filter, slot: 0, on: .a)
+        e.setSlotEffect(.filter, slot: 2, on: .a)
+        e.setSlotVariant(.lowPass, slot: 0, on: .a)
+        e.setSlotVariant(.highPass, slot: 2, on: .a)
+        e.setSlot(0, enabled: true, on: .a)
+        e.setSlot(2, enabled: false, on: .a)
+        e.setSlotStrength(0, 0.9, on: .a)
+        e.setSlotStrength(2, 0.2, on: .a)
+
+        XCTAssertEqual(e.slot(0, on: .a)?.variant, .lowPass)
+        XCTAssertEqual(e.slot(2, on: .a)?.variant, .highPass, "the two filters keep separate varieties")
+        XCTAssertEqual(e.slot(0, on: .a)?.enabled, true)
+        XCTAssertEqual(e.slot(2, on: .a)?.enabled, false, "each filter toggles on its own")
+        XCTAssertEqual(e.slot(0, on: .a)?.strength ?? 0, 0.9, accuracy: 1e-9)
+        XCTAssertEqual(e.slot(2, on: .a)?.strength ?? 0, 0.2, accuracy: 1e-9)
+    }
+
+    /// The effect-keyed shims (CarPlay / TV / Now Playing / glide) are documented FIRST-MATCH: a
+    /// read is "any slot of this family", a write lands on the first. This pins that contract so a
+    /// future change can't silently make those surfaces address a different slot.
+    func testEffectKeyedShimsAreFirstMatchOverDuplicates() {
+        let e = makeEngine()
+        e.setSlotEffect(.filter, slot: 0, on: .a)
+        e.setSlotEffect(.filter, slot: 2, on: .a)
+
+        e.setSlot(2, enabled: true, on: .a)
+        XCTAssertTrue(e.isEnabled(.filter, on: .a), "ANY enabled filter slot reads as on")
+
+        e.setEffect(.filter, enabled: false, on: .a)
+        XCTAssertEqual(e.slot(0, on: .a)?.enabled, false, "the write hits the FIRST filter slot")
+        XCTAssertEqual(e.slot(2, on: .a)?.enabled, true, "and leaves the second one alone")
+        XCTAssertTrue(e.isEnabled(.filter, on: .a), "so the family still reads as on")
+
+        e.setEffectStrength(.filter, 0.75, on: .a)
+        XCTAssertEqual(e.slot(0, on: .a)?.strength ?? 0, 0.75, accuracy: 1e-9)
+        XCTAssertEqual(e.strength(.filter, on: .a), 0.75, accuracy: 1e-9)
+    }
+
+    /// A rack with no slot of a family must absorb effect-keyed writes harmlessly (CarPlay can still
+    /// send "reverb on" to a rack that holds four compressors).
+    func testEffectKeyedWritesAreNoOpsWhenTheFamilyIsNotInTheRack() {
+        let e = makeEngine()
+        for i in 0..<MixEngine.fxSlotCount { e.setSlotEffect(.compressor, slot: i, on: .a) }
+        XCTAssertFalse(e.isEnabled(.reverb, on: .a))
+
+        e.setEffect(.reverb, enabled: true, on: .a)
+        e.setEffectStrength(.reverb, 0.8, on: .a)
+
+        XCTAssertFalse(e.isEnabled(.reverb, on: .a), "there is no reverb slot to turn on")
+        XCTAssertTrue(e.slots(.a).allSatisfy { $0.effect == .compressor }, "the rack is untouched")
+        XCTAssertTrue(e.slots(.a).allSatisfy { !$0.enabled })
+    }
+
+    func testSwappingASlotKeepsItsOnStateAndStrength() {
+        let e = makeEngine()
+        e.setSlot(1, enabled: true, on: .a)
+        e.setSlotStrength(1, 0.8, on: .a)
+        e.setSlotEffect(.compressor, slot: 1, on: .a)
+
+        XCTAssertEqual(e.slot(1, on: .a)?.effect, .compressor)
+        XCTAssertEqual(e.slot(1, on: .a)?.variant, .punch, "the variant resets to the new family's default")
+        XCTAssertEqual(e.slot(1, on: .a)?.enabled, true, "a swap mid-build must not drop out")
+        XCTAssertEqual(e.slot(1, on: .a)?.strength ?? 0, 0.8, accuracy: 1e-9, "…or jump in level")
+    }
+
+    func testOutOfRangeSlotIndexIsIgnored() {
+        let e = makeEngine()
+        e.setSlot(99, enabled: true, on: .a)
+        e.setSlotStrength(-1, 0.9, on: .a)
+        e.setSlotEffect(.reverb, slot: 42, on: .a)
+        e.setSlotVariant(.plate, slot: 42, on: .a)
+        XCTAssertNil(e.slot(99, on: .a))
+        XCTAssertEqual(e.slots(.a).count, MixEngine.fxSlotCount, "the rack is unchanged")
+    }
+
+    /// `setFilterMode` is the pre-rack LP/HP API — it must keep addressing the first filter slot.
+    func testFilterModeShimTracksTheFirstFilterSlotVariant() {
+        let e = makeEngine()
+        XCTAssertEqual(e.filterMode(.a), .lowPass)
+        e.setFilterMode(.highPass, on: .a)
+        XCTAssertEqual(e.filterMode(.a), .highPass)
+        XCTAssertEqual(e.slot(3, on: .a)?.variant, .highPass, "slot 3 is the default layout's filter")
+        e.setSlotVariant(.bandPass, slot: 3, on: .a)
+        XCTAssertEqual(e.filterMode(.a), .lowPass, "band-pass isn't expressible as LP/HP → reads as LP")
+    }
+
+    /// Reset SILENCES the rack but keeps its layout — the DJ's board configuration survives ↺, the
+    /// same way the loaded track and the Lead role do.
+    func testResetSilencesEveryEffectButKeepsTheRack() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        for fx in MixEngine.Effect.allCases {
+            e.setEffect(fx, enabled: true, on: .a)
+            e.setEffectStrength(fx, 0.9, on: .a)
+        }
+        e.setFilterMode(.highPass, on: .a)
+
+        e.resetDeck(.a)
+
+        for fx in MixEngine.Effect.allCases {
+            XCTAssertFalse(e.isEnabled(fx, on: .a), "\(fx) must be silenced by reset")
+            XCTAssertEqual(e.strength(fx, on: .a), 0.5, accuracy: 1e-9, "\(fx) strength re-centres")
+        }
+        XCTAssertNotNil(e.loaded(.a), "reset keeps the track")
+        XCTAssertTrue(e.isReady)
+    }
+
+    /// ↺ silences the rack but must NOT rearrange it — the board the DJ built is still there.
+    func testResetKeepsTheRackLayout() {
+        let e = makeEngine()
+        e.setSlotEffect(.filter, slot: 0, on: .a)
+        e.setSlotVariant(.bandPass, slot: 0, on: .a)
+        e.setSlotEffect(.reverb, slot: 1, on: .a)
+        e.setSlotVariant(.cathedral, slot: 1, on: .a)
+        e.setSlot(0, enabled: true, on: .a)
+        e.setSlotStrength(0, 0.9, on: .a)
+
+        e.resetDeck(.a)
+
+        XCTAssertEqual(e.slot(0, on: .a)?.effect, .filter)
+        XCTAssertEqual(e.slot(0, on: .a)?.variant, .bandPass, "the chosen variety survives reset")
+        XCTAssertEqual(e.slot(1, on: .a)?.variant, .cathedral)
+        XCTAssertEqual(e.slot(0, on: .a)?.enabled, false, "but everything is silenced")
+        XCTAssertEqual(e.slot(0, on: .a)?.strength ?? 0, 0.5, accuracy: 1e-9, "and re-centred")
+    }
+
+    // MARK: - FX rack: timeline events
+
+    /// The two new rack event kinds must survive an encode/decode round-trip WITH their slot index —
+    /// and an older build's unknown-kind fallback must still round-trip them intact.
+    func testRackEventsRoundTripThroughJSON() throws {
+        let events = [
+            MixSessionEvent(id: "e1", tMs: 10, kind: .effectSlot, deck: "A", songId: nil, title: nil,
+                            artist: nil, bpm: nil, camelot: nil, param: "reverb", value: nil,
+                            flag: nil, posMs: 0, slot: 2),
+            MixSessionEvent(id: "e2", tMs: 20, kind: .effectVariant, deck: "A", songId: nil, title: nil,
+                            artist: nil, bpm: nil, camelot: nil, param: "plate", value: nil,
+                            flag: nil, posMs: 0, slot: 2),
+            MixSessionEvent(id: "e3", tMs: 30, kind: .effectToggle, deck: "B", songId: nil, title: nil,
+                            artist: nil, bpm: nil, camelot: nil, param: "filter", value: nil,
+                            flag: true, posMs: 0, slot: 3),
+        ]
+        let data = try JSONEncoder().encode(events)
+        let back = try JSONDecoder().decode([MixSessionEvent].self, from: data)
+        XCTAssertEqual(back, events)
+        XCTAssertEqual(back[0].slot, 2)
+        XCTAssertEqual(back[1].kind, .effectVariant)
+        XCTAssertEqual(back[2].slot, 3)
+    }
+
+    /// A pre-rack event (no `slot` key at all) must still decode — the field is additive.
+    func testPreRackEventDecodesWithoutASlotKey() throws {
+        let json = """
+        [{"id":"e1","tMs":5,"kind":"effectToggle","param":"reverb","flag":true}]
+        """.data(using: .utf8)!
+        let back = try JSONDecoder().decode([MixSessionEvent].self, from: json)
+        XCTAssertEqual(back.count, 1)
+        XCTAssertNil(back[0].slot, "a pre-rack event has no slot")
+        XCTAssertEqual(back[0].kind, .effectToggle)
+    }
+
+    // MARK: - FX rack: Auto-DJ glide targeting
+
+    /// The FX-glide pool + texture roll are pure and UNCHANGED by the rack — only the resolution of
+    /// a rolled effect to a slot is new. This pins the pool so the determinism contract holds.
+    func testGlidePoolIsUnchangedByTheRack() {
+        XCTAssertEqual(MixEngine.fxGlidePool.count, 3)
+        XCTAssertFalse(MixEngine.fxGlidePool.contains(.compressor),
+                       "compressor is a dynamics tool, not a sweep — it stays out of the pool")
+    }
+
+    /// A glide sweeps whatever the DJ put in the rack: it rides the slot's OWN variety rather than
+    /// imposing a default (put Cathedral in a slot and the Auto-DJ sweeps Cathedral), and it must
+    /// never rewrite the slot's family or variety.
+    func testGlideSweepsTheSlotsOwnVarietyWithoutChangingIt() throws {
+        let e = makeEngine()
+        let q = [MixEngine.AutoMixItem(loadable: loadable("a", bpm: 120, lengthMs: 180_000), durationMs: 180_000),
+                 MixEngine.AutoMixItem(loadable: loadable("b", bpm: 120, lengthMs: 180_000), durationMs: 180_000)]
+        e.setFXGlide(true)
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        for d in [MixEngine.Deck.a, .b] {
+            e.setSlotEffect(.reverb, slot: 0, on: d)
+            e.setSlotVariant(.cathedral, slot: 0, on: d)
+        }
+
+        e.skipToNext(fadeSeconds: 5)
+
+        for d in [MixEngine.Deck.a, .b] {
+            XCTAssertEqual(e.slot(0, on: d)?.effect, .reverb, "a glide must not rewrite the family")
+            XCTAssertEqual(e.slot(0, on: d)?.variant, .cathedral, "…nor the variety")
+        }
+        e.teardown()
+    }
+
+    /// A rack with NOTHING sweepable (all compressors) is a legitimate user choice — the glide must
+    /// sit that deck out silently rather than forcing an effect in or logging a phantom sweep.
+    func testGlideSitsOutARackWithNothingSweepable() throws {
+        let e = makeEngine()
+        let q = [MixEngine.AutoMixItem(loadable: loadable("a", bpm: 120, lengthMs: 180_000), durationMs: 180_000),
+                 MixEngine.AutoMixItem(loadable: loadable("b", bpm: 120, lengthMs: 180_000), durationMs: 180_000)]
+        e.setFXGlide(true)
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        for d in [MixEngine.Deck.a, .b] {
+            for i in 0..<MixEngine.fxSlotCount { e.setSlotEffect(.compressor, slot: i, on: d) }
+        }
+        let rec = MockRecorder()
+        e.recorder = rec                      // attach AFTER the rack setup, so only the glide logs
+
+        e.skipToNext(fadeSeconds: 5)
+
+        XCTAssertTrue(e.slots(.a).allSatisfy { $0.effect == .compressor }, "the rack is untouched")
+        XCTAssertTrue(e.slots(.a).allSatisfy { !$0.enabled },
+                      "no compressor was force-engaged by the glide")
+        XCTAssertTrue(rec.glides.allSatisfy { $0.param != "filter" && $0.param != "reverb" && $0.param != "flanger" },
+                      "no phantom FX-glide node for a rack that can't sweep")
+        e.teardown()
+    }
+
+    /// Glide events must name the rack POSITION they swept, so replaying a rack with duplicates is
+    /// unambiguous — and the resolver must skip past a non-sweepable slot to find one it can use.
+    func testGlideResolvesPastNonSweepableSlotsAndStampsThePosition() throws {
+        let e = makeEngine()
+        let q = [MixEngine.AutoMixItem(loadable: loadable("a", bpm: 120, lengthMs: 180_000), durationMs: 180_000),
+                 MixEngine.AutoMixItem(loadable: loadable("b", bpm: 120, lengthMs: 180_000), durationMs: 180_000)]
+        e.setFXGlide(true)
+        e.startAutoMix(q, shuffled: false, lead: 15, fade: 3)
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        // Every slot a compressor EXCEPT the last — the glide must find that one.
+        for d in [MixEngine.Deck.a, .b] {
+            for i in 0..<(MixEngine.fxSlotCount - 1) { e.setSlotEffect(.compressor, slot: i, on: d) }
+            e.setSlotEffect(.reverb, slot: MixEngine.fxSlotCount - 1, on: d)
+        }
+        let rec = MockRecorder()
+        e.recorder = rec
+
+        e.skipToNext(fadeSeconds: 5)
+
+        let fxGlides = rec.rackEvents.filter { $0.kind == .glide && $0.slot != nil }
+        XCTAssertFalse(fxGlides.isEmpty, "an FX glide should have been logged")
+        XCTAssertTrue(fxGlides.allSatisfy { $0.slot == MixEngine.fxSlotCount - 1 },
+                      "the glide must resolve to the only sweepable slot and stamp its position")
+        e.teardown()
+    }
+
+    /// The engine must STAMP the rack position on every slot-driven event — without it, a replay of
+    /// a rack holding duplicates can't tell which of two filters the DJ actually moved.
+    func testSlotEventsCarryTheirRackPosition() {
+        let e = makeEngine()
+        let rec = MockRecorder()
+        e.recorder = rec
+
+        e.setSlotEffect(.filter, slot: 2, on: .a)
+        e.setSlotVariant(.bandPass, slot: 2, on: .a)
+        e.setSlot(2, enabled: true, on: .a)
+        e.setSlotStrength(2, 0.7, on: .a)
+
+        let swap = rec.rackEvents.first { $0.kind == .effectSlot }
+        XCTAssertEqual(swap?.param, "filter")
+        XCTAssertEqual(swap?.slot, 2)
+
+        let variant = rec.rackEvents.first { $0.kind == .effectVariant }
+        XCTAssertEqual(variant?.param, "bandPass")
+        XCTAssertEqual(variant?.slot, 2)
+
+        XCTAssertEqual(rec.rackEvents.first { $0.kind == .effectToggle }?.slot, 2)
+        XCTAssertEqual(rec.rackEvents.first { $0.kind == .effectStrength }?.slot, 2)
+    }
+
+    /// A kind this build doesn't know (recorded by a NEWER build) decodes to `.unknown(raw)` and
+    /// re-encodes as the ORIGINAL string — the corpus is never flattened by a round-trip.
+    func testUnknownRackKindRoundTripsIntact() throws {
+        let json = """
+        [{"id":"e1","tMs":5,"kind":"effectMacro","param":"x","slot":1}]
+        """.data(using: .utf8)!
+        let back = try JSONDecoder().decode([MixSessionEvent].self, from: json)
+        XCTAssertTrue(back[0].kind.isUnknown)
+        XCTAssertEqual(back[0].slot, 1)
+        let reencoded = String(data: try JSONEncoder().encode(back), encoding: .utf8) ?? ""
+        XCTAssertTrue(reencoded.contains("effectMacro"), "the future kind must survive re-save")
     }
 }

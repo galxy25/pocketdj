@@ -229,7 +229,7 @@ final class MixEngine {
     /// Pitch range in semitones (frequency shift, tempo preserved). 0 = original.
     nonisolated static let pitchRange: ClosedRange<Double> = -12...12
     /// Deck volume range. 0…1 is attenuation; 1…2 is a **gain boost** to +6 dB (200%) applied on the
-    /// deck's always-active filter EQ `globalGain`. A master peak limiter catches the resulting peaks.
+    /// deck's always-present TRIM node `globalGain`. A master peak limiter catches the resulting peaks.
     nonisolated static let volumeRange: ClosedRange<Double> = 0...2.0
     /// 3-band deck EQ gain range, in dB. 0 = flat.
     nonisolated static let eqRange: ClosedRange<Double> = -12...12
@@ -247,8 +247,11 @@ final class MixEngine {
         var volume: Double = 1.0
         var rate: Double = 1.0       // tempo multiplier
         var pitch: Double = 0.0      // semitones
-        var compressor = false, reverb = false, flanger = false, filter = false
-        var compStrength = 0.5, reverbStrength = 0.5, flangerStrength = 0.5, filterStrength = 0.5
+        /// The FX RACK: four positional slots, each holding any effect family + variety, with that
+        /// effect's on/off + strength. DUPLICATES ARE LEGAL (two compressors, or a low-pass in one
+        /// slot and a high-pass in another). Index == rack position; always exactly `slotCount`.
+        /// Replaces the old flat `compressor/reverb/flanger/filter` bools + per-effect strengths.
+        var slots: [FXSlot] = DeckState.defaultSlots
         /// Stem mode: when on (and the track has burned stems), the deck plays its 4 stems through
         /// the SAME effect chain + crossfader, with per-stem mute + level. Reset on load.
         var stemMode = false
@@ -266,10 +269,16 @@ final class MixEngine {
         /// plumbing (derivable from position + grid) and lives in `loopWindows`.
         var loopOn = false
         var loopUnits: Double = 2
-        /// 3-band EQ gain in dB, always active (no on/off — 0 is flat/no-op).
+        /// 3-band EQ gain in dB, always active (no on/off — 0 is flat/no-op). NOT part of the rack:
+        /// the 3-band EQ is a permanent channel-strip control, not a swappable effect.
         var eqLow: Double = 0, eqMid: Double = 0, eqHigh: Double = 0
-        /// Which cutoff shape the "Filter" FX sweeps. Independent of `filter`'s on/off + strength.
-        var filterMode: FilterMode = .lowPass
+
+        /// The rack's size + its factory layout — the pre-rack grid order, so an existing user's
+        /// decks look and sound exactly as they did before the rack shipped.
+        static let slotCount = 4
+        static let defaultSlots: [FXSlot] = [
+            FXSlot(.compressor), FXSlot(.reverb), FXSlot(.flanger), FXSlot(.filter),
+        ]
 
         func eqGain(_ b: EQBand) -> Double {
             switch b { case .low: return eqLow; case .mid: return eqMid; case .high: return eqHigh }
@@ -278,38 +287,26 @@ final class MixEngine {
             switch b { case .low: eqLow = db; case .mid: eqMid = db; case .high: eqHigh = db }
         }
 
-        func isEnabled(_ e: Effect) -> Bool {
-            switch e {
-            case .compressor: return compressor
-            case .reverb:     return reverb
-            case .flanger:    return flanger
-            case .filter:     return filter
-            }
-        }
+        /// Index of the first slot holding `e`, or nil if the rack has none of that family.
+        func firstSlot(_ e: Effect) -> Int? { slots.firstIndex { $0.effect == e } }
+
+        // MARK: Effect-keyed shims (FIRST-MATCH)
+        //
+        // The pre-rack API, kept so the effect-keyed surfaces (CarPlay, the TV app, the Now Playing
+        // mini-panel, the Auto-DJ glide) keep working without knowing about slots. DELIBERATELY
+        // LOSSY once a rack holds duplicates: a read is "ANY slot of this family", a write hits the
+        // FIRST one. A rack with no slot of that family reads as off/default and ignores writes.
+        // The Mix deck itself drives slots by INDEX (see `setSlot…`) and is never lossy.
+
+        func isEnabled(_ e: Effect) -> Bool { slots.contains { $0.effect == e && $0.enabled } }
+        func strength(_ e: Effect) -> Double { slots.first { $0.effect == e }?.strength ?? 0.5 }
         mutating func set(_ e: Effect, _ on: Bool) {
-            switch e {
-            case .compressor: compressor = on
-            case .reverb:     reverb = on
-            case .flanger:    flanger = on
-            case .filter:     filter = on
-            }
-        }
-        func strength(_ e: Effect) -> Double {
-            switch e {
-            case .compressor: return compStrength
-            case .reverb:     return reverbStrength
-            case .flanger:    return flangerStrength
-            case .filter:     return filterStrength
-            }
+            guard let i = firstSlot(e) else { return }
+            slots[i].enabled = on
         }
         mutating func setStrength(_ e: Effect, _ v: Double) {
-            let c = min(max(v, 0), 1)
-            switch e {
-            case .compressor: compStrength = c
-            case .reverb:     reverbStrength = c
-            case .flanger:    flangerStrength = c
-            case .filter:     filterStrength = c
-            }
+            guard let i = firstSlot(e) else { return }
+            slots[i].setStrength(v)
         }
     }
 
@@ -406,13 +403,46 @@ final class MixEngine {
     /// and resamples each file into canonical.
     @ObservationIgnored private var inputMixers: [Deck: AVAudioMixerNode] = [:]
     @ObservationIgnored private var timePitches: [Deck: AVAudioUnitTimePitch] = [:]
-    @ObservationIgnored private var reverbs: [Deck: AVAudioUnitReverb] = [:]
-    @ObservationIgnored private var filters: [Deck: AVAudioUnitEQ] = [:]
-    /// Always-active 3-band deck EQ (low shelf / mid peak / high shelf) — separate node from
-    /// `filters` (the toggleable resonant-lowpass "Filter" FX + the >100% volume boost's `globalGain`).
+    /// Always-active 3-band deck EQ (low shelf / mid peak / high shelf). NOT part of the FX rack —
+    /// it's a permanent channel-strip control, always in the chain, never bypassed.
     @ObservationIgnored private var eqs: [Deck: AVAudioUnitEQ] = [:]
-    @ObservationIgnored private var flangers: [Deck: AVAudioUnitDelay] = [:]
-    @ObservationIgnored private var comps: [Deck: AVAudioUnitEffect] = [:]
+
+    /// Every effect TYPE, pre-built, for ONE rack slot. Exactly one is un-bypassed at a time, so
+    /// swapping a slot's effect is a BYPASS FLIP — the graph is never rewired (see `connectChain`,
+    /// whose whole contract is "connected once at build"). That's what makes a mid-mix swap
+    /// glitch-free: no detach/attach, no format renegotiation, no schedule invalidation.
+    ///
+    /// The internal order (comp → filter → reverb → mod) is arbitrary and inaudible: at most one of
+    /// the four is ever active, so they can't colour each other.
+    private final class SlotNodes {
+        let comp: AVAudioUnitEffect
+        let filter: AVAudioUnitEQ
+        let reverb: AVAudioUnitReverb
+        let mod: AVAudioUnitDelay
+        /// The reverb preset currently loaded. `loadFactoryPreset` rebuilds the tail, and `applySlot`
+        /// runs at ~10 Hz through an Auto-DJ FX glide — so only reload when the variant ACTUALLY
+        /// changed, never once per tick.
+        var loadedPreset: EffectVariant?
+
+        init(dynamicsDesc: AudioComponentDescription) {
+            comp = AVAudioUnitEffect(audioComponentDescription: dynamicsDesc)
+            filter = AVAudioUnitEQ(numberOfBands: 1)
+            reverb = AVAudioUnitReverb()
+            mod = AVAudioUnitDelay()
+            reverb.loadFactoryPreset(FXParams.reverbPreset(.hall))
+            loadedPreset = .hall
+        }
+        /// Fixed serial order within the slot.
+        var ordered: [AVAudioNode] { [comp, filter, reverb, mod] }
+    }
+    /// The rack: `DeckState.slotCount` node bundles per deck, in rack order.
+    @ObservationIgnored private var slotNodes: [Deck: [SlotNodes]] = [:]
+    /// Per-deck TRIM — a 1-band EQ whose band is permanently bypassed, used ONLY as a `globalGain`
+    /// carrier for the >unity volume boost (`applyBoost`). Pre-rack that gain rode the deck's filter
+    /// EQ, which can't work once "filter" is a swappable slot effect that may not be in the rack at
+    /// all. Sits at the END of the chain but UPSTREAM of the main/cue split, exactly where the old
+    /// filter node sat relative to the split — so `applyCueRouting`'s boost divide-out stays valid.
+    @ObservationIgnored private var trims: [Deck: AVAudioUnitEQ] = [:]
     /// Per-deck output split — the standard DJ channel-strip model. After the effect chain the deck's
     /// post-FX signal fans into two sends (so it follows conventional mixer signal flow, which keeps it
     /// easy to extend):
@@ -587,10 +617,17 @@ final class MixEngine {
         let from: Deck, to: Deck
         // FX Glide
         let fxOn: Bool
+        /// The rolled texture — kept for the timeline (`param`), not for addressing a node.
         let fxEffect: Effect
+        /// The RACK SLOT the glide sweeps on each deck. Resolved per-deck at transition time, so the
+        /// two decks can differ (their racks are independent), and nil when that deck's rack holds
+        /// nothing sweepable — a rack of four compressors is a legitimate choice, not a bug, and
+        /// simply means no FX glide on that deck.
+        let fxSlotFrom: Int?
+        let fxSlotTo: Int?
         let fxPeak: Double
-        let savedFrom: (on: Bool, strength: Double)   // outgoing deck's pre-glide state for fxEffect
-        let savedTo: (on: Bool, strength: Double)      // incoming deck's pre-glide state for fxEffect
+        let savedFrom: (on: Bool, strength: Double)   // outgoing deck's pre-glide state for its slot
+        let savedTo: (on: Bool, strength: Double)      // incoming deck's pre-glide state for its slot
         // Mix Glide (1.0 rate / 0 pitch ⇒ no harmonic glide on that deck)
         let mixOn: Bool
         let outRate: Double, outPitch: Double          // outgoing target (held across the crossfade)
@@ -687,13 +724,13 @@ final class MixEngine {
     /// Emit one session event for a deck (or global) action, stamping the deck's loaded song + its
     /// current playhead. The store owns the timeline (t0/tMs), coalescing, and persistence.
     private func rec(_ kind: MixEventKind, _ deck: Deck? = nil, param: String? = nil,
-                     value: Double? = nil, flag: Bool? = nil) {
+                     value: Double? = nil, flag: Bool? = nil, slot: Int? = nil) {
         guard let recorder else { return }
         let l = deck.flatMap { state($0).loaded }
         let posMs = deck.map { Int(position($0) * 1000) }
         recorder.logEvent(kind, deck: deck?.rawValue, songId: l?.songId, title: l?.title,
                           artist: l?.artist, bpm: nil, camelot: nil, param: param,
-                          value: value, flag: flag, posMs: posMs)
+                          value: value, flag: flag, posMs: posMs, slot: slot)
     }
 
     /// The SINGLE transport funnel — set a deck's playing flag, recording `.play` (+ marking the
@@ -814,35 +851,36 @@ final class MixEngine {
             let player = AVAudioPlayerNode()
             let inputMixer = AVAudioMixerNode()
             let tp = AVAudioUnitTimePitch()
-            let comp = AVAudioUnitEffect(audioComponentDescription: Self.dynamicsDesc)
-            let filter = AVAudioUnitEQ(numberOfBands: 1)
             let eq3 = AVAudioUnitEQ(numberOfBands: 3)  // always-active 3-band low/mid/high gain EQ
             Self.configureEQ3(eq3)
-            let reverb = AVAudioUnitReverb()
-            let flanger = AVAudioUnitDelay()
+            // The FX RACK: one bundle of every effect type per slot. All pre-allocated and wired
+            // now, once — a slot swap only flips bypass flags (see `SlotNodes`).
+            let rack = (0..<DeckState.slotCount).map { _ in SlotNodes(dynamicsDesc: Self.dynamicsDesc) }
+            let trim = AVAudioUnitEQ(numberOfBands: 1)   // volume-boost `globalGain` carrier only
+            trim.bands.first?.bypass = true
             let mainGain = AVAudioMixerNode()      // deck → main/house channel (crossfade factor)
             let cueGain = AVAudioMixerNode()       // deck → cue channel (full, only while cued)
-            reverb.loadFactoryPreset(.mediumHall)
-            for n in [player, inputMixer, tp, comp, filter, eq3, reverb, flanger, mainGain, cueGain] as [AVAudioNode] {
+            let rackNodes = rack.flatMap(\.ordered)
+            for n in [player, inputMixer, tp] + rackNodes + [eq3, trim, mainGain, cueGain] as [AVAudioNode] {
                 engine.attach(n)
             }
             // `player → inputMixer` carries the file's real format (set per load); the mixer converts
             // it into canonical stereo. The effect chain below it is pinned at canonical FOR LIFE, so
             // loading a mono / 48 kHz / odd file never reconfigures (and crashes) a live AU.
             engine.connect(player, to: inputMixer, format: canonical)
-            connectChain(d, nodes: (inputMixer, tp, comp, filter, eq3, reverb, flanger))
-            // Split the deck's post-FX output (flanger) into the main + cue buses, both → master. The
+            connectChain(d, nodes: [inputMixer, tp] + rackNodes + [eq3, trim])
+            // Split the deck's post-FX output (trim) into the main + cue buses, both → master. The
             // crossfade/cue levels + pans live on these two mixers (see `applyCueRouting`); the chain
             // above is untouched so stems (which merge at `inputMixer`) ride the split for free.
-            engine.connect(flanger, to: [AVAudioConnectionPoint(node: mainGain, bus: 0),
-                                         AVAudioConnectionPoint(node: cueGain, bus: 0)],
+            engine.connect(trim, to: [AVAudioConnectionPoint(node: mainGain, bus: 0),
+                                      AVAudioConnectionPoint(node: cueGain, bus: 0)],
                            fromBus: 0, format: canonical)
             // House send: `mainGain → houseSum` (clean stereo, tapped for recording); the cue-pan is
             // applied downstream on `housePan`. The cue send goes straight to the master mix.
             engine.connect(mainGain, to: hSum, format: canonical)
             engine.connect(cueGain, to: engine.mainMixerNode, format: canonical)
-            players[d] = player; inputMixers[d] = inputMixer; timePitches[d] = tp; comps[d] = comp
-            filters[d] = filter; eqs[d] = eq3; reverbs[d] = reverb; flangers[d] = flanger
+            players[d] = player; inputMixers[d] = inputMixer; timePitches[d] = tp
+            eqs[d] = eq3; slotNodes[d] = rack; trims[d] = trim
             mainGains[d] = mainGain; cueGains[d] = cueGain
             // Four stem player nodes summing into the SAME inputMixer → they pass through the deck's
             // tempo/pitch/effects/crossfader exactly like the main file. Idle (canonical format) until
@@ -879,7 +917,7 @@ final class MixEngine {
         // Push whatever the UI already set, then derive gains.
         for d in Deck.allCases {
             applyRate(d); applyPitch(d)
-            for e in Effect.allCases { applyEffect(e, on: d) }
+            applyAllSlots(d)
             applyAllEQ(d)
         }
         applyMixGains()
@@ -908,13 +946,14 @@ final class MixEngine {
         }
         // Per-deck VU-meter taps — installed ONCE here, exactly like the recording tap above (never
         // toggled at runtime: adding/removing a tap on a live node pauses the decks on-device). TWO
-        // taps per deck feed one `MixDeckLevels`: PRE-fader off `flanger` (post-FX, before the
-        // volume+crossfade gain) and POST-fader off `mainGain` (after it). The UI picks which to show,
-        // so both always run; the overhead (peak+RMS over ≤4096 frames, ~10 Hz) is trivial. These
-        // ride the `ensureEngine` rebuild (media-services reset) for free onto the fresh nodes.
+        // taps per deck feed one `MixDeckLevels`: PRE-fader off `trim` (the last node before the
+        // main/cue split — post-FX, before the volume+crossfade gain) and POST-fader off `mainGain`
+        // (after it). The UI picks which to show, so both always run; the overhead (peak+RMS over
+        // ≤4096 frames, ~10 Hz) is trivial. These ride the `ensureEngine` rebuild (media-services
+        // reset) for free onto the fresh nodes.
         for d in Deck.allCases {
             let lv = d == .a ? levelsA : levelsB
-            if let pre = flangers[d] {
+            if let pre = trims[d] {
                 pre.installTap(onBus: 0, bufferSize: 4096, format: pre.outputFormat(forBus: 0)) { buffer, _ in
                     let (p, r) = Self.vuMeter(buffer)
                     lv.prePeak = max(p, lv.prePeak * Self.vuPeakDecay)
@@ -1139,7 +1178,7 @@ final class MixEngine {
         if let recorder, let l = state(deck).loaded {
             recorder.logEvent(.load, deck: deck.rawValue, songId: l.songId, title: l.title,
                               artist: l.artist, bpm: l.bpm, camelot: l.camelot, param: nil,
-                              value: nil, flag: nil, posMs: 0)
+                              value: nil, flag: nil, posMs: 0, slot: nil)
         }
         updateSystemNowPlaying()      // a new track on the now-playing deck → refresh the card
         persistMixDeckSession()       // deck load = structural change — the mix survives a kill
@@ -1478,10 +1517,11 @@ final class MixEngine {
             $0.rate = 1.0
             $0.pitch = 0.0
             $0.volume = 1.0
-            $0.compressor = false; $0.reverb = false; $0.flanger = false; $0.filter = false
-            $0.compStrength = 0.5; $0.reverbStrength = 0.5; $0.flangerStrength = 0.5; $0.filterStrength = 0.5
+            // SILENCE the rack but KEEP ITS LAYOUT: which effects/varieties are on the board is
+            // board configuration the DJ set up — like the loaded track and the Lead role, which
+            // reset also preserves. ↺ turns every slot off and re-centres its strength.
+            for i in $0.slots.indices { $0.slots[i].enabled = false; $0.slots[i].setStrength(0.5) }
             $0.eqLow = 0; $0.eqMid = 0; $0.eqHigh = 0
-            $0.filterMode = .lowPass
             $0.stemMuted = []     // un-mute + re-level every stem (keeps stem mode itself)
             $0.stemVol = [:]
         }
@@ -1973,10 +2013,18 @@ final class MixEngine {
     }
 
     // MARK: - Filter mode (low-pass / high-pass)
+    //
+    // The pre-rack LP/HP API, now expressed as the FIRST filter slot's variant. Superseded by the
+    // general `setSlotVariant` (any slot, any family) once the rack UI lands; kept here so the
+    // existing call sites keep working unchanged.
 
-    func filterMode(_ deck: Deck) -> FilterMode { state(deck).filterMode }
+    func filterMode(_ deck: Deck) -> FilterMode {
+        guard let i = state(deck).firstSlot(.filter) else { return .lowPass }
+        return state(deck).slots[i].variant == .highPass ? .highPass : .lowPass
+    }
     func setFilterMode(_ mode: FilterMode, on deck: Deck) {
-        mutate(deck) { $0.filterMode = mode }
+        guard let i = state(deck).firstSlot(.filter) else { return }
+        mutate(deck) { $0.slots[i].setVariant(mode == .highPass ? .highPass : .lowPass) }
         applyEffect(.filter, on: deck)
         rec(.filterMode, deck, param: mode.rawValue)
         persistMixDeckSession()                  // discrete tap — persist immediately
@@ -2139,6 +2187,53 @@ final class MixEngine {
         applyEffect(effect, on: deck)
         rec(.effectStrength, deck, param: effect.rawValue, value: state(deck).strength(effect))
         persistMixDeckSession(debounced: true)   // slider surface — one write per burst
+    }
+
+    // MARK: - FX rack (slot-indexed)
+    //
+    // The Mix deck's own API. Unlike the effect-keyed calls above, these address a rack POSITION, so
+    // they stay exact when the rack holds duplicates (two compressors, an LP and an HP filter, …).
+
+    nonisolated static var fxSlotCount: Int { 4 }
+
+    func slots(_ deck: Deck) -> [FXSlot] { state(deck).slots }
+    func slot(_ i: Int, on deck: Deck) -> FXSlot? { state(deck).slots[safe: i] }
+
+    func setSlot(_ i: Int, enabled: Bool, on deck: Deck) {
+        guard let s = state(deck).slots[safe: i], s.enabled != enabled else { return }
+        mutate(deck) { $0.slots[i].enabled = enabled }
+        applySlot(i, on: deck)
+        rec(.effectToggle, deck, param: s.effect.rawValue, flag: enabled, slot: i)
+        persistMixDeckSession()                  // discrete tap — persist immediately
+    }
+
+    func setSlotStrength(_ i: Int, _ strength: Double, on deck: Deck) {
+        guard state(deck).slots[safe: i] != nil else { return }
+        mutate(deck) { $0.slots[i].setStrength(strength) }
+        applySlot(i, on: deck)
+        let s = state(deck).slots[i]
+        rec(.effectStrength, deck, param: s.effect.rawValue, value: s.strength, slot: i)
+        persistMixDeckSession(debounced: true)   // slider surface — one write per burst
+    }
+
+    /// Swap which effect family a slot holds. The variant resets to that family's default, and the
+    /// slot keeps its on/off + strength so a swap mid-build doesn't drop out or jump in level.
+    func setSlotEffect(_ effect: Effect, slot i: Int, on deck: Deck) {
+        guard let s = state(deck).slots[safe: i], s.effect != effect else { return }
+        mutate(deck) { $0.slots[i].setEffect(effect) }
+        applySlot(i, on: deck)
+        rec(.effectSlot, deck, param: effect.rawValue, slot: i)
+        persistMixDeckSession()
+    }
+
+    /// Pick a different variety of the effect a slot already holds (LP→HP, Hall→Plate, …).
+    func setSlotVariant(_ variant: EffectVariant, slot i: Int, on deck: Deck) {
+        guard let s = state(deck).slots[safe: i],
+              s.variant != variant, variant.effect == s.effect else { return }
+        mutate(deck) { $0.slots[i].setVariant(variant) }
+        applySlot(i, on: deck)
+        rec(.effectVariant, deck, param: variant.rawValue, slot: i)
+        persistMixDeckSession()
     }
 
     // MARK: - Auto-Mix (auto-DJ)
@@ -2423,8 +2518,8 @@ final class MixEngine {
     /// effect back to its pre-glide state + tempo/pitch to natural. No-op when no glide is in flight.
     private func abortGlide() {
         guard let c = glideCtx else { return }
-        setGlideEffect(c.fxEffect, enabled: c.savedFrom.on, strength: c.savedFrom.strength, on: c.from)
-        setGlideEffect(c.fxEffect, enabled: c.savedTo.on, strength: c.savedTo.strength, on: c.to)
+        setGlideSlot(c.fxSlotFrom, enabled: c.savedFrom.on, strength: c.savedFrom.strength, on: c.from)
+        setGlideSlot(c.fxSlotTo, enabled: c.savedTo.on, strength: c.savedTo.strength, on: c.to)
         setGlideRate(1.0, on: c.from); setGlidePitch(0.0, on: c.from)
         setGlideRate(1.0, on: c.to);   setGlidePitch(0.0, on: c.to)
         glideCtx = nil
@@ -2680,7 +2775,7 @@ final class MixEngine {
         // its forced effect (a load doesn't clear effects) + natural tempo/pitch BEFORE the load, then
         // hand off to the postroll that eases the now-live INCOMING deck back to natural.
         if autoTransitionIsGlide, let c = glideCtx {
-            setGlideEffect(c.fxEffect, enabled: c.savedFrom.on, strength: c.savedFrom.strength, on: from)
+            setGlideSlot(c.fxSlotFrom, enabled: c.savedFrom.on, strength: c.savedFrom.strength, on: from)
             setGlideRate(1.0, on: from); setGlidePitch(0.0, on: from)
         }
         // Preload the next LOADABLE queue item, advancing past entries whose file vanished (a
@@ -2774,11 +2869,17 @@ final class MixEngine {
                                      toCamelot: state(to).loaded?.camelot,
                                      fromBPM: matchBPM(from), toBPM: matchBPM(to))
                   : (1, 0, 1, 0)
+        // Resolve the rolled texture to a RACK SLOT per deck (each deck has its own rack), and save
+        // that slot's pre-glide state so the restore paths put back exactly what the DJ had.
+        let slotFrom = glideSlot(for: tex.effect, on: from)
+        let slotTo = glideSlot(for: tex.effect, on: to)
+        let savedFrom = slotFrom.flatMap { state(from).slots[safe: $0] }
+        let savedTo = slotTo.flatMap { state(to).slots[safe: $0] }
         glideCtx = GlideContext(
             from: from, to: to,
-            fxOn: fxOn, fxEffect: tex.effect, fxPeak: tex.peak,
-            savedFrom: (state(from).isEnabled(tex.effect), state(from).strength(tex.effect)),
-            savedTo: (state(to).isEnabled(tex.effect), state(to).strength(tex.effect)),
+            fxOn: fxOn, fxEffect: tex.effect, fxSlotFrom: slotFrom, fxSlotTo: slotTo, fxPeak: tex.peak,
+            savedFrom: (savedFrom?.enabled ?? false, savedFrom?.strength ?? 0.5),
+            savedTo: (savedTo?.enabled ?? false, savedTo?.strength ?? 0.5),
             mixOn: mixOn,
             outRate: mp.outRate, outPitch: mp.outPitch, inRate: mp.inRate, inPitch: mp.inPitch)
         autoTransitionIsGlide = true
@@ -2790,7 +2891,7 @@ final class MixEngine {
             glideInSecondsActive = preroll
             autoPrerollStartedAt = now
             emitOutgoingGlideEvents(span: preroll)     // one compact .glide node per outgoing ramp
-            if fxOn { setGlideEffect(tex.effect, enabled: true, strength: 0, on: from) }  // engage at 0
+            if fxOn { setGlideSlot(slotFrom, enabled: true, strength: 0, on: from) }  // engage at 0
             applyOutgoingGlide(0)
         } else {                                        // no runway / skip → snap + straight to fade
             glideInSecondsActive = 0
@@ -2804,7 +2905,7 @@ final class MixEngine {
     /// PRE-ROLL step (progress `p` 0→1): ramp the texture effect + tempo/pitch IN on the outgoing deck.
     private func applyOutgoingGlide(_ p: Double) {
         guard let c = glideCtx else { return }
-        if c.fxOn { setGlideEffect(c.fxEffect, enabled: true, strength: p * c.fxPeak, on: c.from) }
+        if c.fxOn { setGlideSlot(c.fxSlotFrom, enabled: true, strength: p * c.fxPeak, on: c.from) }
         if c.mixOn {
             setGlideRate(1 + (c.outRate - 1) * p, on: c.from)
             setGlidePitch(c.outPitch * p, on: c.from)
@@ -2816,8 +2917,8 @@ final class MixEngine {
     private func startGlideCrossfade() {
         guard let c = glideCtx else { return }
         if c.fxOn {
-            setGlideEffect(c.fxEffect, enabled: true, strength: c.fxPeak, on: c.from)
-            setGlideEffect(c.fxEffect, enabled: true, strength: c.fxPeak, on: c.to)
+            setGlideSlot(c.fxSlotFrom, enabled: true, strength: c.fxPeak, on: c.from)
+            setGlideSlot(c.fxSlotTo, enabled: true, strength: c.fxPeak, on: c.to)
         }
         if c.mixOn {
             setGlideRate(c.outRate, on: c.from); setGlidePitch(c.outPitch, on: c.from)
@@ -2850,7 +2951,7 @@ final class MixEngine {
     /// natural (the crossfade already fully favours it).
     private func applyIncomingGlide(_ p: Double) {
         guard let c = glideCtx else { return }
-        if c.fxOn { setGlideEffect(c.fxEffect, enabled: true, strength: (1 - p) * c.fxPeak, on: c.to) }
+        if c.fxOn { setGlideSlot(c.fxSlotTo, enabled: true, strength: (1 - p) * c.fxPeak, on: c.to) }
         if c.mixOn {
             setGlideRate(c.inRate + (1 - c.inRate) * p, on: c.to)
             setGlidePitch(c.inPitch * (1 - p), on: c.to)
@@ -2862,7 +2963,7 @@ final class MixEngine {
     private func finishGlide() {
         autoPostrollStartedAt = nil
         if let c = glideCtx {
-            setGlideEffect(c.fxEffect, enabled: c.savedTo.on, strength: c.savedTo.strength, on: c.to)
+            setGlideSlot(c.fxSlotTo, enabled: c.savedTo.on, strength: c.savedTo.strength, on: c.to)
             if c.mixOn { setGlideRate(1.0, on: c.to); setGlidePitch(0.0, on: c.to) }
         }
         glideCtx = nil
@@ -2895,20 +2996,39 @@ final class MixEngine {
         mutate(deck) { $0.pitch = min(max(semitones, Self.pitchRange.lowerBound), Self.pitchRange.upperBound) }
         applyPitch(deck)
     }
-    private func setGlideEffect(_ effect: Effect, enabled: Bool, strength: Double, on deck: Deck) {
-        mutate(deck) { $0.set(effect, enabled); $0.setStrength(effect, min(max(strength, 0), 1)) }
-        applyEffect(effect, on: deck)
+    /// Sweep ONE rack slot. Deliberately never touches the slot's effect/variant — the glide rides
+    /// whatever the DJ put there (put Plate in slot 2 and the Auto-DJ sweeps Plate), it doesn't
+    /// impose its own. A nil slot (nothing sweepable in that rack) is a silent no-op.
+    private func setGlideSlot(_ i: Int?, enabled: Bool, strength: Double, on deck: Deck) {
+        guard let i, state(deck).slots[safe: i] != nil else { return }
+        mutate(deck) {
+            $0.slots[i].enabled = enabled
+            $0.slots[i].setStrength(strength)
+        }
+        applySlot(i, on: deck)
+    }
+
+    /// Which slot an FX glide should sweep on `deck`: the first slot holding the rolled texture
+    /// effect, else the first holding ANY sweepable (pool) effect — so a rack without, say, a filter
+    /// still glides on its reverb instead of silently doing nothing. nil ⇒ that rack has nothing
+    /// worth sweeping (e.g. all compressors), and the deck simply sits the glide out.
+    private func glideSlot(for effect: Effect, on deck: Deck) -> Int? {
+        let slots = state(deck).slots
+        if let i = slots.firstIndex(where: { $0.effect == effect }) { return i }
+        return slots.firstIndex { Self.fxGlidePool.contains($0.effect) }
     }
 
     /// Emit ONE compact `.glide` timeline event for a ramp: `param` from→to over `span` seconds, with
     /// the average rate of change. Skips a no-op ramp (from ≈ to), so an identical-key / no-preroll
     /// segment doesn't log a phantom node. Deck playhead + loaded track are stamped for the corpus.
-    private func recGlide(_ param: String, deck: Deck?, from: Double, to: Double, span: Double) {
+    private func recGlide(_ param: String, deck: Deck?, from: Double, to: Double, span: Double,
+                          slot: Int? = nil) {
         guard let recorder, abs(to - from) > 1e-6 else { return }
         let l = deck.flatMap { state($0).loaded }
         recorder.logGlide(deck: deck?.rawValue, param: param, songId: l?.songId, title: l?.title,
                           artist: l?.artist, from: from, to: to,
-                          rate: (to - from) / max(0.05, span), posMs: deck.map { Int(position($0) * 1000) })
+                          rate: (to - from) / max(0.05, span),
+                          posMs: deck.map { Int(position($0) * 1000) }, slot: slot)
     }
 
     /// The OUTGOING deck's glide ramps (tempo/pitch bend up-toward + effect sweep-in) — logged once as
@@ -2919,7 +3039,11 @@ final class MixEngine {
             recGlide("tempo", deck: c.from, from: 1.0, to: c.outRate, span: span)
             recGlide("pitch", deck: c.from, from: 0.0, to: c.outPitch, span: span)
         }
-        if c.fxOn { recGlide(c.fxEffect.rawValue, deck: c.from, from: 0.0, to: c.fxPeak, span: span) }
+        // Only log an FX ramp that actually happened: a rack with nothing sweepable resolves to no
+        // slot, and must not leave a phantom "filter swept" node in the corpus.
+        if c.fxOn, let i = c.fxSlotFrom {
+            recGlide(c.fxEffect.rawValue, deck: c.from, from: 0.0, to: c.fxPeak, span: span, slot: i)
+        }
     }
 
     /// The INCOMING deck's glide ramps (tempo/pitch settle-to-natural + effect sweep-out) — logged
@@ -2931,7 +3055,9 @@ final class MixEngine {
             recGlide("tempo", deck: c.to, from: c.inRate, to: 1.0, span: span)
             recGlide("pitch", deck: c.to, from: c.inPitch, to: 0.0, span: span)
         }
-        if c.fxOn { recGlide(c.fxEffect.rawValue, deck: c.to, from: c.fxPeak, to: 0.0, span: span) }
+        if c.fxOn, let i = c.fxSlotTo {
+            recGlide(c.fxEffect.rawValue, deck: c.to, from: c.fxPeak, to: 0.0, span: span, slot: i)
+        }
     }
 
     // MARK: Glide math (pure — testable)
@@ -3397,18 +3523,20 @@ final class MixEngine {
         setVolume(ds.volume, on: deck)
         setRate(ds.rate, on: deck)
         setPitch(ds.pitch, on: deck)
-        setEffect(.compressor, enabled: ds.compressor, on: deck)
-        setEffect(.reverb, enabled: ds.reverb, on: deck)
-        setEffect(.flanger, enabled: ds.flanger, on: deck)
-        setEffect(.filter, enabled: ds.filter, on: deck)
-        setEffectStrength(.compressor, ds.compStrength, on: deck)
-        setEffectStrength(.reverb, ds.reverbStrength, on: deck)
-        setEffectStrength(.flanger, ds.flangerStrength, on: deck)
-        setEffectStrength(.filter, ds.filterStrength, on: deck)
+        // Restore the whole FX rack in ONE state write, then push it to the graph. `resolvedSlots`
+        // hands back the lossless `fxSlots` when present and migrates a pre-rack session (flat
+        // fields + filterMode → the default layout) when it isn't, so an upgrading user's deck comes
+        // back exactly as they left it.
+        let restored = ds.resolvedSlots.map { s -> FXSlot in
+            let effect = Effect(rawValue: s.effect) ?? .compressor
+            return FXSlot(effect, variant: EffectVariant(rawValue: s.variant),
+                          enabled: s.on, strength: s.strength)
+        }
+        mutate(deck) { $0.slots = restored }
+        applyAllSlots(deck)
         setEqGain(.low, ds.eqLow ?? 0, on: deck)
         setEqGain(.mid, ds.eqMid ?? 0, on: deck)
         setEqGain(.high, ds.eqHigh ?? 0, on: deck)
-        setFilterMode(ds.filterMode.flatMap(FilterMode.init(rawValue:)) ?? .lowPass, on: deck)
         if ds.stemMode {
             setStemMode(true, on: deck)     // stems no longer burned → stays single-file (graceful)
             if stemActive(deck) {
@@ -3539,13 +3667,24 @@ final class MixEngine {
                                                 albumId: l.albumId, lengthMs: lengthMs),
             positionMs: max(0, Int(position(deck) * 1000)),
             volume: s.volume, rate: s.rate, pitch: s.pitch,
-            compressor: s.compressor, reverb: s.reverb, flanger: s.flanger, filter: s.filter,
-            compStrength: s.compStrength, reverbStrength: s.reverbStrength,
-            flangerStrength: s.flangerStrength, filterStrength: s.filterStrength,
+            // The flat per-effect fields are written through the FIRST-MATCH shims. They're the
+            // rollback contract: an older build (which knows nothing about slots) still restores a
+            // sane deck from them. The rack's own lossless form rides `fxSlots` (added next).
+            compressor: s.isEnabled(.compressor), reverb: s.isEnabled(.reverb),
+            flanger: s.isEnabled(.flanger), filter: s.isEnabled(.filter),
+            compStrength: s.strength(.compressor), reverbStrength: s.strength(.reverb),
+            flangerStrength: s.strength(.flanger), filterStrength: s.strength(.filter),
             stemMode: s.stemMode, stemMuted: Array(s.stemMuted).sorted(), stemVol: s.stemVol,
             loopOn: s.loopOn, loopUnits: s.loopUnits,
             eqLow: s.eqLow, eqMid: s.eqMid, eqHigh: s.eqHigh,
-            filterMode: s.filterMode.rawValue)
+            filterMode: filterMode(deck).rawValue,
+            // The rack's LOSSLESS form — duplicates, varieties, and per-slot state that the flat
+            // fields above can't express.
+            fxSlots: s.slots.map {
+                MixDeckSessionStore.FXSlotSnapshot(effect: $0.effect.rawValue,
+                                                   variant: $0.variant.rawValue,
+                                                   on: $0.enabled, strength: $0.strength)
+            })
     }
 
     private func trackRef(_ l: MixLoadable) -> MixDeckSessionStore.TrackRef {
@@ -3855,13 +3994,18 @@ final class MixEngine {
         }
     }
 
-    /// Apply the deck's >unity volume boost as the filter EQ's `globalGain`: 0 dB at ≤100%, up to
-    /// +6 dB at 200%. The EQ sits downstream of the deck's `inputMixer`, so the boost lifts the main
-    /// file AND the 4 stems uniformly. Driven ONLY by a volume change (build / `setVolume` /
-    /// `resetDeck`) — never the crossfader path — so an equal-power fade doesn't re-write it.
+    /// Apply the deck's >unity volume boost as the TRIM node's `globalGain`: 0 dB at ≤100%, up to
+    /// +6 dB at 200%. Trim sits downstream of the deck's `inputMixer`, so the boost lifts the main
+    /// file AND the 4 stems uniformly, and upstream of the main/cue split, so `applyCueRouting`'s
+    /// divide-out still yields an unboosted monitor. Driven ONLY by a volume change (build /
+    /// `setVolume` / `resetDeck`) — never the crossfader path — so an equal-power fade doesn't
+    /// re-write it.
+    ///
+    /// Pre-rack this rode the deck's filter EQ; once "filter" became a swappable slot effect that a
+    /// rack may not contain at all, the boost needed a node that is ALWAYS present.
     private func applyBoost(_ deck: Deck) {
         guard built else { return }
-        filters[deck]?.globalGain = Float(20 * log10(max(state(deck).volume, 1.0)))
+        trims[deck]?.globalGain = Float(20 * log10(max(state(deck).volume, 1.0)))
     }
 
     /// Push one EQ band's gain onto the deck's always-active 3-band `AVAudioUnitEQ` node.
@@ -3888,51 +4032,69 @@ final class MixEngine {
     private func applyRate(_ deck: Deck) { timePitches[deck]?.rate = Float(state(deck).rate) }
     private func applyPitch(_ deck: Deck) { timePitches[deck]?.pitch = Float(state(deck).pitch * 100) } // cents
 
-    /// Realize an effect's enabled-state + strength onto its AVAudioUnit.
+    /// Realize ONE rack slot onto its pre-allocated nodes: bypass every effect type in the bundle
+    /// except the one this slot currently holds (and bypass them ALL when the slot is off), then
+    /// push the active node's parameters from the pure `FXParams` table.
+    ///
+    /// This is the ONLY place the rack touches the audio graph, and it never attaches, detaches, or
+    /// reconnects anything — a mid-mix swap is just these four `bypass` writes.
+    private func applySlot(_ i: Int, on deck: Deck) {
+        guard built, let bundle = slotNodes[deck]?[safe: i],
+              let slot = state(deck).slots[safe: i] else { return }
+        let live = slot.enabled
+        bundle.comp.bypass   = !(live && slot.effect == .compressor)
+        bundle.filter.bypass = !(live && slot.effect == .filter)
+        bundle.reverb.bypass = !(live && slot.effect == .reverb)
+        bundle.mod.bypass    = !(live && slot.effect == .flanger)
+        guard live else { return }          // fully bypassed ⇒ its parameters are inaudible
+        let v = slot.variant
+        let s = slot.strength
+        switch slot.effect {
+        case .reverb:
+            // `loadFactoryPreset` rebuilds the reverb tail — only on an ACTUAL variant change, never
+            // per glide tick (this runs at ~10 Hz during an Auto-DJ transition).
+            if bundle.loadedPreset != v {
+                bundle.reverb.loadFactoryPreset(FXParams.reverbPreset(v))
+                bundle.loadedPreset = v
+            }
+            bundle.reverb.wetDryMix = Float(s) * 100
+        case .filter:
+            guard let band = bundle.filter.bands.first else { return }
+            band.bypass = false             // the NODE's bypass above gates the effect
+            band.filterType = FXParams.filterType(v)
+            band.frequency = FXParams.filterFrequency(v, s)
+            band.bandwidth = FXParams.filterBandwidth(v, s)
+        case .flanger:
+            bundle.mod.delayTime = FXParams.modDelayTime(v, s)
+            bundle.mod.feedback = FXParams.modFeedback(v, s)
+            bundle.mod.wetDryMix = FXParams.modWetDryMix(v, s)
+            bundle.mod.lowPassCutoff = FXParams.modLowPassCutoff(v)
+        case .compressor:
+            let au = bundle.comp.audioUnit
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_Threshold,
+                                  kAudioUnitScope_Global, 0, FXParams.compThreshold(v, s), 0)
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_HeadRoom,
+                                  kAudioUnitScope_Global, 0, FXParams.compHeadRoom(v), 0)
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_AttackTime,
+                                  kAudioUnitScope_Global, 0, FXParams.compAttack(v), 0)
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_ReleaseTime,
+                                  kAudioUnitScope_Global, 0, FXParams.compRelease(v), 0)
+            AudioUnitSetParameter(au, kDynamicsProcessorParam_OverallGain,
+                                  kAudioUnitScope_Global, 0, FXParams.compMakeup(v, s), 0)
+        }
+    }
+
+    private func applyAllSlots(_ deck: Deck) {
+        for i in 0..<DeckState.slotCount { applySlot(i, on: deck) }
+    }
+
+    /// Push every slot holding `effect` — the bridge for the effect-keyed shims (`setEffect`,
+    /// `setEffectStrength`, the Auto-DJ glide), which address a family rather than a position.
+    /// With duplicates in the rack, one family write legitimately touches several slots.
     private func applyEffect(_ effect: Effect, on deck: Deck) {
         guard built else { return }
-        let on = state(deck).isEnabled(effect)
-        let s = Float(state(deck).strength(effect))
-        switch effect {
-        case .reverb:
-            guard let n = reverbs[deck] else { return }
-            n.wetDryMix = s * 100; n.bypass = !on
-        case .filter:
-            guard let n = filters[deck], let band = n.bands.first else { return }
-            switch state(deck).filterMode {
-            case .lowPass:
-                band.filterType = .resonantLowPass
-                // Strength sweeps the cutoff log-down from ~18 kHz (subtle) to ~250 Hz (heavy) —
-                // classic DJ build-DOWN (cuts highs as strength rises).
-                band.frequency = Float(18_000 * pow(250.0 / 18_000.0, Double(s)))
-            case .highPass:
-                band.filterType = .resonantHighPass
-                // Strength sweeps the cutoff log-up from ~30 Hz (subtle) to ~2 kHz (heavy) —
-                // classic DJ build-UP (cuts bass as strength rises).
-                band.frequency = Float(30.0 * pow(2_000.0 / 30.0, Double(s)))
-            }
-            band.bandwidth = 0.5
-            band.bypass = !on
-            // The EQ NODE stays active (band-bypass alone gates the filter EFFECT) so its
-            // `globalGain` — which carries the deck's >unity volume boost (`applyBoost`) — keeps
-            // applying even when the filter is off. At unity + filter-off it's a transparent passthrough.
-            n.bypass = false
-        case .flanger:
-            guard let n = flangers[deck] else { return }
-            n.delayTime = 0.004                 // ~4 ms comb (static; a true LFO flanger is future work)
-            n.feedback = s * 60                 // %
-            n.wetDryMix = s * 50                // %
-            n.lowPassCutoff = 15_000
-            n.bypass = !on
-        case .compressor:
-            guard let n = comps[deck] else { return }
-            // Threshold drops 0 → −30 dB as strength rises (heavier compression); makeup gain rises
-            // ~half that (0 → +15 dB) so engaging Comp adds density/punch instead of just dropping level.
-            AudioUnitSetParameter(n.audioUnit, kDynamicsProcessorParam_Threshold,
-                                  kAudioUnitScope_Global, 0, AudioUnitParameterValue(-30 * s), 0)
-            AudioUnitSetParameter(n.audioUnit, kDynamicsProcessorParam_OverallGain,
-                                  kAudioUnitScope_Global, 0, AudioUnitParameterValue(15 * s), 0)
-            n.bypass = !on
+        for (i, s) in state(deck).slots.enumerated() where s.effect == effect {
+            applySlot(i, on: deck)
         }
     }
 
@@ -3941,20 +4103,13 @@ final class MixEngine {
     /// AU's channel count / sample rate (which AVAudioEngine asserts-and-crashes on).
     private static let canonicalFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
 
-    /// Connect a deck's effect chain at the fixed canonical format (inputMixer → timePitch → comp →
-    /// filter → eq3 → reverb → flanger). Called ONCE per deck at build; never reconnected. The
-    /// flanger's output is split onto the main + cue buses by the caller (see `ensureEngine`).
-    private func connectChain(_ deck: Deck,
-                              nodes: (AVAudioMixerNode, AVAudioUnitTimePitch, AVAudioUnitEffect,
-                                      AVAudioUnitEQ, AVAudioUnitEQ, AVAudioUnitReverb, AVAudioUnitDelay)) {
-        let (inputMixer, tp, comp, filter, eq3, reverb, flanger) = nodes
+    /// Serially connect a deck's chain at the fixed canonical format:
+    /// `inputMixer → timePitch → slot0 … slot3 (4 nodes each) → eq3 → trim`.
+    /// Called ONCE per deck at build; NEVER reconnected — the rack changes by bypass, not by
+    /// rewiring. The trim's output is split onto the main + cue buses by the caller (`ensureEngine`).
+    private func connectChain(_ deck: Deck, nodes: [AVAudioNode]) {
         let fmt = Self.canonicalFormat
-        engine.connect(inputMixer, to: tp, format: fmt)
-        engine.connect(tp, to: comp, format: fmt)
-        engine.connect(comp, to: filter, format: fmt)
-        engine.connect(filter, to: eq3, format: fmt)
-        engine.connect(eq3, to: reverb, format: fmt)
-        engine.connect(reverb, to: flanger, format: fmt)
+        for (a, b) in zip(nodes, nodes.dropFirst()) { engine.connect(a, to: b, format: fmt) }
     }
 
     /// One-time band setup for a deck's 3-band EQ node: low shelf @ 320 Hz, mid peak @ 1 kHz

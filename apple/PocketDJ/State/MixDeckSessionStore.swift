@@ -94,8 +94,53 @@ final class MixDeckSessionStore {
         var eqMid: Double? = nil
         var eqHigh: Double? = nil
         /// Filter FX mode rawValue ("lowPass"/"highPass"). OPTIONAL (schema-safe); absent ⇒ lowPass.
+        /// SUPERSEDED by `fxSlots` (which carries a variant per slot) — still WRITTEN for rollback
+        /// and still READ when migrating a pre-rack session.
         var filterMode: String? = nil
+        /// The FX RACK, lossless: one entry per slot, in rack order. OPTIONAL for the same reason as
+        /// `loopOn`/`eqLow` — the loader demands an EXACT `schemaVersion` match, so bumping would
+        /// discard every saved session. Absent (a pre-rack session) ⇒ synthesized from the flat
+        /// fields above in the default layout, which is exactly what those sessions meant.
+        /// Read through `resolvedSlots`, never directly.
+        var fxSlots: [FXSlotSnapshot]? = nil
+
+        /// The rack layout a restore should apply: the lossless `fxSlots` when present and WELL-FORMED,
+        /// else the pre-rack flat fields mapped onto the default layout. Never fails, never returns
+        /// empty — a corrupt rack degrades to the legacy reading rather than to a dead deck.
+        var resolvedSlots: [FXSlotSnapshot] {
+            if let s = fxSlots, s.count == MixDeckSessionStore.fxSlotCount,
+               s.allSatisfy({ $0.isWellFormed }) {
+                return s
+            }
+            return [
+                FXSlotSnapshot(effect: "compressor", variant: "punch", on: compressor, strength: compStrength),
+                FXSlotSnapshot(effect: "reverb", variant: "hall", on: reverb, strength: reverbStrength),
+                FXSlotSnapshot(effect: "flanger", variant: "flange", on: flanger, strength: flangerStrength),
+                FXSlotSnapshot(effect: "filter",
+                               variant: filterMode == "highPass" ? "highPass" : "lowPass",
+                               on: filter, strength: filterStrength),
+            ]
+        }
     }
+
+    /// One rack slot on disk. Strings (not the enums) so an unrecognised value from a NEWER build
+    /// degrades to a default on load instead of throwing away the whole session.
+    struct FXSlotSnapshot: Codable, Equatable {
+        var effect: String
+        var variant: String
+        var on: Bool
+        var strength: Double
+        /// Both rawValues resolve AND the variant belongs to the effect's family.
+        var isWellFormed: Bool {
+            guard let e = MixEngine.Effect(rawValue: effect),
+                  let v = EffectVariant(rawValue: variant) else { return false }
+            return v.effect == e
+        }
+    }
+
+    /// Mirrors `MixEngine.fxSlotCount` — a snapshot with a different count is treated as corrupt.
+    /// `nonisolated` so the pure `resolvedSlots` migration can read it off the main actor.
+    nonisolated static let fxSlotCount = 4
 
     /// One Auto-DJ queue row — a `MixEngine.AutoMixItem` (loadable + known length).
     struct AutoRow: Codable, Equatable {

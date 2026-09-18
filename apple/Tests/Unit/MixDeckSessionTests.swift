@@ -910,4 +910,162 @@ final class MixEngineSessionTests: XCTestCase {
         XCTAssertNil(ds.loopOn, "absent ⇒ no loop, not a decode failure")
         XCTAssertNil(ds.loopUnits)
     }
+
+    // MARK: - FX rack migration
+    //
+    // The hazard these guard: `schemaVersion` is matched EXACTLY on load, so the rack had to ride
+    // an optional field. If `resolvedSlots` ever returned empty/nil for a real session, every
+    // upgrading user would silently lose their decks.
+
+    /// A REAL pre-rack session (no `fxSlots` key at all) must still decode AND come back as the
+    /// default layout carrying exactly what its flat fields meant — including the LP/HP mode.
+    func testPreRackSessionMigratesIntoTheDefaultRack() throws {
+        let legacy = """
+        {"track":{"songId":"sng_old","title":"T","artist":"Aria","bpm":120,"camelot":"8A",
+         "key":"Am","albumId":"alb_1","lengthMs":200000},
+         "positionMs":1000,"volume":1.0,"rate":1.0,"pitch":0.0,
+         "compressor":false,"reverb":true,"flanger":false,"filter":true,
+         "compStrength":0.5,"reverbStrength":0.8,"flangerStrength":0.5,"filterStrength":0.3,
+         "stemMode":false,"stemMuted":[],"stemVol":{},"filterMode":"highPass"}
+        """
+        let ds = try JSONDecoder().decode(MixDeckSessionStore.DeckSnapshot.self, from: Data(legacy.utf8))
+        XCTAssertNil(ds.fxSlots, "a pre-rack session has no rack")
+
+        let slots = ds.resolvedSlots
+        XCTAssertEqual(slots.count, 4, "migration must never yield an empty rack")
+        XCTAssertEqual(slots.map(\.effect), ["compressor", "reverb", "flanger", "filter"],
+                       "…in the pre-rack grid order")
+        XCTAssertEqual(slots[1].on, true);  XCTAssertEqual(slots[1].strength, 0.8, accuracy: 1e-9)
+        XCTAssertEqual(slots[3].on, true);  XCTAssertEqual(slots[3].strength, 0.3, accuracy: 1e-9)
+        XCTAssertEqual(slots[3].variant, "highPass", "the legacy filterMode carries into the variant")
+        XCTAssertEqual(slots[0].on, false); XCTAssertEqual(slots[2].on, false)
+        XCTAssertTrue(slots.allSatisfy(\.isWellFormed))
+    }
+
+    func testPreRackSessionWithoutFilterModeDefaultsToLowPass() throws {
+        let legacy = """
+        {"track":{"songId":"s","title":"T","artist":"A","bpm":120,"camelot":null,
+         "key":null,"albumId":null,"lengthMs":1000},
+         "positionMs":0,"volume":1.0,"rate":1.0,"pitch":0.0,
+         "compressor":false,"reverb":false,"flanger":false,"filter":false,
+         "compStrength":0.5,"reverbStrength":0.5,"flangerStrength":0.5,"filterStrength":0.5,
+         "stemMode":false,"stemMuted":[],"stemVol":{}}
+        """
+        let ds = try JSONDecoder().decode(MixDeckSessionStore.DeckSnapshot.self, from: Data(legacy.utf8))
+        XCTAssertEqual(ds.resolvedSlots[3].variant, "lowPass")
+    }
+
+    /// A well-formed rack is returned VERBATIM — duplicates and all.
+    func testWellFormedRackIsUsedAsIs() {
+        var ds = legacyDeckSnapshot()
+        ds.fxSlots = [
+            .init(effect: "filter", variant: "lowPass", on: true, strength: 0.9),
+            .init(effect: "filter", variant: "highPass", on: false, strength: 0.2),
+            .init(effect: "compressor", variant: "glue", on: true, strength: 0.6),
+            .init(effect: "reverb", variant: "cathedral", on: false, strength: 0.4),
+        ]
+        let slots = ds.resolvedSlots
+        XCTAssertEqual(slots.map(\.effect), ["filter", "filter", "compressor", "reverb"],
+                       "duplicates survive the round-trip")
+        XCTAssertEqual(slots.map(\.variant), ["lowPass", "highPass", "glue", "cathedral"])
+        XCTAssertEqual(slots[0].strength, 0.9, accuracy: 1e-9)
+    }
+
+    /// Corrupt racks fall back to the LEGACY reading rather than to a dead deck. Each case is a way
+    /// a hand-edited or newer-build file could arrive.
+    func testCorruptRackFallsBackToTheFlatFields() {
+        let cases: [(String, [MixDeckSessionStore.FXSlotSnapshot])] = [
+            ("wrong count", [.init(effect: "reverb", variant: "hall", on: true, strength: 0.5)]),
+            ("unknown effect", [
+                .init(effect: "vocoder", variant: "hall", on: true, strength: 0.5),
+                .init(effect: "reverb", variant: "hall", on: false, strength: 0.5),
+                .init(effect: "flanger", variant: "flange", on: false, strength: 0.5),
+                .init(effect: "filter", variant: "lowPass", on: false, strength: 0.5),
+            ]),
+            ("cross-family variant", [
+                .init(effect: "reverb", variant: "highPass", on: true, strength: 0.5),
+                .init(effect: "reverb", variant: "hall", on: false, strength: 0.5),
+                .init(effect: "flanger", variant: "flange", on: false, strength: 0.5),
+                .init(effect: "filter", variant: "lowPass", on: false, strength: 0.5),
+            ]),
+        ]
+        for (name, bad) in cases {
+            var ds = legacyDeckSnapshot()
+            ds.reverb = true; ds.reverbStrength = 0.77       // the legacy truth to fall back to
+            ds.fxSlots = bad
+            let slots = ds.resolvedSlots
+            XCTAssertEqual(slots.count, 4, "\(name): must still yield a full rack")
+            XCTAssertEqual(slots.map(\.effect), ["compressor", "reverb", "flanger", "filter"],
+                           "\(name): falls back to the default layout")
+            XCTAssertEqual(slots[1].on, true, "\(name): the flat fields are honoured")
+            XCTAssertEqual(slots[1].strength, 0.77, accuracy: 1e-9, "\(name)")
+        }
+    }
+
+    /// The rollback contract: the engine keeps WRITING the flat fields, so an older build (which
+    /// ignores `fxSlots`) still restores a sane deck from a rack-era session.
+    func testRackSnapshotStillWritesTheFlatFieldsForRollback() async throws {
+        let store = makeStore()
+        let e = makeEngine(store: store)
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        wireStudioResolve(e, files: ["smp_r1": try makeSineWAV(seconds: 2)])
+        e.load(songId: "smp_r1", title: "T", artist: "A", bpm: 120,
+               camelot: nil, key: nil, albumId: nil, lengthMs: nil, on: .a)
+        try XCTSkipUnless(e.loaded(.a) != nil, "fixture did not load")
+
+        e.setSlotEffect(.reverb, slot: 0, on: .a)
+        e.setSlotVariant(.plate, slot: 0, on: .a)
+        e.setSlot(0, enabled: true, on: .a)
+        await waitUntil("rack snapshot on disk") { store.load()?.deckA?.fxSlots != nil }
+
+        let snap = try XCTUnwrap(store.load()?.deckA)
+        XCTAssertEqual(snap.fxSlots?.first?.effect, "reverb")
+        XCTAssertEqual(snap.fxSlots?.first?.variant, "plate")
+        XCTAssertTrue(snap.reverb, "an older build reads this flat field")
+        XCTAssertEqual(snap.resolvedSlots.first?.variant, "plate")
+    }
+
+    /// A rack-era session restores its layout exactly — the end-to-end path users actually hit.
+    func testRackSurvivesAKillAndRestore() async throws {
+        let store = makeStore()
+        let e = makeEngine(store: store)
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        wireStudioResolve(e, files: ["smp_r1": try makeSineWAV(seconds: 2)])
+        e.load(songId: "smp_r1", title: "T", artist: "A", bpm: 120,
+               camelot: nil, key: nil, albumId: nil, lengthMs: nil, on: .a)
+        try XCTSkipUnless(e.loaded(.a) != nil, "fixture did not load")
+
+        e.setSlotEffect(.filter, slot: 0, on: .a)
+        e.setSlotVariant(.bandPass, slot: 0, on: .a)
+        e.setSlot(0, enabled: true, on: .a)
+        e.setSlotEffect(.filter, slot: 1, on: .a)          // a DUPLICATE family
+        e.setSlotVariant(.highPass, slot: 1, on: .a)
+        await waitUntil("rack snapshot on disk") { store.load()?.deckA?.fxSlots != nil }
+
+        // A fresh engine over the SAME store, as after a kill + relaunch.
+        let e2 = makeEngine(store: store)
+        e2.ensureEngine()
+        try XCTSkipUnless(e2.isReady, "no audio device on this test host")
+        wireStudioResolve(e2, files: ["smp_r1": try makeSineWAV(seconds: 2)])
+        e2.restorePersistedMixIfIdle()
+        e2.materializePendingRestoreIfNeeded()
+        try XCTSkipUnless(e2.loaded(.a) != nil, "restore did not re-load the deck")
+
+        XCTAssertEqual(e2.slot(0, on: .a)?.effect, .filter)
+        XCTAssertEqual(e2.slot(0, on: .a)?.variant, .bandPass, "the variety survives a restart")
+        XCTAssertEqual(e2.slot(0, on: .a)?.enabled, true)
+        XCTAssertEqual(e2.slot(1, on: .a)?.variant, .highPass, "and so does the duplicate filter")
+    }
+
+    /// A minimal pre-rack snapshot to mutate in migration tests.
+    private func legacyDeckSnapshot() -> MixDeckSessionStore.DeckSnapshot {
+        .init(track: .init(songId: "s", title: "T", artist: "A", bpm: nil, camelot: nil,
+                           key: nil, albumId: nil, lengthMs: nil),
+              positionMs: 0, volume: 1, rate: 1, pitch: 0,
+              compressor: false, reverb: false, flanger: false, filter: false,
+              compStrength: 0.5, reverbStrength: 0.5, flangerStrength: 0.5, filterStrength: 0.5,
+              stemMode: false, stemMuted: [], stemVol: [:])
+    }
 }

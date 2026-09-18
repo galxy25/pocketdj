@@ -26,7 +26,7 @@ final class MixSessionsUITests: XCTestCase {
         // Generate session events (no track needed — setters fire + record regardless).
         tapN("deck-A-tempo-inc", 3)
         tapN("deck-A-vol-inc", 5)          // push gain past 100% → boost styling
-        tapIfExists("deck-A-fx-reverb")     // toggle an effect
+        tapIfExists("deck-A-fx-slot-1")     // toggle an effect (slot 1 = Reverb by default)
         tapN("deck-B-pitch-inc", 2)
         if firstWith("crossfader").exists { firstWith("crossfader").adjust(toNormalizedSliderPosition: 0.7) }
         save(app, "02-mix-after-actions")

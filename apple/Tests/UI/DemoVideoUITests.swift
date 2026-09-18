@@ -110,10 +110,12 @@ final class DemoVideoUITests: XCTestCase {
         }
 
         // ---- 7. One FX pad on/off ----
-        let fx = app.any("deck-B-fx-filter")
-        if tapIfPresent(fx, "deck-B-fx-filter (on)", timeout: 4) {
+        // Rack slot 3 is the default layout's Filter (ids are slot-indexed now that a rack can hold
+        // duplicates, so a name-keyed id would be ambiguous).
+        let fx = app.any("deck-B-fx-slot-3")
+        if tapIfPresent(fx, "deck-B-fx-slot-3 (on)", timeout: 4) {
             pause(3)
-            tapIfPresent(fx, "deck-B-fx-filter (off)", timeout: 3)
+            tapIfPresent(fx, "deck-B-fx-slot-3 (off)", timeout: 3)
             pause(1)
         }
 
