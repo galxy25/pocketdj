@@ -2226,6 +2226,16 @@ final class MixEngine {
         persistMixDeckSession()
     }
 
+    /// Set a slot's modulation configuration (source / musical rate / signed depth / shape /
+    /// phase offset). Persists as user intent; the LIVE modulated value is runtime plumbing and
+    /// never touches the stored slot.
+    func setSlotMod(_ mod: SlotMod, slot i: Int, on deck: Deck) {
+        guard let s = state(deck).slots[safe: i], s.mod != mod else { return }
+        mutate(deck) { $0.slots[i].mod = mod }
+        applySlot(i, on: deck)
+        persistMixDeckSession()                  // discrete config change — persist immediately
+    }
+
     /// Pick a different variety of the effect a slot already holds (LP→HP, Hall→Plate, …).
     func setSlotVariant(_ variant: EffectVariant, slot i: Int, on deck: Deck) {
         guard let s = state(deck).slots[safe: i],
@@ -3529,8 +3539,10 @@ final class MixEngine {
         // back exactly as they left it.
         let restored = ds.resolvedSlots.map { s -> FXSlot in
             let effect = Effect(rawValue: s.effect) ?? .compressor
-            return FXSlot(effect, variant: EffectVariant(rawValue: s.variant),
-                          enabled: s.on, strength: s.strength)
+            var slot = FXSlot(effect, variant: EffectVariant(rawValue: s.variant),
+                              enabled: s.on, strength: s.strength)
+            slot.mod = s.resolvedMod
+            return slot
         }
         mutate(deck) { $0.slots = restored }
         applyAllSlots(deck)
@@ -3683,7 +3695,12 @@ final class MixEngine {
             fxSlots: s.slots.map {
                 MixDeckSessionStore.FXSlotSnapshot(effect: $0.effect.rawValue,
                                                    variant: $0.variant.rawValue,
-                                                   on: $0.enabled, strength: $0.strength)
+                                                   on: $0.enabled, strength: $0.strength,
+                                                   modSource: $0.mod.source == .off ? nil : $0.mod.source.rawValue,
+                                                   modRate: $0.mod.source == .off ? nil : $0.mod.rate.rawValue,
+                                                   modShape: $0.mod.source == .off ? nil : $0.mod.shape.rawValue,
+                                                   modDepth: $0.mod.source == .off ? nil : $0.mod.depth,
+                                                   modPhase: $0.mod.source == .off ? nil : $0.mod.phase)
             })
     }
 

@@ -1059,6 +1059,89 @@ final class MixEngineSessionTests: XCTestCase {
         XCTAssertEqual(e2.slot(1, on: .a)?.variant, .highPass, "and so does the duplicate filter")
     }
 
+    // MARK: - FX modulation persistence
+
+    /// A pre-modulation rack snapshot (no mod keys at all) must resolve to modulation OFF.
+    func testPreModulationSlotResolvesToModOff() throws {
+        let json = """
+        {"effect":"filter","variant":"highPass","on":true,"strength":0.7}
+        """
+        let s = try JSONDecoder().decode(MixDeckSessionStore.FXSlotSnapshot.self, from: Data(json.utf8))
+        XCTAssertEqual(s.resolvedMod, SlotMod(), "absent keys ⇒ the default (off)")
+        XCTAssertTrue(s.isWellFormed)
+    }
+
+    func testModConfigRoundTripsThroughJSON() throws {
+        var s = MixDeckSessionStore.FXSlotSnapshot(effect: "filter", variant: "lowPass",
+                                                   on: true, strength: 0.5)
+        s.modSource = "lfo"; s.modRate = "quarter"; s.modShape = "saw"
+        s.modDepth = -0.4; s.modPhase = 0.25
+        let back = try JSONDecoder().decode(MixDeckSessionStore.FXSlotSnapshot.self,
+                                            from: JSONEncoder().encode(s))
+        XCTAssertEqual(back.resolvedMod,
+                       SlotMod(source: .lfo, rate: .quarter, depth: -0.4, shape: .saw, phase: 0.25))
+    }
+
+    /// THE trap this design guards: a garbage mod value from a NEWER build must degrade to
+    /// defaults — it must NOT make the slot ill-formed, because `resolvedSlots` discards the
+    /// ENTIRE rack (falling back to the pre-rack flat fields) when any slot fails.
+    func testGarbageModValuesNeverCostTheUserTheirRack() {
+        var ds = legacyDeckSnapshot()
+        ds.fxSlots = [
+            .init(effect: "filter", variant: "bandPass", on: true, strength: 0.9,
+                  modSource: "sidechain-quantum", modRate: "1/64", modShape: "fractal",
+                  modDepth: 0.5, modPhase: 0),                      // a future build's vocabulary
+            .init(effect: "filter", variant: "highPass", on: false, strength: 0.2),
+            .init(effect: "compressor", variant: "glue", on: true, strength: 0.6),
+            .init(effect: "reverb", variant: "cathedral", on: false, strength: 0.4),
+        ]
+        let slots = ds.resolvedSlots
+        XCTAssertEqual(slots.map(\.variant), ["bandPass", "highPass", "glue", "cathedral"],
+                       "the custom rack LAYOUT must survive garbage mod values")
+        XCTAssertEqual(slots[0].resolvedMod.source, .off,
+                       "an unknown source degrades to off — it must not guess")
+        XCTAssertEqual(slots[0].resolvedMod.rate, .bar)
+        XCTAssertEqual(slots[0].resolvedMod.shape, .sine)
+    }
+
+    /// Out-of-range persisted numbers clamp on the way in (a hand-edited depth of 9 must not
+    /// produce a 9× wobble).
+    func testResolvedModClampsDepthAndFoldsPhase() {
+        var s = MixDeckSessionStore.FXSlotSnapshot(effect: "filter", variant: "lowPass",
+                                                   on: true, strength: 0.5)
+        s.modSource = "lfo"; s.modDepth = 9; s.modPhase = 2.75
+        XCTAssertEqual(s.resolvedMod.depth, 1)
+        XCTAssertEqual(s.resolvedMod.phase, 0.75, accuracy: 1e-9)
+    }
+
+    /// End-to-end: a modulated slot survives capture → JSON → restore with its rhythm intact.
+    func testModulationSurvivesAKillAndRestore() async throws {
+        let store = makeStore()
+        let e = makeEngine(store: store)
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        wireStudioResolve(e, files: ["smp_r1": try makeSineWAV(seconds: 2)])
+        e.load(songId: "smp_r1", title: "T", artist: "A", bpm: 120,
+               camelot: nil, key: nil, albumId: nil, lengthMs: nil, on: .a)
+        try XCTSkipUnless(e.loaded(.a) != nil, "fixture did not load")
+
+        e.setSlotMod(SlotMod(source: .lfo, rate: .quarter, depth: 0.6, shape: .triangle, phase: 0.5),
+                     slot: 3, on: .a)
+        await waitUntil("mod snapshot on disk") { store.load()?.deckA?.fxSlots?[3].modSource == "lfo" }
+
+        let e2 = makeEngine(store: store)
+        e2.ensureEngine()
+        try XCTSkipUnless(e2.isReady, "no audio device on this test host")
+        wireStudioResolve(e2, files: ["smp_r1": try makeSineWAV(seconds: 2)])
+        e2.restorePersistedMixIfIdle()
+        e2.materializePendingRestoreIfNeeded()
+        try XCTSkipUnless(e2.loaded(.a) != nil, "restore did not re-load the deck")
+
+        XCTAssertEqual(e2.slot(3, on: .a)?.mod,
+                       SlotMod(source: .lfo, rate: .quarter, depth: 0.6, shape: .triangle, phase: 0.5),
+                       "the slot's rhythm must survive a relaunch")
+    }
+
     /// A minimal pre-rack snapshot to mutate in migration tests.
     private func legacyDeckSnapshot() -> MixDeckSessionStore.DeckSnapshot {
         .init(track: .init(songId: "s", title: "T", artist: "A", bpm: nil, camelot: nil,
