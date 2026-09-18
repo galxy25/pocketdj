@@ -1154,19 +1154,14 @@ private struct DeckView: View {
         }
     }
 
-    // 2×2 grid: Compressor · Reverb (top), Flanger · Filter (bottom).
+    // The FX RACK — a 2×2 grid of four SLOTS, each holding any effect (duplicates allowed). Tap a
+    // chip to toggle it; long-press / right-click reveals its strength flanked by the effect picker
+    // (left) and the variety picker (right).
     private var effectsGrid: some View {
         LazyVGrid(columns: [GridItem(.flexible(), spacing: 6), GridItem(.flexible(), spacing: 6)],
                   spacing: 6) {
-            ForEach(MixEngine.Effect.allCases) { fx in
-                EffectButton(effect: fx,
-                             isOn: engine.isEnabled(fx, on: deck),
-                             strength: engine.strength(fx, on: deck),
-                             a11y: "\(a11y)-fx-\(fx.rawValue)",
-                             onToggle: { engine.setEffect(fx, enabled: !engine.isEnabled(fx, on: deck), on: deck) },
-                             onStrength: { engine.setEffectStrength(fx, $0, on: deck) },
-                             filterMode: fx == .filter ? engine.filterMode(deck) : nil,
-                             onFilterMode: fx == .filter ? { engine.setFilterMode($0, on: deck) } : nil)
+            ForEach(0..<MixEngine.fxSlotCount, id: \.self) { i in
+                FXSlotChip(index: i, deck: deck, engine: engine, a11y: "\(a11y)-fx-slot-\(i)")
             }
         }
     }
@@ -1774,10 +1769,6 @@ struct EffectButton: View {
     let a11y: String
     let onToggle: () -> Void
     let onStrength: (Double) -> Void
-    /// Low-pass/high-pass toggle — Filter FX only (nil for the other 3 effects). Rendered as a small
-    /// LP/HP chip alongside the strength control wherever it's revealed.
-    var filterMode: MixEngine.FilterMode? = nil
-    var onFilterMode: ((MixEngine.FilterMode) -> Void)? = nil
 
     /// In-place flip (landscape / iPad / macOS): showing the strength slider vs the labelled button.
     @State private var editing = false
@@ -1808,15 +1799,9 @@ struct EffectButton: View {
             if !Task.isCancelled { editing = false }
         }
         .popover(isPresented: $showPopover, arrowEdge: .top) {
-            VStack(spacing: 0) {
-                if let filterMode, let onFilterMode {
-                    HStack { Spacer(); FilterModeToggle(mode: filterMode, a11y: "\(a11y)-mode", onChange: onFilterMode) }
-                        .padding(.horizontal, 16).padding(.top, 12)
-                }
-                ChipStrengthPopover(title: effect.label, systemImage: effect.icon, tint: Theme.accent,
-                                    value: strength, step: 0.05, a11y: "\(a11y)-strength",
-                                    presented: $showPopover, onChange: onStrength)
-            }
+            ChipStrengthPopover(title: effect.label, systemImage: effect.icon, tint: Theme.accent,
+                                value: strength, step: 0.05, a11y: "\(a11y)-strength",
+                                presented: $showPopover, onChange: onStrength)
         }
     }
 
@@ -1855,9 +1840,6 @@ struct EffectButton: View {
     private var sliderFace: some View {
         HStack(spacing: 5) {
             Image(systemName: effect.icon)
-            if let filterMode, let onFilterMode {
-                FilterModeToggle(mode: filterMode, a11y: "\(a11y)-mode", onChange: onFilterMode)
-            }
             StepButton(dir: .dec, value: strength, range: 0...1, step: 0.05, a11y: "\(a11y)-strength",
                        onChange: onStrength, onInteract: { interaction += 1 })
             Slider(value: Binding(get: { strength }, set: { onStrength($0); interaction += 1 }), in: 0...1)
@@ -1883,29 +1865,190 @@ struct EffectButton: View {
     }
 }
 
-/// LP/HP compact chip — tap flips the Filter FX's cutoff shape. Lives beside the strength control
-/// wherever it's revealed (in-place flip + iPhone popover); independent of the on/off + strength.
-private struct FilterModeToggle: View {
-    let mode: MixEngine.FilterMode
+/// ONE FX-RACK SLOT. Modelled on `EffectButton` (same tap-to-toggle, long-press / right-click to
+/// reveal, 3 s idle auto-revert, and in-place-flip-vs-popover split), but addressed by rack POSITION
+/// rather than by effect — so a rack can hold duplicates (two compressors, an LP and an HP filter).
+///
+/// Revealed, it shows the requested symmetry: the EFFECT picker on the left and the VARIETY picker
+/// on the right, flanking the strength slider.
+private struct FXSlotChip: View {
+    let index: Int
+    let deck: MixEngine.Deck
+    let engine: MixEngine
     let a11y: String
-    let onChange: (MixEngine.FilterMode) -> Void
+
+    @State private var editing = false
+    @State private var interaction = 0
+    @State private var showPopover = false
+
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hSize
+    /// Compact widths (iPhone either orientation) get the fixed-width popover — the chip is far too
+    /// narrow there for an in-place slider flanked by two menus.
+    private var useChipPopover: Bool { hSize == .compact }
+    #else
+    private var useChipPopover: Bool { false }
+    #endif
+
+    private var slot: FXSlot { engine.slot(index, on: deck) ?? FXSlot(.compressor) }
+    private var isOn: Bool { slot.enabled }
 
     var body: some View {
-        Button {
-            onChange(mode == .lowPass ? .highPass : .lowPass)
-        } label: {
-            Text(mode.label)
-                .font(.caption2.weight(.bold))
-                .frame(width: 26, height: 18)
-                .background(Theme.bgOverlay, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous).strokeBorder(Theme.border, lineWidth: 1))
+        Group {
+            if editing && !useChipPopover { sliderFace } else { buttonFace }
         }
-        .buttonStyle(.plain)
-        .foregroundStyle(Theme.accent)
-        .help(mode == .lowPass ? "Low-pass (cuts highs) — tap for high-pass" : "High-pass (cuts bass) — tap for low-pass")
+        .animation(.easeInOut(duration: 0.15), value: editing)
+        .task(id: interaction) {
+            guard editing else { return }
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            if !Task.isCancelled { editing = false }
+        }
+        .popover(isPresented: $showPopover, arrowEdge: .top) { popoverFace }
+    }
+
+    // The chip shows the VARIETY, not the family name: "Hall" / "HP" / "Glue" says more in the same
+    // pixels than "Reverb" / "Filter" / "Comp", and the icon already carries the family.
+    private var buttonFace: some View {
+        HStack(spacing: 4) {
+            Image(systemName: slot.effect.icon)
+            Text(slot.variant.label).lineLimit(1).minimumScaleFactor(0.75)
+        }
+        .font(.caption.weight(.medium))
+        .frame(maxWidth: .infinity, minHeight: 18)
+        .padding(.vertical, 7)
+        .background(isOn ? Theme.accent.opacity(0.25) : Theme.bgOverlay,
+                    in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .strokeBorder(isOn ? Theme.accent : Theme.border, lineWidth: 1))
+        .foregroundStyle(isOn ? Theme.accent : Theme.fgDim)
+        .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .onTapGesture { engine.setSlot(index, enabled: !isOn, on: deck) }
+        .onLongPressGesture(minimumDuration: 0.4) { reveal() }
+        #if os(macOS)
+        .overlay(SecondaryClick { reveal() })
+        #endif
+        .help("\(slot.effect.label) · \(slot.variant.longLabel) — tap to toggle · "
+              + "long-press / right-click to pick the effect, its variety, and strength")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Slot \(index + 1), \(slot.effect.label), \(slot.variant.longLabel)")
         .accessibilityIdentifier(a11y)
-        .accessibilityLabel("Filter mode")
-        .accessibilityValue(mode == .lowPass ? "Low-pass" : "High-pass")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAddTraits(isOn ? .isSelected : [])
+    }
+
+    // iPad / macOS — roomy enough for the pickers, steppers and slider in one row.
+    private var sliderFace: some View {
+        HStack(spacing: 5) {
+            effectMenu
+            StepButton(dir: .dec, value: slot.strength, range: 0...1, step: 0.05,
+                       a11y: "\(a11y)-strength", onChange: setStrength,
+                       onInteract: { interaction += 1 })
+            Slider(value: Binding(get: { slot.strength }, set: { setStrength($0); interaction += 1 }),
+                   in: 0...1)
+                .controlSize(.small)
+                .accessibilityIdentifier("\(a11y)-strength")
+            StepButton(dir: .inc, value: slot.strength, range: 0...1, step: 0.05,
+                       a11y: "\(a11y)-strength", onChange: setStrength,
+                       onInteract: { interaction += 1 })
+            variantMenu
+        }
+        .font(.caption.weight(.medium))
+        .frame(maxWidth: .infinity, minHeight: 18)
+        .padding(.vertical, 7).padding(.horizontal, 8)
+        .background(Theme.accent.opacity(0.18), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Theme.accent, lineWidth: 1))
+        .foregroundStyle(Theme.accent)
+    }
+
+    // Compact iPhone — the two pickers sit above a full-width strength slider.
+    private var popoverFace: some View {
+        VStack(spacing: 0) {
+            HStack {
+                effectMenu
+                Spacer(minLength: 12)
+                variantMenu
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(Theme.accent)
+            .padding(.horizontal, 16).padding(.top, 14)
+            ChipStrengthPopover(title: "Slot \(index + 1)", systemImage: slot.effect.icon,
+                                tint: Theme.accent, value: slot.strength, step: 0.05,
+                                a11y: "\(a11y)-strength", presented: $showPopover,
+                                onChange: setStrength,
+                                // Browsing the two menus above reads as "idle" to the 3 s timer —
+                                // it would close the sheet mid-choice. Outside-tap dismisses.
+                                autoDismiss: false)
+        }
+        // MUST sit on the popover's ROOT content. `ChipStrengthPopover` carries this modifier on
+        // its own body, but wrapping it in this VStack makes the VStack the root — without this the
+        // popover silently fails to present on a compact iPhone.
+        .presentationCompactAdaptation(.popover)
+    }
+
+    /// LEFT — swap which effect this slot holds. Any family, including one already in another slot.
+    private var effectMenu: some View {
+        Menu {
+            ForEach(MixEngine.Effect.allCases) { fx in
+                Button {
+                    engine.setSlotEffect(fx, slot: index, on: deck)
+                    interaction += 1
+                } label: {
+                    Label(fx.label, systemImage: fx == slot.effect ? "checkmark" : fx.icon)
+                }
+                .accessibilityIdentifier("\(a11y)-effect-\(fx.rawValue)")
+            }
+        } label: {
+            pickerLabel(slot.effect.label, icon: slot.effect.icon)
+        }
+        .fixedSize()
+        .help("Swap this slot's effect")
+        .accessibilityIdentifier("\(a11y)-effect")
+        .accessibilityLabel("Effect")
+        .accessibilityValue(slot.effect.label)
+    }
+
+    /// RIGHT — pick a different variety of the effect this slot already holds (the symmetric twin of
+    /// the effect menu; it generalizes the old LP/HP toggle to every family).
+    private var variantMenu: some View {
+        Menu {
+            ForEach(EffectVariant.all(for: slot.effect)) { v in
+                Button {
+                    engine.setSlotVariant(v, slot: index, on: deck)
+                    interaction += 1
+                } label: {
+                    Label(v.longLabel, systemImage: v == slot.variant ? "checkmark" : "circle")
+                }
+                .accessibilityIdentifier("\(a11y)-variant-\(v.rawValue)")
+            }
+        } label: {
+            pickerLabel(slot.variant.label, icon: nil)
+        }
+        .fixedSize()
+        .help("Pick a variety of \(slot.effect.label)")
+        .accessibilityIdentifier("\(a11y)-variant")
+        .accessibilityLabel("Variety")
+        .accessibilityValue(slot.variant.longLabel)
+    }
+
+    private func pickerLabel(_ text: String, icon: String?) -> some View {
+        HStack(spacing: 3) {
+            if let icon { Image(systemName: icon) }
+            Text(text).lineLimit(1)
+            Image(systemName: "chevron.up.chevron.down").font(.system(size: 7, weight: .bold))
+        }
+        .font(.caption2.weight(.semibold))
+        .padding(.horizontal, 6).padding(.vertical, 4)
+        .background(Theme.bgOverlay, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
+            .strokeBorder(Theme.border, lineWidth: 1))
+    }
+
+    private func setStrength(_ v: Double) { engine.setSlotStrength(index, v, on: deck) }
+
+    private func reveal() {
+        if !isOn { engine.setSlot(index, enabled: true, on: deck) }  // dialling should be audible
+        if useChipPopover { showPopover = true }
+        else { editing = true; interaction += 1 }
     }
 }
 
@@ -1922,6 +2065,12 @@ struct ChipStrengthPopover: View {
     let a11y: String
     @Binding var presented: Bool
     let onChange: (Double) -> Void
+    /// Close on 3 s of no slider/stepper interaction. TRUE for the simple chips (a quick dial, then
+    /// get out of the way). FALSE when the popover hosts MORE than this slider — the FX rack puts
+    /// its effect + variety menus above it, and browsing a menu is idle time by this timer's
+    /// reckoning, so a 3 s guillotine would yank the sheet away mid-choice. Those close on an
+    /// outside tap instead.
+    var autoDismiss: Bool = true
     @State private var interaction = 0
 
     var body: some View {
@@ -1946,6 +2095,7 @@ struct ChipStrengthPopover: View {
         .presentationCompactAdaptation(.popover)       // stay a popover on iPhone (not a sheet)
         // Auto-dismiss after 3 s idle; each drag OR step bumps `interaction` and restarts the timer.
         .task(id: interaction) {
+            guard autoDismiss else { return }
             try? await Task.sleep(nanoseconds: 3_000_000_000)
             if !Task.isCancelled { presented = false }
         }
