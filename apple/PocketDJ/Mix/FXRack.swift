@@ -129,6 +129,12 @@ struct FXSlot: Equatable, Sendable {
     mutating func setStrength(_ v: Double) { strength = min(max(v, 0), 1) }
 }
 
+extension Array {
+    /// Bounds-checked read. The rack is always `slotCount` long, but a slot index arrives from the
+    /// UI, a restored session, and the Auto-DJ glide — a stale one must return nil, not trap.
+    subscript(safe i: Int) -> Element? { indices.contains(i) ? self[i] : nil }
+}
+
 // MARK: - Variant → AU parameters
 
 /// The pure variant→parameter mapping for every effect family. Kept as plain value-returning

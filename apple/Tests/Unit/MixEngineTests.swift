@@ -1532,4 +1532,87 @@ final class MixEngineTests: XCTestCase {
         MixLoadable(songId: id, title: "T", artist: "A", bpm: bpm,
                     camelot: nil, key: nil, albumId: nil, lengthMs: lengthMs)
     }
+
+    // MARK: - FX rack: the graph contract
+
+    /// THE load-bearing invariant of the rack design: changing effects NEVER rewires the audio
+    /// graph, so it can't stop the engine or interrupt playback. Hammer every effect on both decks
+    /// while both are playing and assert the engine stays running the whole way — if a future change
+    /// reintroduces attach/detach/reconnect on this path, this test catches it as a dead engine.
+    func testEffectChangesNeverStopTheEngineMidPlayback() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 3)
+        let b = try makeSineWAV(seconds: 3)
+        defer { try? FileManager.default.removeItem(at: a); try? FileManager.default.removeItem(at: b) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.loadFile(b, release: nil, startMs: nil, meta: meta("b", bpm: 128), on: .b)
+        e.playBoth()
+        XCTAssertTrue(e.isRunning)
+
+        for round in 0..<12 {
+            for fx in MixEngine.Effect.allCases {
+                let deck: MixEngine.Deck = round.isMultiple(of: 2) ? .a : .b
+                e.setEffect(fx, enabled: true, on: deck)
+                e.setEffectStrength(fx, Double(round % 5) / 4.0, on: deck)
+                e.setFilterMode(round.isMultiple(of: 3) ? .highPass : .lowPass, on: deck)
+                XCTAssertTrue(e.isReady, "the engine died swapping \(fx) on \(deck) (round \(round))")
+            }
+        }
+        XCTAssertTrue(e.isReady, "the graph must survive the whole sweep")
+        XCTAssertTrue(e.isRunning, "playback must never be interrupted by an FX change")
+        XCTAssertNotNil(e.loaded(.a)); XCTAssertNotNil(e.loaded(.b))
+    }
+
+    /// The >unity volume boost used to ride the deck's FILTER EQ, which the rack can now swap away
+    /// from entirely — it moved to a dedicated always-present trim node. Boosting past 100% with no
+    /// filter anywhere in the signal path must still work (and not crash the graph).
+    func testVolumeBoostSurvivesWithTheFilterEffectOff() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        e.setEffect(.filter, enabled: false, on: .a)      // nothing filter-shaped is active
+        e.play(.a)
+
+        e.setVolume(1.8, on: .a)                          // +5.1 dB of boost, carried by trim
+        XCTAssertEqual(e.volume(.a), 1.8, accuracy: 1e-9)
+        XCTAssertTrue(e.isReady, "boosting with the filter off must not break the graph")
+        XCTAssertTrue(e.isRunning)
+
+        e.setVolume(1.0, on: .a)
+        XCTAssertEqual(e.volume(.a), 1.0, accuracy: 1e-9)
+        XCTAssertTrue(e.isReady)
+    }
+
+    /// Reset SILENCES the rack but keeps its layout — the DJ's board configuration survives ↺, the
+    /// same way the loaded track and the Lead role do.
+    func testResetSilencesEveryEffectButKeepsTheRack() throws {
+        let e = makeEngine()
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+
+        let a = try makeSineWAV(seconds: 2)
+        defer { try? FileManager.default.removeItem(at: a) }
+        e.loadFile(a, release: nil, startMs: nil, meta: meta("a", bpm: 120), on: .a)
+        for fx in MixEngine.Effect.allCases {
+            e.setEffect(fx, enabled: true, on: .a)
+            e.setEffectStrength(fx, 0.9, on: .a)
+        }
+        e.setFilterMode(.highPass, on: .a)
+
+        e.resetDeck(.a)
+
+        for fx in MixEngine.Effect.allCases {
+            XCTAssertFalse(e.isEnabled(fx, on: .a), "\(fx) must be silenced by reset")
+            XCTAssertEqual(e.strength(fx, on: .a), 0.5, accuracy: 1e-9, "\(fx) strength re-centres")
+        }
+        XCTAssertNotNil(e.loaded(.a), "reset keeps the track")
+        XCTAssertTrue(e.isReady)
+    }
 }
