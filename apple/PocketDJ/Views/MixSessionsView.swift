@@ -647,9 +647,14 @@ enum MixEventDisplay {
         case .volume:      return ("speaker.wave.2.fill", "Vol → \(pct(e.value))", Theme.accent)
         case .crossfader:  return ("arrow.left.arrow.right", "Crossfader → " + String(format: "%.2f", e.value ?? 0.5), Theme.accent2)
         case .effectToggle:
-            return (fxIcon(e.param), "\(cap(e.param, "FX")) " + ((e.flag ?? false) ? "on" : "off"), Theme.accent)
+            return (fxIcon(e.param),
+                    "\(cap(e.param, "FX")) " + ((e.flag ?? false) ? "on" : "off") + slotSuffix(e), Theme.accent)
         case .effectStrength:
-            return (fxIcon(e.param), "\(cap(e.param, "FX")) \(pct(e.value))", Theme.accent)
+            return (fxIcon(e.param), "\(cap(e.param, "FX")) \(pct(e.value))" + slotSuffix(e), Theme.accent)
+        case .effectSlot:
+            return (fxIcon(e.param), "Slot \(slotNo(e)) → \(cap(e.param, "FX"))", Theme.accent2)
+        case .effectVariant:
+            return ("dial.medium", "Slot \(slotNo(e)) → \(variantLabel(e.param))", Theme.accent2)
         case .eq:
             return ("slider.horizontal.3", "EQ \(cap(e.param, "band")) → " + String(format: "%+.0f dB", e.value ?? 0), Theme.accent)
         case .filterMode:
@@ -693,6 +698,20 @@ enum MixEventDisplay {
     }
     private static func pct(_ v: Double?) -> String { "\(Int(((v ?? 0) * 100).rounded()))%" }
     private static func cap(_ s: String?, _ fallback: String) -> String { (s ?? fallback).capitalized }
+
+    /// 1-based rack position for display ("Slot 3"), since the stored index is 0-based.
+    private static func slotNo(_ e: MixSessionEvent) -> String { "\((e.slot ?? 0) + 1)" }
+    /// Qualify a toggle/strength line with its rack position — only for rack-era events. Pre-rack
+    /// sessions carry no `slot`, and their lines must keep reading exactly as they always did.
+    private static func slotSuffix(_ e: MixSessionEvent) -> String {
+        e.slot.map { " (slot \($0 + 1))" } ?? ""
+    }
+    /// A variant's human label, falling back to the raw string for a value this build doesn't know
+    /// (a session recorded by a NEWER build with more varieties).
+    private static func variantLabel(_ raw: String?) -> String {
+        guard let raw else { return "variant" }
+        return EffectVariant(rawValue: raw)?.longLabel ?? raw.capitalized
+    }
 
     static func fxIcon(_ name: String?) -> String {
         switch name {

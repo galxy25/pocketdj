@@ -30,6 +30,11 @@ struct MixSessionEvent: Identifiable, Codable, Hashable, Sendable {
     var fromValue: Double? = nil
     /// `.glide` only — the ramp's average rate of change (END−START units per second).
     var rate: Double? = nil
+    /// FX-RACK events only — which of the deck's 4 slots this touched. Optional so pre-rack docs
+    /// decode unchanged (and so an older build, which drops the key on re-save, still round-trips
+    /// the rest of the event). Needed because a rack can hold DUPLICATES, so `param` ("filter")
+    /// no longer identifies a single control.
+    var slot: Int? = nil
 }
 
 /// The kinds of recorded mix activity. `unknown(raw)` is the lenient-decode sink so an unrecognized
@@ -42,8 +47,16 @@ enum MixEventKind: Codable, Hashable, Sendable {
     case effectToggle, effectStrength
     /// A 3-band EQ knob move. `param` names the band ("low"/"mid"/"high").
     case eq
-    /// Filter FX mode flip. `param` is the new mode ("lowPass"/"highPass").
+    /// Filter FX mode flip. `param` is the new mode ("lowPass"/"highPass"). SUPERSEDED by
+    /// `.effectVariant` (which covers every family, not just the filter) — kept so sessions
+    /// recorded before the FX rack still decode + render. No longer emitted.
     case filterMode
+    /// An FX-rack slot was swapped to a different effect family. `param` = the new effect's
+    /// rawValue, `slot` = the rack position.
+    case effectSlot
+    /// An FX-rack slot was switched to a different variety of its effect. `param` = the
+    /// `EffectVariant` rawValue, `slot` = the rack position.
+    case effectVariant
     case stemMode, stemMute, stemVolume
     case lead, sync, resetDeck
     /// Auto-mix PAUSE / RESUME (the DJ steps away, takes over the decks by hand, then hands control
@@ -61,6 +74,7 @@ enum MixEventKind: Codable, Hashable, Sendable {
         "tempo": .tempo, "pitch": .pitch, "volume": .volume, "crossfader": .crossfader,
         "effectToggle": .effectToggle, "effectStrength": .effectStrength, "eq": .eq,
         "filterMode": .filterMode,
+        "effectSlot": .effectSlot, "effectVariant": .effectVariant,
         "stemMode": .stemMode, "stemMute": .stemMute, "stemVolume": .stemVolume,
         "lead": .lead, "sync": .sync, "resetDeck": .resetDeck, "glide": .glide,
         "autoPause": .autoPause, "autoResume": .autoResume,
@@ -75,6 +89,8 @@ enum MixEventKind: Codable, Hashable, Sendable {
         case .effectToggle: return "effectToggle"; case .effectStrength: return "effectStrength"
         case .eq: return "eq"
         case .filterMode: return "filterMode"
+        case .effectSlot: return "effectSlot"
+        case .effectVariant: return "effectVariant"
         case .stemMode: return "stemMode";    case .stemMute: return "stemMute"
         case .stemVolume: return "stemVolume"; case .lead: return "lead"
         case .sync: return "sync";            case .resetDeck: return "resetDeck"
@@ -163,9 +179,11 @@ struct MixSessionsDocument: Codable, Sendable {
 /// recording is a no-op until a store is wired (and in tests).
 @MainActor
 protocol MixSessionRecorder: AnyObject {
+    /// `slot` identifies the FX-rack position for rack events (nil for everything else) — a rack can
+    /// hold duplicates, so `param` alone no longer names a unique control.
     func logEvent(_ kind: MixEventKind, deck: String?, songId: String?, title: String?,
                   artist: String?, bpm: Double?, camelot: String?, param: String?,
-                  value: Double?, flag: Bool?, posMs: Int?)
+                  value: Double?, flag: Bool?, posMs: Int?, slot: Int?)
     /// A compact `.glide` ramp (auto-mix machine sweep). `deck`/`posMs` are nil for a global param
     /// (the crossfader).
     func logGlide(deck: String?, param: String, songId: String?, title: String?, artist: String?,

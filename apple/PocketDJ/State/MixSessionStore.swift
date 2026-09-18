@@ -126,15 +126,17 @@ final class MixSessionStore: MixSessionRecorder {
 
     func logEvent(_ kind: MixEventKind, deck: String?, songId: String?, title: String?,
                   artist: String?, bpm: Double?, camelot: String?, param: String?,
-                  value: Double?, flag: Bool?, posMs: Int?) {
+                  value: Double?, flag: Bool?, posMs: Int?, slot: Int? = nil) {
         anchorOnFirstActivity()
         let tMs = max(0, Int(nowMs - recStartedAt))
 
-        // Coalesce a continuous run: if the LAST event is the same (kind, deck, param) and still
-        // inside this 120 ms bucket, update its value/position in place (keep its bucket-start tMs)
-        // instead of appending — downsamples a drag to ~8 Hz while preserving the trajectory.
+        // Coalesce a continuous run: if the LAST event is the same (kind, deck, param, slot) and
+        // still inside this 120 ms bucket, update its value/position in place (keep its bucket-start
+        // tMs) instead of appending — downsamples a drag to ~8 Hz while preserving the trajectory.
+        // `slot` joins the key so dragging two same-effect rack slots can't collapse into one run.
         if kind.isContinuous, let i = recEvents.indices.last,
            recEvents[i].kind == kind, recEvents[i].deck == deck, recEvents[i].param == param,
+           recEvents[i].slot == slot,
            tMs - recEvents[i].tMs < Self.coalesceWindowMs {
             recEvents[i].value = value
             recEvents[i].posMs = posMs
@@ -147,7 +149,7 @@ final class MixSessionStore: MixSessionRecorder {
         recEvents.append(MixSessionEvent(id: "e\(recSeq)", tMs: tMs, kind: kind, deck: deck,
                                          songId: songId, title: title, artist: artist, bpm: bpm,
                                          camelot: camelot, param: param, value: value, flag: flag,
-                                         posMs: posMs))
+                                         posMs: posMs, slot: slot))
         // Discrete, high-value events persist immediately; continuous ones ride the debounce.
         kind.isContinuous ? scheduleSave() : saveNow()
     }

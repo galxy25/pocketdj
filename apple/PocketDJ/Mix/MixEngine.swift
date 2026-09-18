@@ -717,13 +717,13 @@ final class MixEngine {
     /// Emit one session event for a deck (or global) action, stamping the deck's loaded song + its
     /// current playhead. The store owns the timeline (t0/tMs), coalescing, and persistence.
     private func rec(_ kind: MixEventKind, _ deck: Deck? = nil, param: String? = nil,
-                     value: Double? = nil, flag: Bool? = nil) {
+                     value: Double? = nil, flag: Bool? = nil, slot: Int? = nil) {
         guard let recorder else { return }
         let l = deck.flatMap { state($0).loaded }
         let posMs = deck.map { Int(position($0) * 1000) }
         recorder.logEvent(kind, deck: deck?.rawValue, songId: l?.songId, title: l?.title,
                           artist: l?.artist, bpm: nil, camelot: nil, param: param,
-                          value: value, flag: flag, posMs: posMs)
+                          value: value, flag: flag, posMs: posMs, slot: slot)
     }
 
     /// The SINGLE transport funnel — set a deck's playing flag, recording `.play` (+ marking the
@@ -1171,7 +1171,7 @@ final class MixEngine {
         if let recorder, let l = state(deck).loaded {
             recorder.logEvent(.load, deck: deck.rawValue, songId: l.songId, title: l.title,
                               artist: l.artist, bpm: l.bpm, camelot: l.camelot, param: nil,
-                              value: nil, flag: nil, posMs: 0)
+                              value: nil, flag: nil, posMs: 0, slot: nil)
         }
         updateSystemNowPlaying()      // a new track on the now-playing deck → refresh the card
         persistMixDeckSession()       // deck load = structural change — the mix survives a kill
@@ -2180,6 +2180,53 @@ final class MixEngine {
         applyEffect(effect, on: deck)
         rec(.effectStrength, deck, param: effect.rawValue, value: state(deck).strength(effect))
         persistMixDeckSession(debounced: true)   // slider surface — one write per burst
+    }
+
+    // MARK: - FX rack (slot-indexed)
+    //
+    // The Mix deck's own API. Unlike the effect-keyed calls above, these address a rack POSITION, so
+    // they stay exact when the rack holds duplicates (two compressors, an LP and an HP filter, …).
+
+    nonisolated static var fxSlotCount: Int { 4 }
+
+    func slots(_ deck: Deck) -> [FXSlot] { state(deck).slots }
+    func slot(_ i: Int, on deck: Deck) -> FXSlot? { state(deck).slots[safe: i] }
+
+    func setSlot(_ i: Int, enabled: Bool, on deck: Deck) {
+        guard let s = state(deck).slots[safe: i], s.enabled != enabled else { return }
+        mutate(deck) { $0.slots[i].enabled = enabled }
+        applySlot(i, on: deck)
+        rec(.effectToggle, deck, param: s.effect.rawValue, flag: enabled, slot: i)
+        persistMixDeckSession()                  // discrete tap — persist immediately
+    }
+
+    func setSlotStrength(_ i: Int, _ strength: Double, on deck: Deck) {
+        guard state(deck).slots[safe: i] != nil else { return }
+        mutate(deck) { $0.slots[i].setStrength(strength) }
+        applySlot(i, on: deck)
+        let s = state(deck).slots[i]
+        rec(.effectStrength, deck, param: s.effect.rawValue, value: s.strength, slot: i)
+        persistMixDeckSession(debounced: true)   // slider surface — one write per burst
+    }
+
+    /// Swap which effect family a slot holds. The variant resets to that family's default, and the
+    /// slot keeps its on/off + strength so a swap mid-build doesn't drop out or jump in level.
+    func setSlotEffect(_ effect: Effect, slot i: Int, on deck: Deck) {
+        guard let s = state(deck).slots[safe: i], s.effect != effect else { return }
+        mutate(deck) { $0.slots[i].setEffect(effect) }
+        applySlot(i, on: deck)
+        rec(.effectSlot, deck, param: effect.rawValue, slot: i)
+        persistMixDeckSession()
+    }
+
+    /// Pick a different variety of the effect a slot already holds (LP→HP, Hall→Plate, …).
+    func setSlotVariant(_ variant: EffectVariant, slot i: Int, on deck: Deck) {
+        guard let s = state(deck).slots[safe: i],
+              s.variant != variant, variant.effect == s.effect else { return }
+        mutate(deck) { $0.slots[i].setVariant(variant) }
+        applySlot(i, on: deck)
+        rec(.effectVariant, deck, param: variant.rawValue, slot: i)
+        persistMixDeckSession()
     }
 
     // MARK: - Auto-Mix (auto-DJ)
