@@ -57,6 +57,9 @@ enum MixEventKind: Codable, Hashable, Sendable {
     /// An FX-rack slot was switched to a different variety of its effect. `param` = the
     /// `EffectVariant` rawValue, `slot` = the rack position.
     case effectVariant
+    /// A slot's MODULATION config changed (LFO / envelope follower). `param` =
+    /// "<source>:<rate>:<shape>" rawValues, `value` = signed depth, `slot` = the rack position.
+    case effectMod
     case stemMode, stemMute, stemVolume
     case lead, sync, resetDeck
     /// Auto-mix PAUSE / RESUME (the DJ steps away, takes over the decks by hand, then hands control
@@ -74,7 +77,7 @@ enum MixEventKind: Codable, Hashable, Sendable {
         "tempo": .tempo, "pitch": .pitch, "volume": .volume, "crossfader": .crossfader,
         "effectToggle": .effectToggle, "effectStrength": .effectStrength, "eq": .eq,
         "filterMode": .filterMode,
-        "effectSlot": .effectSlot, "effectVariant": .effectVariant,
+        "effectSlot": .effectSlot, "effectVariant": .effectVariant, "effectMod": .effectMod,
         "stemMode": .stemMode, "stemMute": .stemMute, "stemVolume": .stemVolume,
         "lead": .lead, "sync": .sync, "resetDeck": .resetDeck, "glide": .glide,
         "autoPause": .autoPause, "autoResume": .autoResume,
@@ -91,6 +94,7 @@ enum MixEventKind: Codable, Hashable, Sendable {
         case .filterMode: return "filterMode"
         case .effectSlot: return "effectSlot"
         case .effectVariant: return "effectVariant"
+        case .effectMod: return "effectMod"
         case .stemMode: return "stemMode";    case .stemMute: return "stemMute"
         case .stemVolume: return "stemVolume"; case .lead: return "lead"
         case .sync: return "sync";            case .resetDeck: return "resetDeck"

@@ -1884,6 +1884,37 @@ final class MixEngineTests: XCTestCase {
         XCTAssertEqual(rec.rackEvents.first { $0.kind == .effectStrength }?.slot, 2)
     }
 
+    /// A modulation config change must land ONE discrete `.effectMod` event carrying the slot,
+    /// the source:rate:shape triple, and the signed depth.
+    func testSetSlotModEmitsOneStampedEvent() {
+        let e = makeEngine()
+        let rec = MockRecorder()
+        e.recorder = rec
+
+        e.setSlotMod(SlotMod(source: .lfo, rate: .eighth, depth: -0.6, shape: .square, phase: 0),
+                     slot: 3, on: .b)
+
+        let ev = rec.rackEvents.filter { $0.kind == .effectMod }
+        XCTAssertEqual(ev.count, 1)
+        XCTAssertEqual(ev.first?.param, "lfo:eighth:square")
+        XCTAssertEqual(ev.first?.slot, 3)
+        // Setting the SAME config again is a no-op — no duplicate event.
+        e.setSlotMod(SlotMod(source: .lfo, rate: .eighth, depth: -0.6, shape: .square, phase: 0),
+                     slot: 3, on: .b)
+        XCTAssertEqual(rec.rackEvents.filter { $0.kind == .effectMod }.count, 1)
+    }
+
+    func testEffectModEventRoundTripsThroughJSON() throws {
+        let ev = MixSessionEvent(id: "e1", tMs: 10, kind: .effectMod, deck: "A", songId: nil,
+                                 title: nil, artist: nil, bpm: nil, camelot: nil,
+                                 param: "envelope:bar:sine", value: -0.4, flag: nil, posMs: 0, slot: 1)
+        let back = try JSONDecoder().decode([MixSessionEvent].self,
+                                            from: JSONEncoder().encode([ev]))
+        XCTAssertEqual(back, [ev])
+        XCTAssertEqual(back[0].kind, .effectMod)
+        XCTAssertEqual(back[0].value ?? 0, -0.4, accuracy: 1e-12)
+    }
+
     /// A kind this build doesn't know (recorded by a NEWER build) decodes to `.unknown(raw)` and
     /// re-encodes as the ORIGINAL string — the corpus is never flattened by a round-trip.
     func testUnknownRackKindRoundTripsIntact() throws {

@@ -2241,6 +2241,14 @@ final class MixEngine {
         guard let s = state(deck).slots[safe: i], s.mod != mod else { return }
         mutate(deck) { $0.slots[i].mod = mod }
         applySlot(i, on: deck)
+        // A beat-synced LFO needs the MEASURED grid NOW — the lazy download is gated on the Beat
+        // pulse setting (off by default), so force it exactly like arming a loop does. Without
+        // this most decks would silently degrade to the catalog-BPM lattice.
+        if mod.source == .lfo, let id = state(deck).loaded?.songId {
+            hydrateBeatGrid(deck, songId: id, force: true)
+        }
+        rec(.effectMod, deck, param: "\(mod.source.rawValue):\(mod.rate.rawValue):\(mod.shape.rawValue)",
+            value: mod.depth, slot: i)
         persistMixDeckSession()                  // discrete config change — persist immediately
     }
 
