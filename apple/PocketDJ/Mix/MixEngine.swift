@@ -247,8 +247,11 @@ final class MixEngine {
         var volume: Double = 1.0
         var rate: Double = 1.0       // tempo multiplier
         var pitch: Double = 0.0      // semitones
-        var compressor = false, reverb = false, flanger = false, filter = false
-        var compStrength = 0.5, reverbStrength = 0.5, flangerStrength = 0.5, filterStrength = 0.5
+        /// The FX RACK: four positional slots, each holding any effect family + variety, with that
+        /// effect's on/off + strength. DUPLICATES ARE LEGAL (two compressors, or a low-pass in one
+        /// slot and a high-pass in another). Index == rack position; always exactly `slotCount`.
+        /// Replaces the old flat `compressor/reverb/flanger/filter` bools + per-effect strengths.
+        var slots: [FXSlot] = DeckState.defaultSlots
         /// Stem mode: when on (and the track has burned stems), the deck plays its 4 stems through
         /// the SAME effect chain + crossfader, with per-stem mute + level. Reset on load.
         var stemMode = false
@@ -266,10 +269,16 @@ final class MixEngine {
         /// plumbing (derivable from position + grid) and lives in `loopWindows`.
         var loopOn = false
         var loopUnits: Double = 2
-        /// 3-band EQ gain in dB, always active (no on/off — 0 is flat/no-op).
+        /// 3-band EQ gain in dB, always active (no on/off — 0 is flat/no-op). NOT part of the rack:
+        /// the 3-band EQ is a permanent channel-strip control, not a swappable effect.
         var eqLow: Double = 0, eqMid: Double = 0, eqHigh: Double = 0
-        /// Which cutoff shape the "Filter" FX sweeps. Independent of `filter`'s on/off + strength.
-        var filterMode: FilterMode = .lowPass
+
+        /// The rack's size + its factory layout — the pre-rack grid order, so an existing user's
+        /// decks look and sound exactly as they did before the rack shipped.
+        static let slotCount = 4
+        static let defaultSlots: [FXSlot] = [
+            FXSlot(.compressor), FXSlot(.reverb), FXSlot(.flanger), FXSlot(.filter),
+        ]
 
         func eqGain(_ b: EQBand) -> Double {
             switch b { case .low: return eqLow; case .mid: return eqMid; case .high: return eqHigh }
@@ -278,38 +287,26 @@ final class MixEngine {
             switch b { case .low: eqLow = db; case .mid: eqMid = db; case .high: eqHigh = db }
         }
 
-        func isEnabled(_ e: Effect) -> Bool {
-            switch e {
-            case .compressor: return compressor
-            case .reverb:     return reverb
-            case .flanger:    return flanger
-            case .filter:     return filter
-            }
-        }
+        /// Index of the first slot holding `e`, or nil if the rack has none of that family.
+        func firstSlot(_ e: Effect) -> Int? { slots.firstIndex { $0.effect == e } }
+
+        // MARK: Effect-keyed shims (FIRST-MATCH)
+        //
+        // The pre-rack API, kept so the effect-keyed surfaces (CarPlay, the TV app, the Now Playing
+        // mini-panel, the Auto-DJ glide) keep working without knowing about slots. DELIBERATELY
+        // LOSSY once a rack holds duplicates: a read is "ANY slot of this family", a write hits the
+        // FIRST one. A rack with no slot of that family reads as off/default and ignores writes.
+        // The Mix deck itself drives slots by INDEX (see `setSlot…`) and is never lossy.
+
+        func isEnabled(_ e: Effect) -> Bool { slots.contains { $0.effect == e && $0.enabled } }
+        func strength(_ e: Effect) -> Double { slots.first { $0.effect == e }?.strength ?? 0.5 }
         mutating func set(_ e: Effect, _ on: Bool) {
-            switch e {
-            case .compressor: compressor = on
-            case .reverb:     reverb = on
-            case .flanger:    flanger = on
-            case .filter:     filter = on
-            }
-        }
-        func strength(_ e: Effect) -> Double {
-            switch e {
-            case .compressor: return compStrength
-            case .reverb:     return reverbStrength
-            case .flanger:    return flangerStrength
-            case .filter:     return filterStrength
-            }
+            guard let i = firstSlot(e) else { return }
+            slots[i].enabled = on
         }
         mutating func setStrength(_ e: Effect, _ v: Double) {
-            let c = min(max(v, 0), 1)
-            switch e {
-            case .compressor: compStrength = c
-            case .reverb:     reverbStrength = c
-            case .flanger:    flangerStrength = c
-            case .filter:     filterStrength = c
-            }
+            guard let i = firstSlot(e) else { return }
+            slots[i].setStrength(v)
         }
     }
 
@@ -1478,10 +1475,11 @@ final class MixEngine {
             $0.rate = 1.0
             $0.pitch = 0.0
             $0.volume = 1.0
-            $0.compressor = false; $0.reverb = false; $0.flanger = false; $0.filter = false
-            $0.compStrength = 0.5; $0.reverbStrength = 0.5; $0.flangerStrength = 0.5; $0.filterStrength = 0.5
+            // SILENCE the rack but KEEP ITS LAYOUT: which effects/varieties are on the board is
+            // board configuration the DJ set up — like the loaded track and the Lead role, which
+            // reset also preserves. ↺ turns every slot off and re-centres its strength.
+            for i in $0.slots.indices { $0.slots[i].enabled = false; $0.slots[i].setStrength(0.5) }
             $0.eqLow = 0; $0.eqMid = 0; $0.eqHigh = 0
-            $0.filterMode = .lowPass
             $0.stemMuted = []     // un-mute + re-level every stem (keeps stem mode itself)
             $0.stemVol = [:]
         }
@@ -1973,10 +1971,18 @@ final class MixEngine {
     }
 
     // MARK: - Filter mode (low-pass / high-pass)
+    //
+    // The pre-rack LP/HP API, now expressed as the FIRST filter slot's variant. Superseded by the
+    // general `setSlotVariant` (any slot, any family) once the rack UI lands; kept here so the
+    // existing call sites keep working unchanged.
 
-    func filterMode(_ deck: Deck) -> FilterMode { state(deck).filterMode }
+    func filterMode(_ deck: Deck) -> FilterMode {
+        guard let i = state(deck).firstSlot(.filter) else { return .lowPass }
+        return state(deck).slots[i].variant == .highPass ? .highPass : .lowPass
+    }
     func setFilterMode(_ mode: FilterMode, on deck: Deck) {
-        mutate(deck) { $0.filterMode = mode }
+        guard let i = state(deck).firstSlot(.filter) else { return }
+        mutate(deck) { $0.slots[i].setVariant(mode == .highPass ? .highPass : .lowPass) }
         applyEffect(.filter, on: deck)
         rec(.filterMode, deck, param: mode.rawValue)
         persistMixDeckSession()                  // discrete tap — persist immediately
@@ -3539,13 +3545,17 @@ final class MixEngine {
                                                 albumId: l.albumId, lengthMs: lengthMs),
             positionMs: max(0, Int(position(deck) * 1000)),
             volume: s.volume, rate: s.rate, pitch: s.pitch,
-            compressor: s.compressor, reverb: s.reverb, flanger: s.flanger, filter: s.filter,
-            compStrength: s.compStrength, reverbStrength: s.reverbStrength,
-            flangerStrength: s.flangerStrength, filterStrength: s.filterStrength,
+            // The flat per-effect fields are written through the FIRST-MATCH shims. They're the
+            // rollback contract: an older build (which knows nothing about slots) still restores a
+            // sane deck from them. The rack's own lossless form rides `fxSlots` (added next).
+            compressor: s.isEnabled(.compressor), reverb: s.isEnabled(.reverb),
+            flanger: s.isEnabled(.flanger), filter: s.isEnabled(.filter),
+            compStrength: s.strength(.compressor), reverbStrength: s.strength(.reverb),
+            flangerStrength: s.strength(.flanger), filterStrength: s.strength(.filter),
             stemMode: s.stemMode, stemMuted: Array(s.stemMuted).sorted(), stemVol: s.stemVol,
             loopOn: s.loopOn, loopUnits: s.loopUnits,
             eqLow: s.eqLow, eqMid: s.eqMid, eqHigh: s.eqHigh,
-            filterMode: s.filterMode.rawValue)
+            filterMode: filterMode(deck).rawValue)
     }
 
     private func trackRef(_ l: MixLoadable) -> MixDeckSessionStore.TrackRef {
@@ -3899,19 +3909,12 @@ final class MixEngine {
             n.wetDryMix = s * 100; n.bypass = !on
         case .filter:
             guard let n = filters[deck], let band = n.bands.first else { return }
-            switch state(deck).filterMode {
-            case .lowPass:
-                band.filterType = .resonantLowPass
-                // Strength sweeps the cutoff log-down from ~18 kHz (subtle) to ~250 Hz (heavy) —
-                // classic DJ build-DOWN (cuts highs as strength rises).
-                band.frequency = Float(18_000 * pow(250.0 / 18_000.0, Double(s)))
-            case .highPass:
-                band.filterType = .resonantHighPass
-                // Strength sweeps the cutoff log-up from ~30 Hz (subtle) to ~2 kHz (heavy) —
-                // classic DJ build-UP (cuts bass as strength rises).
-                band.frequency = Float(30.0 * pow(2_000.0 / 30.0, Double(s)))
-            }
-            band.bandwidth = 0.5
+            // The variant (LP/HP/BP) comes from the slot holding this effect; the curves live in
+            // the pure `FXParams` table.
+            let v = state(deck).firstSlot(.filter).map { state(deck).slots[$0].variant } ?? .lowPass
+            band.filterType = FXParams.filterType(v)
+            band.frequency = FXParams.filterFrequency(v, Double(s))
+            band.bandwidth = FXParams.filterBandwidth(v, Double(s))
             band.bypass = !on
             // The EQ NODE stays active (band-bypass alone gates the filter EFFECT) so its
             // `globalGain` — which carries the deck's >unity volume boost (`applyBoost`) — keeps
