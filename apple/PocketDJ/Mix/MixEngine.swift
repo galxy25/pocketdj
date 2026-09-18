@@ -437,6 +437,14 @@ final class MixEngine {
     }
     /// The rack: `DeckState.slotCount` node bundles per deck, in rack order.
     @ObservationIgnored private var slotNodes: [Deck: [SlotNodes]] = [:]
+    /// Modulation runtime mirrors — the CURRENT per-slot LFO phase (nil = nothing to lock to) and
+    /// per-deck envelope level, maintained by the mod tick / envelope tap and read by
+    /// `effectiveStrength`. NON-OBSERVABLE plumbing (PlayerClock doctrine): these change at up to
+    /// 60 Hz and must never invalidate SwiftUI; the user's `slots[i].mod`/`strength` stay the only
+    /// observable truth. Empty until the mod tick lands (commit 5) — `effectiveStrength` reads
+    /// nil/0 ⇒ identity, so this refactor is behaviour-neutral.
+    @ObservationIgnored private var modPhaseMirror: [Deck: [Double?]] = [:]
+    @ObservationIgnored private var envMirror: [Deck: Double] = [:]
     /// Per-deck TRIM — a 1-band EQ whose band is permanently bypassed, used ONLY as a `globalGain`
     /// carrier for the >unity volume boost (`applyBoost`). Pre-rack that gain rode the deck's filter
     /// EQ, which can't work once "filter" is a swappable slot effect that may not be in the rack at
@@ -4050,11 +4058,13 @@ final class MixEngine {
     private func applyPitch(_ deck: Deck) { timePitches[deck]?.pitch = Float(state(deck).pitch * 100) } // cents
 
     /// Realize ONE rack slot onto its pre-allocated nodes: bypass every effect type in the bundle
-    /// except the one this slot currently holds (and bypass them ALL when the slot is off), then
-    /// push the active node's parameters from the pure `FXParams` table.
+    /// except the one this slot currently holds (and bypass them ALL when the slot is off), handle
+    /// the reverb preset, then push the active node's parameters.
     ///
-    /// This is the ONLY place the rack touches the audio graph, and it never attaches, detaches, or
-    /// reconnects anything — a mid-mix swap is just these four `bypass` writes.
+    /// This is the ONLY place the rack changes graph STATE (bypasses + preset), and it never
+    /// attaches, detaches, or reconnects anything — a mid-mix swap is just these four `bypass`
+    /// writes. The per-frame VALUE writes live in `writeSlotParams`, which the modulation tick
+    /// calls directly so it can never touch bypasses or reload a reverb tail at 60 Hz.
     private func applySlot(_ i: Int, on deck: Deck) {
         guard built, let bundle = slotNodes[deck]?[safe: i],
               let slot = state(deck).slots[safe: i] else { return }
@@ -4064,25 +4074,50 @@ final class MixEngine {
         bundle.reverb.bypass = !(live && slot.effect == .reverb)
         bundle.mod.bypass    = !(live && slot.effect == .flanger)
         guard live else { return }          // fully bypassed ⇒ its parameters are inaudible
+        // `loadFactoryPreset` rebuilds the reverb tail — only on an ACTUAL variant change, never
+        // per glide/mod tick.
+        if slot.effect == .reverb, bundle.loadedPreset != slot.variant {
+            bundle.reverb.loadFactoryPreset(FXParams.reverbPreset(slot.variant))
+            bundle.loadedPreset = slot.variant
+        }
+        writeSlotParams(i, on: deck, slot: slot, strength: effectiveStrength(i, on: deck))
+    }
+
+    /// The strength the NODES should see right now: the user's stored value plus the modulator's
+    /// current offset (beat-synced LFO phase / envelope level, both from non-observable mirrors the
+    /// mod tick maintains). Read by EVERY write path — including the 10 Hz Auto-DJ glide, whose
+    /// `setGlideSlot` moves the BASE while the LFO keeps wobbling around it (they compose instead
+    /// of the glide stomping the wobble). Identity while the slot doesn't modulate, and for the
+    /// families `FXParams.modulates` scopes out.
+    private func effectiveStrength(_ i: Int, on deck: Deck) -> Double {
+        guard let slot = state(deck).slots[safe: i] else { return 0.5 }
+        guard slot.mod.source != .off, FXParams.modulates(slot.effect) != nil else { return slot.strength }
+        return FXParams.modulated(base: slot.strength, mod: slot.mod,
+                                  phase01: modPhaseMirror[deck]?[safe: i] ?? nil,
+                                  env: envMirror[deck] ?? 0)
+    }
+
+    /// Pure node VALUE writes for one live slot — no bypass churn, no preset loads, no allocation.
+    /// `strength` is the LIVE (possibly modulated) value; `slot.strength` remains the user's base.
+    /// The single delayTime rule lives here: `AVAudioUnitDelay.delayTime` is derived from the BASE
+    /// strength only — an un-ramped delay-length jump moves the read pointer mid-waveform and
+    /// clicks, so modulation may move wet/feedback but the comb length follows only deliberate
+    /// user gestures (exactly as before modulation existed).
+    private func writeSlotParams(_ i: Int, on deck: Deck, slot: FXSlot, strength: Double) {
+        guard built, let bundle = slotNodes[deck]?[safe: i] else { return }
         let v = slot.variant
-        let s = slot.strength
+        let s = strength
         switch slot.effect {
         case .reverb:
-            // `loadFactoryPreset` rebuilds the reverb tail — only on an ACTUAL variant change, never
-            // per glide tick (this runs at ~10 Hz during an Auto-DJ transition).
-            if bundle.loadedPreset != v {
-                bundle.reverb.loadFactoryPreset(FXParams.reverbPreset(v))
-                bundle.loadedPreset = v
-            }
             bundle.reverb.wetDryMix = Float(s) * 100
         case .filter:
             guard let band = bundle.filter.bands.first else { return }
-            band.bypass = false             // the NODE's bypass above gates the effect
+            band.bypass = false             // the NODE's bypass (applySlot) gates the effect
             band.filterType = FXParams.filterType(v)
             band.frequency = FXParams.filterFrequency(v, s)
             band.bandwidth = FXParams.filterBandwidth(v, s)
         case .flanger:
-            bundle.mod.delayTime = FXParams.modDelayTime(v, s)
+            bundle.mod.delayTime = FXParams.modDelayTime(v, slot.strength)   // BASE only — see doc
             bundle.mod.feedback = FXParams.modFeedback(v, s)
             bundle.mod.wetDryMix = FXParams.modWetDryMix(v, s)
             bundle.mod.lowPassCutoff = FXParams.modLowPassCutoff(v)
