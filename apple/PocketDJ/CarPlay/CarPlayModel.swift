@@ -335,6 +335,17 @@ final class CarPlayModel {
         services.mix.setEffect(fx, enabled: enabled, on: mixLeadDeck)
     }
 
+    // MARK: FX rack (read + toggle only)
+    //
+    // CarPlay shows whatever the lead deck's rack currently HOLDS, addressed by slot so a rack with
+    // duplicates (two filters, say) lists both and toggles the right one. Building the rack —
+    // swapping effects, picking varieties — stays on the Mix deck; there's no car-safe idiom for it.
+
+    func mixSlots() -> [FXSlot] { services.mix.slots(mixLeadDeck) }
+    func setMixSlot(_ i: Int, enabled: Bool) {
+        services.mix.setSlot(i, enabled: enabled, on: mixLeadDeck)
+    }
+
     /// Tempo multiplier (1.0 = normal speed), stepped by 0.01 — same step TV's trio uses.
     func mixRate() -> Double { services.mix.rate(mixLeadDeck) }
     func setMixRate(_ rate: Double) { services.mix.setRate(rate, on: mixLeadDeck) }
