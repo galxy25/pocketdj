@@ -813,6 +813,7 @@ private struct DeckView: View {
             transportRow                                 // ↺ rewind · Sync to Lead
             tempoSlider                                  // live time-stretch (pitch preserved)
             pitchSlider                                  // live pitch shift (tempo preserved)
+            eqRow                                        // 3-band EQ (low/mid/high) knobs, always active
             effectsGrid                                  // tap = toggle · long-press / right-click = strength
             if engine.stemActive(deck) { stemGrid }      // 2×2 stem pads — only while in stem mode
             DeckVUMeter(engine: engine, deck: deck, a11y: a11y)   // level; right-click/long-press → pre/post
@@ -1033,6 +1034,24 @@ private struct DeckView: View {
                           value: p,
                           range: MixEngine.pitchRange, step: 0.1,
                           a11y: "\(a11y)-pitch") { engine.setPitch($0, on: deck) }
+    }
+
+    // 3-band EQ — always active, one knob per band, laid out horizontally.
+    private var eqRow: some View {
+        HStack(spacing: 0) {
+            ForEach(MixEngine.EQBand.allCases, id: \.self) { band in
+                eqKnob(band)
+                if band != .high { Spacer(minLength: 0) }
+            }
+        }
+    }
+
+    private func eqKnob(_ band: MixEngine.EQBand) -> some View {
+        let v = engine.eqGain(band, on: deck)
+        return MixKnob(title: band.label,
+                       display: v == 0 ? "0" : String(format: "%+.0f", v),
+                       value: v, range: MixEngine.eqRange,
+                       a11y: "\(a11y)-eq-\(band.label.lowercased())") { engine.setEqGain(band, $0, on: deck) }
     }
 
     /// Jump-to-cue buttons for the loaded track's positional cue points (set in the Performance ▸
@@ -1564,6 +1583,78 @@ struct DeckSlider: View {
                     .accessibilityIdentifier(a11y)
                     .accessibilityValue(accessibilityValueText ?? display)
                 StepButton(dir: .inc, value: value, range: range, step: step, tint: tint, a11y: a11y, onChange: onChange)
+            }
+        }
+    }
+}
+
+/// A rotary knob control (title above, numeric readout below) — drag vertically to adjust: up
+/// increases, down decreases. Used for the 3-band EQ under the pitch slider, laid out horizontally
+/// (one knob per band); the vertical drag keeps a horizontal row of knobs from fighting a
+/// horizontal `Slider`-style drag. VoiceOver gets the usual adjustable-element increment/decrement.
+struct MixKnob: View {
+    let title: String
+    let display: String
+    let value: Double
+    let range: ClosedRange<Double>
+    let a11y: String
+    var tint: Color = Theme.accent
+    let onChange: (Double) -> Void
+
+    /// The value `onChanged` deltas are measured from — captured once per gesture so a long drag
+    /// doesn't compound translation against an already-updated `value` (which would run away).
+    @State private var dragOrigin: Double?
+
+    private static let diameter: CGFloat = 40
+    private static let sweep: Double = 270          // degrees of rotary travel, start to end
+    private static let pixelsForFullSweep: Double = 120   // vertical drag distance = full range
+
+    private var normalized: Double {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return 0.5 }
+        return min(max((value - range.lowerBound) / span, 0), 1)
+    }
+    private var indicatorAngle: Angle {
+        .degrees(-Self.sweep / 2 + normalized * Self.sweep)
+    }
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text(title).font(.caption).foregroundStyle(Theme.fgDim)
+            ZStack {
+                Circle().fill(Theme.bgOverlay)
+                Circle().strokeBorder(Theme.border, lineWidth: 1)
+                Capsule()
+                    .fill(tint)
+                    .frame(width: 2.5, height: Self.diameter * 0.32)
+                    .offset(y: -Self.diameter * 0.18)
+                    .rotationEffect(indicatorAngle)
+            }
+            .frame(width: Self.diameter, height: Self.diameter)
+            .contentShape(Circle())
+            .gesture(
+                DragGesture(minimumDistance: 2)
+                    .onChanged { g in
+                        let origin = dragOrigin ?? value
+                        if dragOrigin == nil { dragOrigin = value }
+                        let span = range.upperBound - range.lowerBound
+                        let delta = (-g.translation.height / Self.pixelsForFullSweep) * span
+                        onChange(min(max(origin + delta, range.lowerBound), range.upperBound))
+                    }
+                    .onEnded { _ in dragOrigin = nil }
+            )
+            Text(display).font(.caption2.monospacedDigit()).foregroundStyle(Theme.fg)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityIdentifier(a11y)
+        .accessibilityLabel(title)
+        .accessibilityValue(display)
+        .accessibilityAdjustableAction { direction in
+            let step = (range.upperBound - range.lowerBound) / 20
+            switch direction {
+            case .increment: onChange(min(value + step, range.upperBound))
+            case .decrement: onChange(max(value - step, range.lowerBound))
+            @unknown default: break
             }
         }
     }
