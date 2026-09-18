@@ -40,6 +40,8 @@ enum MixEventKind: Codable, Hashable, Sendable {
     case load, play, pause, seek
     case tempo, pitch, volume, crossfader
     case effectToggle, effectStrength
+    /// A 3-band EQ knob move. `param` names the band ("low"/"mid"/"high").
+    case eq
     case stemMode, stemMute, stemVolume
     case lead, sync, resetDeck
     /// Auto-mix PAUSE / RESUME (the DJ steps away, takes over the decks by hand, then hands control
@@ -55,7 +57,7 @@ enum MixEventKind: Codable, Hashable, Sendable {
     private static let known: [String: MixEventKind] = [
         "load": .load, "play": .play, "pause": .pause, "seek": .seek,
         "tempo": .tempo, "pitch": .pitch, "volume": .volume, "crossfader": .crossfader,
-        "effectToggle": .effectToggle, "effectStrength": .effectStrength,
+        "effectToggle": .effectToggle, "effectStrength": .effectStrength, "eq": .eq,
         "stemMode": .stemMode, "stemMute": .stemMute, "stemVolume": .stemVolume,
         "lead": .lead, "sync": .sync, "resetDeck": .resetDeck, "glide": .glide,
         "autoPause": .autoPause, "autoResume": .autoResume,
@@ -68,6 +70,7 @@ enum MixEventKind: Codable, Hashable, Sendable {
         case .tempo: return "tempo";          case .pitch: return "pitch"
         case .volume: return "volume";        case .crossfader: return "crossfader"
         case .effectToggle: return "effectToggle"; case .effectStrength: return "effectStrength"
+        case .eq: return "eq"
         case .stemMode: return "stemMode";    case .stemMute: return "stemMute"
         case .stemVolume: return "stemVolume"; case .lead: return "lead"
         case .sync: return "sync";            case .resetDeck: return "resetDeck"
@@ -92,7 +95,7 @@ enum MixEventKind: Codable, Hashable, Sendable {
     /// saved on a debounce (vs. discrete kinds, which append + save immediately).
     var isContinuous: Bool {
         switch self {
-        case .tempo, .pitch, .volume, .crossfader, .effectStrength, .stemVolume: return true
+        case .tempo, .pitch, .volume, .crossfader, .effectStrength, .stemVolume, .eq: return true
         default: return false
         }
     }

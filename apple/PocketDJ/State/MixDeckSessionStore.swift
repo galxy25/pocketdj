@@ -88,6 +88,11 @@ final class MixDeckSessionStore {
         /// what lets pre-loop sessions keep restoring. Absent ⇒ no loop, default length.
         var loopOn: Bool? = nil
         var loopUnits: Double? = nil
+        /// 3-band EQ gain in dB. OPTIONAL for the same reason as `loopOn`/`loopUnits` — absent ⇒
+        /// flat (0 dB) on every band.
+        var eqLow: Double? = nil
+        var eqMid: Double? = nil
+        var eqHigh: Double? = nil
     }
 
     /// One Auto-DJ queue row — a `MixEngine.AutoMixItem` (loadable + known length).

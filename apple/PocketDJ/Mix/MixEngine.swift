@@ -151,6 +151,19 @@ final class MixEngine {
         }
     }
 
+    /// The 3-band deck EQ (low shelf / mid peak / high shelf), always active — unlike `Effect` it
+    /// has no on/off toggle, just a gain per band. `bandIndex` matches the fixed band order the
+    /// per-deck `AVAudioUnitEQ(numberOfBands: 3)` is configured with once at build (see `ensureEngine`).
+    enum EQBand: CaseIterable, Hashable {
+        case low, mid, high
+        var bandIndex: Int {
+            switch self { case .low: return 0; case .mid: return 1; case .high: return 2 }
+        }
+        var label: String {
+            switch self { case .low: return "Low"; case .mid: return "Mid"; case .high: return "High" }
+        }
+    }
+
     /// A deck's display payload — the view re-resolves artwork + waveform from this, so the engine
     /// stays free of catalog/UI types.
     struct LoadedTrack: Equatable {
@@ -210,6 +223,8 @@ final class MixEngine {
     /// Deck volume range. 0…1 is attenuation; 1…2 is a **gain boost** to +6 dB (200%) applied on the
     /// deck's always-active filter EQ `globalGain`. A master peak limiter catches the resulting peaks.
     nonisolated static let volumeRange: ClosedRange<Double> = 0...2.0
+    /// 3-band deck EQ gain range, in dB. 0 = flat.
+    nonisolated static let eqRange: ClosedRange<Double> = -12...12
 
     /// The four stem parts — MATCH the burned file suffixes (`BurnStore` stem cache) so
     /// `localStemURLs` keys line up. The Mix stem grid + per-deck stem playback key on these.
@@ -243,6 +258,15 @@ final class MixEngine {
         /// plumbing (derivable from position + grid) and lives in `loopWindows`.
         var loopOn = false
         var loopUnits: Double = 2
+        /// 3-band EQ gain in dB, always active (no on/off — 0 is flat/no-op).
+        var eqLow: Double = 0, eqMid: Double = 0, eqHigh: Double = 0
+
+        func eqGain(_ b: EQBand) -> Double {
+            switch b { case .low: return eqLow; case .mid: return eqMid; case .high: return eqHigh }
+        }
+        mutating func setEqGain(_ b: EQBand, _ db: Double) {
+            switch b { case .low: eqLow = db; case .mid: eqMid = db; case .high: eqHigh = db }
+        }
 
         func isEnabled(_ e: Effect) -> Bool {
             switch e {
@@ -374,6 +398,9 @@ final class MixEngine {
     @ObservationIgnored private var timePitches: [Deck: AVAudioUnitTimePitch] = [:]
     @ObservationIgnored private var reverbs: [Deck: AVAudioUnitReverb] = [:]
     @ObservationIgnored private var filters: [Deck: AVAudioUnitEQ] = [:]
+    /// Always-active 3-band deck EQ (low shelf / mid peak / high shelf) — separate node from
+    /// `filters` (the toggleable resonant-lowpass "Filter" FX + the >100% volume boost's `globalGain`).
+    @ObservationIgnored private var eqs: [Deck: AVAudioUnitEQ] = [:]
     @ObservationIgnored private var flangers: [Deck: AVAudioUnitDelay] = [:]
     @ObservationIgnored private var comps: [Deck: AVAudioUnitEffect] = [:]
     /// Per-deck output split — the standard DJ channel-strip model. After the effect chain the deck's
@@ -779,19 +806,21 @@ final class MixEngine {
             let tp = AVAudioUnitTimePitch()
             let comp = AVAudioUnitEffect(audioComponentDescription: Self.dynamicsDesc)
             let filter = AVAudioUnitEQ(numberOfBands: 1)
+            let eq3 = AVAudioUnitEQ(numberOfBands: 3)  // always-active 3-band low/mid/high gain EQ
+            Self.configureEQ3(eq3)
             let reverb = AVAudioUnitReverb()
             let flanger = AVAudioUnitDelay()
             let mainGain = AVAudioMixerNode()      // deck → main/house channel (crossfade factor)
             let cueGain = AVAudioMixerNode()       // deck → cue channel (full, only while cued)
             reverb.loadFactoryPreset(.mediumHall)
-            for n in [player, inputMixer, tp, comp, filter, reverb, flanger, mainGain, cueGain] as [AVAudioNode] {
+            for n in [player, inputMixer, tp, comp, filter, eq3, reverb, flanger, mainGain, cueGain] as [AVAudioNode] {
                 engine.attach(n)
             }
             // `player → inputMixer` carries the file's real format (set per load); the mixer converts
             // it into canonical stereo. The effect chain below it is pinned at canonical FOR LIFE, so
             // loading a mono / 48 kHz / odd file never reconfigures (and crashes) a live AU.
             engine.connect(player, to: inputMixer, format: canonical)
-            connectChain(d, nodes: (inputMixer, tp, comp, filter, reverb, flanger))
+            connectChain(d, nodes: (inputMixer, tp, comp, filter, eq3, reverb, flanger))
             // Split the deck's post-FX output (flanger) into the main + cue buses, both → master. The
             // crossfade/cue levels + pans live on these two mixers (see `applyCueRouting`); the chain
             // above is untouched so stems (which merge at `inputMixer`) ride the split for free.
@@ -803,7 +832,7 @@ final class MixEngine {
             engine.connect(mainGain, to: hSum, format: canonical)
             engine.connect(cueGain, to: engine.mainMixerNode, format: canonical)
             players[d] = player; inputMixers[d] = inputMixer; timePitches[d] = tp; comps[d] = comp
-            filters[d] = filter; reverbs[d] = reverb; flangers[d] = flanger
+            filters[d] = filter; eqs[d] = eq3; reverbs[d] = reverb; flangers[d] = flanger
             mainGains[d] = mainGain; cueGains[d] = cueGain
             // Four stem player nodes summing into the SAME inputMixer → they pass through the deck's
             // tempo/pitch/effects/crossfader exactly like the main file. Idle (canonical format) until
@@ -841,6 +870,7 @@ final class MixEngine {
         for d in Deck.allCases {
             applyRate(d); applyPitch(d)
             for e in Effect.allCases { applyEffect(e, on: d) }
+            applyAllEQ(d)
         }
         applyMixGains()
         for d in Deck.allCases { applyBoost(d) }   // >unity boost (globalGain) AFTER effects set the filter EQ
@@ -1440,11 +1470,13 @@ final class MixEngine {
             $0.volume = 1.0
             $0.compressor = false; $0.reverb = false; $0.flanger = false; $0.filter = false
             $0.compStrength = 0.5; $0.reverbStrength = 0.5; $0.flangerStrength = 0.5; $0.filterStrength = 0.5
+            $0.eqLow = 0; $0.eqMid = 0; $0.eqHigh = 0
             $0.stemMuted = []     // un-mute + re-level every stem (keeps stem mode itself)
             $0.stemVol = [:]
         }
         applyRate(deck); applyPitch(deck)
         for e in Effect.allCases { applyEffect(e, on: deck) }
+        applyAllEQ(deck)
         applyMixGains()
         applyBoost(deck)         // volume back to 100% → globalGain back to 0 dB
         restart(deck)            // rewind to the start (no-op if nothing is loaded)
@@ -1917,6 +1949,16 @@ final class MixEngine {
         applyPitch(deck)
         rec(.pitch, deck, value: state(deck).pitch)
         persistMixDeckSession(debounced: true)   // slider surface — one write per burst
+    }
+
+    // MARK: - 3-band EQ
+
+    func eqGain(_ band: EQBand, on deck: Deck) -> Double { state(deck).eqGain(band) }
+    func setEqGain(_ band: EQBand, _ db: Double, on deck: Deck) {
+        mutate(deck) { $0.setEqGain(band, min(max(db, Self.eqRange.lowerBound), Self.eqRange.upperBound)) }
+        applyEQ(band, on: deck)
+        rec(.eq, deck, param: "\(band)", value: state(deck).eqGain(band))
+        persistMixDeckSession(debounced: true)   // knob surface — one write per burst
     }
 
     /// Designate (or clear) the Lead deck for beat-matching. Tapping the current lead clears it.
@@ -3342,6 +3384,9 @@ final class MixEngine {
         setEffectStrength(.reverb, ds.reverbStrength, on: deck)
         setEffectStrength(.flanger, ds.flangerStrength, on: deck)
         setEffectStrength(.filter, ds.filterStrength, on: deck)
+        setEqGain(.low, ds.eqLow ?? 0, on: deck)
+        setEqGain(.mid, ds.eqMid ?? 0, on: deck)
+        setEqGain(.high, ds.eqHigh ?? 0, on: deck)
         if ds.stemMode {
             setStemMode(true, on: deck)     // stems no longer burned → stays single-file (graceful)
             if stemActive(deck) {
@@ -3476,7 +3521,8 @@ final class MixEngine {
             compStrength: s.compStrength, reverbStrength: s.reverbStrength,
             flangerStrength: s.flangerStrength, filterStrength: s.filterStrength,
             stemMode: s.stemMode, stemMuted: Array(s.stemMuted).sorted(), stemVol: s.stemVol,
-            loopOn: s.loopOn, loopUnits: s.loopUnits)
+            loopOn: s.loopOn, loopUnits: s.loopUnits,
+            eqLow: s.eqLow, eqMid: s.eqMid, eqHigh: s.eqHigh)
     }
 
     private func trackRef(_ l: MixLoadable) -> MixDeckSessionStore.TrackRef {
@@ -3795,6 +3841,14 @@ final class MixEngine {
         filters[deck]?.globalGain = Float(20 * log10(max(state(deck).volume, 1.0)))
     }
 
+    /// Push one EQ band's gain onto the deck's always-active 3-band `AVAudioUnitEQ` node.
+    private func applyEQ(_ band: EQBand, on deck: Deck) {
+        eqs[deck]?.bands[band.bandIndex].gain = Float(state(deck).eqGain(band))
+    }
+    private func applyAllEQ(_ deck: Deck) {
+        for b in EQBand.allCases { applyEQ(b, on: deck) }
+    }
+
     /// Set each stem node's volume to ONLY its per-stem balance (0…1, zeroed when muted) — exactly like
     /// the single-file player, which now runs at unity. The deck volume + crossfade live downstream on
     /// `mainGains`, and the cue send taps upstream of them, so stems ride the main fader + cue PFL for
@@ -3856,18 +3910,41 @@ final class MixEngine {
     private static let canonicalFormat = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
 
     /// Connect a deck's effect chain at the fixed canonical format (inputMixer → timePitch → comp →
-    /// filter → reverb → flanger). Called ONCE per deck at build; never reconnected. The flanger's
-    /// output is split onto the main + cue buses by the caller (see `ensureEngine`).
+    /// filter → eq3 → reverb → flanger). Called ONCE per deck at build; never reconnected. The
+    /// flanger's output is split onto the main + cue buses by the caller (see `ensureEngine`).
     private func connectChain(_ deck: Deck,
                               nodes: (AVAudioMixerNode, AVAudioUnitTimePitch, AVAudioUnitEffect,
-                                      AVAudioUnitEQ, AVAudioUnitReverb, AVAudioUnitDelay)) {
-        let (inputMixer, tp, comp, filter, reverb, flanger) = nodes
+                                      AVAudioUnitEQ, AVAudioUnitEQ, AVAudioUnitReverb, AVAudioUnitDelay)) {
+        let (inputMixer, tp, comp, filter, eq3, reverb, flanger) = nodes
         let fmt = Self.canonicalFormat
         engine.connect(inputMixer, to: tp, format: fmt)
         engine.connect(tp, to: comp, format: fmt)
         engine.connect(comp, to: filter, format: fmt)
-        engine.connect(filter, to: reverb, format: fmt)
+        engine.connect(filter, to: eq3, format: fmt)
+        engine.connect(eq3, to: reverb, format: fmt)
         engine.connect(reverb, to: flanger, format: fmt)
+    }
+
+    /// One-time band setup for a deck's 3-band EQ node: low shelf @ 320 Hz, mid peak @ 1 kHz
+    /// (moderate Q so it doesn't smear neighboring bands), high shelf @ 3.2 kHz — standard DJ-mixer
+    /// EQ points. Only `gain` changes after this (per `applyEQ`); type/frequency/bandwidth are fixed.
+    private static func configureEQ3(_ eq: AVAudioUnitEQ) {
+        let low = eq.bands[EQBand.low.bandIndex]
+        low.filterType = .lowShelf
+        low.frequency = 320
+        low.gain = 0
+        low.bypass = false
+        let mid = eq.bands[EQBand.mid.bandIndex]
+        mid.filterType = .parametric
+        mid.frequency = 1000
+        mid.bandwidth = 1.0
+        mid.gain = 0
+        mid.bypass = false
+        let high = eq.bands[EQBand.high.bandIndex]
+        high.filterType = .highShelf
+        high.frequency = 3200
+        high.gain = 0
+        high.bypass = false
     }
 
     /// Octave-fold a tempo ratio into `rateRange` (×2 / ÷2 = half/double-time match), then clamp.

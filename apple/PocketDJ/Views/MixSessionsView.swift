@@ -650,6 +650,8 @@ enum MixEventDisplay {
             return (fxIcon(e.param), "\(cap(e.param, "FX")) " + ((e.flag ?? false) ? "on" : "off"), Theme.accent)
         case .effectStrength:
             return (fxIcon(e.param), "\(cap(e.param, "FX")) \(pct(e.value))", Theme.accent)
+        case .eq:
+            return ("slider.horizontal.3", "EQ \(cap(e.param, "band")) → " + String(format: "%+.0f dB", e.value ?? 0), Theme.accent)
         case .stemMode:    return ("square.split.2x2", "Stems " + ((e.flag ?? false) ? "on" : "off"), Theme.accent2)
         case .stemMute:
             let muted = e.flag ?? false
