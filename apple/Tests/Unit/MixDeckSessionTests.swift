@@ -1017,7 +1017,13 @@ final class MixEngineSessionTests: XCTestCase {
         e.setSlotEffect(.reverb, slot: 0, on: .a)
         e.setSlotVariant(.plate, slot: 0, on: .a)
         e.setSlot(0, enabled: true, on: .a)
-        await waitUntil("rack snapshot on disk") { store.load()?.deckA?.fxSlots != nil }
+        // Wait for the snapshot that reflects the LAST write, not merely the first one to create
+        // `fxSlots` — each setter persists, so a weaker predicate races and can read the
+        // pre-enable snapshot.
+        await waitUntil("the enabled plate-reverb snapshot on disk") {
+            let s = store.load()?.deckA?.fxSlots?.first
+            return s?.effect == "reverb" && s?.variant == "plate" && s?.on == true
+        }
 
         let snap = try XCTUnwrap(store.load()?.deckA)
         XCTAssertEqual(snap.fxSlots?.first?.effect, "reverb")
@@ -1042,7 +1048,12 @@ final class MixEngineSessionTests: XCTestCase {
         e.setSlot(0, enabled: true, on: .a)
         e.setSlotEffect(.filter, slot: 1, on: .a)          // a DUPLICATE family
         e.setSlotVariant(.highPass, slot: 1, on: .a)
-        await waitUntil("rack snapshot on disk") { store.load()?.deckA?.fxSlots != nil }
+        // Wait for the LAST write to land, not the first (every setter persists).
+        await waitUntil("both filter slots on disk") {
+            let s = store.load()?.deckA?.fxSlots
+            return s?[safe: 0]?.variant == "bandPass" && s?[safe: 0]?.on == true
+                && s?[safe: 1]?.variant == "highPass"
+        }
 
         // A fresh engine over the SAME store, as after a kill + relaunch.
         let e2 = makeEngine(store: store)
