@@ -1880,6 +1880,8 @@ private struct FXSlotChip: View {
     @State private var editing = false
     @State private var interaction = 0
     @State private var showPopover = false
+    /// The modulation sheet (LFO / envelope) — its own popover so the main reveal stays lean.
+    @State private var showModPopover = false
 
     #if os(iOS)
     @Environment(\.horizontalSizeClass) private var hSize
@@ -1904,6 +1906,12 @@ private struct FXSlotChip: View {
             if !Task.isCancelled { editing = false }
         }
         .popover(isPresented: $showPopover, arrowEdge: .top) { popoverFace }
+        .popover(isPresented: $showModPopover, arrowEdge: .top) {
+            FXSlotModPopover(index: index, deck: deck, engine: engine, a11y: a11y)
+                // On the popover ROOT — a wrapped popover without it silently fails to present
+                // on compact iPhone (the shipped LP/HP-toggle bug; never again).
+                .presentationCompactAdaptation(.popover)
+        }
     }
 
     // The chip shows the VARIETY, not the family name: "Hall" / "HP" / "Glue" says more in the same
@@ -1912,6 +1920,10 @@ private struct FXSlotChip: View {
         HStack(spacing: 4) {
             Image(systemName: slot.effect.icon)
             Text(slot.variant.label).lineLimit(1).minimumScaleFactor(0.75)
+            if slot.mod.source != .off {
+                // The always-visible modulation indicator: this slot is moving on its own.
+                Image(systemName: "waveform.path").font(.system(size: 8, weight: .bold))
+            }
         }
         .font(.caption.weight(.medium))
         .frame(maxWidth: .infinity, minHeight: 18)
@@ -1931,6 +1943,8 @@ private struct FXSlotChip: View {
               + "long-press / right-click to pick the effect, its variety, and strength")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Slot \(index + 1), \(slot.effect.label), \(slot.variant.longLabel)")
+        .accessibilityValue(slot.mod.source == .off ? (isOn ? "on" : "off")
+                            : "\(isOn ? "on" : "off"), \(slot.mod.source.label) modulation")
         .accessibilityIdentifier(a11y)
         .accessibilityAddTraits(.isButton)
         .accessibilityAddTraits(isOn ? .isSelected : [])
@@ -1944,6 +1958,7 @@ private struct FXSlotChip: View {
             HStack(spacing: 5) {
                 effectMenu
                 Spacer(minLength: 8)
+                modButton
                 variantMenu
             }
             HStack(spacing: 5) {
@@ -1976,6 +1991,7 @@ private struct FXSlotChip: View {
             HStack {
                 effectMenu
                 Spacer(minLength: 12)
+                modButton
                 variantMenu
             }
             .font(.caption.weight(.medium))
@@ -2055,10 +2071,162 @@ private struct FXSlotChip: View {
 
     private func setStrength(_ v: Double) { engine.setSlotStrength(index, v, on: deck) }
 
+    /// Opens the modulation sheet. Tinted while the slot modulates so the revealed face carries
+    /// the state even before you open it.
+    private var modButton: some View {
+        Button {
+            showPopover = false          // the two popovers must never stack
+            showModPopover = true
+            interaction += 1
+        } label: {
+            Image(systemName: "waveform.path")
+                .font(.caption2.weight(.bold))
+                .frame(width: 24, height: 22)
+                .background(slot.mod.source != .off ? Theme.accent.opacity(0.3) : Theme.bgOverlay,
+                            in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                    .strokeBorder(slot.mod.source != .off ? Theme.accent : Theme.border, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("Modulation — beat-synced LFO or audio-reactive envelope")
+        .accessibilityIdentifier("\(a11y)-mod")
+        .accessibilityLabel("Modulation")
+        .accessibilityValue(slot.mod.source.label)
+    }
+
     private func reveal() {
         if !isOn { engine.setSlot(index, enabled: true, on: deck) }  // dialling should be audible
         if useChipPopover { showPopover = true }
         else { editing = true; interaction += 1 }
+    }
+}
+
+/// The modulation sheet for one rack slot: source (Off / beat-synced LFO / envelope follower),
+/// then the LFO's musical rate + shape + phase offset, and the signed depth. Its own popover so
+/// the strength reveal stays lean; closes on an outside tap (no idle timer — it hosts menus, and
+/// browsing a menu reads as idle).
+private struct FXSlotModPopover: View {
+    let index: Int
+    let deck: MixEngine.Deck
+    let engine: MixEngine
+    let a11y: String
+
+    private var slot: FXSlot { engine.slot(index, on: deck) ?? FXSlot(.compressor) }
+    private var mod: SlotMod { slot.mod }
+    /// Whether this deck has a MEASURED grid (vs the catalog-BPM lattice) — the honesty hint.
+    private var hasMeasuredGrid: Bool { engine.loaded(deck)?.beatsMs?.isEmpty == false }
+    private var hasAnyBpm: Bool {
+        let t = engine.loaded(deck)
+        return ((t?.gridBpm ?? t?.bpm) ?? 0) > 0
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Slot \(index + 1) · Modulation", systemImage: "waveform.path")
+                .font(.caption.weight(.semibold)).foregroundStyle(Theme.accent)
+            if FXParams.modulates(slot.effect) == nil {
+                // Scope made visible instead of hidden (reverb/compressor, this phase).
+                Text("Modulation isn't available for \(slot.effect.label) yet.")
+                    .font(.caption).foregroundStyle(Theme.fgDim)
+            } else {
+                Picker("Source", selection: Binding(
+                    get: { mod.source },
+                    set: { newSource in set { m in m.source = newSource } }
+                )) {
+                    ForEach(ModSource.allCases) { s in
+                        Text(s.label).tag(s)
+                            .accessibilityIdentifier("\(a11y)-mod-source-\(s.rawValue)")
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .accessibilityIdentifier("\(a11y)-mod-source")
+
+                if mod.source == .lfo {
+                    HStack(spacing: 8) {
+                        Menu {
+                            ForEach(ModRate.allCases) { r in
+                                Button { set { m in m.rate = r } } label: {
+                                    Label(r.label, systemImage: r == mod.rate ? "checkmark" : "metronome")
+                                }
+                                .accessibilityIdentifier("\(a11y)-mod-rate-\(r.rawValue)")
+                            }
+                        } label: {
+                            chipLabel("\(mod.rate.label)\(hasMeasuredGrid ? "" : " est.")")
+                        }
+                        .accessibilityIdentifier("\(a11y)-mod-rate")
+                        Menu {
+                            ForEach(ModShape.allCases) { sh in
+                                Button { set { m in m.shape = sh } } label: {
+                                    Label(sh.label, systemImage: sh == mod.shape ? "checkmark" : "waveform.path")
+                                }
+                                .accessibilityIdentifier("\(a11y)-mod-shape-\(sh.rawValue)")
+                            }
+                        } label: {
+                            chipLabel(mod.shape.label)
+                        }
+                        .accessibilityIdentifier("\(a11y)-mod-shape")
+                        Spacer()
+                        // Cycle-phase offset in quarter-cycle steps (offset a slot half a cycle
+                        // behind its twin).
+                        Button { set { m in m.phase = (m.phase + 0.25).truncatingRemainder(dividingBy: 1) } } label: {
+                            chipLabel("φ \(Int((mod.phase * 100).rounded()))%")
+                        }
+                        .buttonStyle(.plain)
+                        .help("Cycle phase offset — tap to step by a quarter cycle")
+                        .accessibilityIdentifier("\(a11y)-mod-phase")
+                    }
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(Theme.accent)
+                    if !hasAnyBpm {
+                        Text("No BPM for this track — the LFO has nothing to lock to.")
+                            .font(.caption2).foregroundStyle(Theme.fgDim)
+                    } else if !hasMeasuredGrid {
+                        Text("No measured beat grid — locked to the catalog BPM (est.).")
+                            .font(.caption2).foregroundStyle(Theme.fgDim)
+                    }
+                }
+
+                if mod.source != .off {
+                    HStack(spacing: 8) {
+                        Text("Depth").font(.caption).foregroundStyle(Theme.fgDim)
+                        Slider(value: Binding(
+                            get: { mod.depth },
+                            set: { v in set { m in m.depth = v } }
+                        ), in: -1...1)
+                            .tint(Theme.accent)
+                            .accessibilityIdentifier("\(a11y)-mod-depth")
+                        Text(String(format: "%+.0f%%", mod.depth * 100))
+                            .font(.caption.monospacedDigit()).foregroundStyle(Theme.fg)
+                            .frame(width: 46, alignment: .trailing)
+                    }
+                    if mod.source == .envelope {
+                        Text(mod.depth >= 0 ? "Louder passages push the effect harder."
+                                            : "Louder passages DUCK the effect.")
+                            .font(.caption2).foregroundStyle(Theme.fgDim)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .frame(width: 300)
+    }
+
+    private func chipLabel(_ text: String) -> some View {
+        HStack(spacing: 3) {
+            Text(text).lineLimit(1)
+            Image(systemName: "chevron.up.chevron.down").font(.system(size: 7, weight: .bold))
+        }
+        .padding(.horizontal, 6).padding(.vertical, 4)
+        .background(Theme.bgOverlay, in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
+            .strokeBorder(Theme.border, lineWidth: 1))
+    }
+
+    private func set(_ mutate: (inout SlotMod) -> Void) {
+        var m = mod
+        mutate(&m)
+        engine.setSlotMod(m, slot: index, on: deck)
     }
 }
 

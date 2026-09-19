@@ -66,6 +66,47 @@ final class FXRackUITests: XCTestCase {
         save(app, "03-slot0-swapped-to-filter")
     }
 
+    /// The modulation sheet: reveal a slot, open MOD, set the LFO — the chip must then carry the
+    /// waveform indicator and its a11y value must name the source.
+    func testModPopoverSetsAnLFOAndTheChipShowsIt() {
+        let app = XCUIApplication()
+        app.launchEnvironment["PDJ_USE_FIXTURE"] = "1"
+        app.launchEnvironment["PDJ_START_SECTION"] = "Mix"
+        app.launch()
+        XCTAssertTrue(app.any("deck-A-fx-slot-3").waitForExistence(timeout: 20))
+        XCTAssertEqual(app.any("deck-A-fx-slot-3").label, "Slot 4, Filter, Low-pass")
+
+        // Reveal slot 3 (the default Filter) and open the MOD sheet.
+        app.any("deck-A-fx-slot-3").press(forDuration: 1.5)
+        let modBtn = app.any("deck-A-fx-slot-3-mod")
+        XCTAssertTrue(modBtn.waitForExistence(timeout: 5), "the MOD button should be revealed")
+        modBtn.tap()
+
+        let source = app.any("deck-A-fx-slot-3-mod-source")
+        XCTAssertTrue(source.waitForExistence(timeout: 5), "the modulation sheet should open")
+        save(app, "07-mod-sheet-open")
+
+        // Pick LFO on the segmented control.
+        let lfoSeg = app.buttons["LFO"].firstMatch
+        XCTAssertTrue(lfoSeg.waitForExistence(timeout: 5))
+        lfoSeg.tap()
+        XCTAssertTrue(app.any("deck-A-fx-slot-3-mod-rate").waitForExistence(timeout: 5),
+                      "the LFO rate picker should appear")
+        XCTAssertTrue(app.any("deck-A-fx-slot-3-mod-depth").exists, "…and the depth slider")
+        save(app, "08-mod-sheet-lfo")
+
+        // Dismiss (the popover's dismiss region on iPhone; coordinate tap as fallback).
+        let dismiss = app.otherElements["PopoverDismissRegion"].firstMatch
+        if dismiss.exists { dismiss.tap() }
+        else { app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.06)).tap() }
+        let chip = app.any("deck-A-fx-slot-3")
+        XCTAssertTrue(chip.waitForExistence(timeout: 5))
+        XCTAssertTrue(chip.value.debugDescription.contains("LFO") || chip.label.contains("LFO")
+                      || (chip.value as? String)?.contains("LFO") == true,
+                      "the chip must announce its modulation — value: \(String(describing: chip.value))")
+        save(app, "09-chip-with-lfo-indicator")
+    }
+
     // MARK: - Helpers (mirror the other Mix UI tests)
 
     private func save(_ app: XCUIApplication, _ name: String) {

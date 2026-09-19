@@ -1532,6 +1532,18 @@ final class MixEngineTests: XCTestCase {
         return url
     }
 
+    /// Poll a modulation condition instead of sleeping a fixed span: the ~60 Hz mod tick is
+    /// best-effort and a loaded host can starve it for a while without anything being wrong.
+    private func waitUntilMod(_ what: String, timeout: Double = 8,
+                              _ cond: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if cond() { return }
+            try? await Task.sleep(nanoseconds: 20_000_000)
+        }
+        XCTFail("timed out waiting for \(what)")
+    }
+
     private func loadable(_ id: String, bpm: Double?, lengthMs: Int?) -> MixLoadable {
         MixLoadable(songId: id, title: "T", artist: "A", bpm: bpm,
                     camelot: nil, key: nil, albumId: nil, lengthMs: lengthMs)
@@ -1879,11 +1891,13 @@ final class MixEngineTests: XCTestCase {
         e.setSlotMod(SlotMod(source: .lfo, rate: .quarter, depth: 1.0, shape: .sine), slot: 0, on: .a)
         e.play(.a)
 
-        // Sample the filter band frequency over ~0.8 s (≈1.6 LFO cycles) — it must move.
+        // Sample the filter band frequency until it has demonstrably swept. POLLED rather than a
+        // fixed sleep: the 60 Hz tick is best-effort, and a loaded CI host must not fail this.
         var seen: Set<Int> = []
-        for _ in 0..<12 {
-            try await Task.sleep(nanoseconds: 70_000_000)
+        for _ in 0..<200 {
             if let f = e.slotFilterFrequencyForTesting(0, on: .a) { seen.insert(Int(f)) }
+            if seen.count > 3 { break }
+            try await Task.sleep(nanoseconds: 25_000_000)
         }
         XCTAssertGreaterThan(seen.count, 3, "the cutoff must sweep, not sit still — saw \(seen)")
         XCTAssertEqual(e.slot(0, on: .a)?.strength ?? 0, 0.5, accuracy: 1e-9,
@@ -1906,11 +1920,14 @@ final class MixEngineTests: XCTestCase {
         let baseFreq = e.slotFilterFrequencyForTesting(0, on: .a)
         e.setSlotMod(SlotMod(source: .lfo, rate: .quarter, depth: 1.0, shape: .sine), slot: 0, on: .a)
         e.play(.a)
-        try await Task.sleep(nanoseconds: 400_000_000)     // let it wobble
+        await waitUntilMod("the LFO to move the cutoff off its base") {
+            abs((e.slotFilterFrequencyForTesting(0, on: .a) ?? 0) - (baseFreq ?? 0)) > 1
+        }
 
         e.pause(.a)
-        try await Task.sleep(nanoseconds: 200_000_000)     // give the tick a chance to snap back
-
+        await waitUntilMod("the node to snap back to the stored strength") {
+            abs((e.slotFilterFrequencyForTesting(0, on: .a) ?? -1) - (baseFreq ?? -2)) <= 1
+        }
         XCTAssertEqual(e.slotFilterFrequencyForTesting(0, on: .a) ?? -1, baseFreq ?? -2,
                        accuracy: 1, "a stopped deck's node must sit exactly on the user's value")
         e.teardown()
@@ -1930,10 +1947,11 @@ final class MixEngineTests: XCTestCase {
         let baseFreq = e.slotFilterFrequencyForTesting(0, on: .a)
         e.setSlotMod(SlotMod(source: .lfo, rate: .quarter, depth: 1.0, shape: .square), slot: 0, on: .a)
         e.play(.a)
-        try await Task.sleep(nanoseconds: 300_000_000)
+        await waitUntilMod("the square LFO to move the cutoff") {
+            abs((e.slotFilterFrequencyForTesting(0, on: .a) ?? 0) - (baseFreq ?? 0)) > 1
+        }
 
         e.setSlotMod(SlotMod(), slot: 0, on: .a)           // source off
-        try await Task.sleep(nanoseconds: 100_000_000)
 
         XCTAssertEqual(e.slotFilterFrequencyForTesting(0, on: .a) ?? -1, baseFreq ?? -2,
                        accuracy: 1, "mod off ⇒ the node returns to the stored strength")
@@ -1956,7 +1974,9 @@ final class MixEngineTests: XCTestCase {
         e.setSlotMod(SlotMod(source: .envelope, depth: 1.0), slot: 0, on: .a)
         e.play(.a)
 
-        try await Task.sleep(nanoseconds: 700_000_000)     // let the follower settle on the sine
+        await waitUntilMod("the follower to push the cutoff off its base") {
+            abs((e.slotFilterFrequencyForTesting(0, on: .a) ?? 0) - (baseFreq ?? 0)) > 50
+        }
         let pushed = e.slotFilterFrequencyForTesting(0, on: .a)
         XCTAssertNotEqual(pushed ?? -1, baseFreq ?? -2, accuracy: 50,
                           "a steady signal must push the cutoff well away from the base")
@@ -1964,7 +1984,9 @@ final class MixEngineTests: XCTestCase {
                        "the stored strength never moves")
 
         e.pause(.a)
-        try await Task.sleep(nanoseconds: 800_000_000)     // taps park → mirror stale → silence
+        await waitUntilMod("the paused deck's node to return to base") {
+            abs((e.slotFilterFrequencyForTesting(0, on: .a) ?? -1) - (baseFreq ?? -2)) <= 1
+        }
         XCTAssertEqual(e.slotFilterFrequencyForTesting(0, on: .a) ?? -1, baseFreq ?? -2,
                        accuracy: 1, "paused ⇒ envelope reads silent ⇒ the node sits on base")
         e.teardown()
