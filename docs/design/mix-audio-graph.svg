@@ -47,6 +47,12 @@
     <text x="620" y="226" fill="#9db4de" text-anchor="middle" font-size="10">tempo 0.5–2.0× · pitch ±12 st</text>
     <text x="620" y="240" fill="#7ee2a8" text-anchor="middle" font-size="10">last pre-FX point (untapped)</text>
 
+    <!-- envelope tap (pre-FX) off inputMixer -->
+    <line x1="390" y1="256" x2="390" y2="286" stroke="#f0b429" stroke-width="1.5" stroke-dasharray="4 3" marker-end="url(#arrTap)"/>
+    <rect x="252" y="288" width="276" height="30" rx="7" fill="#241f10" stroke="#f0b429"/>
+    <text x="390" y="302" fill="#f7d675" text-anchor="middle" font-size="10">ENVELOPE tap · pre-FX → MixDeckEnvelope</text>
+    <text x="390" y="313" fill="#c9b06a" text-anchor="middle" font-size="9">1024 fr · τ-ballistics · drives audio-reactive mod</text>
+
     <!-- edges: sources → inputMixer → timePitch -->
     <line x1="230" y1="183" x2="300" y2="210" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
     <line x1="230" y1="266" x2="300" y2="236" stroke="#7fb4ff" stroke-width="2" marker-end="url(#arr)"/>
@@ -192,11 +198,11 @@
     <text x="722" y="1178" fill="#e8eefc" font-size="13" font-weight="bold">Known limitations</text>
     <text x="722" y="1202" fill="#9db4de">· Graph is write-once — no runtime attach/detach/reconnect;</text>
     <text x="734" y="1218" fill="#9db4de">new taps/nodes must be added at build time</text>
-    <text x="722" y="1240" fill="#9db4de">· One tap per node bus (trim + mainGain already taken)</text>
-    <text x="722" y="1262" fill="#9db4de">· "Pre-fader" VU tap is POST-FX — unusable as an</text>
-    <text x="734" y="1278" fill="#9db4de">envelope-follower source (feedback); pre-FX = timePitch out</text>
-    <text x="722" y="1300" fill="#9db4de">· All param changes are host-rate one-shot sets — fast</text>
-    <text x="734" y="1316" fill="#9db4de">delayTime modulation zippers (Flanger/Chorus = static combs)</text>
+    <text x="722" y="1240" fill="#9db4de">· One tap per bus (trim, mainGain + inputMixer taken)</text>
+    <text x="722" y="1262" fill="#9db4de">· "Pre-fader" VU tap is POST-FX — the envelope follower</text>
+    <text x="734" y="1278" fill="#9db4de">taps inputMixer (pre-FX) instead; timePitch out still free</text>
+    <text x="722" y="1300" fill="#9db4de">· Host-rate one-shot params (~45/s cap → LFO stops at 1/8);</text>
+    <text x="734" y="1316" fill="#9db4de">delayTime NEVER ticks — mod pumps wet/feedback only</text>
     <text x="722" y="1338" fill="#9db4de">· No custom RT node here; custom AUAudioUnit FAILED on</text>
     <text x="734" y="1354" fill="#9db4de">device once (Studio, "only gain worked") — don't retry it</text>
     <text x="722" y="1376" fill="#9db4de">· loadFactoryPreset rebuilds the reverb tail — never per tick</text>

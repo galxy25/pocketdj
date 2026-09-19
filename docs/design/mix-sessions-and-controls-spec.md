@@ -61,6 +61,28 @@ and a high-pass in another, or two compressors, is a valid board.
   first sweepable one, else none — an all-compressor rack sits the glide out) and sweeps only that
   slot's on/off + strength, never its family or variety.
 
+### 1b. Slot modulation (LFO / envelope follower)
+
+Each slot carries a `SlotMod` — source **Off / LFO / Env**, musical rate (1 bar · 1/2 · 1/4 · 1/4T ·
+1/8; nothing faster — host-rate params cap at ~45 updates/s), five shapes, SIGNED depth (−100…+100%,
+negative inverts/ducks), and a cycle-phase offset. Reached from the **MOD button** beside the
+variety picker; the chip carries a small waveform glyph while modulating.
+
+- **LFO** locks to the deck's measured beat grid via `BeatMath.cyclePhase` (downbeat-anchored,
+  phase-continuous past the grid's end), falling back to the catalog-BPM lattice — the sheet says
+  "est." when un-gridded and warns when there's no BPM at all. Source-time in ⇒ a time-stretched
+  deck's LFO follows the music. Selecting LFO force-hydrates the grid (like arming a loop).
+- **Env** follows the deck's own pre-FX signal (the `inputMixer` tap; −40…0 dBFS → 0…1, 8 ms
+  attack / 180 ms release). Positive depth pushes on loud passages; negative ducks.
+- The modulator writes NODES, never state: `strength` stays the user's setting, the ~60 Hz mod
+  tick derives phase from the playhead each tick (never integrates), and the Auto-DJ glide
+  composes (it moves the base; the LFO wobbles around it). A paused deck's nodes sit exactly on
+  the stored values. `delayTime` NEVER moves at tick rate — Modulation-family modulation pumps
+  wet/feedback (rhythmic comb intensity, dub-echo swells), it is not a swept flanger.
+- Only Filter + the Modulation family modulate this phase (`FXParams.modulates`); the sheet says
+  so for Reverb/Compressor rather than hiding it. Persisted as optional snapshot fields (schema
+  stays v1); timeline kind `.effectMod`.
+
 ## 2. Gain boost to 200%
 
 Deck volume now ranges `0…2.0`. The graph keeps the documented 0…1 `volume` on the player + stem
