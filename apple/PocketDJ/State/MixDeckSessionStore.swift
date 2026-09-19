@@ -130,11 +130,35 @@ final class MixDeckSessionStore {
         var variant: String
         var on: Bool
         var strength: Double
+        /// Modulation (LFO / envelope follower). OPTIONAL like every post-v1 field — absent
+        /// (pre-modulation session) ⇒ modulation off. Strings again so a future build's new
+        /// source/rate/shape degrades to a default HERE rather than failing the slot.
+        var modSource: String? = nil
+        var modRate: String? = nil
+        var modShape: String? = nil
+        var modDepth: Double? = nil
+        var modPhase: Double? = nil
+
         /// Both rawValues resolve AND the variant belongs to the effect's family.
+        /// The mod fields are DELIBERATELY not validated here: `resolvedSlots` discards the whole
+        /// rack (falling back to the pre-rack flat fields) when any slot is malformed, and a
+        /// garbage mod string from a newer build must never cost the user their rack layout —
+        /// unknown mod values degrade to "off"/defaults in `resolvedMod` instead.
         var isWellFormed: Bool {
             guard let e = MixEngine.Effect(rawValue: effect),
                   let v = EffectVariant(rawValue: variant) else { return false }
             return v.effect == e
+        }
+
+        /// The modulation config this slot restores to — total, never fails: unknown or absent
+        /// values become the defaults (source falls back to .off, so a session from a build with
+        /// sources we don't know simply doesn't modulate here).
+        var resolvedMod: SlotMod {
+            SlotMod(source: modSource.flatMap(ModSource.init(rawValue:)) ?? .off,
+                    rate: modRate.flatMap(ModRate.init(rawValue:)) ?? .bar,
+                    depth: modDepth ?? 0.5,
+                    shape: modShape.flatMap(ModShape.init(rawValue:)) ?? .sine,
+                    phase: modPhase ?? 0)
         }
     }
 

@@ -83,6 +83,77 @@ enum EffectVariant: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+// MARK: - Modulation model
+
+/// What drives a slot's modulation. `.off` is the default and the compatibility guarantee: a slot
+/// with modulation off behaves BYTE-IDENTICALLY to the pre-modulation build.
+enum ModSource: String, Codable, CaseIterable, Identifiable, Sendable {
+    case off, lfo, envelope
+    var id: String { rawValue }
+    var label: String {
+        switch self { case .off: return "Off"; case .lfo: return "LFO"; case .envelope: return "Env" }
+    }
+}
+
+/// Beat-synced LFO rates, in MUSICAL units. Deliberately stops at 1/8: with the default IO buffer
+/// (~21-23 ms) parameters land at ~45 updates/s, so a 1/8-triplet at 128 BPM (~160 ms cycle) would
+/// render as ~7 steps — audible stair-stepping. These five all stay musical at the ceiling.
+enum ModRate: String, Codable, CaseIterable, Identifiable, Sendable {
+    case bar, half, quarter, quarterTriplet, eighth
+    var id: String { rawValue }
+    /// Cycle length in BEATS (4/4 assumed, like the whole beat-grid pipeline).
+    var beats: Double {
+        switch self {
+        case .bar:            return 4
+        case .half:           return 2
+        case .quarter:        return 1
+        case .quarterTriplet: return 2.0 / 3.0
+        case .eighth:         return 0.5
+        }
+    }
+    var label: String {
+        switch self {
+        case .bar:            return "1 bar"
+        case .half:           return "1/2"
+        case .quarter:        return "1/4"
+        case .quarterTriplet: return "1/4T"
+        case .eighth:         return "1/8"
+        }
+    }
+}
+
+/// LFO waveforms. `saw` falls (starts high on the downbeat, classic filter "duck-and-recover");
+/// `ramp` rises. `square` is a hard gate.
+enum ModShape: String, Codable, CaseIterable, Identifiable, Sendable {
+    case sine, triangle, saw, ramp, square
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+}
+
+/// One slot's modulation configuration. Rides `FXSlot` (and the session snapshot) as plain user
+/// intent — the LIVE modulated value is runtime plumbing that never touches this struct, and the
+/// slot's `strength` remains the user's setting, never written by the modulator.
+struct SlotMod: Equatable, Sendable {
+    var source: ModSource = .off
+    var rate: ModRate = .bar
+    /// SIGNED depth −1…+1. Negative inverts: an envelope DUCKS instead of pushes; an LFO starts
+    /// on its trough. Clamped by the setter path.
+    var depth: Double = 0.5
+    var shape: ModShape = .sine
+    /// Cycle phase offset 0…<1 — lets slot 2's LFO sit half a cycle behind slot 0's.
+    var phase: Double = 0
+
+    init() {}
+    init(source: ModSource, rate: ModRate = .bar, depth: Double = 0.5,
+         shape: ModShape = .sine, phase: Double = 0) {
+        self.source = source
+        self.rate = rate
+        self.depth = min(max(depth, -1), 1)
+        self.shape = shape
+        self.phase = phase - phase.rounded(.down)     // fold into 0..<1
+    }
+}
+
 // MARK: - A rack slot
 
 /// One of the deck's four FX rack slots: which effect family it holds, which variety of it, and
@@ -96,7 +167,12 @@ struct FXSlot: Equatable, Sendable {
     private(set) var variant: EffectVariant
     var enabled: Bool
     /// 0…1 — clamped by `setStrength`. Always stored; only audible while `enabled`.
+    /// This is the USER'S value: the modulator computes an offset around it at runtime but never
+    /// writes it back (see `MixEngine.effectiveStrength`).
     var strength: Double
+    /// Beat-synced LFO / envelope-follower configuration. Default off. Survives `setEffect` /
+    /// `setVariant` — modulation is the slot's rhythm, independent of what it currently sounds like.
+    var mod: SlotMod = SlotMod()
 
     init(_ effect: MixEngine.Effect,
          variant: EffectVariant? = nil,
@@ -141,6 +217,73 @@ extension Array {
 /// statics (no AVAudioUnit touched) so the whole table is unit-testable on a headless host with no
 /// audio device — `MixEngine.applySlot` is the only thing that writes these onto real nodes.
 enum FXParams {
+    // MARK: Modulation math (pure)
+
+    /// What modulation is allowed to MOVE for each family — and, by omission, what it must never
+    /// touch. `AVAudioUnitDelay.delayTime` is DELIBERATELY absent: the AU gives no ramp on it, so
+    /// a per-buffer jump moves the read pointer mid-waveform and clicks. Reverb/compressor return
+    /// nil this phase (gives the UI its "unavailable" state for free).
+    enum ModTarget { case cutoff, wetFeedback }
+    static func modulates(_ e: MixEngine.Effect) -> ModTarget? {
+        switch e {
+        case .filter:  return .cutoff
+        case .flanger: return .wetFeedback     // wetDryMix + feedback + lowPassCutoff — NEVER delayTime
+        case .reverb, .compressor: return nil  // not this phase
+        }
+    }
+
+    /// Waveform value at `phase01` (0…<1) → 0…1. Saw FALLS (starts high on the downbeat — the
+    /// classic duck-and-recover); ramp rises; square is a half-cycle gate.
+    static func wave(_ shape: ModShape, phase01: Double) -> Double {
+        let p = phase01 - phase01.rounded(.down)
+        switch shape {
+        case .sine:     return (sin(2 * .pi * p - .pi / 2) + 1) / 2   // trough on the downbeat, rising
+        case .triangle: return p < 0.5 ? p * 2 : 2 - p * 2
+        case .saw:      return 1 - p
+        case .ramp:     return p
+        case .square:   return p < 0.5 ? 1 : 0
+        }
+    }
+
+    /// The value the NODES should see: the user's `base` strength plus the modulator's current
+    /// offset, clamped to 0…1. IDENTITY when the source is off or depth is 0 — the guarantee that
+    /// modulation-off behaves byte-identically to the pre-modulation build.
+    ///   • `.lfo`: BIPOLAR around base — `base + depth × (wave×2 − 1)`; a nil phase (nothing to
+    ///     lock to) is the identity.
+    ///   • `.envelope`: UNIPOLAR — `base + depth × env`; negative depth ducks.
+    static func modulated(base: Double, mod: SlotMod, phase01: Double?, env: Double) -> Double {
+        let clampedBase = min(max(base, 0), 1)
+        guard mod.depth != 0 else { return clampedBase }
+        switch mod.source {
+        case .off:
+            return clampedBase
+        case .lfo:
+            guard let p = phase01 else { return clampedBase }
+            let w = wave(mod.shape, phase01: p)
+            return min(max(clampedBase + mod.depth * (w * 2 - 1), 0), 1)
+        case .envelope:
+            return min(max(clampedBase + mod.depth * min(max(env, 0), 1), 0), 1)
+        }
+    }
+
+    /// Map a linear RMS (0…1 full-scale) onto the 0…1 modulation drive over a fixed dBFS window:
+    /// −40 dBFS → 0, 0 dBFS → 1, clamped, monotone. Fixed window over auto-gain on purpose —
+    /// predictable and testable; a quiet track under-modulates and the depth knob compensates.
+    static func envelopeCurve(rms: Float) -> Double {
+        guard rms > 0 else { return 0 }
+        let db = 20 * log10(Double(rms))
+        return min(max((db + 40) / 40, 0), 1)
+    }
+
+    /// One-pole ballistics coefficient for a TIME CONSTANT `tau` at step `dt`: `1 − exp(−dt/τ)`.
+    /// Buffer-size independent by construction — the same signal chopped into 1024- or 4096-frame
+    /// callbacks converges identically in wall time. (Deliberately NOT the VU taps' per-callback
+    /// constants, whose decay speed silently changes with buffer size.)
+    static func ballisticsCoef(dt: Double, tau: Double) -> Float {
+        guard tau > 0, dt > 0 else { return 1 }
+        return Float(1 - exp(-dt / tau))
+    }
+
     // MARK: Filter — AVAudioUnitEQ, one band
 
     /// Cutoff/centre frequency (Hz) for a filter variant at strength `s` (0…1).

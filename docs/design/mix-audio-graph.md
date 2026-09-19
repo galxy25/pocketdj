@@ -78,6 +78,7 @@ file (`mix-audio-graph.svg`).
 |---|---|---|---|
 | Pre-fader VU | `trim` output | `MixDeckLevels.prePeak/preRMS` | 4096-frame buffers (~10 Hz); peak + RMS ballistics run on the tap thread. **Post-FX** despite the "pre-fader" name. |
 | Post-fader VU | `mainGain` output | `MixDeckLevels.postPeak/postRMS` | Same shape, after volume × crossfade. |
+| Envelope follower | `inputMixer` output | `MixDeckEnvelope.value` | **Pre-FX** (a filter driven by it can't hear itself and feed back), post-stem-merge. 1024-frame buffers (~23 ms) with time-constant ballistics (8 ms attack / 180 ms release) so the host's delivered buffer size can't change the follower's speed. Drives the FX modulation's audio-reactive source. |
 | Recording | `houseSum` output | `MixTapSink` + `MixTapPulse` liveness | Installed once at build, never per-recording — adding/removing a tap on a live node pauses the decks on-device. |
 
 ## Known limitations
@@ -85,16 +86,19 @@ file (`mix-audio-graph.svg`).
 - **The graph is write-once.** No node is ever attached/detached/reconnected while running; the
   only full-rebuild path is the iOS media-services-reset recovery, which stops playback first.
   Anything needing new topology (new taps, new nodes) must be added at build time.
-- **One tap per node bus.** `trim` and `mainGain` each already carry theirs; a new consumer of
-  those points must share the existing callback, not add a second tap.
+- **One tap per node bus.** `trim`, `mainGain`, and (since the FX modulation) `inputMixer` each
+  carry theirs; a new consumer of those points must share the existing callback, not add a
+  second tap. `timePitch`'s output remains the one untapped per-deck point.
 - **The "pre-fader" VU tap is post-FX.** Fine for metering; wrong as a source for anything that
-  *drives* the effects (e.g. an envelope follower — it would hear its own effect and feed back).
-  The pre-FX point is `timePitch`'s output, currently untapped.
-- **All parameter changes are host-rate one-shot sets** from the main actor (`applySlot`, the
-  ~10 Hz Auto-DJ glide tick). No `AudioUnitScheduleParameters`, no sample-accurate ramps.
-  Consequences: fast modulation of *most* params is fine, but `AVAudioUnitDelay.delayTime`
-  steps audibly — which is why Flanger/Chorus are static combs today ("a true LFO flanger" needs
-  audio-rate DSP).
+  *drives* the effects. The envelope follower therefore taps `inputMixer` (pre-FX) instead.
+- **All parameter changes are host-rate one-shot sets** from the main actor (`applySlot` /
+  `writeSlotParams`, the ~10 Hz Auto-DJ glide tick, the ~60 Hz modulation tick). No
+  `AudioUnitScheduleParameters`, no sample-accurate ramps. With the default IO buffer this caps
+  effective modulation at ~45 updates/s — the reason LFO rates stop at 1/8. Fast modulation of
+  most params is fine, but **`AVAudioUnitDelay.delayTime` never moves at tick rate** (un-ramped
+  read-pointer jump = clicks; `writeSlotParams` derives it from the BASE strength only) — so
+  Flanger/Chorus remain static combs whose *wet/feedback* pump rhythmically; a true swept
+  flanger still needs audio-rate DSP.
 - **No custom real-time node in the Mix graph.** The app's only custom RT DSP lives behind the
   Studio arranger's `AVAudioSourceNode` (`MultitrackPlayer.swift`). A custom v3 `AUAudioUnit` was
   tried there and FAILED to instantiate on device ("only gain worked", removed in c6dfc926) — do

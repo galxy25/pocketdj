@@ -135,6 +135,78 @@ enum BeatMath {
 
     /// Beat positions in `[0, durationMs)` — the real measured grid when present, else a constant
     /// lattice from `bpm` phased on `firstDownbeatMs`. nil when there's no usable grid.
+    /// Fractional position (0 ≤ phase < 1) through a modulation cycle of `cycleBeats` beats at
+    /// source-time `atMs`, anchored so cycle 0 begins on a bar DOWNBEAT. The Mix FX modulation
+    /// (LFO) calls this every tick — O(log n), no allocation.
+    ///
+    /// Semantics:
+    ///   • MEASURED grid (`beatsMs` non-empty): continuous beat position = last-beat index +
+    ///     linear fraction to the next beat; past the last measured beat the walk extends on the
+    ///     grid's own spacing (mean interval, else 60000/bpm) so phase stays CONTINUOUS — the same
+    ///     doctrine as `sliceBoundaries`. Anchored on the last measured downbeat ≤ `atMs`
+    ///     (± `downbeatToleranceMs` membership), else beat 0 — the same assumption the beat pulse
+    ///     makes when `downbeatsMs` is absent.
+    ///   • NO measured grid: constant lattice `60000/bpm` anchored at `firstDownbeatMs`
+    ///     (identically to the pulse's synthesized fallback).
+    ///   • `atMs` is SOURCE time, so a time-stretched deck's LFO speeds up/slows down with the
+    ///     music for free — no tempo term belongs here.
+    ///   • `offset` (0…1) shifts the cycle phase, letting one slot's LFO ride half a cycle behind
+    ///     another's.
+    ///
+    /// nil when there is nothing to lock to (no beats AND no positive bpm) or `cycleBeats ≤ 0`.
+    /// Before the first beat/downbeat the phase counts back on the same lattice (negative beat
+    /// positions fold correctly), so an intro before beat 0 still wobbles in time.
+    nonisolated static func cyclePhase(atMs: Double,
+                                       beatsMs: [Int]?, downbeatsMs: [Int]?,
+                                       bpm: Double, firstDownbeatMs: Int,
+                                       cycleBeats: Double, offset: Double = 0) -> Double? {
+        guard cycleBeats > 0 else { return nil }
+        let beatPos: Double            // continuous beats since the ANCHOR downbeat
+        if let real = beatsMs, !real.isEmpty {
+            // Constant spacing for extension beyond either end of the measured grid.
+            let step: Double = bpm > 0 ? 60000.0 / bpm
+                : (real.count >= 2 ? Double(real[real.count - 1] - real[0]) / Double(real.count - 1)
+                                   : 500)   // single beat, no bpm: 120 BPM stand-in
+            // Continuous beat index at `atMs`: binary-search the last beat ≤ atMs, then the
+            // linear fraction toward the next (extended past the ends on `step`).
+            var lo = 0, hi = real.count
+            while lo < hi { let mid = (lo + hi) / 2; if Double(real[mid]) <= atMs { lo = mid + 1 } else { hi = mid } }
+            let idx: Double
+            if lo == 0 {                                  // before the first measured beat
+                idx = (atMs - Double(real[0])) / step
+            } else if lo >= real.count {                  // past the last measured beat
+                idx = Double(real.count - 1) + (atMs - Double(real[real.count - 1])) / step
+            } else {
+                let a = Double(real[lo - 1]), b = Double(real[lo])
+                idx = Double(lo - 1) + (atMs - a) / max(b - a, 1)
+            }
+            // Anchor: the beat index of the last downbeat ≤ atMs (near-membership), else beat 0.
+            var anchor = 0.0
+            if let downs = downbeatsMs, !downs.isEmpty {
+                var dlo = 0, dhi = downs.count            // last downbeat ≤ atMs
+                while dlo < dhi { let mid = (dlo + dhi) / 2; if Double(downs[mid]) <= atMs { dlo = mid + 1 } else { dhi = mid } }
+                if dlo > 0 {
+                    let dms = downs[dlo - 1]
+                    // Map the downbeat back to its beat index (± tolerance).
+                    var blo = 0, bhi = real.count
+                    while blo < bhi { let mid = (blo + bhi) / 2; if real[mid] < dms { blo = mid + 1 } else { bhi = mid } }
+                    for c in [blo - 1, blo] where c >= 0 && c < real.count
+                        && abs(real[c] - dms) <= downbeatToleranceMs {
+                        anchor = Double(c); break
+                    }
+                }
+            }
+            beatPos = idx - anchor
+        } else {
+            guard bpm > 0 else { return nil }
+            beatPos = (atMs - Double(firstDownbeatMs)) / (60000.0 / bpm)
+        }
+        // Fold into 0..<1, positive even for negative beat positions (pre-anchor intros).
+        let raw = beatPos / cycleBeats + offset
+        let phase = raw - raw.rounded(.down)
+        return phase
+    }
+
     private nonisolated static func beatLattice(grid g: (bpm: Double, firstDownbeatMs: Int, beatsMs: [Int]),
                                                 durationMs: Int) -> [Int]? {
         if !g.beatsMs.isEmpty {

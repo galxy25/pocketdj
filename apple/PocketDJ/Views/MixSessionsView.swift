@@ -655,6 +655,8 @@ enum MixEventDisplay {
             return (fxIcon(e.param), "Slot \(slotNo(e)) → \(cap(e.param, "FX"))", Theme.accent2)
         case .effectVariant:
             return ("dial.medium", "Slot \(slotNo(e)) → \(variantLabel(e.param))", Theme.accent2)
+        case .effectMod:
+            return ("waveform.path", "Slot \(slotNo(e)) mod → \(modLabel(e.param, depth: e.value))", Theme.accent2)
         case .eq:
             return ("slider.horizontal.3", "EQ \(cap(e.param, "band")) → " + String(format: "%+.0f dB", e.value ?? 0), Theme.accent)
         case .filterMode:
@@ -711,6 +713,19 @@ enum MixEventDisplay {
     private static func variantLabel(_ raw: String?) -> String {
         guard let raw else { return "variant" }
         return EffectVariant(rawValue: raw)?.longLabel ?? raw.capitalized
+    }
+    /// "lfo:quarter:saw" + depth → "LFO 1/4 Saw 60%"; "off:…" → "Off". Unknown pieces pass raw.
+    private static func modLabel(_ raw: String?, depth: Double?) -> String {
+        let parts = (raw ?? "").split(separator: ":").map(String.init)
+        let source = parts.first.flatMap(ModSource.init(rawValue:))
+        guard let source, source != .off else { return "Off" }
+        var out = source.label
+        if source == .lfo, parts.count > 1 {
+            out += " " + (ModRate(rawValue: parts[1])?.label ?? parts[1])
+        }
+        if parts.count > 2 { out += " " + (ModShape(rawValue: parts[2])?.label ?? parts[2]) }
+        if let depth { out += String(format: " %+.0f%%", depth * 100) }
+        return out
     }
 
     static func fxIcon(_ name: String?) -> String {
