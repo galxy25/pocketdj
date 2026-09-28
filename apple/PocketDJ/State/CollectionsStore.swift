@@ -193,10 +193,14 @@ final class CollectionsStore {
     /// No-op in normal use.
     private func seedForUITestsIfRequested() {
         if let raw = ProcessInfo.processInfo.environment["PDJ_SEED_COLLECTIONS"], playlists.isEmpty {
-            let pl = createPlaylist("Seeded Set")
-            addSong("sng_1", toPlaylist: pl.id)
-            let extra = max(1, Int(raw) ?? 1)
-            if extra > 1 { for i in 2...extra { _ = createPlaylist("Crate \(i)") } }
+            if raw == "showcase" {
+                seedShowcaseCollections()
+            } else {
+                let pl = createPlaylist("Seeded Set")
+                addSong("sng_1", toPlaylist: pl.id)
+                let extra = max(1, Int(raw) ?? 1)
+                if extra > 1 { for i in 2...extra { _ = createPlaylist("Crate \(i)") } }
+            }
         }
         // Clean-versions-only seam: a deterministic 3-song playlist over the fixture's
         // clean / substitutable / skip trio (sng_1 clean · sng_2 explicit WITH a clean id ·
@@ -219,6 +223,30 @@ final class CollectionsStore {
            !pockets.contains(where: { $0.name == "Comfort Zone" }) {
             let p = createPocket("Comfort Zone")
             setRecommendationsEnabled(false, forPocket: p.id)
+        }
+    }
+
+    /// App Store screenshot collections (`PDJ_SEED_COLLECTIONS=showcase`): four real crates over
+    /// the `screenshot-index` catalog, grouped so each one reads as a DJ's actual set rather than
+    /// the single one-song "Seeded Set" the `=1` seam makes — which is precisely the empty-looking
+    /// listing this screenshot pass exists to replace. Same names and membership the macOS
+    /// renderer seeds, so both platforms' listings show one coherent library.
+    private func seedShowcaseCollections() {
+        let playlistSpecs: [(String, [String])] = [
+            ("Friday Night Warmup", ["sng_16", "sng_17", "sng_18", "sng_19", "sng_20", "sng_1"]),
+            ("Golden Hour Rooftop", ["sng_5", "sng_24", "sng_21", "sng_2", "sng_23"]),
+        ]
+        for (name, ids) in playlistSpecs {
+            let pl = createPlaylist(name)
+            for id in ids { addSong(id, toPlaylist: pl.id) }
+        }
+        let pocketSpecs: [(String, [String])] = [
+            ("Peak Hour Energy", ["sng_4", "sng_18", "sng_20", "sng_41", "sng_34"]),
+            ("Late Night Wind-Down", ["sng_6", "sng_9", "sng_10", "sng_29", "sng_54"]),
+        ]
+        for (name, ids) in pocketSpecs {
+            let p = createPocket(name)
+            for id in ids { addSong(id, toPocket: p.id) }
         }
     }
 

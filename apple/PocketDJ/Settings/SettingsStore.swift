@@ -523,6 +523,14 @@ final class SettingsStore {
             self.mixDeckLayout = layout
         }
 
+        // Same seam for the Producer sub-tab (`PDJ_STUDIO_TAB=sequencer`): the Studio shell restores
+        // `studioTab` in a `.task`, and under the fixture's ephemeral defaults that value is always
+        // nil — so every screenshot/test run lands on the Samples list. Pinning it here (before any
+        // view reads it) is what lets the App Store driver shoot the step grid.
+        if let tab = ProcessInfo.processInfo.environment["PDJ_STUDIO_TAB"], !tab.isEmpty {
+            self.studioTab = tab
+        }
+
         // CAPTURE the private-sync default now (after the PDJ_RIP_SERVER_URL seam so a seeded
         // server derives private): an unset value must become a fixed install-time choice, not a
         // live derivation that flips when ripServerURL is edited later. In-memory only — init

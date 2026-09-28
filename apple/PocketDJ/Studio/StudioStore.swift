@@ -1462,7 +1462,11 @@ final class StudioStore {
     /// when present, else synthesizes a 1 s tone so the seeded rows are never dead files.
     /// Donations/Spotlight are deliberately NOT involved (spec §11).
     func seedFixtureIfRequested(bundle: Bundle = .main) {
-        guard ProcessInfo.processInfo.environment["PDJ_SEED_STUDIO"] == "1" else { return }
+        // `1` = the deterministic UI-test seed (unchanged forever — tests address these rows by
+        // fixed id). `showcase` = that PLUS the marketing-grade extras the App Store screenshots
+        // need (a multi-lane groove and a full pad bank); see `seedShowcaseExtras`.
+        let mode = ProcessInfo.processInfo.environment["PDJ_SEED_STUDIO"]
+        guard mode == "1" || mode == "showcase" else { return }
         guard samples.isEmpty, loops.isEmpty, patterns.isEmpty, cues.isEmpty else { return }
         guard let samplesDir = try? StudioFolders.appRoot(.samples),
               let loopsDir = try? StudioFolders.appRoot(.loops) else { return }
@@ -1517,13 +1521,66 @@ final class StudioStore {
                                fileName: takeFile, bpm: 120, events: events,
                                durationMs: 2_000, createdAt: now))
         }
+
+        if mode == "showcase" { seedShowcaseExtras(samplesDir: samplesDir, now: now) }
     }
+
+    /// App Store screenshot extras (`PDJ_SEED_STUDIO=showcase`): a five-lane 16-step house groove
+    /// at the same 124 BPM the Mix showcase decks run, plus a full eight-pad cue bank on the track
+    /// deck A is playing — so the Producer screenshot shows a session mid-build instead of an
+    /// empty sample list. Strictly ADDITIVE to the `=1` seed above: the fixed-id rows UI tests
+    /// address are untouched, so no existing assertion changes meaning.
+    ///
+    /// Every lane gets a REAL synthesized audio file at a distinct pitch — `reconcileOnLaunch`
+    /// deletes sample records whose file is provably gone, which would silently strip the pattern's
+    /// rows back to "missing target" placeholders.
+    private func seedShowcaseExtras(samplesDir: URL, now: Double) {
+        // (id, lane label, tone Hz, the 16 sixteenth-note positions that fire)
+        let lanes: [(id: String, label: String, hz: Double, hits: [Int])] = [
+            ("smp_kick",  "Kick",      60,  [0, 4, 8, 12]),
+            ("smp_clap",  "Clap",      900, [4, 12]),
+            ("smp_hat",   "Hat",       1_600, [2, 6, 10, 14, 15]),
+            ("smp_bass",  "Bass",      110, [0, 3, 6, 8, 11, 14]),
+            ("smp_stab",  "Chord Stab", 523, [6, 14]),
+        ]
+        var rows: [StudioPatternRow] = []
+        for lane in lanes {
+            let file = StudioFolders.fileName(.samples, id: lane.id)
+            let frames = Self.writeSeedTone(to: samplesDir.appendingPathComponent(file),
+                                            seconds: 0.4, aac: true, hz: lane.hz)
+            guard frames > 0 else { continue }
+            addSample(StudioSample(id: lane.id, name: lane.label, fileName: file,
+                                   wasUserFolder: false, createdAt: now, durationMs: 400,
+                                   source: .mic,
+                                   grid: StudioGrid(bpm: 124, firstDownbeatMs: 0, beatsMs: [])))
+            var steps = Array(repeating: false, count: StudioPattern.defaultStepCount)
+            for i in lane.hits where i < steps.count { steps[i] = true }
+            rows.append(StudioPatternRow(targetId: lane.id, steps: steps, label: lane.label))
+        }
+        guard !rows.isEmpty else { return }
+        // Short on purpose: the editor's title field truncates around ten characters on a phone,
+        // and "Rooftop Groove" shipped as "Rooftop G…" in the first capture.
+        addPattern(StudioPattern(id: Self.showcasePatternId, name: "Rooftop", bpm: 124,
+                                 rows: rows, createdAt: now))
+
+        // A full pad bank on deck A's track, named the way a DJ actually marks a house record.
+        let pads = ["Intro", "Build", "Drop", "Break", "Vocal In", "Riser", "Bridge", "Outro"]
+        let at = [8_000, 24_000, 41_000, 58_000, 74_000, 91_000, 107_000, 141_000]
+        for (slot, name) in pads.enumerated() {
+            setCue(songId: "sng_16", slot: slot, positionMs: at[slot], name: name)
+        }
+    }
+
+    /// The showcase groove's fixed id — the screenshot driver opens this pattern directly so the
+    /// Producer shot lands on the step grid rather than the pattern list.
+    static let showcasePatternId = "ptn_showcase"
 
     /// Write a short 440 Hz tone (44.1 kHz mono) — AAC m4a or LPCM 16-bit CAF. Returns the
     /// frame count written (0 on failure). Seed-only: production audio is written by the
     /// capture/render engines, never here.
     @discardableResult
-    private static func writeSeedTone(to url: URL, seconds: Double, aac: Bool) -> Int64 {
+    private static func writeSeedTone(to url: URL, seconds: Double, aac: Bool,
+                                      hz: Double = 440) -> Int64 {
         let sr = 44_100.0
         var settings: [String: Any] = [
             AVFormatIDKey: aac ? kAudioFormatMPEG4AAC : kAudioFormatLinearPCM,
@@ -1542,7 +1599,7 @@ final class StudioStore {
         buf.frameLength = frames
         if let p = buf.floatChannelData?[0] {
             for i in 0..<Int(frames) {
-                p[i] = sinf(Float(i) * 2 * .pi * 440 / Float(sr)) * 0.5
+                p[i] = sinf(Float(i) * 2 * .pi * Float(hz) / Float(sr)) * 0.5
             }
         }
         guard (try? file.write(from: buf)) != nil else { return 0 }

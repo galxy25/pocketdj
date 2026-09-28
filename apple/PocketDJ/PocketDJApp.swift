@@ -403,6 +403,23 @@ struct PocketDJApp: App {
         // tapping the Playlists "Shared" tab poisoned every later launch in the run (the
         // Yours-only seeded rows never rendered — ~24 of the 44 sweep failures).
         launchDefaultsInstance = sharedDefaults
+        // SCREENSHOT SEAM (`PDJ_NP_EXPANDED=1`): raise the full-bleed Now Playing overlay instead
+        // of the docked sidebar strip. These two fractions are plain @AppStorage keys defaulting to
+        // 0 (= docked), and on iPhone the selected section is pushed OVER the sidebar deck, so a
+        // capture of the deck is otherwise impossible without walking Back through the stack.
+        // Written HERE because @AppStorage resolves against `sharedDefaults` the moment the scene
+        // builds — a later write would not be seen by the first render. Also normalizes the two
+        // persisted view-state keys the deck's shape depends on, so a simulator that last ran
+        // collapsed cannot silently produce a thin-strip screenshot.
+        if ProcessInfo.processInfo.environment["PDJ_NP_EXPANDED"] == "1" {
+            sharedDefaults.set(1.0, forKey: NowPlayingResize.portraitFractionKey)
+            sharedDefaults.set(0.62, forKey: NowPlayingResize.wideFractionKey)
+            sharedDefaults.set(false, forKey: "nowPlayingCollapsed")
+            // Played list OFF: at full height its header scrolls up under the floating ＋ button
+            // and collides with it, and hiding it lets the record cluster centre properly. Up Next
+            // still carries the "this is a real set" signal.
+            sharedDefaults.set(false, forKey: "nowPlayingShowPlayed")
+        }
         let settings = SettingsStore(defaults: sharedDefaults)
         // ── Zero-to-hero onboarding (first install / reinstall) ── decided ONCE,
         // HERE, before any store can persist: the decision reads the settings blob's

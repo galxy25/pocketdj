@@ -19,7 +19,15 @@ struct StudioSequencerView: View {
     /// The pattern open in the editor; nil = the pattern list. When the open pattern vanishes
     /// (deleted from another device's doc sync, a reconcile) the guard below falls back to the
     /// list instead of rendering a dead editor.
-    @State private var openPatternId: String?
+    @State private var openPatternId: String? = Self.launchOpenPatternId
+
+    /// Screenshot/test seam (`PDJ_STUDIO_OPEN_PATTERN=<pattern id>`): open straight into the step
+    /// grid instead of the pattern list. Read once at init — the same shape as
+    /// `StudioScoreView`'s `PDJ_SCORE_PLAYHEAD_MS`. The `studio.pattern(id) != nil` guard below
+    /// still applies, so a stale/misspelled id falls back to the list rather than rendering dead.
+    private static var launchOpenPatternId: String? {
+        ProcessInfo.processInfo.environment["PDJ_STUDIO_OPEN_PATTERN"].flatMap { $0.isEmpty ? nil : $0 }
+    }
 
     var body: some View {
         Group {

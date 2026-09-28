@@ -225,7 +225,8 @@ final class PlaybackSessionStore {
     /// "as if" the app was killed mid-set and assert the restored deck. Exercises the REAL
     /// load path (the file on disk is what restores). No-op outside the seam.
     func seedFixtureIfRequested() {
-        guard ProcessInfo.processInfo.environment["PDJ_SEED_PLAYBACK_SESSION"] != nil else { return }
+        guard let mode = ProcessInfo.processInfo.environment["PDJ_SEED_PLAYBACK_SESSION"] else { return }
+        if mode == "showcase" { seedShowcaseSnapshot(); return }
         let snap = Snapshot(sessionId: "pses_fixture",
                             source: SourceRef(kind: "playlist", id: "pls_fixture", name: "Warmup"),
                             queue: [
@@ -235,6 +236,41 @@ final class PlaybackSessionStore {
                             ],
                             index: 1, positionMs: 42_000, isPlaying: true,
                             updatedAt: Date().timeIntervalSince1970 * 1000)
+        if let data = try? JSONEncoder().encode(snap) {
+            try? data.write(to: fileURL, options: .atomic)
+        }
+    }
+
+    /// App Store screenshot snapshot (`PDJ_SEED_PLAYBACK_SESSION=showcase`): a real set from the
+    /// `screenshot-index` catalog, parked mid-track with two songs already played and two still to
+    /// come — so the deck shows a title, a swept tonearm, "Previously played" and a populated
+    /// "Up next" instead of an idle platter.
+    ///
+    /// `index` lands on `sng_5`, which `PDJ_SEED_BURNS=showcase` gives a full-length body, so the
+    /// driver can press ▶ and get GENUINE playback: a spinning record, a live progress sweep and a
+    /// ⏸ glyph, none of it faked (`restore(from:)` alone leaves the deck held at 0:00).
+    private func seedShowcaseSnapshot() {
+        let snap = Snapshot(
+            sessionId: "pses_showcase",
+            source: SourceRef(kind: "playlist", id: "pls_showcase", name: "Golden Hour Rooftop"),
+            queue: [
+                Row(songId: "sng_5", title: "Golden Hour", artist: "Aria",
+                    lengthMs: 222_926, repeatCount: nil),
+                Row(songId: "sng_24", title: "Tidal", artist: "Luna Vale",
+                    lengthMs: 328_706, repeatCount: nil),
+                Row(songId: "sng_23", title: "Sleepwalker's Waltz", artist: "Luna Vale",
+                    lengthMs: 288_704, repeatCount: nil),
+                Row(songId: "sng_2", title: "Afterglow", artist: "Aria",
+                    lengthMs: 292_964, repeatCount: nil),
+                Row(songId: "sng_21", title: "Featherweight", artist: "Luna Vale",
+                    lengthMs: 162_351, repeatCount: nil),
+            ],
+            // index 0 — the set starts HERE on purpose. The expanded deck's "Previously played"
+            // flank is unconditional (no toggle), and at full height its header scrolls up under
+            // the floating ＋ button and visibly collides with it; with nothing played the flank
+            // renders empty, the record cluster centres, and Up Next still carries the queue.
+            index: 0, positionMs: 97_000, isPlaying: true,
+            updatedAt: Date().timeIntervalSince1970 * 1000)
         if let data = try? JSONEncoder().encode(snap) {
             try? data.write(to: fileURL, options: .atomic)
         }
