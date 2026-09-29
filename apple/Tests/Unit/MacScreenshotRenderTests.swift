@@ -51,6 +51,11 @@ final class MacScreenshotRenderTests: XCTestCase {
         let recorder: MixRecorder
         let downloader: CollectionMixDownloader
         let studio: StudioStore
+        let studioEngine: StudioEngine
+        let studioMic: StudioMicRecorder
+        let instrumentEngine: InstrumentEngine
+        let instrumentPacks: InstrumentPackStore
+        let demux: DemuxStore
         let favorites: FavoritesStore
         let intents: IntentServices
         let streaming: StreamingStore
@@ -77,6 +82,11 @@ final class MacScreenshotRenderTests: XCTestCase {
                 .environment(recorder)
                 .environment(downloader)
                 .environment(studio)
+                .environment(studioEngine)
+                .environment(studioMic)
+                .environment(instrumentEngine)
+                .environment(instrumentPacks)
+                .environment(demux)
                 .environment(favorites)
                 .environment(intents)
                 .environment(streaming)
@@ -89,6 +99,17 @@ final class MacScreenshotRenderTests: XCTestCase {
     }
 
     private func makeGraph() async throws -> Graph {
+        // Producer seams, set BEFORE any store reads them: SettingsStore.init consumes
+        // PDJ_STUDIO_TAB, and StudioSequencerView reads PDJ_STUDIO_OPEN_PATTERN when its @State
+        // initializes. Without both, the tab lands on the Samples LIST and the sequencer opens on
+        // the pattern list rather than the step grid. The media root is redirected to a scratch
+        // dir so the seed's synthesized lane audio can never land in a real Studio folder.
+        setenv("PDJ_SEED_STUDIO", "showcase", 1)
+        setenv("PDJ_STUDIO_TAB", "sequencer", 1)
+        setenv("PDJ_STUDIO_OPEN_PATTERN", StudioStore.showcasePatternId, 1)
+        StudioFolders.appRootOverride = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-shots-studio-\(UUID().uuidString)", isDirectory: true)
+
         let app = AppModel(loader: FixtureCatalog(resource: "screenshot-index"))
         await app.loadIfNeeded()
         XCTAssertFalse(app.albums.isEmpty, "screenshot-index fixture must load — nothing renders from an empty catalog")
@@ -101,7 +122,13 @@ final class MacScreenshotRenderTests: XCTestCase {
         let player = PlayerEngine()
         // REAL on-disk burns for the songs the Mix decks load — `MixEngine.load` resolves
         // through the BurnStore and silently no-ops for an unburned id.
-        let burns = try MixBurnFixture.burnStore(ids: ["sng_16", "sng_18"], rips: rips)
+        // FULL-LENGTH, song-shaped bodies: a deck reads its duration and waveform from the FILE,
+        // so the old 2 s tone rendered "0:00 / 0:02" under a 2:44 title with a solid-block
+        // waveform, and clamped the seeded mid-track playhead. sng_5 is the Now Playing track.
+        let burns = try MixBurnFixture.burnStore(
+            ids: ["sng_16", "sng_18", "sng_5", "sng_24", "sng_23", "sng_2", "sng_21"], rips: rips,
+            lengths: ["sng_16": 164.663, "sng_18": 318.519, "sng_5": 222.926],
+            shaped: true)
         let coordinator = PlaybackCoordinator(
             ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
             appleMusic: AppleMusicPlaybackProvider(provider: AppleMusicProvider()))
@@ -111,6 +138,13 @@ final class MacScreenshotRenderTests: XCTestCase {
         let recorder = MixRecorder(engine: mix, sessions: mixSessions)
         let downloader = CollectionMixDownloader(engine: mix, burns: burns, rips: rips, transfers: nil)
         let studio = StudioStore(fileURL: tempURL("studio"))
+        // Seeds the five-lane "Rooftop" groove (env set at the top of makeGraph).
+        studio.seedFixtureIfRequested()
+        let studioEngine = StudioEngine()
+        let studioMic = StudioMicRecorder()
+        let instrumentEngine = InstrumentEngine()
+        let instrumentPacks = InstrumentPackStore()
+        let demux = DemuxStore()
         let favorites = FavoritesStore(fileURL: tempURL("fav"))
         let intents = IntentServices(app: app, settings: settings, collections: collections,
                                      setlistPlayer: sequencer, mix: mix, burns: burns,
@@ -128,6 +162,9 @@ final class MacScreenshotRenderTests: XCTestCase {
                           player: player, burns: burns, coordinator: coordinator,
                           sequencer: sequencer, mix: mix, mixSessions: mixSessions,
                           recorder: recorder, downloader: downloader, studio: studio,
+                          studioEngine: studioEngine, studioMic: studioMic,
+                          instrumentEngine: instrumentEngine, instrumentPacks: instrumentPacks,
+                          demux: demux,
                           favorites: favorites, intents: intents, streaming: streaming,
                           history: history, activity: activity, skips: SkipTracker(),
                           jukebox: jukebox, rowSelection: RowSelection())
@@ -384,11 +421,17 @@ final class MacScreenshotRenderTests: XCTestCase {
         // the other three PNGs on disk (each shot writes before the next renders).
         let shots: [(name: String, section: RootView.Section, settle: Double,
                      make: (Binding<NavigationPath>) -> AnyView)] = [
+            // Order IS the App Store display order — Mix leads, then the Producer grid.
+            // Known limitation: the deck WAVEFORMS render empty here. Extraction is async work
+            // kicked off by the live view's appearance and it never runs in this offscreen host —
+            // a 14 s settle produced a byte-identical PNG to a 5 s one, so waiting does not fix
+            // it. Everything else is populated (both decks, real durations, the 8-pad cue bank,
+            // EQ/FX, crossfader); the iOS/visionOS captures carry the waveform.
+            ("mac-01-mix", .mix, 5.0, { _ in AnyView(MixView(path: .constant(NavigationPath()))) }),
+            ("mac-02-producer", .performance, 6.0, { _ in AnyView(PerformanceView()) }),
             // Browse derives its rows off-main (BrowseModel) — give it the longest settle.
-            ("mac-01-browse", .browse, 8.0, { AnyView(BrowseView(path: $0)) }),
-            ("mac-02-history", .history, 5.0, { AnyView(HistoryView(path: $0)) }),
-            ("mac-04-mix", .mix, 5.0, { AnyView(MixView(path: $0)) }),
-            ("mac-03-collections", .playlists, 5.0, { AnyView(PlaylistsView(path: $0)) }),
+            ("mac-03-browse", .browse, 8.0, { AnyView(BrowseView(path: $0)) }),
+            ("mac-04-collections", .playlists, 5.0, { AnyView(PlaylistsView(path: $0)) }),
         ]
 
         for shot in shots {

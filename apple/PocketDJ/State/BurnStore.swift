@@ -211,8 +211,13 @@ final class BurnStore {
         let env = ProcessInfo.processInfo.environment
         // BOTH vars required: the fixture flag is what redirects this store to a throwaway
         // index (`launchURL`), so seeding can never write tone files into a real library.
-        guard env["PDJ_SEED_BURNS"] == "1", env["PDJ_USE_FIXTURE"] != nil,
+        let mode = env["PDJ_SEED_BURNS"]
+        guard mode == "1" || mode == "showcase", env["PDJ_USE_FIXTURE"] != nil,
               let dir = appBurnsDir() else { return }
+        if mode == "showcase" {
+            seedShowcaseBurns(dir: dir)
+            return
+        }
         // A SUBSET on purpose, not all 7. If every fixture song had audio, a round would
         // sound fine even with the playability filter removed, and the UI test that asserts
         // "the card on screen plays" would stay green against the broken sampler. With a mix,
@@ -237,9 +242,62 @@ final class BurnStore {
         save()
     }
 
+    /// App Store screenshot burns (`PDJ_SEED_BURNS=showcase`): the exact `screenshot-index` songs
+    /// the Mix and Now Playing showcases put on a deck, each with its REAL catalog title/artist/
+    /// BPM/key and a tone as long as the real track.
+    ///
+    /// Full length is not cosmetic: `MixEngine.loadFile` takes the deck's duration from the AUDIO
+    /// FILE, so a 2 s tone renders "0:00 / 0:02" under a title claiming 2:44, and any seeded
+    /// playhead past 2 s gets clamped to the end. The tone is also amplitude-MODULATED with a
+    /// song-shaped envelope, because `WaveformExtractor` normalizes against the loudest bucket —
+    /// a constant-amplitude tone yields 200 identical buckets, i.e. a solid block where the
+    /// waveform should be.
+    private func seedShowcaseBurns(dir: URL) {
+        // Catalog truth for the showcase songs (screenshot-index.json). Deck/queue-head tracks get
+        // a full-length body; the rest only have to resolve, so they stay short and cheap.
+        let songs: [(id: String, title: String, artist: String, bpm: Double, key: String,
+                     camelot: String, ms: Int, full: Bool)] = [
+            // Mix — deck A / deck B: a genuine harmonic pair (both 1A, 122.6 vs 124.0 BPM).
+            ("sng_16", "Elevator to the Moon", "DJ Meridian West", 122.6, "Ab minor", "1A", 164_663, true),
+            ("sng_18", "Midnight Lemonade", "DJ Meridian West", 124.0, "Ab minor", "1A", 318_519, true),
+            // Now Playing — the track on the deck.
+            ("sng_5", "Golden Hour", "Aria", 124.3, "G major", "9B", 222_926, true),
+            // Auto-DJ queue + Up Next rows.
+            ("sng_17", "Terrace Groove", "DJ Meridian West", 122.1, "F# minor", "11A", 205_307, false),
+            ("sng_19", "Skyline Shuffle", "DJ Meridian West", 122.0, "E minor", "9A", 297_159, false),
+            ("sng_20", "Fifth Floor Funk", "DJ Meridian West", 127.2, "F# minor", "11A", 254_700, false),
+            ("sng_24", "Tidal", "Luna Vale", 101.6, "Ab minor", "1A", 328_706, false),
+            ("sng_23", "Sleepwalker's Waltz", "Luna Vale", 109.9, "E major", "12B", 288_704, false),
+            ("sng_2", "Afterglow", "Aria", 119.4, "B major", "1B", 292_964, false),
+            ("sng_21", "Featherweight", "Luna Vale", 94.8, "Db minor", "12A", 162_351, false),
+        ]
+        for s in songs {
+            let file = "\(s.id).wav"
+            let url = dir.appendingPathComponent(file)
+            // 22.05 kHz mono keeps a full 5-minute body around 13 MB — the body is only ever a
+            // meter/waveform carrier, so fidelity is irrelevant and the simulator's temp dir
+            // shouldn't carry 4× that for nothing.
+            let seconds = s.full ? Double(s.ms) / 1000.0 : 2.0
+            guard Self.writeSeedTone(to: url, seconds: seconds,
+                                     sr: s.full ? 22_050 : 44_100,
+                                     shaped: s.full) > 0 else { continue }
+            let bytes = (try? FileManager.default
+                .attributesOfItem(atPath: url.path)[.size] as? Int) ?? 0
+            items[s.id] = BurnItem(
+                songId: s.id, title: s.title, artist: s.artist,
+                audioFileName: file, sidecarFileName: "\(s.id).txt", source: "digital",
+                bpm: s.bpm, musicalKey: s.key, camelot: s.camelot,
+                durationMs: s.ms, startMs: nil,
+                bytes: bytes ?? 0, rippedAt: nil, downloadedAt: now, state: .ready,
+                error: nil, wasAppStorage: true)
+        }
+        save()
+    }
+
     /// A 2 s 440 Hz tone (LPCM) — the seeded burn's audio body. Returns the frames written.
-    private static func writeSeedTone(to url: URL, seconds: Double) -> Int64 {
-        let sr = 44_100.0
+    private static func writeSeedTone(to url: URL, seconds: Double,
+                                      sr hz: Double = 44_100, shaped: Bool = false) -> Int64 {
+        let sr = hz
         let settings: [String: Any] = [
             AVFormatIDKey: kAudioFormatLinearPCM,
             AVSampleRateKey: sr,
@@ -255,10 +313,35 @@ final class BurnStore {
         else { return 0 }
         buf.frameLength = frames
         if let p = buf.floatChannelData?[0] {
-            for i in 0..<Int(frames) { p[i] = sinf(Float(i) * 2 * .pi * 440 / Float(sr)) * 0.5 }
+            let n = Int(frames)
+            for i in 0..<n {
+                let base = sinf(Float(i) * 2 * .pi * 440 / Float(sr)) * 0.5
+                p[i] = shaped ? base * Self.showcaseEnvelope(at: Double(i) / Double(max(n, 1))) : base
+            }
         }
         guard (try? file.write(from: buf)) != nil else { return 0 }
         return Int64(frames)
+    }
+
+    /// A song-shaped amplitude envelope over normalized position `t` (0…1), so the burned
+    /// showcase body draws like a track instead of a rectangle: quiet intro, build, two loud
+    /// drops split by a breakdown, fade-out — with a 16th-note pulse on top so neighbouring
+    /// waveform buckets differ. Pure and deterministic (identical screenshots every run).
+    private static func showcaseEnvelope(at t: Double) -> Float {
+        let section: Double
+        switch t {
+        case ..<0.06:  section = 0.22 + t / 0.06 * 0.18          // intro
+        case ..<0.20:  section = 0.40 + (t - 0.06) / 0.14 * 0.55 // build
+        case ..<0.46:  section = 1.00                            // first drop
+        case ..<0.58:  section = 0.42                             // breakdown
+        case ..<0.62:  section = 0.42 + (t - 0.58) / 0.04 * 0.58 // riser
+        case ..<0.90:  section = 1.00                            // second drop
+        default:       section = max(0.18, 1.0 - (t - 0.90) / 0.10 * 0.82)
+        }
+        // ~120 BPM sixteenths across a nominal 3-minute body: enough cycles that each of the
+        // extractor's 200 buckets lands on a different part of the pulse.
+        let pulse = 0.72 + 0.28 * abs(sin(t * .pi * 2 * 360))
+        return Float(min(1.0, section * pulse))
     }
 
     /// Connect the (optional) coordinator's main-actor finalize callbacks to this store, and

@@ -753,8 +753,12 @@ struct TVRepeatButton: View {
     var body: some View {
         Button { engine.cycleAutoRepeat() } label: {
             Label(title, systemImage: engine.autoRepeat == .one ? "repeat.1" : "repeat")
+                .lineLimit(1)
                 .foregroundStyle(engine.autoRepeat == .off ? Theme.fgDim : Theme.accent)
         }
+        // Sizes to its own content like every other control on the TV transport row — without
+        // this it stretched into a tall pill once its neighbours started sizing to content.
+        .fixedSize(horizontal: true, vertical: false)
         .accessibilityIdentifier(a11yId)
     }
     private var title: String {
@@ -819,6 +823,13 @@ struct TVMixControlsRow: View {
     private var deck: MixEngine.Deck { engine.nowPlayingDeck ?? .a }
 
     var body: some View {
+        // THREE rows, not one. The FX slots and the tempo/pitch groups used to share a single
+        // HStack: four rack buttons carrying two-word labels ("Comp · Punch", "Flanger · Flanger")
+        // plus both nudge groups overflow a 1920-pt TV row, so SwiftUI squeezed every label to
+        // near-zero width and each wrapped ONE LETTER PER LINE — which also made the row tall
+        // enough to push the live deck card off the bottom of the screen entirely. Splitting the
+        // row fixes both; `lineLimit(1)` + `fixedSize` make a future overflow truncate instead of
+        // silently collapsing back into a column of letters.
         VStack(alignment: .leading, spacing: 14) {
             HStack(spacing: 18) {
                 // One button per FX-RACK SLOT of the lead deck, following whatever the rack holds
@@ -831,8 +842,10 @@ struct TVMixControlsRow: View {
                     } label: {
                         Label("\(slot.effect.label) · \(slot.variant.label)",
                               systemImage: slot.effect.icon)
+                            .lineLimit(1)
                             .foregroundStyle(on ? Theme.accent : Theme.fg)
                     }
+                    .fixedSize(horizontal: true, vertical: false)
                     .accessibilityIdentifier("tv-mix-fx-slot-\(i)")
                     .contextMenu {
                         ForEach([0.25, 0.5, 0.75, 1.0], id: \.self) { v in
@@ -843,6 +856,8 @@ struct TVMixControlsRow: View {
                         }
                     }
                 }
+            }
+            HStack(spacing: 18) {
                 // Tempo / pitch nudges for the LEAD deck — grayed while a transition (incl.
                 // glide) owns the decks, so a manual nudge can't fight the Auto DJ's ramps.
                 let inTransition = engine.autoTransitioning
@@ -850,12 +865,14 @@ struct TVMixControlsRow: View {
                     Button { engine.setRate(engine.rate(deck) - 0.01, on: deck) } label: {
                         Label("Tempo −", systemImage: "minus")
                     }
+                    .fixedSize(horizontal: true, vertical: false)
                     .accessibilityIdentifier("tv-mix-tempo-down")
                     Text("\(Int((engine.rate(deck) * 100).rounded()))%")
                         .font(.callout.monospacedDigit()).foregroundStyle(Theme.fgDim)
                     Button { engine.setRate(engine.rate(deck) + 0.01, on: deck) } label: {
                         Label("Tempo ＋", systemImage: "plus")
                     }
+                    .fixedSize(horizontal: true, vertical: false)
                     .accessibilityIdentifier("tv-mix-tempo-up")
                 }
                 .disabled(inTransition)
@@ -863,12 +880,14 @@ struct TVMixControlsRow: View {
                     Button { engine.setPitch(engine.pitch(deck) - 1, on: deck) } label: {
                         Label("Pitch −", systemImage: "arrow.down")
                     }
+                    .fixedSize(horizontal: true, vertical: false)
                     .accessibilityIdentifier("tv-mix-pitch-down")
                     Text("\(Int(engine.pitch(deck).rounded()))")
                         .font(.callout.monospacedDigit()).foregroundStyle(Theme.fgDim)
                     Button { engine.setPitch(engine.pitch(deck) + 1, on: deck) } label: {
                         Label("Pitch ＋", systemImage: "arrow.up")
                     }
+                    .fixedSize(horizontal: true, vertical: false)
                     .accessibilityIdentifier("tv-mix-pitch-up")
                 }
                 .disabled(inTransition)
@@ -880,8 +899,10 @@ struct TVMixControlsRow: View {
                     engine.setStemMode(!stemsOn, on: deck)
                 } label: {
                     Label("Stems", systemImage: "square.stack.3d.up")
+                        .lineLimit(1)
                         .foregroundStyle(stemsOn ? Theme.accent : Theme.fg)
                 }
+                .fixedSize(horizontal: true, vertical: false)
                 .accessibilityIdentifier("tv-mix-stems")
                 ForEach(Self.stemLabels, id: \.0) { name, label in
                     let muted = engine.isStemMuted(name, on: deck)
@@ -890,8 +911,10 @@ struct TVMixControlsRow: View {
                         engine.toggleStemMute(name, on: deck)
                     } label: {
                         Label(label, systemImage: muted ? "speaker.slash" : "speaker.wave.2")
+                            .lineLimit(1)
                             .foregroundStyle(muted ? Theme.fgDim : Theme.fg)
                     }
+                    .fixedSize(horizontal: true, vertical: false)
                     .accessibilityIdentifier("tv-mix-stem-\(name)")
                     .contextMenu {
                         ForEach([0.25, 0.5, 0.75, 1.0], id: \.self) { v in
@@ -958,6 +981,10 @@ struct TVMixLiveSurface: View {
                     .font(.callout.monospacedDigit())
                     .foregroundStyle(Theme.fgDim)
             }
+            // Six labeled buttons on one row overflow a 1920-pt TV, and an overflowing
+            // HStack squeezes each label until it wraps ONE LETTER PER LINE ("Re sum e").
+            // `lineLimit(1)` + `fixedSize` keep every control on a single line — same fix
+            // as TVMixControlsRow above.
             HStack(spacing: 20) {
                 if engine.autoPaused {
                     // The lock-screen seam is the ONE pause that silences the decks and
@@ -967,23 +994,27 @@ struct TVMixLiveSurface: View {
                     Button {
                         engine.remotePlay()
                         if engine.autoMixing, engine.autoPaused { engine.resumeAuto() }
-                    } label: { Label("Resume", systemImage: "play.fill") }
-                        .accessibilityIdentifier("tv-mix-resume")
+                    } label: { Label("Resume", systemImage: "play.fill").lineLimit(1) }
+                        .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityIdentifier("tv-mix-resume")
                 } else {
-                    Button { engine.remotePause() } label: { Label("Pause", systemImage: "pause.fill") }
-                        .accessibilityIdentifier("tv-mix-pause")
+                    Button { engine.remotePause() } label: { Label("Pause", systemImage: "pause.fill").lineLimit(1) }
+                        .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityIdentifier("tv-mix-pause")
                 }
                 // FAST vs SLOW skip — the lock-screen pair (⏭ 5 s sweep / ⏮ long blend), as
                 // two labeled buttons. `remoteSkip` (not `skipToNext`) so a skip pressed while
                 // the mix is PAUSED un-suspends the machine first instead of being swallowed.
                 Button { engine.remoteSkip(fadeSeconds: 5) } label: {
-                    Label("Skip · quick", systemImage: "forward.fill")
+                    Label("Skip · quick", systemImage: "forward.fill").lineLimit(1)
                 }
-                .accessibilityIdentifier("tv-mix-skip")
+                .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityIdentifier("tv-mix-skip")
                 Button { engine.remoteSkip(fadeSeconds: settings.skipFadeSeconds) } label: {
-                    Label("Skip · blend", systemImage: "forward.end.fill")
+                    Label("Skip · blend", systemImage: "forward.end.fill").lineLimit(1)
                 }
-                .accessibilityIdentifier("tv-mix-skip-slow")
+                .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityIdentifier("tv-mix-skip-slow")
                 TVRepeatButton(a11yId: "tv-mix-repeat")
                 // A restored/parked session claims this card the instant it materializes
                 // (autoMixing flips true before anything is loaded — MixEngine.
@@ -992,13 +1023,15 @@ struct TVMixLiveSurface: View {
                 // card re-renders), but a stop button doesn't read as "pick a different
                 // collection" (Levi's CarPlay report, 2026-09-03 — same card shape, same gap).
                 Button { engine.stopAutoMix() } label: {
-                    Label("New Mix", systemImage: "shuffle")
+                    Label("New Mix", systemImage: "shuffle").lineLimit(1)
                 }
-                .accessibilityIdentifier("tv-mix-new")
+                .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityIdentifier("tv-mix-new")
                 Button(role: .destructive) { engine.stopAutoMix() } label: {
-                    Label("Stop", systemImage: "stop.fill")
+                    Label("Stop", systemImage: "stop.fill").lineLimit(1)
                 }
-                .accessibilityIdentifier("tv-mix-stop")
+                .fixedSize(horizontal: true, vertical: false)
+                    .accessibilityIdentifier("tv-mix-stop")
             }
             TVGlideToggles()
             // A running mix that is still pulling its collection(s): late landings append to

@@ -362,7 +362,8 @@ final class MixDeckSessionStore {
     /// mid-mix and assert the restored decks. Exercises the REAL load path (the file on disk
     /// is what restores). No-op outside the seam.
     func seedFixtureIfRequested() {
-        guard ProcessInfo.processInfo.environment["PDJ_SEED_MIX_DECK_SESSION"] != nil else { return }
+        guard let mode = ProcessInfo.processInfo.environment["PDJ_SEED_MIX_DECK_SESSION"] else { return }
+        if mode == "showcase" { seedShowcaseSnapshot(); return }
         let sample = TrackRef(songId: "smp_fixture", title: "Seeded Sample", artist: "PocketDJ",
                               bpm: 120, camelot: nil, key: nil, albumId: nil, lengthMs: 1_000)
         let loop = TrackRef(songId: "lp_fixture", title: "Seeded Loop", artist: "PocketDJ",
@@ -381,6 +382,51 @@ final class MixDeckSessionStore {
                                                livePos: 0, nextToLoad: 2, liveDeck: "A",
                                                sourceLabel: "Warmup", leadSeconds: 15,
                                                fadeSeconds: 3, fxGlide: false, mixGlide: false),
+                            wasRunning: true,
+                            updatedAt: Date().timeIntervalSince1970 * 1000)
+        if let data = try? JSONEncoder().encode(snap) {
+            try? data.write(to: fileURL, options: .atomic)
+        }
+    }
+
+    /// App Store screenshot snapshot (`PDJ_SEED_MIX_DECK_SESSION=showcase`): a real two-deck
+    /// transition from the `screenshot-index` catalog instead of the 1-second test blips above —
+    /// deck A 1:23 into "Elevator to the Moon", deck B cued 6 s into "Midnight Lemonade", both
+    /// 1A/Ab minor at 122.6 and 124.0 BPM, so the harmonic + beat-matched pairing the app actually
+    /// computes is what the screenshot shows. Requires `PDJ_SEED_BURNS=showcase` to have put
+    /// full-length bodies on disk for both songIds — `restoreDeck` silently leaves a deck empty
+    /// when the file doesn't resolve.
+    private func seedShowcaseSnapshot() {
+        func track(_ id: String, _ title: String, _ artist: String, _ bpm: Double,
+                   _ camelot: String, _ key: String, _ albumId: String, _ ms: Int) -> TrackRef {
+            TrackRef(songId: id, title: title, artist: artist, bpm: bpm, camelot: camelot,
+                     key: key, albumId: albumId, lengthMs: ms)
+        }
+        let a = track("sng_16", "Elevator to the Moon", "DJ Meridian West", 122.6, "1A", "Ab minor", "alb_4", 164_663)
+        let b = track("sng_18", "Midnight Lemonade", "DJ Meridian West", 124.0, "1A", "Ab minor", "alb_4", 318_519)
+        let queue = [
+            a, b,
+            track("sng_17", "Terrace Groove", "DJ Meridian West", 122.1, "11A", "F# minor", "alb_4", 205_307),
+            track("sng_20", "Fifth Floor Funk", "DJ Meridian West", 127.2, "11A", "F# minor", "alb_4", 254_700),
+            track("sng_19", "Skyline Shuffle", "DJ Meridian West", 122.0, "9A", "E minor", "alb_4", 297_159),
+            track("sng_5", "Golden Hour", "Aria", 124.3, "9B", "G major", "alb_1", 222_926),
+        ]
+        // Compressor + reverb engaged on the outgoing deck: the FX rack reads as in-use rather
+        // than a row of untouched switches.
+        func deck(_ t: TrackRef, positionMs: Int, fx: Bool) -> DeckSnapshot {
+            DeckSnapshot(track: t, positionMs: positionMs, volume: 1.0, rate: 1.0, pitch: 0,
+                         compressor: fx, reverb: fx, flanger: false, filter: false,
+                         compStrength: 0.45, reverbStrength: 0.3, flangerStrength: 0.5,
+                         filterStrength: 0.5, stemMode: false, stemMuted: [], stemVol: [:])
+        }
+        let snap = Snapshot(deckA: deck(a, positionMs: 83_000, fx: true),
+                            deckB: deck(b, positionMs: 6_000, fx: false),
+                            // Mid-transition, still leaning to the outgoing deck.
+                            crossfader: 0.42, leadDeck: "A",
+                            auto: AutoSnapshot(queue: queue.map { AutoRow(track: $0, durationMs: $0.lengthMs ?? 0) },
+                                               livePos: 0, nextToLoad: 2, liveDeck: "A",
+                                               sourceLabel: "Friday Night Warmup", leadSeconds: 15,
+                                               fadeSeconds: 8, fxGlide: true, mixGlide: true),
                             wasRunning: true,
                             updatedAt: Date().timeIntervalSince1970 * 1000)
         if let data = try? JSONEncoder().encode(snap) {

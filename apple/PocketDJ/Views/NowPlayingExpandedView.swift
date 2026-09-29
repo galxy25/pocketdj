@@ -48,7 +48,14 @@ struct NowPlayingExpandedView: View {
                 tallLayout(deck: deck)
             }
         }
-        .background(Theme.bg)
+        // An explicit opaque substrate, not a plain `.background(Color)`. This surface is an
+        // `.overlay` over the split view, and on visionOS that composites against the window's
+        // glass: a bare Color background let the section BEHIND the panel show through it (the
+        // search field and empty-state text were legible through the platter) and taps fell past
+        // the panel to the view underneath, so the transport never responded. Filling with a real
+        // shape and claiming the hit area fixes both, and is a no-op on the other platforms.
+        .background { Rectangle().fill(Theme.bg) }
+        .contentShape(Rectangle())
         .overlay(alignment: .topLeading) { builderButton }
         .overlay(alignment: .topTrailing) { collapseButton }
         .sheet(item: $detailSong) { song in
