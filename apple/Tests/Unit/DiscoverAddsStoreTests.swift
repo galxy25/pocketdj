@@ -385,4 +385,79 @@ final class DiscoverAddsStoreTests: XCTestCase {
         XCTAssertEqual(reloaded.entries.last?.trackNumber, 4)
         XCTAssertEqual(reloaded.entries.first?.album, "Older", "the old row is untouched")
     }
+
+    // MARK: - Pre-release refresh
+
+    private let day: Double = 24 * 3600 * 1000
+
+    private func preReleaseAlbum(_ s: DiscoverAddsStore, releaseMs: Double? = nil, lastMs: Double? = nil) {
+        let songs = [("6797942160", "Echos", 1), ("6797942176", "Track 16", 16)].map { id, title, n in
+            DiscoverAddsStore.Entry(songId: "amrec_\(id)", appleMusicId: id, title: title,
+                                    artist: "Erykah Badu & The Alchemist",
+                                    album: "Sorry, we don't have an album title yet ...", artworkUrl: nil,
+                                    durationMs: nil, addedAtMs: 0, albumId: "amrec_album_6797941897",
+                                    albumAppleMusicId: "6797941897", trackNumber: n)
+        }
+        s.addAlbumBatch(albumId: "amrec_album_6797941897", appleMusicId: "6797941897",
+                        title: "Sorry, we don't have an album title yet ...", artist: "Erykah Badu & The Alchemist",
+                        trackIds: songs.map(\.songId), trackCount: 16, preparedCopies: false, songs: songs)
+        if releaseMs != nil || lastMs != nil {
+            s.applyAlbumRefresh(albumId: "amrec_album_6797941897", title: nil, trackCount: nil,
+                                releaseDateMs: releaseMs, tracks: [], nowMs: lastMs ?? 0)
+        }
+    }
+
+    func testPlaceholderPatterns() {
+        XCTAssertTrue(DiscoverAddsStore.isPlaceholderTitle("Track 16"))
+        XCTAssertFalse(DiscoverAddsStore.isPlaceholderTitle("Track 16 (Remix)"))
+        XCTAssertTrue(DiscoverAddsStore.isPlaceholderAlbum("Sorry, we don't have an album title yet ..."))
+        XCTAssertFalse(DiscoverAddsStore.isPlaceholderAlbum("Before The World Blows"))
+    }
+
+    func testProvisionalAlbumIsRecheckedDailyAndOnReleaseDay() {
+        let s = store()
+        let release = 100 * day
+        preReleaseAlbum(s, releaseMs: release, lastMs: 90 * day)
+        let a = s.albums[0], tracks = s.entries
+        XCTAssertFalse(DiscoverAddsStore.needsRefresh(a, tracks: tracks, nowMs: 90 * day + 3600_000), "throttled within a day")
+        XCTAssertTrue(DiscoverAddsStore.needsRefresh(a, tracks: tracks, nowMs: 91 * day), "daily while provisional")
+        // Checked an hour before release: release day itself must not wait out the daily throttle.
+        s.applyAlbumRefresh(albumId: a.albumId, title: nil, trackCount: nil, releaseDateMs: nil, tracks: [], nowMs: release - 3600_000)
+        XCTAssertTrue(DiscoverAddsStore.needsRefresh(s.albums[0], tracks: s.entries, nowMs: release + 60_000), "release-day recheck")
+    }
+
+    func testReleasedCompleteAlbumStopsRechecking() {
+        let s = store()
+        preReleaseAlbum(s)
+        let tracks = [("6797942160", "Echos", 1), ("6797942176", "Black Box (feat. Kamasi Washington)", 16)]
+            .map { (id: $0.0, title: $0.1, artist: "Erykah Badu & The Alchemist", discNumber: Optional(1),
+                    trackNumber: Optional($0.2), durationMs: Optional(200_000)) }
+        s.applyAlbumRefresh(albumId: "amrec_album_6797941897", title: "Before The World Blows", trackCount: 2,
+                            releaseDateMs: 50 * day, tracks: tracks, nowMs: 60 * day)
+        XCTAssertFalse(DiscoverAddsStore.needsRefresh(s.albums[0], tracks: s.entries, nowMs: 400 * day))
+    }
+
+    func testRefreshRetitlesPlaceholdersAndAppendsNewTracks() {
+        let s = store()
+        preReleaseAlbum(s)
+        let tracks = [("6797942160", "Echos", 1), ("6797942161", "I Just Play A Part", 2), ("6797942176", "Black Box", 16)]
+            .map { (id: $0.0, title: $0.1, artist: "Erykah Badu & The Alchemist", discNumber: Optional(1),
+                    trackNumber: Optional($0.2), durationMs: Optional(180_000)) }
+        let r = s.applyAlbumRefresh(albumId: "amrec_album_6797941897", title: "Before The World Blows", trackCount: 3,
+                                    releaseDateMs: 10 * day, tracks: tracks, nowMs: 20 * day)
+        XCTAssertEqual(r.added.map(\.songId), ["amrec_6797942161"])
+        XCTAssertEqual(Set(r.updated.map(\.songId)), ["amrec_6797942160", "amrec_6797942176"])
+        XCTAssertEqual(s.entries.first { $0.songId == "amrec_6797942176" }?.title, "Black Box")
+        XCTAssertEqual(s.entries.first { $0.songId == "amrec_6797942176" }?.album, "Before The World Blows")
+        XCTAssertEqual(r.album?.title, "Before The World Blows")
+        XCTAssertEqual(s.albums[0].trackIds, ["amrec_6797942160", "amrec_6797942161", "amrec_6797942176"])
+        // Persisted: a relaunch sees the refreshed album.
+        let reloaded = DiscoverAddsStore(fileURL: s.syncFileURL)
+        XCTAssertEqual(reloaded.albums[0].title, "Before The World Blows")
+        XCTAssertEqual(reloaded.albums[0].releaseDateMs, 10 * day)
+        // A second identical read changes nothing.
+        let again = s.applyAlbumRefresh(albumId: "amrec_album_6797941897", title: "Before The World Blows", trackCount: 3,
+                                        releaseDateMs: 10 * day, tracks: tracks, nowMs: 21 * day)
+        XCTAssertTrue(again.updated.isEmpty && again.added.isEmpty && again.album == nil)
+    }
 }

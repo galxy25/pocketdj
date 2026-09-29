@@ -35,6 +35,7 @@ import {
   recordStrike, effectiveIgnoredPids, removalGuardTripped, playlistDumpLooksBroken, CONFIRM_STRIKES,
   reconcileRemovals, deferPlaylistRemovals, REMOVAL_CONFIRM_STRIKES,
 } from './lib/am-sync-merge.mjs';
+import { placeholderCandidates, mergeRefreshed, fillCatalogIds } from './lib/am-placeholder-refresh.mjs';
 
 function arg(name, def) { const i = process.argv.indexOf('--' + name); return i >= 0 ? process.argv[i + 1] : def; }
 const INDEX = arg('index', 'public/apple-music-index.json');
@@ -44,6 +45,8 @@ const TIMEOUT = parseInt(arg('timeout', '1800'), 10) * 1000;
 const REPO = arg('repo', path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'));
 const STATE_DIR = arg('state-dir', path.join(os.homedir(), '.pocketdj', 'am-sync'));
 const DRY = process.argv.includes('--dry-run');
+const LOOKUP_BASE = process.env.POCKETDJ_ITUNES_LOOKUP_BASE || 'https://itunes.apple.com/lookup';
+const LINKS_CACHE = (process.env.POCKETDJ_LINKS_CACHE || path.join(os.homedir(), '.pocketdj', 'streaming-links', 'links-cache.ndjson'));
 if (!OUT && !DRY) { console.error('usage: --index <committed.json> --out <merged.json> [--source-name N] [--timeout S] [--state-dir D] [--dry-run]'); process.exit(1); }
 
 // Persistent ignore list for metadata-less "ghost" library entries (orphaned iCloud
@@ -71,6 +74,25 @@ function loadPendingRemovals() {
 function savePendingRemovals(p) {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.writeFileSync(PENDING_FILE, JSON.stringify({ version: 1, ...p }, null, 2));
+}
+
+// A retitled song's streaming-link cache entries were resolved against the OLD title (and a
+// cached miss is never retried), so drop them; the streaming-links nightly re-resolves them.
+// Skipped while that job holds its lock — the next night's refresh can't lose the retitle, but
+// the eviction would be lost, so it is logged loudly.
+function evictStreamingLinks(ids) {
+  if (!fs.existsSync(LINKS_CACHE)) return;
+  if (fs.existsSync(path.join(path.dirname(LINKS_CACHE), '.sync.lock'))) {
+    log(`  ⚠ streaming-links cache locked — NOT evicting ${ids.size} retitled song(s): ${[...ids].join(',')}`);
+    return;
+  }
+  const lines = fs.readFileSync(LINKS_CACHE, 'utf8').split('\n');
+  const kept = lines.filter((l) => { try { return !ids.has(JSON.parse(l).id); } catch { return true; } });
+  if (kept.length === lines.length) return;
+  const tmp = LINKS_CACHE + '.tmp';
+  fs.writeFileSync(tmp, kept.join('\n'));
+  fs.renameSync(tmp, LINKS_CACHE);
+  log(`  evicted ${lines.length - kept.length} streaming-link cache entr(y/ies) for retitled songs`);
 }
 
 const ns = nsFor(SOURCE);
@@ -200,6 +222,58 @@ if (newPositions.length) {
   }
 }
 
+// 4b. pre-release placeholder refresh. Music.app retitles a pre-release album's "Track N" rows IN
+// PLACE on release day (same persistent IDs, no modification-date bump), so the new-pid diff above
+// never sees it. Re-read every song on a still-placeholder album and merge the fresh metadata.
+let refresh = { updated: new Map(), renamed: new Set(), touchedAlbums: new Set() };
+let refreshAlbums = [];
+let catalogIdsFilled = 0;
+const refreshIds = placeholderCandidates(oldSongs.filter((s) => !confirmedRemoved.has(s.id)), idx.albums);
+if (refreshIds.size) {
+  const positions = [], pids = [];
+  allPids.forEach((pid, i) => { if (refreshIds.has(songIdFor(ns, pid))) { positions.push(i + 1); pids.push(pid); } });
+  log(`▶ re-reading ${positions.length} song(s) on ${new Set([...refreshIds].map((id) => oldById.get(id)?.albumId)).size} placeholder album(s)…`);
+  if (positions.length) {
+    const raw = path.join(tmpdir, 'refresh.tsv');
+    const tr = runOsascript(buildTrackScript({ rawPath: raw, timeoutSec: Math.floor(TIMEOUT / 1000), positions }), TIMEOUT + 30000);
+    if (!tr.ok) log('  ⚠ placeholder re-read failed — keeping committed rows: ' + tr.err);
+    else {
+      const { rows } = partitionTrackRows(fs.readFileSync(raw, 'utf8'), pids);
+      const xml = path.join(tmpdir, 'refresh.xml');
+      writeLibraryXml({ rows, playlists: [], runStart: Date.now(), out: xml });
+      const out = path.join(tmpdir, 'refresh.json');
+      const ir = spawnSync('node', ['--max-old-space-size=4096', path.join(REPO, 'scripts/index-apple-music.mjs'),
+        '--xml', xml, '--out', out, '--source-name', SOURCE], { encoding: 'utf8' });
+      if (ir.status !== 0) log('  ⚠ placeholder re-index failed — keeping committed rows: ' + (ir.stderr || ''));
+      else {
+        const fresh = JSON.parse(fs.readFileSync(out, 'utf8'));
+        refresh = mergeRefreshed({ oldById, refreshedSongs: fresh.songs });
+        refreshAlbums = fresh.albums || [];
+      }
+    }
+  }
+  // Catalog ids for refreshed rows: one unfiltered iTunes LOOKUP per album (search filters
+  // explicit tracks; lookup doesn't). Non-fatal — a miss just leaves the id for next night.
+  const oldAlbumById = new Map((idx.albums || []).map((a) => [a.id, a]));
+  const byAlbum = new Map();
+  for (const s of refresh.updated.values()) {
+    const amId = oldAlbumById.get(s.albumId)?.appleMusicId || oldAlbumById.get(oldById.get(s.id)?.albumId)?.appleMusicId;
+    if (!amId || s.appleMusicId) continue;
+    (byAlbum.get(amId) || byAlbum.set(amId, []).get(amId)).push(s);
+  }
+  for (const [amId, songs] of byAlbum) {
+    try {
+      const res = await fetch(`${LOOKUP_BASE}?id=${encodeURIComponent(amId)}&entity=song&limit=200`, { signal: AbortSignal.timeout(15000) });
+      const tracks = ((await res.json()).results || []).filter((r) => r.wrapperType === 'track');
+      const { songs: filled, filled: n } = fillCatalogIds(songs, tracks);
+      for (const s of filled) refresh.updated.set(s.id, s);
+      catalogIdsFilled += n;
+    } catch (e) { log(`  ⚠ iTunes lookup for album ${amId} failed (${e.message}) — retry next night`); }
+  }
+  log(`  refreshed ${refresh.updated.size} song(s) (${refresh.renamed.size} retitled, ${catalogIdsFilled} catalog id(s) filled)`);
+  if (refresh.renamed.size) evictStreamingLinks(refresh.renamed);
+}
+
 // 5. playlists — always re-dump + remap to song ids (membership changes carry no date)
 log('▶ dumping playlists…');
 const plRaw = path.join(tmpdir, 'pl.tsv');
@@ -218,13 +292,16 @@ if (playlistRows && playlistDumpLooksBroken(playlistRows.length, (idx.playlists 
 
 // 6. merge
 // 6a. songs: drop CONFIRMED removed (deferred ones stay until confirmed), append new
-const finalSongs = oldSongs.filter((s) => !confirmedRemoved.has(s.id)).concat(partial.songs || []);
+const finalSongs = oldSongs.filter((s) => !confirmedRemoved.has(s.id))
+  .map((s) => refresh.updated.get(s.id) || s)
+  .concat(partial.songs || []);
 const finalSongIds = new Set(finalSongs.map((s) => s.id));
 
 // 6b. albums: keep untouched verbatim; rebuild touched (gained/lost a song) from final songs
 const touched = new Set();
 for (const s of (partial.songs || [])) touched.add(s.albumId);
 for (const sid of confirmedRemoved) { const s = oldById.get(sid); if (s) touched.add(s.albumId); }
+for (const aid of refresh.touchedAlbums) touched.add(aid);
 const touchedSongs = new Map(); // albumId -> [song]
 for (const s of finalSongs) {
   if (!touched.has(s.albumId)) continue;
@@ -241,8 +318,22 @@ for (const a of (idx.albums || [])) {
   finalAlbums.push({ ...a, trackList: sortTracks(songs) });
 }
 const oldAlbumIds = new Set((idx.albums || []).map((a) => a.id));
-for (const a of (partial.albums || [])) {                    // brand-new albums
-  if (oldAlbumIds.has(a.id)) continue;
+// A retitled placeholder ALBUM gets a new id (album ids hash the name); it inherits the old
+// album's catalog id, which already identified the real release.
+const movedFrom = new Map();
+for (const s of refresh.updated.values()) {
+  const was = oldById.get(s.id)?.albumId;
+  if (was && was !== s.albumId) movedFrom.set(s.albumId, was);
+}
+const oldAlbumsById = new Map((idx.albums || []).map((a) => [a.id, a]));
+const refreshNewAlbums = refreshAlbums.filter((a) => movedFrom.has(a.id)).map((a) => {
+  const old = oldAlbumsById.get(movedFrom.get(a.id));
+  return old && old.appleMusicId && !a.appleMusicId ? { ...a, appleMusicId: old.appleMusicId, appleMusicUrl: old.appleMusicUrl } : a;
+});
+const seenNewAlbum = new Set();
+for (const a of [...(partial.albums || []), ...refreshNewAlbums]) {   // brand-new albums
+  if (oldAlbumIds.has(a.id) || seenNewAlbum.has(a.id)) continue;
+  seenNewAlbum.add(a.id);
   const songs = touchedSongs.get(a.id);
   finalAlbums.push(songs && songs.length ? { ...a, trackList: sortTracks(songs) } : a);
 }
@@ -273,7 +364,7 @@ const out = { ...idx, albums: finalAlbums, playlists: finalPlaylists, songs: fin
 // the nightly job's `cmp` then skips the commit/deploy entirely. (A pure playlist reorder still
 // ships: the playlists array itself differs, which cmp catches regardless of generatedAt.)
 const addedSongs = (partial.songs || []).length;
-const changed = addedSongs > 0 || confirmedRemoved.size > 0 ||
+const changed = addedSongs > 0 || confirmedRemoved.size > 0 || refresh.updated.size > 0 ||
   JSON.stringify(finalPlaylists) !== JSON.stringify(idx.playlists || []);
 if (out.manifest) {
   out.manifest.counts = {
@@ -290,5 +381,6 @@ cleanup();
 console.error(`✓ am-incremental-sync → ${OUT}${changed ? '' : ' (no change)'}`);
 console.error(`  songs ${oldSongs.length} → ${finalSongs.length} (+${addedSongs} added, -${confirmedRemoved.size} removed` +
   (deferredRemoved.size ? `, ${deferredRemoved.size} removal(s) pending confirmation` : '') + ')');
+if (refresh.updated.size) console.error(`  placeholder refresh: ${refresh.updated.size} song(s) updated, ${refresh.renamed.size} retitled, ${catalogIdsFilled} catalog id(s) filled`);
 console.error(`  albums ${(idx.albums || []).length} → ${finalAlbums.length} | playlists ${(idx.playlists || []).length} → ${finalPlaylists.length}`);
 console.error(`  explicit ${finalSongs.filter((s) => s.explicit).length} | appleMusicId ${finalSongs.filter((s) => s.appleMusicId).length} (existing tracks keep theirs)`);

@@ -2598,6 +2598,8 @@ const server = http.createServer(async (req, res) => {
         artworkUrl: c.artworkUrl100 || null,
         trackCount: c.trackCount || tracks.length || null,
         year: c.releaseDate ? (Number(String(c.releaseDate).slice(0, 4)) || null) : null,
+        // Full ISO date: the app rechecks a pre-release album's track list on this day.
+        releaseDate: c.releaseDate || null,
         url: c.collectionViewUrl || null,
       } : null;
       return send(res, 200, { id, album, tracks });

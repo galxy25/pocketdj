@@ -1207,6 +1207,8 @@ final class RipsStore {
         var year: Int? = nil
         /// Apple Music deep link (`collectionViewUrl`) — the macOS "add" fallback opens this.
         var url: String? = nil
+        /// Catalog release date (ISO 8601), sent by `/album-tracks` — drives the release-day recheck.
+        var releaseDate: String? = nil
         var id: String { albumId }
     }
 
@@ -1318,6 +1320,46 @@ final class RipsStore {
             return AlbumExpansion(album: decoded.album, tracks: decoded.tracks)
         } catch { return .empty }
     }
+
+    /// Recheck every provisional (pre-release / partial) Discover album against the catalog:
+    /// retitle placeholder tracks, append tracks that appeared since the add, and learn the
+    /// release date so the album is rechecked the day it releases (see
+    /// `DiscoverAddsStore.needsRefresh`). A download-intent album also fans rips out for its new
+    /// tracks. Runs at launch/foreground; each album is checked at most daily until release day.
+    func refreshProvisionalAlbums(now: Date = Date()) async {
+        guard let store = discoverAdds, hasServer else { return }
+        let nowMs = now.timeIntervalSince1970 * 1000
+        let due = store.albums.filter { a in
+            DiscoverAddsStore.needsRefresh(a, tracks: store.entries.filter { $0.albumId == a.albumId }, nowMs: nowMs)
+        }
+        for a in due {
+            let exp = await fetchAlbumExpansion(collectionId: a.appleMusicId)
+            guard !exp.tracks.isEmpty || exp.album != nil else { continue }   // offline / lookup miss → next launch
+            let releaseMs = exp.album?.releaseDate.flatMap { ISO8601DateFormatter().date(from: $0) }
+                .map { $0.timeIntervalSince1970 * 1000 }
+            let r = store.applyAlbumRefresh(
+                albumId: a.albumId, title: exp.album?.title, trackCount: exp.album?.trackCount,
+                releaseDateMs: releaseMs,
+                tracks: exp.tracks.map { ($0.id, $0.title, $0.artist, $0.discNumber, $0.trackNumber, $0.durationMs) },
+                nowMs: nowMs)
+            if !r.updated.isEmpty || !r.added.isEmpty || r.album != nil {
+                DiagLog.shared.log("discover", "album refresh \(a.appleMusicId): \(r.updated.count) retitled, \(r.added.count) new track(s)")
+                onDiscoverAlbumRefreshed?(r.updated.map(DiscoverAddsStore.indexSong),
+                                          r.added.map(DiscoverAddsStore.indexSong),
+                                          r.album.map(DiscoverAddsStore.indexAlbum))
+            }
+            if a.preparedCopies != false {
+                for e in r.added {
+                    _ = await requestRip(songId: e.songId, title: e.title, artist: e.artist,
+                                         appleMusicId: e.appleMusicId, lengthMs: e.durationMs)
+                }
+            }
+        }
+    }
+
+    /// Wired in PocketDJApp to `AppModel.refreshDiscoverRows` — replaces retitled provisional rows
+    /// and appends new ones with ONE catalog rebuild.
+    @ObservationIgnored var onDiscoverAlbumRefreshed: ((_ updated: [IndexSong], _ added: [IndexSong], _ album: IndexAlbum?) -> Void)?
 
     /// What an album add owes BEYOND the Apple Music library write. Stated by the CALLER, with
     /// no default, because the two surfaces that add an album mean genuinely different things

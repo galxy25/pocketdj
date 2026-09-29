@@ -896,6 +896,32 @@ final class AppModel {
         applyEdits()
     }
 
+    /// A provisional Discover album was rechecked against the catalog: REPLACE its retitled rows
+    /// (and the album row) in place, append its new tracks, and rebuild ONCE. Only rows this
+    /// source still owns are replaced — a row an indexed twin already superseded stays gone.
+    func refreshDiscoverRows(updated: [IndexSong], added: [IndexSong], album: IndexAlbum?) {
+        var changed = false
+        let byId = Dictionary(updated.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        if !byId.isEmpty {
+            for i in rawSongs.indices {
+                guard let u = byId[rawSongs[i].id], songSourceById[u.id] == DiscoverAddsStore.sourceName else { continue }
+                rawSongs[i] = u
+                rawSongsById[u.id] = u
+                changed = true
+            }
+        }
+        if let album, albumSourceById[album.id] == DiscoverAddsStore.sourceName,
+           let j = rawAlbums.firstIndex(where: { $0.id == album.id }) {
+            rawAlbums[j] = album
+            rawAlbumsById[album.id] = album
+            changed = true
+        }
+        if !added.isEmpty {
+            injectDiscoverAlbumBatch(songs: added, album: nil)   // rebuilds itself when it appends
+        }
+        if changed { applyEdits() }
+    }
+
     /// An IMPORT landing while the catalog is LIVE: append every unknown row (songs AND
     /// their albums) as the "Imported" synthetic source, then ONE effective rebuild — a
     /// playlist import can carry hundreds of songs, and the edit-save rebuild is the

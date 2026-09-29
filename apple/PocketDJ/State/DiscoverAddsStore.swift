@@ -98,6 +98,11 @@ final class DiscoverAddsStore {
         /// "Add to Apple Music again" retry affordance. Optional-and-appended (`= nil`
         /// for memberwise-init compatibility, like `Entry.libraryWrite`).
         var libraryWrite: String? = nil
+        /// Catalog release date (epoch ms), learned from the album lookup. A pre-release album's
+        /// track list is rechecked on this day. Optional-and-appended like the fields above.
+        var releaseDateMs: Double? = nil
+        /// When the album was last rechecked against the catalog (epoch ms).
+        var lastRefreshAtMs: Double? = nil
         var id: String { albumId }
     }
 
@@ -320,6 +325,89 @@ final class DiscoverAddsStore {
         for a in albums where !beforeAlbums.contains(a.albumId) {
             onAlbumAdded?(Self.indexAlbum(a))
         }
+    }
+
+    // MARK: - Pre-release refresh
+
+    /// Apple's pre-release placeholders ("Track 16", "Sorry, we don't have an album title yet …").
+    nonisolated static func isPlaceholderTitle(_ s: String) -> Bool {
+        s.trimmingCharacters(in: .whitespaces).range(of: #"^(?i)track\s*\d+$"#, options: .regularExpression) != nil
+    }
+    nonisolated static func isPlaceholderAlbum(_ s: String) -> Bool {
+        s.trimmingCharacters(in: .whitespaces)
+            .range(of: #"^(?i)sorry,?\s+we\s+don.?t\s+have\s+an\s+album\s+title\s+yet"#, options: .regularExpression) != nil
+    }
+
+    static let refreshIntervalMs: Double = 24 * 3600 * 1000
+
+    /// Whether a provisional album should be rechecked against the catalog NOW (pure).
+    /// An album is provisional while it has placeholder titles, fewer tracks than the catalog
+    /// promised, no known release date, or hasn't been checked since its release. Provisional
+    /// albums are rechecked daily — and immediately once their release date has passed.
+    nonisolated static func needsRefresh(_ a: AlbumEntry, tracks: [Entry], nowMs: Double) -> Bool {
+        let last = a.lastRefreshAtMs ?? 0
+        let checkedSinceRelease = a.releaseDateMs.map { last >= $0 } ?? false
+        let provisional = isPlaceholderAlbum(a.title)
+            || tracks.contains { isPlaceholderTitle($0.title) }
+            || (a.trackCount ?? 0) > tracks.count
+            || !checkedSinceRelease
+        guard provisional else { return false }
+        if let release = a.releaseDateMs, release <= nowMs, last < release { return true }
+        return nowMs - last >= refreshIntervalMs
+    }
+
+    /// Merge a fresh catalog read of a provisional album: retitle/renumber its tracks (matched by
+    /// catalog id), append tracks that appeared since the add, and record the release date and
+    /// check time. Returns the rows the live catalog must replace and the new tracks it must add;
+    /// both empty (and the album only re-stamped) when nothing changed.
+    @discardableResult
+    func applyAlbumRefresh(albumId: String, title: String?, trackCount: Int?, releaseDateMs: Double?,
+                           tracks: [(id: String, title: String, artist: String, discNumber: Int?,
+                                     trackNumber: Int?, durationMs: Int?)],
+                           nowMs: Double) -> (updated: [Entry], added: [Entry], album: AlbumEntry?) {
+        guard let ai = albums.firstIndex(where: { $0.albumId == albumId }) else { return ([], [], nil) }
+        var album = albums[ai]
+        let albumTitleChanged = title.map { !$0.isEmpty && $0 != album.title } ?? false
+        if albumTitleChanged, let title { album.title = title }
+        if let trackCount { album.trackCount = trackCount }
+        if let releaseDateMs { album.releaseDateMs = releaseDateMs }
+        album.lastRefreshAtMs = nowMs
+
+        var updated: [Entry] = []
+        var added: [Entry] = []
+        let known = Set(entries.filter { $0.albumId == albumId }.map(\.appleMusicId))
+        for t in tracks {
+            if known.contains(t.id), let i = entries.firstIndex(where: { $0.albumId == albumId && $0.appleMusicId == t.id }) {
+                var e = entries[i]
+                let before = e
+                if !t.title.isEmpty { e.title = t.title }
+                if !t.artist.isEmpty { e.artist = t.artist }
+                e.trackNumber = t.trackNumber ?? e.trackNumber
+                e.discNumber = t.discNumber ?? e.discNumber
+                e.durationMs = t.durationMs ?? e.durationMs
+                e.album = album.title
+                if e != before { entries[i] = e; updated.append(e) }
+            } else if !known.contains(t.id) {
+                let template = entries.first { $0.albumId == albumId }
+                let e = Entry(songId: "amrec_\(t.id)", appleMusicId: t.id, title: t.title, artist: t.artist,
+                              album: album.title, artworkUrl: album.artworkUrl, durationMs: t.durationMs,
+                              addedAtMs: nowMs, albumId: albumId, albumAppleMusicId: album.appleMusicId,
+                              albumArtworkUrl: template?.albumArtworkUrl ?? album.artworkUrl,
+                              trackNumber: t.trackNumber, discNumber: t.discNumber, year: album.year,
+                              explicit: nil)
+                entries.append(e)
+                added.append(e)
+            }
+        }
+        if !added.isEmpty {
+            let order = entries.filter { $0.albumId == albumId }
+                .sorted { (($0.discNumber ?? 1), ($0.trackNumber ?? 0)) < (($1.discNumber ?? 1), ($1.trackNumber ?? 0)) }
+            album.trackIds = order.map(\.songId)
+        }
+        albums[ai] = album
+        save()
+        let albumChanged = albumTitleChanged || !added.isEmpty
+        return (updated, added, albumChanged ? album : nil)
     }
 
     // MARK: - Catalog synthesis (pure)
