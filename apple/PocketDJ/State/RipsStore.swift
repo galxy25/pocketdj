@@ -907,11 +907,19 @@ final class RipsStore {
             let body: [String: Any] = ripFromCloud ? ["songId": songId, "ripFromCloud": true] : ["songId": songId]
             post.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (data, response) = try await session.data(for: post)
-            guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return }
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            guard (200..<300).contains(status) else {
+                DiagLog.shared.log("rip", "passive rip refused songId=\(songId) http=\(status) tok=\(!tok.isEmpty)")
+                return
+            }
             let view = try JSONDecoder().decode(Job.self, from: data)
+            if view.jobId == nil, view.phase != .ready {
+                DiagLog.shared.log("rip", "passive rip not queued songId=\(songId) phase=\(view.phase.rawValue) error=\(view.error ?? "-")")
+            }
             jobs[songId] = view
         } catch {
-            // Fire-and-forget: a failed request must be silent to playback.
+            // Silent to playback, but never invisible to diagnostics.
+            DiagLog.shared.log("rip", "passive rip failed songId=\(songId) error=\((error as NSError).domain)#\((error as NSError).code)")
         }
     }
 

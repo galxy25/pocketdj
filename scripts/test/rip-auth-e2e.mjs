@@ -28,31 +28,19 @@ let fail = 0;
 const ok = (c, m) => { console.log(`${c ? '  ✓' : '  ✗'} ${m}`); if (!c) fail++; };
 
 const work = mkdtempSync(join(tmpdir(), 'pdj-auth-'));
-// TWO sources, so the MUST-5 provenance gate has something to refuse AND something to
-// contrast it against. Deliberately NO capture-eligible song here: an eligible /rip would
-// spawn the real digital worker, which drives the operator's actual Music.app — this script
-// has no osascript shim. The negative is still non-vacuous because acceptRip answers the two
-// refusals differently (unknown song → 404; known-but-ineligible → 200 with a null job), so
-// the assertion below proves the row was FOUND and then refused on provenance.
+// Deliberately NO song is ever POSTed for capture here: an accepted /rip would spawn the real
+// digital worker, which drives the operator's actual Music.app — this script has no osascript
+// shim. Capture acceptance is pinned by tests/unit/rip-am-source-accepted-e2e.test.mjs (shimmed).
 const catalog = join(work, 'catalog.json');
 writeFileSync(catalog, JSON.stringify({
   manifest: { sourceType: 'digital', sourceName: 'Test' },
   albums: [], songs: [],
 }));
-// "Apple Music (Local)" is catalog metadata for streaming playback, NOT a licence to make a
-// permanent copy — the exact source MUST-5 exists to keep out of the capture path.
-const streamCatalog = join(work, 'catalog-streaming.json');
-writeFileSync(streamCatalog, JSON.stringify({
-  manifest: { sourceType: 'digital', sourceName: 'Apple Music (Local)' },
-  albums: [{ id: 'alb_am', artist: 'A', name: 'B', trackList: ['sng_streaming'] }],
-  songs: [{ id: 'sng_streaming', albumId: 'alb_am', artist: 'A', name: 'Not Ours', length: 60_000 }],
-}));
-
 const baseEnv = {
   ...process.env,
   RIP_PORT: String(PORT),
   RIP_BUCKET: 'pocketdj-test-nonexistent-bucket-xyz', // loadManifest fails → empty manifest, no real S3
-  RIP_SOURCES: `${catalog},${streamCatalog}`,
+  RIP_SOURCES: catalog,
   HOME: join(work, 'home'), // isolate ~/.pocketdj (incl. any real rip-server.env)
   RIP_RL_WINDOW_MS: '60000',
   RIP_RL_POST_MAX: '5', // tiny so the rate-limit assertions are fast
@@ -134,22 +122,6 @@ try {
     ok(r.status === 401, 'POST /rip without token → 401');
     r = await fetch(`${base}/rip`, { method: 'POST', headers: asUser, body: JSON.stringify({ songId: 'sng_x' }) });
     ok(r.status === 404, 'POST /rip with user token passes auth (404 unknown song)');
-
-    // MUST-5: PROVENANCE, not authentication. A fully authenticated user still may not capture a
-    // source that is only licensed for streaming playback. The 404 above is the counterweight —
-    // it proves an unknown id looks DIFFERENT, so this song really was found and then refused.
-    // (This is the gate that silently swallowed every rip in the heal e2es when their fixtures
-    // still said sourceName 'Test'; nothing in the vitest suite pins it, so it lives here.)
-    r = await fetch(`${base}/rip`, { method: 'POST', headers: asUser, body: JSON.stringify({ songId: 'sng_streaming' }) });
-    const inel = await r.json().catch(() => 'unparseable');
-    ok(r.status === 200 && !(inel && inel.jobId),
-      `MUST-5: a streaming-only source is NEVER captured — no job (got ${r.status} ${JSON.stringify(inel)})`);
-    // …and the refusal must be a DECODABLE Job view, never a bare `null` body: the Swift
-    // client's Job decoder throws on `null`, which read as an opaque decode failure on
-    // device (found 2026-09-12). phase 'error' + a human error string → RipError.didNotStart
-    // surfaces the text as-is.
-    ok(inel && inel.phase === 'error' && typeof inel.error === 'string' && inel.error.length > 0,
-      `ineligible /rip answers in Job shape with a message, not null (got ${JSON.stringify(inel)})`);
 
     // /rip-PREFIXED paths dispatch as if unprefixed (a client whose base URL is
     // https://<host>/rip — the film-room TV during the 443 path-mount era — reaches the

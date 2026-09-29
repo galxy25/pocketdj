@@ -217,8 +217,13 @@ final class PlaybackCoordinator {
                 // silently enqueue a capture on the shared server keyed by a shared id — that
                 // both mutates the owner's public bucket and runs work on their machine. When
                 // per-user server auth lands, this widens back with the server enforcing scope.
-                if isCatalogOwner(), provider.backend == .appleMusic,
-                   AppleMusicCatalog.storeID(fromSongID: song.id) == nil {
+                let owner = isCatalogOwner()
+                let catalogOnly = AppleMusicCatalog.storeID(fromSongID: song.id) != nil
+                NPLog.trace("passiveRip id=\(song.id) backend=\(provider.backend) owner=\(owner) catalogOnly=\(catalogOnly) fire=\(owner && provider.backend == .appleMusic && !catalogOnly)")
+                if !owner, provider.backend == .appleMusic, !catalogOnly {
+                    DiagLog.shared.log("rip", "passive rip skipped songId=\(song.id) reason=not-owner")
+                }
+                if owner, provider.backend == .appleMusic, !catalogOnly {
                     Task { await self.ripProvider.requestAsyncRip(song.id) }
                 }
                 return
