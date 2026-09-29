@@ -64,6 +64,9 @@ struct PocketDJApp: App {
     @MainActor private func syncFavoritesIfReady() {
         guard onboarding.isComplete, app.state == .loaded else { return }
         Task { await favoritesSync.run() }
+        // Pre-release albums added from Discover/New: retitle placeholders + fill the track list
+        // once the album releases (daily while provisional, immediately on release day).
+        Task { await rips.refreshProvisionalAlbums() }
         // Same cadence for the on-device Apple Music library index (public-mode source):
         // incremental after the first build (sorted-by-added, early-stop), so this is a
         // handful of rows on a normal foreground. Gated inside the runner (public + authorized).
@@ -1205,6 +1208,9 @@ struct PocketDJApp: App {
             collectionActivity?.record(kind: .catalogRemove, itemId: itemId, itemTitle: itemTitle)
         }
         rips.discoverAdds = discoverAdds
+        rips.onDiscoverAlbumRefreshed = { [weak app] updated, added, album in
+            app?.refreshDiscoverRows(updated: updated, added: added, album: album)
+        }
         _discoverAdds = State(initialValue: discoverAdds)
 
         // ── Imported songs: provisional entries for cross-user transfers ───────
