@@ -13,6 +13,7 @@ struct SongDetailView: View {
     /// Optional-degrade (the AddToCollectionView `writeBack` pattern): previews/tests that
     /// render the detail standalone lose only the Suggested-collections rows.
     @Environment(RecommendationService.self) private var recEngine: RecommendationService?
+    @Environment(PlayCountService.self) private var playCounts: PlayCountService?
     @Environment(\.dismiss) private var dismiss
     let song: IndexSong
     /// The stack this detail was pushed onto, when it HAS one. Every presentation now passes
@@ -48,6 +49,15 @@ struct SongDetailView: View {
 
     /// Always read the latest (possibly edited) version from the catalog.
     private var current: IndexSong { app.songsById[song.id] ?? song }
+    /// BPM/key/camelot with the rip analysis overlaid — the same values the song rows show.
+    private var analysis: (bpm: Double?, key: String?, camelot: String?) {
+        rips.analysis(songId: current.id, bpm: current.bpm, key: current.key, camelot: current.camelot)
+    }
+    private var playCount: Int {
+        guard let playCounts else { return 0 }
+        _ = playCounts.revision
+        return playCounts.snapshot()[current.id] ?? 0
+    }
     private var album: IndexAlbum? { current.albumId.flatMap { app.albumsById[$0] } }
 
     /// The provisional Discover entry behind this song, when it is one. Carries the album
@@ -316,7 +326,7 @@ struct SongDetailView: View {
                     route: .artist(current.artist)) {
                 Text(current.artist).font(.title3).foregroundStyle(Theme.accent)
             }
-            KeyChip(key: current.key, camelot: current.camelot)
+            KeyChip(key: analysis.key, camelot: analysis.camelot)
             if let src = app.source(ofSong: current.id) {
                 Tag(text: src, color: Theme.fgDim)
                     .accessibilityIdentifier("source-tag")
@@ -377,9 +387,11 @@ struct SongDetailView: View {
         if let name = albumName { r.append(("Album", name)) }
         if let n = current.trackNumber ?? discoverEntry?.trackNumber { r.append(("Track #", String(n))) }
         if let y = current.year ?? discoverEntry?.year ?? albumRef?.year { r.append(("Year", String(y))) }
-        r.append(("BPM", Fmt.bpm(current.bpm)))
-        if let k = current.key { r.append(("Key", k)) }
-        if let c = current.camelot { r.append(("Camelot", c)) }
+        let a = analysis
+        r.append(("BPM", Fmt.bpm(a.bpm)))
+        if let k = a.key { r.append(("Key", k)) }
+        if let c = a.camelot { r.append(("Camelot", c)) }
+        r.append(("Plays", String(playCount)))
         r.append(("Length", Fmt.duration(current.length)))
         r.append(("Explicit", current.explicit == true ? "Yes" : "No"))
         if let f = current.fileType { r.append(("File type", f.uppercased())) }
