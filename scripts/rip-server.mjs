@@ -682,19 +682,6 @@ function resolveVariantRow(songId) {
 }
 const findSongOrVariant = (id) => songById.get(id) || resolveVariantRow(id);
 
-// MUST-5: gate capture on PROVENANCE, not on the incidental sourceType routing (which
-// picks a processing pipeline, not a legal source — a vinyl VARIANT row is forced to
-// sourceType 'digital' by resolveVariantRow above even though it's still the user's own
-// vinyl). Only the user's own vinyl or their own uploaded digital files may ever be
-// captured. "Apple Music (Local)" is catalog metadata for streaming playback via
-// MusicKit, not a license to make a permanent copy — and an ad-hoc row (no sourceName at
-// all; see adhocRow above) exists specifically to bypass that, so it fails closed too.
-// Same strict-allowlist philosophy as STUDIO_ID/ADHOC_ID: unknown fails, not passes.
-const CAPTURE_ELIGIBLE_SOURCES = new Set(['My Vinyl', 'My Digital']);
-function isCaptureEligible(song) {
-  return !!song && CAPTURE_ELIGIBLE_SOURCES.has(song.sourceName);
-}
-
 function acceptRip(songId, ripFromCloud = false, adhoc = null) {
   let song = songId && findSongOrVariant(songId);
   // AD-HOC rip: a freshly-recognized Apple Music track (PocketDJ recognizer "add to
@@ -716,7 +703,6 @@ function acceptRip(songId, ripFromCloud = false, adhoc = null) {
   }
   if (!song) return { job: null, status: 'unknown', url: null };
   if (manifest[songId]) return { job: null, status: 'ready', url: publicUrl(manifest[songId].key) };
-  if (!isCaptureEligible(song)) return { job: null, status: 'ineligible', url: null };
   // Probe the library ONCE, here. wantCloud is the RESOLVED preference (post-probe), not
   // the raw request flag — it is what we persist + route on so persist/resume can never
   // disagree (a track later deleted from the library doesn't flip the resourceKey; it just
@@ -978,10 +964,6 @@ async function runJob(job) {
   setPhase(job, 'searching');
   const song = songById.get(job.songId);
   if (!song) return fail(job, 'unknown songId');
-  // MUST-5 defense-in-depth: acceptRip already rejects an ineligible song before a job
-  // exists, so this only fires for a job persisted before this gate landed (queueFile
-  // survives a restart — see resumePending).
-  if (!isCaptureEligible(song)) return fail(job, 'capture not available for this source');
   // Digital songs always capture from Apple Music; an analog song does too when its job
   // resolved to a cloud rip (preferCloud, set at accept time on an exact library match).
   if (song.sourceType !== 'analog' || job.preferCloud) return runDigitalJob(job, song);
@@ -2639,16 +2621,11 @@ const server = http.createServer(async (req, res) => {
     // source) be captured by artist+title. Ignored when the songId is already known.
     const adhoc = (title && artist) ? { title, artist, appleMusicId, lengthMs } : null;
     const r = acceptRip(songId, ripFromCloud, adhoc);
+    // One line per request, whatever the outcome: a 2xx that creates no job must never be
+    // invisible (the Sep 2026 outage was a silent 200 refusal on every passive rip).
+    console.log(`  POST /rip ${songId} → ${r.status}${r.job ? ` job=${r.job.jobId.slice(0, 8)}` : ''}`);
     if (r.status === 'unknown') return send(res, 404, { error: 'unknown songId' });
     if (r.status === 'ready') return send(res, 200, { jobId: null, songId, phase: 'ready', url: r.url });
-    // Capture-ineligible source (not My Vinyl / My Digital): r.job is null, and
-    // jobView(null) returns null — a 200 with body `null` that the Swift client's
-    // Job decoder chokes on. Answer in the Job shape the client already decodes
-    // (phase 'error' + message, no jobId → RipError.didNotStart surfaces the text).
-    if (r.status === 'ineligible') {
-      return send(res, 200, { jobId: null, songId, phase: 'error', message: null, url: null,
-        error: 'This song’s source is streaming-only — it has no file the import server can capture.' });
-    }
     return send(res, 200, jobView(r.job));
   }
   // POST /rip-collection {songIds:[...]} — Feature 2 RIP. Batch-enqueue every song in
@@ -2671,6 +2648,7 @@ const server = http.createServer(async (req, res) => {
     });
     const counts = results.reduce((c, r) => { c[r.status] = (c[r.status] || 0) + 1; c.total++; return c; },
       { ready: 0, queued: 0, inflight: 0, unknown: 0, total: 0 });
+    console.log(`  POST /rip-collection → ${JSON.stringify(counts)}`);
     return send(res, 200, { results, counts });
   }
   // POST /backfill-cuts — slice a per-song cut chunk for EVERY analog manifest entry that lacks

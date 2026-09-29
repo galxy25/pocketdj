@@ -405,6 +405,13 @@ struct RootView: View {
                let first = app.albums.first {
                 path.append(first)
             }
+            // Testing seam: `PDJ_AUTOPLAY_SONG_ID=<songId>` plays that song through the real
+            // provider chain once the catalog is loaded, so playback→rip can be driven headlessly.
+            if let autoId = ProcessInfo.processInfo.environment["PDJ_AUTOPLAY_SONG_ID"], !autoId.isEmpty {
+                let s = app.songsById[autoId]
+                NPLog.trace("autoplay seam id=\(autoId) found=\(s != nil)")
+                await coordinator.play(id: autoId, title: s?.name ?? "", artist: s?.artist ?? "")
+            }
             consumeIntentRoute(intents.pendingRoute)   // route parked by a cold intent launch
             consumeJukeboxOpen(jukebox.pendingOpenId)  // jukebox link tapped at cold launch
             consumeFriendsOpen(friends.pendingOpenId)  // MwF link/push tapped at cold launch
