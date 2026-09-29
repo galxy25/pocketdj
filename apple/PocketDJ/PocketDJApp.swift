@@ -413,7 +413,10 @@ struct PocketDJApp: App {
         // collapsed cannot silently produce a thin-strip screenshot.
         if ProcessInfo.processInfo.environment["PDJ_NP_EXPANDED"] == "1" {
             sharedDefaults.set(1.0, forKey: NowPlayingResize.portraitFractionKey)
-            sharedDefaults.set(0.62, forKey: NowPlayingResize.wideFractionKey)
+            // FULL width, not a fraction: on a wide window a partial panel leaves the section
+            // rendering beside it, which reads as clutter in a marketing shot (and was what made
+            // the visionOS deck look "see-through" before the opaque substrate landed).
+            sharedDefaults.set(1.0, forKey: NowPlayingResize.wideFractionKey)
             sharedDefaults.set(false, forKey: "nowPlayingCollapsed")
             // Played list OFF: at full height its header scrolls up under the floating ＋ button
             // and collides with it, and hiding it lets the record cluster centre properly. Up Next
