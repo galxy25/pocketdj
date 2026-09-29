@@ -80,10 +80,12 @@ struct SongRowView: View {
     // manifest) overlays the catalog index values — so once a song is ripped the row shows
     // the latest analysis. The manifest carries these only for analyzed (digital) rips;
     // analog rips leave them nil and the row keeps the catalog values.
-    private var ripped: RipsStore.ManifestEntry? { rips.manifest[data.songId] }
-    private var effBpm: Double? { ripped?.bpm ?? data.bpm }
-    private var effKey: String? { ripped?.musicalKey ?? data.key }
-    private var effCamelot: String? { ripped?.camelot ?? data.camelot }
+    private var eff: (bpm: Double?, key: String?, camelot: String?) {
+        rips.analysis(songId: data.songId, bpm: data.bpm, key: data.key, camelot: data.camelot)
+    }
+    private var effBpm: Double? { eff.bpm }
+    private var effKey: String? { eff.key }
+    private var effCamelot: String? { eff.camelot }
 
     /// The bottom line's text half — "year · genre", size-gated. The ARTIST is no longer here:
     /// it moved to the top line, right-aligned opposite the title.

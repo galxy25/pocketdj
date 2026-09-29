@@ -199,4 +199,19 @@ final class RipsStoreTests: XCTestCase {
         XCTAssertTrue(RippedAudioFile.readableContentTypes.contains(RippedAudioFile.mp3Type))
         XCTAssertTrue(RippedAudioFile.mp3Type.conforms(to: .audio))
     }
+
+    /// Song rows and the song detail screen read BPM/key/camelot through ONE overlay: the rip's
+    /// measured analysis wins, the catalog value fills in (the "U" on the detail screen bug).
+    @MainActor
+    func testAnalysisOverlayPrefersRipAnalysisAndFallsBackToCatalog() {
+        let rips = RipsStore()
+        rips.setManifest(["sng_eyes": .init(key: "rips/sng_eyes.mp3", bpm: 117.5, musicalKey: "D minor", camelot: "7A"),
+                          "sng_partial": .init(key: "rips/sng_partial.mp3", bpm: 90)])
+        let a = rips.analysis(songId: "sng_eyes", bpm: nil, key: nil, camelot: nil)
+        XCTAssertEqual(a.bpm, 117.5); XCTAssertEqual(a.key, "D minor"); XCTAssertEqual(a.camelot, "7A")
+        let b = rips.analysis(songId: "sng_partial", bpm: 88, key: "C major", camelot: "8B")
+        XCTAssertEqual(b.bpm, 90); XCTAssertEqual(b.key, "C major"); XCTAssertEqual(b.camelot, "8B")
+        let c = rips.analysis(songId: "sng_unripped", bpm: 120, key: nil, camelot: nil)
+        XCTAssertEqual(c.bpm, 120); XCTAssertNil(c.camelot)
+    }
 }

@@ -176,6 +176,15 @@ final class RipsStore {
 
     /// What's already ripped, keyed by songId (loaded from public S3).
     private(set) var manifest: [String: ManifestEntry] = [:]
+
+    /// BPM / key / camelot as every song surface shows them: the rip's analysis (measured from
+    /// the ripped audio) wins over the catalog's values. One definition so rows and the song
+    /// detail screen can never disagree.
+    func analysis(songId: String, bpm: Double?, key: String?, camelot: String?)
+        -> (bpm: Double?, key: String?, camelot: String?) {
+        let m = manifest[songId]
+        return (m?.bpm ?? bpm, m?.musicalKey ?? key, m?.camelot ?? camelot)
+    }
     /// Active / last rip job per songId (drives the row's live phase label).
     private(set) var jobs: [String: Job] = [:]
     /// Active / last STEM job per songId (drives the row's Stemify phase label).
