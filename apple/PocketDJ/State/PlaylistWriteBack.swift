@@ -497,6 +497,7 @@ final class PlaylistWriteBack {
                     update(jobId) { $0.appleMusicId = resolved }
                     save()
                 } else {
+                    DiagLog.shared.log("writeback", "unresolvable jobId=\(jobId) title=\(job.title) artist=\(job.artist)")
                     update(jobId) {
                         $0.attempts += 1
                         $0.state = .unresolvable
@@ -522,14 +523,16 @@ final class PlaylistWriteBack {
                 $0.nextAttemptAtMs = nil
                 $0.settledAtMs = Self.nowMs
             }
+            DiagLog.shared.log("writeback", "delivered jobId=\(jobId) title=\(job.title)")
             return true
         } catch {
             let attempts = job.attempts + 1
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            let terminal = attempts >= Self.maxAttempts
             update(jobId) {
                 $0.attempts = attempts
                 $0.lastError = message
-                if attempts >= Self.maxAttempts {
+                if terminal {
                     $0.state = .failed
                     $0.nextAttemptAtMs = nil
                     $0.settledAtMs = Self.nowMs
@@ -537,6 +540,12 @@ final class PlaylistWriteBack {
                     $0.nextAttemptAtMs = Self.nowMs + Self.backoffMs(attempts)
                 }
             }
+            // The one diagnostic trace for this whole path — without it a failure like a
+            // transient 403 from MusicLibraryRequest is only ever visible as a screenshot of
+            // the in-app debug panel. attempts/terminal say whether the backoff retry will
+            // paper over this on its own or the job is now stuck.
+            DiagLog.shared.log("writeback",
+                "attempt failed jobId=\(jobId) title=\(job.title) attempts=\(attempts) terminal=\(terminal) error=\(message)")
             lastError = message
             return false
         }
