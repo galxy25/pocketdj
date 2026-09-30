@@ -926,6 +926,14 @@ final class RipsStore {
                 DiagLog.shared.log("rip", "passive rip not queued songId=\(songId) phase=\(view.phase.rawValue) error=\(view.error ?? "-")")
             }
             jobs[songId] = view
+            // Unlike the interactive ▶ path (`ensureURL`), this fire-and-forget request has
+            // no caller waiting on the result — without a background poll the row's phase
+            // freezes at whatever this one POST returned (searching/queued) forever, even
+            // once the server finishes ripping + analyzing seconds later. Mirror `ensureURL`
+            // and keep `jobs[songId]` live until the job actually terminates.
+            if let jobId = view.jobId, view.phase != .ready, view.phase != .error {
+                pollToReady(songId: songId, jobId: jobId)
+            }
         } catch {
             // Silent to playback, but never invisible to diagnostics.
             DiagLog.shared.log("rip", "passive rip failed songId=\(songId) error=\((error as NSError).domain)#\((error as NSError).code)")
