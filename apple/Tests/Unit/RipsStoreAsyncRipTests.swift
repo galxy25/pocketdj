@@ -108,6 +108,30 @@ final class RipsStoreAsyncRipTests: XCTestCase {
         XCTAssertEqual(rips.jobs["sng_1"]?.jobId, "job_2")
     }
 
+    /// Regression (2026-09-30): a passive rip fired while streaming elsewhere (Apple Music)
+    /// is fire-and-forget with NO caller waiting on the result — unlike the interactive ▶
+    /// path (`ensureURL`), which polls `/jobs/:id` until ready. Without its own background
+    /// poll, `jobs[songId]` freezes at whatever phase the single `/rip` POST returned
+    /// (queued/searching) even after the server finishes ripping + analyzing seconds later —
+    /// exactly the symptom Levi saw in History: every song stuck on "Searching…"/"Queued…"
+    /// forever despite the rip server showing them ready with full BPM/key/timbre. This
+    /// asserts the row's job state catches up once the background poll lands.
+    func testRequestRipIfNeededPollsUntilReadyAfterQueued() async {
+        let rips = makeStore()
+        RecordingURLProtocol.bodyByPath["/rip"] = Data(#"{"jobId":"job_1","songId":"sng_1","phase":"queued"}"#.utf8)
+        RecordingURLProtocol.bodyByPath["/jobs/job_1"] = Data(
+            #"{"jobId":"job_1","songId":"sng_1","phase":"ready","url":"https://s3.test/sng_1.mp3"}"#.utf8)
+        await rips.requestRipIfNeeded("sng_1")
+        XCTAssertEqual(rips.jobs["sng_1"]?.phase, .queued, "initial POST response recorded as-is")
+
+        let deadline = Date().addingTimeInterval(5)
+        while rips.jobs["sng_1"]?.phase != .ready, Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+        }
+        XCTAssertEqual(rips.jobs["sng_1"]?.phase, .ready,
+                       "background poll must update the row once the server finishes")
+    }
+
     // MARK: ripFromCloud flag in the POST body (omitted off, present on)
 
     func testRequestRipIfNeededOmitsCloudFlagWhenOff() async {
