@@ -186,6 +186,7 @@
 		4A0AB3125E050E99FF1B7C34 /* CollectionActivityStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D86835BD625D9184A2A579B5 /* CollectionActivityStoreTests.swift */; };
 		4A3AA6F211B418638811B976 /* SigV4.swift in Sources */ = {isa = PBXBuildFile; fileRef = 534721080A769A3FC887E608 /* SigV4.swift */; };
 		4AE7CC7D53DD3D19DBC5B894 /* AppleMusicPlaybackProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = CEE53668B264B16244CBCEF1 /* AppleMusicPlaybackProvider.swift */; };
+		4BE7C505FD583B319250C385 /* CollectionsAlphabeticalTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71E8023DB0081499BF605DC3 /* CollectionsAlphabeticalTests.swift */; };
 		4D0C744C62507A752563EFCF /* StudioFoldersTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BDE5713FB04603512577AF2 /* StudioFoldersTests.swift */; };
 		4D2B471E5A6C13F4BA25A961 /* WidgetNowPlayingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B4978B8669DF99AC562256F3 /* WidgetNowPlayingTests.swift */; };
 		4E55400AE121301B689DDDC3 /* DiagSecret.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1F634A81AF4FE88173C2FC3D /* DiagSecret.swift */; };
@@ -883,6 +884,7 @@
 		715AB831C0016619550FFEEA /* StudioStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioStore.swift; sourceTree = "<group>"; };
 		716673B40CDC4A04D4485070 /* DemuxModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxModels.swift; sourceTree = "<group>"; };
 		716F2667F0AAC0AADE06AAD0 /* StudioMIDIImport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioMIDIImport.swift; sourceTree = "<group>"; };
+		71E8023DB0081499BF605DC3 /* CollectionsAlphabeticalTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionsAlphabeticalTests.swift; sourceTree = "<group>"; };
 		724E20A01740CD3684F83596 /* StreamingService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingService.swift; sourceTree = "<group>"; };
 		725DEA73B0A1B7F94B3D335B /* VUMeterAndCueUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VUMeterAndCueUITests.swift; sourceTree = "<group>"; };
 		7266D9DD5E60E6B11B393E85 /* JukeboxView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JukeboxView.swift; sourceTree = "<group>"; };
@@ -1291,6 +1293,7 @@
 				7EC9B2E762FC19A8EAAE9B56 /* CollectionMixDownloaderTests.swift */,
 				06FEFD50647943DBFB287D1F /* CollectionOpenPerfTests.swift */,
 				5699B98E5ECF46FBDDFB34C0 /* CollectionRipBurnControllerTests.swift */,
+				71E8023DB0081499BF605DC3 /* CollectionsAlphabeticalTests.swift */,
 				85F233B547CE674B0B4A00A5 /* CollectionsBatchAddTests.swift */,
 				D1997B5567E77A4DA7AAD246 /* CollectionsCleanOnlyTests.swift */,
 				813419D6DFCB455E81782E7A /* CollectionsLossyDecodeTests.swift */,
@@ -2337,6 +2340,7 @@
 				CAE6BD0DF9750320AF3F9FA0 /* CollectionSortTests.swift in Sources */,
 				DCFC53DDDEC4A96BA00DE2AB /* CollectionStallFixTests.swift in Sources */,
 				87357294B2DEA9127BBCD302 /* CollectionTimelineTests.swift in Sources */,
+				4BE7C505FD583B319250C385 /* CollectionsAlphabeticalTests.swift in Sources */,
 				42658B018DC0D88CFCB6A8F4 /* CollectionsBatchAddTests.swift in Sources */,
 				A03FD5767CB993B8DE394B03 /* CollectionsCleanOnlyTests.swift in Sources */,
 				3E81CB42894CE13257AE9441 /* CollectionsLossyDecodeTests.swift in Sources */,
@@ -3114,7 +3118,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
@@ -3178,7 +3182,7 @@
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.0;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 1.0.1;
+				MARKETING_VERSION = 1.0.2;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";

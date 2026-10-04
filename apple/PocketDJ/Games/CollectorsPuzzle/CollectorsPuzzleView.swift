@@ -325,7 +325,7 @@ struct CollectorsPuzzleView: View {
 
     /// All playlists + pockets the membership filter can reference.
     private var allCollections: [(id: String, name: String)] {
-        collections.pockets.map { ($0.id, $0.name) } + collections.playlists.map { ($0.id, $0.name) }
+        collections.pocketsAZ.map { ($0.id, $0.name) } + collections.playlistsAZ.map { ($0.id, $0.name) }
     }
 
     private var membershipList: some View {

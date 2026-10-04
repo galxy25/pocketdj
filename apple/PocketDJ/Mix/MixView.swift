@@ -422,17 +422,17 @@ struct MixView: View {
         }
         if !collections.pockets.isEmpty {
             Section("Pockets") {
-                ForEach(collections.pockets) { p in Button(p.name) { pick(.pocket(p.id)) } }
+                ForEach(collections.pocketsAZ) { p in Button(p.name) { pick(.pocket(p.id)) } }
             }
         }
         if !collections.playlists.isEmpty {
             Section("Playlists") {
-                ForEach(collections.playlists) { p in Button(p.name) { pick(.playlist(p.id)) } }
+                ForEach(collections.playlistsAZ) { p in Button(p.name) { pick(.playlist(p.id)) } }
             }
         }
         if !collections.visibleSetlists.isEmpty {
             Section("Set lists") {
-                ForEach(collections.visibleSetlists) { s in Button(s.name ?? "Set list") { pick(.setlist(s.id)) } }
+                ForEach(collections.visibleSetlistsAZ) { s in Button(s.name ?? "Set list") { pick(.setlist(s.id)) } }
             }
         }
     }
@@ -925,21 +925,21 @@ private struct DeckView: View {
             }
             if !collections.pockets.isEmpty {
                 Section("Pockets") {
-                    ForEach(collections.pockets) { p in
+                    ForEach(collections.pocketsAZ) { p in
                         Button(p.name) { source = .pocket(p.id) }
                     }
                 }
             }
             if !collections.playlists.isEmpty {
                 Section("Playlists") {
-                    ForEach(collections.playlists) { p in
+                    ForEach(collections.playlistsAZ) { p in
                         Button(p.name) { source = .playlist(p.id) }
                     }
                 }
             }
             if !collections.visibleSetlists.isEmpty {
                 Section("Set lists") {
-                    ForEach(collections.visibleSetlists) { s in
+                    ForEach(collections.visibleSetlistsAZ) { s in
                         Button(s.name ?? "Set list") { source = .setlist(s.id) }
                     }
                 }
@@ -2760,17 +2760,17 @@ private struct TrackLoaderSheet: View {
         Menu {
             if !collections.pockets.isEmpty {
                 Section("Pockets") {
-                    ForEach(collections.pockets) { p in Button(p.name) { source = .pocket(p.id) } }
+                    ForEach(collections.pocketsAZ) { p in Button(p.name) { source = .pocket(p.id) } }
                 }
             }
             if !collections.playlists.isEmpty {
                 Section("Playlists") {
-                    ForEach(collections.playlists) { p in Button(p.name) { source = .playlist(p.id) } }
+                    ForEach(collections.playlistsAZ) { p in Button(p.name) { source = .playlist(p.id) } }
                 }
             }
             if !collections.visibleSetlists.isEmpty {
                 Section("Set lists") {
-                    ForEach(collections.visibleSetlists) { s in Button(s.name ?? "Set list") { source = .setlist(s.id) } }
+                    ForEach(collections.visibleSetlistsAZ) { s in Button(s.name ?? "Set list") { source = .setlist(s.id) } }
                 }
             }
         } label: {

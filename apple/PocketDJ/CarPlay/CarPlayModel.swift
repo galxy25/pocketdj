@@ -72,12 +72,12 @@ final class CarPlayModel {
     /// (Apple Music / iTunes mirrors, from `app.indexPlaylists`) — source rows are id-prefixed
     /// "src:" and carry a source badge in the subtitle.
     func playlists() -> [Row] {
-        let mine = collections.playlists.map { pl -> Row in
+        let mine = collections.playlistsAZ.map { pl -> Row in
             let ids = collections.playableIds(forPlaylist: pl.id)
             return Row(id: pl.id, title: pl.name, subtitle: songsSubtitle(resolvedCount(ids)),
                        artworkAlbumId: firstAlbumId(ids), isSong: false)
         }
-        let source = app.indexPlaylists.map { sp -> Row in
+        let source = app.indexPlaylists.sorted { CollectionsStore.azLess($0.name, $1.name) }.map { sp -> Row in
             Row(id: "src:\(sp.id)", title: sp.name,
                 subtitle: "\(songsSubtitle(resolvedCount(sp.songIds))) · \(sp.sourceName)",
                 artworkAlbumId: firstAlbumId(sp.songIds), isSong: false)
@@ -92,7 +92,7 @@ final class CarPlayModel {
     }
 
     func pockets() -> [Row] {
-        collections.pockets.map { pk in
+        collections.pocketsAZ.map { pk in
             let ids = collections.playableIds(forPocket: pk.id)
             return Row(id: pk.id, title: pk.name, subtitle: songsSubtitle(resolvedCount(ids)),
                        artworkAlbumId: firstAlbumId(ids), isSong: false)
@@ -135,8 +135,8 @@ final class CarPlayModel {
 
     /// Add-to destinations: pockets then playlists, each with a kind-prefixed target id.
     func addTargets() -> [Row] {
-        collections.pockets.map { Row(id: "pkt:\($0.id)", title: $0.name, subtitle: "Pocket", artworkAlbumId: nil, isSong: false) }
-        + collections.playlists.map { Row(id: "pls:\($0.id)", title: $0.name, subtitle: "Playlist", artworkAlbumId: nil, isSong: false) }
+        collections.pocketsAZ.map { Row(id: "pkt:\($0.id)", title: $0.name, subtitle: "Pocket", artworkAlbumId: nil, isSong: false) }
+        + collections.playlistsAZ.map { Row(id: "pls:\($0.id)", title: $0.name, subtitle: "Playlist", artworkAlbumId: nil, isSong: false) }
     }
 
     /// Add `songId` to the target encoded by `addTargets` (a `pkt:`/`pls:`-prefixed id). Playlists
@@ -279,13 +279,13 @@ final class CarPlayModel {
     }
 
     func mixCrates() -> (pockets: [MixCrate], playlists: [MixCrate], setlists: [MixCrate]) {
-        (collections.pockets.map {
+        (collections.pocketsAZ.map {
             MixCrate(id: MixSource.pocket($0.id).id, title: $0.name, source: .pocket($0.id))
         },
-         collections.playlists.map {
+         collections.playlistsAZ.map {
             MixCrate(id: MixSource.playlist($0.id).id, title: $0.name, source: .playlist($0.id))
         },
-         collections.visibleSetlists.map {
+         collections.visibleSetlistsAZ.map {
             MixCrate(id: MixSource.setlist($0.id).id, title: $0.name ?? "Set list", source: .setlist($0.id))
         })
     }

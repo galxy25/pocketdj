@@ -337,6 +337,10 @@ across launches — so a long crate of your own collections tucks away as neatly
 played**, **A–Z**, or **Last updated** — the choice **persists** and applies to your playlists,
 your pockets, folder contents, and each Shared source group alike.
 
+**Alphabetical everywhere else.** A–Z is the default on this screen, and every other place that
+lists your collections — the Mix crate pickers, Add-to menus, filters, Apple TV, CarPlay, and
+Siri/Shortcuts pickers — is alphabetical too (numbers sort naturally: Set 2 before Set 10).
+
 **Folders.** You can group playlists into **folders**:
 
 - **＋ New folder** — create one and name it,

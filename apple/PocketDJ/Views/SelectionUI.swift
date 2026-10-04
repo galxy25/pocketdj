@@ -155,8 +155,7 @@ struct SelectionBar: View {
             if !recents.isEmpty { Divider() }
             if !collections.pockets.isEmpty {
                 Menu("Pockets") {
-                    ForEach(collections.pockets.sorted {
-                        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { p in
+                    ForEach(collections.pocketsAZ) { p in
                         Button(p.name) { add(to: AddTarget(kind: .pocket, id: p.id)) }
                             .accessibilityIdentifier("selection-add-pocket-\(p.id)")
                     }
@@ -165,8 +164,7 @@ struct SelectionBar: View {
             }
             if !collections.playlists.isEmpty {
                 Menu("Playlists") {
-                    ForEach(collections.playlists.sorted {
-                        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }) { pl in
+                    ForEach(collections.playlistsAZ) { pl in
                         Button(pl.name) { add(to: AddTarget(kind: .playlist, id: pl.id)) }
                             .accessibilityIdentifier("selection-add-playlist-\(pl.id)")
                     }

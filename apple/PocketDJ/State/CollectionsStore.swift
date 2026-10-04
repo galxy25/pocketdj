@@ -279,6 +279,16 @@ final class CollectionsStore {
         let templates = Set(playlists.map(\.id)).union(pockets.map(\.id))
         return setlists.filter { templates.contains($0.playlistId) }
     }
+    /// A–Z (case/diacritic-insensitive, numeric-aware) views for every PICKER / MENU / remote
+    /// list. The stored arrays keep creation order; surfaces that list collections for a person
+    /// read these so "alphabetical by default" holds everywhere, not just on the Collections tab
+    /// (which layers the user's chosen `CollectionSortOrder` on top, A–Z by default).
+    var pocketsAZ: [Pocket] { pockets.sorted { Self.azLess($0.name, $1.name) } }
+    var playlistsAZ: [Playlist] { playlists.sorted { Self.azLess($0.name, $1.name) } }
+    var visibleSetlistsAZ: [Setlist] { visibleSetlists.sorted { Self.azLess($0.name ?? "Set list", $1.name ?? "Set list") } }
+    nonisolated static func azLess(_ a: String, _ b: String) -> Bool {
+        a.localizedStandardCompare(b) == .orderedAscending
+    }
     /// Setlists for a playlist, most-recent first (a performance history). The reserved
     /// "Now Playing" setlist is never a member (its synthetic parent id is filtered).
     func setlists(forPlaylist id: String) -> [Setlist] {

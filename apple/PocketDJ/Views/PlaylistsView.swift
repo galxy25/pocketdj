@@ -638,7 +638,7 @@ struct PlaylistsView: View {
         // Add as a pocket-ref into an existing playlist (the "nesting" add)
         if !collections.playlists.isEmpty {
             Menu {
-                ForEach(collections.playlists) { pl in
+                ForEach(collections.playlistsAZ) { pl in
                     Button {
                         collections.addPocketRef(pocket.id, toPlaylist: pl.id,
                                                  sequenceId: pl.sequences.first?.nodeId)
