@@ -166,6 +166,11 @@ order) or **🔀 Shuffle**. The engine plays the whole collection **end-to-end a
 **auto-loading the next track** onto the free deck and running a **timed crossfade** between them
 (the lead-in and fade lengths come from Settings).
 
+**Crate A + Crate B.** The setup row has two pickers — **A** and **B** (B defaults to *Same as A*).
+Pick two different collections and the mix blends them: each crate shuffles on its own and the queue
+alternates A, B, A, B… (a song in both plays once). Same crate-per-deck mix the Apple TV and CarPlay
+Mix tabs offer, now on iPhone, iPad, Mac and Vision Pro.
+
 While it runs, a live **"Auto-mixing"** banner shows the running status (**N / M**) with a **Stop**.
 The banner lives in the body of the screen (not only the nav bar), so on an iPhone — where a crowded
 toolbar collapses extras into a "•••" menu — the **Stop stays reachable** the whole time.

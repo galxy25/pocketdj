@@ -47,6 +47,7 @@ struct MixView: View {
     @Environment(BurnStore.self) private var burns
     @Environment(StudioStore.self) private var studio
     @Environment(SettingsStore.self) private var settings
+    @Environment(IntentServices.self) private var intents
     @Environment(MixSessionStore.self) private var mixSessions
     @Environment(MixRecorder.self) private var recorder
     @Environment(JukeboxStore.self) private var jukebox
@@ -65,6 +66,10 @@ struct MixView: View {
     @State private var loaderDeck: MixEngine.Deck?
     /// The GLOBAL collection Auto mode plays end-to-end (distinct from the per-deck sources).
     @State private var autoSource: MixSource?
+    /// Crate B for a two-crate Auto mix (the CarPlay / TV "Deck B"). nil ⇒ "same as Crate A" —
+    /// the ordinary single-collection mix.
+    @State private var autoSourceB: MixSource?
+    @State private var autoStartError: String?
     /// Session rename alert + reset confirmation.
     @State private var renaming = false
     @State private var nameDraft = ""
@@ -144,6 +149,7 @@ struct MixView: View {
         // Auto mode pins BOTH decks' load source to the auto-mix collection (so a Pause → hand-load-more
         // flow needs no per-deck source picking). Fires when you pick the collection or flip on Auto.
         .onChange(of: autoSource) { syncDeckSourcesToAuto(); beginDownload(autoSource) }
+        .onChange(of: autoSourceB) { syncDeckSourcesToAuto(); beginDownload(autoSource) }
         .onChange(of: engine.autoEnabled) { syncDeckSourcesToAuto() }
         // Picking a collection for a MANUAL mix (either deck's source menu / loader sheet) starts
         // its download run too — `begin` is idempotent per source, so the auto-mode mirroring above
@@ -410,34 +416,45 @@ struct MixView: View {
         }
     }
 
-    @ViewBuilder private var autoSourceMenuItems: some View {
+    @ViewBuilder private func autoSourceMenuItems(pick: @escaping (MixSource) -> Void) -> some View {
         if collections.pockets.isEmpty && collections.playlists.isEmpty && collections.visibleSetlists.isEmpty {
             Text("No pockets, playlists, or set lists yet")
         }
         if !collections.pockets.isEmpty {
             Section("Pockets") {
-                ForEach(collections.pockets) { p in Button(p.name) { autoSource = .pocket(p.id) } }
+                ForEach(collections.pockets) { p in Button(p.name) { pick(.pocket(p.id)) } }
             }
         }
         if !collections.playlists.isEmpty {
             Section("Playlists") {
-                ForEach(collections.playlists) { p in Button(p.name) { autoSource = .playlist(p.id) } }
+                ForEach(collections.playlists) { p in Button(p.name) { pick(.playlist(p.id)) } }
             }
         }
         if !collections.visibleSetlists.isEmpty {
             Section("Set lists") {
-                ForEach(collections.visibleSetlists) { s in Button(s.name ?? "Set list") { autoSource = .setlist(s.id) } }
+                ForEach(collections.visibleSetlists) { s in Button(s.name ?? "Set list") { pick(.setlist(s.id)) } }
             }
         }
     }
 
-    private var autoSourceName: String? {
-        switch autoSource {
+    private func crateName(_ source: MixSource?) -> String? {
+        switch source {
         case .pocket(let id):   return collections.pocket(id)?.name
         case .playlist(let id): return collections.playlist(id)?.name
         case .setlist(let id):  return collections.setlist(id)?.name ?? "Set list"
         case nil:               return nil
         }
+    }
+
+    private var autoSourceName: String? { crateName(autoSource) }
+
+    /// B is a real second crate only when it differs from A.
+    private var autoCrateB: MixSource? { autoSourceB == autoSource ? nil : autoSourceB }
+
+    /// Every collection the auto mix pulls from — the downloader tracks the UNION.
+    private var autoDownloadSources: [MixSource] {
+        guard let a = autoSource else { return [] }
+        return autoCrateB.map { [a, $0] } ?? [a]
     }
 
     /// In-CONTENT Auto-mode setup row (shown in Auto mode before a mix starts): the collection
@@ -448,13 +465,21 @@ struct MixView: View {
             HStack(spacing: 10) {
                 Image(systemName: "wand.and.stars").foregroundStyle(Theme.accent)
                 Menu {
-                    autoSourceMenuItems
+                    autoSourceMenuItems { autoSource = $0 }
                 } label: {
-                    Label(autoSourceName ?? engine.autoSourceLabel ?? "Pick a collection",
-                          systemImage: "rectangle.stack")
+                    Label("A · \(autoSourceName ?? engine.autoSourceLabel ?? "Pick a collection")",
+                          systemImage: "a.circle.fill")
                         .lineLimit(1)
                 }
                 .accessibilityIdentifier("mix-auto-source")
+                Menu {
+                    Button("Same as Crate A") { autoSourceB = nil }
+                    autoSourceMenuItems { autoSourceB = $0 }
+                } label: {
+                    Label("B · \(crateName(autoSourceB) ?? "Same as A")", systemImage: "b.circle.fill")
+                        .lineLimit(1)
+                }
+                .accessibilityIdentifier("mix-auto-source-b")
                 Spacer(minLength: 8)
                 Button { startAuto(shuffled: false) } label: { Label("Play", systemImage: "play.fill") }
                     .disabled(autoSource == nil)
@@ -469,6 +494,11 @@ struct MixView: View {
             }
             .buttonStyle(.bordered)
             .tint(Theme.accent)
+            if let autoStartError {
+                Label(autoStartError, systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(Theme.danger)
+                    .accessibilityIdentifier("mix-auto-error")
+            }
             glideToggles                                  // FX Glide · Mix Glide (arm before Play)
         }
         .padding(12)
@@ -595,12 +625,29 @@ struct MixView: View {
     private func syncDeckSourcesToAuto() {
         guard engine.autoEnabled, let s = autoSource else { return }
         sourceA = s
-        sourceB = s
+        sourceB = autoCrateB ?? s
     }
 
     private func startAuto(shuffled: Bool) {
         guard let src = autoSource else { return }
-        sourceA = src; sourceB = src           // both decks browse the auto collection (for hand-loading on Pause)
+        autoStartError = nil
+        sourceA = src; sourceB = autoCrateB ?? src   // decks browse the auto crates (for hand-loading on Pause)
+        if let b = autoCrateB {
+            // Two crates — the same door CarPlay + TV use: per-crate shuffle, A0,B0,A1,B1…
+            // interleave, union download run. allowPendingStart: an unburned crate starts the
+            // download and the mix begins on the first landing.
+            Task {
+                do {
+                    _ = try await intents.startAutoMix(deckA: src, deckB: b, shuffle: shuffled,
+                                                       allowPendingStart: true)
+                    IntentDonations.startedAutoMix(source: src, shuffle: shuffled, collections: collections)
+                } catch {
+                    autoStartError = String(localized: (error as? PocketDJIntentError)?.localizedStringResource
+                        ?? "Those crates can’t start a mix right now.")
+                }
+            }
+            return
+        }
         downloader.begin(source: src)          // (re)start the collection pull — idempotent per source
         let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: src)
         let items = loadables.map { l in
@@ -622,6 +669,9 @@ struct MixView: View {
     /// Kick the download pipeline for a freshly-picked mix collection (nil-safe onChange funnel).
     private func beginDownload(_ source: MixSource?) {
         guard let source else { return }
+        // Auto mode with two crates: ALWAYS the union set, from every funnel (deck-source
+        // onChange included) — a single-source `begin` would cancel the union run.
+        if engine.autoEnabled, autoCrateB != nil { downloader.begin(sources: autoDownloadSources); return }
         downloader.begin(source: source)
     }
 
