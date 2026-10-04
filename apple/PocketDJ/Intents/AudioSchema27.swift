@@ -332,9 +332,9 @@ struct AudioPlaylistEntity: IndexedEntity {
 
     @MainActor
     static func all(in collections: CollectionsStore) -> [AudioPlaylistEntity] {
-        collections.playlists.filter { $0.id != nowPlayingPlaylistId }
+        collections.playlistsAZ.filter { $0.id != nowPlayingPlaylistId }
             .map { AudioPlaylistEntity(playlist: $0, collections: collections) }
-        + collections.pockets.map { AudioPlaylistEntity(pocket: $0, collections: collections) }
+        + collections.pocketsAZ.map { AudioPlaylistEntity(pocket: $0, collections: collections) }
     }
 }
 

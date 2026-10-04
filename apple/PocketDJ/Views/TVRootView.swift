@@ -318,21 +318,21 @@ struct TVMixView: View {
         }
         if !collections.pockets.isEmpty {
             Section("Pockets") {
-                ForEach(collections.pockets) { p in
+                ForEach(collections.pocketsAZ) { p in
                     Button(p.name) { pick(.pocket(p.id)) }
                 }
             }
         }
         if !collections.playlists.isEmpty {
             Section("Playlists") {
-                ForEach(collections.playlists) { p in
+                ForEach(collections.playlistsAZ) { p in
                     Button(p.name) { pick(.playlist(p.id)) }
                 }
             }
         }
         if !collections.visibleSetlists.isEmpty {
             Section("Set lists") {
-                ForEach(collections.visibleSetlists) { s in
+                ForEach(collections.visibleSetlistsAZ) { s in
                     Button(s.name ?? "Set list") { pick(.setlist(s.id)) }
                 }
             }
@@ -1151,8 +1151,8 @@ struct TVBrowseView: View {
             Set(albumHits.map(\.artist))).filter { $0.localizedCaseInsensitiveContains(q) })
             .sorted().prefix(6)
         let norm = q.lowercased()
-        let playlistHits = collections.playlists.filter { $0.name.lowercased().contains(norm) }.prefix(6)
-        let pocketHits = collections.pockets.filter { $0.name.lowercased().contains(norm) }.prefix(6)
+        let playlistHits = collections.playlistsAZ.filter { $0.name.lowercased().contains(norm) }.prefix(6)
+        let pocketHits = collections.pocketsAZ.filter { $0.name.lowercased().contains(norm) }.prefix(6)
         let setlistHits = collections.visibleSetlists.filter { ($0.name ?? "").lowercased().contains(norm) }.prefix(6)
         let empty = songHits.isEmpty && albumHits.isEmpty && artistHits.isEmpty
             && playlistHits.isEmpty && pocketHits.isEmpty && setlistHits.isEmpty
@@ -1235,7 +1235,7 @@ struct TVBrowseView: View {
         List {
             if !collections.playlists.isEmpty {
                 Section("Playlists") {
-                    ForEach(collections.playlists) { p in
+                    ForEach(collections.playlistsAZ) { p in
                         row(value: p, icon: "music.note.list", name: p.name,
                             ids: { collections.playableIds(forPlaylist: p.id) })
                             .accessibilityIdentifier("tv-browse-playlist-\(p.id)")
@@ -1244,7 +1244,7 @@ struct TVBrowseView: View {
             }
             if !collections.pockets.isEmpty {
                 Section("Pockets") {
-                    ForEach(collections.pockets) { p in
+                    ForEach(collections.pocketsAZ) { p in
                         row(value: p, icon: "rectangle.stack", name: p.name,
                             ids: { collections.playableIds(forPocket: p.id) })
                             .accessibilityIdentifier("tv-browse-pocket-\(p.id)")
@@ -1253,7 +1253,7 @@ struct TVBrowseView: View {
             }
             if !collections.visibleSetlists.isEmpty {
                 Section("Set lists") {
-                    ForEach(collections.visibleSetlists) { s in
+                    ForEach(collections.visibleSetlistsAZ) { s in
                         row(value: s, icon: "list.number", name: s.name ?? "Set list",
                             ids: { collections.playableIds(forSetlist: s.id) })
                             .accessibilityIdentifier("tv-browse-setlist-\(s.id)")

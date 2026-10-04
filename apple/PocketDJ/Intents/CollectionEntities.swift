@@ -31,7 +31,7 @@ struct PlaylistEntity: AppEntity, IndexedEntity {
 
     /// All speakable playlists (feeds Siri's phrase vocabulary + Shortcuts pickers).
     @MainActor static func all(in collections: CollectionsStore) -> [PlaylistEntity] {
-        collections.playlists.filter { $0.id != nowPlayingPlaylistId }.map(PlaylistEntity.init)
+        collections.playlistsAZ.filter { $0.id != nowPlayingPlaylistId }.map(PlaylistEntity.init)
     }
     @MainActor static func matching(_ string: String, in collections: CollectionsStore) -> [PlaylistEntity] {
         all(in: collections).filter { $0.name.localizedCaseInsensitiveContains(string) }
@@ -73,7 +73,7 @@ struct PocketEntity: AppEntity, IndexedEntity {
     }
 
     @MainActor static func all(in collections: CollectionsStore) -> [PocketEntity] {
-        collections.pockets.map(PocketEntity.init)
+        collections.pocketsAZ.map(PocketEntity.init)
     }
     @MainActor static func matching(_ string: String, in collections: CollectionsStore) -> [PocketEntity] {
         all(in: collections).filter { $0.name.localizedCaseInsensitiveContains(string) }
@@ -141,10 +141,11 @@ struct AutoMixSourceEntity: AppEntity {
     /// Pockets first (the primary auto-mix source), then playlists, then setlist history —
     /// the same groups the Mix tab's collection picker offers. Now Playing filtered.
     @MainActor static func all(in collections: CollectionsStore) -> [AutoMixSourceEntity] {
-        let pockets = collections.pockets.map(AutoMixSourceEntity.init(pocket:))
-        let playlists = collections.playlists.map(AutoMixSourceEntity.init(playlist:))
+        let pockets = collections.pocketsAZ.map(AutoMixSourceEntity.init(pocket:))
+        let playlists = collections.playlistsAZ.map(AutoMixSourceEntity.init(playlist:))
         let setlists = collections.setlists
             .filter { $0.id != nowPlayingSetlistId }
+            .sorted { CollectionsStore.azLess($0.name ?? "Set list", $1.name ?? "Set list") }
             .map(AutoMixSourceEntity.init(setlist:))
         return pockets + playlists + setlists
     }

@@ -308,11 +308,11 @@ private struct MembershipPicker: View {
             if !any {
                 if !collections.playlists.isEmpty {
                     Text("Playlists").font(.caption).foregroundStyle(.secondary)
-                    ForEach(collections.playlists) { row("\u{266B} \($0.name)", id: $0.id) }
+                    ForEach(collections.playlistsAZ) { row("\u{266B} \($0.name)", id: $0.id) }
                 }
                 if !collections.pockets.isEmpty {
                     Text("Pockets").font(.caption).foregroundStyle(.secondary)
-                    ForEach(collections.pockets) { row("\u{25D6} \($0.name)", id: $0.id) }
+                    ForEach(collections.pocketsAZ) { row("\u{25D6} \($0.name)", id: $0.id) }
                 }
             }
         }
