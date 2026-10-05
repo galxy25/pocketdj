@@ -1,9 +1,9 @@
 {
  "v": 1,
- "generatedAt": "2026-10-04T11:01:05.142Z",
+ "generatedAt": "2026-10-05T11:01:05.616Z",
  "counts": {
   "audioBearing": 16289,
-  "candidates": 94214,
+  "candidates": 94215,
   "aliases": 3672,
   "rejectedLane1": 0
  },
