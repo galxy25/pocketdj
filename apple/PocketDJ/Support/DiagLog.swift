@@ -10,9 +10,10 @@ import CryptoKit
 ///   • TestFlight/Debug ONLY — gated on the sandbox App Store receipt (App Store builds have
 ///     a production receipt and never log). No user data: callers log EVENT facts (states,
 ///     error codes, counts, booleans); never tokens, URLs with credentials, names, or titles.
-///   • The embedded key is a DELIBERATE scoped tradeoff (the `recEngineEnrollSecret`
-///     precedent): PutObject-only, single `diag/*` prefix, private bucket, 14-day lifecycle
-///     expiry. Worst-case extraction = someone can write expiring text files to a log prefix.
+///   • The writer key is NOT in the binary or in git: the owner enters it in Settings ▸ Debug
+///     (Keychain, iCloud-synced; see `DiagCredentialStore`). It is scoped PutObject-only on
+///     the single `diag/*` prefix of a private bucket with 14-day lifecycle expiry. With no
+///     key configured every call is a silent no-op.
 ///   • Fire-and-forget: upload failures are swallowed — diagnostics must never disturb the
 ///     app, and a device that can't reach S3 simply reports nothing.
 ///
@@ -34,9 +35,9 @@ import CryptoKit
 final class DiagLog {
     static let shared = DiagLog()
 
-    // Scoped diag-writer identity (IAM user pocketdj-diag-writer; PutObject on diag/* only).
-    private static let accessKey = "REDACTED_ACCESS_KEY_ID"
-    private static let secretKey = DiagSecret.value
+    /// Diag-writer identity (IAM user pocketdj-diag-writer; PutObject on diag/* only), read
+    /// from the Keychain. nil ⇒ logging is a no-op. Refreshed by `reloadCredentials()`.
+    private var credentials: DiagCredentialStore.Credentials?
     private static let bucketHost = "pocketdj-logs-011183829623.s3.us-west-2.amazonaws.com"
     private static let region = "us-west-2"
 
@@ -80,6 +81,8 @@ final class DiagLog {
         enabled = sandbox && ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] == nil
             && NSClassFromString("XCTestCase") == nil
 
+        credentials = enabled ? DiagCredentialStore().load() : nil
+
         let defaults = UserDefaults.standard
         let deviceId: String
         if let existing = defaults.string(forKey: "pdj.diag.deviceId") {
@@ -102,15 +105,26 @@ final class DiagLog {
         let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
         keyBase = "diag/\(platform)-\(deviceId)/\(stamp)-b\(build)"
 
-        if enabled {
+        if enabled, credentials != nil {
             log("launch", "build=\(build) platform=\(platform) device=\(deviceId)")
+        }
+    }
+
+    /// Re-read the Keychain after the owner enters/clears the key in Settings ▸ Debug. Lines
+    /// logged while no key was configured were dropped, not buffered.
+    func reloadCredentials() {
+        guard enabled else { return }
+        let had = credentials != nil
+        credentials = DiagCredentialStore().load()
+        if !had, credentials != nil {
+            log("launch", "diag key configured; late start")
         }
     }
 
     /// Append one event line. `category == "error"` flushes immediately. NEVER pass secrets —
     /// log presence/length/codes, not values (titles ride ONLY the `telemetry` lane).
     func log(_ category: String, _ message: String) {
-        guard enabled, totalLines < Self.sessionLineLimit else { return }
+        guard enabled, credentials != nil, totalLines < Self.sessionLineLimit else { return }
         totalLines += 1
         let ts = Self.iso.string(from: Date())
         if totalLines == Self.sessionLineLimit {
@@ -147,7 +161,7 @@ final class DiagLog {
     /// (there is no termination callback worth trusting) — push them out now. Fire-and-forget
     /// like every other flush; iOS grants comfortably enough runway for one small PUT.
     func flushOnBackground() {
-        guard enabled else { return }
+        guard enabled, credentials != nil else { return }
         flushNow()
     }
 
@@ -171,8 +185,9 @@ final class DiagLog {
         let prev = uploadChain
         uploadChain = Task { @MainActor [weak self] in
             await prev?.value
-            guard let latest = self?.pendingBodies.removeValue(forKey: key) else { return }
-            await Task.detached(priority: .utility) { await Self.put(key: key, body: latest) }.value
+            guard let self, let latest = self.pendingBodies.removeValue(forKey: key),
+                  let creds = self.credentials else { return }
+            await Task.detached(priority: .utility) { await Self.put(key: key, body: latest, credentials: creds) }.value
         }
     }
 
@@ -197,7 +212,7 @@ final class DiagLog {
 
     // MARK: SigV4 PUT (pure CryptoKit — no SDK)
 
-    private static func put(key: String, body: Data) async {
+    private static func put(key: String, body: Data, credentials: DiagCredentialStore.Credentials) async {
         let now = Date()
         let amzFmt = DateFormatter()
         amzFmt.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
@@ -219,7 +234,7 @@ final class DiagLog {
         func hmac(_ key: Data, _ msg: String) -> Data {
             Data(HMAC<SHA256>.authenticationCode(for: Data(msg.utf8), using: SymmetricKey(data: key)))
         }
-        let kDate = hmac(Data(("AWS4" + secretKey).utf8), shortDate)
+        let kDate = hmac(Data(("AWS4" + credentials.secret).utf8), shortDate)
         let kRegion = hmac(kDate, region)
         let kService = hmac(kRegion, "s3")
         let kSigning = hmac(kService, "aws4_request")
@@ -230,7 +245,7 @@ final class DiagLog {
         request.setValue(amzDate, forHTTPHeaderField: "x-amz-date")
         request.setValue(payloadHash, forHTTPHeaderField: "x-amz-content-sha256")
         request.setValue(
-            "AWS4-HMAC-SHA256 Credential=\(accessKey)/\(scope), SignedHeaders=\(signedHeaders), Signature=\(signature)",
+            "AWS4-HMAC-SHA256 Credential=\(credentials.accessKeyID)/\(scope), SignedHeaders=\(signedHeaders), Signature=\(signature)",
             forHTTPHeaderField: "Authorization")
         request.httpBody = body
         _ = try? await URLSession.shared.data(for: request)   // fire-and-forget
