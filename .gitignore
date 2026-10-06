@@ -87,3 +87,7 @@ scripts/lambda/rec-engine/.endpoint-url.txt
 # committed near it risks publishing this to every other user.
 /playcounts.json
 *-playcounts.json
+
+# diag key must never be compiled in or tracked (lives in Keychain; see DiagCredentialStore)
+apple/PocketDJ/Support/DiagSecret*.swift
+scripts/gen-diag-secret.sh

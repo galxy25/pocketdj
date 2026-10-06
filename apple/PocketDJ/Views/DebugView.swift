@@ -16,6 +16,9 @@ struct DebugView: View {
     @State private var exportSession: DebugSessionStore.DebugSession?
     @State private var exportText = ""
     @State private var confirmDeleteAll = false
+    @State private var diagKeyID = ""
+    @State private var diagKeySecret = ""
+    @State private var diagKeyStored = DiagCredentialStore().load() != nil
 
     private var diag: MixDiag { MixDiag.shared }
     private var archive: DebugSessionStore { DebugSessionStore.shared }
@@ -36,6 +39,7 @@ struct DebugView: View {
             } footer: {
                 Text("Streams every action and screen to PocketDJ's private diagnostic bucket while you use the app — including CarPlay — so a session can be debugged remotely. TestFlight/debug builds only; turn off when not needed.")
             }
+            diagKeySection
             sessionsSection
             // Both diagnostic values here exist to be QUOTED somewhere else — the build
             // identity into a bug report, the iCloud hash into Config.ownerICloudHashes — so
@@ -141,6 +145,43 @@ struct DebugView: View {
         #else
         UIPasteboard.general.string = s
         #endif
+    }
+
+    /// The S3 diag-writer key lives ONLY in the Keychain (iCloud-synced to the owner's other
+    /// devices) — never in the binary, git, or SettingsStore. Fields clear after Save so the
+    /// secret is never re-displayed.
+    private var diagKeySection: some View {
+        Section {
+            if diagKeyStored {
+                LabeledContent("Diag key", value: "Stored")
+                Button("Remove diag key", role: .destructive) {
+                    DiagCredentialStore().clear()
+                    diagKeyStored = false
+                    DiagLog.shared.reloadCredentials()
+                }
+                .accessibilityIdentifier("debug-diagkey-remove")
+            }
+            TextField("Access key ID", text: $diagKeyID)
+                .autocorrectionDisabled()
+                #if !os(macOS)
+                .textInputAutocapitalization(.never)
+                #endif
+                .accessibilityIdentifier("debug-diagkey-id")
+            SecureField("Secret access key", text: $diagKeySecret)
+                .accessibilityIdentifier("debug-diagkey-secret")
+            Button("Save diag key") {
+                DiagCredentialStore().save(accessKeyID: diagKeyID, secret: diagKeySecret)
+                diagKeyID = ""; diagKeySecret = ""
+                diagKeyStored = DiagCredentialStore().load() != nil
+                DiagLog.shared.reloadCredentials()
+            }
+            .disabled(diagKeyID.isEmpty || diagKeySecret.isEmpty)
+            .accessibilityIdentifier("debug-diagkey-save")
+        } header: {
+            Text("Remote diagnostics key")
+        } footer: {
+            Text("Write-only S3 key for the diagnostic bucket. Stored in the Keychain and synced via iCloud Keychain; with no key, remote logging does nothing.")
+        }
     }
 
     /// Persisted preference + live push into the logger (whose singleton may already exist);
