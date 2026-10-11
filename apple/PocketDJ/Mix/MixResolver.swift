@@ -1,7 +1,8 @@
 import Foundation
 
 /// One LOADABLE deck candidate — a song that is actually present on disk as a BURNED file
-/// (so a deck's AVAudioFile can open it). Notes/text/un-burned songs never become a
+/// (so a deck's AVAudioFile can open it), or — in streaming mode — one the deck can STREAM
+/// (ripped, not yet downloaded; see `MixResolver.streamable`). Notes/text/un-burned songs never become a
 /// MixLoadable (the resolver drops them — "degrade gracefully"). Snapshot metadata is inlined so
 /// the picker row reads standalone, exactly like a setlist freezes its tracks.
 struct MixLoadable: Identifiable, Hashable {
@@ -27,6 +28,9 @@ struct MixResolver {
     /// Studio store — resolves PERFORMANCE ITEMS (`smp_`/`lp_`/`ptn_`/`tk_`), which have no
     /// BurnStore file, into loadable decks with their on-device beat grid + detected key.
     let studio: StudioStore
+    /// STREAMING MODE seam (`MixEngine.canStream`): a ripped-but-not-burned song is loadable
+    /// too — the deck streams it while it downloads. nil ⇒ on-disk only (the pre-streaming rule).
+    var streamable: ((String) -> Bool)? = nil
 
     /// Ordered LOADABLE items for a deck source. Pocket → DAG-resolved song ids; playlist →
     /// catalog-resolved song ids (albums/pockets expanded, same walk playback already uses —
@@ -106,8 +110,11 @@ struct MixResolver {
         }
     }
 
-    /// A song is loadable IFF its burned file exists on disk. Uses the NON-HOLDING existence
-    /// check (`BurnStore.localURL`) so enumerating a long source never opens N security scopes —
-    /// the deck re-acquires a HELD handle (`localURLForPlayback`) only when it actually loads.
-    private func isLoadable(_ songId: String) -> Bool { burns.localURL(forSong: songId) != nil }
+    /// A song is loadable IFF its burned file exists on disk — or, in streaming mode, it can be
+    /// streamed. Uses the NON-HOLDING existence check (`BurnStore.localURL`) so enumerating a long
+    /// source never opens N security scopes — the deck re-acquires a HELD handle
+    /// (`localURLForPlayback`) only when it actually loads.
+    private func isLoadable(_ songId: String) -> Bool {
+        burns.localURL(forSong: songId) != nil || streamable?(songId) == true
+    }
 }

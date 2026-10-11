@@ -521,6 +521,53 @@ final class MixEngine {
     @ObservationIgnored private var beatPulseEnabled = false
     @ObservationIgnored private var releases: [Deck: () -> Void] = [:]
     @ObservationIgnored private var paths: [Deck: String] = [:]
+
+    // MARK: Streaming mode (decks playing a file that is still downloading)
+    //
+    // A deck asked for a ripped-but-not-burned song loads it STREAMING (`loadStreaming`): the
+    // track is committed to the deck immediately (so the auto machine's `loadAuto` succeeds and
+    // the queue never waits), and `pumpStream` attaches the growing file once its first seconds
+    // land. `endFrames` is the schedulable FRONTIER while streaming — every file-based path
+    // (seek / restart / loop / stems-off re-prime / ensure) already bounds itself by it — and the
+    // pump APPENDS a segment from a fresh `AVAudioFile` open as bytes arrive (segments chained
+    // from successive opens of a growing LAME mp3 render bit-identical to one segment). When the
+    // download completes the deck swaps to the final (adopted burn) file and is an ordinary deck.
+
+    /// Wired at app init; nil in tests ⇒ streaming is off and `load` behaves exactly as before.
+    @ObservationIgnored var streamer: MixStreamLoader?
+    /// The stream each still-streaming deck plays (nil once complete → ordinary file deck).
+    @ObservationIgnored private var deckStreams: [Deck: MixStreamLoader.Stream] = [:] {
+        didSet { publishStreamState() }
+    }
+    /// The playhead is HELD: not enough bytes yet at the load / after a seek past the frontier /
+    /// on an underrun. The tick doesn't advance a holding deck; the pump resumes it.
+    @ObservationIgnored private var streamHolding: [Deck: Bool] = [:] {
+        didSet { publishStreamState() }
+    }
+    /// OBSERVABLE mirrors for the deck UI (the plumbing above is observation-ignored): which decks
+    /// are waiting on bytes (the "Buffering…" indicator) and which are still streaming (the
+    /// waveform re-reads once the file is complete). Written only on change.
+    private(set) var bufferingDecks: Set<Deck> = []
+    private(set) var streamingDecks: Set<Deck> = []
+    private func publishStreamState() {
+        let buffering = Set(Deck.allCases.filter { streamHolding[$0] == true && deckStreams[$0] != nil })
+        let streaming = Set(deckStreams.keys)
+        if buffering != bufferingDecks { bufferingDecks = buffering }
+        if streaming != streamingDecks { streamingDecks = streaming }
+    }
+    /// The catalog length the load asked for (the analog window), until the file attaches.
+    @ObservationIgnored private var streamWindowMs: [Deck: Int] = [:]
+    /// The song window's END in file frames once attached (`endFrames` is the frontier until then).
+    @ObservationIgnored private var streamFullEnd: [Deck: AVAudioFramePosition] = [:]
+    /// Bytes of file per second of audio, learned at attach (nil ⇒ the header didn't claim the
+    /// full length — play only once complete).
+    @ObservationIgnored private var streamBytesPerSecond: [Deck: Double] = [:]
+    /// Seconds of runway needed past the playhead to start / to resume after an underrun.
+    nonisolated static let streamStartRunway: Double = 2
+    nonisolated static let streamResumeRunway: Double = 4
+    /// Bytes counted as present can include a torn trailing mp3 frame; never schedule the last
+    /// stretch before the frontier.
+    nonisolated static let streamFrontierMargin: Double = 1.5
     /// Four stem player nodes per deck, all summing into the deck's `inputMixer` (so they ride the
     /// same tempo/pitch/effect/crossfader chain as the main file). Idle until stem mode wires real
     /// files; their burn-folder scope is held in `stemReleases`.
@@ -1114,6 +1161,7 @@ final class MixEngine {
         stemReleases[.a]?(); stemReleases[.a] = nil
         stemReleases[.b]?(); stemReleases[.b] = nil
         stemFiles = [:]
+        clearStream(.a); clearStream(.b)
         mutate(.a) { $0.loaded = nil; $0.startMs = nil }
         mutate(.b) { $0.loaded = nil; $0.startMs = nil }
         #if os(iOS)
@@ -1162,7 +1210,20 @@ final class MixEngine {
                      on: deck)
             return
         }
-        guard let handle = burns.localURLForPlaybackPreferringCut(forSong: songId) else { return }
+        guard let handle = burns.localURLForPlaybackPreferringCut(forSong: songId) else {
+            // STREAMING MODE: not on disk yet, but ripped — play it while it downloads.
+            if let streamer, streamer.canStream(songId) {
+                let grid = burns.beatGrid(forSong: songId)
+                loadStreaming(songId: songId, lengthMs: lengthMs,
+                              meta: LoadedTrack(songId: songId, title: title, artist: artist,
+                                                bpm: bpm, camelot: camelot, key: key, albumId: albumId,
+                                                gridBpm: grid?.bpm, firstDownbeatMs: grid?.firstDownbeatMs,
+                                                steady: grid?.steady, beatsMs: nil, downbeatsMs: nil),
+                              on: deck)
+                hydrateBeatGrid(deck, songId: songId)
+            }
+            return
+        }
         // A per-song CUT plays its whole file from 0:00; an analog shared-album fallback SEEKS to the
         // song's startMs AND bounds playback to the song's lengthMs window, so it stops at the song
         // boundary instead of bleeding into the next song on the side.
@@ -1204,6 +1265,7 @@ final class MixEngine {
         guard count > 0 else { release?(); return }    // over-length startMs / empty file — keep current track
 
         player.stop()
+        clearStream(deck)                  // a real file load supersedes any stream on this deck
         engine.connect(player, to: inputMixer, format: file.processingFormat)   // only the varying link
         releases[deck]?()                  // release the PREVIOUS file's scope, hold the new one
         releases[deck] = release
@@ -1216,6 +1278,12 @@ final class MixEngine {
         player.scheduleSegment(file, startingFrame: start, frameCount: AVAudioFrameCount(count),
                                at: nil, completionHandler: nil)
         fileScheduled[deck] = true
+        commitLoad(deck, meta: meta, startMs: startMs, durationSeconds: Double(count) / sr)
+    }
+
+    /// The shared tail of every deck load (file or stream): the new track takes the deck with
+    /// tempo/pitch/lead/stems/loop reset, the card + session log + durable session learn about it.
+    private func commitLoad(_ deck: Deck, meta: LoadedTrack, startMs: Int?, durationSeconds: Double) {
         if leadDeck == deck { leadDeck = nil }   // load resets this deck's lead role + tempo/pitch
         mutate(deck) {
             $0.loaded = meta
@@ -1235,7 +1303,7 @@ final class MixEngine {
         // (e.g. blend on A+B, queue a new song onto B, pause A → the card must stay on A).
         let aOn = state(.a).isPlaying, bOn = state(.b).isPlaying
         if aOn != bOn { lastNowPlayingDeck = aOn ? .a : .b }
-        setDuration(deck, Double(count) / sr)
+        setDuration(deck, durationSeconds)
         setPosition(deck, 0)
         applyRate(deck); applyPitch(deck)
         // Record the load with the track's musical attributes (bpm/camelot) so the corpus is
@@ -1247,6 +1315,248 @@ final class MixEngine {
         }
         updateSystemNowPlaying()      // a new track on the now-playing deck → refresh the card
         persistMixDeckSession()       // deck load = structural change — the mix survives a kill
+    }
+
+    // MARK: - Streaming loads
+
+    /// Can `songId` load onto a deck right now by STREAMING (ripped, not burned, server reachable)?
+    /// The resolvers use this to admit not-yet-downloaded songs into decks + auto queues.
+    func canStream(_ songId: String) -> Bool { streamer?.canStream(songId) ?? false }
+
+    /// Is this deck streaming a song that hasn't finished downloading? (Observable.)
+    func isStreaming(_ deck: Deck) -> Bool { streamingDecks.contains(deck) }
+
+    /// Is this deck waiting for downloaded audio (track loaded, playhead held)? (Observable —
+    /// drives the deck's "Buffering…" indicator.)
+    func isBuffering(_ deck: Deck) -> Bool { bufferingDecks.contains(deck) }
+
+    /// Song ids the decks are playing from live streams (the loader never evicts these).
+    var streamingSongIds: Set<String> { Set(deckStreams.values.map(\.songId)) }
+
+    /// The not-yet-played auto queue from the live slot on, in play order — the collection
+    /// downloader fetches in THIS order so the next tracks land first. Empty when not auto-mixing.
+    var autoUpcomingSongIds: [String] {
+        guard autoMixing, autoLivePos < autoQueue.count else { return [] }
+        return autoQueue[autoLivePos...].map(\.loadable.songId)
+    }
+
+    /// Load `songId` onto `deck` as a STREAM. The track takes the deck synchronously — exactly
+    /// like a file load from every caller's point of view (the auto machine's `loadAuto` checks
+    /// `loaded` right after) — with the catalog length as its provisional duration and the
+    /// playhead HELD until `pumpStream` has enough bytes. A failed open leaves the deck untouched.
+    private func loadStreaming(songId: String, lengthMs: Int?, meta: LoadedTrack, on deck: Deck) {
+        if !isRestoringMixSession { pendingMixRestore = nil }
+        ensureEngine()
+        guard let player = players[deck], let streamer,
+              let stream = streamer.open(songId, title: meta.title, artist: meta.artist) else { return }
+        masterPausedDecks.remove(deck)
+        player.stop()
+        clearStream(deck)
+        releases[deck]?(); releases[deck] = nil
+        files[deck] = nil; paths[deck] = nil; sampleRates[deck] = nil
+        startFrames[deck] = nil; endFrames[deck] = nil
+        segmentStartSeconds[deck] = 0
+        fileScheduled[deck] = false
+        deckStreams[deck] = stream
+        streamHolding[deck] = true
+        if let lengthMs { streamWindowMs[deck] = lengthMs }
+        commitLoad(deck, meta: meta, startMs: nil,
+                   durationSeconds: Double(lengthMs ?? Self.autoFallbackDurationMs) / 1000)
+        DiagLog.shared.telemetry("mixstream", "deck \(deck.rawValue) load \(songId)")
+        pumpStream(deck)
+    }
+
+    /// The loader's progress fan-in: pump every deck streaming `songId`.
+    func streamProgressed(_ songId: String) {
+        for d in Deck.allCases where deckStreams[d]?.songId == songId { pumpStream(d) }
+    }
+
+    /// Extend a streaming deck's playable audio to the new byte frontier: attach the file on the
+    /// first usable bytes, start/resume a HELD playhead once it has runway, append a segment to a
+    /// running linear schedule, and hand over to the final file on completion.
+    private func pumpStream(_ deck: Deck) {
+        guard let s = deckStreams[deck], built, let player = players[deck] else { return }
+        if s.failed { handleStreamFailure(deck); return }
+        guard s.resolved, s.bytesReceived > 0 || s.isComplete else { return }
+        let url = s.isComplete ? (s.finalURL ?? s.fileURL) : s.fileURL
+
+        // FIRST ATTACH — the header (and its full-length claim) is readable now.
+        if files[deck] == nil {
+            guard let file = try? AVAudioFile(forReading: url), let inputMixer = inputMixers[deck] else { return }
+            let sr = file.processingFormat.sampleRate
+            let total = file.length
+            let startMs = s.isCut ? nil : s.startMs
+            let windowMs = s.isCut ? nil : streamWindowMs[deck]
+            let start = min(max(0, AVAudioFramePosition((Double(startMs ?? 0) / 1000.0) * sr)), total)
+            let windowed = windowMs.map { AVAudioFramePosition((Double($0) / 1000.0) * sr) }
+            let count = windowed.map { min(total - start, max(0, $0)) } ?? (total - start)
+            guard sr > 0, count > 0 else {
+                // A complete file with nothing in the window can never play — fail the deck. A
+                // partial one just hasn't got its header/frames yet.
+                if s.isComplete { handleStreamFailure(deck) }
+                return
+            }
+            engine.connect(player, to: inputMixer, format: file.processingFormat)
+            files[deck] = file
+            paths[deck] = url.path
+            sampleRates[deck] = sr
+            startFrames[deck] = start
+            endFrames[deck] = start
+            streamFullEnd[deck] = start + count
+            streamBytesPerSecond[deck] = Self.streamBytesPerSecond(totalFrames: total, sampleRate: sr,
+                                                                   expectedBytes: s.expectedBytes)
+            mutate(deck) { $0.startMs = startMs }
+            setDuration(deck, Double(count) / sr)      // the real window replaces the catalog guess
+            if position(deck) > duration(deck) { setPosition(deck, duration(deck)) }
+        }
+        guard let sr = sampleRates[deck], let start = startFrames[deck], let fullEnd = streamFullEnd[deck],
+              let end = endFrames[deck] else { return }
+        let frontier: AVAudioFramePosition = s.isComplete ? fullEnd : min(fullEnd, Self.streamPlayableFrames(
+            bytes: s.bytesReceived, bytesPerSecond: streamBytesPerSecond[deck], sampleRate: sr,
+            startFrame: start))
+
+        if streamHolding[deck] == true {
+            let posFrame = start + AVAudioFramePosition(position(deck) * sr)
+            let runway = (state(deck).isPlaying ? Self.streamResumeRunway : Self.streamStartRunway)
+            let need = min(fullEnd, posFrame + AVAudioFramePosition((s.isComplete ? 0 : runway) * sr))
+            guard s.isComplete || (frontier > posFrame && frontier >= need) else { return }
+            guard let f = try? AVAudioFile(forReading: url) else { return }
+            files[deck] = f
+            paths[deck] = url.path
+            endFrames[deck] = frontier
+            streamHolding[deck] = false
+            if !stemActive(deck) {
+                if loopWindow(deck) != nil { _ = armLoop(deck, resumeAt: position(deck)) }
+                else { rescheduleFile(deck, fromSeconds: position(deck)) }
+                if state(deck).isPlaying, startEngineIfNeeded() { player.play() }
+            }
+            restampAutoEnd(deck)       // the held seconds pushed this deck's end back
+            DiagLog.shared.telemetry("mixstream", "deck \(deck.rawValue) \(position(deck) > 0.1 ? "resume" : "start") \(s.songId) runway=\(String(format: "%.1f", Double(frontier - posFrame) / sr))s")
+            refreshTransport()
+            startTickIfNeeded()
+        } else if frontier > end {
+            // Append from a fresh open (an open sees only the bytes present at open time). Small
+            // appends while the runway is short, big ones once it's comfortable — every pending
+            // segment pins an open file, so a fast download must not queue hundreds of them.
+            let playFrame = start + AVAudioFramePosition((truePlayhead(deck) ?? position(deck)) * sr)
+            let runway = Double(end - playFrame) / sr
+            let chunk = runway < 10 ? 1.0 : 15.0
+            guard s.isComplete || Double(frontier - end) / sr >= chunk else { return }
+            guard let f = try? AVAudioFile(forReading: url) else { return }
+            if fileScheduled[deck] == true, loopWindow(deck) == nil, !stemActive(deck) {
+                player.scheduleSegment(f, startingFrame: end, frameCount: AVAudioFrameCount(frontier - end),
+                                       at: nil, completionHandler: nil)
+            }
+            files[deck] = f
+            paths[deck] = url.path
+            endFrames[deck] = frontier
+        }
+        if s.isComplete, endFrames[deck] == fullEnd, streamHolding[deck] != true { finishStream(deck, s) }
+    }
+
+    /// The download finished and the whole window is scheduled: become an ordinary file deck on
+    /// the final file. An adopted burn is re-acquired through the playback resolver so a
+    /// security-scoped burn folder stays readable for as long as this deck holds it.
+    private func finishStream(_ deck: Deck, _ s: MixStreamLoader.Stream) {
+        if s.adopted, let final = s.finalURL, let h = burns.localURLForPlayback(forSong: s.songId),
+           h.url.standardizedFileURL == final.standardizedFileURL {
+            releases[deck]?()
+            releases[deck] = h.release
+            paths[deck] = h.url.path
+        }
+        DiagLog.shared.telemetry("mixstream", "deck \(deck.rawValue) complete \(s.songId)")
+        clearStream(deck)
+    }
+
+    /// The stream died for good. Before any audio: the load failed — drop the track (the auto
+    /// machine's preload re-check then skips the song: `canStream` refuses it for a cooldown). A
+    /// live auto deck that never sounded skips ahead. Mid-song: the bytes we have ARE the song
+    /// now — its window ends at the frontier, so the deck plays out and the mix moves on.
+    private func handleStreamFailure(_ deck: Deck) {
+        guard let s = deckStreams[deck] else { return }
+        let songId = s.songId
+        if files[deck] == nil || endFrames[deck] == startFrames[deck] {
+            let wasLive = autoMixing && deck == autoLiveDeck && state(deck).isPlaying
+            DiagLog.shared.log("error", "mixstream deck \(deck.rawValue) drop \(songId) — stream failed before audio")
+            ejectDeckCore(deck)
+            persistMixDeckSession()
+            if wasLive, !autoTransitioning { skipToNext(fadeSeconds: 0.5) }
+            return
+        }
+        guard let sr = sampleRates[deck], let start = startFrames[deck], let end = endFrames[deck] else { return }
+        DiagLog.shared.log("error", "mixstream deck \(deck.rawValue) truncate \(songId) at \(Int(Double(end - start) / sr))s")
+        streamFullEnd[deck] = end
+        setDuration(deck, Double(end - start) / sr)
+        if autoMixing { autoDeckDurationMs[deck] = Int(duration(deck) * 1000) }
+        if streamHolding[deck] == true {
+            streamHolding[deck] = false
+            setPosition(deck, min(position(deck), duration(deck)))
+        }
+        restampAutoEnd(deck)
+        clearStream(deck)
+    }
+
+    /// Forget a deck's stream bookkeeping (the stream itself keeps downloading — the collection
+    /// run needs the file either way).
+    private func clearStream(_ deck: Deck) {
+        deckStreams[deck] = nil
+        streamHolding[deck] = nil
+        streamWindowMs[deck] = nil
+        streamFullEnd[deck] = nil
+        streamBytesPerSecond[deck] = nil
+    }
+
+    /// Hold a playing streaming deck whose playhead caught the byte frontier (the tick calls this):
+    /// stop the voice where it is, freeze the playhead, and let the pump resume it with runway.
+    private func holdStream(_ deck: Deck) {
+        guard deckStreams[deck] != nil, streamHolding[deck] != true else { return }
+        players[deck]?.stop()
+        fileScheduled[deck] = false
+        streamHolding[deck] = true
+        DiagLog.shared.telemetry("mixstream", "deck \(deck.rawValue) underrun at \(String(format: "%.1f", position(deck)))s")
+    }
+
+    /// Re-stamp an auto deck's wall-clock end from its live position (held seconds don't count).
+    private func restampAutoEnd(_ deck: Deck) {
+        guard autoMixing, autoDeckEndsAt[deck] != nil else { return }
+        let durMs = autoDeckDurationMs[deck] ?? Self.autoFallbackDurationMs
+        let remaining = max(0, Double(durMs) / 1000 - position(deck)) / max(0.05, state(deck).rate)
+        autoDeckEndsAt[deck] = Date().addingTimeInterval(remaining)
+    }
+
+    /// Is a streaming deck's playhead frozen waiting for bytes?
+    private func streamHeld(_ deck: Deck) -> Bool { streamHolding[deck] == true }
+
+    /// The schedulable frontier (seconds into the song window) of a streaming deck, nil otherwise.
+    private func streamFrontierSeconds(_ deck: Deck) -> Double? {
+        guard deckStreams[deck] != nil, let sr = sampleRates[deck], sr > 0,
+              let start = startFrames[deck], let end = endFrames[deck] else { return nil }
+        return Double(end - start) / sr
+    }
+
+    /// Bytes of file per second of audio for a growing LAME mp3. Its header claims the FULL
+    /// length up front; a file whose claim couldn't cover even `expectedBytes` at the max mp3
+    /// bitrate (320 kbps ≈ 41 KB/s with framing) has no such header — nil ⇒ don't play until the
+    /// download completes (its frame→byte map is unknowable mid-flight). Pure.
+    nonisolated static func streamBytesPerSecond(totalFrames: AVAudioFramePosition, sampleRate: Double,
+                                                 expectedBytes: Int64?) -> Double? {
+        guard sampleRate > 0, totalFrames > 0 else { return nil }
+        let seconds = Double(totalFrames) / sampleRate
+        guard let expected = expectedBytes, expected > 0 else {
+            return CollectionMixDownloader.bytesPerPlaybackSecond   // no length: the 256 kbps house rate
+        }
+        guard seconds >= Double(expected) / 41_000 else { return nil }
+        return Double(expected) / seconds
+    }
+
+    /// The last FILE frame safe to schedule given `bytes` downloaded: bytes → seconds at the
+    /// file's byte rate, minus the torn-frame margin, never before the window start. nil rate
+    /// (headerless) ⇒ nothing until complete. Pure.
+    nonisolated static func streamPlayableFrames(bytes: Int64, bytesPerSecond: Double?, sampleRate: Double,
+                                                 startFrame: AVAudioFramePosition) -> AVAudioFramePosition {
+        guard let bps = bytesPerSecond, bps > 0 else { return startFrame }
+        let seconds = Double(bytes) / bps - streamFrontierMargin
+        return max(startFrame, AVAudioFramePosition(max(0, seconds) * sampleRate))
     }
 
     // MARK: - Transport
@@ -1278,7 +1588,7 @@ final class MixEngine {
     /// playing). `pause()` then `play()` — exactly the manual workaround — re-primes the render
     /// state without touching the schedule, so the deck resumes from where it stopped.
     private func resumePlayingDecks() {
-        for d in Deck.allCases where state(d).isPlaying {
+        for d in Deck.allCases where state(d).isPlaying && !streamHeld(d) {   // held: the pump resumes it
             ensureDeckScheduled(d)   // an engine uninit DROPS schedules — re-arm before re-priming
             if stemActive(d) {
                 for n in (stemPlayers[d] ?? [:]).values where n.isPlaying { n.pause() }
@@ -1298,7 +1608,7 @@ final class MixEngine {
     /// intent first, and seek/restart stop+re-play inside one main-actor turn the tick can't
     /// interleave). Callers must ensure the engine is RUNNING (play() on a dead engine traps).
     private func healParkedPlayers() {
-        for d in Deck.allCases where state(d).isPlaying {
+        for d in Deck.allCases where state(d).isPlaying && !streamHeld(d) {   // held = parked ON PURPOSE
             if stemActive(d) {
                 if let nodes = stemPlayers[d], nodes.values.contains(where: { !$0.isPlaying }) {
                     dlog("heal: re-kick STEMS deck \(d.rawValue)")
@@ -1323,7 +1633,7 @@ final class MixEngine {
     /// load healed it. A trusted schedule is left untouched, so a normal pause→resume (segments
     /// alive) never restart-glitches. Never starts a voice itself — the caller owns play().
     private func ensureDeckScheduled(_ deck: Deck) {
-        guard state(deck).loaded != nil else { return }
+        guard state(deck).loaded != nil, !streamHeld(deck) else { return }   // held: the pump schedules
         if loopWindow(deck) != nil {          // a live loop re-arms as a LOOP, not a linear tail
             let trusted = stemActive(deck) ? stemsScheduled[deck] == true : fileScheduled[deck] == true
             if !trusted {
@@ -1369,7 +1679,8 @@ final class MixEngine {
         // uncatchable play()-on-a-dead-engine call is skipped.
         if startEngineIfNeeded() {
             ensureDeckScheduled(deck)   // tvOS silent-resume: an untrusted/dropped schedule re-arms BEFORE play
-            if stemActive(deck) { startStems(deck) } else { players[deck]?.play() }
+            // A HELD stream deck keeps only the intent — the pump starts the voice with runway.
+            if stemActive(deck) { startStems(deck) } else if !streamHeld(deck) { players[deck]?.play() }
         }
         setPlaying(deck, true)
         refreshTransport()
@@ -1406,7 +1717,7 @@ final class MixEngine {
         for d in Deck.allCases where state(d).loaded != nil {
             if engineUp {
                 ensureDeckScheduled(d)   // see play(): re-arm anything whose schedule was dropped
-                if stemActive(d) { startStems(d) } else { players[d]?.play() }
+                if stemActive(d) { startStems(d) } else if !streamHeld(d) { players[d]?.play() }
             }
             setPlaying(d, true)
         }
@@ -1555,6 +1866,9 @@ final class MixEngine {
             guard scheduleStems(deck, fromSeconds: 0) else { return }
             setPosition(deck, 0)
             if was { startStems(deck) }
+        } else if streamHeld(deck) {
+            setPosition(deck, 0)          // still waiting for bytes: rewind the HELD playhead…
+            pumpStream(deck)              // …and start it right away if 0:00 already has runway
         } else {
             guard built, let file = files[deck], let player = players[deck],
                   let start = startFrames[deck], let end = endFrames[deck], end > start else { return }
@@ -1623,6 +1937,7 @@ final class MixEngine {
         releases[deck]?(); releases[deck] = nil   // release the main file's scope
         files[deck] = nil; paths[deck] = nil; sampleRates[deck] = nil
         startFrames[deck] = nil; endFrames[deck] = nil; segmentStartSeconds[deck] = nil
+        clearStream(deck)                                 // a streaming deck forgets its stream
         clearLoopState(deck)                              // the loop dies with the track
         if leadDeck == deck { leadDeck = nil }     // give up the lead role if this deck held it
         mutate(deck) { $0 = DeckState() }          // empty track, every parameter back to default, cue off
@@ -1657,6 +1972,15 @@ final class MixEngine {
             let ok = scheduleStems(deck, fromSeconds: clamped)
             setPosition(deck, clamped)
             if was, ok { startStems(deck) }
+        } else if deckStreams[deck] != nil,
+                  streamHeld(deck) || clamped >= (streamFrontierSeconds(deck) ?? 0) - 0.05 {
+            // STREAMING past the downloaded frontier: HOLD at the target; the pump resumes the
+            // deck there once the bytes arrive (immediately, if they already have).
+            players[deck]?.stop()
+            fileScheduled[deck] = false
+            streamHolding[deck] = true
+            setPosition(deck, clamped)
+            pumpStream(deck)
         } else {
             guard built, let file = files[deck], let player = players[deck], let sr = sampleRates[deck],
                   let start = startFrames[deck], let end = endFrames[deck] else { return }
@@ -4450,6 +4774,7 @@ final class MixEngine {
                     if !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
                     continue
                 }
+                if streamHeld(d) { continue }    // streaming: waiting for bytes — the playhead is frozen
                 // LOOPING: the playhead folds back into the window instead of advancing to the
                 // end, and the queue is topped up so the repeats never run dry.
                 if let w = loopWindow(d) {
@@ -4459,7 +4784,16 @@ final class MixEngine {
                     topUpLoop(d)
                     continue
                 }
-                let pos = min(position(d) + dt * state(d).rate, dur)   // source advances at rate× wall time
+                var pos = min(position(d) + dt * state(d).rate, dur)   // source advances at rate× wall time
+                // STREAMING underrun: the playhead caught the downloaded frontier — hold it there
+                // (the pump resumes with runway) instead of running on over silence.
+                if let frontier = streamFrontierSeconds(d), !stemActive(d), frontier < dur - 0.05,
+                   pos >= frontier - 0.05 {
+                    pos = min(pos, frontier)
+                    setPosition(d, pos)
+                    holdStream(d)
+                    continue
+                }
                 setPosition(d, pos)
                 if pos >= dur, !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
             }

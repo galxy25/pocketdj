@@ -58,7 +58,7 @@ file (`mix-audio-graph.svg`).
 
 | Stage | Node type | What it does |
 |---|---|---|
-| **player** | `AVAudioPlayerNode` | Plays the deck's single burned file. `player → inputMixer` is the ONLY link ever reconnected (per load, at the file's real format), so a mono / 48 kHz / odd file never reconfigures a live AU downstream — which AVAudioEngine asserts-and-crashes on. |
+| **player** | `AVAudioPlayerNode` | Plays the deck's single burned file — or, in STREAMING mode, the same file while it is still downloading (`MixStreamLoader` → `loadStreaming`/`pumpStream`): segments up to the byte frontier, each appended from a fresh `AVAudioFile` open of the growing mp3 (bit-identical to one segment), with the playhead HELD at the frontier on an underrun. `player → inputMixer` is the ONLY link ever reconnected (per load — for a stream, when its header first lands — at the file's real format), so a mono / 48 kHz / odd file never reconfigures a live AU downstream — which AVAudioEngine asserts-and-crashes on. |
 | **stem players ×4** | `AVAudioPlayerNode` | vocals / drums / bass / other, summing into the SAME `inputMixer` so stems ride the deck's whole chain (tempo, pitch, FX, fader, cue) exactly like the main file. Idle unless stem mode wires real files. |
 | **inputMixer** | `AVAudioMixerNode` | The format normalizer: up/down-mixes and resamples whatever arrives into canonical 44.1 kHz stereo. Everything downstream is pinned at canonical FOR LIFE. |
 | **timePitch** | `AVAudioUnitTimePitch` | Tempo (0.5–2.0×, pitch preserved) and pitch (±12 st, tempo preserved). The last pre-FX point in the chain — the natural place for a pre-FX analysis tap. |
@@ -110,3 +110,8 @@ file (`mix-audio-graph.svg`).
   sidecars and are only auto-downloaded when Beat pulse is on (or a loop forces it); Studio items
   have beats but no downbeats; profile items have neither (catalog BPM only). Anything beat-locked
   needs the synthesized-lattice fallback (`60/bpm` anchored at `firstDownbeatMs`).
+- **Streaming decks are file decks with a moving end.** While a deck streams, `endFrames` is the
+  downloaded frontier, so seek/loop/restart/stems-off can only reach audio that has landed (a seek
+  past it holds at the target until the bytes arrive). The frame↔byte map trusts the LAME/Xing
+  full-length header of our 256 kbps CBR rips; a headerless file plays only once complete. An
+  analog song without a fetchable per-song cut streams its whole album side up to `startMs`.

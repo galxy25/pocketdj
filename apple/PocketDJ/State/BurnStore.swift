@@ -448,6 +448,66 @@ final class BurnStore {
         onAnyBurnFinalized?(record.songId, bytes)   // fan-out AFTER the .ready item landed
     }
 
+    /// MIX STREAMING adoption (`MixStreamLoader`): a deck streamed this song's durable mp3 to
+    /// completion — the same bytes a burn would have fetched — so land it as a normal `.ready`
+    /// burn instead of downloading it a second time. Mirrors the in-process burn's write tail:
+    /// descriptive file names, the shared analog side written once, the sidecar, the ledger
+    /// upsert, then the `onAnyBurnFinalized` fan-out (the collection downloader counts it).
+    /// The file is MOVED (a deck's open `AVAudioFile`s keep reading the same inode). Returns the
+    /// adopted audio URL, or nil when there was nothing to adopt (already burned, not in the
+    /// manifest, no writable folder, empty file) — the caller keeps playing its own copy.
+    @discardableResult
+    func adoptStreamedFile(songId: String, title: String, artist: String, from tempURL: URL) -> URL? {
+        guard let entry = rips.manifest[songId] else { return nil }
+        if items[songId]?.state == .ready, localURL(forSong: songId) != nil { return nil }
+        guard let folder = resolveBurnFolder(allowRePersist: true) else { return nil }
+        let dir = folder.url
+        defer { if folder.scoped { dir.stopAccessingSecurityScopedResource() } }
+        let fm = FileManager.default
+        guard let size = (try? fm.attributesOfItem(atPath: tempURL.path))?[.size] as? Int, size > 0 else { return nil }
+        let (s, a) = lookup?(SongVariant.baseId(songId)) ?? (nil, nil)
+        let (audioName, sidecarName) = fileNames(for: songId, entry: entry, song: s, album: a)
+        let audioURL = dir.appendingPathComponent(audioName)
+        do {
+            // Analog: a sibling song already wrote the shared side — keep it (same object).
+            let analogShared = entry.source == "analog" && fm.fileExists(atPath: audioURL.path)
+            if !analogShared {
+                if fm.fileExists(atPath: audioURL.path) { try fm.removeItem(at: audioURL) }
+                try fm.moveItem(at: tempURL, to: audioURL)
+            }
+            let sidecar = Self.buildSidecar(songId: songId, fallback: (id: songId, title: title, artist: artist),
+                                            song: s, album: a, entry: entry)
+            try Data(sidecar.utf8).write(to: dir.appendingPathComponent(sidecarName), options: .atomic)
+            let prev = items[songId]
+            items[songId] = BurnItem(
+                songId: songId, title: title, artist: artist,
+                audioFileName: audioName, sidecarFileName: sidecarName,
+                source: entry.source ?? "digital",
+                bpm: entry.bpm, musicalKey: entry.musicalKey, camelot: entry.camelot,
+                durationMs: entry.durationMs,
+                startMs: entry.source == "analog" ? entry.startMs : nil,
+                bytes: size, rippedAt: entry.rippedAt, downloadedAt: now,
+                state: .ready, error: nil, wasAppStorage: !folder.isUserFolder,
+                cutFileName: prev?.cutFileName, cutDownloadedAt: prev?.cutDownloadedAt)
+            save()
+            onAnyBurnFinalized?(songId, size)
+            return audioURL
+        } catch {
+            DiagLog.shared.log("error", "mixstream adopt \(songId) failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    /// MIX STREAMING: a deck is about to stream this song — cancel a still-pending BACKGROUND
+    /// burn of it (the iOS lane enqueues a whole collection at once) so the file isn't fetched
+    /// twice. The stream's adoption lands the same `.ready` item. No-op on the in-process path.
+    func yieldBackgroundDownload(songId: String) {
+        guard let transfers, items[songId]?.state == .downloading else { return }
+        transfers.cancelAll(songIds: [songId])
+        items[songId] = nil
+        save()
+    }
+
     // MARK: Feature 2 — burnt-music folder resolution (security-scoped)
 
     /// Resolve the ACTIVE burn folder: the user-picked security-scoped folder when a bookmark

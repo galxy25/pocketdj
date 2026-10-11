@@ -649,7 +649,8 @@ struct MixView: View {
             return
         }
         downloader.begin(source: src)          // (re)start the collection pull — idempotent per source
-        let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: src)
+        let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio,
+                    streamable: engine.canStream).loadables(for: src)
         let items = loadables.map { l in
             MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? 180_000)
         }
@@ -661,7 +662,7 @@ struct MixView: View {
         downloader.noteAutoStarted(initialIds: Set(loadables.map(\.songId)),
                                    lead: settings.autoMixLeadSeconds,
                                    fade: settings.autoMixFadeSeconds,
-                                   label: autoSourceName)
+                                   label: autoSourceName, shuffled: shuffled)
         // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
         IntentDonations.startedAutoMix(source: src, shuffle: shuffled, collections: collections)
     }
@@ -882,7 +883,9 @@ private struct DeckView: View {
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(a11y)
-        .task(id: loaded?.songId) {                            // compute peaks once per loaded track
+        // Compute peaks once per loaded track — and once more when a STREAMING track finishes
+        // downloading (the waveform reads the burned file, which only exists then).
+        .task(id: "\(loaded?.songId ?? "")|\(engine.isStreaming(deck))") {
             guard let id = loaded?.songId else { peaks = []; return }
             // Song length (ms) windows an analog shared-album file to its own slice (digital: ignored).
             peaks = await MixWaveform.peaks(forSong: id, lengthMs: app.songsById[id]?.length, burns: burns)
@@ -894,6 +897,7 @@ private struct DeckView: View {
         HStack(spacing: 8) {
             Text("Deck \(deck.rawValue)")
                 .font(.headline).foregroundStyle(Theme.fg)
+            if engine.isBuffering(deck) { bufferingBadge }
             Spacer()
             sourceMenu
         }
@@ -1239,12 +1243,34 @@ private struct DeckView: View {
         }
     }
 
+    /// STREAMING: the deck's track hasn't got enough downloaded audio to play (just loaded, a seek
+    /// past what's arrived, or the download fell behind). Clears itself the moment it resumes.
+    private var bufferingBadge: some View {
+        HStack(spacing: 5) {
+            ProgressView().controlSize(.mini)
+            Text("Buffering…").font(.caption.weight(.medium))
+        }
+        .foregroundStyle(Theme.fgDim)
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Theme.bgOverlay, in: Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Buffering")
+        .accessibilityIdentifier("\(a11y)-buffering")
+    }
+
     private var playButton: some View {
         Button { engine.togglePlay(deck) } label: {
-            Image(systemName: engine.isPlaying(deck) ? "pause.fill" : "play.fill")
-                .font(.title3)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+            Group {
+                // Waiting for bytes WITH play intent: the spinner says "starting", not "paused".
+                if engine.isPlaying(deck) && engine.isBuffering(deck) {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: engine.isPlaying(deck) ? "pause.fill" : "play.fill")
+                        .font(.title3)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 22)
+            .padding(.vertical, 6)
         }
         .buttonStyle(.bordered)
         .tint(Theme.accent)
@@ -2643,7 +2669,8 @@ private struct TrackLoaderSheet: View {
     /// was read twice + `hiddenPlayedCount` once) re-walked the whole pocket on every keystroke.
     private func resolvedSource() -> [MixLoadable] {
         guard let source else { return [] }
-        return MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: source)
+        return MixResolver(app: app, collections: collections, burns: burns, studio: studio,
+                    streamable: engine.canStream).loadables(for: source)
     }
 
     /// Apply the search query to an already-resolved list (post-search, pre-played-drop).
