@@ -536,10 +536,25 @@ final class MixEngine {
     /// Wired at app init; nil in tests ⇒ streaming is off and `load` behaves exactly as before.
     @ObservationIgnored var streamer: MixStreamLoader?
     /// The stream each still-streaming deck plays (nil once complete → ordinary file deck).
-    @ObservationIgnored private var deckStreams: [Deck: MixStreamLoader.Stream] = [:]
+    @ObservationIgnored private var deckStreams: [Deck: MixStreamLoader.Stream] = [:] {
+        didSet { publishStreamState() }
+    }
     /// The playhead is HELD: not enough bytes yet at the load / after a seek past the frontier /
     /// on an underrun. The tick doesn't advance a holding deck; the pump resumes it.
-    @ObservationIgnored private var streamHolding: [Deck: Bool] = [:]
+    @ObservationIgnored private var streamHolding: [Deck: Bool] = [:] {
+        didSet { publishStreamState() }
+    }
+    /// OBSERVABLE mirrors for the deck UI (the plumbing above is observation-ignored): which decks
+    /// are waiting on bytes (the "Buffering…" indicator) and which are still streaming (the
+    /// waveform re-reads once the file is complete). Written only on change.
+    private(set) var bufferingDecks: Set<Deck> = []
+    private(set) var streamingDecks: Set<Deck> = []
+    private func publishStreamState() {
+        let buffering = Set(Deck.allCases.filter { streamHolding[$0] == true && deckStreams[$0] != nil })
+        let streaming = Set(deckStreams.keys)
+        if buffering != bufferingDecks { bufferingDecks = buffering }
+        if streaming != streamingDecks { streamingDecks = streaming }
+    }
     /// The catalog length the load asked for (the analog window), until the file attaches.
     @ObservationIgnored private var streamWindowMs: [Deck: Int] = [:]
     /// The song window's END in file frames once attached (`endFrames` is the frontier until then).
@@ -1308,8 +1323,12 @@ final class MixEngine {
     /// The resolvers use this to admit not-yet-downloaded songs into decks + auto queues.
     func canStream(_ songId: String) -> Bool { streamer?.canStream(songId) ?? false }
 
-    /// Is this deck streaming a song that hasn't finished downloading?
-    func isStreaming(_ deck: Deck) -> Bool { deckStreams[deck] != nil }
+    /// Is this deck streaming a song that hasn't finished downloading? (Observable.)
+    func isStreaming(_ deck: Deck) -> Bool { streamingDecks.contains(deck) }
+
+    /// Is this deck waiting for downloaded audio (track loaded, playhead held)? (Observable —
+    /// drives the deck's "Buffering…" indicator.)
+    func isBuffering(_ deck: Deck) -> Bool { bufferingDecks.contains(deck) }
 
     /// Song ids the decks are playing from live streams (the loader never evicts these).
     var streamingSongIds: Set<String> { Set(deckStreams.values.map(\.songId)) }

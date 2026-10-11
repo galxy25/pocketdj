@@ -883,7 +883,9 @@ private struct DeckView: View {
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(a11y)
-        .task(id: loaded?.songId) {                            // compute peaks once per loaded track
+        // Compute peaks once per loaded track — and once more when a STREAMING track finishes
+        // downloading (the waveform reads the burned file, which only exists then).
+        .task(id: "\(loaded?.songId ?? "")|\(engine.isStreaming(deck))") {
             guard let id = loaded?.songId else { peaks = []; return }
             // Song length (ms) windows an analog shared-album file to its own slice (digital: ignored).
             peaks = await MixWaveform.peaks(forSong: id, lengthMs: app.songsById[id]?.length, burns: burns)
@@ -895,6 +897,7 @@ private struct DeckView: View {
         HStack(spacing: 8) {
             Text("Deck \(deck.rawValue)")
                 .font(.headline).foregroundStyle(Theme.fg)
+            if engine.isBuffering(deck) { bufferingBadge }
             Spacer()
             sourceMenu
         }
@@ -1240,12 +1243,34 @@ private struct DeckView: View {
         }
     }
 
+    /// STREAMING: the deck's track hasn't got enough downloaded audio to play (just loaded, a seek
+    /// past what's arrived, or the download fell behind). Clears itself the moment it resumes.
+    private var bufferingBadge: some View {
+        HStack(spacing: 5) {
+            ProgressView().controlSize(.mini)
+            Text("Buffering…").font(.caption.weight(.medium))
+        }
+        .foregroundStyle(Theme.fgDim)
+        .padding(.horizontal, 8).padding(.vertical, 3)
+        .background(Theme.bgOverlay, in: Capsule())
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Buffering")
+        .accessibilityIdentifier("\(a11y)-buffering")
+    }
+
     private var playButton: some View {
         Button { engine.togglePlay(deck) } label: {
-            Image(systemName: engine.isPlaying(deck) ? "pause.fill" : "play.fill")
-                .font(.title3)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 6)
+            Group {
+                // Waiting for bytes WITH play intent: the spinner says "starting", not "paused".
+                if engine.isPlaying(deck) && engine.isBuffering(deck) {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: engine.isPlaying(deck) ? "pause.fill" : "play.fill")
+                        .font(.title3)
+                }
+            }
+            .frame(maxWidth: .infinity, minHeight: 22)
+            .padding(.vertical, 6)
         }
         .buttonStyle(.bordered)
         .tint(Theme.accent)

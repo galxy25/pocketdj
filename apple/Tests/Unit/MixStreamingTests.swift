@@ -127,6 +127,7 @@ final class MixStreamingTests: XCTestCase {
         XCTAssertEqual(engine.loaded(.a)?.songId, "st", "the track takes the deck at once — the queue never waits")
         XCTAssertTrue(engine.isStreaming(.a))
         XCTAssertFalse(engine.fileScheduledForTesting(.a), "held: nothing schedulable yet")
+        XCTAssertTrue(engine.isBuffering(.a), "the deck shows Buffering… while it waits for audio")
         XCTAssertEqual(engine.duration(.a), 12, accuracy: 0.01, "catalog length is the provisional duration")
 
         // Half the file: attach + schedule from 0:00.
@@ -134,6 +135,7 @@ final class MixStreamingTests: XCTestCase {
         try data.prefix(half).write(to: file)
         loader.injectStreamForTesting(songId: "st", file: file, bytes: Int64(half), expected: total)
         XCTAssertTrue(engine.fileScheduledForTesting(.a), "runway arrived — the deck is scheduled")
+        XCTAssertFalse(engine.isBuffering(.a), "the indicator clears the moment it can play")
         XCTAssertEqual(engine.duration(.a), 12, accuracy: 0.05, "real window from the header")
         XCTAssertTrue(engine.isStreaming(.a))
 
@@ -141,6 +143,7 @@ final class MixStreamingTests: XCTestCase {
         try data.write(to: file)
         loader.injectStreamForTesting(songId: "st", file: file, bytes: total, expected: total, finished: true)
         XCTAssertFalse(engine.isStreaming(.a), "complete ⇒ an ordinary file deck")
+        XCTAssertFalse(engine.isBuffering(.a))
         XCTAssertEqual(engine.loaded(.a)?.songId, "st")
         engine.teardown()
     }
@@ -167,11 +170,13 @@ final class MixStreamingTests: XCTestCase {
         engine.seek(.a, toSeconds: 9)
         XCTAssertEqual(engine.position(.a), 9, accuracy: 0.001, "the playhead holds AT the target")
         XCTAssertFalse(engine.fileScheduledForTesting(.a), "nothing past the frontier to schedule")
+        XCTAssertTrue(engine.isBuffering(.a), "a seek past the download shows Buffering…")
 
         try data.write(to: file)
         loader.injectStreamForTesting(songId: "sk", file: file, bytes: total, expected: total, finished: true)
         XCTAssertTrue(engine.fileScheduledForTesting(.a), "bytes arrived — resumed")
         XCTAssertEqual(engine.position(.a), 9, accuracy: 0.001, "resumed at the held target")
+        XCTAssertFalse(engine.isBuffering(.a))
         engine.teardown()
     }
 
@@ -193,6 +198,7 @@ final class MixStreamingTests: XCTestCase {
         XCTAssertEqual(engine.loaded(.a)?.songId, "dead")
         await wait { engine.loaded(.a) == nil }
         XCTAssertNil(engine.loaded(.a), "presign failed twice ⇒ the deck is emptied")
+        XCTAssertFalse(engine.isBuffering(.a), "an emptied deck never shows a stale Buffering…")
         XCTAssertFalse(engine.canStream("dead"), "cooling down — not re-opened")
         XCTAssertFalse(engine.canStream("other"),
                        "the rip server isn't answering — NO new streams for a while, so an offline/server-down mix runs on what's on disk")
