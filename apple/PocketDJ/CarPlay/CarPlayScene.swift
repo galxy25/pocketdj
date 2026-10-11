@@ -146,6 +146,7 @@ final class CarPlayController {
             _ = mix.onAirTrack?.songId
             _ = mix.fxGlideEnabled
             _ = mix.mixGlideEnabled
+            _ = mix.onAirBuffering        // streaming: the live row's "Buffering…" detail
             // The download run's progress renders on the setup card (and arms the zero-start),
             // so its facts re-render the tab too.
             if let d = model.services.mixDownloader {
@@ -209,7 +210,8 @@ final class CarPlayController {
                    model.crateName(mixDeckA) ?? "", model.crateName(mixDeckB) ?? "",
                    fx, "\(model.mixRate())", "\(model.mixPitch())",
                    model.mixInTransition() ? "1" : "0",
-                   model.stemModeOn() ? "1" : "0", stemMutes]
+                   model.stemModeOn() ? "1" : "0", stemMutes,
+                   model.mixBuffering() ? "1" : "0"]
             .joined(separator: "|")
         guard sig != lastMixSignature else { return }
         lastMixSignature = sig
@@ -342,7 +344,7 @@ final class CarPlayController {
         let np = model.mixNowPlaying()
         let paused = model.autoMixPaused()
         let state = CPListItem(text: np.map { "\($0.title) — \($0.artist)" } ?? "Auto DJ",
-                               detailText: paused ? "Paused" : "Playing")
+                               detailText: paused ? "Paused" : (model.mixBuffering() ? "Buffering…" : "Playing"))
         state.handler = { [weak self] _, completion in self?.showNowPlaying(); completion() }
         rows.append(state)
         // A restored/parked session claims this tab the instant it materializes (autoMixing

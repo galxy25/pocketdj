@@ -306,6 +306,8 @@ final class CarPlayModel {
     func mixNowPlaying() -> (title: String, artist: String)? {
         services.mix.onAirTrack.map { ($0.title, $0.artist) }
     }
+    /// STREAMING: the on-air track is waiting for downloaded audio (the live row says so).
+    func mixBuffering() -> Bool { services.mix.onAirBuffering }
     func fxGlideOn() -> Bool { services.mix.fxGlideEnabled }
     func audioGlideOn() -> Bool { services.mix.mixGlideEnabled }
     func setFXGlide(_ on: Bool) { services.mix.setFXGlide(on) }

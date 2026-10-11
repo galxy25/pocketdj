@@ -565,6 +565,9 @@ struct TVMixNowPlayingCard: View {
                             .foregroundStyle(Theme.fgDim)
                             .lineLimit(1)
                     }
+                    if engine.onAirBuffering {
+                        MixBufferingBadge(large: true, a11yId: "tv-np-mix-buffering")
+                    }
                     positionLine
                     transport
                     secondStrip
@@ -961,6 +964,9 @@ struct TVMixLiveSurface: View {
                     .font(.title3.weight(.semibold)).foregroundStyle(Theme.fg)
                 if let label = engine.autoSourceLabel {
                     Text(label).font(.callout).foregroundStyle(Theme.fgDim).lineLimit(1)
+                }
+                if engine.onAirBuffering {
+                    MixBufferingBadge(large: true, a11yId: "tv-mix-buffering")
                 }
             }
             if let track = engine.onAirTrack {
