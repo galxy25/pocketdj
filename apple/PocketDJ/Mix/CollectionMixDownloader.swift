@@ -17,11 +17,18 @@ import Foundation
 /// divided by a 30 s rolling window of OBSERVED download throughput), and a separate "K ripping"
 /// count — server rips are real-time capture, so a byte ETA over them would lie.
 ///
-/// GRACEFUL DEGRADATION: the mix starts over whatever is already downloaded; each landing makes
-/// the track eligible immediately — appended to a RUNNING auto-mix of this collection via the
-/// existing `autoQueueInsert(.end)`, or, when the auto-mix already ended exhausted
-/// (`MixEngine.autoEndedExhausted`), the mix is re-armed with the late arrivals. It never waits
-/// for the whole collection and never feeds the decks an un-downloaded track.
+/// STREAMING MODE: the mix's queue is built from every RIPPED track (downloaded or not — a deck
+/// streams what isn't on disk, `MixEngine.loadStreaming`), so a shuffle is a true shuffle of the
+/// whole union from the first second. This lane then fetches in PLAY ORDER (`nextBurnId` reads
+/// `MixEngine.autoUpcomingSongIds`), never burns a song a deck is already streaming (the stream IS
+/// its download — adoption lands it via `onAnyBurnFinalized`), and counts streamed bytes in the
+/// ETA window. Songs that still need a server rip become eligible when the manifest flips them;
+/// a shuffled mix scatters them into the upcoming queue instead of stacking them at the end.
+///
+/// GRACEFUL DEGRADATION: the mix starts over whatever is loadable; each new arrival joins a
+/// RUNNING auto-mix of this collection via the existing `autoQueueInsert`, or, when the auto-mix
+/// already ended exhausted (`MixEngine.autoEndedExhausted`), the mix is re-armed with the late
+/// arrivals. It never waits for the whole collection.
 ///
 /// App-scoped (created in `PocketDJApp` next to `MixEngine`, injected via environment): a mix
 /// survives leaving the Mix tab, so its download run must too. Nothing here is persisted —
@@ -180,6 +187,8 @@ final class CollectionMixDownloader {
     @ObservationIgnored private var autoLead: Double = 15
     @ObservationIgnored private var autoFade: Double = 3
     @ObservationIgnored private var autoLabel: String?
+    /// The armed mix was started shuffled: late arrivals scatter (`.random`) rather than append.
+    @ObservationIgnored private var autoShuffled = false
 
     // MARK: Begin / resume
 
@@ -261,8 +270,10 @@ final class CollectionMixDownloader {
     /// Called when an auto-mix over this downloader's collection starts: seeds the append-dedupe
     /// sets (the queue already contains `initialIds`) and captures the mix parameters a later
     /// exhaustion re-arm must reuse. The engine API stays untouched — dedupe lives here.
-    func noteAutoStarted(initialIds: Set<String>, lead: Double, fade: Double, label: String?) {
+    func noteAutoStarted(initialIds: Set<String>, lead: Double, fade: Double, label: String?,
+                         shuffled: Bool = false) {
         autoArmed = true
+        autoShuffled = shuffled
         initialAutoIds = initialIds
         appendedIds = []
         autoLead = lead
@@ -287,6 +298,7 @@ final class CollectionMixDownloader {
         if !pending.isEmpty {
             burns.requestStop()                       // stops the loop + in-flight background tasks
             transfers?.cancelAll(songIds: pending)
+            engine.streamer?.cancel(songIds: pending) // streams no deck is playing
             let stillRipping = pending.filter { rips.cachedURL($0) == nil }
             if !stillRipping.isEmpty {
                 let rips = self.rips
@@ -302,6 +314,7 @@ final class CollectionMixDownloader {
         initialAutoIds = []
         appendedIds = []
         autoLabel = nil
+        autoShuffled = false
         isActive = false
         sources = []
         totalCount = 0
@@ -341,20 +354,40 @@ final class CollectionMixDownloader {
             self.window.add(bytes: delta, at: self.now())
             self.recomputeETA()
         }
+        // Streamed bytes are download bytes (a completed stream is adopted as this run's burn).
+        engine.streamer?.onBytes = { [weak self] songId, delta in
+            guard let self, self.isActive, self.trackedIds.contains(songId), delta > 0 else { return }
+            self.window.add(bytes: delta, at: self.now())
+            self.recomputeETA()
+        }
+        // A stream that died (or was evicted for a newer one) hands the song back to the lane.
+        engine.streamer?.onFailed = { [weak self] songId in
+            guard let self, self.isActive, self.trackedIds.contains(songId),
+                  !self.downloadedIds.contains(songId), !self.burnQueue.contains(songId),
+                  self.rips.cachedURL(songId) != nil else { return }
+            self.burnQueue.append(songId)
+            if self.driveTask == nil { self.driveTask = Task { [weak self] in await self?.drive() } }
+        }
     }
 
     private func removeHooks() {
         burns.onAnyBurnFinalized = nil
         transfers?.onBytes = nil
+        engine.streamer?.onBytes = nil
+        engine.streamer?.onFailed = nil
     }
 
     // MARK: Drive (serial burn lane)
 
     private func drive() async {
         while !Task.isCancelled {
-            if let id = burnQueue.first {
-                burnQueue.removeFirst()
+            if let id = nextBurnId() {
+                burnQueue.removeAll { $0 == id }
                 await burnOne(id)
+            } else if !burnQueue.isEmpty {
+                // Everything left is streaming onto a deck right now — the stream IS the download
+                // (adoption lands it; a failure hands it back via `onFailed`). Wait it out.
+                try? await RipsStore.sleep(ms: Self.idleWaitMs)
             } else if ripPollTask != nil {
                 // The rip lane is still flipping songs ready — idle-wait for it to feed the queue.
                 try? await RipsStore.sleep(ms: Self.idleWaitMs)
@@ -373,6 +406,17 @@ final class CollectionMixDownloader {
             }
         }
         driveTask = nil
+    }
+
+    /// The next song to fetch: the first one the running mix will PLAY (live slot onward), else
+    /// collection order — skipping songs a deck is streaming (their stream is their download).
+    private func nextBurnId() -> String? {
+        let streamer = engine.streamer
+        let queued = Set(burnQueue)
+        for id in engine.autoUpcomingSongIds where queued.contains(id) && streamer?.isStreaming(id) != true {
+            return id
+        }
+        return burnQueue.first { streamer?.isStreaming($0) != true }
     }
 
     private func burnOne(_ id: String) async {
@@ -429,11 +473,16 @@ final class CollectionMixDownloader {
             await rips.refreshManifest()
             if Task.isCancelled { return }
             // Each id whose manifest entry flipped ready moves into the burn lane (order kept).
+            var flipped = false
             for id in orderedIds where pending.contains(id) && rips.cachedURL(id) != nil {
                 pending.remove(id)
                 burnQueue.append(id)
+                flipped = true
             }
             recomputeETA()        // also refreshes rippingCount
+            // Streaming mode: a freshly-ripped song is STREAMABLE now — it can join the mix
+            // without waiting for its download.
+            if flipped { continueAutoMixIfArmed() }
         }
         ripPollTask = nil
     }
@@ -481,7 +530,7 @@ final class CollectionMixDownloader {
                     MixEngine.AutoMixItem(loadable: f.loadable,
                                           durationMs: f.loadable.lengthMs ?? Self.fallbackDurationMs,
                                           sourceLabel: f.label),
-                    placement: .end)
+                    placement: autoShuffled ? .random : .end)
                 appendedIds.insert(f.loadable.songId)
             }
         } else if engine.autoEndedExhausted || autoStartPending {
@@ -552,4 +601,5 @@ final class CollectionMixDownloader {
     var autoStartPendingForTesting: Bool { autoStartPending }
     var initialAutoIdsForTesting: Set<String> { initialAutoIds }
     var autoLabelForTesting: String? { autoLabel }
+    var nextBurnIdForTesting: String? { nextBurnId() }
 }

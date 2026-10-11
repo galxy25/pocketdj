@@ -292,7 +292,8 @@ final class IntentServices {
         // source). Deliberately BEFORE the loadables guard: an all-undownloaded collection still
         // starts pulling, so a retried intent finds tracks on disk.
         mixDownloader?.begin(source: source)
-        let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: source)
+        let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio,
+                                   streamable: mix.canStream).loadables(for: source)
         guard !loadables.isEmpty else {
             // NOTHING ON DISK YET is not a failure for a first-party Mix surface — the phone's
             // Mix tab arms the ZERO-START instead: the download run is already going (begin
@@ -302,7 +303,7 @@ final class IntentServices {
             // NOW, not a mix that starts unannounced a minute later.
             if allowPendingStart, let d = mixDownloader, d.isActive {
                 d.noteAutoStarted(initialIds: [], lead: settings.autoMixLeadSeconds,
-                                  fade: settings.autoMixFadeSeconds, label: name)
+                                  fade: settings.autoMixFadeSeconds, label: name, shuffled: shuffle)
                 return (name, 0)
             }
             throw PocketDJIntentError.noBurnedSongs(name)
@@ -316,7 +317,8 @@ final class IntentServices {
         // Progressive eligibility: tracks that finish downloading join this mix's queue.
         mixDownloader?.noteAutoStarted(initialIds: Set(loadables.map(\.songId)),
                                        lead: settings.autoMixLeadSeconds,
-                                       fade: settings.autoMixFadeSeconds, label: name)
+                                       fade: settings.autoMixFadeSeconds, label: name,
+                                       shuffled: shuffle)
         return (name, items.count)
     }
 
@@ -357,7 +359,8 @@ final class IntentServices {
         // BEFORE the loadables guard, and registering BOTH crates: late downloads from either
         // must join the running queue (the downloader tracks the union).
         mixDownloader?.begin(sources: deckA == deckB ? [deckA] : [deckA, deckB])
-        let resolver = MixResolver(app: app, collections: collections, burns: burns, studio: studio)
+        let resolver = MixResolver(app: app, collections: collections, burns: burns, studio: studio,
+                                   streamable: mix.canStream)
         var a = resolver.loadables(for: deckA)
         var b = deckA == deckB ? [] : resolver.loadables(for: deckB)
         let aIds = Set(a.map(\.songId))
@@ -366,7 +369,7 @@ final class IntentServices {
             // Same zero-start contract as the single-source guard above, over the union run.
             if allowPendingStart, let d = mixDownloader, d.isActive {
                 d.noteAutoStarted(initialIds: [], lead: settings.autoMixLeadSeconds,
-                                  fade: settings.autoMixFadeSeconds, label: name)
+                                  fade: settings.autoMixFadeSeconds, label: name, shuffled: shuffle)
                 return (name, 0)
             }
             throw PocketDJIntentError.noBurnedSongs(name)
@@ -391,7 +394,8 @@ final class IntentServices {
                          label: name)
         mixDownloader?.noteAutoStarted(initialIds: Set(queue.map(\.loadable.songId)),
                                        lead: settings.autoMixLeadSeconds,
-                                       fade: settings.autoMixFadeSeconds, label: name)
+                                       fade: settings.autoMixFadeSeconds, label: name,
+                                       shuffled: shuffle)
         return (name, items.count)
     }
 

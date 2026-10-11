@@ -568,6 +568,12 @@ struct PocketDJApp: App {
         let mixSessions = MixSessionStore(fileURL: MixSessionStore.launchURL())
         let mix = MixEngine(burns: burns)
         mix.recorder = mixSessions
+        // STREAMING MODE: a deck asked for a ripped-but-not-downloaded song plays it while its
+        // bytes arrive (the finished stream is adopted as an ordinary burn).
+        let mixStreamer = MixStreamLoader(rips: rips, burns: burns)
+        mixStreamer.onProgress = { [weak mix] songId in mix?.streamProgressed(songId) }
+        mixStreamer.pinnedIds = { [weak mix] in mix?.streamingSongIds ?? [] }
+        mix.streamer = mixStreamer
         mix.artworkURLsProvider = artworkURLsProvider
         // F4: a Mix-tab session (deck / Auto-DJ) starting must tear down a live Now Playing mix
         // engagement — the panel hides then, so the DSP would otherwise keep rendering a hidden second
@@ -737,9 +743,10 @@ struct PocketDJApp: App {
             case .setlist(let id):  return collections.ripIds(forSetlist: id)
             }
         }
-        mixDownloader.resolveLoadables = { [weak app, weak collections, weak burns, weak studio] source in
+        mixDownloader.resolveLoadables = { [weak app, weak collections, weak burns, weak studio, weak mix] source in
             guard let app, let collections, let burns, let studio else { return [] }
-            return MixResolver(app: app, collections: collections, burns: burns, studio: studio)
+            return MixResolver(app: app, collections: collections, burns: burns, studio: studio,
+                               streamable: { mix?.canStream($0) ?? false })
                 .loadables(for: source)
         }
         mixDownloader.resolveSourceName = { [weak collections] source in

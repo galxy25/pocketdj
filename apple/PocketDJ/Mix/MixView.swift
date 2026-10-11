@@ -649,7 +649,8 @@ struct MixView: View {
             return
         }
         downloader.begin(source: src)          // (re)start the collection pull — idempotent per source
-        let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: src)
+        let loadables = MixResolver(app: app, collections: collections, burns: burns, studio: studio,
+                    streamable: engine.canStream).loadables(for: src)
         let items = loadables.map { l in
             MixEngine.AutoMixItem(loadable: l, durationMs: l.lengthMs ?? 180_000)
         }
@@ -661,7 +662,7 @@ struct MixView: View {
         downloader.noteAutoStarted(initialIds: Set(loadables.map(\.songId)),
                                    lead: settings.autoMixLeadSeconds,
                                    fade: settings.autoMixFadeSeconds,
-                                   label: autoSourceName)
+                                   label: autoSourceName, shuffled: shuffled)
         // Donate the equivalent App Intent so Siri/Spotlight learn this habit.
         IntentDonations.startedAutoMix(source: src, shuffle: shuffled, collections: collections)
     }
@@ -2643,7 +2644,8 @@ private struct TrackLoaderSheet: View {
     /// was read twice + `hiddenPlayedCount` once) re-walked the whole pocket on every keystroke.
     private func resolvedSource() -> [MixLoadable] {
         guard let source else { return [] }
-        return MixResolver(app: app, collections: collections, burns: burns, studio: studio).loadables(for: source)
+        return MixResolver(app: app, collections: collections, burns: burns, studio: studio,
+                    streamable: engine.canStream).loadables(for: source)
     }
 
     /// Apply the search query to an already-resolved list (post-search, pre-played-drop).
