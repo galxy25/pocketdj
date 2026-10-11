@@ -148,6 +148,44 @@ final class MixStreamingTests: XCTestCase {
         engine.teardown()
     }
 
+    /// The REMOTE surfaces' signal (CarPlay's live row, the TV mix screens, the Mix-tab banner):
+    /// `onAirBuffering` is true while the on-air deck waits for bytes WITH play intent — a cued
+    /// standby deck still buffering is not "on air" — and clears when audio starts.
+    func testOnAirBufferingFollowsTheOnAirDeck() async throws {
+        let data = try fixture
+        let rips = makeRips()
+        let burns = try MixBurnFixture.burnStore(ids: [], rips: rips)
+        let engine = MixEngine(burns: burns)
+        let loader = MixStreamLoader(rips: rips, burns: burns, configuration: stubConfig())
+        loader.onProgress = { [weak engine] in engine?.streamProgressed($0) }
+        engine.streamer = loader
+        let fa = tempFile("oa"), fb = tempFile("ob")
+        let total = Int64(data.count)
+        try data.prefix(12_000).write(to: fa)
+        try data.prefix(12_000).write(to: fb)
+        loader.injectStreamForTesting(songId: "oa", file: fa, bytes: 12_000, expected: total)
+        loader.injectStreamForTesting(songId: "ob", file: fb, bytes: 12_000, expected: total)
+
+        // Auto mix over two not-yet-downloaded songs: deck A is on air and waiting.
+        engine.startAutoMix(["oa", "ob"].map {
+            .init(loadable: MixLoadable(songId: $0, title: $0, artist: "A", bpm: 120, camelot: "8A",
+                                        key: nil, albumId: nil, lengthMs: 12_000), durationMs: 12_000)
+        }, shuffled: false, lead: 4, fade: 1, label: "mix")
+        XCTAssertEqual(engine.onAirTrack?.songId, "oa")
+        XCTAssertTrue(engine.isBuffering(.a) && engine.isBuffering(.b), "both decks are waiting for bytes")
+        XCTAssertTrue(engine.onAirBuffering, "the on-air deck is waiting — remote surfaces say Buffering…")
+
+        // The on-deck NEXT getting its bytes changes nothing on air…
+        try data.write(to: fb)
+        loader.injectStreamForTesting(songId: "ob", file: fb, bytes: total, expected: total, finished: true)
+        XCTAssertTrue(engine.onAirBuffering)
+        // …the on-air deck getting runway clears it.
+        try data.prefix(data.count / 2).write(to: fa)
+        loader.injectStreamForTesting(songId: "oa", file: fa, bytes: total / 2, expected: total)
+        XCTAssertFalse(engine.onAirBuffering, "audio started — the indicator clears everywhere")
+        engine.teardown()
+    }
+
     /// Seeking past the downloaded frontier HOLDS at the target; the bytes arriving resume the
     /// deck exactly there (not from the frontier, not from 0:00).
     func testSeekPastFrontierHoldsAtTargetUntilBytesArrive() async throws {

@@ -508,6 +508,7 @@
 		E1CA5DE62974808E72925887 /* QueueBuilderState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 357F5C2B33C4DC5F36340164 /* QueueBuilderState.swift */; };
 		E2CAF81D921F22EE4E57F77D /* BackupZipTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26044E640932C5D8941C1609 /* BackupZipTests.swift */; };
 		E347FFBDCA616A24D14361B7 /* OnboardingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 65E0EC3D7BF449A729CF9353 /* OnboardingUITests.swift */; };
+		E378C74F6220B74F7ED6351C /* MixBufferingBadge.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F8C5C6954CAA705DF4AFDB4 /* MixBufferingBadge.swift */; };
 		E41D71DC9FADA0074147CD77 /* SongDuplicateJudge.swift in Sources */ = {isa = PBXBuildFile; fileRef = C528F22C1ABAEDC7AEFC5795 /* SongDuplicateJudge.swift */; };
 		E474D6811C5BB3427D7173DA /* MixSessionRecordingsDeleteTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8FEF5D66CE6986539420ACC /* MixSessionRecordingsDeleteTests.swift */; };
 		E587A551AC47A9F28314DFEE /* CollectionCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 307B7915C1ED1521808777F9 /* CollectionCatalogTests.swift */; };
@@ -845,6 +846,7 @@
 		5E68B627E11B43B6DA0FFC32 /* NowPlayingSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingSnapshot.swift; sourceTree = "<group>"; };
 		5E8B350FAAC7E6D5EB518D0A /* JukeboxJoinView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JukeboxJoinView.swift; sourceTree = "<group>"; };
 		5F3947915C544A8CD0B3C12A /* PlayCountCaptureTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayCountCaptureTests.swift; sourceTree = "<group>"; };
+		5F8C5C6954CAA705DF4AFDB4 /* MixBufferingBadge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixBufferingBadge.swift; sourceTree = "<group>"; };
 		5FA96085F1C8A41712C7ADB1 /* ForYouGrid.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForYouGrid.swift; sourceTree = "<group>"; };
 		5FB11D272713C95786246DB9 /* TVRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVRootView.swift; sourceTree = "<group>"; };
 		5FBF57030AF5B6DB195B3FCC /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
@@ -1577,6 +1579,7 @@
 			children = (
 				7AF2006A818A5AAD956500B5 /* CollectionMixDownloader.swift */,
 				3114C7979FC9315629D622E8 /* FXRack.swift */,
+				5F8C5C6954CAA705DF4AFDB4 /* MixBufferingBadge.swift */,
 				469A732C6C97D2B46EFD04AB /* MixEngine.swift */,
 				D0C8A3B9AC9D85D51A04BE77 /* MixResolver.swift */,
 				63C6865680AB3F93F6BCF8BB /* MixStreamLoader.swift */,
@@ -2665,6 +2668,7 @@
 				12F4DE84A71C1E6CEFEDBBC7 /* MainThreadStallWatchdog.swift in Sources */,
 				FCB1ABFCDC5E1DC9E47B03BF /* MasterFX.swift in Sources */,
 				97AA9807DA89998D23B41C7D /* MelodyTracker.swift in Sources */,
+				E378C74F6220B74F7ED6351C /* MixBufferingBadge.swift in Sources */,
 				657EF0367FBF0CBAEE6D462C /* MixDeckSessionStore.swift in Sources */,
 				E9B39C840851B06D8DF2F18B /* MixEngine.swift in Sources */,
 				575635D6BB4568391DE3D0C7 /* MixIntents.swift in Sources */,

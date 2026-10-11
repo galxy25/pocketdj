@@ -3748,6 +3748,21 @@ final class MixEngine {
         return nil
     }
 
+    /// STREAMING: is the on-air audio waiting for downloaded bytes? The deck `onAirTrack` reads
+    /// (same rule) is buffering — or, mid-transition/skip, the INCOMING deck the mix is fading
+    /// into is still waiting with play intent. Observable (reads `bufferingDecks`) — drives the
+    /// "Buffering…" indicator on the remote surfaces (CarPlay's Mix tab, the TV mix screens) and
+    /// the Mix tab's auto-mix banner.
+    var onAirBuffering: Bool {
+        guard !bufferingDecks.isEmpty else { return false }
+        if autoMixing {
+            if isBuffering(autoLiveDeck) { return true }
+            let incoming = other(autoLiveDeck)
+            return autoTransitioning && isBuffering(incoming) && state(incoming).isPlaying
+        }
+        return Deck.allCases.contains { state($0).isPlaying && isBuffering($0) }
+    }
+
     /// The auto queue's not-yet-reached tail (position order) — the guests' "up next".
     /// Empty when not auto-mixing (a manual mix has no knowable next).
     var autoUpcoming: [MixLoadable] {

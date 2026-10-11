@@ -517,8 +517,12 @@ struct MixView: View {
             HStack(spacing: 10) {
                 Image(systemName: "wand.and.stars").foregroundStyle(Theme.accent)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(engine.autoPaused ? "Auto-mix paused" : "Auto-mixing")
-                        .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
+                    HStack(spacing: 8) {
+                        Text(engine.autoPaused ? "Auto-mix paused" : "Auto-mixing")
+                            .font(.subheadline.weight(.semibold)).foregroundStyle(Theme.fg)
+                        // iPhone shows one deck at a time — the banner says it for the mix.
+                        if engine.onAirBuffering { MixBufferingBadge(a11yId: "mix-auto-buffering") }
+                    }
                     if let status = engine.autoStatus {
                         Text(status).font(.caption.monospacedDigit()).foregroundStyle(Theme.fgDim)
                     }
@@ -1245,18 +1249,7 @@ private struct DeckView: View {
 
     /// STREAMING: the deck's track hasn't got enough downloaded audio to play (just loaded, a seek
     /// past what's arrived, or the download fell behind). Clears itself the moment it resumes.
-    private var bufferingBadge: some View {
-        HStack(spacing: 5) {
-            ProgressView().controlSize(.mini)
-            Text("Buffering…").font(.caption.weight(.medium))
-        }
-        .foregroundStyle(Theme.fgDim)
-        .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(Theme.bgOverlay, in: Capsule())
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Buffering")
-        .accessibilityIdentifier("\(a11y)-buffering")
-    }
+    private var bufferingBadge: some View { MixBufferingBadge(a11yId: "\(a11y)-buffering") }
 
     private var playButton: some View {
         Button { engine.togglePlay(deck) } label: {
