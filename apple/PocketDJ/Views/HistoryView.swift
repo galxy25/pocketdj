@@ -238,6 +238,15 @@ struct HistoryView: View {
         .onChange(of: pocketsTabOn) {
             if !pocketsTabOn && tab == .pockets { tab = .playback }
         }
+        // Headless-verification seam (mirrors PDJ_START_SECTION / PDJ_TV_TAB): land on a named
+        // History tab ("Pockets") so `simctl` can screenshot it without driving taps. Only a tab
+        // that is actually offered is honoured.
+        .onAppear {
+            if let raw = ProcessInfo.processInfo.environment["PDJ_HISTORY_TAB"],
+               let t = HistoryTab(rawValue: raw), visibleTabs.contains(t) {
+                tab = t
+            }
+        }
     }
 
     // MARK: - Tab control (every available tab; the current one is filled)

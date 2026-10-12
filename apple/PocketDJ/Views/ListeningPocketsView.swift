@@ -107,9 +107,11 @@ struct ListeningPocketLabeler {
     let results: ListeningPocketsResults?
     let location: ListeningLocationStore?
 
-    /// Today's label for a place/trip id. See the type doc of `ListeningPocketsView`.
+    /// Today's label for a place/trip id. See the type doc of `ListeningPocketsView`. With places
+    /// & trips ON, this device's engine is the authority (an id it pruned reads "Earlier place");
+    /// with it off — or on a platform with no engine — the cloud's last uploaded snapshot names it.
     func contextLabel(_ tag: ListeningContextTag, fallback: String? = nil) -> String {
-        if let location, location.isSupported {
+        if let location, location.isSupported, location.isEnabled {
             return location.label(for: tag) ?? "Earlier place"
         }
         return results?.snapshotLabel(for: tag) ?? fallback ?? "Earlier place"

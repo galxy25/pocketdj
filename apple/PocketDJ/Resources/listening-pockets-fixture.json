@@ -15,7 +15,7 @@
   },
   "pockets": [
     {
-      "id": "pk_5d41402abc4b", "startMs": 1760081940000, "endMs": 1760083140000, "tzOffsetMin": -420,
+      "id": "pk_5d41402abc4b", "startMs": 1760081940000, "endMs": 1760083140000, "tzOffsetMin": 0,
       "localDate": "2025-10-10", "localStartHour": 7.65, "dow": 5, "dayType": "weekday", "timeBucket": "morning",
       "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA", "memberCount": 4, "skippedCount": 1, "sessionPlays": 5,
       "members": [
@@ -39,7 +39,7 @@
       "patternId": "pt_9b2e61a0c7d4"
     },
     {
-      "id": "pk_7e2a11cc09f1", "startMs": 1759995540000, "endMs": 1759996260000, "tzOffsetMin": -420,
+      "id": "pk_7e2a11cc09f1", "startMs": 1759995540000, "endMs": 1759996260000, "tzOffsetMin": 0,
       "localDate": "2025-10-09", "localStartHour": 7.6, "dow": 4, "dayType": "weekday", "timeBucket": "morning",
       "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA", "memberCount": 3, "skippedCount": 0, "sessionPlays": 3,
       "members": [
