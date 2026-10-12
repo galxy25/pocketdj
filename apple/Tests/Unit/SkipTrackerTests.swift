@@ -309,4 +309,102 @@ final class SkipTrackerTests: XCTestCase {
         tracker.noteAdvanceAway(songId: "sng_x", positionMs: 10_000, durationMs: 200_000)
         XCTAssertEqual(recordedSkips, ["sng_x", "sng_x"])
     }
+
+    // MARK: Played fraction (listening pockets: completed vs partial)
+
+    private func fraction(_ history: PlayHistoryStore, _ id: UUID) -> Double? {
+        history.events.first { $0.id == id }?.listenedFraction
+    }
+
+    /// A natural end never advances away — the NEXT track's arm is what reports the outgoing
+    /// track's fraction, so a fully-played song reads `completed`.
+    func testArmReportsFractionForOutgoingTrack() {
+        let history = makeHistory()
+        let tracker = makeTracker(history)
+        let old = start(tracker, history, songId: "sng_old", at: 1_000)
+        tracker.samplePosition(songId: "sng_old", positionMs: 190_000, durationMs: 200_000)
+        start(tracker, history, songId: "sng_new", at: 300_000)
+        XCTAssertEqual(fraction(history, old.id) ?? -1, 0.95, accuracy: 0.001)
+        XCTAssertEqual(history.events.first { $0.id == old.id }?.outcome, .completed)
+        XCTAssertTrue(recordedSkips.isEmpty, "an arm reports, it never classifies")
+    }
+
+    func testNothingReportedWithoutSamplesOrDuration() {
+        let history = makeHistory()
+        let tracker = makeTracker(history)
+        let a = start(tracker, history, songId: "sng_a", at: 1_000)
+        start(tracker, history, songId: "sng_b", at: 60_000)          // no samples at all
+        XCTAssertNil(fraction(history, a.id))
+        let b = history.events.last!
+        tracker.samplePosition(songId: "sng_b", positionMs: 50_000, durationMs: nil)  // no duration
+        start(tracker, history, songId: "sng_c", at: 120_000)
+        XCTAssertNil(fraction(history, b.id), "never guess a fraction without a duration")
+        XCTAssertEqual(history.events.first { $0.id == b.id }?.outcome, .unknown)
+    }
+
+    /// A repeat replay re-zeroes the mark — but pass 1's listen is reported first.
+    func testRestartReportsBeforeRezeroing() {
+        let history = makeHistory()
+        let tracker = makeTracker(history)
+        let ev = start(tracker, history)
+        tracker.samplePosition(songId: "sng_x", positionMs: 180_000, durationMs: 200_000)  // 90%
+        tracker.noteTrackRestarted(songId: "sng_x")
+        XCTAssertEqual(fraction(history, ev.id) ?? -1, 0.9, accuracy: 0.001)
+        tracker.noteAdvanceAway(songId: "sng_x", positionMs: 20_000, durationMs: 200_000)  // ⏭ at 10%
+        XCTAssertEqual(fraction(history, ev.id) ?? -1, 0.9, accuracy: 0.001, "max-merged, pass 1 kept")
+        XCTAssertEqual(recordedSkips, ["sng_x"], "the replay skip still counts")
+        XCTAssertEqual(history.events.first { $0.id == ev.id }?.outcome, .skipped)
+    }
+
+    /// The adopt-late verdict still marks the skip AND carries the stashed track's fraction.
+    func testLateVerdictMarksSkipAndReportsFraction() {
+        let history = makeHistory()
+        let tracker = makeTracker(history)
+        let old = start(tracker, history, songId: "sng_old", at: 1_000)
+        tracker.samplePosition(songId: "sng_old", positionMs: 60_000, durationMs: 200_000)  // 30%
+        start(tracker, history, songId: "sng_new", at: 60_000)
+        tracker.noteAdvanceAway(songId: "sng_old", positionMs: nil, durationMs: 200_000)
+        XCTAssertEqual(history.events.first { $0.id == old.id }?.wasSkipped, true)
+        XCTAssertEqual(fraction(history, old.id) ?? -1, 0.3, accuracy: 0.001)
+        XCTAssertEqual(recordedSkips, ["sng_old"])
+    }
+
+    func testVerdictAboveHalfReportsCompletedNotSkip() {
+        let history = makeHistory()
+        let tracker = makeTracker(history)
+        let ev = start(tracker, history)
+        tracker.noteAdvanceAway(songId: "sng_x", positionMs: 150_000, durationMs: 200_000)
+        XCTAssertEqual(fraction(history, ev.id) ?? -1, 0.75, accuracy: 0.001)
+        XCTAssertEqual(history.events.first { $0.id == ev.id }?.outcome, .completed)
+        XCTAssertTrue(recordedSkips.isEmpty)
+    }
+
+    func testCheckpointReportsWithoutClassifying() {
+        let history = makeHistory()
+        let tracker = makeTracker(history)
+        let ev = start(tracker, history)
+        tracker.samplePosition(songId: "sng_x", positionMs: 40_000, durationMs: 200_000)  // 20%
+        tracker.checkpoint()
+        XCTAssertEqual(fraction(history, ev.id) ?? -1, 0.2, accuracy: 0.001)
+        XCTAssertNil(history.events.first { $0.id == ev.id }?.wasSkipped, "a checkpoint is not a verdict")
+        XCTAssertTrue(recordedSkips.isEmpty)
+        XCTAssertEqual(history.events.first { $0.id == ev.id }?.outcome, .partial)
+        // …and the real ⏭ afterwards still classifies.
+        tracker.noteAdvanceAway(songId: "sng_x", positionMs: 40_000, durationMs: 200_000)
+        XCTAssertEqual(recordedSkips, ["sng_x"])
+    }
+
+    /// The injected sink wins over the history fallback (the app wires it).
+    func testNoteListenedSinkIsUsedWhenWired() {
+        let history = makeHistory()
+        let tracker = makeTracker(history)
+        var reports: [(UUID, Double)] = []
+        tracker.noteListened = { reports.append(($0, $1)) }
+        let ev = start(tracker, history)
+        tracker.noteAdvanceAway(songId: "sng_x", positionMs: 100_000, durationMs: 200_000)
+        XCTAssertEqual(reports.count, 1)
+        XCTAssertEqual(reports.first?.0, ev.id)
+        XCTAssertEqual(reports.first?.1 ?? -1, 0.5, accuracy: 0.0001)
+        XCTAssertNil(fraction(history, ev.id), "the sink, not the fallback, received it")
+    }
 }

@@ -77,6 +77,11 @@ final class SkipTracker {
     @ObservationIgnored weak var history: PlayHistoryStore?
     /// Cumulative-count sink, wired at app init to `PlayCountService.noteSkipped`.
     @ObservationIgnored var noteSkip: ((String) -> Void)?
+    /// Played-fraction sink (listening pockets' completed-vs-partial half of the outcome), wired
+    /// at app init to `PlayHistoryStore.noteListened`. nil ⇒ falls back to `history` directly.
+    /// Reported on every verdict, on the arm that replaces a track, before a restart re-zeroes the
+    /// mark, and on `checkpoint()` — never guessed: unknown duration or no samples reports nothing.
+    @ObservationIgnored var noteListened: ((UUID, Double) -> Void)?
 
     /// A new track started (the history event was just appended). Stashes the replaced track
     /// (a jump's advance-away arrives AFTER this — the adopt ordering, see the class doc),
@@ -105,7 +110,33 @@ final class SkipTracker {
     func noteTrackRestarted(songId: String) {
         guard let current = currentSongId,
               SongVariant.baseId(songId) == SongVariant.baseId(current) else { return }
+        // Pass 1's listen is real — report it BEFORE the mark it lives in is re-zeroed.
+        reportCurrentFraction()
         maxPositionMs = 0
+    }
+
+    /// Report the current track's played fraction WITHOUT classifying it — the app calls this on
+    /// scenePhase `.background` and on `SetlistPlayer.stop()`, the exits that never advance away
+    /// (so would otherwise leave a fully-heard song's outcome unknown).
+    func checkpoint() {
+        reportCurrentFraction()
+    }
+
+    /// The current track's high-water fraction, when one is actually known (a duration AND at
+    /// least one non-zero sample). Max-merged downstream, so repeating it is harmless.
+    private func reportCurrentFraction() {
+        guard let eid = currentEventId, let dur = lastKnownDurationMs, dur > 0,
+              maxPositionMs > 0 else { return }
+        report(eventId: eid, fraction: Double(maxPositionMs) / Double(dur))
+    }
+
+    private func report(eventId: UUID, fraction: Double) {
+        let f = min(1, max(0, fraction))
+        if let noteListened {
+            noteListened(eventId, f)
+        } else {
+            history?.noteListened(eventId: eventId, fraction: f)
+        }
     }
 
     /// Point the tracker at `eventId`/`songId`, stashing the track it replaces. A re-arm on
@@ -113,6 +144,10 @@ final class SkipTracker {
     /// record) must keep the existing stash — overwriting it with ourselves would lose the
     /// real previous track while its adopt verdict is still in flight.
     private func arm(eventId: UUID, songId: String, classified: Bool) {
+        // The outgoing track's listen is final once something replaces it — report it now (the
+        // natural end / auto-advance paths never call `noteAdvanceAway`, so this is the ONLY
+        // place a fully-played song's "completed" comes from).
+        reportCurrentFraction()
         if let eid = currentEventId, let sid = currentSongId, eid != eventId {
             previous = PreviousTrack(eventId: eid, songId: sid, classified: self.classified,
                                      maxPositionMs: maxPositionMs,
@@ -167,7 +202,11 @@ final class SkipTracker {
     /// forward between ticks) beats the mark — callers pass the max of the two.
     private func classify(eventId: UUID, songId: String, positionMs: Int, durationMs: Int?) {
         guard let dur = durationMs, dur > 0 else { return }
-        guard Double(positionMs) / Double(dur) < 0.5 else { return }
+        let fraction = Double(positionMs) / Double(dur)
+        // Every verdict carries its fraction (max-merged downstream — a skip at 20% after an
+        // earlier 60% pass keeps the 60%); only then does the <50% rule decide the skip.
+        report(eventId: eventId, fraction: fraction)
+        guard fraction < 0.5 else { return }
         history?.markSkipped(eventId: eventId)
         noteSkip?(songId)
     }

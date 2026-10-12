@@ -93,6 +93,34 @@ final class PlayHistoryStore {
         /// Stamped by `markSkipped(eventId:)` after the fact — the event is appended at track
         /// START (the live History row) and only later classified.
         var wasSkipped: Bool? = nil
+        /// High-water played fraction (0…1) of this playback, MAX-merged (never decreases). nil =
+        /// unknown. ADDITIVE-OPTIONAL like `wasSkipped`; written by `noteListened(eventId:fraction:)`
+        /// (SkipTracker for set playback, `MixPlayOutcomeBridge` for the Mix decks).
+        var listenedFraction: Double? = nil
+        /// Local UTC offset in minutes at play time (`TimeZone.current.secondsFromGMT(for:)/60`),
+        /// stamped by `record()`. Listening pockets bucket plays by LOCAL time of day, and the
+        /// device's zone at upload time is wrong for a play made before a trip across zones.
+        var tzOffsetMin: Int? = nil
+        /// Settled location context (see ListeningContext.swift) — opaque place/trip ids only.
+        /// nil = not (yet) resolved / not applicable. WRITE-ONCE: `stampContexts` fills it only
+        /// while nil, and only for this install's own plays.
+        var listeningContext: ListeningContextTag? = nil
+        /// True when a CarPlay scene was connected at record time (iOS); nil elsewhere / unknown.
+        var carPlay: Bool? = nil
+
+        /// What happened to this playback, DERIVED (never stored) so a future outcome token can
+        /// never make an event fail to decode: the skip flag wins, then the played fraction.
+        enum PlayOutcome: String { case completed, skipped, partial, unknown }
+        var outcome: PlayOutcome {
+            if wasSkipped == true { return .skipped }
+            guard let f = listenedFraction else { return .unknown }
+            return f >= 0.5 ? .completed : .partial
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case id, songId, playedAt, source, contextId, contextName, title, artist
+            case originInstallId, wasSkipped, listenedFraction, tzOffsetMin, listeningContext, carPlay
+        }
     }
 
     /// The persisted, versioned document.
@@ -149,6 +177,9 @@ final class PlayHistoryStore {
     /// instead of staying stuck on whatever recorded last. Payload: the existing LOCAL event
     /// the play collapsed into. Same cheapness contract as `onRecord`.
     @ObservationIgnored var onResume: ((PlayEvent) -> Void)?
+    /// "Is a CarPlay scene connected right now?" — read once per `record()` and stamped onto the
+    /// event (`PlayEvent.carPlay`). Wired in `PocketDJApp` on iOS only; nil ⇒ the field stays nil.
+    @ObservationIgnored var carPlayProbe: (() -> Bool)?
 
     @ObservationIgnored private let fileURL: URL
     /// The on-disk document CloudSyncService syncs (registration reads the SAME URL the
@@ -234,10 +265,13 @@ final class PlayHistoryStore {
             }
             return nil
         }
+        let playedAtDate = Date(timeIntervalSince1970: nowMs / 1000)
         let event = PlayEvent(id: UUID(), songId: songId, playedAt: nowMs,
                               source: context.source, contextId: context.contextId,
                               contextName: context.contextName, title: title, artist: artist,
-                              originInstallId: installId)
+                              originInstallId: installId,
+                              tzOffsetMin: TimeZone.current.secondsFromGMT(for: playedAtDate) / 60,
+                              carPlay: carPlayProbe?())
         events.append(event)
         lastPlayedIndex[songId] = max(lastPlayedIndex[songId] ?? 0, nowMs)
         countIndex[songId, default: 0] += 1
@@ -260,6 +294,44 @@ final class PlayHistoryStore {
         events[i].wasSkipped = true
         revision &+= 1
         save()
+    }
+
+    /// Record how much of an already-recorded playback was heard — the "completed vs partial"
+    /// half of the outcome (`markSkipped` is the other). Clamped to 0…1 and MAX-merged: a later,
+    /// smaller report (a restart's fresh pass, a stale checkpoint) never lowers it. Changes under
+    /// one percentage point are dropped so the ~1 Hz-fed reporters can't churn the file. Same
+    /// contract as `markSkipped`: in-place edit + revision bump + save, NO `onRecord`.
+    func noteListened(eventId: UUID, fraction: Double) {
+        guard fraction.isFinite else { return }
+        let f = min(1, max(0, fraction))
+        guard let i = events.lastIndex(where: { $0.id == eventId }) else { return }
+        if let old = events[i].listenedFraction, f < old + 0.01 { return }
+        events[i].listenedFraction = f
+        revision &+= 1
+        save()
+    }
+
+    /// Fill in settled location contexts (the listening-pockets settle pass). WRITE-ONCE and
+    /// LOCAL-ONLY: an event that already carries a context keeps it, and a peer's play is never
+    /// tagged with where THIS device was. One save for the whole batch.
+    func stampContexts(_ tags: [UUID: ListeningContextTag]) {
+        guard !tags.isEmpty else { return }
+        var changed = false
+        for i in events.indices {
+            guard events[i].listeningContext == nil, let tag = tags[events[i].id],
+                  !isFromAnotherDevice(events[i]) else { continue }
+            events[i].listeningContext = tag
+            changed = true
+        }
+        guard changed else { return }
+        revision &+= 1
+        save()
+    }
+
+    /// The newest LOCAL event for `songId` (tail search) — the Mix bridge's fallback when a
+    /// play was collapsed by the 30 s window and `record` returned nil.
+    func lastLocalEvent(forSongId songId: String) -> PlayEvent? {
+        events.last { $0.songId == songId && !isFromAnotherDevice($0) }
     }
 
     /// Recent plays projected for the For You ranking (`ZoneEngine`).
@@ -448,7 +520,7 @@ final class PlayHistoryStore {
               let doc = try? JSONDecoder().decode(Document.self, from: data) else { return false }
         var byId = Dictionary(events.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         var addedFromDisk = 0
-        var absorbedSkipFlags = false
+        var absorbedPeerFields = false
         for e in doc.events {
             guard let mine = byId[e.id] else { byId[e.id] = e; addedFromDisk += 1; continue }
             // Shared row: keep OUR copy, but OR the skip flag in — the verdict is monotone
@@ -457,27 +529,85 @@ final class PlayHistoryStore {
             // that merely synced it.
             if e.wasSkipped == true, mine.wasSkipped != true {
                 byId[e.id]?.wasSkipped = true
-                absorbedSkipFlags = true
+                absorbedPeerFields = true
+            }
+            // The outcome fields converge the same way: fraction is MAX-merged, the rest are
+            // first-writer-wins (ours if set, else theirs). Each rule is monotone, so two devices
+            // applying each other's docs reach the same row instead of trading values forever.
+            if let theirs = e.listenedFraction, theirs > (mine.listenedFraction ?? -1) {
+                byId[e.id]?.listenedFraction = theirs
+                absorbedPeerFields = true
+            }
+            if mine.listeningContext == nil, let ctx = e.listeningContext {
+                byId[e.id]?.listeningContext = ctx
+                absorbedPeerFields = true
+            }
+            if mine.tzOffsetMin == nil, let tz = e.tzOffsetMin {
+                byId[e.id]?.tzOffsetMin = tz
+                absorbedPeerFields = true
+            }
+            if mine.carPlay == nil, let cp = e.carPlay {
+                byId[e.id]?.carPlay = cp
+                absorbedPeerFields = true
             }
         }
         // A superset worth publishing exists if WE hold ROWS the pulled document lacks — or
         // per-row SKIP FLAGS it lacks. The flag check closes the relaunch hole: a peer doc
         // with identical row COUNT but no flags used to skip the save, leaving flagless bytes
-        // on disk for the next launch to decode (the flags silently evaporated).
-        let docSkippedIds = Set(doc.events.lazy.filter { $0.wasSkipped == true }.map(\.id))
-        let weHoldFlagsTheDocLacks = byId.values.contains {
-            $0.wasSkipped == true && !docSkippedIds.contains($0.id)
+        // on disk for the next launch to decode (the flags silently evaporated). The outcome
+        // fields (fraction / context / tz / CarPlay) have the identical hole, so they ride the
+        // same check: any row where ours carries something the doc's copy lacks.
+        let docById = Dictionary(doc.events.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
+        let weHoldFlagsTheDocLacks = byId.values.contains { mine in
+            guard let theirs = docById[mine.id] else { return false }   // a row-level gap, counted below
+            return Self.holdsFieldsMissing(from: theirs, mine: mine)
         }
         let weHoldRowsTheDocLacks = byId.count > doc.events.count
         events = byId.values.sorted { $0.playedAt < $1.playedAt }
         if events.count > Self.maxEvents { trimToCap() }
         rebuildIndexes()
-        if addedFromDisk > 0 || absorbedSkipFlags || weHoldRowsTheDocLacks || weHoldFlagsTheDocLacks {
+        if addedFromDisk > 0 || absorbedPeerFields || weHoldRowsTheDocLacks || weHoldFlagsTheDocLacks {
             revision &+= 1
         }
         guard weHoldRowsTheDocLacks || weHoldFlagsTheDocLacks else { return false }
         save()
         return true
+    }
+
+    /// Does `mine` carry a per-row field the document's copy of the same event lacks? Mirrors the
+    /// merge rules above exactly — anything a merge would ADD to `theirs` is "lacking".
+    private static func holdsFieldsMissing(from theirs: PlayEvent, mine: PlayEvent) -> Bool {
+        if mine.wasSkipped == true, theirs.wasSkipped != true { return true }
+        if let f = mine.listenedFraction, f > (theirs.listenedFraction ?? -1) { return true }
+        if mine.listeningContext != nil, theirs.listeningContext == nil { return true }
+        if mine.tzOffsetMin != nil, theirs.tzOffsetMin == nil { return true }
+        if mine.carPlay != nil, theirs.carPlay == nil { return true }
+        return false
+    }
+}
+
+extension PlayHistoryStore.PlayEvent {
+    /// The pre-pockets fields decode exactly as the synthesized decoder did (a malformed one
+    /// still drops this ONE event via `LenientEvent`). The outcome fields added for listening
+    /// pockets decode with `try?`: a value a newer build shapes differently — or garbage — reads
+    /// as nil instead of throwing the whole play out of history. Lives in an extension so the
+    /// memberwise initializer survives.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        songId = try c.decode(String.self, forKey: .songId)
+        playedAt = try c.decode(Double.self, forKey: .playedAt)
+        source = try c.decode(PlayHistoryStore.PlaySource.self, forKey: .source)
+        contextId = try c.decodeIfPresent(String.self, forKey: .contextId)
+        contextName = try c.decodeIfPresent(String.self, forKey: .contextName)
+        title = try c.decodeIfPresent(String.self, forKey: .title)
+        artist = try c.decodeIfPresent(String.self, forKey: .artist)
+        originInstallId = try c.decodeIfPresent(String.self, forKey: .originInstallId)
+        wasSkipped = try c.decodeIfPresent(Bool.self, forKey: .wasSkipped)
+        listenedFraction = (try? c.decodeIfPresent(Double.self, forKey: .listenedFraction)) ?? nil
+        tzOffsetMin = (try? c.decodeIfPresent(Int.self, forKey: .tzOffsetMin)) ?? nil
+        listeningContext = (try? c.decodeIfPresent(ListeningContextTag.self, forKey: .listeningContext)) ?? nil
+        carPlay = (try? c.decodeIfPresent(Bool.self, forKey: .carPlay)) ?? nil
     }
 }
 

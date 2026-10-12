@@ -21,6 +21,7 @@ struct SettingsView: View {
     /// Optional-degrade (the `writeBack` pattern): always injected by the app; a preview/test
     /// host that renders Settings standalone loses only the Recommendations status rows.
     @Environment(RecommendationService.self) private var recEngine: RecommendationService?
+    @Environment(ListeningPocketsService.self) private var pockets: ListeningPocketsService?
     @State private var ripTesting = false
     @State private var ripStatus: RipStatus?
     @State private var jukeboxTesting = false
@@ -823,6 +824,18 @@ struct SettingsView: View {
                 Toggle("Include lifetime play counts", isOn: $settings.shareLifetimePlayCounts)
                     .accessibilityIdentifier("rec-share-playcounts-toggle")
                     .onChange(of: settings.shareLifetimePlayCounts) { settings.persist() }
+                // Listening pockets ride this consent and this key (sub-toggle, default ON).
+                Toggle("Find my listening pockets", isOn: $settings.listeningPocketsEnabled)
+                    .accessibilityIdentifier("pockets-toggle")
+                    .onChange(of: settings.listeningPocketsEnabled) {
+                        settings.persist()
+                        pockets?.enabledDidChange()
+                    }
+                // Places & trips (iOS only; renders nothing elsewhere) — needs pockets on.
+                ListeningLocationSettingsSection(pocketsEnabled: settings.listeningPocketsEnabled)
+                if let err = pockets?.syncError, settings.listeningPocketsEnabled {
+                    Text(err).font(.caption).foregroundStyle(Theme.danger)
+                }
                 LabeledContent("Last sent") {
                     Text(recLastSentLabel)
                         .foregroundStyle(.secondary)
@@ -839,11 +852,12 @@ struct SettingsView: View {
         } header: {
             Text("Recommendations")
         } footer: {
-            Text("When on, your listening history, favorites, collection updates, Gem Collector results, and — unless you turn it off above — your lifetime play counts (including the counts imported from Apple Music) are sent to PocketDJ to compute suggestions. When off, nothing leaves your device.")
+            Text("When on, your listening history, favorites, collection updates, Gem Collector results, and — unless you turn it off above — your lifetime play counts (including the counts imported from Apple Music) are sent to PocketDJ to compute suggestions, and, with pockets on, whether each song was finished or skipped and the local time of day. With places & trips on, anonymous labels such as 'Location A' or 'A → B'. Never coordinates. When off, nothing leaves your device.")
         }
         .onChange(of: settings.recEngineEnabled) {
             settings.persist()
             recEngine?.enabledDidChange()
+            pockets?.enabledDidChange()
         }
         .confirmationDialog("Delete your recommendation data from PocketDJ's servers?",
                             isPresented: $showRecDeleteConfirm, titleVisibility: .visible) {
@@ -853,7 +867,7 @@ struct SettingsView: View {
             .accessibilityIdentifier("rec-delete-cloud-confirm")
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Removes the uploaded listening history, favorites, and collection data from the recommendation service. Your on-device history is untouched. If the engine stays on, fresh data is uploaded again from now on.")
+            Text("Removes the uploaded listening history, favorites, collection data, and listening pockets from PocketDJ's servers. Your on-device history is untouched. If the engine stays on, fresh data is uploaded again from now on.")
         }
     }
 

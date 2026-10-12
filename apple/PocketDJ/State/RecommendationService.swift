@@ -409,6 +409,21 @@ final class RecommendationService {
         (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
     }
 
+    /// The bearer key + scoped profile id, for the OTHER first-party service that rides this
+    /// consent and this identity (listening pockets, `ListeningPocketsService`). nil while the
+    /// engine is disabled — so a caller that forgot its own gate still can't reach the network.
+    /// Mints the key exactly like a flush would (the pockets upload may well be the first).
+    func sharedCredentials() -> (key: String, profileId: String)? {
+        guard isEnabled else { return nil }
+        let key = ensureKey()
+        return (key, scopedProfileId(key: key))
+    }
+
+    /// "Delete cloud data" cascade: fired after the rec state's DELETE succeeded, with the
+    /// credential that authorized it, so listening pockets erases its own server state under the
+    /// SAME identity. Awaited — the button's completion means both are gone.
+    @ObservationIgnored var onDeleteCloudData: ((_ key: String, _ profileId: String) async -> Void)?
+
     /// The rec-engine-scoped profile id: `HMAC-SHA256(profileId, key: bearer)` hex. See the
     /// type doc — third parties that learned the broadcast `X-PocketDJ-Profile` cannot compute
     /// this without the bearer key, so they can no longer address this profile's rec state.
@@ -1165,6 +1180,8 @@ final class RecommendationService {
         if !sync.didMigrateScopedProfile {
             try? await client.deleteState(key: bearer, profileId: profileIdProvider())
         }
+        // Listening pockets live under the same identity — erase them with the same credential.
+        await onDeleteCloudData?(bearer, scopedProfileId(key: bearer))
         sync = SyncState()
         sync.didMigrateScopedProfile = true   // both ids are gone — nothing left to migrate
         persistSyncState()

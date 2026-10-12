@@ -33,6 +33,11 @@ enum Config {
     /// "Use PocketDJ Recommendation Engine" is ON (default OFF); nothing is sent otherwise.
     static let recEngineBase = URL(string: "https://n5ordrwfe9.execute-api.us-west-2.amazonaws.com")!
 
+    /// LISTENING-POCKETS endpoint — the `pocketdj-listening-pockets` Lambda is mounted at
+    /// `/pockets` on the SAME HTTP API as the rec engine, so this is an alias, not a second host.
+    /// Same consent (rec engine ON + "Find my listening pockets" ON) and the same bearer key.
+    static let listeningPocketsBase = recEngineBase
+
     /// ENROLLMENT SECRET for the recommendation engine (`REC_ENROLL_SECRET` on the Lambda,
     /// sent as `X-PocketDJ-Enroll`). The server requires it to CREATE a profile's state object
     /// and accepts it in place of a mismatched key on `DELETE /state`; an already-enrolled

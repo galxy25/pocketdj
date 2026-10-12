@@ -788,7 +788,35 @@ final class MixEngine {
     /// Play-stats hook (the storage manager's LRP prune signal): fired alongside
     /// `recorder?.notePlayed` whenever a deck transitions to playing. Wired at app init
     /// to `PlayStatsStore.notePlayed`; nil in tests.
+    /// ONCE PER DECK LOAD: a pause→play resume is the same listen, not a second play (it used to
+    /// re-fire on every resume and History grew a phantom row per pause longer than 30 s).
     @ObservationIgnored var onSongPlayed: ((String) -> Void)?
+    /// A deck's loaded track stopped being the music: payload (songId, playedSeconds,
+    /// durationSeconds, reason). Fired at most once per deck load, and only for a load that
+    /// actually PLAYED. Positions are SOURCE seconds (`position(deck)` / `duration(deck)`). The
+    /// listening-pockets outcome hook (`MixPlayOutcomeBridge`) — the Mix decks' answer to the
+    /// SetlistPlayer → SkipTracker feed, which never sees Mix/Auto-DJ playback.
+    @ObservationIgnored var onDeckTrackEnded: ((String, Double, Double, MixTrackEndReason) -> Void)?
+    /// Decks whose CURRENT load has fired `onSongPlayed` / `onDeckTrackEnded`. Reset per load
+    /// (`commitLoad`, `ejectDeckCore`) and when an auto transition replays a deck's load.
+    @ObservationIgnored private var playNotedThisLoad: Set<Deck> = []
+    @ObservationIgnored private var endReportedThisLoad: Set<Deck> = []
+
+    /// Report that `deck`'s current track stopped being the music (see `onDeckTrackEnded`).
+    /// No-op unless this load played and hasn't reported yet — so the first reason wins (a skip
+    /// on the last track reports `.skip`, and the `stopAutoMix` it triggers stays silent).
+    private func reportDeckEnded(_ deck: Deck, _ reason: MixTrackEndReason) {
+        guard playNotedThisLoad.contains(deck), !endReportedThisLoad.contains(deck),
+              let id = state(deck).loaded?.songId else { return }
+        endReportedThisLoad.insert(deck)
+        onDeckTrackEnded?(id, position(deck), duration(deck), reason)
+    }
+
+    /// A fresh load cycle on `deck`: its next play is a new play, its next end a new end.
+    private func resetLoadCycle(_ deck: Deck) {
+        playNotedThisLoad.remove(deck)
+        endReportedThisLoad.remove(deck)
+    }
 
     // MARK: - Durable mix-deck session (state)
 
@@ -834,8 +862,8 @@ final class MixEngine {
             NowPlayingArbiter.shared.claim(self)   // a Mix deck started → own the lock-screen card
             rec(.play, deck)
             if let id = state(deck).loaded?.songId {
-                recorder?.notePlayed(songId: id)
-                onSongPlayed?(id)
+                recorder?.notePlayed(songId: id)   // dedupes per session itself
+                if playNotedThisLoad.insert(deck).inserted { onSongPlayed?(id) }
             }
         } else {
             rec(.pause, deck)
@@ -1284,6 +1312,10 @@ final class MixEngine {
     /// The shared tail of every deck load (file or stream): the new track takes the deck with
     /// tempo/pitch/lead/stems/loop reset, the card + session log + durable session learn about it.
     private func commitLoad(_ deck: Deck, meta: LoadedTrack, startMs: Int?, durationSeconds: Double) {
+        // A track that played on this deck is being loaded over — its listen ends here (the
+        // playhead still holds its last position; `mutate` below forgets it).
+        reportDeckEnded(deck, .replaced)
+        resetLoadCycle(deck)
         if leadDeck == deck { leadDeck = nil }   // load resets this deck's lead role + tempo/pitch
         mutate(deck) {
             $0.loaded = meta
@@ -1478,6 +1510,7 @@ final class MixEngine {
         if files[deck] == nil || endFrames[deck] == startFrames[deck] {
             let wasLive = autoMixing && deck == autoLiveDeck && state(deck).isPlaying
             DiagLog.shared.log("error", "mixstream deck \(deck.rawValue) drop \(songId) — stream failed before audio")
+            reportDeckEnded(deck, .stopped)   // a dead stream is not the listener skipping it
             ejectDeckCore(deck)
             persistMixDeckSession()
             if wasLive, !autoTransitioning { skipToNext(fadeSeconds: 0.5) }
@@ -1931,6 +1964,8 @@ final class MixEngine {
     /// the cue/PFL send, which `resetDeck` deliberately keeps — and push the defaults onto the
     /// graph. Records/persists NOTHING: the caller owns the semantic timeline event + the persist.
     private func ejectDeckCore(_ deck: Deck) {
+        reportDeckEnded(deck, .replaced) // the listen ends here (BEFORE we forget the track)
+        resetLoadCycle(deck)
         setPlaying(deck, false)          // emit .pause if it was running (BEFORE we forget the track)
         stopActiveNodes(deck)            // stop the single file + any stem voices
         unwireStems(deck)                // drop stem files + their security scope
@@ -2743,6 +2778,7 @@ final class MixEngine {
     func stopAutoMix() {
         DiagLog.shared.telemetry("action", "auto-mix stop")
         autoEndedExhausted = false   // user-initiated stop by default; exhaust sites re-set it after
+        if autoMixing { reportDeckEnded(autoLiveDeck, .stopped) }
         endAutoLoop()
         pauseBoth()
     }
@@ -3115,6 +3151,9 @@ final class MixEngine {
     /// a one-off fast skip never shortens the next AUTOMATIC crossfade.
     func skipToNext(fadeSeconds: Double) {
         guard autoEnabled, autoMixing, isReady, !autoTransitioning else { return }
+        // The listen ends at the moment of the SKIP, not when the crossfade finishes retiring it
+        // (by then a fast fade has played on). Covers `remoteSkip` — CarPlay / lock-screen ⏭.
+        reportDeckEnded(autoLiveDeck, .skip)
         // An explicit skip OVERRIDES repeat-one (next means next — the universal transport
         // convention); repeat-ALL turns the last-track skip into a wrap to the queue head.
         var wrapping = false
@@ -3155,6 +3194,12 @@ final class MixEngine {
         // fader move, not just the deck moves.
         recGlide("crossfader", deck: nil, from: crossfader,
                  to: autoFadeFrom == .a ? 1.0 : 0.0, span: autoFadeSeconds)
+        // The incoming deck may REPLAY its current load (repeat-one, a queue duplicate the
+        // preload kept): that is a new play of the slot, so open a fresh load cycle for it.
+        if playNotedThisLoad.contains(to) {
+            reportDeckEnded(to, .replaced)
+            resetLoadCycle(to)
+        }
         restart(to)
         play(to)
         autoDeckEndsAt[to] = now.addingTimeInterval(Double(autoDeckDurationMs[to] ?? Self.autoFallbackDurationMs) / 1000)
@@ -3163,6 +3208,7 @@ final class MixEngine {
     private func finishAutoCrossfade() {
         let from = autoFadeFrom
         let to = other(from)
+        reportDeckEnded(from, .natural)   // no-op when a skip already reported this load
         applyCrossfader(from == .a ? 1 : 0)
         silence(from)           // retire the outgoing deck WITHOUT ending the auto-mix we're inside
         autoLiveDeck = to
@@ -5277,3 +5323,8 @@ private extension AVAudioPCMBuffer {
         return copy
     }
 }
+
+/// Why a deck's track stopped being the music (`MixEngine.onDeckTrackEnded`): the auto machine
+/// crossfaded out at its end (`natural`), the listener skipped (`skip` — in-app or remote ⏭), the
+/// deck was loaded over / ejected (`replaced`), or the mix stopped under it (`stopped`).
+enum MixTrackEndReason: String { case natural, skip, replaced, stopped }

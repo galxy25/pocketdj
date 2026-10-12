@@ -49,12 +49,18 @@ struct HistoryView: View {
     /// selection bar, and no Copy / Add to…. It's now one model, scoped to `selectionScope`
     /// so arming Select here can never intercept taps in Browse.
     @Environment(RowSelection.self) private var rowSelection
+    /// Listening pockets (optional like `writeBack`: a standalone preview host has none, and
+    /// then the Pockets tab simply never appears).
+    @Environment(ListeningPocketsService.self) private var pockets: ListeningPocketsService?
     @Binding var path: NavigationPath
 
     /// Declaration order IS tab order: Playback, For You, Collection (the owner's own ordering).
     enum HistoryTab: String, CaseIterable {
         case playback = "Playback"
         case collection = "Collection"
+        /// Listening pockets — the cloud-found stretches where you were in a groove. Before For
+        /// You (which stays last, per the owner); shown only while the pockets gate is on.
+        case pockets = "Pockets"
         // For You is deliberately LAST (owner): it is the forward-looking tab, and the two
         // backward-looking ones read left-to-right before it. CaseIterable order is what the
         // picker renders, so this declaration IS the tab order. Raw values are the persisted
@@ -64,6 +70,7 @@ struct HistoryView: View {
             switch self {
             case .playback:   return "play.circle.fill"
             case .collection: return "rectangle.stack.fill"
+            case .pockets:    return "waveform.path"
             case .forYou:     return "sparkles"
             }
         }
@@ -209,6 +216,8 @@ struct HistoryView: View {
                 }
             case .collection:
                 collectionContent
+            case .pockets:
+                ListeningPocketsView(path: $path)
             case .forYou:
                 ForYouTilesView(path: $path, refreshToken: forYouRefreshToken)
             }
@@ -224,6 +233,20 @@ struct HistoryView: View {
         .onChange(of: settings.recEngineEnabled) {
             if !settings.recEngineEnabled && tab == .forYou { tab = .playback }
         }
+        // Same rule for Pockets: its gate (engine AND the pockets sub-toggle) closed while it
+        // was showing → back to Playback.
+        .onChange(of: pocketsTabOn) {
+            if !pocketsTabOn && tab == .pockets { tab = .playback }
+        }
+        // Headless-verification seam (mirrors PDJ_START_SECTION / PDJ_TV_TAB): land on a named
+        // History tab ("Pockets") so `simctl` can screenshot it without driving taps. Only a tab
+        // that is actually offered is honoured.
+        .onAppear {
+            if let raw = ProcessInfo.processInfo.environment["PDJ_HISTORY_TAB"],
+               let t = HistoryTab(rawValue: raw), visibleTabs.contains(t) {
+                tab = t
+            }
+        }
     }
 
     // MARK: - Tab control (every available tab; the current one is filled)
@@ -238,10 +261,20 @@ struct HistoryView: View {
     /// The tabs on offer, in declaration order. For You joins only while the recommendation engine
     /// is on (or its UI-test fixture seam) — with the engine off the pair is Playback | Collection.
     private var visibleTabs: [HistoryTab] {
-        (settings.recEngineEnabled || recFixtureOn)
-            ? HistoryTab.allCases
-            : HistoryTab.allCases.filter { $0 != .forYou }
+        let forYouOn = settings.recEngineEnabled || recFixtureOn
+        let pocketsOn = pocketsTabOn
+        return HistoryTab.allCases.filter {
+            switch $0 {
+            case .forYou:  return forYouOn
+            case .pockets: return pocketsOn
+            default:       return true
+            }
+        }
     }
+
+    /// The Pockets tab follows the pockets privacy gate (rec engine ON + "Find my listening
+    /// pockets" ON) or its UI-test fixture seam — `ListeningPocketsService.isEnabled` is both.
+    private var pocketsTabOn: Bool { pockets?.isEnabled ?? false }
 
     /// Custom button row (not a segmented `Picker`) so it renders prominently and identically on
     /// iOS, macOS, and visionOS. EVERY available tab is shown and the current one is filled —
@@ -745,6 +778,13 @@ struct HistoryView: View {
                 }
                 .help("Recompute your For You tiles")
                 .accessibilityIdentifier("foryou-menu")
+            } else if tab == .pockets {
+                // Pull-to-refresh's twin for the Mac (no pull gesture): send, then re-fetch.
+                Button { Task { await pockets?.refreshNow() } } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Refresh your pockets")
+                .accessibilityIdentifier("pockets-refresh")
             } else if canBackfill {
                 // Collection shows your ADDs — offer to (re)send the recent ones to the Apple
                 // Music playlists they came from, for adds that never made it upstream (added
