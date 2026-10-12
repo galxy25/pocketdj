@@ -28,12 +28,15 @@ struct NowPlayingMixPanel: View {
     private var mixActive: Bool { mix.isRunning || mix.autoMixing }
     private var available: Bool { sequencer.mixAvailable(mixActive: mixActive) }
 
-    /// Whether the current track has burned stems on disk — read from the BurnStore so the Stems
-    /// toggle is enabled BEFORE the swap (the DSP only learns `stemsAvailable` once engaged).
-    private var stemsBurned: Bool {
+    /// Whether the current track HAS stems anywhere — burned on disk, a profile item's, or in the
+    /// catalog (streamed in on demand while the full song keeps playing) — read from the stores so
+    /// the Stems toggle is enabled BEFORE the swap (the DSP only learns `stemsAvailable` once
+    /// engaged).
+    private var stemsObtainable: Bool {
         guard expanded, let id = sequencer.currentSongId else { return false }
         return burns.stemsBurned(forSong: id)
             || (ProfileSourceStore.isProfileSongId(id) && profileSource?.stemURLs(id: id) != nil)
+            || burns.stemsRemote(forSong: id)
     }
 
     /// Idempotent: the first control touch performs the AVPlayer→DSP hand-off.
@@ -123,6 +126,12 @@ struct NowPlayingMixPanel: View {
             HStack {
                 Text("Stems").font(.caption2.weight(.semibold)).foregroundStyle(Theme.fgDim)
                 Spacer()
+                // A pending handover says so — the full song plays on until the stems land
+                // (or, toggling off, until the full song has runway). Tapping again cancels.
+                if let h = dsp.stemHandover {
+                    MixBufferingBadge(text: h == .toStems ? "Loading stems…" : "Loading full mix…",
+                                      a11yId: "np-mix-stems-pending")
+                }
                 Button {
                     engage()
                     dsp.setStemMode(!dsp.stemMode)
@@ -135,10 +144,11 @@ struct NowPlayingMixPanel: View {
                         .overlay(Capsule().stroke(dsp.stemMode ? Theme.accent : Theme.border))
                 }
                 .buttonStyle(.plain)
-                .disabled(!stemsBurned)
+                .disabled(!stemsObtainable)
                 .accessibilityIdentifier("np-mix-stems-toggle")
+                .accessibilityValue(dsp.stemsLoading ? "Loading" : (dsp.stemMode ? "On" : "Off"))
             }
-            if !stemsBurned {
+            if !stemsObtainable {
                 Text("No stems for this track")
                     .font(.caption2).foregroundStyle(Theme.fgDim)
             } else if dsp.stemMode {

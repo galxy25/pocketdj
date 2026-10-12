@@ -109,6 +109,21 @@ final class MixStreamLoader {
     /// (main actor). Part events never reach `onProgress`/`onFailed`/`onBytes`: the song lanes
     /// (engine pump, collection downloader) only ever see song ids.
     var onStemProgress: ((String) -> Void)?
+    /// Further stem-set listeners (the Now Playing DSP streams stems through this same loader;
+    /// `onStemProgress` stays the Mix engine's). Keyed so an owner can remove its own.
+    private var stemListeners: [UUID: (String) -> Void] = [:]
+    @discardableResult
+    func addStemListener(_ listener: @escaping (String) -> Void) -> UUID {
+        let id = UUID()
+        stemListeners[id] = listener
+        return id
+    }
+    func removeStemListener(_ id: UUID) { stemListeners[id] = nil }
+    /// Fan a stem-set event out to every listener (base song id).
+    private func stemProgressed(_ base: String) {
+        onStemProgress?(base)
+        for l in stemListeners.values { l(base) }
+    }
 
     // MARK: State
 
@@ -282,7 +297,7 @@ final class MixStreamLoader {
 
     /// Route an event for `key` to the right listener: a stem part fans out as its base song.
     private func notify(_ key: String) {
-        if let base = Self.stemSongId(fromKey: key) { onStemProgress?(base) } else { onProgress?(key) }
+        if let base = Self.stemSongId(fromKey: key) { stemProgressed(base) } else { onProgress?(key) }
     }
 
     /// All four parts landed: MOVE them into the burn folder as ordinary burned stems (a deck's
@@ -466,7 +481,7 @@ final class MixStreamLoader {
                 stemSets[base] = nil
             }
             streams[s.songId] = nil
-            onStemProgress?(base)
+            stemProgressed(base)
             return
         }
         recentFailures[s.songId] = Date()
@@ -538,7 +553,7 @@ final class MixStreamLoader {
             for s in set.parts.values where !s.isComplete { s.isComplete = true; s.finalURL = s.fileURL }
             adoptStemsIfComplete(songId)
         }
-        onStemProgress?(songId)
+        stemProgressed(songId)
         return set
     }
     func failStemsForTesting(_ songId: String) {

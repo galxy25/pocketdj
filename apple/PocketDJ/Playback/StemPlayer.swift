@@ -10,8 +10,10 @@ import UIKit
 /// harness for the Demucs stem feature (and the foundation for per-deck stems on the Mix tab).
 ///
 /// Graph: 4× `AVAudioPlayerNode` (vocals/drums/bass/other) → `engine.mainMixerNode` → output.
-/// All four are scheduled from the same frame and started at ONE shared `AVAudioTime`, so they
-/// play sample-accurately in sync. Per-stem `node.volume` gives instant mute / solo with no
+/// All four are scheduled from the same song second (past any mp3 encoder priming — headerless
+/// Demucs parts decode one 576-sample granule late) and started on ONE sample frame
+/// (`StemSync.startTogether`; a shared HOST time lands them a few samples apart — a flam), so
+/// they play sample-accurately in sync. Per-stem `node.volume` gives instant mute / solo with no
 /// glitch.
 ///
 /// Plays from LOCAL files only — the stems are BURNED to the app's offline store first (see
@@ -32,6 +34,8 @@ final class StemPlayer {
     @ObservationIgnored private var scopeRelease: (() -> Void)?
     /// Bumped on every stop/seek so a stale schedule-completion can't flip state after the fact.
     @ObservationIgnored private var generation = 0
+    /// Encoder priming at the head of the loaded set (`StemSync.mp3PrimingFrames`).
+    @ObservationIgnored private var prime: AVAudioFramePosition = 0
 
     /// Which song's stems are currently loaded (so the panel reloads when the song changes).
     private(set) var loadedSongId: String?
@@ -87,7 +91,8 @@ final class StemPlayer {
             if let f = try? AVAudioFile(forReading: url) { newFiles[name] = f }
         }
         files = newFiles
-        duration = newFiles.values.map { Double($0.length) / $0.processingFormat.sampleRate }.max() ?? 0
+        prime = StemSync.setPrimingFrames(newFiles, order: Self.stems)
+        duration = newFiles.values.map { StemSync.songSeconds($0, prime: prime) }.max() ?? 0
         muted = []; soloed = nil; pausedAt = 0
         if newFiles.isEmpty { loadError = "Couldn’t load stems" }
         for (name, file) in newFiles {
@@ -145,8 +150,7 @@ final class StemPlayer {
         for (name, node) in nodes {
             guard let file = files[name] else { continue }
             node.stop()
-            let sr = file.processingFormat.sampleRate
-            let startFrame = AVAudioFramePosition(offset * sr)
+            let startFrame = StemSync.frame(file, prime: prime, atSeconds: offset)
             let count = file.length - startFrame
             guard count > 0 else { continue }
             let isLead = (name == leadName)            // one node owns the end signal
@@ -169,8 +173,7 @@ final class StemPlayer {
             }
         }
         applyVolumes()
-        let when = AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.08))
-        for node in started { node.play(at: when) }
+        StemSync.startTogether(started, lead: 0.08)
         playStartHost = CACurrentMediaTime() - offset
         isPlaying = true
     }
@@ -179,6 +182,11 @@ final class StemPlayer {
         guard gen == generation, isPlaying else { return }   // ignore a stale (seeked/stopped) completion
         isPlaying = false
         pausedAt = 0
+    }
+
+    /// TEST PROBE: the render frame each loaded stem node started on — one value when in sync.
+    func startFramesForTesting() -> [AVAudioFramePosition?] {
+        Self.stems.compactMap { files[$0] != nil ? nodes[$0] : nil }.map { StemSync.startFrame(of: $0) }
     }
 
     private func applyVolumes() {
@@ -192,6 +200,7 @@ final class StemPlayer {
         for node in nodes.values { node.stop() }
         if engine.isRunning { engine.stop() }
         files = [:]
+        prime = 0
         scopeRelease?(); scopeRelease = nil
         isPlaying = false; pausedAt = 0; duration = 0
         muted = []; soloed = nil

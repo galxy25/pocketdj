@@ -688,6 +688,10 @@ final class BurnStore {
         return true
     }
 
+    /// Does the catalog have stems for this song at all (separated server-side — they can be
+    /// streamed or burned on demand)? Manifest check only, no I/O.
+    func stemsRemote(forSong songId: String) -> Bool { rips.stemURLs(forSong: songId) != nil }
+
     /// Every song id whose 4 stems are on disk in the ACTIVE burn folder — powers the Tracks
     /// stem-import picker. Scans every reachable burn root for `stem-<id>-<part>.mp3` names to
     /// gather candidates, then keeps only those with all four parts present in the active folder
