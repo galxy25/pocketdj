@@ -240,14 +240,15 @@ final class EndpointResolver: @unchecked Sendable {
         else if devHosts.contains(host) { target = cfg.url(.catalogBaseDev) }
         else { return url }
         if target.host?.lowercased() == host { return url }
-        var c = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        let t = URLComponents(url: target, resolvingAgainstBaseURL: false)
-        c?.scheme = t?.scheme
-        c?.host = t?.host
-        c?.port = nil
-        let prefix = t?.path ?? ""
-        c?.path = (prefix.hasSuffix("/") ? String(prefix.dropLast()) : prefix) + (c?.path ?? "")
-        return c?.url ?? url
+        guard var c = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let t = URLComponents(url: target, resolvingAgainstBaseURL: false) else { return url }
+        let originalPath = c.path
+        let prefix = t.path.hasSuffix("/") ? String(t.path.dropLast()) : t.path
+        c.scheme = t.scheme
+        c.host = t.host
+        c.port = nil
+        c.path = prefix + originalPath
+        return c.url ?? url
     }
 
     // MARK: Apply / fetch
