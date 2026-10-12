@@ -43,6 +43,7 @@ import { readFileSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isDeployedWorkerSpotAware, effectiveMarket } from '../../scripts/stem-autoscaler.mjs';
+import { ENVS } from '../../scripts/lib/aws-env.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const read = (p) => readFileSync(join(REPO, p), 'utf8');
@@ -215,8 +216,13 @@ describe('what "deployed" means — the S3 prefix, never the repo', () => {
     // Asserted in pieces because the script composes them (BUCKET=… PREFIX=… B="s3://$BUCKET/$PREFIX").
     // Pushing to a DIFFERENT prefix is the silent failure this pins: the deploy reports success, the
     // autoscaler keeps reading the untouched old object, and the fleet never leaves on-demand.
+    // The bucket comes from scripts/lib/aws-env.sh (POCKETDJ_ENV, default blue), whose blue value
+    // must stay the bucket the userdata fetches from.
     const deploy = read('scripts/stem-deploy-worker.sh');
-    expect(deploy).toContain('pocketdj-rips-011183829623');
+    expect(deploy).toContain('lib/aws-env.sh');
+    expect(deploy).toMatch(/^BUCKET="\$PDJ_RIPS_BUCKET"/m);
+    expect(read('scripts/lib/aws-env.sh')).toContain("PDJ_RIPS_BUCKET='pocketdj-rips-011183829623'");
+    expect(`s3://${ENVS.blue.buckets.rips}/worker-code`).toBe(WORKER_CODE_PREFIX);
     expect(deploy).toContain('worker-code');
     expect(deploy).toContain('stem-worker.mjs');
   });
@@ -224,7 +230,10 @@ describe('what "deployed" means — the S3 prefix, never the repo', () => {
   it('the autoscaler preflights that same object — not scripts/stem-worker.mjs', () => {
     // The tempting shortcut is to check the file sitting next to the autoscaler, which is always
     // spot-aware on this branch and tells you nothing whatsoever about the fleet.
-    expect(read('scripts/stem-autoscaler.mjs')).toContain(`${WORKER_CODE_PREFIX}/stem-worker.mjs`);
+    // The default is composed from aws-env (`${AWS_ENV.workerCodeBase}/stem-worker.mjs`); blue's base
+    // must be exactly the prefix userdata copies from.
+    expect(read('scripts/stem-autoscaler.mjs')).toContain('`${AWS_ENV.workerCodeBase}/stem-worker.mjs`');
+    expect(ENVS.blue.workerCodeBase).toBe(WORKER_CODE_PREFIX);
   });
 
   it('checks the object by its STAMP, and gets it from a HEAD rather than a download', () => {
