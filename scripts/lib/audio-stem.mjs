@@ -12,6 +12,7 @@ import { copyFileSync, mkdirSync, rmSync, existsSync, statSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { AWS_ENV } from './aws-env.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const STEM_PY = join(REPO, '.claude/skills/analog-indexer/stems/separate-one.py');
@@ -34,7 +35,7 @@ export const STEM_NAMES = ['vocals', 'drums', 'bass', 'other'];
  */
 export async function separateStems(opts) {
   const {
-    file, songId, bucket, region = 'us-west-2', profile = 'levi',
+    file, songId, bucket, region = 'us-west-2', profile = AWS_ENV.profile,
     model = STEMS_MODEL,
     runtime = process.env.POCKETDJ_DEMUCS_RUNTIME || 'native',
     device = (process.env.POCKETDJ_DEMUCS_RUNTIME || 'native') === 'docker'

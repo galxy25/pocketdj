@@ -51,13 +51,14 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { loadLibraryXML, indexLibrary } from './lib/am-match.mjs';
 import { foldCloudReindex, isCloudEntry } from './lib/cloud-reindex-fold.mjs';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(__dirname, '..');
 const expand = (p) => (p && p.startsWith('~') ? p.replace(/^~/, homedir()) : p);
 
-const RIP_BUCKET = process.env.RIP_BUCKET || 'pocketdj-rips-011183829623';
-const AWS_PROFILE = process.env.AWS_PROFILE || 'levi';
+const RIP_BUCKET = process.env.RIP_BUCKET || AWS_ENV.buckets.rips;
+const AWS_PROFILE = process.env.AWS_PROFILE || AWS_ENV.profile;
 const AWS_REGION = process.env.AWS_REGION || 'us-west-2';
 const LOCAL_MANIFEST_CACHE = join(homedir(), '.pocketdj', 'rips', 'manifest.json');
 

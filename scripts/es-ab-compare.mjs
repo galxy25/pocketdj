@@ -28,12 +28,13 @@
 import { createHash, createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 function parseArgs(argv) {
   const a = {
     a: process.env.ES_A, b: process.env.ES_B,
     index: process.env.ES_INDEX || 'pocketdj',
-    profile: process.env.AWS_PROFILE || 'levi',
+    profile: process.env.AWS_PROFILE || AWS_ENV.profile,
     region: process.env.AWS_REGION || 'us-west-2',
     service: 'aoss', reps: 7, k: 20, queries: null,
   };

@@ -114,6 +114,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const laneArgIdx = process.argv.indexOf('--lane');
 const LANE = laneArgIdx >= 0 ? process.argv[laneArgIdx + 1] : 'stem';
@@ -152,13 +153,15 @@ function parseSubnets(spec) {
 }
 /// The subnets THIS lane may launch into. Exported because the AZ walk is the part most likely to be
 /// got wrong silently, and a test that cannot see the list cannot check it covers the region.
+/// DEFAULT_VPC_SUBNETS are BLUE's subnets: any other POCKETDJ_ENV launches from the template's own
+/// subnet (empty list) unless POCKETDJ_<LANE>_SUBNETS names that account's subnets.
 export const SUBNETS = parseSubnets(process.env[`POCKETDJ_${LANE.toUpperCase()}_SUBNETS`])
-  || (LANE === 'stem' ? DEFAULT_VPC_SUBNETS : []);
+  || (LANE === 'stem' && AWS_ENV.name === 'blue' ? DEFAULT_VPC_SUBNETS : []);
 
 const bool = (s) => /^(1|true|yes|on)$/i.test(String(s || ''));
 const LANES = {
   stem: {
-    jobsQueue: process.env.POCKETDJ_STEM_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-jobs',
+    jobsQueue: process.env.POCKETDJ_STEM_JOBS_QUEUE || AWS_ENV.queues.stemJobs,
     // 2026-07-19: standard-vCPU quota raised 5 → 64 (m7i.large = 2 vCPU ⇒ 32 max); default 30
     // keeps one instance-pair of headroom so an unrelated launch never trips a quota error.
     // On SPOT the real ceiling is lower still (32 spot vCPU ⇒ 16) — see the two-buckets note above.
@@ -175,10 +178,10 @@ const LANES = {
     // The bytes a booting worker ACTUALLY runs (userdata copies this over the AMI's copy). The spot
     // preflight reads THIS object, not scripts/stem-worker.mjs — the repo's opinion of the worker is
     // worth nothing to an instance that never sees it.
-    workerCode: process.env.POCKETDJ_STEM_WORKER_CODE || 's3://pocketdj-rips-011183829623/worker-code/stem-worker.mjs',
+    workerCode: process.env.POCKETDJ_STEM_WORKER_CODE || `${AWS_ENV.workerCodeBase}/stem-worker.mjs`,
   },
   timbre: {
-    jobsQueue: process.env.POCKETDJ_TIMBRE_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-timbre-jobs',
+    jobsQueue: process.env.POCKETDJ_TIMBRE_JOBS_QUEUE || AWS_ENV.queues.timbreJobs,
     // Each timbre message is a BATCH of ~50 songs run across 8 warm shards, so a small fleet
     // absorbs a large backlog: 3 × c7g.2xlarge = 24 warm shards.
     maxWorkers: Number(process.env.POCKETDJ_TIMBRE_MAX_WORKERS || 3),
@@ -198,7 +201,7 @@ const LANES = {
     // exists to dodge per-AZ SPOT scarcity, and on-demand capacity for three c7g.2xlarge is never
     // the binding constraint. An empty list means "launch exactly as before, from the template's own
     // subnet", which keeps this lane byte-for-byte unchanged.
-    workerCode: process.env.POCKETDJ_TIMBRE_WORKER_CODE || 's3://pocketdj-rips-011183829623/worker-code/timbre-worker.mjs',
+    workerCode: process.env.POCKETDJ_TIMBRE_WORKER_CODE || `${AWS_ENV.workerCodeBase}/timbre-worker.mjs`,
   },
 };
 const CFG = {
@@ -237,8 +240,11 @@ if (!LANES[LANE]) { console.error(`unknown --lane ${LANE}; use stem|timbre`); pr
 if (CFG.market !== 'spot' && CFG.market !== 'on-demand') {
   console.error(`unknown market "${CFG.market}" for lane ${LANE}; use spot|on-demand`); process.exit(2);
 }
+// Blue keeps the original rule (profile only when AWS_PROFILE is set); other envs fall back to
+// their own profile so a green run can never silently use the default credentials.
+const AWS_PROFILE_ARG = process.env.AWS_PROFILE || (AWS_ENV.name === 'blue' ? '' : AWS_ENV.profile);
 const aws = (...a) => execFileSync('aws', [...a, '--region', CFG.region,
-  ...(process.env.AWS_PROFILE ? ['--profile', process.env.AWS_PROFILE] : [])], { encoding: 'utf8' });
+  ...(AWS_PROFILE_ARG ? ['--profile', AWS_PROFILE_ARG] : [])], { encoding: 'utf8' });
 /// The AWS CLI answers `--output json` with an empty line when a query matches nothing, and a
 /// stubbed or future CLI can answer with whitespace or prose. JSON.parse throws on all three and
 /// would take the whole reconcile down with it, so every parse of CLI output goes through here.

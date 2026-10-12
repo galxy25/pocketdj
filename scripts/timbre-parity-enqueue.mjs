@@ -24,13 +24,14 @@ import { readFileSync, readdirSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { execFileSync } from 'node:child_process';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const arg = (f, d) => { const i = process.argv.indexOf(f); return i >= 0 ? process.argv[i + 1] : d; };
 const N = Number(arg('--n', 120));
 const PREFIX = arg('--prefix', 'rips/timbre-parity/');
 const REGION = process.env.AWS_REGION || 'us-west-2';
-const PROFILE = process.env.AWS_PROFILE || 'levi';
-const QUEUE = process.env.POCKETDJ_TIMBRE_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-timbre-jobs';
+const PROFILE = process.env.AWS_PROFILE || AWS_ENV.profile;
+const QUEUE = process.env.POCKETDJ_TIMBRE_JOBS_QUEUE || AWS_ENV.queues.timbreJobs;
 const RESULTS = join(homedir(), '.pocketdj', 'timbre-batch', 'results');
 const MANIFEST = join(homedir(), '.pocketdj', 'rips', 'manifest.json');
 const aws = (...a) => execFileSync('aws', [...a, '--region', REGION, '--profile', PROFILE], { encoding: 'utf8' });

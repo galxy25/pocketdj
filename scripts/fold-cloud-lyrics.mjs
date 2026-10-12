@@ -41,11 +41,12 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve, join, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const RIP_BUCKET = process.env.RIP_BUCKET || 'pocketdj-rips-011183829623';
+const RIP_BUCKET = process.env.RIP_BUCKET || AWS_ENV.buckets.rips;
 const RIPS_BASE = `https://${RIP_BUCKET}.s3.us-west-2.amazonaws.com`;
-const AWS_PROFILE = process.env.AWS_PROFILE || 'levi';
+const AWS_PROFILE = process.env.AWS_PROFILE || AWS_ENV.profile;
 // Test seams: POCKETDJ_FOLD_INDEXES (comma list, absolute or repo-relative) + POCKETDJ_FOLD_OUT.
 const INDEXES = process.env.POCKETDJ_FOLD_INDEXES
   ? process.env.POCKETDJ_FOLD_INDEXES.split(',').map((s) => s.trim()).filter(Boolean)
@@ -151,7 +152,7 @@ console.error(JSON.stringify(report, null, 2));
 if (uploadEnvs.length && report.txtWritten > 0) {
   const acct = execFileSync('aws', ['sts', 'get-caller-identity', '--profile', AWS_PROFILE,
     '--query', 'Account', '--output', 'text'], { encoding: 'utf8' }).trim();
-  const cf = { dev: process.env.CF_ID_DEV || 'E123GKAO9JVETP', prod: process.env.CF_ID_PROD || 'E1SP8M1SIF7Q8D' };
+  const cf = { dev: process.env.CF_ID_DEV || AWS_ENV.cloudfront.dev.id, prod: process.env.CF_ID_PROD || AWS_ENV.cloudfront.prod.id };
   for (const env of uploadEnvs) {
     const bucket = `pocketdj-${env}-web-${acct}`;
     console.error(`▶ Copying ${report.txtWritten} whisper lyrics -> s3://${bucket}/lyrics/ …`);

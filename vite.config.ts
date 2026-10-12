@@ -2,12 +2,13 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 import { readFileSync } from 'node:fs';
+import { AWS_ENV } from './scripts/lib/aws-env.mjs';
 
 // Online-search aoss host for the dev proxy — read from the SAME public/search-config.json
 // the clients read, so a collection swap (scale-to-zero rebuild → new host) never drifts.
 const SEARCH_HOST = (() => {
   try { return JSON.parse(readFileSync('public/search-config.json', 'utf8')).host as string; }
-  catch { return 'mii9dwge3uiee2tvivt5.aoss.us-west-2.on.aws'; }
+  catch { return AWS_ENV.aossHost; }
 })();
 
 // PocketDJ build config.

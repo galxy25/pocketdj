@@ -42,6 +42,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 import { normalize } from '../.claude/skills/analog-indexer/lib/normalize.js';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -51,7 +52,7 @@ function parseArgs(argv) {
     ingest: true, publish: true, dryRun: false,
     work: join(homedir(), '.pocketdj', 'digital'),
     ripServer: process.env.RIP_SERVER_URL || 'http://127.0.0.1:8787',
-    bucket: 'pocketdj-rips-011183829623', region: 'us-west-2', profile: 'levi' };
+    bucket: AWS_ENV.buckets.rips, region: 'us-west-2', profile: AWS_ENV.profile };
   for (let i = 2; i < argv.length; i++) {
     const k = argv[i];
     const next = () => argv[++i];
@@ -174,7 +175,7 @@ async function main() {
   const W = ARGS.work;
   for (const d of ['audio', 'art']) mkdirSync(join(W, d), { recursive: true });
 
-  const ACCT = ARGS.bucket.split('-').pop(); // 011183829623
+  const ACCT = ARGS.bucket.split('-').pop(); // the account id suffix (blue: 011183829623)
   const WEB_BUCKET = `pocketdj-${ARGS.env}-web-${ACCT}`;
 
   console.error(`▶ Digital indexer — root="${ARGS.root}" source="${ARGS.sourceName}"${ARGS.artist ? ` artist=${ARGS.artist}` : ''}`);
@@ -360,7 +361,7 @@ async function main() {
   if (ARGS.publish && !ARGS.dryRun) {
     try {
       aws(['s3', 'cp', outIndex, `s3://${WEB_BUCKET}/digital-index.json`, '--content-type', 'application/json', '--cache-control', 'no-cache']);
-      const CF = ARGS.env === 'prod' ? 'E1SP8M1SIF7Q8D' : 'E123GKAO9JVETP';
+      const CF = ARGS.env === 'prod' ? AWS_ENV.cloudfront.prod.id : AWS_ENV.cloudfront.dev.id;
       aws(['cloudfront', 'create-invalidation', '--distribution-id', CF, '--paths', '/digital-index.json']);
       console.error(`  published digital-index.json -> ${WEB_BUCKET} (CF ${CF} invalidated)`);
     } catch (e) { console.error(`  ! publish failed: ${e.message}`); }

@@ -24,13 +24,14 @@
 import { createHash, createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 // ---------------- args ----------------
 function parseArgs(argv) {
   const a = {
     index: process.env.ES_INDEX || 'pocketdj',
     endpoint: process.env.ES_ENDPOINT,
-    profile: process.env.AWS_PROFILE || 'levi',
+    profile: process.env.AWS_PROFILE || AWS_ENV.profile,
     region: process.env.AWS_REGION || 'us-west-2',
     service: 'aoss',
     sources: 'public/current-index.json,public/apple-music-index.json',

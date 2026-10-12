@@ -41,6 +41,7 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from 'node
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const execFile = promisify(execFileCb);
 
@@ -61,9 +62,9 @@ const CFG = {
   enrollSecret: a['enroll-secret'] || process.env.REC_ENROLL_SECRET || '',
   ripServer: (a['rip-server'] || process.env.RIP_SERVER || 'http://localhost:8787').replace(/\/$/, ''),
   ripToken: a['rip-token'] || process.env.RIP_TOKEN || '',
-  bucket: a.bucket || process.env.POCKETDJ_RIPS_BUCKET || 'pocketdj-rips-011183829623',
+  bucket: a.bucket || process.env.POCKETDJ_RIPS_BUCKET || AWS_ENV.buckets.rips,
   region: a.region || process.env.AWS_REGION || 'us-west-2',
-  profile: a.profile || process.env.AWS_PROFILE || 'levi',
+  profile: a.profile || process.env.AWS_PROFILE || AWS_ENV.profile,
   until: a.until || '06:00',
   // A ceiling ON TOP of the clock, so a `--until` far in the future (a manual catch-up run) still
   // cannot turn into an unbounded sweep of the catalog.

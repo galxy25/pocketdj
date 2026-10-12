@@ -16,8 +16,9 @@
 //
 // Prints the queue URLs. Run once: node scripts/timbre-sqs-setup.mjs
 import { execFileSync } from 'node:child_process';
+import { AWS_ENV } from './lib/aws-env.mjs';
 const REGION = process.env.AWS_REGION || 'us-west-2';
-const PROFILE = process.env.AWS_PROFILE || 'levi';
+const PROFILE = process.env.AWS_PROFILE || AWS_ENV.profile;
 const aws = (...a) => execFileSync('aws', [...a, '--region', REGION, '--profile', PROFILE], { encoding: 'utf8' }).trim();
 const createQueue = (name, attrs) => JSON.parse(aws('sqs', 'create-queue', '--queue-name', name,
   ...(attrs ? ['--attributes', JSON.stringify(attrs)] : []), '--output', 'json')).QueueUrl;
