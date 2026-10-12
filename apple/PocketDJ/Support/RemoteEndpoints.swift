@@ -115,8 +115,12 @@ struct EndpointConfig: Equatable, Sendable {
     static func decode(_ data: Data) -> Result<EndpointConfig, Rejection> {
         guard let obj = try? JSONSerialization.jsonObject(with: data),
               let doc = obj as? [String: Any] else { return .failure(.notJSON) }
-        guard (doc["v"] as? NSNumber)?.intValue == schemaVersion,
-              !(doc["v"] is Bool) else { return .failure(.unsupportedVersion) }
+        // `true` also arrives as an NSNumber (and every NSNumber bridges `is Bool`), so tell a
+        // JSON boolean apart by its CF type, not by casting.
+        guard let v = doc["v"] as? NSNumber,
+              CFGetTypeID(v) != CFBooleanGetTypeID(),
+              v.intValue == schemaVersion, v.doubleValue == Double(schemaVersion)
+        else { return .failure(.unsupportedVersion) }
         guard let envRaw = doc["env"] as? String,
               case let env = envRaw.trimmingCharacters(in: .whitespacesAndNewlines), !env.isEmpty
         else { return .failure(.missingEnv) }

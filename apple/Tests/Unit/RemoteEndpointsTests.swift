@@ -116,12 +116,16 @@ final class RemoteEndpointsTests: XCTestCase {
 
     func testRejectsInvalidDocuments() {
         var wrongVersion = Self.green; wrongVersion["v"] = 2
+        var boolVersion = Self.green; boolVersion["v"] = true
+        var stringVersion = Self.green; stringVersion["v"] = "1"
         var noEnv = Self.green; noEnv["env"] = " "
         var noEndpoints = Self.green; noEndpoints["endpoints"] = nil
         let cases: [(String, Data, EndpointConfig.Rejection)] = [
             ("html", Data("<!doctype html><html></html>".utf8), .notJSON),
             ("array", Self.data([1, 2]), .notJSON),
             ("version", Self.data(wrongVersion), .unsupportedVersion),
+            ("bool version", Self.data(boolVersion), .unsupportedVersion),
+            ("string version", Self.data(stringVersion), .unsupportedVersion),
             ("env", Self.data(noEnv), .missingEnv),
             ("endpoints", Self.data(noEndpoints), .missingEndpoints),
             ("missing required", Self.doc(replacing: "ripsBase", with: nil), .missingKey("ripsBase")),
