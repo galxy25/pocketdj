@@ -352,6 +352,11 @@ struct PocketDJApp: App {
     /// The cloud recommendation-engine orchestrator (WS-E) — inert (zero network) unless the
     /// Settings toggle "Use PocketDJ Recommendation Engine" is ON. See RecommendationService.
     @State private var recEngine: RecommendationService
+    /// On-device place/trip engine (opt-in, iOS; inert elsewhere) — raw location never leaves
+    /// it, only opaque ids via `ListeningContextProviding`.
+    @State private var listeningLocation: ListeningLocationStore
+    /// Listening pockets: outcome upload + results for History ▸ Pockets (rides the rec consent).
+    @State private var listeningPockets: ListeningPocketsService
     /// iCloud (CloudKit private DB) sync of profile + session-data documents. RootView's
     /// launch task awaits its launch pass BEFORE the durable-session restores so a fresh
     /// device restores cloud session files, not empty ones.
@@ -614,6 +619,16 @@ struct PocketDJApp: App {
         // Append-only play TIMELINE (History mode) — distinct from the aggregate playStats above.
         let playHistory = PlayHistoryStore(fileURL: PlayHistoryStore.launchURL())
         _playHistory = State(initialValue: playHistory)
+        // Every play is stamped with whether a CarPlay scene was up (a listening-pockets feature:
+        // the car is its own context even before places & trips is turned on).
+        #if os(iOS)
+        playHistory.carPlayProbe = { CarPlayController.current != nil }
+        #endif
+        // The on-device place/trip engine. Built + started HERE, early in init, so a background
+        // relaunch for a CLVisit delivers into a live delegate (no-op unless opted in, iOS).
+        let listeningLocation = ListeningLocationStore(fileURL: ListeningLocationStore.launchURL())
+        listeningLocation.startIfEnabled()
+        _listeningLocation = State(initialValue: listeningLocation)
         // Peer plays count toward the storage prune (Levi's call): the merged history answers
         // "when was this last played ANYWHERE", so a track played constantly on the Mac isn't first
         // out of the phone's download cache. Read at query time rather than folded into the
@@ -629,6 +644,11 @@ struct PocketDJApp: App {
         _skipTracker = State(initialValue: skipTracker)
         skipTracker.history = playHistory
         skipTracker.noteSkip = { [weak playCounts] id in playCounts?.noteSkipped(id) }
+        // …and every verdict / track change carries the played FRACTION (completed vs partial —
+        // the other half of a listening-pockets outcome).
+        skipTracker.noteListened = { [weak playHistory] id, fraction in
+            playHistory?.noteListened(eventId: id, fraction: fraction)
+        }
         setlistPlayer.onAdvanceAway = { [weak skipTracker] id, pos, dur in
             skipTracker?.noteAdvanceAway(songId: id, positionMs: pos, durationMs: dur)
         }
@@ -900,14 +920,23 @@ struct PocketDJApp: App {
             // that absorbs it, instead of being added a second time.
             playCounts?.notePlayed(id, backend: backend); recordNonMixHistory(id)
         }
-        mix.onSongPlayed = { [weak playCounts, weak playHistory, weak mix, weak mixSessions, weak app] songId in
+        // Mix / Auto-DJ outcomes: the SkipTracker never sees the decks, so the bridge maps each
+        // deck play to its history event and applies the same <50% rule when the deck reports
+        // why its track ended (CarPlay ⏭ during an auto mix is `remoteSkip` → `.skip`).
+        let mixOutcome = MixPlayOutcomeBridge(history: playHistory)
+        mixOutcome.noteSkip = { [weak playCounts] id in playCounts?.noteSkipped(id) }
+        mix.onSongPlayed = { [weak playCounts, weak playHistory, weak mix, weak mixSessions, weak app] songId, deck in
             // The Mix decks play LOCAL files only — never Apple Music.
             playCounts?.notePlayed(songId, backend: .ripServer)
             guard let playHistory else { return }
             let name = (mix?.autoMixing == true ? mix?.autoSourceLabel : nil) ?? mixSessions?.currentName
             let context = PlayHistoryStore.PlayContext(source: .mix, contextId: mixSessions?.currentId, contextName: name)
-            playHistory.record(songId: songId, title: app?.songsById[songId]?.name,
-                               artist: app?.songsById[songId]?.artist, context: context)
+            let event = playHistory.record(songId: songId, title: app?.songsById[songId]?.name,
+                                           artist: app?.songsById[songId]?.artist, context: context)
+            mixOutcome.notePlayed(deck: deck, songId: songId, event: event)
+        }
+        mix.onDeckTrackEnded = { songId, played, duration, reason, deck in
+            mixOutcome.noteTrackEnded(deck: deck, songId: songId, played: played, duration: duration, reason: reason)
         }
         // The prune must never delete a file an engine holds OPEN: both Mix decks, the
         // inline/now-playing track, and the sequencer's current queue item are off-limits.
@@ -1448,6 +1477,40 @@ struct PocketDJApp: App {
             await recEngine?.similarSongs(toCollections: ids) ?? []
         }
         _recEngine = State(initialValue: recEngine)
+        // ── Listening pockets ──────────────────────────────────────────────────
+        // Per-play outcomes (finished / skipped / fraction, local time, surface, CarPlay, and —
+        // opt-in, iOS — an opaque place/trip) upload to the pockets Lambda on the rec engine's
+        // API, under the rec engine's consent AND key; the cloud finds the grooves and History ▸
+        // Pockets shows them. Same fixture guard as the rec client: a UI-test run gets a stub
+        // transport (and `PDJ_POCKETS_FIXTURE` serves canned results with no network at all).
+        let pocketsClient: ListeningPocketsClient
+        if ProcessInfo.processInfo.environment["PDJ_USE_FIXTURE"] != nil {
+            pocketsClient = ListeningPocketsClient(transport: { req in
+                (Data("{}".utf8), HTTPURLResponse(url: req.url ?? Config.listeningPocketsBase,
+                                                  statusCode: 200, httpVersion: nil,
+                                                  headerFields: nil)!)
+            })
+        } else {
+            pocketsClient = ListeningPocketsClient()
+        }
+        let listeningPockets = ListeningPocketsService(
+            history: playHistory, settings: settings,
+            credentials: { [weak recEngine] in recEngine?.sharedCredentials() },
+            provider: listeningLocation, client: pocketsClient)
+        // `ctx` rides only while the places & trips TOGGLE is on — not merely while permission
+        // happens to be granted (a revoked permission must not strip already-settled contexts).
+        listeningPockets.locationOptedIn = { [weak listeningLocation] in listeningLocation?.isEnabled ?? false }
+        // Places & trips exist only to feed pockets: when pockets (or the engine) turn off, so does
+        // location — stop + erase, never collecting with nothing to feed. The launch check covers a
+        // gate that closed without the Settings toggles (a settings reset, an older build).
+        listeningPockets.onDisabled = { [weak listeningLocation] in listeningLocation?.setEnabled(false) }
+        if !listeningPockets.isEnabled, listeningLocation.isEnabled { listeningLocation.setEnabled(false) }
+        // "Delete cloud data" erases the pockets state too, with the credential that erased the
+        // rec state (awaited, so the button's completion means both are gone).
+        recEngine.onDeleteCloudData = { [weak listeningPockets] key, profileId in
+            await listeningPockets?.deleteCloudData(key: key, profileId: profileId)
+        }
+        _listeningPockets = State(initialValue: listeningPockets)
         // Fixture guard lives HERE (not inside the service): UI-test runs must never
         // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
         // globally and the sync engine itself must stay drivable by tests.
@@ -1601,7 +1664,11 @@ struct PocketDJApp: App {
             guard let recEngine else { return true }
             return await recEngine.deleteCloudData()
         }
-        accountDeletion.recClearLocal = { [weak recEngine] cloudDeleted in
+        accountDeletion.recClearLocal = { [weak recEngine, weak listeningPockets, weak listeningLocation] cloudDeleted in
+            // Listening pockets' device-local files + the on-device place/trip data go with the
+            // account (location: off + erased — the same as turning the toggle off).
+            listeningPockets?.clearLocal()
+            listeningLocation?.setEnabled(false)
             recEngine?.clearLocal(cloudDeleted: cloudDeleted)
         }
         _accountDeletion = State(initialValue: accountDeletion)
@@ -1719,6 +1786,8 @@ struct PocketDJApp: App {
                 .environment(playlistSync)
                 .environment(accountDeletion)
                 .environment(recEngine)
+                .environment(listeningLocation)
+                .environment(listeningPockets)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through
@@ -1775,6 +1844,18 @@ struct PocketDJApp: App {
                 // Recommendation-engine auto-flush: idempotent, and internally a no-op while
                 // the Settings toggle is off (re-armed by enabledDidChange when it flips on).
                 .task { recEngine.startAutoFlush() }
+                // Listening-pockets auto-flush: same contract (idempotent, gated inside).
+                .task { listeningPockets.startAutoFlush() }
+                // …and the same gate, observed: any path that closes it (not only the Settings
+                // toggles, which also call `enabledDidChange`) turns places & trips off.
+                .onChange(of: listeningPockets.isEnabled) { _, on in
+                    if !on, listeningLocation.isEnabled { listeningLocation.setEnabled(false) }
+                }
+                // A stopped set never advances away, so its last track's fraction is reported
+                // here (the next play's arm would report it too — this just doesn't wait).
+                .onChange(of: setlistPlayer.isRunning) { _, running in
+                    if !running { skipTracker.checkpoint() }
+                }
                 // Apple's play-count baseline, decoded OFF the main actor (see the store's init).
                 // Idempotent: it refuses to run against a store that has already been touched.
                 .task {
@@ -1901,6 +1982,11 @@ struct PocketDJApp: App {
                         // Recommendation engine: land the pending deltas before a possible
                         // suspension→kill (5 s debounce; inert while the toggle is off).
                         recEngine.flushSoon()
+                        // The current track's played fraction so far (a backgrounded app may
+                        // never see this track advance) — BEFORE the history push below — then
+                        // the listening-pockets upload (same debounce, same gate doctrine).
+                        skipTracker.checkpoint()
+                        listeningPockets.flushSoon()
                         // Push any session documents whose files advanced since the last
                         // sync — AFTER the flushes above so the freshest bytes upload.
                         // (pushAllowed also refuses inside while onboarding is unresolved.)

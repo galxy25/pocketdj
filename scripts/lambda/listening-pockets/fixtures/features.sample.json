@@ -1,0 +1,891 @@
+{
+ "v": 1,
+ "generatedAt": "synthetic-fixture",
+ "counts": {
+  "songs": 56
+ },
+ "songs": [
+  {
+   "i": "sng_5050aade77c4",
+   "al": "alb_2f16896ed282",
+   "a": "Lumen Drive",
+   "n": "electronic track 1",
+   "g": "electronic",
+   "y": 2016,
+   "b": 118,
+   "c": "8A",
+   "s": [
+    "driving",
+    "warm"
+   ],
+   "t": {
+    "loud": 0.726,
+    "punch": 0.7878
+   }
+  },
+  {
+   "i": "sng_d355cc000d8b",
+   "al": "alb_6934e4071b12",
+   "a": "Kessa",
+   "n": "electronic track 2",
+   "g": "electronic",
+   "y": 2016,
+   "b": 124,
+   "c": "9A",
+   "s": [
+    "warm",
+    "euphoric"
+   ],
+   "t": {
+    "loud": 0.6006,
+    "punch": 0.7742
+   }
+  },
+  {
+   "i": "sng_2bd6aa178f08",
+   "al": "alb_b6c8d9d312dd",
+   "a": "Halden",
+   "n": "electronic track 3",
+   "g": "electronic",
+   "y": 2017,
+   "b": 123.3,
+   "c": "9B",
+   "s": [
+    "driving"
+   ],
+   "t": {
+    "loud": 0.7042,
+    "punch": 0.7314
+   }
+  },
+  {
+   "i": "sng_df6f9d2e2f2a",
+   "al": "alb_48718f939c4f",
+   "a": "Mirae",
+   "n": "electronic track 4",
+   "g": "electronic",
+   "y": 2021,
+   "b": 121.9,
+   "c": "10B",
+   "s": [
+    "euphoric",
+    "driving"
+   ],
+   "t": {
+    "loud": 0.6455,
+    "punch": 0.7615
+   }
+  },
+  {
+   "i": "sng_e517ffed1ba7",
+   "al": "alb_5d77ee2d5f74",
+   "a": "Okto",
+   "n": "electronic track 5",
+   "g": "electronic",
+   "y": 2023,
+   "b": 123.1,
+   "c": "10A",
+   "s": [
+    "driving",
+    "warm"
+   ],
+   "t": {
+    "loud": 0.6564,
+    "punch": 0.7669
+   }
+  },
+  {
+   "i": "sng_24124669befd",
+   "al": "alb_d1846cb3fe0f",
+   "a": "Saffi",
+   "n": "electronic track 6",
+   "g": "electronic",
+   "y": 2019,
+   "b": 118.5,
+   "c": "11A",
+   "s": [
+    "driving",
+    "euphoric"
+   ],
+   "t": {
+    "loud": 0.7284,
+    "punch": 0.7315
+   },
+   "am": "1771724281"
+  },
+  {
+   "i": "sng_ce1a2fa144ff",
+   "al": "alb_a35d6fbcb2ca",
+   "a": "Lumen Drive",
+   "n": "electronic track 7",
+   "g": "electronic",
+   "y": 2016,
+   "b": 120.1,
+   "c": "8A",
+   "s": [
+    "driving"
+   ],
+   "t": {
+    "loud": 0.6772,
+    "punch": 0.6631
+   }
+  },
+  {
+   "i": "sng_2b11b843b917",
+   "al": "alb_5efb47195593",
+   "a": "Kessa",
+   "n": "electronic track 8",
+   "g": "electronic",
+   "y": 2018,
+   "b": 121.5,
+   "c": "9A",
+   "s": [
+    "euphoric"
+   ],
+   "t": {
+    "loud": 0.7304,
+    "punch": 0.7455
+   }
+  },
+  {
+   "i": "sng_c47f2d82bad2",
+   "al": "alb_23aa843e1286",
+   "a": "Halden",
+   "n": "electronic track 9",
+   "g": "electronic",
+   "y": 2024,
+   "b": 123.5,
+   "c": "9B",
+   "s": [
+    "euphoric",
+    "warm"
+   ],
+   "t": {
+    "loud": 0.6795,
+    "punch": 0.6901
+   }
+  },
+  {
+   "i": "sng_864189836f21",
+   "al": "alb_d047ac515905",
+   "a": "Mirae",
+   "n": "electronic track 10",
+   "g": "electronic",
+   "y": 2021,
+   "b": 123.6,
+   "c": "10B",
+   "s": [
+    "warm",
+    "euphoric"
+   ],
+   "t": {
+    "loud": 0.657,
+    "punch": 0.7722
+   }
+  },
+  {
+   "i": "sng_32df97b4f035",
+   "al": "alb_770e3e6b0ae3",
+   "a": "Okto",
+   "n": "electronic track 11",
+   "g": "electronic",
+   "y": 2021,
+   "b": 121.6,
+   "c": "10A",
+   "s": [
+    "euphoric",
+    "warm"
+   ],
+   "t": {
+    "loud": 0.6145,
+    "punch": 0.6965
+   }
+  },
+  {
+   "i": "sng_95d9dead7579",
+   "al": "alb_9212862afd0e",
+   "a": "Saffi",
+   "n": "electronic track 12",
+   "g": "electronic",
+   "y": 2018,
+   "b": 122.3,
+   "c": "11A",
+   "s": [
+    "warm",
+    "euphoric"
+   ],
+   "t": {
+    "loud": 0.6522,
+    "punch": 0.7117
+   }
+  },
+  {
+   "i": "sng_e44e89f6c105",
+   "al": "alb_6a09a1338ac0",
+   "a": "Rook Avenue",
+   "n": "hip-hop track 1",
+   "g": "hip-hop",
+   "y": 2017,
+   "b": 95.5,
+   "c": "3A",
+   "s": [
+    "dark"
+   ],
+   "t": {
+    "loud": 0.5673,
+    "punch": 0.6219
+   }
+  },
+  {
+   "i": "sng_3d33ac723459",
+   "al": "alb_dfbbdc40ca3c",
+   "a": "Tamsin Kai",
+   "n": "hip-hop track 2",
+   "g": "hip-hop",
+   "y": 2007,
+   "b": 89.7,
+   "c": "7B",
+   "s": [
+    "dark",
+    "confident"
+   ],
+   "t": {
+    "loud": 0.5164,
+    "punch": 0.6036
+   }
+  },
+  {
+   "i": "sng_b508c8529337",
+   "al": "alb_990e83a27919",
+   "a": "Low Orbit",
+   "n": "hip-hop track 3",
+   "g": "hip-hop",
+   "y": 2011,
+   "b": 94.4,
+   "c": "12A",
+   "s": [
+    "confident",
+    "dark"
+   ],
+   "t": {
+    "loud": 0.5626,
+    "punch": 0.5777
+   }
+  },
+  {
+   "i": "sng_6ad2b1e70ef0",
+   "al": "alb_f405356e2dc0",
+   "a": "DJ Parcel",
+   "n": "hip-hop track 4",
+   "g": "hip-hop",
+   "y": 1996,
+   "b": 95.8,
+   "c": "5A",
+   "s": [
+    "confident"
+   ],
+   "t": {
+    "loud": 0.4684,
+    "punch": 0.5273
+   }
+  },
+  {
+   "i": "sng_ff82a2c2c91c",
+   "al": "alb_fe789f091552",
+   "a": "Vela",
+   "n": "hip-hop track 5",
+   "g": "hip-hop",
+   "y": 2019,
+   "b": 91.2,
+   "c": "1B",
+   "s": [
+    "confident",
+    "dark"
+   ],
+   "t": {
+    "loud": 0.5535,
+    "punch": 0.5128
+   }
+  },
+  {
+   "i": "sng_6b9be13b205c",
+   "al": "alb_ef6ef6469486",
+   "a": "Rook Avenue",
+   "n": "hip-hop track 6",
+   "g": "hip-hop",
+   "y": 2003,
+   "b": 92.2,
+   "c": "3A",
+   "s": [
+    "gritty"
+   ],
+   "t": {
+    "loud": 0.5604,
+    "punch": 0.5495
+   }
+  },
+  {
+   "i": "sng_5459d757a358",
+   "al": "alb_14c2f748a30c",
+   "a": "Tamsin Kai",
+   "n": "hip-hop track 7",
+   "g": "hip-hop",
+   "y": 2018,
+   "b": 86,
+   "c": "7B",
+   "s": [
+    "confident",
+    "gritty"
+   ],
+   "t": {
+    "loud": 0.5293,
+    "punch": 0.6249
+   }
+  },
+  {
+   "i": "sng_3d96ac27a1d2",
+   "al": "alb_a42294e3018f",
+   "a": "Low Orbit",
+   "n": "hip-hop track 8",
+   "g": "hip-hop",
+   "y": 1999,
+   "b": 87.9,
+   "c": "12A",
+   "s": [
+    "dark",
+    "confident"
+   ],
+   "t": {
+    "loud": 0.5277,
+    "punch": 0.5795
+   }
+  },
+  {
+   "i": "sng_e5da88ce56c7",
+   "al": "alb_246d7d50a5f5",
+   "a": "DJ Parcel",
+   "n": "hip-hop track 9",
+   "g": "hip-hop",
+   "y": 2015,
+   "b": 94.7,
+   "c": "5A",
+   "s": [
+    "confident",
+    "dark"
+   ],
+   "t": {
+    "loud": 0.5203,
+    "punch": 0.5464
+   }
+  },
+  {
+   "i": "sng_bdeab8d16f53",
+   "al": "alb_89d96fa61013",
+   "a": "Vela",
+   "n": "hip-hop track 10",
+   "g": "hip-hop",
+   "y": 1994,
+   "b": 97,
+   "c": "1B",
+   "s": [
+    "dark",
+    "confident"
+   ],
+   "t": {
+    "loud": 0.5468,
+    "punch": 0.6015
+   }
+  },
+  {
+   "i": "sng_ab8505d69834",
+   "al": "alb_b94baac0dcba",
+   "a": "Rook Avenue",
+   "n": "hip-hop track 11",
+   "g": "hip-hop",
+   "y": 2009,
+   "b": 88.6,
+   "c": "3A",
+   "s": [
+    "gritty",
+    "dark"
+   ],
+   "t": {
+    "loud": 0.4831,
+    "punch": 0.6412
+   }
+  },
+  {
+   "i": "sng_80b6d4384779",
+   "al": "alb_749d7622ca75",
+   "a": "Tamsin Kai",
+   "n": "hip-hop track 12",
+   "g": "hip-hop",
+   "y": 1999,
+   "b": 86.7,
+   "c": "7B",
+   "s": [
+    "dark",
+    "confident"
+   ],
+   "t": {
+    "loud": 0.5725,
+    "punch": 0.6019
+   }
+  },
+  {
+   "i": "sng_9c22fa04323f",
+   "al": "alb_fe543ecd0420",
+   "a": "Low Orbit",
+   "n": "hip-hop track 13",
+   "g": "hip-hop",
+   "y": 2007,
+   "b": 92.6,
+   "c": "12A",
+   "s": [
+    "gritty",
+    "confident"
+   ],
+   "t": {
+    "loud": 0.5934,
+    "punch": 0.5371
+   }
+  },
+  {
+   "i": "sng_93c2e67a0cfd",
+   "al": "alb_fd49cced0b19",
+   "a": "DJ Parcel",
+   "n": "hip-hop track 14",
+   "g": "hip-hop",
+   "y": 2020,
+   "b": 85.7,
+   "c": "5A",
+   "s": [
+    "confident",
+    "gritty"
+   ],
+   "t": {
+    "loud": 0.5023,
+    "punch": 0.5758
+   }
+  },
+  {
+   "i": "sng_2cb49ca41a10",
+   "al": "alb_b0fd86bbb6c4",
+   "a": "Bento Quartet",
+   "n": "jazz track 1",
+   "g": "jazz",
+   "y": 1972,
+   "b": 139.2,
+   "c": "3A",
+   "s": [
+    "mellow"
+   ],
+   "t": {
+    "loud": 0.2361,
+    "punch": 0.2155
+   }
+  },
+  {
+   "i": "sng_ba4ee2efe3cb",
+   "al": "alb_7c06b6d3c887",
+   "a": "Nell Ardent",
+   "n": "jazz track 2",
+   "g": "jazz",
+   "y": 1975,
+   "b": 142,
+   "c": "4A",
+   "s": [
+    "mellow"
+   ],
+   "t": {
+    "loud": 0.2134,
+    "punch": 0.2848
+   }
+  },
+  {
+   "i": "sng_9e601fbf0060",
+   "al": "alb_a06a32635fcf",
+   "a": "Kessel Trio",
+   "n": "jazz track 3",
+   "g": "jazz",
+   "y": 1972,
+   "b": 125.1,
+   "c": "3B",
+   "s": [
+    "smooth",
+    "mellow"
+   ],
+   "t": {
+    "loud": 0.2419,
+    "punch": 0.2595
+   }
+  },
+  {
+   "i": "sng_95f823c31396",
+   "al": "alb_c5461e1d385f",
+   "a": "Bento Quartet",
+   "n": "jazz track 4",
+   "g": "jazz",
+   "y": 1970,
+   "b": 107.9,
+   "c": "2A",
+   "s": [
+    "smooth",
+    "mellow"
+   ],
+   "t": {
+    "loud": 0.2549,
+    "punch": 0.3004
+   }
+  },
+  {
+   "i": "sng_c266014174ae",
+   "al": "alb_b3ca0f1772cd",
+   "a": "Nell Ardent",
+   "n": "jazz track 5",
+   "g": "jazz",
+   "y": 1970,
+   "b": 109.1,
+   "c": "3A",
+   "s": [
+    "mellow"
+   ],
+   "t": {
+    "loud": 0.2591,
+    "punch": 0.2981
+   }
+  },
+  {
+   "i": "sng_18431deff048",
+   "al": "alb_ad249c0e7a35",
+   "a": "Kessel Trio",
+   "n": "jazz track 6",
+   "g": "jazz",
+   "y": 1959,
+   "b": 137.8,
+   "c": "4A",
+   "s": [
+    "smooth"
+   ],
+   "t": {
+    "loud": 0.2137,
+    "punch": 0.3017
+   }
+  },
+  {
+   "i": "sng_20ff05537c74",
+   "al": "alb_d89ebd78e7d5",
+   "a": "Bento Quartet",
+   "n": "jazz track 7",
+   "g": "jazz",
+   "y": 1969,
+   "b": 103.9,
+   "c": "3B",
+   "s": [
+    "smooth"
+   ],
+   "t": {
+    "loud": 0.1687,
+    "punch": 0.2507
+   }
+  },
+  {
+   "i": "sng_f99916e454b2",
+   "al": "alb_0912d26d04b1",
+   "a": "Nell Ardent",
+   "n": "jazz track 8",
+   "g": "jazz",
+   "y": 1972,
+   "b": 134.6,
+   "c": "2A",
+   "s": [
+    "mellow",
+    "smooth"
+   ],
+   "t": {
+    "loud": 0.2264,
+    "punch": 0.2571
+   }
+  },
+  {
+   "i": "sng_ea6ce45f8481",
+   "al": "alb_4ce43d1b07f8",
+   "a": "Kessel Trio",
+   "n": "jazz track 9",
+   "g": "jazz",
+   "y": 1964,
+   "b": 130.5,
+   "c": "3A",
+   "s": [
+    "mellow"
+   ],
+   "t": {
+    "loud": 0.2692,
+    "punch": 0.2253
+   }
+  },
+  {
+   "i": "sng_59c0f6e65814",
+   "al": "alb_63e02414e855",
+   "a": "Glass Harbor",
+   "n": "rock track 1",
+   "g": "rock",
+   "y": 1992,
+   "b": 140.8,
+   "c": "6B"
+  },
+  {
+   "i": "sng_e3e836ed6981",
+   "al": "alb_47e4210979ff",
+   "a": "The Wexfords",
+   "n": "rock track 2",
+   "g": "rock",
+   "y": 2004,
+   "b": 142.5,
+   "c": "11B"
+  },
+  {
+   "i": "sng_de525748fdec",
+   "al": "alb_ac5ef42b9031",
+   "a": "Glass Harbor",
+   "n": "rock track 3",
+   "g": "rock",
+   "y": 2004,
+   "b": 147.4,
+   "c": "6B"
+  },
+  {
+   "i": "sng_3381cf121f84",
+   "al": "alb_31656f540794",
+   "a": "The Wexfords",
+   "n": "rock track 4",
+   "g": "rock",
+   "y": 1986,
+   "b": 141.5,
+   "c": "11B"
+  },
+  {
+   "i": "sng_7a871ba47595",
+   "al": "alb_4584067ccc15",
+   "a": "Glass Harbor",
+   "n": "rock track 5",
+   "g": "rock",
+   "y": 1996,
+   "b": 151,
+   "c": "6B"
+  },
+  {
+   "i": "sng_8deabb94cfb9",
+   "al": "alb_04388de7845f",
+   "a": "The Wexfords",
+   "n": "rock track 6",
+   "g": "rock",
+   "y": 1990,
+   "b": 136.7,
+   "c": "11B"
+  },
+  {
+   "i": "sng_9184eee1a405",
+   "al": "alb_309936577f2b",
+   "a": "Ivy Sol",
+   "n": "pop track 1",
+   "g": "pop",
+   "y": 2017,
+   "b": 108.8,
+   "c": "1A",
+   "s": [
+    "bright",
+    "upbeat"
+   ]
+  },
+  {
+   "i": "sng_8b9caacdac52",
+   "al": "alb_3b487bb528f0",
+   "a": "Marlo",
+   "n": "pop track 2",
+   "g": "pop",
+   "y": 2015,
+   "b": 100.5,
+   "c": "5B",
+   "s": [
+    "upbeat"
+   ]
+  },
+  {
+   "i": "sng_b4c366ddbf98",
+   "al": "alb_57bbcdfcd665",
+   "a": "Penny Arcade",
+   "n": "pop track 3",
+   "g": "pop",
+   "y": 2024,
+   "b": 104.1,
+   "c": "8B",
+   "s": [
+    "bright",
+    "upbeat"
+   ]
+  },
+  {
+   "i": "sng_1d458c7870c3",
+   "al": "alb_9a9dfd326786",
+   "a": "Ivy Sol",
+   "n": "pop track 4",
+   "g": "pop",
+   "y": 2024,
+   "b": 104.9,
+   "c": "2B",
+   "s": [
+    "bright",
+    "upbeat"
+   ]
+  },
+  {
+   "i": "sng_4ce024fea8ca",
+   "al": "alb_1527d4c74e7a",
+   "a": "Marlo",
+   "n": "pop track 5",
+   "g": "pop",
+   "y": 2020,
+   "b": 127.5,
+   "c": "1A",
+   "s": [
+    "upbeat"
+   ]
+  },
+  {
+   "i": "sng_a36a2702eed6",
+   "al": "alb_673d49f306b7",
+   "a": "Penny Arcade",
+   "n": "pop track 6",
+   "g": "pop",
+   "y": 2011,
+   "b": 125.1,
+   "c": "5B",
+   "s": [
+    "upbeat"
+   ]
+  },
+  {
+   "i": "sng_456dcaf2e4ee",
+   "al": "alb_9c0bd04f962a",
+   "a": "Ivy Sol",
+   "n": "pop track 7",
+   "g": "pop",
+   "y": 2014,
+   "b": 114.4,
+   "c": "8B",
+   "s": [
+    "upbeat",
+    "bright"
+   ]
+  },
+  {
+   "i": "sng_61610ee49409",
+   "al": "alb_e36f98827590",
+   "a": "Marlo",
+   "n": "pop track 8",
+   "g": "pop",
+   "y": 2022,
+   "b": 113.9,
+   "c": "2B",
+   "s": [
+    "bright"
+   ]
+  },
+  {
+   "i": "sng_b00b19de6435",
+   "al": "alb_67b382b9b5b5",
+   "a": "Penny Arcade",
+   "n": "pop track 9",
+   "g": "pop",
+   "y": 2020,
+   "b": 125,
+   "c": "1A",
+   "s": [
+    "bright",
+    "upbeat"
+   ]
+  },
+  {
+   "i": "sng_2c8aa912d67c",
+   "al": "alb_fed7528017c0",
+   "a": "Cassia June",
+   "n": "r&b track 1",
+   "g": "r&b",
+   "y": 2000,
+   "b": 67.1,
+   "c": "4B",
+   "s": [
+    "smooth"
+   ]
+  },
+  {
+   "i": "sng_145cd21a3d44",
+   "al": "alb_dcc0decaa83e",
+   "a": "Darnell Moss",
+   "n": "r&b track 2",
+   "g": "r&b",
+   "y": 1992,
+   "b": 69.9,
+   "c": "9B",
+   "s": [
+    "romantic"
+   ]
+  },
+  {
+   "i": "sng_ff8aace4c6d2",
+   "al": "alb_823319d1ea25",
+   "a": "Cassia June",
+   "n": "r&b track 3",
+   "g": "r&b",
+   "y": 1993,
+   "b": 72.9,
+   "c": "4B",
+   "s": [
+    "romantic",
+    "smooth"
+   ]
+  },
+  {
+   "i": "sng_f64f167e1d55",
+   "al": "alb_61a7385c625b",
+   "a": "Darnell Moss",
+   "n": "r&b track 4",
+   "g": "r&b",
+   "y": 1994,
+   "b": 62.1,
+   "c": "9B",
+   "s": [
+    "romantic",
+    "smooth"
+   ]
+  },
+  {
+   "i": "sng_24f28cc3b07b",
+   "al": "alb_ab2163648c2d",
+   "a": "Cassia June",
+   "n": "r&b track 5",
+   "g": "r&b",
+   "y": 1994,
+   "b": 65.8,
+   "c": "4B",
+   "s": [
+    "romantic",
+    "smooth"
+   ]
+  },
+  {
+   "i": "sng_01aa85248a94",
+   "al": "alb_daab64d30288",
+   "a": "Darnell Moss",
+   "n": "r&b track 6",
+   "g": "r&b",
+   "y": 1996,
+   "b": 68.7,
+   "c": "9B",
+   "s": [
+    "romantic"
+   ]
+  }
+ ]
+}

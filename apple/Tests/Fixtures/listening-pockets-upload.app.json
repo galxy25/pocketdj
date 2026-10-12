@@ -1,0 +1,4441 @@
+{
+  "deviceId" : "DEVICE-CONTRACT",
+  "events" : [
+    {
+      "artist" : "Artist bad2",
+      "atMs" : 1790088000000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000001",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_c47f2d82bad2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f21",
+      "atMs" : 1790088240000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000002",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_864189836f21",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist f035",
+      "atMs" : 1790088480000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000003",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_32df97b4f035",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 7579",
+      "atMs" : 1790088720000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000004",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_95d9dead7579",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 77c4",
+      "atMs" : 1790088960000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000005",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_5050aade77c4",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0d8b",
+      "atMs" : 1790089200000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000006",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_d355cc000d8b",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist fdec",
+      "atMs" : 1790105400000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000007",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_de525748fdec",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist d67c",
+      "atMs" : 1790105580000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000008",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_2c8aa912d67c",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1396",
+      "atMs" : 1790105760000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000009",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_95f823c31396",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a8ca",
+      "atMs" : 1790105940000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000010",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_4ce024fea8ca",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c105",
+      "atMs" : 1790125500000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000011",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e44e89f6c105",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 3459",
+      "atMs" : 1790125740000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000012",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d33ac723459",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 9337",
+      "atMs" : 1790125980000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000013",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_b508c8529337",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0ef0",
+      "atMs" : 1790126220000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000014",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_6ad2b1e70ef0",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c91c",
+      "atMs" : 1790126460000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000015",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ff82a2c2c91c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist b917",
+      "atMs" : 1790174400000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000016",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2b11b843b917",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bad2",
+      "atMs" : 1790174640000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000017",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_c47f2d82bad2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f21",
+      "atMs" : 1790174880000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000018",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_864189836f21",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist f035",
+      "atMs" : 1790175120000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000019",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_32df97b4f035",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 7579",
+      "atMs" : 1790175360000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000020",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_95d9dead7579",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 77c4",
+      "atMs" : 1790175600000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000021",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_5050aade77c4",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0060",
+      "atMs" : 1790191800000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000022",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_9e601fbf0060",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist fdec",
+      "atMs" : 1790191980000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000023",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_de525748fdec",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist d67c",
+      "atMs" : 1790192160000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000024",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_2c8aa912d67c",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1396",
+      "atMs" : 1790192340000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000025",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_95f823c31396",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f53",
+      "atMs" : 1790211900000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000026",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_bdeab8d16f53",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c105",
+      "atMs" : 1790212140000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000027",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e44e89f6c105",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 3459",
+      "atMs" : 1790212380000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000028",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_3d33ac723459",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 9337",
+      "atMs" : 1790212620000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000029",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_b508c8529337",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0ef0",
+      "atMs" : 1790212860000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000030",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_6ad2b1e70ef0",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 44ff",
+      "atMs" : 1790260800000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000031",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ce1a2fa144ff",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist b917",
+      "atMs" : 1790261040000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000032",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2b11b843b917",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bad2",
+      "atMs" : 1790261280000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000033",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_c47f2d82bad2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f21",
+      "atMs" : 1790261520000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000034",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_864189836f21",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist f035",
+      "atMs" : 1790261760000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000035",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_32df97b4f035",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 7579",
+      "atMs" : 1790262000000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000036",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_95d9dead7579",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bf98",
+      "atMs" : 1790278200000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000037",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_b4c366ddbf98",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0060",
+      "atMs" : 1790278380000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000038",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_9e601fbf0060",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist fdec",
+      "atMs" : 1790278560000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000039",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_de525748fdec",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist d67c",
+      "atMs" : 1790278740000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000040",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2c8aa912d67c",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 56c7",
+      "atMs" : 1790298300000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000041",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e5da88ce56c7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f53",
+      "atMs" : 1790298540000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000042",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_bdeab8d16f53",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c105",
+      "atMs" : 1790298780000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000043",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_e44e89f6c105",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 3459",
+      "atMs" : 1790299020000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000044",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d33ac723459",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 9337",
+      "atMs" : 1790299260000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000045",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_b508c8529337",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist befd",
+      "atMs" : 1790347200000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000046",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_24124669befd",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 44ff",
+      "atMs" : 1790347440000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000047",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ce1a2fa144ff",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist b917",
+      "atMs" : 1790347680000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000048",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2b11b843b917",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bad2",
+      "atMs" : 1790347920000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000049",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_c47f2d82bad2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f21",
+      "atMs" : 1790348160000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000050",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_864189836f21",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist f035",
+      "atMs" : 1790348400000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000051",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_32df97b4f035",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6981",
+      "atMs" : 1790364600000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000052",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e3e836ed6981",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bf98",
+      "atMs" : 1790364780000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000053",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_b4c366ddbf98",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0060",
+      "atMs" : 1790364960000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000054",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_9e601fbf0060",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist fdec",
+      "atMs" : 1790365140000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000055",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_de525748fdec",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a1d2",
+      "atMs" : 1790384700000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000056",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d96ac27a1d2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 56c7",
+      "atMs" : 1790384940000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000057",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e5da88ce56c7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f53",
+      "atMs" : 1790385180000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000058",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_bdeab8d16f53",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c105",
+      "atMs" : 1790385420000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000059",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e44e89f6c105",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 3459",
+      "atMs" : 1790385660000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000060",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d33ac723459",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist fdec",
+      "atMs" : 1790460000000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000061",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_de525748fdec",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist d67c",
+      "atMs" : 1790460300000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000062",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_2c8aa912d67c",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1396",
+      "atMs" : 1790460600000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000063",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_95f823c31396",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a8ca",
+      "atMs" : 1790460900000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000064",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_4ce024fea8ca",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bf98",
+      "atMs" : 1790546400000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000065",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_b4c366ddbf98",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0060",
+      "atMs" : 1790546700000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000066",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_9e601fbf0060",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist fdec",
+      "atMs" : 1790547000000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000067",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_de525748fdec",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist d67c",
+      "atMs" : 1790547300000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000068",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_2c8aa912d67c",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 8f08",
+      "atMs" : 1790606400000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000069",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2bd6aa178f08",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 2f2a",
+      "atMs" : 1790606640000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000070",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_df6f9d2e2f2a",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1ba7",
+      "atMs" : 1790606880000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000071",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e517ffed1ba7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist befd",
+      "atMs" : 1790607120000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000072",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_24124669befd",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 44ff",
+      "atMs" : 1790607360000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000073",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ce1a2fa144ff",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist b917",
+      "atMs" : 1790607600000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000074",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2b11b843b917",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 5814",
+      "atMs" : 1790623800000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000075",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_59c0f6e65814",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist ac52",
+      "atMs" : 1790623980000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000076",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_8b9caacdac52",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist e3cb",
+      "atMs" : 1790624160000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000077",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_ba4ee2efe3cb",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6981",
+      "atMs" : 1790624340000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000078",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e3e836ed6981",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c91c",
+      "atMs" : 1790643900000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000079",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ff82a2c2c91c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 205c",
+      "atMs" : 1790644140000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000080",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_6b9be13b205c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a358",
+      "atMs" : 1790644380000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000081",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_5459d757a358",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a1d2",
+      "atMs" : 1790644620000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000082",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d96ac27a1d2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 56c7",
+      "atMs" : 1790644860000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000083",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e5da88ce56c7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0d8b",
+      "atMs" : 1790692800000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000084",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_d355cc000d8b",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 8f08",
+      "atMs" : 1790693040000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000085",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2bd6aa178f08",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 2f2a",
+      "atMs" : 1790693280000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000086",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_df6f9d2e2f2a",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1ba7",
+      "atMs" : 1790693520000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000087",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_e517ffed1ba7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist befd",
+      "atMs" : 1790693760000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000088",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_24124669befd",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 44ff",
+      "atMs" : 1790694000000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000089",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ce1a2fa144ff",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1a10",
+      "atMs" : 1790710200000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000090",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2cb49ca41a10",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 5814",
+      "atMs" : 1790710380000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000091",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_59c0f6e65814",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist ac52",
+      "atMs" : 1790710560000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000092",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_8b9caacdac52",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist e3cb",
+      "atMs" : 1790710740000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000093",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ba4ee2efe3cb",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0ef0",
+      "atMs" : 1790730300000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000094",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_6ad2b1e70ef0",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c91c",
+      "atMs" : 1790730540000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000095",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ff82a2c2c91c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 205c",
+      "atMs" : 1790730780000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000096",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_6b9be13b205c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a358",
+      "atMs" : 1790731020000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000097",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_5459d757a358",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a1d2",
+      "atMs" : 1790731260000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000098",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d96ac27a1d2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 77c4",
+      "atMs" : 1790779200000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000099",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_5050aade77c4",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0d8b",
+      "atMs" : 1790779440000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000100",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_d355cc000d8b",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 8f08",
+      "atMs" : 1790779680000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000101",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2bd6aa178f08",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 2f2a",
+      "atMs" : 1790779920000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000102",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_df6f9d2e2f2a",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1ba7",
+      "atMs" : 1790780160000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000103",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e517ffed1ba7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist befd",
+      "atMs" : 1790780400000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000104",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_24124669befd",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a405",
+      "atMs" : 1790796600000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000105",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_9184eee1a405",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1a10",
+      "atMs" : 1790796780000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000106",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_2cb49ca41a10",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 5814",
+      "atMs" : 1790796960000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000107",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_59c0f6e65814",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist ac52",
+      "atMs" : 1790797140000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000108",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_8b9caacdac52",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 9337",
+      "atMs" : 1790816700000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000109",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_b508c8529337",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0ef0",
+      "atMs" : 1790816940000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000110",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_6ad2b1e70ef0",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c91c",
+      "atMs" : 1790817180000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000111",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_ff82a2c2c91c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 205c",
+      "atMs" : 1790817420000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000112",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_6b9be13b205c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a358",
+      "atMs" : 1790817660000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000113",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_5459d757a358",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 7579",
+      "atMs" : 1790865600000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000114",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_95d9dead7579",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 77c4",
+      "atMs" : 1790865840000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000115",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_5050aade77c4",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0d8b",
+      "atMs" : 1790866080000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000116",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_d355cc000d8b",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 8f08",
+      "atMs" : 1790866320000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000117",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_2bd6aa178f08",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 2f2a",
+      "atMs" : 1790866560000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000118",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_df6f9d2e2f2a",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1ba7",
+      "atMs" : 1790866800000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000119",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e517ffed1ba7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a8ca",
+      "atMs" : 1790883000000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000120",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_4ce024fea8ca",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a405",
+      "atMs" : 1790883180000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000121",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_9184eee1a405",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1a10",
+      "atMs" : 1790883360000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000122",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_2cb49ca41a10",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 5814",
+      "atMs" : 1790883540000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000123",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_59c0f6e65814",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 3459",
+      "atMs" : 1790903100000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000124",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d33ac723459",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 9337",
+      "atMs" : 1790903340000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000125",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_b508c8529337",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0ef0",
+      "atMs" : 1790903580000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000126",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_6ad2b1e70ef0",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c91c",
+      "atMs" : 1790903820000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000127",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ff82a2c2c91c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 205c",
+      "atMs" : 1790904060000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000128",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_6b9be13b205c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist f035",
+      "atMs" : 1790952000000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000129",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_32df97b4f035",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 7579",
+      "atMs" : 1790952240000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000130",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_95d9dead7579",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 77c4",
+      "atMs" : 1790952480000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000131",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_5050aade77c4",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0d8b",
+      "atMs" : 1790952720000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000132",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_d355cc000d8b",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 8f08",
+      "atMs" : 1790952960000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000133",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2bd6aa178f08",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 2f2a",
+      "atMs" : 1790953200000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000134",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_df6f9d2e2f2a",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1396",
+      "atMs" : 1790969400000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000135",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_95f823c31396",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a8ca",
+      "atMs" : 1790969580000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000136",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_4ce024fea8ca",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a405",
+      "atMs" : 1790969760000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000137",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_9184eee1a405",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1a10",
+      "atMs" : 1790969940000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000138",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2cb49ca41a10",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c105",
+      "atMs" : 1790989500000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000139",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e44e89f6c105",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 3459",
+      "atMs" : 1790989740000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000140",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d33ac723459",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 9337",
+      "atMs" : 1790989980000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000141",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_b508c8529337",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0ef0",
+      "atMs" : 1790990220000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000142",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_6ad2b1e70ef0",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c91c",
+      "atMs" : 1790990460000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000143",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ff82a2c2c91c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bf98",
+      "atMs" : 1791064800000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000144",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_b4c366ddbf98",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0060",
+      "atMs" : 1791065100000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000145",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_9e601fbf0060",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist fdec",
+      "atMs" : 1791065400000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000146",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_de525748fdec",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist d67c",
+      "atMs" : 1791065700000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000147",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_2c8aa912d67c",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist e3cb",
+      "atMs" : 1791151200000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000148",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_ba4ee2efe3cb",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6981",
+      "atMs" : 1791151500000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000149",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_e3e836ed6981",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bf98",
+      "atMs" : 1791151800000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000150",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_b4c366ddbf98",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0060",
+      "atMs" : 1791152100000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000151",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_9e601fbf0060",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist b917",
+      "atMs" : 1791211200000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000152",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2b11b843b917",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bad2",
+      "atMs" : 1791211440000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000153",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_c47f2d82bad2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f21",
+      "atMs" : 1791211680000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000154",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_864189836f21",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist f035",
+      "atMs" : 1791211920000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000155",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_32df97b4f035",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 7579",
+      "atMs" : 1791212160000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000156",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_95d9dead7579",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 77c4",
+      "atMs" : 1791212400000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000157",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_5050aade77c4",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0060",
+      "atMs" : 1791228600000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000158",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_9e601fbf0060",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist fdec",
+      "atMs" : 1791228780000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000159",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_de525748fdec",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist d67c",
+      "atMs" : 1791228960000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000160",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_2c8aa912d67c",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1396",
+      "atMs" : 1791229140000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000161",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_95f823c31396",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a1d2",
+      "atMs" : 1791248700000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000162",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d96ac27a1d2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 56c7",
+      "atMs" : 1791248940000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000163",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e5da88ce56c7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f53",
+      "atMs" : 1791249180000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000164",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_bdeab8d16f53",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c105",
+      "atMs" : 1791249420000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000165",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e44e89f6c105",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 3459",
+      "atMs" : 1791249660000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000166",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d33ac723459",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 44ff",
+      "atMs" : 1791297600000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000167",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ce1a2fa144ff",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist b917",
+      "atMs" : 1791297840000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000168",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2b11b843b917",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bad2",
+      "atMs" : 1791298080000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000169",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_c47f2d82bad2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f21",
+      "atMs" : 1791298320000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000170",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_864189836f21",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist f035",
+      "atMs" : 1791298560000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000171",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_32df97b4f035",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 7579",
+      "atMs" : 1791298800000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000172",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_95d9dead7579",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bf98",
+      "atMs" : 1791315000000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000173",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_b4c366ddbf98",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0060",
+      "atMs" : 1791315180000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000174",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_9e601fbf0060",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist fdec",
+      "atMs" : 1791315360000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000175",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_de525748fdec",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist d67c",
+      "atMs" : 1791315540000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000176",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2c8aa912d67c",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a358",
+      "atMs" : 1791335100000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000177",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_5459d757a358",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a1d2",
+      "atMs" : 1791335340000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000178",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d96ac27a1d2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 56c7",
+      "atMs" : 1791335580000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000179",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_e5da88ce56c7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f53",
+      "atMs" : 1791335820000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000180",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_bdeab8d16f53",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c105",
+      "atMs" : 1791336060000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000181",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e44e89f6c105",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist befd",
+      "atMs" : 1791384000000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000182",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_24124669befd",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 44ff",
+      "atMs" : 1791384240000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000183",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ce1a2fa144ff",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist b917",
+      "atMs" : 1791384480000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000184",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2b11b843b917",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bad2",
+      "atMs" : 1791384720000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000185",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_c47f2d82bad2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f21",
+      "atMs" : 1791384960000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000186",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_864189836f21",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist f035",
+      "atMs" : 1791385200000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000187",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_32df97b4f035",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6981",
+      "atMs" : 1791401400000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000188",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e3e836ed6981",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bf98",
+      "atMs" : 1791401580000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000189",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_b4c366ddbf98",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0060",
+      "atMs" : 1791401760000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000190",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_9e601fbf0060",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist fdec",
+      "atMs" : 1791401940000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000191",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_de525748fdec",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 205c",
+      "atMs" : 1791421500000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000192",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_6b9be13b205c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a358",
+      "atMs" : 1791421740000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000193",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_5459d757a358",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a1d2",
+      "atMs" : 1791421980000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000194",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_3d96ac27a1d2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 56c7",
+      "atMs" : 1791422220000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000195",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e5da88ce56c7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f53",
+      "atMs" : 1791422460000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000196",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_bdeab8d16f53",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1ba7",
+      "atMs" : 1791470400000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000197",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e517ffed1ba7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist befd",
+      "atMs" : 1791470640000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000198",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_24124669befd",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 44ff",
+      "atMs" : 1791470880000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000199",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ce1a2fa144ff",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist b917",
+      "atMs" : 1791471120000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000200",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_2b11b843b917",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bad2",
+      "atMs" : 1791471360000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000201",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_c47f2d82bad2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6f21",
+      "atMs" : 1791471600000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000202",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_864189836f21",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist e3cb",
+      "atMs" : 1791487800000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000203",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ba4ee2efe3cb",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6981",
+      "atMs" : 1791487980000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000204",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_e3e836ed6981",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bf98",
+      "atMs" : 1791488160000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000205",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_b4c366ddbf98",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0060",
+      "atMs" : 1791488340000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000206",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_9e601fbf0060",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c91c",
+      "atMs" : 1791507900000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000207",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ff82a2c2c91c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 205c",
+      "atMs" : 1791508140000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000208",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_6b9be13b205c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a358",
+      "atMs" : 1791508380000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000209",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_5459d757a358",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a1d2",
+      "atMs" : 1791508620000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000210",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d96ac27a1d2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 56c7",
+      "atMs" : 1791508860000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000211",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e5da88ce56c7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 2f2a",
+      "atMs" : 1791556800000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000212",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_df6f9d2e2f2a",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a405",
+      "atMs" : 1791556800000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000218",
+      "ord" : 1,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_9184eee1a405",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1ba7",
+      "atMs" : 1791557040000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000213",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e517ffed1ba7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist befd",
+      "atMs" : 1791557280000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000214",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_24124669befd",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 44ff",
+      "atMs" : 1791557520000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000215",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_ce1a2fa144ff",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist b917",
+      "atMs" : 1791557760000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000216",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2b11b843b917",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bad2",
+      "atMs" : 1791558000000,
+      "carPlay" : null,
+      "ctx" : {
+        "destination" : "plc_8899aabbccddeeff",
+        "kind" : "trip",
+        "origin" : "plc_0f1e2d3c4b5a6978",
+        "tripId" : "trp_3c9a0b1d2e4f5a6b"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000217",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_c47f2d82bad2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist ac52",
+      "atMs" : 1791574200000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000219",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_8b9caacdac52",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist e3cb",
+      "atMs" : 1791574380000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000220",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_ba4ee2efe3cb",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6981",
+      "atMs" : 1791574560000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000221",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_e3e836ed6981",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bf98",
+      "atMs" : 1791574740000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_8899aabbccddeeff"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000222",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_b4c366ddbf98",
+      "source" : "playlist",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0ef0",
+      "atMs" : 1791594300000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000223",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_6ad2b1e70ef0",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist c91c",
+      "atMs" : 1791594540000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000224",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_ff82a2c2c91c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 205c",
+      "atMs" : 1791594780000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.29999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000225",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "partial",
+      "songId" : "sng_6b9be13b205c",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a358",
+      "atMs" : 1791595020000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000226",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_5459d757a358",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist a1d2",
+      "atMs" : 1791595260000,
+      "carPlay" : true,
+      "ctx" : {
+        "destination" : "plc_0f1e2d3c4b5a6978",
+        "kind" : "trip",
+        "origin" : "plc_8899aabbccddeeff",
+        "tripId" : "trp_b6a5f4e2d1b0a9c3"
+      },
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000227",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_3d96ac27a1d2",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist e3cb",
+      "atMs" : 1791669600000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000228",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_ba4ee2efe3cb",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6981",
+      "atMs" : 1791669900000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000229",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_e3e836ed6981",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist bf98",
+      "atMs" : 1791670200000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000230",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_b4c366ddbf98",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0060",
+      "atMs" : 1791670500000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000231",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_9e601fbf0060",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6981",
+      "atMs" : 1791691200000,
+      "carPlay" : null,
+      "ctx" : null,
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000232",
+      "ord" : 0,
+      "originInstallId" : "0D9E8F7A-1111-4000-8000-00000000BBBB",
+      "outcome" : "completed",
+      "songId" : "sng_e3e836ed6981",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 5814",
+      "atMs" : 1791756000000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000233",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_59c0f6e65814",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist ac52",
+      "atMs" : 1791756300000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000234",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_8b9caacdac52",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist e3cb",
+      "atMs" : 1791756600000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000235",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_ba4ee2efe3cb",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 6981",
+      "atMs" : 1791756900000,
+      "carPlay" : null,
+      "ctx" : {
+        "kind" : "place",
+        "placeId" : "plc_0f1e2d3c4b5a6978"
+      },
+      "fraction" : null,
+      "id" : "00000000-0000-4000-8000-000000000236",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "unknown",
+      "songId" : "sng_e3e836ed6981",
+      "source" : "browser",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 77c4",
+      "atMs" : 1791816000000,
+      "carPlay" : null,
+      "ctx" : null,
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000237",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_5050aade77c4",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 0d8b",
+      "atMs" : 1791816240000,
+      "carPlay" : null,
+      "ctx" : null,
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000238",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_d355cc000d8b",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 8f08",
+      "atMs" : 1791816480000,
+      "carPlay" : null,
+      "ctx" : null,
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000239",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_2bd6aa178f08",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 2f2a",
+      "atMs" : 1791816720000,
+      "carPlay" : null,
+      "ctx" : null,
+      "fraction" : 0.14999999999999999,
+      "id" : "00000000-0000-4000-8000-000000000240",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "skipped",
+      "songId" : "sng_df6f9d2e2f2a",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist 1ba7",
+      "atMs" : 1791816960000,
+      "carPlay" : null,
+      "ctx" : null,
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000241",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_e517ffed1ba7",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    },
+    {
+      "artist" : "Artist befd",
+      "atMs" : 1791817200000,
+      "carPlay" : null,
+      "ctx" : null,
+      "fraction" : 0.96999999999999997,
+      "id" : "00000000-0000-4000-8000-000000000242",
+      "ord" : 0,
+      "originInstallId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "outcome" : "completed",
+      "songId" : "sng_24124669befd",
+      "source" : "mix",
+      "tzOffsetMin" : -420
+    }
+  ],
+  "installId" : "6F1C2D3E-0000-4000-8000-00000000AAAA",
+  "places" : [
+    {
+      "id" : "plc_0f1e2d3c4b5a6978",
+      "label" : "Location A",
+      "rank" : 1,
+      "share" : 0.623
+    },
+    {
+      "id" : "plc_8899aabbccddeeff",
+      "label" : "Location B",
+      "rank" : 2,
+      "share" : 0.27100000000000002
+    }
+  ],
+  "sentAtMs" : 1791831600000,
+  "trips" : [
+    {
+      "destination" : "plc_8899aabbccddeeff",
+      "id" : "trp_3c9a0b1d2e4f5a6b",
+      "label" : "A → B",
+      "occurrences" : 15,
+      "origin" : "plc_0f1e2d3c4b5a6978"
+    },
+    {
+      "destination" : "plc_0f1e2d3c4b5a6978",
+      "id" : "trp_b6a5f4e2d1b0a9c3",
+      "label" : "B → A",
+      "occurrences" : 14,
+      "origin" : "plc_8899aabbccddeeff"
+    }
+  ],
+  "v" : 1
+}
