@@ -901,7 +901,13 @@ private struct DeckView: View {
         HStack(spacing: 8) {
             Text("Deck \(deck.rawValue)")
                 .font(.headline).foregroundStyle(Theme.fg)
-            if engine.isBuffering(deck) { bufferingBadge }
+            if engine.isBuffering(deck) {
+                bufferingBadge
+            } else if let h = engine.stemHandover(deck) {
+                // A stem handover waiting for its incoming voice — the outgoing one plays on.
+                MixBufferingBadge(text: h == .toStems ? "Loading stems…" : "Loading full mix…",
+                                  a11yId: "\(a11y)-stems-pending")
+            }
             Spacer()
             sourceMenu
         }
@@ -2372,18 +2378,18 @@ private struct SecondaryClick: NSViewRepresentable {
 }
 #endif
 
-/// The stem-mode toggle (between Sync and Reset, shown only for a track that HAS stems). TAP enters
-/// stem mode — burning the 4 stems locally first if they aren't already (a brief spinner) — or exits
-/// it. Accent-filled + "selected" while on.
+/// The stem-mode toggle (between Sync and Reset, shown only for a track that HAS stems). TAP asks
+/// for stem mode or leaves it — the ENGINE owns the rest (`MixEngine.setStemMode`): stems not on
+/// disk stream in while the full mix keeps playing (a spinner until it hands over), and a second
+/// tap while they load cancels. Accent-filled + "selected" while wanted.
 private struct StemModeButton: View {
     let deck: MixEngine.Deck
     let engine: MixEngine
     let songId: String
     let compact: Bool          // iPhone portrait → icon-only (cramped two-deck row)
     let a11y: String
-    @Environment(BurnStore.self) private var burns
-    @Environment(ProfileSourceStore.self) private var profileSource: ProfileSourceStore?
-    @State private var burning = false
+    /// A handover is in flight (stems loading, or the full mix catching up).
+    private var loading: Bool { engine.stemHandover(deck) != nil }
 
     var body: some View {
         let on = engine.stemModeOn(deck)
@@ -2398,7 +2404,7 @@ private struct StemModeButton: View {
                 .foregroundStyle(on ? Theme.accent : Theme.fgDim)
         }
         .buttonStyle(.plain)
-        .disabled(burning || songId.isEmpty)
+        .disabled(songId.isEmpty)
         .help(on ? "Stem mode on — tap to exit"
                  : "Split this track into stems (vocals · drums · bass · other) for live mixing")
         .accessibilityIdentifier(a11y)
@@ -2406,7 +2412,7 @@ private struct StemModeButton: View {
     }
 
     @ViewBuilder private func label(on: Bool) -> some View {
-        if burning {
+        if loading {
             HStack(spacing: 4) { ProgressView().controlSize(.mini); if !compact { Text("Stems") } }
         } else if compact {
             Image(systemName: "square.split.2x2")
@@ -2415,21 +2421,7 @@ private struct StemModeButton: View {
         }
     }
 
-    private func toggle() {
-        if engine.stemModeOn(deck) { engine.setStemMode(false, on: deck); return }
-        // A "Pocket DJ" profile item's stems are already on disk (no burn) — enter stem mode directly.
-        if ProfileSourceStore.isProfileSongId(songId), profileSource?.stemURLs(id: songId) != nil {
-            engine.setStemMode(true, on: deck); return
-        }
-        // Stems must be BURNED locally to play (no streaming). Burn first if needed, then enter.
-        if burns.stemsBurned(forSong: songId) { engine.setStemMode(true, on: deck); return }
-        burning = true
-        Task {
-            _ = await burns.burnStems(forSong: songId)
-            burning = false
-            engine.setStemMode(true, on: deck)
-        }
-    }
+    private func toggle() { engine.setStemMode(!engine.stemModeOn(deck), on: deck) }
 }
 
 /// One pad in a deck's 2×2 stem grid (visible only in stem mode). TAP toggles MUTE (the pad greys

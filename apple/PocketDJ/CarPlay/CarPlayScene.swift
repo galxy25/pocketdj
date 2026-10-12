@@ -147,6 +147,10 @@ final class CarPlayController {
             _ = mix.fxGlideEnabled
             _ = mix.mixGlideEnabled
             _ = mix.onAirBuffering        // streaming: the live row's "Buffering…" detail
+            // The Stems row's "Loading…": a handover landing leaves `stemModeOn` unchanged (the
+            // intent never moved), so the pending state itself must re-render the tab.
+            _ = mix.stemHandover(.a)
+            _ = mix.stemHandover(.b)
             // The download run's progress renders on the setup card (and arms the zero-start),
             // so its facts re-render the tab too.
             if let d = model.services.mixDownloader {
@@ -210,7 +214,7 @@ final class CarPlayController {
                    model.crateName(mixDeckA) ?? "", model.crateName(mixDeckB) ?? "",
                    fx, "\(model.mixRate())", "\(model.mixPitch())",
                    model.mixInTransition() ? "1" : "0",
-                   model.stemModeOn() ? "1" : "0", stemMutes,
+                   model.stemModeOn() ? "1" : "0", model.stemsLoading() ? "1" : "0", stemMutes,
                    model.mixBuffering() ? "1" : "0"]
             .joined(separator: "|")
         guard sig != lastMixSignature else { return }
@@ -470,7 +474,7 @@ final class CarPlayController {
     /// matching TV's exact one-tap semantics — see `CarPlayModel.toggleStemMute`).
     private func mixStemsSection(_ model: CarPlayModel) -> CPListSection {
         let stemsOn = model.stemModeOn()
-        let mode = CPListItem(text: "Stems", detailText: stemsOn ? "On" : "Off")
+        let mode = CPListItem(text: "Stems", detailText: model.stemsLoading() ? "Loading…" : (stemsOn ? "On" : "Off"))
         mode.handler = { [weak self] _, completion in
             model.setStemMode(!stemsOn); self?.refreshMixTab(); completion()
         }

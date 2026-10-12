@@ -901,7 +901,9 @@ struct TVMixControlsRow: View {
                 Button {
                     engine.setStemMode(!stemsOn, on: deck)
                 } label: {
-                    Label("Stems", systemImage: "square.stack.3d.up")
+                    // A pending handover says so — the full mix plays on until the stems land.
+                    Label(engine.stemHandover(deck) == .toStems ? "Loading stems…" : "Stems",
+                          systemImage: "square.stack.3d.up")
                         .lineLimit(1)
                         .foregroundStyle(stemsOn ? Theme.accent : Theme.fg)
                 }
