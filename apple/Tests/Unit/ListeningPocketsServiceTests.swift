@@ -508,7 +508,12 @@ final class ListeningPocketsServiceTests: XCTestCase {
         XCTAssertEqual(del.value(forHTTPHeaderField: "Authorization"), "Bearer the-key")
         XCTAssertEqual(del.value(forHTTPHeaderField: "X-PocketDJ-Profile"), "the-profile")
         XCTAssertEqual(del.value(forHTTPHeaderField: "X-PocketDJ-Enroll"), "enroll-secret")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: env.syncURL.path))
+        // The sync doc is rewritten holding ONLY the upload floor (no fingerprints, no profile).
+        let doc = try JSONDecoder().decode(ListeningPocketsService.SyncDoc.self,
+                                           from: Data(contentsOf: env.syncURL))
+        XCTAssertTrue(doc.sent.isEmpty)
+        XCTAssertNil(doc.profileId)
+        XCTAssertEqual(doc.uploadFloorMs, Self.nowMs)
         XCTAssertFalse(FileManager.default.fileExists(atPath: env.cacheURL.path))
         XCTAssertNil(env.svc.results)
         XCTAssertTrue(env.svc.acknowledgedFingerprints.isEmpty, "a re-enable re-uploads fresh")
