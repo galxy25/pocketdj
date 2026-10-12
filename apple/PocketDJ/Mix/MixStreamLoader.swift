@@ -130,6 +130,14 @@ final class MixStreamLoader {
     private(set) var streams: [String: Stream] = [:]
     /// Stem sets by base song id (live, finished or failed — a failed set is dropped on failure).
     private(set) var stemSets: [String: StemSet] = [:]
+    /// Who holds each live stem set: one token per ENGINE (`mixStemOwner` for every Mix deck —
+    /// the engine de-dups its own decks — `nowPlayingStemOwner` for the Now Playing DSP). A set
+    /// two engines joined is cancelled only once BOTH let go: before, Now Playing toggling its
+    /// stems off cancelled the transfer a Mix deck was still waiting on (and vice versa), and
+    /// since a cancel tells no one, that deck sat on "Loading stems…" for good.
+    private var stemOwners: [String: Set<String>] = [:]
+    nonisolated static let mixStemOwner = "mix"
+    nonisolated static let nowPlayingStemOwner = "nowplaying"
     private var recentStemFailures: [String: Date] = [:]
     private var recentFailures: [String: Date] = [:]
     /// The device has a usable network path (NWPathMonitor; optimistic until the first update).
@@ -267,10 +275,13 @@ final class MixStreamLoader {
     /// Begin (or join) streaming `songId`'s 4 stems, all at once (the engine can only switch
     /// once EVERY part has runway, so they must arrive together). Returns nil when it can't.
     @discardableResult
-    func openStems(_ songId: String) -> StemSet? {
+    func openStems(_ songId: String, owner: String = mixStemOwner) -> StemSet? {
         if let set = stemSets[songId], !set.failed {
             let files = set.parts.values.map { ($0.finalURL ?? $0.fileURL).path }
-            if !set.isComplete || files.allSatisfy({ FileManager.default.fileExists(atPath: $0) }) { return set }
+            if !set.isComplete || files.allSatisfy({ FileManager.default.fileExists(atPath: $0) }) {
+                stemOwners[songId, default: []].insert(owner)
+                return set
+            }
         }
         guard canStreamStems(songId), let remote = rips.stemURLs(forSong: songId) else { return nil }
         var parts: [String: Stream] = [:]
@@ -286,6 +297,7 @@ final class MixStreamLoader {
         }
         let set = StemSet(songId: songId, parts: parts)
         stemSets[songId] = set
+        stemOwners[songId] = [owner]
         recentStemFailures[songId] = nil
         for (s, url) in sources {
             streams[s.songId] = s
@@ -316,8 +328,15 @@ final class MixStreamLoader {
     /// ejected). Stem sets ride outside the song lane's `maxConcurrent` cap, so an abandoned set
     /// left running would compete with the on-air and next songs' streams for the whole ~32 MB.
     /// A completed set is kept (it's already adopted as burned stems); an incomplete one's files
-    /// are swept (a deck still reading leftovers keeps its open handles).
-    func cancelStems(_ songId: String) {
+    /// are swept (a deck still reading leftovers keeps its open handles). `owner` lets go of its
+    /// claim; the transfer stops only when no other engine still holds the set.
+    func cancelStems(_ songId: String, owner: String = mixStemOwner) {
+        stemOwners[songId]?.remove(owner)
+        if let others = stemOwners[songId], !others.isEmpty, stemSets[songId]?.isComplete == false {
+            DiagLog.shared.telemetry("mixstream", "stems release \(songId) by \(owner) — still held by \(others.sorted())")
+            return
+        }
+        stemOwners[songId] = nil
         guard let set = stemSets[songId], !set.isComplete else { return }
         for p in set.parts.values {
             cancelTransfer(p)
@@ -480,6 +499,7 @@ final class MixStreamLoader {
                 }
                 stemSets[base] = nil
             }
+            stemOwners[base] = nil
             streams[s.songId] = nil
             stemProgressed(base)
             return

@@ -3855,8 +3855,13 @@ final class MixEngine {
     /// on every event that can change the answer — the request itself, a stem/main stream pump,
     /// a fetch landing, a seek, the tick's underrun checks. Idempotent; never stops a voice that
     /// has no successor with runway.
+    ///
+    /// ONE FADE AT A TIME: while a handover crossfade is in flight this leaves the intent where
+    /// it is — the fade's landing re-runs it. Superseding a fade early (`cutTo…` settles it first)
+    /// stops its OUTGOING voice while the incoming one may still sit inside its start lead, not
+    /// yet rendering: up to `handoverLead` (60 ms) of dead air on a rapid toggle.
     private func advanceStemHandover(_ deck: Deck) {
-        guard let h = stemHandovers[deck], state(deck).loaded != nil, built else { return }
+        guard let h = stemHandovers[deck], state(deck).loaded != nil, built, stemFade[deck] == nil else { return }
         let pos = position(deck)
         switch h {
         case .toStems:
@@ -4106,13 +4111,16 @@ final class MixEngine {
             }
             guard let self, !Task.isCancelled, self.stemFadeGen[deck] == gen else { return }
             self.settleStemFade(deck)
+            self.advanceStemHandover(deck)       // the intent may have moved while it faded
         }
         stemFade[deck] = (toStems, task)
     }
 
     /// Land an in-flight handover crossfade NOW: the outgoing voice stops, both gains return to
     /// 1. Every path that stops, re-schedules or pauses a deck's voices calls this first, so no
-    /// transport action ever sees a half-faded deck. No-op when nothing is fading.
+    /// transport action ever sees a half-faded deck. No-op when nothing is fading. An intent that
+    /// moved during the fade (`advanceStemHandover` defers to it) is re-checked once the caller's
+    /// transport action has finished — a fade cut short by a pause must not strand it.
     private func settleStemFade(_ deck: Deck) {
         guard let f = stemFade.removeValue(forKey: deck) else { return }
         stemFadeGen[deck, default: 0] &+= 1
@@ -4124,6 +4132,13 @@ final class MixEngine {
             stopStemNodes(deck)
         }
         setVoiceGains(deck, main: 1, stems: 1)
+        if stemHandovers[deck] != nil {
+            let intent = stemIntentGen[deck] ?? 0
+            Task { @MainActor [weak self] in
+                guard let self, self.stemIntentGen[deck] == intent else { return }
+                self.advanceStemHandover(deck)
+            }
+        }
     }
 
     private func setVoiceGains(_ deck: Deck, main: Float, stems: Float) {

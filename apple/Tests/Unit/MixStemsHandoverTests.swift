@@ -352,23 +352,39 @@ final class MixStemsHandoverTests: XCTestCase {
         XCTAssertTrue(ok)
     }
 
-    /// Hammer the toggle on a PLAYING deck with stems on disk — every flip a live crossfade
-    /// superseding the last. The deck ends on exactly the voice the LAST tap asked for, with
-    /// one voice rendering and no dead air at any point.
+    /// Hammer the toggle on a PLAYING deck with stems on disk. The deck ends on exactly the voice
+    /// the LAST tap asked for, with one voice rendering and — judged at SAMPLE resolution, not in
+    /// ¼-second windows — no dead air at any point. (Before: a toggle mid-crossfade settled the
+    /// fade first, stopping its outgoing voice while the incoming one still sat in its 60 ms
+    /// start lead — up to 60 ms of silence the windowed probe couldn't see. Now a toggle mid-fade
+    /// only moves the intent; the fade's landing acts on it.)
     func testRapidTogglesLandOnTheLastIntentWithoutDeadAir() async throws {
         let rig = try rig(burned: ["rt"], lengths: ["rt": 12], streaming: false)
         let e = rig.engine
         try burnStems(rig, "rt")
         e.load(songId: "rt", title: "T", artist: "A", bpm: 120, camelot: "8A", key: nil, albumId: nil, on: .a)
         await playAndSettle(e)
+        let cap = e.captureForTesting(.a)
+        cap.start()
+        await capture(cap, atLeast: 0.2)
 
+        // Deterministic reversals INSIDE the incoming voice's start lead / the fade, both ways.
+        for gapMs in [0, 15, 40, 90] {
+            e.setStemMode(true, on: .a)
+            if gapMs > 0 { try? await Task.sleep(nanoseconds: UInt64(gapMs) * 1_000_000) }
+            e.setStemMode(false, on: .a)
+            await wait { !e.stemFadeInFlightForTesting(.a) && e.stemHandover(.a) == nil }
+            await capture(cap, atLeast: 0.1)
+        }
         for i in 0..<7 {
             e.setStemMode(i % 2 == 0, on: .a)                       // on, off, on, … on
             try? await Task.sleep(nanoseconds: UInt64.random(in: 0...40_000_000))
         }
-        let silent = await silentWindows(e, over: 1.0)
-        XCTAssertEqual(silent, 0, "no dead air through the toggling")
-        await wait { !e.stemFadeInFlightForTesting(.a) }
+        await wait { !e.stemFadeInFlightForTesting(.a) && e.stemHandover(.a) == nil }
+        await capture(cap, atLeast: 0.2)
+        let y = cap.stop()
+        let gap = longestSilence(y)
+        XCTAssertLessThan(gap, 88, "\(gap) samples (\(gap * 1000 / 44_100) ms) of dead air through the toggling")
         XCTAssertTrue(e.stemModeOn(.a))
         XCTAssertTrue(e.stemActive(.a), "the last tap asked for stems")
         XCTAssertNil(e.stemHandover(.a))

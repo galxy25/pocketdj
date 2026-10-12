@@ -225,6 +225,14 @@ final class NowPlayingStemsHandoverTests: XCTestCase {
         r.dsp.onReachedEnd = { ends += 1 }
         let cap = r.dsp.captureForTesting()
         cap.start()
+        // Deterministic reversals INSIDE the incoming voice's start lead / the fade, both ways.
+        for gapMs in [0, 15, 40, 90] {
+            r.dsp.setStemMode(true)
+            if gapMs > 0 { try? await Task.sleep(nanoseconds: UInt64(gapMs) * 1_000_000) }
+            r.dsp.setStemMode(false)
+            await StemAudioProbe.wait { !r.dsp.stemFadeInFlightForTesting() && r.dsp.stemHandover == nil }
+        }
+        XCTAssertFalse(r.dsp.stemsOnAir)
         for i in 0..<9 {
             r.dsp.setStemMode(i % 2 == 0)                                  // on, off, on, … on
             try? await Task.sleep(nanoseconds: UInt64.random(in: 0...50_000_000))
@@ -344,5 +352,93 @@ final class NowPlayingStemsHandoverTests: XCTestCase {
         XCTAssertNil(r.dsp.stemHandover)
         XCTAssertEqual(ends, 0)
         XCTAssertTrue(r.dsp.isPlaying)
+    }
+
+    // MARK: 6 — review fixes
+
+    /// A toggle mid-crossfade moves only the intent; a PAUSE before the fade lands settles it.
+    /// The moved intent must still be carried out — on a paused song, an outright switch — not
+    /// stranded as "Loading full mix…" with no monitor running to finish it. (Before: it stayed
+    /// pending until the next resume.)
+    func testPauseMidFadeStillCarriesOutTheMovedIntent() async throws {
+        let r = try rig("np9", remote: false, streaming: false)
+        try burnStems(r, "np9")
+        try await engage(r, "np9")
+        var ends = 0
+        r.dsp.onReachedEnd = { ends += 1 }
+        XCTAssertTrue(r.dsp.setStemMode(true))
+        XCTAssertTrue(r.dsp.stemFadeInFlightForTesting(), "precondition: a live crossfade")
+        XCTAssertTrue(r.dsp.setStemMode(false))
+        XCTAssertEqual(r.dsp.stemHandover, .toFullMix, "mid-fade: the intent moves, the fade runs on")
+        r.dsp.pause()
+        await StemAudioProbe.wait(timeout: 1) { r.dsp.stemHandover == nil }
+        XCTAssertNil(r.dsp.stemHandover, "the moved intent is carried out on the paused song")
+        XCTAssertFalse(r.dsp.stemsOnAir)
+        XCTAssertFalse(r.dsp.isPlaying)
+        r.dsp.resume()
+        await StemAudioProbe.wait { r.dsp.mainNodePlayingForTesting() }
+        XCTAssertTrue(r.dsp.mainNodePlayingForTesting(), "resumes on the full song")
+        XCTAssertFalse(r.dsp.stemNodesPlayingForTesting())
+        XCTAssertEqual(ends, 0)
+    }
+
+    /// One stem set, two engines: a Mix deck and Now Playing both joined the same song's stem
+    /// stream. Now Playing letting go (stems off) must not cancel the transfer the Mix deck still
+    /// waits on — a cancel tells no one, so that deck would sit on "Loading stems…" for good —
+    /// and the set goes only once BOTH have let go.
+    func testLettingGoOfStemsNeverCancelsAnotherEnginesStream() async throws {
+        let r = try rig("np10")
+        try await engage(r, "np10")
+        try streamStems(r, "np10", fraction: 0.03)
+        let mixSide = try XCTUnwrap(r.loader.openStems("np10", owner: MixStreamLoader.mixStemOwner), "a Mix deck joins")
+        XCTAssertTrue(r.dsp.setStemMode(true))
+        XCTAssertTrue(r.dsp.isStreamingStemsForTesting())
+        XCTAssertTrue(r.dsp.setStemMode(false))
+        XCTAssertFalse(r.dsp.isStreamingStemsForTesting(), "Now Playing let go")
+        XCTAssertTrue(r.loader.stemSet(for: "np10") === mixSide, "…but the Mix deck still holds the stream")
+        r.loader.cancelStems("np10", owner: MixStreamLoader.mixStemOwner)
+        XCTAssertNil(r.loader.stemSet(for: "np10"), "the last holder letting go cancels it")
+    }
+
+    /// The system STOPS the engine (a route change / sample-rate flip): the playhead holds where
+    /// the song was — not the current segment's start — and the configuration change restarts it
+    /// there, seamless from then on. (Before: nothing observed it — silence with `isPlaying` true,
+    /// and the position fell back to where the segment began, so a resume replayed the song.)
+    func testEngineStopRestartsAtThePlayhead() async throws {
+        let r = try rig("np11", remote: false, streaming: false)
+        try await engage(r, "np11")
+        var ends = 0
+        r.dsp.onReachedEnd = { ends += 1 }
+        await StemAudioProbe.wait { r.dsp.currentTime > 2 }
+        let before = r.dsp.currentTime
+        XCTAssertGreaterThan(before, 2)
+        r.dsp.simulateEngineStopForTesting(stopOnly: true)
+        XCTAssertEqual(r.dsp.currentTime, before, accuracy: 0.25, "the engine stopping doesn't rewind the playhead")
+        r.dsp.simulateEngineStopForTesting()
+        XCTAssertTrue(r.dsp.isPlaying)
+        let at = r.dsp.currentTime
+        XCTAssertEqual(at, before, accuracy: 0.3, "restarted at the playhead")
+        let cap = r.dsp.captureForTesting()
+        await StemAudioProbe.wait { r.dsp.currentTime > at + 0.2 }
+        cap.start()
+        await StemAudioProbe.capture(cap, atLeast: 0.6)
+        StemAudioProbe.assertSeamless(cap.stop(), against: try StemAudioProbe.decoded(try noiseMix), "after the restart")
+        XCTAssertGreaterThan(r.dsp.currentTime, before)
+        XCTAssertEqual(ends, 0)
+    }
+
+    /// An interruption pauses at the playhead and `.shouldResume` brings the song back there.
+    func testInterruptionPausesAtThePlayheadAndResumes() async throws {
+        let r = try rig("np12", remote: false, streaming: false)
+        try await engage(r, "np12")
+        await StemAudioProbe.wait { r.dsp.currentTime > 1.5 }
+        let before = r.dsp.currentTime
+        r.dsp.simulateInterruptionForTesting(began: true)
+        XCTAssertFalse(r.dsp.isPlaying, "paused for the interruption")
+        XCTAssertEqual(r.dsp.currentTime, before, accuracy: 0.25, "…at the playhead")
+        r.dsp.simulateInterruptionForTesting(began: false, shouldResume: true)
+        XCTAssertTrue(r.dsp.isPlaying)
+        await StemAudioProbe.wait { r.dsp.currentTime > before + 0.3 }
+        XCTAssertGreaterThan(r.dsp.currentTime, before + 0.3, "resumed from there")
     }
 }

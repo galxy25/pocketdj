@@ -201,8 +201,24 @@ final class NowPlayingDSP {
     /// rate-scaled; non-observable). Falls back to `pausedAt` while paused or before the scheduled
     /// voice has begun rendering — mirrors `MixEngine.truePlayhead`'s nil→`position` fallback.
     var currentTime: Double {
-        let t = (isPlaying ? livePlayhead() : nil) ?? pausedAt
+        let t = (isPlaying ? (livePlayhead() ?? anchoredPlayhead()) : nil) ?? pausedAt
         return min(max(0, t), duration)
+    }
+
+    /// The last live playhead reading paired with its render host time (refreshed by every
+    /// `livePlayhead` read, seeded at each start). It carries the playhead through a stretch the
+    /// render clock can't: the system STOPPED the engine (route change / interruption) and
+    /// `lastRenderTime` is nil — before, `currentTime` fell back to `pausedAt`, the position the
+    /// current SEGMENT started at, so a recovery (or a pending stem handover acting meanwhile)
+    /// restarted the song minutes back.
+    @ObservationIgnored private var playAnchor: (host: UInt64, song: Double)?
+
+    /// `playAnchor` projected to now at the deck's rate (never behind the anchor — inside a start
+    /// lead it reads the start position).
+    private func anchoredPlayhead() -> Double? {
+        guard let a = playAnchor else { return nil }
+        let dt = AVAudioTime.seconds(forHostTime: mach_absolute_time()) - AVAudioTime.seconds(forHostTime: a.host)
+        return a.song + max(0, dt) * _rate
     }
 
     /// The live render-clock playhead (song-relative seconds), or nil when the clock node isn't
@@ -217,7 +233,9 @@ final class NowPlayingDSP {
               let nodeTime = node.lastRenderTime,
               let pt = node.playerTime(forNodeTime: nodeTime),
               pt.sampleTime >= 0 else { return nil }
-        return segStartSongSeconds + Double(pt.sampleTime) / clockSR
+        let t = segStartSongSeconds + Double(pt.sampleTime) / clockSR
+        if nodeTime.isHostTimeValid { playAnchor = (nodeTime.hostTime, t) }
+        return t
     }
 
     /// True once the audio graph built + started (false on a headless host with no audio device —
@@ -305,6 +323,75 @@ final class NowPlayingDSP {
         // `isReady` false — the panel simply won't engage rather than crashing.
         do { try engine.start() } catch { return }
         built = true
+        registerEngineStopHandling()
+    }
+
+    // MARK: - The system stopping the engine (route change / interruption)
+    //
+    // An I/O configuration change (headphones ⇄ speaker ⇄ Bluetooth, a sample-rate flip) or an
+    // interruption (a call) STOPS this engine behind our back: `isPlaying` stayed true over dead
+    // air until the user tapped ⏸ ▶ twice — and both that resume and any stem handover acting
+    // meanwhile restarted from `pausedAt`, the CURRENT SEGMENT's start (now `playAnchor`).
+
+    @ObservationIgnored private var configChangeObserver: NSObjectProtocol?
+    @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
+    /// `.began` paused a PLAYING song — `.ended` (`.shouldResume`) resumes only that.
+    @ObservationIgnored private var interruptedWhilePlaying = false
+
+    private func registerEngineStopHandling() {
+        configChangeObserver = NotificationCenter.default.addObserver(
+            forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.handleEngineConfigurationChange() }
+        }
+        #if canImport(UIKit) && !os(macOS)
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] note in
+            guard let info = note.userInfo, let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+            let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
+                .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? true
+            MainActor.assumeIsolated { self?.handleInterruption(began: type == .began, shouldResume: shouldResume) }
+        }
+        #endif
+    }
+
+    /// The engine was stopped + reconfigured: restart the song AT its playhead (the graph is
+    /// pinned at the canonical format, so nothing needs re-wiring). A stem handover in flight
+    /// lands first; a pending one re-checks once the voices are back.
+    private func handleEngineConfigurationChange() {
+        guard isEngaged, isPlaying else { return }
+        let pos = currentTime
+        NPLog.trace("npdsp engine config change @\(String(format: "%.2f", pos))s — restarting")
+        settleStemFade()
+        guard pos < duration - 0.05 else { reportEndDeferred(true); return }   // `resume` would restart at 0:00
+        isPlaying = false
+        pausedAt = pos
+        resume()
+    }
+
+    private func handleInterruption(began: Bool, shouldResume: Bool) {
+        if began {
+            if isPlaying { interruptedWhilePlaying = true; pause() }
+        } else {
+            guard interruptedWhilePlaying, shouldResume, isEngaged, !isPlaying else {
+                interruptedWhilePlaying = false
+                return
+            }
+            interruptedWhilePlaying = false
+            resume()
+        }
+    }
+
+    /// TEST SEAM: the system stops the engine (`stopOnly`), and then — unless `stopOnly` — posts
+    /// its configuration change.
+    func simulateEngineStopForTesting(stopOnly: Bool = false) {
+        engine.stop()
+        if !stopOnly { handleEngineConfigurationChange() }
+    }
+    func simulateInterruptionForTesting(began: Bool, shouldResume: Bool = true) {
+        if began { engine.stop() }
+        handleInterruption(began: began, shouldResume: shouldResume)
     }
 
     // MARK: - Engage / disengage (the AVPlayer → DSP hand-off, driven by SetlistPlayer)
@@ -361,6 +448,8 @@ final class NowPlayingDSP {
         resetStemIntent()                       // stale-proofs any fetch/stream/fade (track change)
         stopVoices(main: true, stems: true)
         if engine.isRunning { engine.stop() }   // idle the graph so the AVPlayer owns audio alone
+        interruptedWhilePlaying = false
+        playAnchor = nil
         file = nil
         _stemMode = false
         fileRelease?(); fileRelease = nil
@@ -510,7 +599,8 @@ final class NowPlayingDSP {
     /// whole behind `stemIntentGen` — a completion for a superseded request (toggled off, a new
     /// track, disengaged) never claims anything.
     private func requestStemSource(_ songId: String) {
-        if let streamer, streamer.canStreamStems(songId), let set = streamer.openStems(songId) {
+        if let streamer, streamer.canStreamStems(songId),
+           let set = streamer.openStems(songId, owner: MixStreamLoader.nowPlayingStemOwner) {
             stemStream = set
             pumpStems()
             return
@@ -617,6 +707,7 @@ final class NowPlayingDSP {
             _stemMode = true
             _stemHandover = nil
             pausedAt = p
+            playAnchor = (start.hostTime, p)
             runStemFade(toStems: true, atHostTime: start.hostTime)
         } else {
             let from = stemFrontier == nil ? min(pos, maxStemSeconds()) : pos
@@ -659,6 +750,7 @@ final class NowPlayingDSP {
             _stemMode = false
             _stemHandover = nil
             pausedAt = p
+            playAnchor = (start.hostTime, p)
             runStemFade(toStems: false, atHostTime: start.hostTime)
         } else {
             stopVoices(main: false, stems: true)  // invalidate the lead stem's armed end, then flush
@@ -721,7 +813,10 @@ final class NowPlayingDSP {
 
     /// Land an in-flight crossfade NOW: the outgoing voice stops (its completion already stale —
     /// the cut bumped `generation`), both gains return to 1. Every path that stops, re-schedules
-    /// or pauses the voices calls this first. No-op when nothing is fading.
+    /// or pauses the voices calls this first. No-op when nothing is fading. An intent that moved
+    /// during the fade (`advanceStemHandover` defers to it) is re-checked once the caller's
+    /// transport action has finished — a fade cut short by a PAUSE must not strand it ("Loading
+    /// full mix…" on a paused song, with no monitor running to finish it).
     private func settleStemFade() {
         guard let f = stemFade else { return }
         stemFade = nil
@@ -729,6 +824,14 @@ final class NowPlayingDSP {
         f.task.cancel()
         if f.toStems { player.stop() } else { for n in stemNodes.values { n.stop() } }
         setVoiceGains(main: 1, stems: 1)
+        if _stemHandover != nil {
+            let intent = stemIntentGen
+            Task { @MainActor [weak self] in
+                guard let self, self.stemIntentGen == intent else { return }
+                self.advanceStemHandover()
+                self.refreshStemMonitor()
+            }
+        }
     }
 
     private func setVoiceGains(main: Float, stems: Float) {
@@ -753,7 +856,7 @@ final class NowPlayingDSP {
     private func releaseStemStream() {
         guard let set = stemStream else { return }
         stemStream = nil
-        if !set.isComplete { streamer?.cancelStems(set.songId) }
+        if !set.isComplete { streamer?.cancelStems(set.songId, owner: MixStreamLoader.nowPlayingStemOwner) }
     }
 
     /// Forget the stem INTENT entirely (track change / disengage / re-engage): stale-proof any
@@ -1047,7 +1150,8 @@ final class NowPlayingDSP {
         let voices: [AVAudioPlayerNode] = stemMode ? stemVoices() : [player]
         guard !voices.isEmpty else { isPlaying = false; pausedAt = min(max(0, pos), duration); return }
         // The voices sit upstream of the time-stretch: their timeline runs at the deck's rate.
-        StemSync.startTogether(voices, clocks: [inputMixer], lead: StemSync.startLead, rate: _rate)
+        let start = StemSync.startTogether(voices, clocks: [inputMixer], lead: StemSync.startLead, rate: _rate)
+        playAnchor = (start.hostTime, pos)
         // No `playStartHost` rebase: `currentTime` now rides the node render clock (rate-scaled,
         // drift-free). `pausedAt` seeds the pre-render fallback at the segment's start position.
         pausedAt = pos

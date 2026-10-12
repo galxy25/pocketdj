@@ -140,7 +140,7 @@ final class StemPlayer {
         isPlaying = false
     }
 
-    /// Schedule all loaded stems from `offset` and start them at ONE shared host time.
+    /// Schedule all loaded stems from `offset` and start them on ONE sample frame.
     private func startSynced(from offset: Double) {
         guard !files.isEmpty else { return }
         generation += 1
