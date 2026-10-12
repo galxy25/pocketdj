@@ -1,0 +1,80 @@
+{
+  "v": 1,
+  "generatedAtMs": 1760100300000,
+  "stale": false,
+  "algo": { "version": 1, "params": { "sessionGapMs": 1800000, "minRun": 3, "endOnConsecutiveSkips": 2 } },
+  "baseline": { "plays": 180, "windowDays": 90, "thin": false },
+  "labels": {
+    "places": [
+      { "id": "plc_0f1e2d3c4b5a6978", "rank": 1, "label": "Location A", "share": 0.62 },
+      { "id": "plc_8899aabbccddeeff", "rank": 2, "label": "Location B", "share": 0.27 }
+    ],
+    "trips": [
+      { "id": "trp_3c9a0b1d2e4f5a6b", "origin": "plc_0f1e2d3c4b5a6978", "destination": "plc_8899aabbccddeeff", "label": "A → B", "occurrences": 14 }
+    ]
+  },
+  "pockets": [
+    {
+      "id": "pk_5d41402abc4b", "startMs": 1760081940000, "endMs": 1760083140000, "tzOffsetMin": -420,
+      "localDate": "2025-10-10", "localStartHour": 7.65, "dow": 5, "dayType": "weekday", "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA", "memberCount": 4, "skippedCount": 1, "sessionPlays": 5,
+      "members": [
+        { "eventId": "0B7E0A52-1C1E-4F5B-9A11-2D3C4B5A6F70", "songId": "sng_1", "atMs": 1760081940000, "outcome": "completed" },
+        { "eventId": "0B7E0A52-1C1E-4F5B-9A11-2D3C4B5A6F71", "songId": "sng_2", "atMs": 1760082180000, "outcome": "completed" },
+        { "eventId": "0B7E0A52-1C1E-4F5B-9A11-2D3C4B5A6F72", "songId": "sng_6", "atMs": 1760082660000, "outcome": "completed" },
+        { "eventId": "0B7E0A52-1C1E-4F5B-9A11-2D3C4B5A6F73", "songId": "sng_4", "atMs": 1760083140000, "outcome": "unknown" }
+      ],
+      "ctx": { "kind": "trip", "tripId": "trp_3c9a0b1d2e4f5a6b", "origin": "plc_0f1e2d3c4b5a6978", "destination": "plc_8899aabbccddeeff" },
+      "features": [
+        { "dim": "trip", "value": "trp_3c9a0b1d2e4f5a6b", "label": "A → B", "share": 1.0, "baselineShare": 0.06, "lift": 16.7, "score": 2.81, "count": 4 },
+        { "dim": "timeBucket", "value": "morning", "label": "Morning", "share": 1.0, "baselineShare": 0.21, "lift": 4.76, "score": 1.56, "count": 4 },
+        { "dim": "artist", "value": "aria", "label": "Aria", "share": 0.5, "baselineShare": 0.1, "lift": 5.0, "score": 0.8, "count": 2 },
+        { "dim": "source", "value": "mix", "label": "Mix", "share": 1.0, "baselineShare": 0.35, "lift": 2.8, "score": 1.03, "count": 4 }
+      ],
+      "numeric": {
+        "bpm": { "center": 120, "lo": 110, "hi": 128, "coverage": 1.0, "dispersionRatio": 0.3, "baselineCenter": 104.0, "defining": true }
+      },
+      "harmonic": null,
+      "title": "Weekday morning · A → B · 110–128 BPM · Aria",
+      "patternId": "pt_9b2e61a0c7d4"
+    },
+    {
+      "id": "pk_7e2a11cc09f1", "startMs": 1759995540000, "endMs": 1759996260000, "tzOffsetMin": -420,
+      "localDate": "2025-10-09", "localStartHour": 7.6, "dow": 4, "dayType": "weekday", "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA", "memberCount": 3, "skippedCount": 0, "sessionPlays": 3,
+      "members": [
+        { "eventId": "1B7E0A52-1C1E-4F5B-9A11-2D3C4B5A6F70", "songId": "sng_2", "atMs": 1759995540000, "outcome": "completed" },
+        { "eventId": "1B7E0A52-1C1E-4F5B-9A11-2D3C4B5A6F71", "songId": "sng_1", "atMs": 1759995900000, "outcome": "completed" },
+        { "eventId": "1B7E0A52-1C1E-4F5B-9A11-2D3C4B5A6F72", "songId": "sng_6", "atMs": 1759996260000, "outcome": "completed" }
+      ],
+      "ctx": { "kind": "trip", "tripId": "trp_3c9a0b1d2e4f5a6b", "origin": "plc_0f1e2d3c4b5a6978", "destination": "plc_8899aabbccddeeff" },
+      "features": [
+        { "dim": "trip", "value": "trp_3c9a0b1d2e4f5a6b", "label": "A → B", "share": 1.0, "baselineShare": 0.06, "lift": 16.7, "score": 2.81, "count": 3 },
+        { "dim": "artist", "value": "aria", "label": "Aria", "share": 0.667, "baselineShare": 0.1, "lift": 6.67, "score": 1.26, "count": 2 }
+      ],
+      "numeric": {},
+      "harmonic": null,
+      "title": "Weekday morning · A → B · Aria",
+      "patternId": "pt_9b2e61a0c7d4"
+    }
+  ],
+  "patterns": [
+    {
+      "id": "pt_9b2e61a0c7d4", "key": "weekday|morning|trip:trp_3c9a0b1d2e4f5a6b|-",
+      "title": "Weekday mornings · A → B · 110–128 BPM · Aria",
+      "pocketIds": ["pk_5d41402abc4b", "pk_7e2a11cc09f1"], "occurrences": 2, "distinctDays": 2,
+      "firstMs": 1759995540000, "lastMs": 1760081940000, "dayType": "weekday", "timeBucket": "morning",
+      "ctx": { "kind": "trip", "tripId": "trp_3c9a0b1d2e4f5a6b", "origin": "plc_0f1e2d3c4b5a6978", "destination": "plc_8899aabbccddeeff" },
+      "features": [
+        { "dim": "trip", "value": "trp_3c9a0b1d2e4f5a6b", "label": "A → B", "share": 1.0, "baselineShare": 0.06, "lift": 16.7, "score": 2.81, "count": 7 },
+        { "dim": "timeBucket", "value": "morning", "label": "Morning", "share": 1.0, "baselineShare": 0.21, "lift": 4.76, "score": 1.56, "count": 7 },
+        { "dim": "artist", "value": "aria", "label": "Aria", "share": 0.571, "baselineShare": 0.1, "lift": 5.71, "score": 0.99, "count": 4 }
+      ],
+      "numeric": {
+        "bpm": { "center": 124, "lo": 110, "hi": 128, "coverage": 1.0, "dispersionRatio": 0.28, "baselineCenter": 104.0, "defining": true }
+      },
+      "harmonic": null,
+      "topSongs": [ { "songId": "sng_1", "plays": 2 }, { "songId": "sng_2", "plays": 2 }, { "songId": "sng_6", "plays": 2 }, { "songId": "sng_4", "plays": 1 } ]
+    }
+  ]
+}

@@ -359,6 +359,12 @@ final class SettingsStore {
     /// complete record than anything else here, and someone may reasonably want it to stay on the
     /// device while cloud recommendations stay on.
     var shareLifetimePlayCounts: Bool
+    /// "Find my listening pockets" (Settings ▸ Recommendations) — upload per-play outcomes
+    /// (finished / skipped, local time of day, surface) so the cloud can find the stretches
+    /// where you were in a groove. Sub-toggle of `recEngineEnabled` (it rides that consent and
+    /// that bearer key; with the engine off nothing is uploaded at all). Defaults TRUE under it —
+    /// the `shareLifetimePlayCounts` precedent: the engine itself is the deliberate opt-in.
+    var listeningPocketsEnabled: Bool
     /// HOW OFTEN History ▸ For You RE-RANKS ITSELF (Settings ▸ For You). Default WEEKLY — Friday
     /// 16:20 local, per the owner's ask. `.manual` preserves the shipped refresh-on-demand
     /// behaviour as an explicit choice; the ⋯ ▸ Refresh works under every cadence. Due-ness is
@@ -504,6 +510,7 @@ final class SettingsStore {
         self.amImportNewPlaylists = data.amImportNewPlaylists ?? false
         self.recEngineEnabled = data.recEngineEnabled ?? false
         self.shareLifetimePlayCounts = data.shareLifetimePlayCounts ?? true
+        self.listeningPocketsEnabled = data.listeningPocketsEnabled ?? true
         self.forYouRefreshCadence = data.forYouRefreshCadence
             .flatMap(ForYouRefreshCadence.init(rawValue:)) ?? ForYouRefreshSchedule.defaultCadence
         self.forYouRefreshMinutes = min(max(data.forYouRefreshMinutes ?? ForYouRefreshSchedule.defaultMinutes, 0), 1439)
@@ -702,7 +709,8 @@ final class SettingsStore {
             shareLifetimePlayCounts: shareLifetimePlayCounts,
             forYouRefreshCadence: forYouRefreshCadence.rawValue,
             forYouRefreshMinutes: forYouRefreshMinutes,
-            forYouRefreshWeekday: forYouRefreshWeekday)
+            forYouRefreshWeekday: forYouRefreshWeekday,
+            listeningPocketsEnabled: listeningPocketsEnabled)
         if let encoded = try? JSONEncoder().encode(snapshot) {
             defaults.set(encoded, forKey: SettingsStore.key)
         }
@@ -789,6 +797,7 @@ final class SettingsStore {
         amImportNewPlaylists = d.amImportNewPlaylists ?? false
         recEngineEnabled = d.recEngineEnabled ?? false
         shareLifetimePlayCounts = d.shareLifetimePlayCounts ?? true
+        listeningPocketsEnabled = d.listeningPocketsEnabled ?? true
         forYouRefreshCadence = d.forYouRefreshCadence
             .flatMap(ForYouRefreshCadence.init(rawValue:)) ?? ForYouRefreshSchedule.defaultCadence
         forYouRefreshMinutes = min(max(d.forYouRefreshMinutes ?? ForYouRefreshSchedule.defaultMinutes, 0), 1439)
@@ -952,6 +961,10 @@ struct SettingsData: Codable {
     var forYouRefreshMinutes: Int?
     /// Optional so older blobs still decode (coalesced to 6 = Friday, `Calendar` numbering).
     var forYouRefreshWeekday: Int?
+    /// Optional so older blobs still decode. Coalesced to TRUE at the read sites — see
+    /// `SettingsStore.listeningPocketsEnabled`; inert while the rec engine is off. Defaulted so
+    /// the memberwise call sites that predate it compile unchanged.
+    var listeningPocketsEnabled: Bool? = nil
 
     static let `default` = SettingsData(
         // No shipped default catalog source — same reasoning as the blank rip/jukebox URLs

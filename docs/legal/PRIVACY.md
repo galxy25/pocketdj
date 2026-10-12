@@ -69,6 +69,7 @@ These never leave your device unless you personally export or share them.
 | **Recorded mix sessions and rendered instrumentals** | A local recordings folder — the app container, or a folder you pick |
 | **Speech transcripts for the karaoke panel** | The local Demux document ([§8](#8-two-transcription-engines-and-why-the-difference-matters)) |
 | **The Now Playing widget snapshot** (title, artist, artwork, up-next) | A shared App Group container readable only by PocketDJ and its own widget |
+| **Places and trips** (only if you turn on "Use places & trips in pockets", iPhone only) — the places you spend time and the trips between them, learned from iOS visit reports | On device only, in a file that is excluded from backups and never synced. Raw visit coordinates are deleted after 30 days; each place keeps only a rounded centre point (about 11 m). Turning the setting off erases all of it. Only anonymous labels ever leave the device ([§4.6](#46-listening-history-recommendations-and-listening-pockets)). |
 | **The owner identity check** — a salted hash of your iCloud user id, used to decide whether two-way Apple Music favorites sync is permitted | Computed and compared in memory on device. Never transmitted anywhere. |
 | **Diagnostic capture** (Settings ▸ Debug) | An in-memory buffer while you have the toggle on. Nothing auto-uploads. If you export it and send it to us, that is your action, and it may contain song titles and audio device names. |
 | **Cached catalog, artwork, and lyrics text** | On-device cache <!-- #TOUPDATE: FALSE AS WRITTEN. This row said "cleared from Settings ▸ Storage". It cannot be: the storage manager deletes DOWNLOADED MEDIA ONLY. apple/Tests/Unit/BurnStoreStorageTests.swift:9 states it outright — "Everything here deletes DOWNLOADED media only — there is deliberately no catalog or collections involvement to test, because the API never touches them." Either ship a catalog/artwork/lyrics cache-clear action in Settings ▸ Storage, or leave this row saying only where the cache lives. Do not name a control that does not exist. --> |
@@ -119,6 +120,28 @@ PocketDJ publishes a browsable catalog so people can see collections, tracklists
 ### 4.5 Server logs
 
 Our servers keep operational logs — request timing, errors, song ids, and for the jukebox, the text of guest requests. IP addresses reaching the jukebox are used for rate limiting. See [§11](#11-how-long-we-keep-things) for retention.
+
+### 4.6 Listening history, recommendations and listening pockets
+
+**Off by default.** Nothing in this section leaves your device unless you turn on **Settings ▸ Recommendations ▸ Use PocketDJ Recommendation Engine**.
+
+**The Recommendation Engine.** When it is on, PocketDJ sends your listening history (which songs you played and when), your favorites, your collection changes, your Gem Collector results, and (unless you turn off "Include lifetime play counts") your lifetime play counts to PocketDJ cloud services, which use them to compute your For You and suggested-collection lists. Your data is stored under a random key that only your devices hold, and the identifier it is filed under is derived from that key.
+
+**Listening pockets.** A listening pocket is a stretch where you played three or more songs in a row without skipping. With the engine on, **Find my listening pockets** is also on unless you turn it off. It sends, for each play:
+
+- the song id, and when it started, rounded down to the minute;
+- your time-zone offset at the time, so the analysis can use your local time of day;
+- whether you finished it or skipped it, and how much of it played;
+- where in the app you played it (for example Mix or a playlist) and whether CarPlay was connected;
+- the artist name shown for it.
+
+Our servers use this to find your pockets and describe what they have in common, such as the genre, the tempo range, the time of day, and the place or trip.
+
+**Places and trips, if you turn them on.** On iPhone, a separate setting, **Use places & trips in pockets**, is off by default and needs pockets to be on. It uses iOS visit reports to learn, on your device, which of your places you were at during a play or that you were travelling between two of them. Your places are numbered by how much time you spend at each (Location A, Location B, …) and are never identified as home, work, or an address. What is uploaded is only the anonymous label for each play: a random place id, or a random trip id with its starting and ending place ids, plus the "Location A"-style names. **Your raw location never leaves your device.** Raw visit data is deleted from the device after 30 days, and turning the setting off erases all place data from the device.
+
+**Turning things off.** Turning the engine or pockets off stops all uploads. Data already uploaded stays on our servers until you choose **Delete cloud data** ([§13](#13-deleting-your-data-and-your-account)), so that turning a switch off and on again doesn't erase your history.
+
+<!-- #TOUPDATE: OPEN DECISION (Levi) — the App Store privacy label and PrivacyInfo.xcprivacy. Opaque place/trip ids derived from location are arguably "Coarse Location, linked, App Functionality, not tracking". The manifest was deliberately NOT changed in this pass; decide, then update the manifest, Appendix B, and §10/§12.1 together. -->
 
 ---
 
@@ -248,7 +271,7 @@ A host can optionally let guests hear the current track on their own phones. It 
 - We do not track you across other companies' apps and websites. The app declares no tracking and no tracking domains, and requests no tracking permission.
   <!-- #TOUPDATE: the behavioral half is true — there is no tracking SDK in the binary. The DECLARATION half is not: NOTHING IS DECLARED AT ALL. There is no `.xcprivacy` in either target (`find apple -name "*.xcprivacy" -not -path "*/build*"` → nothing; the only hits are ZIPFoundation's own manifest inside build output) and no `NSPrivacyTracking` key anywhere in the repo. "Declares no tracking" asserts the existence of a file that does not exist. The manifest is NOT optional here — the app uses UserDefaults (`pdj.settings.v1`) and file timestamps, both API-declaration categories. Ship the manifests (Appendix B) or drop the clause. Appendix B repeats this claim and is at least covered by its own block marker; this one was bare, in the most quotable list in the document. -->
 - We do not run ads.
-- We do not collect your location, contacts, health, financial, or browsing data.
+- We do not collect your location, contacts, health, financial, or browsing data. Your raw location is never collected. If you turn on places & trips for listening pockets, we receive anonymous place and trip ids, such as "Location A" or "A → B", and never coordinates ([§4.6](#46-listening-history-recommendations-and-listening-pockets)).
 - We do not auto-upload diagnostics or crash reports to ourselves.
 - We do not read your iCloud private database.
 - We do not copy audio out of Apple Music.
@@ -269,6 +292,9 @@ A host can optionally let guests hear the current track on their own phones. It 
 | Server logs | {{RETENTION_LOGS}} <!-- #TOUPDATE: must be true — logs have no rotation, no truncation, and no retention configuration of any kind. Pick a number AND ship the log rotation that enforces it. A stated retention period with no implementation is a false statement, not an aspiration. --> |
 | Catalog metadata you contributed | For as long as the catalog entry exists |
 | Data in your private iCloud database | Controlled by you, in your Apple Account, until you delete the app's iCloud data or turn sync off |
+| Listening-pocket play events (if on, [§4.6](#46-listening-history-recommendations-and-listening-pockets)) | 180 days from the play, then removed automatically. Deleted at once by **Delete cloud data**. |
+| Listening-pocket results (your pockets and recurring patterns) | Replaced each time they are recomputed. Deleted at once by **Delete cloud data**. |
+| Places and trips (on device only) | Raw visit data for 30 days; places you haven't visited for 180 days are forgotten; everything is erased when you turn the setting off |
 | Everything on your device | Until you delete it, or until the storage manager's least-recently-played cleanup removes it if you set a storage cap |
 
 ---
@@ -282,6 +308,7 @@ A host can optionally let guests hear the current track on their own phones. It 
 - **Export** — take your collections, playlists, and library out as a file at any time. That is your data portability route and it does not require asking us.
 - **Microphone and Apple Music permissions** — revocable at any time in iOS/macOS Settings.
 - **Online search** — off unless you turn it on.
+- **Settings ▸ Recommendations** — the Recommendation Engine, listening pockets, and places & trips each have their own switch. **Delete cloud data** erases what they uploaded, and **Erase location data** erases your places on the device.
 
 **Legal rights.** Depending on where you live — including under the EU GDPR, the UK GDPR, and US state privacy laws — you may have the right to access, correct, delete, export, or restrict our processing of your personal data, to object to processing based on legitimate interests, and to lodge a complaint with your data protection authority. Most of your data is on your device or in your own iCloud account, so you already control it directly. For anything we hold, write to {{CONTACT_EMAIL}} and we will respond within {{RESPONSE_SLA}}.
 <!-- #TOUPDATE: "For anything we hold, write to us" promises a rights pipeline that cannot currently be executed. Stored objects are SONG-KEYED AND SHARED (`rips/<songId>.mp3`), and the intake server has no user identity at all — one shared bearer token, empty by default (rip-server.mjs:49 `token: process.env.RIP_TOKEN || ''`; :1905 `if (!CFG.token) return true`). There is therefore no way to determine which objects are "yours", and deleting a song-keyed object deletes it for every other user holding the same song. An access or deletion request cannot be honored, and a portability request cannot be scoped. This is unblocked only by §4.2's per-user keys and per-user auth. Sibling DMCA §6's marker puts the same architecture problem harder: "architecturally impossible to implement as written." -->
@@ -292,11 +319,12 @@ GDPR Art. 13/14 wants these as a list, not spread across a flow table. In the ca
 
 - **Identifiers** — your profile identifier (a random UUID), your DJ display name, and for jukebox guests an IP address and a random browser identifier.
 - **User content** — audio you upload, import, or digitize; stems, analysis, and transcripts derived from it; your collections, playlists, setlists, and edits; jukebox request text.
-- **Usage data** — play history and play stats, and the now-playing/queue state published while a jukebox session is live.
+- **Usage data** — play history and play stats, and the now-playing/queue state published while a jukebox session is live. If you turn on the Recommendation Engine, it also covers whether each play was finished or skipped and its local time of day, for listening pockets ([§4.6](#46-listening-history-recommendations-and-listening-pockets)).
+- **Anonymous place and trip labels** — only if you turn on places & trips: random place and trip ids and "Location A"-style names, never coordinates.
 - **Search data** — Discover search terms and, if you turn it on, online catalog queries.
 - **Device data** — the device name attached to each synced record, and operational request metadata in server logs.
 
-We process no special-category data (Art. 9), no location, no contacts, no health or financial data, and no browsing history.
+We process no special-category data (Art. 9), no raw location (only the opt-in anonymous place and trip labels above), no contacts, no health or financial data, and no browsing history.
 
 **Whether you have to provide it (Art. 13(2)(e)).** None of this is a statutory requirement. Providing audio, a display name, or a jukebox request is a **contractual** necessity only in the narrow sense that the specific feature cannot function without it — if you do not upload audio, the cloud features simply do not run, and the rest of the app works. There is no consequence to declining beyond the loss of that feature.
 
@@ -341,6 +369,8 @@ PocketDJ does not require you to create an account with us. It creates a **profi
 
 **If you delete the app** without deleting your profile, your device copies go with it. Your private iCloud data stays in your Apple Account until you remove it (iOS Settings ▸ your name ▸ iCloud ▸ Manage Storage), and anything stored for you by PocketDJ cloud services stays until you ask us to delete it.
 <!-- #TOUPDATE: "stays until you ask us to delete it" implies a deletion path that can be executed on request. There is none — see the marker below, which applies to this sentence too. -->
+
+**Recommendation and listening-pocket data:** Settings ▸ Recommendations ▸ **Delete cloud data** deletes, in one action, everything the Recommendation Engine and listening pockets uploaded: your listening history, favorites, collection data, play events, and computed pockets. Your history on the device is not affected.
 
 **Either way, you can email {{CONTACT_EMAIL}} and ask us to delete everything we hold.** We will.
 <!-- #TOUPDATE: THE BOLDEST PROMISE IN THE DOCUMENT AND CURRENTLY THE LEAST KEEPABLE. It cannot be honored today, for a structural reason rather than a missing-feature reason: stored objects are SONG-KEYED AND SHARED (`rips/<songId>.mp3`, `rips/stems/<songId>/…`, `rips/analysis/<songId>.json`), and the intake server has NO USER IDENTITY — one shared bearer token, empty by default (rip-server.mjs:49; :1905 `if (!CFG.token) return true`). Two consequences, and the second is worse than the first: (1) we cannot determine which objects are "yours", so we cannot scope the deletion; (2) deleting a song-keyed object DELETES IT FOR EVERY OTHER USER holding that song, so honoring one person's request destroys other people's data.
@@ -425,6 +455,10 @@ Read this as the one-page version of §3 through §9.
 | Profile (random id + display name) | **Yes** | Your private iCloud database; display name also to the guest page while you host a jukebox | Yes |
 | Collections, playlists, edits, favorites, imported songs | **Yes** | Your private iCloud database (we cannot read it) | Yes |
 | Play history and play stats | **Yes** | Your private iCloud database. Also published to the guest page while a jukebox session is live. | Yes |
+| Listening history for recommendations (opt-in, [§4.6](#46-listening-history-recommendations-and-listening-pockets)) | **Yes**, only while the Recommendation Engine is on | PocketDJ cloud services (AWS, US) | Yes, under a random per-profile key |
+| Listening-pocket play events: song id, minute-rounded time, time-zone offset, finished/skipped and how much played, where in the app, CarPlay yes/no, artist | **Yes**, only while the engine and pockets are both on | Same | Same |
+| Anonymous place and trip ids and their "Location A"-style names | **Yes**, only while places & trips is also on (iPhone) | Same | Same |
+| Raw location (visit coordinates) | **No** | Device only, deleted after 30 days | — |
 | Owner identity hash | **No** | Computed and compared on device only | — |
 | Apple Music library reads and writes | **Yes** | Apple (your own account) | Yes |
 | Jukebox guest request text, guest identifier, guest IP | **Yes** (from the guest's device) | PocketDJ cloud services | No account; IP and identifier are personal data |
@@ -455,6 +489,7 @@ App Review rejects under Guideline 5.1.1 when the privacy label and the privacy 
 | Search History | §4.4 |
 | Usage Data ▸ Other + User Content ▸ Other | §4.5 (server logs — song ids, and jukebox request text) <!-- #TOUPDATE: MAPPING CORRECTED, VERIFY BEFORE FILING. This row previously mapped *Diagnostics ▸ Other* to §4.5 (server logs), which is very likely wrong: in Apple's definitions *Diagnostics* means crash, performance, and other diagnostic data collected FROM THE DEVICE — and §10 of this policy correctly says we collect none of that, so declaring Diagnostics would contradict our own text. Backend request logs containing song ids map to *Usage Data*, and the text of a guest's jukebox request is *User Content*. Confirm both against Apple's current category definitions in App Store Connect before filling the label, and make sure the guest-side entry is not overlooked simply because guests are not app users. --> |
 
+<!-- #TOUPDATE: listening pockets (§4.6) adds opt-in uploads of play outcomes (Usage Data ▸ Product Interaction) and anonymous place and trip ids derived from location. Whether those ids must be declared as Location ▸ Coarse Location (linked, App Functionality, not tracking) is Levi's open decision. Until it is made, "location" below is in question, and the label, PrivacyInfo.xcprivacy and this appendix must change together. -->
 **Declared not collected:** location, contacts, health, financial info, browsing history, advertising data, purchases, crash data, and — with the §3 exception stated in this policy — device-only microphone audio and on-device speech transcripts.
 
 **Three things to get right when transcribing the label:**
