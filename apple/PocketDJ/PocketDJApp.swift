@@ -925,7 +925,7 @@ struct PocketDJApp: App {
         // why its track ended (CarPlay ⏭ during an auto mix is `remoteSkip` → `.skip`).
         let mixOutcome = MixPlayOutcomeBridge(history: playHistory)
         mixOutcome.noteSkip = { [weak playCounts] id in playCounts?.noteSkipped(id) }
-        mix.onSongPlayed = { [weak playCounts, weak playHistory, weak mix, weak mixSessions, weak app] songId in
+        mix.onSongPlayed = { [weak playCounts, weak playHistory, weak mix, weak mixSessions, weak app] songId, deck in
             // The Mix decks play LOCAL files only — never Apple Music.
             playCounts?.notePlayed(songId, backend: .ripServer)
             guard let playHistory else { return }
@@ -933,10 +933,10 @@ struct PocketDJApp: App {
             let context = PlayHistoryStore.PlayContext(source: .mix, contextId: mixSessions?.currentId, contextName: name)
             let event = playHistory.record(songId: songId, title: app?.songsById[songId]?.name,
                                            artist: app?.songsById[songId]?.artist, context: context)
-            mixOutcome.notePlayed(songId: songId, event: event)
+            mixOutcome.notePlayed(deck: deck, songId: songId, event: event)
         }
-        mix.onDeckTrackEnded = { songId, played, duration, reason in
-            mixOutcome.noteTrackEnded(songId: songId, played: played, duration: duration, reason: reason)
+        mix.onDeckTrackEnded = { songId, played, duration, reason, deck in
+            mixOutcome.noteTrackEnded(deck: deck, songId: songId, played: played, duration: duration, reason: reason)
         }
         // The prune must never delete a file an engine holds OPEN: both Mix decks, the
         // inline/now-playing track, and the sequencer's current queue item are off-limits.
@@ -1500,6 +1500,11 @@ struct PocketDJApp: App {
         // `ctx` rides only while the places & trips TOGGLE is on — not merely while permission
         // happens to be granted (a revoked permission must not strip already-settled contexts).
         listeningPockets.locationOptedIn = { [weak listeningLocation] in listeningLocation?.isEnabled ?? false }
+        // Places & trips exist only to feed pockets: when pockets (or the engine) turn off, so does
+        // location — stop + erase, never collecting with nothing to feed. The launch check covers a
+        // gate that closed without the Settings toggles (a settings reset, an older build).
+        listeningPockets.onDisabled = { [weak listeningLocation] in listeningLocation?.setEnabled(false) }
+        if !listeningPockets.isEnabled, listeningLocation.isEnabled { listeningLocation.setEnabled(false) }
         // "Delete cloud data" erases the pockets state too, with the credential that erased the
         // rec state (awaited, so the button's completion means both are gone).
         recEngine.onDeleteCloudData = { [weak listeningPockets] key, profileId in
@@ -1841,6 +1846,11 @@ struct PocketDJApp: App {
                 .task { recEngine.startAutoFlush() }
                 // Listening-pockets auto-flush: same contract (idempotent, gated inside).
                 .task { listeningPockets.startAutoFlush() }
+                // …and the same gate, observed: any path that closes it (not only the Settings
+                // toggles, which also call `enabledDidChange`) turns places & trips off.
+                .onChange(of: listeningPockets.isEnabled) { _, on in
+                    if !on, listeningLocation.isEnabled { listeningLocation.setEnabled(false) }
+                }
                 // A stopped set never advances away, so its last track's fraction is reported
                 // here (the next play's arm would report it too — this just doesn't wait).
                 .onChange(of: setlistPlayer.isRunning) { _, running in

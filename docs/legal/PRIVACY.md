@@ -127,7 +127,7 @@ Our servers keep operational logs — request timing, errors, song ids, and for 
 
 **The Recommendation Engine.** When it is on, PocketDJ sends your listening history (which songs you played and when), your favorites, your collection changes, your Gem Collector results, and (unless you turn off "Include lifetime play counts") your lifetime play counts to PocketDJ cloud services, which use them to compute your For You and suggested-collection lists. Your data is stored under a random key that only your devices hold, and the identifier it is filed under is derived from that key.
 
-**Listening pockets.** A listening pocket is a stretch where you played three or more songs in a row without skipping. With the engine on, **Find my listening pockets** is also on unless you turn it off. It sends, for each play:
+**Listening pockets.** A listening pocket is a stretch where you played three or more songs in a row without skipping. Finding them is a separate switch, **Find my listening pockets**, which is off until you turn it on; with the engine on, PocketDJ offers it once in History ▸ Pockets. When you turn it on, it sends, for each play in the previous 90 days and from then on:
 
 - the song id, and when it started, rounded down to the minute;
 - your time-zone offset at the time, so the analysis can use your local time of day;
@@ -135,11 +135,13 @@ Our servers keep operational logs — request timing, errors, song ids, and for 
 - where in the app you played it (for example Mix or a playlist) and whether CarPlay was connected;
 - the artist name shown for it.
 
+Each upload also carries a random identifier for this installation of PocketDJ, so plays from your different devices are kept apart, and the device identifier PocketDJ attaches to all of its cloud requests (on iPhone and iPad it starts as Apple's identifier for this app vendor on this device).
+
 Our servers use this to find your pockets and describe what they have in common, such as the genre, the tempo range, the time of day, and the place or trip.
 
-**Places and trips, if you turn them on.** On iPhone, a separate setting, **Use places & trips in pockets**, is off by default and needs pockets to be on. It uses iOS visit reports to learn, on your device, which of your places you were at during a play or that you were travelling between two of them. Your places are numbered by how much time you spend at each (Location A, Location B, …) and are never identified as home, work, or an address. What is uploaded is only the anonymous label for each play: a random place id, or a random trip id with its starting and ending place ids, plus the "Location A"-style names. **Your raw location never leaves your device.** Raw visit data is deleted from the device after 30 days, and turning the setting off erases all place data from the device.
+**Places and trips, if you turn them on.** On iPhone, a separate setting, **Use places & trips in pockets**, is off by default and needs pockets to be on. It uses iOS visit reports to learn, on your device, which of your places you were at during a play or that you were travelling between two of them. Your places are numbered by how much time you spend at each (Location A, Location B, …) and are never identified as home, work, or an address. What is uploaded is the anonymous label for each play (a random place id, or a random trip id with its starting and ending place ids) and a summary of your places and trips: each place's "Location A"-style name and the share of your time spent there (for example 62%), and each trip's name (such as "A → B") and how many times you have made it. **Your raw location never leaves your device.** Raw visit data is deleted from the device after 30 days, and turning the setting off erases all place data from the device.
 
-**Turning things off.** Turning the engine or pockets off stops all uploads. Data already uploaded stays on our servers until you choose **Delete cloud data** ([§13](#13-deleting-your-data-and-your-account)), so that turning a switch off and on again doesn't erase your history.
+**Turning things off.** Turning the engine or pockets off stops all uploads, and also turns places & trips off and erases your places from the device. Data already uploaded stays on our servers until you choose **Delete cloud data** ([§13](#13-deleting-your-data-and-your-account)), so that turning a switch off and on again doesn't erase your history. After **Delete cloud data**, plays from before the deletion are never uploaded for listening pockets again; only plays after it are.
 
 <!-- #TOUPDATE: OPEN DECISION (Levi) — the App Store privacy label and PrivacyInfo.xcprivacy. Opaque place/trip ids derived from location are arguably "Coarse Location, linked, App Functionality, not tracking". The manifest was deliberately NOT changed in this pass; decide, then update the manifest, Appendix B, and §10/§12.1 together. -->
 
@@ -320,7 +322,7 @@ GDPR Art. 13/14 wants these as a list, not spread across a flow table. In the ca
 - **Identifiers** — your profile identifier (a random UUID), your DJ display name, and for jukebox guests an IP address and a random browser identifier.
 - **User content** — audio you upload, import, or digitize; stems, analysis, and transcripts derived from it; your collections, playlists, setlists, and edits; jukebox request text.
 - **Usage data** — play history and play stats, and the now-playing/queue state published while a jukebox session is live. If you turn on the Recommendation Engine, it also covers whether each play was finished or skipped and its local time of day, for listening pockets ([§4.6](#46-listening-history-recommendations-and-listening-pockets)).
-- **Anonymous place and trip labels** — only if you turn on places & trips: random place and trip ids and "Location A"-style names, never coordinates.
+- **Anonymous place and trip labels** — only if you turn on places & trips: random place and trip ids, "Location A"-style names, each place's share of your time and how often each trip was made, never coordinates.
 - **Search data** — Discover search terms and, if you turn it on, online catalog queries.
 - **Device data** — the device name attached to each synced record, and operational request metadata in server logs.
 
@@ -456,8 +458,8 @@ Read this as the one-page version of §3 through §9.
 | Collections, playlists, edits, favorites, imported songs | **Yes** | Your private iCloud database (we cannot read it) | Yes |
 | Play history and play stats | **Yes** | Your private iCloud database. Also published to the guest page while a jukebox session is live. | Yes |
 | Listening history for recommendations (opt-in, [§4.6](#46-listening-history-recommendations-and-listening-pockets)) | **Yes**, only while the Recommendation Engine is on | PocketDJ cloud services (AWS, US) | Yes, under a random per-profile key |
-| Listening-pocket play events: song id, minute-rounded time, time-zone offset, finished/skipped and how much played, where in the app, CarPlay yes/no, artist | **Yes**, only while the engine and pockets are both on | Same | Same |
-| Anonymous place and trip ids and their "Location A"-style names | **Yes**, only while places & trips is also on (iPhone) | Same | Same |
+| Listening-pocket play events: song id, minute-rounded time, time-zone offset, finished/skipped and how much played, where in the app, CarPlay yes/no, artist; with each upload, a random installation id and the device identifier | **Yes**, only while the engine and pockets are both on | Same | Same |
+| Anonymous place and trip ids, their "Location A"-style names, each place's share of your time, and how often each trip was made | **Yes**, only while places & trips is also on (iPhone) | Same | Same |
 | Raw location (visit coordinates) | **No** | Device only, deleted after 30 days | — |
 | Owner identity hash | **No** | Computed and compared on device only | — |
 | Apple Music library reads and writes | **Yes** | Apple (your own account) | Yes |

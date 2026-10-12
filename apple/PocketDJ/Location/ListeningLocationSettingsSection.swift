@@ -36,10 +36,12 @@ private struct ListeningLocationSettingsRows: View {
     var body: some View {
         // `revision` is read so place/trip lists recompute whenever the engine changes.
         let _ = store.revision
+        // Turning ON needs pockets; turning OFF is never blocked (an opt-out must always work —
+        // the app also turns this off itself whenever pockets close, see `onDisabled`).
         Toggle("Use places & trips in pockets", isOn: Binding(
             get: { store.isEnabled },
-            set: { store.setEnabled($0) }))
-            .disabled(!pocketsEnabled)
+            set: { on in if !on || pocketsEnabled { store.setEnabled(on) } }))
+            .disabled(!pocketsEnabled && !store.isEnabled)
             .accessibilityIdentifier("pockets-location-toggle")
 
         if store.isEnabled {
@@ -81,7 +83,7 @@ private struct ListeningLocationSettingsRows: View {
                 }
         }
 
-        Text("Your location never leaves this device. PocketDJ only learns which of your places, A, B, C…, you were at, or that you were travelling between them. Those anonymous labels can be included with your listening pockets.")
+        Text("Your location never leaves this device. PocketDJ only learns which of your places, A, B, C…, you were at, or that you were travelling between them. Those anonymous labels can be included with your listening pockets. Turning pockets off also turns this off and erases your places.")
             .font(.footnote).foregroundStyle(.secondary)
     }
 

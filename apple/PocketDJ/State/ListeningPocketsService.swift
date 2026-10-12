@@ -55,6 +55,10 @@ final class ListeningPocketsService {
     /// (the app wires the store's `isEnabled`, so a temporarily revoked permission doesn't strip
     /// contexts that were already settled while it was granted).
     @ObservationIgnored var locationOptedIn: (() -> Bool)?
+    /// Fired when the gate CLOSES (engine or pockets turned off). The app wires it to turn places
+    /// & trips off too: location collection exists only to feed pockets, so it must never keep
+    /// running (CLVisit relaunches, stored coordinates) with nothing to feed.
+    @ObservationIgnored var onDisabled: (() -> Void)?
     /// Supplies this install's id + device id for the batch envelope (test seam).
     @ObservationIgnored var deviceIdProvider: () -> String = { DeviceIdentity.current }
 
@@ -78,6 +82,9 @@ final class ListeningPocketsService {
     @ObservationIgnored var debounceNs: UInt64 = 5 * 1_000_000_000
 
     @ObservationIgnored private var isFlushing = false
+    /// True while "Delete cloud data" is awaiting its DELETE — no flush may start meanwhile, or a
+    /// batch could land on the server after the erase.
+    @ObservationIgnored private var isDeleting = false
     @ObservationIgnored private var flushTask: Task<Bool, Never>?
     /// Invalidation epoch (the RecommendationService pattern): bumped by a toggle, a delete or a
     /// local clear; an in-flight flush re-checks it after every await and abandons on a move.
@@ -94,6 +101,11 @@ final class ListeningPocketsService {
         /// Event UUID string → the fingerprint the server acknowledged.
         var sent: [String: String] = [:]
         var lastResultsGeneratedAtMs: Double?
+        /// Set by "Delete cloud data": plays before it never upload again. The erase is of
+        /// everything uploaded so far, and the dialog promises only FRESH data afterwards — without
+        /// this, clearing `sent` would make the next flush re-send the whole 90-day window. Survives
+        /// every reset except account deletion (`clearLocal`).
+        var uploadFloorMs: Double?
 
         init() {}
         init(from decoder: Decoder) throws {
@@ -102,6 +114,7 @@ final class ListeningPocketsService {
             profileId = (try? c.decodeIfPresent(String.self, forKey: .profileId)) ?? nil
             sent = (try? c.decode([String: String].self, forKey: .sent)) ?? [:]
             lastResultsGeneratedAtMs = (try? c.decodeIfPresent(Double.self, forKey: .lastResultsGeneratedAtMs)) ?? nil
+            uploadFloorMs = (try? c.decodeIfPresent(Double.self, forKey: .uploadFloorMs)) ?? nil
         }
     }
 
@@ -160,6 +173,13 @@ final class ListeningPocketsService {
     }
 
     // MARK: - Gate
+
+    /// What turning pockets on sends — shown wherever the user can turn it on (Settings and the
+    /// one-time offer in History ▸ Pockets), so the switch is never flipped blind.
+    static let consentText = "Turning this on sends, for each play in the last 90 days and from now on: the song and its artist, "
+        + "when it started (to the minute) and your time-zone offset, whether you finished or skipped it, "
+        + "where in the app you played it, and whether CarPlay was connected. PocketDJ uses it to find the "
+        + "stretches where you were in a groove."
 
     /// UI-test seam: canned results, zero network. Requires BOTH env vars (the rec fixture rule).
     nonisolated static let fixtureOnEnv: Bool = {
@@ -226,6 +246,7 @@ final class ListeningPocketsService {
             autoFlushTask?.cancel(); autoFlushTask = nil
             debounceTask?.cancel(); debounceTask = nil
             syncError = nil
+            onDisabled?()
         }
     }
 
@@ -236,7 +257,7 @@ final class ListeningPocketsService {
     /// when anything was sent. Returns whether anything was sent.
     @discardableResult
     func flushNow() async -> Bool {
-        guard isEnabled, !fixtureOn, !isFlushing else { return false }
+        guard isEnabled, !fixtureOn, !isFlushing, !isDeleting else { return false }
         isFlushing = true
         let epoch = flushEpoch
         let task = Task { [weak self] () -> Bool in
@@ -258,10 +279,12 @@ final class ListeningPocketsService {
         if sync.profileId != creds.profileId {
             // A different identity (first run, key rebind, migration): nothing it acknowledged
             // is on THIS profile's server state — start the fingerprints over.
+            let floor = sync.uploadFloorMs
             sync = SyncDoc()
             sync.profileId = creds.profileId
+            sync.uploadFloorMs = floor
         }
-        let floorMs = nowMs - Self.windowDays * 86_400_000
+        let floorMs = max(nowMs - Self.windowDays * 86_400_000, sync.uploadFloorMs ?? 0)
         let window = history.events.filter { $0.playedAt >= floorMs }
             .sorted { $0.playedAt < $1.playedAt }
         // Prune the ack map to the window — the floor is what bounds it.
@@ -472,7 +495,11 @@ final class ListeningPocketsService {
     @discardableResult
     func deleteCloudData(key: String, profileId: String) async -> Bool {
         flushEpoch &+= 1
+        // No flush may START while the DELETE is in flight either (the auto loop keeps ticking).
+        isDeleting = true
+        defer { isDeleting = false }
         if let inflight = flushTask { _ = await inflight.value }   // no batch may land after the DELETE
+        let erasedAtMs = nowMs
         do {
             try await client.deleteState(key: key, profileId: profileId)
         } catch ListeningPocketsClient.ClientError.notFound {
@@ -482,6 +509,9 @@ final class ListeningPocketsService {
             return false
         }
         resetLocalState()
+        // "Fresh data from now on": plays before the erase stay off the server for good.
+        sync.uploadFloorMs = max(sync.uploadFloorMs ?? 0, erasedAtMs)
+        persistSync()
         return true
     }
 
@@ -507,6 +537,8 @@ final class ListeningPocketsService {
 
     /// Fingerprints acknowledged so far (tests).
     var acknowledgedFingerprints: [String: String] { sync.sent }
+    /// Plays before this never upload (set by "Delete cloud data"; tests).
+    var uploadFloorMs: Double? { sync.uploadFloorMs }
 
     private func persistSync() {
         if let data = try? JSONEncoder().encode(sync) { try? data.write(to: syncFileURL, options: .atomic) }

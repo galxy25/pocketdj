@@ -310,9 +310,61 @@ final class ListeningPlaceEngineTests: XCTestCase {
         off.trackingStartedAt = nil
         XCTAssertEqual(off.lookup(at: at(4), now: at(30)), .unavailable)
 
-        // Inside an open stay (still there) → that place, up to now.
+        // Inside an OPEN stay: recent → pending (its departure may yet be back-dated over it;
+        // settling is write-once); past the horizon with the stay still open → that place.
         stay(&e, A, 17.5, nil, ids: ids, now: 20)
-        XCTAssertEqual(e.lookup(at: at(19.5), now: at(20)), .settled(.place(placeId(e, at: 4, now: 30)!)))
+        XCTAssertEqual(e.lookup(at: at(19.5), now: at(20)), .pending)
+        XCTAssertEqual(e.lookup(at: at(19.5), now: at(25.6)), .settled(.place(placeId(e, at: 4, now: 30)!)))
+    }
+
+    /// The commute the write-once settle must not get wrong: A's arrival is known, its departure
+    /// lands late and back-dated, and plays on the way to B are a TRIP — never "at A".
+    func testRecentTimeInsideAnOpenStayWaitsForTheDepartureThenSettlesAsTheTrip() {
+        var e = engine(); let ids = IdGen()
+        stay(&e, A, 7, nil, ids: ids, now: 7.1)                         // 07:00 arrived at A, still open
+        // 08:10 / 08:20 auto-flushes while the user drives (phone locked, nothing delivered yet).
+        XCTAssertEqual(e.lookup(at: at(8.08), now: at(8.17)), .pending, "not settled as A while A is open")
+        XCTAssertEqual(e.lookup(at: at(8.08), now: at(8.33)), .pending)
+        // 08:40: B's arrival is delivered BEFORE A's departure — A's end is only a guess (B's start).
+        stay(&e, B, 8.6, nil, ids: ids, now: 8.67)
+        XCTAssertEqual(e.timeline.first?.endIsEstimate, true)
+        XCTAssertEqual(e.lookup(at: at(8.08), now: at(8.67)), .pending, "a clamped end is not a departure")
+        // Then A's departure lands, back-dated to 07:58 → the 08:05 play is on the A→B trip.
+        e.ingest(LocationVisitSample(latitude: A.0, longitude: A.1, horizontalAccuracy: 30,
+                                     arrival: nil, departure: at(7.97)), now: at(8.7), newId: ids.next)
+        XCTAssertNil(e.timeline.first?.endIsEstimate)
+        let trip = tripTag(e, at: 8.08, now: 8.7)
+        XCTAssertNotNil(trip, "the commute play settles as the trip")
+        XCTAssertEqual(trip?.origin, placeId(e, at: 7.5, now: 20))
+        XCTAssertEqual(trip?.destination, placeId(e, at: 9, now: 20))
+        // A play at A before the reported departure settles as A right away.
+        XCTAssertEqual(e.lookup(at: at(7.5), now: at(8.7)), .settled(.place(placeId(e, at: 7.5, now: 20)!)))
+    }
+
+    func testFullDepartureVisitAfterAClampedEndAlsoSettlesTheTrip() {
+        var e = engine(); let ids = IdGen()
+        stay(&e, A, 7, nil, ids: ids, now: 7.1)
+        stay(&e, B, 8.6, nil, ids: ids, now: 8.67)
+        // CoreLocation's full A visit (arrival + departure) — matched by its arrival.
+        stay(&e, A, 7, 7.97, ids: ids, now: 8.7)
+        XCTAssertEqual(e.timeline.count, 2)
+        XCTAssertNotNil(tripTag(e, at: 8.08, now: 8.7))
+    }
+
+    /// Significant-change fixes are coarse (cell-based): an 800 m-accuracy fix 5 km away is still a
+    /// departure hint; a coarse fix that could still be at the place is not.
+    func testCoarseMovementHintStillClosesTheStay() {
+        var e = engine(); let ids = IdGen()
+        stay(&e, A, 0, nil, ids: ids, now: 1)
+        e.noteMovement(LocationFixSample(latitude: A.0 + north(700), longitude: A.1, horizontalAccuracy: 800, at: at(2)),
+                       now: at(2), newId: ids.next)
+        XCTAssertNil(e.timeline.last?.end, "within radius + accuracy — maybe still there")
+        e.noteMovement(LocationFixSample(latitude: A.0 + north(5_000), longitude: A.1, horizontalAccuracy: 800, at: at(3)),
+                       now: at(3), newId: ids.next)
+        XCTAssertEqual(e.timeline.last?.end, at(3))
+        XCTAssertEqual(e.timeline.last?.endIsEstimate, true)
+        // A recent time before the hint is still pending (the real departure is earlier).
+        XCTAssertEqual(e.lookup(at: at(2.9), now: at(3.2)), .pending)
     }
 
     func testRecentUnclaimedTimeIsPendingThenNone() {
@@ -336,6 +388,7 @@ final class ListeningPlaceEngineTests: XCTestCase {
         stay(&e, A, 0, 2.5, ids: ids, now: 4)
         XCTAssertEqual(e.timeline.count, 1)
         XCTAssertEqual(e.timeline.last?.end, at(2.5))
+        XCTAssertNil(e.timeline.last?.endIsEstimate, "a reported departure is final")
     }
 
     /// INVARIANT: T older than pendingHorizon before now is NEVER `.pending`, whatever the timeline.

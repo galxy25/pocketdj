@@ -102,8 +102,12 @@ export const readEvents = (h) => getJson(eventsKey(h));
 /// two first uploads racing can never both create.
 export const writeEvents = (h, doc, { ifMatch } = {}) => putJson(eventsKey(h), doc, ifMatch ? { ifMatch } : { create: true });
 export const readResults = async (h) => (await getJson(resultsKey(h)))?.doc ?? null;
-/// Plain overwrite: results are derived, and two computes racing write equivalent documents.
-export const writeResults = (h, doc) => putJson(resultsKey(h), doc);
+/// With its ETag, for the compute job's conditional write.
+export const readResultsVersioned = (h) => getJson(resultsKey(h));
+/// Conditional like `writeEvents` (replace only the version read; create only if absent) — two
+/// computes racing must not let the one over OLDER events land last (see `computeProfile`).
+export const writeResults = (h, doc, { ifMatch } = {}) => putJson(resultsKey(h), doc, ifMatch ? { ifMatch } : { create: true });
+export const deleteResults = (h) => deleteKey(resultsKey(h));
 
 /// "Delete cloud data": both objects, each best-effort-absent.
 export async function deleteProfile(h) {
@@ -111,20 +115,21 @@ export async function deleteProfile(h) {
   try { await deleteKey(resultsKey(h)); } catch { /* absent or already gone */ }
 }
 
-async function listHashes(stopAt = Infinity) {
+async function listHashes(kind = 'events', stopAt = Infinity) {
   if (localDir()) {
-    const dir = join(localDir(), 'pockets', 'events');
+    const dir = join(localDir(), 'pockets', kind);
     if (!existsSync(dir)) return [];
     return readdirSync(dir).filter((f) => /^[0-9a-f]{64}\.json$/.test(f)).map((f) => f.slice(0, -5)).sort();
   }
   const { client, mod } = await s3();
+  const re = new RegExp(`^pockets/${kind}/([0-9a-f]{64})\\.json$`);
   const hashes = []; let token;
   do {
     const out = await client.send(new mod.ListObjectsV2Command({
-      Bucket: bucket(), Prefix: 'pockets/events/', ContinuationToken: token, MaxKeys: 1000,
+      Bucket: bucket(), Prefix: `pockets/${kind}/`, ContinuationToken: token, MaxKeys: 1000,
     }));
     for (const o of out.Contents || []) {
-      const m = /^pockets\/events\/([0-9a-f]{64})\.json$/.exec(o.Key || '');
+      const m = re.exec(o.Key || '');
       if (m) hashes.push(m[1]);
     }
     if (hashes.length >= stopAt) break;
@@ -134,9 +139,11 @@ async function listHashes(stopAt = Infinity) {
 }
 
 /// Every profile with an events object — the nightly job's work list.
-export const listProfileHashes = () => listHashes();
+export const listProfileHashes = () => listHashes('events');
+/// Every results object — the nightly orphan sweep's work list.
+export const listResultHashes = () => listHashes('results');
 /// How many profiles exist, stopping at `cap`. Only the ENROLL branch calls it.
-export async function countProfiles(cap) { return (await listHashes(cap)).length; }
+export async function countProfiles(cap) { return (await listHashes('events', cap)).length; }
 
 // ── The stored row ──────────────────────────────────────────────────────────────────────────────
 
@@ -232,8 +239,10 @@ export function cleanLabels(places, trips) {
 }
 
 /// A fresh events document for a profile about to be enrolled.
+/// `rev` counts content changes (bumped by every POST that changed something); with `createdAtMs`
+/// (a new document after a delete is a new generation) it is what results are stamped with.
 export function freshEventsDoc(nowMs = Date.now()) {
-  return { v: 1, keyHash: null, createdAtMs: nowMs, updatedAtMs: nowMs, dirty: false,
+  return { v: 1, keyHash: null, createdAtMs: nowMs, updatedAtMs: nowMs, rev: 0, dirty: false,
     labels: { places: [], trips: [], atMs: null }, events: [] };
 }
 

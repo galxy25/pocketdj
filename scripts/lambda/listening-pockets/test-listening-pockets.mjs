@@ -55,7 +55,7 @@ const { normalizeEvents, sessionize, detectPockets, detect, pocketIdFor } = awai
 const { computeResults, foldBpm, localTimeOf, titleFor, camelotNeighbors, emptyResults } = await import('./analyze.mjs');
 const { indexFeatures, resolveSong, identityKeys } = await import('./features.mjs');
 const { cleanEvent, mergeEvents, freshEventsDoc, cleanCtx } = await import('./store.mjs');
-const { handler, normalizePath, _test } = await import('./index.mjs');
+const { handler, normalizePath, computeProfile, _test } = await import('./index.mjs');
 const { historyToUploadEvents, toUpload, buildEventsDoc } = await import('./run-local.mjs');
 
 const FEATS = indexFeatures(catalog);
@@ -745,6 +745,67 @@ test('nightly: recomputes dirty or stale profiles, skips fresh ones, chains when
     process.env.POCKETS_INLINE_COMPUTE = '1';
     _test.setInvoker(null);
   }
+});
+
+test('a compute racing "Delete cloud data" leaves no results behind', async () => {
+  const p = freshProfile();
+  const h = createHash('sha256').update(p).digest('hex');
+  process.env.POCKETS_INLINE_COMPUTE = '0';
+  _test.setInvoker(async () => {});
+  try {
+    await call('POST', '/events', { profile: p, body: batch(wireSeq('PPPP', NOW - 2 * HOUR)) });
+    // The compute reads the events, then the DELETE lands before it writes.
+    const out = await computeProfile(h, { afterRead: async () => {
+      assert.equal((await call('DELETE', '/state', { profile: p })).status, 200);
+    } });
+    assert.equal(out.computed, false);
+    assert.equal(out.orphaned, true);
+    assert.equal(existsSync(resultsPath(p)), false, 'no orphan results after the delete');
+    assert.equal(existsSync(eventsPath(p)), false);
+  } finally {
+    process.env.POCKETS_INLINE_COMPUTE = '1';
+    _test.setInvoker(null);
+  }
+});
+
+test('a slow compute over OLDER events never overwrites newer results', async () => {
+  const p = freshProfile();
+  const h = createHash('sha256').update(p).digest('hex');
+  process.env.POCKETS_INLINE_COMPUTE = '0';
+  _test.setInvoker(async () => {});
+  try {
+    const first = wireSeq('PPPSPSP', NOW - 3 * HOUR);
+    await call('POST', '/events', { profile: p, body: batch(first) });
+    // c1 reads rev 1; meanwhile a skip verdict lands (rev 2) and ITS compute (c2) finishes first.
+    const flipped = { ...first[4], outcome: 'skipped', fraction: 0.2 };
+    const c1 = await computeProfile(h, { afterRead: async () => {
+      await call('POST', '/events', { profile: p, body: batch([flipped]) });
+      assert.equal((await computeProfile(h)).computed, true);
+    } });
+    assert.equal(c1.computed, false);
+    assert.equal(c1.superseded, true);
+    const stored = JSON.parse(readFileSync(resultsPath(p), 'utf8'));
+    assert.equal(stored._source.rev, 2, "the newer compute's results stand");
+    const got = await call('GET', '/results', { profile: p });
+    assert.equal(got.json.stale, false);
+    assert.equal(got.json.pockets[0].memberCount, 3, 'the post-skip pocket, not the stale 5-member one');
+    assert.equal(got.json._source, undefined, 'bookkeeping never leaves the server');
+  } finally {
+    process.env.POCKETS_INLINE_COMPUTE = '1';
+    _test.setInvoker(null);
+  }
+});
+
+test('nightly sweeps results whose events object is gone', async () => {
+  const live = freshProfile();
+  await call('POST', '/events', { profile: live, body: batch(wireSeq('PPP', NOW - 2 * HOUR)) });
+  const orphan = createHash('sha256').update(`orphan-${Date.now()}`).digest('hex');
+  const orphanPath = join(HOME, 'pockets', 'results', `${orphan}.json`);
+  writeFileSync(orphanPath, JSON.stringify(emptyResults()));
+  const out = await handler({ job: 'nightly' }, { getRemainingTimeInMillis: () => 100_000 });
+  assert.ok(out.orphans >= 1);
+  assert.equal(existsSync(orphanPath), false);
+  assert.ok(existsSync(resultsPath(live)), 'live profiles keep their results');
 });
 
 // ── Local runner + contract ─────────────────────────────────────────────────────────────────────

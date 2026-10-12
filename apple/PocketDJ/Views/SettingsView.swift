@@ -824,13 +824,18 @@ struct SettingsView: View {
                 Toggle("Include lifetime play counts", isOn: $settings.shareLifetimePlayCounts)
                     .accessibilityIdentifier("rec-share-playcounts-toggle")
                     .onChange(of: settings.shareLifetimePlayCounts) { settings.persist() }
-                // Listening pockets ride this consent and this key (sub-toggle, default ON).
+                // Listening pockets ride this key but are their OWN opt-in (default OFF): the
+                // engine's consent predates skip outcomes + time of day.
                 Toggle("Find my listening pockets", isOn: $settings.listeningPocketsEnabled)
                     .accessibilityIdentifier("pockets-toggle")
                     .onChange(of: settings.listeningPocketsEnabled) {
                         settings.persist()
                         pockets?.enabledDidChange()
                     }
+                if !settings.listeningPocketsEnabled {
+                    Text(ListeningPocketsService.consentText)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 // Places & trips (iOS only; renders nothing elsewhere) — needs pockets on.
                 ListeningLocationSettingsSection(pocketsEnabled: settings.listeningPocketsEnabled)
                 if let err = pockets?.syncError, settings.listeningPocketsEnabled {

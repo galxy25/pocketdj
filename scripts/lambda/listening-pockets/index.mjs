@@ -41,8 +41,9 @@ import { POCKET_PARAMS, POCKET_LIMITS } from './params.mjs';
 import { computeResults, emptyResults } from './analyze.mjs';
 import { loadFeatures } from './features.mjs';
 import {
-  Precondition, readEvents, writeEvents, readResults, writeResults, deleteProfile,
-  countProfiles, listProfileHashes, cleanEvent, cleanLabels, mergeEvents, freshEventsDoc, INSTALL_RE,
+  Precondition, readEvents, writeEvents, readResults, readResultsVersioned, writeResults, deleteResults,
+  deleteProfile, countProfiles, listProfileHashes, listResultHashes, cleanEvent, cleanLabels, mergeEvents,
+  freshEventsDoc, INSTALL_RE,
 } from './store.mjs';
 
 const REGION = process.env.AWS_REGION || 'us-west-2';
@@ -117,17 +118,56 @@ export function normalizePath(raw) {
 
 // ── Jobs ────────────────────────────────────────────────────────────────────────────────────────
 
+/// Which events version a results document was computed from: the document's generation
+/// (`createdAtMs` — a re-enroll after a delete is a new one) and its content `rev`.
+const sourceOf = (doc) => ({ createdAtMs: doc.createdAtMs ?? null, rev: Number.isInteger(doc.rev) ? doc.rev : 0 });
+
+/// Results stamped `_source` are internal bookkeeping — never part of what GET serves.
+export function publicResults(doc) {
+  const { _source, ...rest } = doc;
+  return rest;
+}
+
 /**
  * Recompute one profile: read events (with ETag), detect + analyze, store results, then clear
  * `dirty` CONDITIONALLY on the ETag we computed from — an upload that landed meanwhile changed the
  * ETag, so its rows stay dirty for the next run instead of being silently marked computed.
+ *
+ * Results never go BACKWARDS and never outlive their events:
+ *   - they are stamped with the events version they came from (`_source`) and written
+ *     conditionally on the results ETag; a compute over an OLDER rev of the same generation than
+ *     what is stored (a slow cold start racing a newer upload's compute) does not write;
+ *   - after writing, the events object is re-read: gone (a DELETE landed mid-compute) or a new
+ *     generation ⇒ the results just written are deleted — "Delete cloud data" must not leave an
+ *     orphan for the nightly job to never see. (A DELETE after that check deletes them itself.)
  */
-export async function computeProfile(h, { nowMs = Date.now() } = {}) {
+export async function computeProfile(h, { nowMs = Date.now(), afterRead = null } = {}) {
   const read = await readEvents(h);
   if (!read) return { computed: false };
+  if (afterRead) await afterRead();   // test seam: what lands while this compute is under way
   const features = await loadFeatures();
-  const results = computeResults(read.doc, features, { nowMs });
-  await writeResults(h, results);
+  const source = sourceOf(read.doc);
+  const results = { ...computeResults(read.doc, features, { nowMs }), _source: source };
+  let written = false;
+  for (let attempt = 0; attempt < 3 && !written; attempt++) {
+    const cur = await readResultsVersioned(h);
+    const s = cur?.doc?._source;
+    if (s && s.createdAtMs === source.createdAtMs && (s.rev ?? 0) > source.rev) {
+      return { computed: false, superseded: true };
+    }
+    try {
+      await writeResults(h, results, cur ? { ifMatch: cur.etag } : {});
+      written = true;
+    } catch (e) {
+      if (!(e instanceof Precondition)) throw e;   // another compute wrote meanwhile: re-check
+    }
+  }
+  if (!written) return { computed: false, conflict: true };   // still dirty → the nightly run
+  const after = await readEvents(h);
+  if (!after || sourceOf(after.doc).createdAtMs !== source.createdAtMs) {
+    try { await deleteResults(h); } catch { /* already gone */ }
+    return { computed: false, orphaned: true };
+  }
   if (read.doc.dirty) {
     read.doc.dirty = false;
     read.doc.computedAtMs = nowMs;
@@ -149,13 +189,27 @@ async function runJob(event, context) {
     const todo = Array.isArray(event.hashes)
       ? event.hashes.filter((x) => typeof x === 'string' && HASH_RE.test(x))
       : await listProfileHashes();
+    // The first hop of a full run also sweeps results whose events object is gone (a compute
+    // that raced a delete before the post-write re-check existed, or a crash between the two).
+    let orphans = 0;
+    if (!Array.isArray(event.hashes)) {
+      const live = new Set(todo);
+      for (const h of await listResultHashes()) {
+        if (live.has(h)) continue;
+        try {
+          if (!(await readEvents(h))) { await deleteResults(h); orphans += 1; }
+        } catch (e) {
+          console.error(`[listening-pockets] orphan sweep failed for ${h.slice(0, 8)}…: ${e.message}`);
+        }
+      }
+    }
     const timeLeft = () => (typeof context?.getRemainingTimeInMillis === 'function'
       ? context.getRemainingTimeInMillis() : Infinity);
     let computed = 0; let skipped = 0; let failed = 0;
     for (let i = 0; i < todo.length; i++) {
       if (timeLeft() < POCKET_LIMITS.nightlyLowTimeMs) {
         await invokeSelf({ job: 'nightly', hashes: todo.slice(i), hop: hop + 1 });
-        return { ok: true, computed, skipped, failed, chained: todo.length - i };
+        return { ok: true, computed, skipped, failed, orphans, chained: todo.length - i };
       }
       const h = todo[i];
       try {
@@ -173,7 +227,7 @@ async function runJob(event, context) {
         console.error(`[listening-pockets] nightly compute failed for ${h.slice(0, 8)}…: ${e.message}`);
       }
     }
-    return { ok: true, computed, skipped, failed, chained: 0 };
+    return { ok: true, computed, skipped, failed, orphans, chained: 0 };
   }
   return { ok: false, error: 'unknown-job' };
 }
@@ -241,7 +295,7 @@ export async function handler(event, context) {
         }
         const changed = merged.changed || labelsChanged;
         // An identical re-send changes nothing and must not trigger a recompute.
-        if (changed) doc.dirty = true;
+        if (changed) { doc.dirty = true; doc.rev = (Number.isInteger(doc.rev) ? doc.rev : 0) + 1; }
         doc.updatedAtMs = nowMs;
         try {
           await writeEvents(auth.profileHash, doc, { ifMatch: read?.etag });
@@ -274,7 +328,7 @@ export async function handler(event, context) {
       const results = await readResults(auth.profileHash);
       const stale = !!read.doc.dirty;
       if (!results) return reply(200, emptyResults({ stale, labels: read.doc.labels }));
-      return reply(200, { ...results, stale });
+      return reply(200, { ...publicResults(results), stale });
     }
 
     if (method === 'DELETE' && path === '/state') {

@@ -7,8 +7,10 @@ import Foundation
 /// ── LIFECYCLE ───────────────────────────────────────────────────────────────────────────────
 /// `MixEngine.onSongPlayed` fires once per deck load; the app records the play and hands the
 /// resulting event here (`notePlayed`) — or nil when the 30 s window collapsed it, in which case
-/// the newest LOCAL event for the song stands in. `MixEngine.onDeckTrackEnded` later reports the
-/// played/duration seconds and WHY it ended (`noteTrackEnded`): the fraction goes onto the event
+/// the newest LOCAL event for the song stands in. `MixEngine.onDeckTrackEnded` later reports, for
+/// the SAME deck, the played/duration seconds and WHY it ended (`noteTrackEnded`). The mapping is
+/// keyed by DECK, never song id: in a repeat-one auto mix both decks hold the same song, and the
+/// incoming deck's play must not capture the outgoing deck's end. The fraction goes onto the event
 /// (`noteListened`), and a `.skip` or `.replaced` under 50% is a skip — the SAME <50% rule the
 /// set player's SkipTracker applies, so a pocket reads Mix and playlist listening alike.
 ///
@@ -23,8 +25,8 @@ final class MixPlayOutcomeBridge {
     /// Cumulative-count sink, wired to `PlayCountService.noteSkipped` (the SkipTracker contract).
     var noteSkip: ((String) -> Void)?
 
-    /// songId → the history event its live deck playback is writing to.
-    private var eventBySong: [String: UUID] = [:]
+    /// deck → the history event its current load is writing to (with the song, as a guard).
+    private var eventByDeck: [MixEngine.Deck: (songId: String, event: UUID)] = [:]
     /// Events whose outcome has already been applied — a second end for the same event (two
     /// decks briefly holding one song, a collapsed replay mapping back onto it) is ignored.
     /// Bounded: an evicted id can at worst re-apply a max-merged fraction.
@@ -37,16 +39,22 @@ final class MixPlayOutcomeBridge {
         self.noteSkip = noteSkip
     }
 
-    /// A deck started playing `songId`; `event` is what `record` returned (nil = collapsed).
-    func notePlayed(songId: String, event: PlayHistoryStore.PlayEvent?) {
-        guard let ev = event ?? history?.lastLocalEvent(forSongId: songId) else { return }
-        eventBySong[songId] = ev.id
+    /// `deck` started playing `songId`; `event` is what `record` returned (nil = collapsed).
+    func notePlayed(deck: MixEngine.Deck, songId: String, event: PlayHistoryStore.PlayEvent?) {
+        guard let ev = event ?? history?.lastLocalEvent(forSongId: songId) else {
+            eventByDeck[deck] = nil   // never let a stale mapping take this load's end
+            return
+        }
+        eventByDeck[deck] = (songId, ev.id)
     }
 
-    /// The deck playing `songId` stopped being the music. Seconds are SOURCE seconds; an
+    /// `deck`'s track (`songId`) stopped being the music. Seconds are SOURCE seconds; an
     /// unknown (zero) duration reports nothing — never guess against the listener.
-    func noteTrackEnded(songId: String, played: Double, duration: Double, reason: MixTrackEndReason) {
-        guard let eid = eventBySong.removeValue(forKey: songId), !endedSet.contains(eid) else { return }
+    func noteTrackEnded(deck: MixEngine.Deck, songId: String, played: Double, duration: Double,
+                        reason: MixTrackEndReason) {
+        guard let mapped = eventByDeck.removeValue(forKey: deck), mapped.songId == songId,
+              !endedSet.contains(mapped.event) else { return }
+        let eid = mapped.event
         remember(eid)
         guard duration > 0, played.isFinite, duration.isFinite else { return }
         let fraction = min(1, max(0, played / duration))

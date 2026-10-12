@@ -50,6 +50,28 @@ final class ListeningPocketsServiceTests: XCTestCase {
         func label(for tag: ListeningContextTag) -> String? { nil }
     }
 
+    /// Holds a request in flight until `open()` — `arrived()` waits until one is held.
+    private actor Gate {
+        private var isOpen = false
+        private var held: [CheckedContinuation<Void, Never>] = []
+        private var arrivals: [CheckedContinuation<Void, Never>] = []
+        private var didArrive = false
+        func hold() async {
+            didArrive = true
+            arrivals.forEach { $0.resume() }; arrivals = []
+            if isOpen { return }
+            await withCheckedContinuation { held.append($0) }
+        }
+        func arrived() async {
+            if didArrive { return }
+            await withCheckedContinuation { arrivals.append($0) }
+        }
+        func open() {
+            isOpen = true
+            held.forEach { $0.resume() }; held = []
+        }
+    }
+
     private struct Env {
         let svc: ListeningPocketsService
         let spy: Spy
@@ -72,20 +94,25 @@ final class ListeningPocketsServiceTests: XCTestCase {
         return url
     }
 
-    private func makeEnv(recOn: Bool = true, pocketsOn: Bool = true, locationOn: Bool = true) -> Env {
+    /// `pocketsOn: nil` leaves the choice unmade (a fresh install / an update from before it existed).
+    private func makeEnv(recOn: Bool = true, pocketsOn: Bool? = true, locationOn: Bool = true,
+                         gate: Gate? = nil) -> Env {
         let suite = "pdj.pockets.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defaults.removePersistentDomain(forName: suite)
         let settings = SettingsStore(defaults: defaults)
         settings.recEngineEnabled = recOn
-        settings.listeningPocketsEnabled = pocketsOn
+        if let pocketsOn { settings.listeningPocketsEnabled = pocketsOn }
         let history = PlayHistoryStore(fileURL: tempURL("history"))
         let spy = Spy()
         let provider = StubProvider()
         provider.isActive = locationOn
         let client = ListeningPocketsClient(base: URL(string: "https://pockets.test")!,
                                             enrollSecret: "enroll-secret",
-                                            transport: { spy.record($0) })
+                                            transport: { req in
+                                                if req.httpMethod == "DELETE", let gate { await gate.hold() }
+                                                return spy.record(req)
+                                            })
         let syncURL = tempURL("sync"), cacheURL = tempURL("cache")
         // Credentials are handed out regardless of the toggles here — the gate under test is the
         // service's OWN (the real `sharedCredentials` is nil while the engine is off as well).
@@ -130,6 +157,55 @@ final class ListeningPocketsServiceTests: XCTestCase {
             XCTAssertFalse(env.svc.isAutoFlushArmed)
             XCTAssertTrue(env.spy.requests.isEmpty, "rec=\(rec) pockets=\(pockets) must send NOTHING")
         }
+    }
+
+    /// Pockets are their own opt-in: an engine that was already on does NOT switch them on, so an
+    /// update never starts uploading skip outcomes (90 days of them) unasked.
+    func testPocketsStayOffUntilChosenEvenWithTheEngineOn() async {
+        let env = makeEnv(recOn: true, pocketsOn: nil)
+        XCTAssertNil(env.settings.listeningPocketsChoice, "never asked")
+        XCTAssertFalse(env.settings.listeningPocketsEnabled)
+        XCTAssertFalse(env.svc.isEnabled)
+        play(env, "sng_1", minutesAgo: 10)
+        let sent = await env.svc.flushNow()
+        env.svc.startAutoFlush()
+        XCTAssertFalse(sent)
+        XCTAssertFalse(env.svc.isAutoFlushArmed)
+        XCTAssertTrue(env.spy.requests.isEmpty)
+    }
+
+    func testPocketsChoicePersistsAsTriState() {
+        let suite = "pdj.pockets.choice.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defaults.removePersistentDomain(forName: suite)
+        addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+        let s = SettingsStore(defaults: defaults)
+        s.recEngineEnabled = true
+        s.persist()
+        XCTAssertNil(SettingsStore(defaults: defaults).listeningPocketsChoice, "unasked survives a reload as unasked")
+        s.listeningPocketsEnabled = false
+        s.persist()
+        XCTAssertEqual(SettingsStore(defaults: defaults).listeningPocketsChoice, false, "a decline is remembered")
+        s.listeningPocketsEnabled = true
+        s.persist()
+        XCTAssertEqual(SettingsStore(defaults: defaults).listeningPocketsEnabled, true)
+    }
+
+    /// The gate closing (pockets or engine off) fires `onDisabled` — the app turns places & trips
+    /// off with it, so location never keeps collecting with nothing to feed.
+    func testGateClosingFiresOnDisabled() {
+        let env = makeEnv()
+        var fired = 0
+        env.svc.onDisabled = { fired += 1 }
+        env.svc.enabledDidChange()
+        XCTAssertEqual(fired, 0, "still enabled")
+        env.settings.listeningPocketsEnabled = false
+        env.svc.enabledDidChange()
+        XCTAssertEqual(fired, 1)
+        env.settings.listeningPocketsEnabled = true
+        env.settings.recEngineEnabled = false
+        env.svc.enabledDidChange()
+        XCTAssertEqual(fired, 2, "the engine turning off closes it too")
     }
 
     // MARK: - Wire contract
@@ -436,6 +512,57 @@ final class ListeningPocketsServiceTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: env.cacheURL.path))
         XCTAssertNil(env.svc.results)
         XCTAssertTrue(env.svc.acknowledgedFingerprints.isEmpty, "a re-enable re-uploads fresh")
+    }
+
+    /// "Fresh data is uploaded again from now on": after the erase, plays from before it never
+    /// re-upload — not on the next flush, not after a relaunch, not after a profile rebind.
+    func testDeleteCloudDataFloorsUploadsAtTheErase() async throws {
+        let env = makeEnv(locationOn: false)
+        play(env, "sng_old1", minutesAgo: 600)
+        play(env, "sng_old2", minutesAgo: 10)
+        await env.svc.flushNow()
+        XCTAssertEqual(env.spy.posts().count, 1)
+        let ok = await env.svc.deleteCloudData(key: Self.key, profileId: Self.profile)
+        XCTAssertTrue(ok)
+        XCTAssertEqual(env.svc.uploadFloorMs, Self.nowMs)
+        let resent = await env.svc.flushNow()
+        XCTAssertFalse(resent, "the erased window is not re-uploaded")
+        XCTAssertEqual(env.spy.posts().count, 1)
+
+        // A play after the erase uploads — alone.
+        let fresh = play(env, "sng_new", minutesAgo: -1)
+        await env.svc.flushNow()
+        XCTAssertEqual(Spy.events(try XCTUnwrap(env.spy.posts().last)).map { $0["id"] as? String },
+                       [fresh.id.uuidString])
+
+        // The floor survives a relaunch and a profile rebind (which resets the fingerprints).
+        let spy2 = Spy()
+        let svc2 = ListeningPocketsService(
+            history: env.history, settings: env.settings, credentials: { (Self.key, "rebound-profile") },
+            provider: env.provider,
+            client: ListeningPocketsClient(base: URL(string: "https://pockets.test")!, transport: { spy2.record($0) }),
+            now: { Date(timeIntervalSince1970: Self.nowMs / 1000) },
+            syncFileURL: env.syncURL, cacheFileURL: env.cacheURL)
+        svc2.fixtureForTesting = false
+        await svc2.flushNow()
+        XCTAssertEqual(spy2.posts().flatMap { Spy.events($0).compactMap { $0["songId"] as? String } }, ["sng_new"])
+    }
+
+    /// No flush may START while the DELETE is in flight — a batch landing after it would rebuild
+    /// the profile the user just erased.
+    func testNoFlushStartsWhileTheDeleteIsInFlight() async throws {
+        let gate = Gate()
+        let env = makeEnv(locationOn: false, gate: gate)
+        play(env, "sng_1", minutesAgo: 10)
+        let deletion = Task { await env.svc.deleteCloudData(key: Self.key, profileId: Self.profile) }
+        await gate.arrived()                       // the DELETE is now held in flight
+        let sent = await env.svc.flushNow()        // e.g. the auto-flush loop's tick
+        XCTAssertFalse(sent)
+        XCTAssertTrue(env.spy.posts().isEmpty, "nothing uploaded during the erase")
+        await gate.open()
+        let ok = await deletion.value
+        XCTAssertTrue(ok)
+        XCTAssertEqual(env.spy.requests.map(\.httpMethod), ["DELETE"])
     }
 
     func testDeleteRunsEvenWhenDisabledAnd404IsSuccess() async {

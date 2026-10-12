@@ -790,17 +790,24 @@ final class MixEngine {
     /// to `PlayStatsStore.notePlayed`; nil in tests.
     /// ONCE PER DECK LOAD: a pause→play resume is the same listen, not a second play (it used to
     /// re-fire on every resume and History grew a phantom row per pause longer than 30 s).
-    @ObservationIgnored var onSongPlayed: ((String) -> Void)?
+    /// Payload (songId, deck): the deck is what pairs this play with its later end report —
+    /// both decks can hold the SAME song (repeat-one auto mix), so a song id can't.
+    @ObservationIgnored var onSongPlayed: ((String, Deck) -> Void)?
     /// A deck's loaded track stopped being the music: payload (songId, playedSeconds,
-    /// durationSeconds, reason). Fired at most once per deck load, and only for a load that
-    /// actually PLAYED. Positions are SOURCE seconds (`position(deck)` / `duration(deck)`). The
-    /// listening-pockets outcome hook (`MixPlayOutcomeBridge`) — the Mix decks' answer to the
-    /// SetlistPlayer → SkipTracker feed, which never sees Mix/Auto-DJ playback.
-    @ObservationIgnored var onDeckTrackEnded: ((String, Double, Double, MixTrackEndReason) -> Void)?
+    /// durationSeconds, reason, deck). Fired at most once per deck load, and only for a load that
+    /// actually PLAYED. Seconds are SOURCE seconds; `playedSeconds` is the load's HIGH-WATER mark,
+    /// not the playhead (a ↺ / rewind / cue jump before the deck is loaded over must not turn a
+    /// finished song into a skip — the SkipTracker's max-position rule). The listening-pockets
+    /// outcome hook (`MixPlayOutcomeBridge`) — the Mix decks' answer to the SetlistPlayer →
+    /// SkipTracker feed, which never sees Mix/Auto-DJ playback.
+    @ObservationIgnored var onDeckTrackEnded: ((String, Double, Double, MixTrackEndReason, Deck) -> Void)?
     /// Decks whose CURRENT load has fired `onSongPlayed` / `onDeckTrackEnded`. Reset per load
     /// (`commitLoad`, `ejectDeckCore`) and when an auto transition replays a deck's load.
     @ObservationIgnored private var playNotedThisLoad: Set<Deck> = []
     @ObservationIgnored private var endReportedThisLoad: Set<Deck> = []
+    /// The furthest source position each deck's CURRENT load has reached (fed by `setPosition`,
+    /// cleared by `resetLoadCycle`).
+    @ObservationIgnored private var positionHighWater: [Deck: Double] = [:]
 
     /// Report that `deck`'s current track stopped being the music (see `onDeckTrackEnded`).
     /// No-op unless this load played and hasn't reported yet — so the first reason wins (a skip
@@ -809,13 +816,15 @@ final class MixEngine {
         guard playNotedThisLoad.contains(deck), !endReportedThisLoad.contains(deck),
               let id = state(deck).loaded?.songId else { return }
         endReportedThisLoad.insert(deck)
-        onDeckTrackEnded?(id, position(deck), duration(deck), reason)
+        let played = max(position(deck), positionHighWater[deck] ?? 0)
+        onDeckTrackEnded?(id, played, duration(deck), reason, deck)
     }
 
     /// A fresh load cycle on `deck`: its next play is a new play, its next end a new end.
     private func resetLoadCycle(_ deck: Deck) {
         playNotedThisLoad.remove(deck)
         endReportedThisLoad.remove(deck)
+        positionHighWater[deck] = nil
     }
 
     // MARK: - Durable mix-deck session (state)
@@ -863,7 +872,7 @@ final class MixEngine {
             rec(.play, deck)
             if let id = state(deck).loaded?.songId {
                 recorder?.notePlayed(songId: id)   // dedupes per session itself
-                if playNotedThisLoad.insert(deck).inserted { onSongPlayed?(id) }
+                if playNotedThisLoad.insert(deck).inserted { onSongPlayed?(id, deck) }
             }
         } else {
             rec(.pause, deck)
@@ -2778,7 +2787,9 @@ final class MixEngine {
     func stopAutoMix() {
         DiagLog.shared.telemetry("action", "auto-mix stop")
         autoEndedExhausted = false   // user-initiated stop by default; exhaust sites re-set it after
-        if autoMixing { reportDeckEnded(autoLiveDeck, .stopped) }
+        // BOTH decks: stopped mid-crossfade, the incoming deck has already played too — left
+        // unreported, its later eject/load would read as a few-percent `.replaced` (a skip).
+        if autoMixing { for d in [autoLiveDeck, other(autoLiveDeck)] { reportDeckEnded(d, .stopped) } }
         endAutoLoop()
         pauseBoth()
     }
@@ -4404,6 +4415,7 @@ final class MixEngine {
 
     private func setPosition(_ deck: Deck, _ v: Double) {
         switch deck { case .a: positionA = v; case .b: positionB = v }
+        if v > (positionHighWater[deck] ?? 0) { positionHighWater[deck] = v }
     }
     private func setDuration(_ deck: Deck, _ v: Double) {
         switch deck { case .a: durationA = v; case .b: durationB = v }

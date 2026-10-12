@@ -33,7 +33,11 @@ struct ListeningPlaceEngine: Codable {
     /// ONE place for every knob. Not persisted — a build with new defaults applies them to the
     /// existing state on the next launch.
     struct Params {
-        var maxAccuracyM = 200.0          // drop worse fixes/visits
+        var maxAccuracyM = 200.0          // drop worse visits (they would mis-cluster places)
+        /// Movement hints are significant-change fixes — mostly cell-based, hundreds of metres to
+        /// kilometres. They only ever CLOSE a stay, and only when farther than radius + accuracy,
+        /// so a coarse fix is safe; the 200 m visit bound would discard nearly all of them.
+        var maxMovementAccuracyM = 3_000.0
         var placeRadiusM = 150.0          // visit joins nearest place within this
         var mergeRadiusM = 100.0          // two places whose centroids drift this close merge
         var minVisitDwell: TimeInterval = 5 * 60
@@ -67,6 +71,19 @@ struct ListeningPlaceEngine: Codable {
         var placeId: String
         var start: Date
         var end: Date?
+        /// `end` is a GUESS, not a CLVisit departure: the next stay's arrival clamped an open stay
+        /// (`normalizeTimeline`), or a movement hint closed it (`noteMovement`). The real
+        /// departure — back-dated, often hours late — may still move it EARLIER, so a recent time
+        /// inside the stay isn't settled yet (see `lookup`). nil/false = a reported departure (and
+        /// every segment persisted before this field existed).
+        var endIsEstimate: Bool? = nil
+
+        init(placeId: String, start: Date, end: Date?, endIsEstimate: Bool? = nil) {
+            self.placeId = placeId; self.start = start; self.end = end; self.endIsEstimate = endIsEstimate
+        }
+
+        /// Still open, or closed only by a guess.
+        var endIsProvisional: Bool { end == nil || endIsEstimate == true }
     }
 
     /// A raw CLVisit as received, kept `rawRetentionDays` (re-clustering headroom + dedupe of
@@ -175,12 +192,13 @@ struct ListeningPlaceEngine: Codable {
     mutating func noteMovement(_ f: LocationFixSample, now: Date,
                                newId: () -> String = ListeningPlaceEngine.randomHex16) {
         guard f.latitude.isFinite, f.longitude.isFinite,
-              f.horizontalAccuracy >= 0, f.horizontalAccuracy <= params.maxAccuracyM else { return }
+              f.horizontalAccuracy >= 0, f.horizontalAccuracy <= params.maxMovementAccuracyM else { return }
         guard let i = timeline.indices.last, timeline[i].end == nil, f.at > timeline[i].start,
               let place = places.first(where: { $0.id == timeline[i].placeId }) else { return }
         let d = Self.distanceM(place.latitude, place.longitude, f.latitude, f.longitude)
         guard d > params.placeRadiusM + f.horizontalAccuracy else { return }
         timeline[i].end = f.at
+        timeline[i].endIsEstimate = true   // the departure was AT OR BEFORE the fix — not exactly at it
         ensureTripIds(newId: newId)
     }
 
@@ -197,7 +215,13 @@ struct ListeningPlaceEngine: Codable {
 
         guard let i = lastSegmentIndex(startingAtOrBefore: t) else { return unresolved }
         let seg = timeline[i]
-        guard let end = seg.end, t > end else { return .settled(.place(seg.placeId)) }
+        guard let end = seg.end, t > end else {
+            // Inside a stay whose end isn't REPORTED yet (still open, or clamped by a guess): the
+            // CLVisit departure lands late and back-dated, so a recent `t` may turn out to be on
+            // the trip out. Settling is write-once, so wait — past the horizon it's the place.
+            if seg.endIsProvisional && recent { return .pending }
+            return .settled(.place(seg.placeId))
+        }
         let sinceDeparture = t.timeIntervalSince(end)
 
         if i + 1 < timeline.count {
@@ -339,14 +363,16 @@ struct ListeningPlaceEngine: Codable {
                 $0.placeId == placeId && abs($0.start.timeIntervalSince(a)) <= params.segmentMatchTolerance
             }) {
                 timeline[i].start = a
-                if let d = departure { timeline[i].end = d }
+                if let d = departure { timeline[i].end = d; timeline[i].endIsEstimate = nil }
             } else {
                 timeline.append(DwellSegment(placeId: placeId, start: a, end: departure))
             }
         } else if let d = departure,
-                  let i = timeline.lastIndex(where: { $0.placeId == placeId && $0.end == nil }) {
-            // Arrival unknown: the departure closes the stay we already have open there.
+                  let i = timeline.lastIndex(where: { $0.placeId == placeId && $0.endIsProvisional }) {
+            // Arrival unknown: the departure closes (or corrects the guessed end of) the stay we
+            // already have there.
             timeline[i].end = max(d, timeline[i].start)
+            timeline[i].endIsEstimate = nil
         }
     }
 
@@ -358,10 +384,16 @@ struct ListeningPlaceEngine: Codable {
         for var seg in timeline {
             if let e = seg.end, e < seg.start { seg.end = seg.start }
             if var prev = out.last {
-                if prev.end == nil || prev.end! > seg.start { prev.end = seg.start }
+                // An open stay ends when the next one starts — a GUESS (its departure is unreported).
+                if prev.end == nil { prev.end = seg.start; prev.endIsEstimate = true }
+                if prev.end! > seg.start { prev.end = seg.start }
                 if prev.placeId == seg.placeId,
                    let pe = prev.end, seg.start.timeIntervalSince(pe) <= params.minVisitDwell {
-                    if let se = seg.end { prev.end = max(pe, se) } else { prev.end = nil }
+                    if let se = seg.end, se >= pe {
+                        prev.end = se; prev.endIsEstimate = seg.endIsEstimate
+                    } else if seg.end == nil {
+                        prev.end = nil; prev.endIsEstimate = nil
+                    }
                     out[out.count - 1] = prev
                     continue
                 }

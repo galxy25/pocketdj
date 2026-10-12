@@ -274,7 +274,12 @@ struct HistoryView: View {
 
     /// The Pockets tab follows the pockets privacy gate (rec engine ON + "Find my listening
     /// pockets" ON) or its UI-test fixture seam — `ListeningPocketsService.isEnabled` is both.
-    private var pocketsTabOn: Bool { pockets?.isEnabled ?? false }
+    /// While the engine is on and pockets were NEVER ASKED, it also shows, once, as the opt-in
+    /// offer (`ListeningPocketsView`); a "Not now" records the choice and the tab goes away.
+    private var pocketsTabOn: Bool {
+        guard let pockets else { return false }
+        return pockets.isEnabled || (settings.recEngineEnabled && settings.listeningPocketsChoice == nil)
+    }
 
     /// Custom button row (not a segmented `Picker`) so it renders prominently and identically on
     /// iOS, macOS, and visionOS. EVERY available tab is shown and the current one is filled —
