@@ -25,12 +25,12 @@ The jukebox domain is CloudFront over the `pocketdj-dev-web-<acct>` bucket with 
 `/jukebox`, so the public `/.well-known/...` path maps to the S3 key `jukebox/.well-known/...`:
 
 ```bash
-ACCT=011183829623
+. scripts/lib/aws-env.sh   # POCKETDJ_ENV=blue (default: account 011183829623, profile levi) | green
 aws s3 cp scripts/jukebox-site/apple-app-site-association \
-  s3://pocketdj-dev-web-$ACCT/jukebox/.well-known/apple-app-site-association \
-  --profile levi --content-type application/json --cache-control "max-age=300" --only-show-errors
-aws cloudfront create-invalidation --distribution-id E123GKAO9JVETP \
-  --paths '/.well-known/apple-app-site-association' --profile levi
+  s3://$PDJ_DEV_WEB_BUCKET/jukebox/.well-known/apple-app-site-association \
+  --profile "$PDJ_PROFILE" --content-type application/json --cache-control "max-age=300" --only-show-errors
+aws cloudfront create-invalidation --distribution-id "$PDJ_CF_DEV" \
+  --paths '/.well-known/apple-app-site-association' --profile "$PDJ_PROFILE"
 ```
 
 ## Step 3 — add the entitlement + re-ship
