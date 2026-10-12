@@ -12,6 +12,8 @@ file (`mix-audio-graph.svg`).
 │                                                                                  │
 │  player ────────────┐    ← AVAudioPlayerNode; player→inputMixer is the ONLY      │
 │  (main file)        │      link reconnected per load (at the FILE's format)      │
+│   ⇅ HANDOVER: main ↔ stems cross at ONE host time (60 ms linear fade, voice      │
+│     gains on the source nodes) — never a stop-then-start; see "Zero dead air"    │
 │                     ▼                                                            │
 │  stem "vocals" ─→ inputMixer ─→ timePitch ─→ SLOT 0 ─→ SLOT 1 ─→ SLOT 2 ─→ SLOT 3│
 │  stem "drums"  ─→   (mixer      (tempo/     ┌─────────────────────────┐          │
@@ -59,7 +61,7 @@ file (`mix-audio-graph.svg`).
 | Stage | Node type | What it does |
 |---|---|---|
 | **player** | `AVAudioPlayerNode` | Plays the deck's single burned file — or, in STREAMING mode, the same file while it is still downloading (`MixStreamLoader` → `loadStreaming`/`pumpStream`): segments up to the byte frontier, each appended from a fresh `AVAudioFile` open of the growing mp3 (bit-identical to one segment), with the playhead HELD at the frontier on an underrun. `player → inputMixer` is the ONLY link ever reconnected (per load — for a stream, when its header first lands — at the file's real format), so a mono / 48 kHz / odd file never reconfigures a live AU downstream — which AVAudioEngine asserts-and-crashes on. |
-| **stem players ×4** | `AVAudioPlayerNode` | vocals / drums / bass / other, summing into the SAME `inputMixer` so stems ride the deck's whole chain (tempo, pitch, FX, fader, cue) exactly like the main file. Idle unless stem mode wires real files. |
+| **stem players ×4** | `AVAudioPlayerNode` | vocals / drums / bass / other, summing into the SAME `inputMixer` so stems ride the deck's whole chain (tempo, pitch, FX, fader, cue) exactly like the main file. Idle unless stem mode wires real files — burned stems, or (STREAMING) four growing part files from `MixStreamLoader.openStems`, appended in lockstep (the same seconds range on every part) up to the shortest part's frontier. Each node's `volume` = per-stem balance × the handover voice gain. |
 | **inputMixer** | `AVAudioMixerNode` | The format normalizer: up/down-mixes and resamples whatever arrives into canonical 44.1 kHz stereo. Everything downstream is pinned at canonical FOR LIFE. |
 | **timePitch** | `AVAudioUnitTimePitch` | Tempo (0.5–2.0×, pitch preserved) and pitch (±12 st, tempo preserved). The last pre-FX point in the chain — the natural place for a pre-FX analysis tap. |
 | **slots 0–3** | 4 × `SlotNodes` | The FX rack. Each slot pre-allocates one node of every effect type — `comp` (DynamicsProcessor AU), `filter` (1-band `AVAudioUnitEQ`), `reverb` (`AVAudioUnitReverb`), `mod` (`AVAudioUnitDelay`) — wired in series with at most ONE un-bypassed. Swapping a slot's effect = bypass flips only. Duplicates across slots are legal (two filters, etc.). 16 FX nodes per deck. |
@@ -80,6 +82,39 @@ file (`mix-audio-graph.svg`).
 | Post-fader VU | `mainGain` output | `MixDeckLevels.postPeak/postRMS` | Same shape, after volume × crossfade. |
 | Envelope follower | `inputMixer` output | `MixDeckEnvelope.value` | **Pre-FX** (a filter driven by it can't hear itself and feed back), post-stem-merge. 1024-frame buffers (~23 ms) with time-constant ballistics (8 ms attack / 180 ms release) so the host's delivered buffer size can't change the follower's speed. Drives the FX modulation's audio-reactive source. |
 | Recording | `houseSum` output | `MixTapSink` + `MixTapPulse` liveness | Installed once at build, never per-recording — adding/removing a tap on a live node pauses the decks on-device. |
+
+## Zero dead air — the stem handover
+
+**Cardinal rule:** the on-air deck never goes silent because of an *engine* transition. Which of
+a deck's two sources renders — the full-mix `player` or the 4 stem players — is a HANDOVER,
+decided in one place (`MixEngine.advanceStemHandover`):
+
+```
+                 setStemMode(true)                       stems wired + runway ≥ 4 s
+   FULL MIX ─────────────────────────▶ PENDING .toStems ─────────────────────────────▶ STEMS
+  (player)   ◀── toggle off / fetch      ("Loading stems…";   (or complete files        (4 nodes)
+     ▲            fails / new track /     full mix plays on)   covering the playhead)       │
+     │            eject: request drops                                                      │
+     │                                                                                      │
+     │        full mix has runway at the playhead           setStemMode(false)              │
+     └──────────────────────────────── PENDING .toFullMix ◀─────────────────────────────────┘
+                                         ("Loading full mix…"; stems play on)
+```
+
+- **The switch itself** (`cutToStems` / `cutToFullMix`): on an audibly-playing deck the incoming
+  voice is scheduled from the OUTGOING voice's render-clock position projected to a host time
+  ~60 ms out, started there with `play(at:)` at gain 0, and the two cross linearly over 60 ms
+  (linear, not equal-power: stems sum back to the mix, so the voices are coherent). Only then is
+  the outgoing voice stopped. A silent deck (paused, cued, or HELD for bytes) switches outright.
+  Every transport path that stops/re-schedules voices `settleStemFade`s first.
+- **Sources across streaming:** stems not on disk STREAM (`MixStreamLoader.openStems`, public
+  objects, all four together, adopted into the burn folder when done) or are fetched whole
+  (`stemFetcher`). A streaming source that runs dry hands over to the other one when it has audio:
+  partial stems hand back to the full mix `stemUnderrunLead` (1 s) before their frontier and
+  re-engage with 4 s of runway; a HELD full mix is rescued by stems that have runway. A deck HOLDS
+  (Buffering…) only when neither source has audio at the playhead.
+- **Generations:** `stemIntentGen` is bumped by every request, track change and eject; a fetch
+  completing for a superseded request touches nothing. Fade steps check `stemFadeGen`.
 
 ## Known limitations
 
@@ -115,3 +150,12 @@ file (`mix-audio-graph.svg`).
   past it holds at the target until the bytes arrive). The frame↔byte map trusts the LAME/Xing
   full-length header of our 256 kbps CBR rips; a headerless file plays only once complete. An
   analog song without a fetchable per-song cut streams its whole album side up to `startMs`.
+- **Handover alignment is render-clock accurate, not sample-locked.** The incoming voice starts
+  at the outgoing voice's projected source position for the start host time; at a non-1.0×
+  tempo the projection rides the time-stretch's rate, so expect sub-buffer (≈ms) error, hidden
+  under the 60 ms crossfade. A handover on a LOOPING deck re-arms the loop on the new voices
+  (the pre-handover re-schedule, a brief gap) instead of crossfading.
+- **Stem streams are not range-windowed.** Stems stream whole (≈4 × 8 MB for a 4-minute song)
+  alongside the deck's own stream; on a slow link they compete for bandwidth with the on-air
+  full mix. The full mix still plays first-come (the handover waits), but its own runway can
+  shrink while stems download.

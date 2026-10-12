@@ -358,6 +358,8 @@ final class CarPlayModel {
 
     func stemModeOn() -> Bool { services.mix.stemModeOn(mixLeadDeck) }
     func setStemMode(_ on: Bool) { services.mix.setStemMode(on, on: mixLeadDeck) }
+    /// A stem handover is waiting for its incoming voice (stems loading — the full mix plays on).
+    func stemsLoading() -> Bool { services.mix.stemHandover(mixLeadDeck) != nil }
     func isStemMuted(_ name: String) -> Bool { services.mix.isStemMuted(name, on: mixLeadDeck) }
     /// Tapping a mute while stems mode is off turns stems mode on first — the exact one-tap
     /// behavior TV's row gives (`if !stemsOn { engine.setStemMode(true, on: deck) }`).

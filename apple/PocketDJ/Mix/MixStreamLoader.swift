@@ -68,6 +68,24 @@ final class MixStreamLoader {
         }
     }
 
+    /// A song's 4 Demucs stems streaming TOGETHER (the Mix deck's stems-while-streaming lane).
+    /// Each part is an ordinary `Stream` keyed `stem:<songId>:<part>` — the same sink, Range
+    /// resume and retry plumbing as a song stream. Stems are public objects (no presign), CBR
+    /// mp3s WITHOUT a Xing header, so an `AVAudioFile` opened on a partial part reports the
+    /// length of the bytes present — the engine reads that (and the byte count) as each part's
+    /// frontier. Never adopted mid-flight: once all four land they MOVE into the burn folder as
+    /// ordinary burned stems (`BurnStore.adoptStreamedStems`), so the next request is instant.
+    final class StemSet {
+        let songId: String
+        /// Part name (`MixEngine.stemNames`) → its stream.
+        let parts: [String: Stream]
+        /// The four files now live in the burn folder (`finalURL` of each part names it).
+        fileprivate(set) var adopted = false
+        init(songId: String, parts: [String: Stream]) { self.songId = songId; self.parts = parts }
+        var isComplete: Bool { !parts.isEmpty && parts.values.allSatisfy(\.isComplete) }
+        var failed: Bool { parts.values.contains(where: \.failed) }
+    }
+
     // MARK: Tunables
 
     static var maxConcurrent = 3
@@ -87,10 +105,17 @@ final class MixStreamLoader {
     var onFailed: ((String) -> Void)?
     /// The song ids some deck is playing right now — never cancelled to make room.
     var pinnedIds: (() -> Set<String>)?
+    /// A stem set's bytes landed / it completed (and was adopted) / it failed — the BASE song id
+    /// (main actor). Part events never reach `onProgress`/`onFailed`/`onBytes`: the song lanes
+    /// (engine pump, collection downloader) only ever see song ids.
+    var onStemProgress: ((String) -> Void)?
 
     // MARK: State
 
     private(set) var streams: [String: Stream] = [:]
+    /// Stem sets by base song id (live, finished or failed — a failed set is dropped on failure).
+    private(set) var stemSets: [String: StemSet] = [:]
+    private var recentStemFailures: [String: Date] = [:]
     private var recentFailures: [String: Date] = [:]
     /// The device has a usable network path (NWPathMonitor; optimistic until the first update).
     private(set) var networkAvailable = true
@@ -200,6 +225,78 @@ final class MixStreamLoader {
         return s
     }
 
+    // MARK: Stems
+
+    nonisolated static let stemKeyPrefix = "stem:"
+    /// The `streams` key of one stem part.
+    nonisolated static func stemKey(_ songId: String, _ part: String) -> String { "\(stemKeyPrefix)\(songId):\(part)" }
+    /// The base song id of a stem-part key; nil for a song key. Pure.
+    nonisolated static func stemSongId(fromKey key: String) -> String? {
+        guard key.hasPrefix(stemKeyPrefix) else { return nil }
+        let rest = key.dropFirst(stemKeyPrefix.count)
+        guard let colon = rest.lastIndex(of: ":") else { return nil }   // part names never hold a colon
+        return String(rest[..<colon])
+    }
+
+    /// Can `songId`'s stems start streaming? Stemmed in the manifest, a network path, and not
+    /// failed within the cooldown. (Public objects — no rip server needed, unlike a song stream.)
+    func canStreamStems(_ songId: String) -> Bool {
+        if let set = stemSets[songId], !set.failed { return true }
+        guard networkAvailable, rips.stemURLs(forSong: songId) != nil else { return false }
+        if let t = recentStemFailures[songId], Date().timeIntervalSince(t) < Self.failureCooldown { return false }
+        return true
+    }
+
+    func stemSet(for songId: String) -> StemSet? { stemSets[songId] }
+
+    /// Begin (or join) streaming `songId`'s 4 stems, all at once (the engine can only switch
+    /// once EVERY part has runway, so they must arrive together). Returns nil when it can't.
+    @discardableResult
+    func openStems(_ songId: String) -> StemSet? {
+        if let set = stemSets[songId], !set.failed {
+            let files = set.parts.values.map { ($0.finalURL ?? $0.fileURL).path }
+            if !set.isComplete || files.allSatisfy({ FileManager.default.fileExists(atPath: $0) }) { return set }
+        }
+        guard canStreamStems(songId), let remote = rips.stemURLs(forSong: songId) else { return nil }
+        var parts: [String: Stream] = [:]
+        var sources: [(Stream, URL)] = []
+        for name in MixEngine.stemNames {
+            guard let url = remote[name] else { return nil }
+            // `.mp3` extension: AVAudioFile picks its decoder from it.
+            let file = dir.appendingPathComponent("\(Self.safe(songId))-stem-\(name)-\(UUID().uuidString.prefix(8)).mp3")
+            FileManager.default.createFile(atPath: file.path, contents: nil)
+            let s = Stream(songId: Self.stemKey(songId, name), fileURL: file, title: name, artist: "")
+            parts[name] = s
+            sources.append((s, url))
+        }
+        let set = StemSet(songId: songId, parts: parts)
+        stemSets[songId] = set
+        recentStemFailures[songId] = nil
+        for (s, url) in sources {
+            streams[s.songId] = s
+            start(s, url: url, offset: 0)     // public object: no presign, no bearer
+        }
+        DiagLog.shared.telemetry("mixstream", "stems open \(songId)")
+        return set
+    }
+
+    /// Route an event for `key` to the right listener: a stem part fans out as its base song.
+    private func notify(_ key: String) {
+        if let base = Self.stemSongId(fromKey: key) { onStemProgress?(base) } else { onProgress?(key) }
+    }
+
+    /// All four parts landed: MOVE them into the burn folder as ordinary burned stems (a deck's
+    /// open `AVAudioFile`s keep reading the same inodes).
+    private func adoptStemsIfComplete(_ base: String) {
+        guard let set = stemSets[base], set.isComplete, !set.adopted else { return }
+        var files: [String: URL] = [:]
+        for (name, s) in set.parts { files[name] = s.fileURL }
+        guard let moved = burns.adoptStreamedStems(songId: base, files: files) else { return }
+        for (name, url) in moved { set.parts[name]?.finalURL = url }
+        set.adopted = true
+        DiagLog.shared.telemetry("mixstream", "stems done \(base)")
+    }
+
     /// Cancel streams (collection run cancelled). Deck-pinned songs are left alone.
     func cancel(songIds: [String]) {
         let pinned = pinnedIds?() ?? []
@@ -239,7 +336,9 @@ final class MixStreamLoader {
 
     /// Keep at most `maxConcurrent` live transfers: cancel the OLDEST one no deck is playing.
     private func makeRoom() {
-        let live = streams.values.filter { !$0.isComplete && !$0.failed }
+        // Stem parts ride their own lane (a set is opened for an on-air deck only) — never
+        // counted against, or evicted for, the song streams' cap.
+        let live = streams.values.filter { !$0.isComplete && !$0.failed && Self.stemSongId(fromKey: $0.songId) == nil }
         guard live.count >= Self.maxConcurrent else { return }
         let pinned = pinnedIds?() ?? []
         if let victim = live.filter({ !pinned.contains($0.songId) }).min(by: { $0.startedAt < $1.startedAt }) {
@@ -272,7 +371,7 @@ final class MixStreamLoader {
                         self.start(s, url: url, offset: 0)
                     }
                 } else {
-                    tripServerDown("HTTP \(status)")
+                    if Self.stemSongId(fromKey: id) == nil { tripServerDown("HTTP \(status)") }
                     fail(s, why: "HTTP \(status)")
                 }
                 return
@@ -284,12 +383,12 @@ final class MixStreamLoader {
             }
             s.expectedBytes = contentRangeTotal ?? (expected > 0 ? expected + (status == 206 ? s.bytesReceived : 0) : nil)
             s.resolved = true
-            onProgress?(id)
+            notify(id)
         case let .bytes(task, total, delta):
             guard let id = byTask[task], let s = streams[id] else { return }
             s.bytesReceived = total
-            onBytes?(id, delta)
-            onProgress?(id)
+            if Self.stemSongId(fromKey: id) == nil { onBytes?(id, delta) }
+            notify(id)
         case let .finished(task, total, error):
             guard let id = byTask[task], let s = streams[id] else { return }
             byTask[task] = nil
@@ -302,7 +401,7 @@ final class MixStreamLoader {
                     DiagLog.shared.telemetry("mixstream", "resume \(id) at \(total) try=\(s.retries) err=\((error as NSError).code)")
                     start(s, url: url, offset: total)
                 } else {
-                    tripServerDown("network")
+                    if Self.stemSongId(fromKey: id) == nil { tripServerDown("network") }
                     fail(s, why: "network \((error as NSError).domain)#\((error as NSError).code)")
                 }
                 return
@@ -326,14 +425,30 @@ final class MixStreamLoader {
         }
         let secs = Date().timeIntervalSince(s.startedAt)
         DiagLog.shared.telemetry("mixstream", "done \(s.songId) bytes=\(s.bytesReceived) secs=\(String(format: "%.1f", secs)) adopted=\(s.finalURL != s.fileURL ? 1 : 0)")
-        onProgress?(s.songId)
+        if let base = Self.stemSongId(fromKey: s.songId) { adoptStemsIfComplete(base) }
+        notify(s.songId)
     }
 
     private func fail(_ s: Stream, why: String) {
         cancelTransfer(s)
         s.failed = true
-        recentFailures[s.songId] = Date()
         DiagLog.shared.log("error", "mixstream FAIL \(s.songId): \(why) bytes=\(s.bytesReceived)")
+        if let base = Self.stemSongId(fromKey: s.songId) {
+            // One dead part sinks the set (a deck needs all four): stop its siblings, cool the
+            // song down, and tell the engine — the deck keeps (or returns to) the full mix.
+            recentStemFailures[base] = Date()
+            if let set = stemSets[base] {
+                for p in set.parts.values where p !== s && !p.isComplete {
+                    cancelTransfer(p)
+                    streams[p.songId] = nil
+                }
+                stemSets[base] = nil
+            }
+            streams[s.songId] = nil
+            onStemProgress?(base)
+            return
+        }
+        recentFailures[s.songId] = Date()
         onProgress?(s.songId)
         onFailed?(s.songId)
         // Keep a failed stream that already has bytes: a deck may be playing its prefix. Drop
@@ -372,6 +487,41 @@ final class MixStreamLoader {
     }
     func failStreamForTesting(_ songId: String) {
         guard let s = streams[songId] else { return }
+        fail(s, why: "test")
+    }
+
+    /// Script a STEM set without a network: each part's pre-written file + byte count (one
+    /// `expected` length for every part). `finished` completes all four (→ adoption).
+    @discardableResult
+    func injectStemsForTesting(songId: String, files: [String: URL], bytes: [String: Int64],
+                               expected: Int64?, finished: Bool = false) -> StemSet {
+        let set: StemSet
+        if let existing = stemSets[songId] {
+            set = existing
+        } else {
+            var parts: [String: Stream] = [:]
+            for (name, url) in files {
+                let s = Stream(songId: Self.stemKey(songId, name), fileURL: url, title: name, artist: "")
+                parts[name] = s
+                streams[s.songId] = s
+            }
+            set = StemSet(songId: songId, parts: parts)
+            stemSets[songId] = set
+        }
+        for (name, s) in set.parts {
+            s.resolved = true
+            s.bytesReceived = bytes[name] ?? s.bytesReceived
+            s.expectedBytes = expected
+        }
+        if finished {
+            for s in set.parts.values where !s.isComplete { s.isComplete = true; s.finalURL = s.fileURL }
+            adoptStemsIfComplete(songId)
+        }
+        onStemProgress?(songId)
+        return set
+    }
+    func failStemsForTesting(_ songId: String) {
+        guard let s = stemSets[songId]?.parts.values.first else { return }
         fail(s, why: "test")
     }
 }

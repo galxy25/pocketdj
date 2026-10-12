@@ -534,7 +534,10 @@ final class MixEngine {
     // download completes the deck swaps to the final (adopted burn) file and is an ordinary deck.
 
     /// Wired at app init; nil in tests ⇒ streaming is off and `load` behaves exactly as before.
-    @ObservationIgnored var streamer: MixStreamLoader?
+    /// Its stem lane reports straight back here (the song lane's `onProgress` is wired by the owner).
+    @ObservationIgnored var streamer: MixStreamLoader? {
+        didSet { streamer?.onStemProgress = { [weak self] songId in self?.stemStreamProgressed(songId) } }
+    }
     /// The stream each still-streaming deck plays (nil once complete → ordinary file deck).
     @ObservationIgnored private var deckStreams: [Deck: MixStreamLoader.Stream] = [:] {
         didSet { publishStreamState() }
@@ -574,6 +577,61 @@ final class MixEngine {
     @ObservationIgnored private var stemPlayers: [Deck: [String: AVAudioPlayerNode]] = [:]
     @ObservationIgnored private var stemFiles: [Deck: [String: AVAudioFile]] = [:]
     @ObservationIgnored private var stemReleases: [Deck: () -> Void] = [:]
+
+    // MARK: Zero dead air — the stem HANDOVER
+    //
+    // CARDINAL RULE: the on-air deck never goes silent because of an ENGINE transition. Switching
+    // a deck between its full mix and its stems is a HANDOVER, not a stop/start: the outgoing
+    // voice keeps playing until the incoming one is wired AND has runway past the playhead, then
+    // the two cross over sample-aligned at one shared host time under a short fade
+    // (`cutToStems` / `cutToFullMix`). Asking for stems that aren't on disk yet — still to be
+    // streamed (`MixStreamLoader.openStems`) or fetched (`stemFetcher`) — records the INTENT
+    // (`stemHandovers`, the deck's "Loading stems…" state) while the full mix plays on; a fetch
+    // that fails, a toggle back, a track change or an eject simply drops it. The same rule runs
+    // the other way (stems → full mix waits for the full mix's runway) and across sources: a
+    // streaming voice that runs dry hands over to the other source when THAT one has audio, and
+    // only a deck with nothing playable anywhere HOLDS (Buffering…). Generation discipline:
+    // every intent change bumps `stemIntentGen`, and an async completion or a fade step that
+    // finds its generation stale touches nothing.
+
+    enum StemHandover: Equatable {
+        case toStems      // stems asked for; the full mix stays on air until they have runway
+        case toFullMix    // stems released; they stay on air until the full mix has runway
+    }
+    /// A deck's pending handover (OBSERVABLE — drives the "Loading stems…" capsule + the Stems
+    /// button's spinner). nil = the deck is on the voice its intent asks for.
+    private(set) var stemHandovers: [Deck: StemHandover] = [:]
+    @ObservationIgnored private var stemIntentGen: [Deck: Int] = [:]
+    /// The whole-file stem fetch (no stem streaming available) — cancelled with the intent.
+    @ObservationIgnored private var stemFetchTasks: [Deck: Task<Void, Never>] = [:]
+    /// Not-on-disk stems the deck is STREAMING (nil once complete and adopted).
+    @ObservationIgnored private var deckStemStreams: [Deck: MixStreamLoader.StemSet] = [:]
+    /// While a deck's stems are PARTIAL (streaming, or a dead stream's leftovers): the seconds
+    /// from 0:00 that every part can play. nil ⇒ the wired stems are complete files.
+    @ObservationIgnored private var stemFrontier: [Deck: Double] = [:]
+    /// How far the stem nodes are scheduled (song seconds), and where their segment began — the
+    /// stems' twin of `endFrames` / `segmentStartSeconds` for the append pump + the playhead.
+    @ObservationIgnored private var stemEndSeconds: [Deck: Double] = [:]
+    @ObservationIgnored private var stemSegmentStartSeconds: [Deck: Double] = [:]
+    /// Handover crossfade gains (1 = settled), multiplied onto the main player's unity volume and
+    /// the stems' per-stem balance. An in-flight fade is `stemFade`; `settleStemFade` snaps it.
+    @ObservationIgnored private var mainVoiceGain: [Deck: Float] = [:]
+    @ObservationIgnored private var stemVoiceGain: [Deck: Float] = [:]
+    @ObservationIgnored private var stemFade: [Deck: (toStems: Bool, task: Task<Void, Never>)] = [:]
+    @ObservationIgnored private var stemFadeGen: [Deck: Int] = [:]
+    /// Fetch `songId`'s stems WHOLE when they can't be streamed (no streamer / not streamable);
+    /// returns whether all four are now on disk. nil ⇒ `BurnStore.burnStems`. Test seam.
+    @ObservationIgnored var stemFetcher: ((String) async -> Bool)?
+    /// Seconds of runway a STREAMING source needs past the playhead before a handover onto it
+    /// (complete files need only to cover the playhead). Mirrors `streamResumeRunway`.
+    nonisolated static let stemHandoverRunway: Double = 4
+    /// The handover crossfade. LINEAR, not equal-power: stems sum back to the full mix, so the
+    /// two voices are coherent — linear gains keep the sum constant (equal-power would bump it
+    /// +3 dB mid-fade).
+    nonisolated static let stemHandoverFade: Double = 0.06
+    /// Partial stems hand back to the full mix this far before their frontier (while they still
+    /// have audio to crossfade out of); they re-engage once they have `stemHandoverRunway` again.
+    nonisolated static let stemUnderrunLead: Double = 1.0
     #if os(iOS)
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
     @ObservationIgnored private var routeChangeObserver: NSObjectProtocol?
@@ -1105,6 +1163,12 @@ final class MixEngine {
     /// state: engine renders on, node silently stopped).
     func parkPlayerNodeForTesting(_ deck: Deck) { players[deck]?.pause() }
     func playerNodeIsPlayingForTesting(_ deck: Deck) -> Bool { players[deck]?.isPlaying ?? false }
+    /// Stem handover seams: are the deck's stem NODES rendering, is a handover crossfade still in
+    /// flight, how far are the stems scheduled (song seconds), and is a whole-file stem fetch pending?
+    func stemNodesPlayingForTesting(_ deck: Deck) -> Bool { (stemPlayers[deck] ?? [:]).values.contains { $0.isPlaying } }
+    func stemFadeInFlightForTesting(_ deck: Deck) -> Bool { stemFade[deck] != nil }
+    func stemEndSecondsForTesting(_ deck: Deck) -> Double? { stemEndSeconds[deck] }
+    func stemFetchPendingForTesting(_ deck: Deck) -> Bool { stemFetchTasks[deck] != nil }
     /// The LIVE filter-band frequency on a slot's filter node — lets a modulation test assert the
     /// LFO actually moves the graph (and snaps back) without reaching into AVAudio.
     func slotFilterFrequencyForTesting(_ i: Int, on deck: Deck) -> Float? {
@@ -1158,9 +1222,7 @@ final class MixEngine {
         if built { engine.stop() }
         releases[.a]?(); releases[.a] = nil
         releases[.b]?(); releases[.b] = nil
-        stemReleases[.a]?(); stemReleases[.a] = nil
-        stemReleases[.b]?(); stemReleases[.b] = nil
-        stemFiles = [:]
+        resetStemIntent(.a); resetStemIntent(.b)   // cancels fetches + fades, drops stems + scopes
         clearStream(.a); clearStream(.b)
         mutate(.a) { $0.loaded = nil; $0.startMs = nil }
         mutate(.b) { $0.loaded = nil; $0.startMs = nil }
@@ -1264,6 +1326,7 @@ final class MixEngine {
         let count = windowed.map { min(available, max(0, $0)) } ?? available
         guard count > 0 else { release?(); return }    // over-length startMs / empty file — keep current track
 
+        resetStemIntent(deck)              // BEFORE scheduling: landing a handover fade stops the player
         player.stop()
         clearStream(deck)                  // a real file load supersedes any stream on this deck
         engine.connect(player, to: inputMixer, format: file.processingFormat)   // only the varying link
@@ -1297,7 +1360,7 @@ final class MixEngine {
             $0.loopOn = false         // the PREVIOUS track's window means nothing here
         }
         clearLoopState(deck)          // …and drop its resolved window + pass count
-        unwireStems(deck)             // drop the prior track's stem files + scope
+        resetStemIntent(deck)         // drop the prior track's stem files/stream/request + scope
         // Loading stopped this deck OUTSIDE setPlaying (direct isPlaying=false above) — mirror the
         // sticky-card update so the card can't later fall back to this deck's never-played new track
         // (e.g. blend on A+B, queue a new song onto B, pause A → the card must stay on A).
@@ -1350,6 +1413,7 @@ final class MixEngine {
         guard let player = players[deck], let streamer,
               let stream = streamer.open(songId, title: meta.title, artist: meta.artist) else { return }
         masterPausedDecks.remove(deck)
+        resetStemIntent(deck)              // BEFORE re-arming the player (see `loadFile`)
         player.stop()
         clearStream(deck)
         releases[deck]?(); releases[deck] = nil
@@ -1452,6 +1516,7 @@ final class MixEngine {
             endFrames[deck] = frontier
         }
         if s.isComplete, endFrames[deck] == fullEnd, streamHolding[deck] != true { finishStream(deck, s) }
+        if stemHandovers[deck] != nil { advanceStemHandover(deck) }   // the full mix's runway grew
     }
 
     /// The download finished and the whole window is scheduled: become an ordinary file deck on
@@ -1475,6 +1540,20 @@ final class MixEngine {
     private func handleStreamFailure(_ deck: Deck) {
         guard let s = deckStreams[deck] else { return }
         let songId = s.songId
+        if stemActive(deck) {
+            // The STEMS carry this deck: a dead full-mix stream must not eject or truncate the
+            // song. Keep whatever full mix arrived (a stems→full-mix handover still works where
+            // it has frames; beyond them the deck simply stays on its stems).
+            // (`endFrames` stays at the frontier, so `mainEndSeconds` bounds that handover.)
+            DiagLog.shared.log("error", "mixstream deck \(deck.rawValue) \(songId) failed — stems carry the deck")
+            clearStream(deck)
+            if stemHandovers[deck] == .toFullMix {
+                // A pending "back to the full mix" it can't reach any more: stay on stems.
+                if mainEndSeconds(deck) - position(deck) <= 0.05 { stemHandovers[deck] = nil }
+                else { advanceStemHandover(deck) }
+            }
+            return
+        }
         if files[deck] == nil || endFrames[deck] == startFrames[deck] {
             let wasLive = autoMixing && deck == autoLiveDeck && state(deck).isPlaying
             DiagLog.shared.log("error", "mixstream deck \(deck.rawValue) drop \(songId) — stream failed before audio")
@@ -1589,6 +1668,7 @@ final class MixEngine {
     /// state without touching the schedule, so the deck resumes from where it stopped.
     private func resumePlayingDecks() {
         for d in Deck.allCases where state(d).isPlaying && !streamHeld(d) {   // held: the pump resumes it
+            settleStemFade(d)        // land any handover crossfade before re-priming
             ensureDeckScheduled(d)   // an engine uninit DROPS schedules — re-arm before re-priming
             if stemActive(d) {
                 for n in (stemPlayers[d] ?? [:]).values where n.isPlaying { n.pause() }
@@ -1608,7 +1688,7 @@ final class MixEngine {
     /// intent first, and seek/restart stop+re-play inside one main-actor turn the tick can't
     /// interleave). Callers must ensure the engine is RUNNING (play() on a dead engine traps).
     private func healParkedPlayers() {
-        for d in Deck.allCases where state(d).isPlaying && !streamHeld(d) {   // held = parked ON PURPOSE
+        for d in Deck.allCases where state(d).isPlaying && !streamHeld(d) && stemFade[d] == nil {   // held = parked ON PURPOSE
             if stemActive(d) {
                 if let nodes = stemPlayers[d], nodes.values.contains(where: { !$0.isPlaying }) {
                     dlog("heal: re-kick STEMS deck \(d.rawValue)")
@@ -1859,6 +1939,7 @@ final class MixEngine {
 
     /// Return a deck to the BEGINNING (its window's start frame) and resume if it was playing.
     func restart(_ deck: Deck) {
+        settleStemFade(deck)
         let was = state(deck).isPlaying
         clearLoopState(deck)   // rewinding past the window would leave a stale loop half-armed
         if stemActive(deck) {                              // stem mode: rewind + re-sync the 4 stems
@@ -1933,7 +2014,7 @@ final class MixEngine {
     private func ejectDeckCore(_ deck: Deck) {
         setPlaying(deck, false)          // emit .pause if it was running (BEFORE we forget the track)
         stopActiveNodes(deck)            // stop the single file + any stem voices
-        unwireStems(deck)                // drop stem files + their security scope
+        resetStemIntent(deck)            // drop stem files/stream/request + their security scope
         releases[deck]?(); releases[deck] = nil   // release the main file's scope
         files[deck] = nil; paths[deck] = nil; sampleRates[deck] = nil
         startFrames[deck] = nil; endFrames[deck] = nil; segmentStartSeconds[deck] = nil
@@ -1967,6 +2048,17 @@ final class MixEngine {
             persistMixDeckSession(debounced: true)
             return
         }
+        settleStemFade(deck)
+        // STREAMING stems that don't reach the target yet: the seek lands on the full mix (which
+        // holds there if IT hasn't the bytes either) and the stems re-engage once they have
+        // runway — a stem seek past the stems' frontier would schedule nothing (dead air).
+        if stemActive(deck), stemFrontier[deck] != nil,
+           !Self.handoverReady(runway: stemFrontierOrEnd(deck) - clamped, complete: false,
+                               songLeft: duration(deck) - clamped) {
+            stopStemNodes(deck)
+            mutate(deck) { $0.stemMode = false }
+            stemHandovers[deck] = deckStemStreams[deck] != nil && stemHandovers[deck] != .toFullMix ? .toStems : nil
+        }
         if stemActive(deck) {                            // stem mode: re-seek + re-sync the 4 stems
             stopStemNodes(deck)
             let ok = scheduleStems(deck, fromSeconds: clamped)
@@ -1999,6 +2091,7 @@ final class MixEngine {
                 setPlaying(deck, true)                        // was already playing → no spurious event
             }
         }
+        advanceStemHandover(deck)        // a pending handover may have runway at the new spot
         refreshTransport()
         startTickIfNeeded()
         refreshAutoDeckEndIfLive(deck)   // auto-mix: re-time the crossfade to the NEW position
@@ -2151,6 +2244,7 @@ final class MixEngine {
     private func armLoop(_ deck: Deck, resumeAt: Double? = nil) -> Bool {
         guard let w = loopWindow(deck), built else { return false }
         guard loopSchedulable(deck, window: w) else { return false }   // ← check before any stop()
+        settleStemFade(deck)
         let was = state(deck).isPlaying
         // A resume point strictly inside the window becomes a shorter FIRST pass; the tail passes
         // are whole windows, so the loop is phase-continuous from wherever it already was.
@@ -3560,61 +3654,59 @@ final class MixEngine {
 
     // MARK: - Stems (per-deck stem-mode playback + grid)
 
-    /// Stem mode is ON for this deck (the grid shows; Play drives the 4 stems).
-    func stemModeOn(_ deck: Deck) -> Bool { state(deck).stemMode }
+    /// Stem mode is ON for this deck — the user's INTENT: on stems, or loading them (a pending
+    /// handover onto them), and not on its way back to the full mix. Drives every Stems toggle.
+    func stemModeOn(_ deck: Deck) -> Bool {
+        switch stemHandovers[deck] {
+        case .toStems?: return true
+        case .toFullMix?: return false
+        case nil: return state(deck).stemMode
+        }
+    }
     /// Stem mode is on AND the 4 stem files are wired (playback actually routes to stems).
     func stemActive(_ deck: Deck) -> Bool { state(deck).stemMode && (stemFiles[deck]?.isEmpty == false) }
+    /// The deck's pending handover (nil when it's on the voice its intent asks for). Observable.
+    func stemHandover(_ deck: Deck) -> StemHandover? { stemHandovers[deck] }
     func isStemMuted(_ name: String, on deck: Deck) -> Bool { state(deck).stemMuted.contains(name) }
     func stemVolume(_ name: String, on deck: Deck) -> Double { state(deck).stemVol[name] ?? 1.0 }
 
-    /// Enable / disable stem mode for a deck. Enabling resolves the BURNED-local 4 stems (the caller
-    /// burns them first — see `BurnStore.burnStems`) and routes the deck through them, still THROUGH
-    /// the deck's effect chain + crossfader; disabling returns to the single mixed file. Switches live
-    /// when the deck is already playing (a brief re-schedule gap). No-op (stays off) when the track
-    /// has no locally-burned stems.
+    /// Ask for the deck's stems (on) or its full mix (off). This records INTENT; the audio follows
+    /// under the zero-dead-air rule (see `StemHandover`): stems on disk with the deck paused or
+    /// cued switch at once; on a playing deck the full mix crossfades into them at the playhead;
+    /// stems NOT on disk are streamed (or fetched) while the full mix plays on, and taken over
+    /// once they have runway. Off waits, the same way, for the full mix's runway (a streaming
+    /// deck's download may lag a stem-mode playhead). A song with no stems anywhere simply keeps
+    /// its full mix (the intent drops). Idempotent; a later call supersedes an earlier pending one.
     func setStemMode(_ on: Bool, on deck: Deck) {
         guard state(deck).loaded != nil else { return }
         ensureEngine()
-        let was = state(deck).isPlaying
-        let pos = position(deck)
+        stemIntentGen[deck, default: 0] &+= 1          // every in-flight fetch for the old intent is stale
+        stemFetchTasks.removeValue(forKey: deck)?.cancel()
+        if on != stemModeOn(deck) { rec(.stemMode, deck, flag: on) }   // the gesture, not the eventual handover
         if on {
-            guard wireStems(deck) else { return }    // no local stems → can't enter stem mode
-            // Schedule the stems BEFORE muting the main file, and ONLY commit to stem mode if they
-            // actually scheduled. Clamp `pos` to just inside the shortest stem so an end-of-track
-            // playhead (the auto-mix tick pins it at `duration`, e.g. right after interrupting a mix)
-            // still lands on real audio instead of zero frames. Without this guard, the old code muted
-            // the main file, set stemMode=true, then discarded a failed `scheduleStems` → the deck went
-            // SILENT (both main stopped AND stems unscheduled) until you toggled stem mode back off.
-            guard scheduleStems(deck, fromSeconds: min(pos, maxStemSeconds(deck))) else { return }
-            players[deck]?.stop()                    // only NOW silence the single mixed file
-            fileScheduled[deck] = false
-            mutate(deck) { $0.stemMode = true }
-            rec(.stemMode, deck, flag: true)
-            applyStemGains(deck)
-            if was { startStems(deck) }
+            if stemActive(deck) {
+                // Already on stems — maybe on its way back: cancel that, the stems just stay.
+                if stemHandovers[deck] != nil { stemHandovers[deck] = nil; persistMixDeckSession() }
+                return
+            }
+            stemHandovers[deck] = .toStems
+            DiagLog.shared.telemetry("mixstems", "deck \(deck.rawValue) request \(state(deck).loaded?.songId ?? "-")")
+            // Not wired, or wired to a dead stream's leftovers: go find (more of) them.
+            if stemFiles[deck]?.isEmpty != false || (stemFrontier[deck] != nil && deckStemStreams[deck] == nil) {
+                requestStemSource(deck)
+            }
+            advanceStemHandover(deck)
         } else {
-            stopStemNodes(deck)
-            mutate(deck) { $0.stemMode = false }
-            rec(.stemMode, deck, flag: false)
-            // Re-prime (and resume) the single mixed file from the same spot.
-            guard built, let file = files[deck], let player = players[deck], let sr = sampleRates[deck],
-                  let start = startFrames[deck], let end = endFrames[deck] else { refreshTransport(); return }
-            let frame = min(max(start, start + AVAudioFramePosition(pos * sr)), end)
-            let count = end - frame
-            player.stop()
-            segmentStartSeconds[deck] = pos    // the single file resumes `pos` s in (true-playhead base)
-            fileScheduled[deck] = count > 0
-            if count > 0 {
-                player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
-                                       at: nil, completionHandler: nil)
-                if was, startEngineIfNeeded() { player.play() }   // dead engine → watchdog resumes
+            if !stemActive(deck) {
+                // Never got onto stems: drop the request — the full mix simply carries on.
+                dropPendingStems(deck)
+            } else {
+                stemHandovers[deck] = .toFullMix
+                advanceStemHandover(deck)
             }
         }
-        // A LIVE loop follows the deck across the mode flip: re-arm on whichever voices now play
-        // (the branches above scheduled the whole remaining track, which would run past the window).
-        if loopWindow(deck) != nil { armLoop(deck) }
         refreshTransport()
-        persistMixDeckSession()                  // stem-mode flip — structural, persist immediately
+        persistMixDeckSession()                  // stem intent flip — structural, persist immediately
     }
 
     func toggleStemMute(_ name: String, on deck: Deck) {
@@ -3631,11 +3723,426 @@ final class MixEngine {
         persistMixDeckSession(debounced: true)   // slider surface — one write per burst
     }
 
-    /// Resolve + open the deck track's 4 burned stem files and reconnect each stem node at the file's
-    /// format (only that link; the chain stays canonical). Holds the burn-folder scope. Returns false
-    /// when the track isn't stem-burned locally / a file won't open.
+    // MARK: Stem handover (zero dead air)
+
+    /// Find the deck's stems for a `.toStems` request: on disk (burned / profile) → wired now;
+    /// streamable → open the stem stream (the pump wires the parts once their first frames land);
+    /// else fetch them whole (`stemFetcher`) behind a generation guard, so a completion for a
+    /// superseded request (toggled off, new track, ejected) never claims the deck.
+    private func requestStemSource(_ deck: Deck) {
+        guard let songId = state(deck).loaded?.songId else { return }
+        if wireStems(deck) { return }
+        if let streamer, streamer.canStreamStems(songId), let set = streamer.openStems(songId) {
+            deckStemStreams[deck] = set
+            pumpStems(deck)
+            return
+        }
+        let gen = stemIntentGen[deck] ?? 0
+        let fetch: (String) async -> Bool = stemFetcher ?? { [burns] id in
+            guard let got = await burns.burnStems(forSong: id) else { return false }
+            got.release?()                       // `wireStems` re-acquires (and holds) its own scope
+            return true
+        }
+        stemFetchTasks[deck] = Task { @MainActor [weak self] in
+            let ok = await fetch(songId)
+            guard let self, !Task.isCancelled, self.stemIntentGen[deck] == gen,
+                  self.state(deck).loaded?.songId == songId, self.stemHandovers[deck] == .toStems else { return }
+            self.stemFetchTasks[deck] = nil
+            if ok, self.wireStems(deck) {
+                self.advanceStemHandover(deck)
+            } else {
+                DiagLog.shared.telemetry("mixstems", "deck \(deck.rawValue) unavailable \(songId) — full mix stays")
+                self.dropPendingStems(deck)
+                self.persistMixDeckSession()
+            }
+            self.refreshTransport()
+        }
+    }
+
+    /// The single decision point: does the deck's pending handover have what it needs NOW? Called
+    /// on every event that can change the answer — the request itself, a stem/main stream pump,
+    /// a fetch landing, a seek, the tick's underrun checks. Idempotent; never stops a voice that
+    /// has no successor with runway.
+    private func advanceStemHandover(_ deck: Deck) {
+        guard let h = stemHandovers[deck], state(deck).loaded != nil, built else { return }
+        let pos = position(deck)
+        switch h {
+        case .toStems:
+            guard stemFiles[deck]?.isEmpty == false else { return }   // still streaming its first frames / fetching
+            if stemFrontier[deck] == nil, !state(deck).isPlaying {
+                cutToStems(deck)               // complete stems on a silent deck: nothing to protect
+                return
+            }
+            guard Self.handoverReady(runway: stemFrontierOrEnd(deck) - pos, complete: stemFrontier[deck] == nil,
+                                     songLeft: duration(deck) - pos) else {
+                // Complete stems that can't cover the playhead never will (shorter than the mix,
+                // or the playhead sits at the very end): give up — the full mix plays on.
+                if stemFrontier[deck] == nil, deckStemStreams[deck] == nil { dropPendingStems(deck) }
+                return
+            }
+            cutToStems(deck)
+        case .toFullMix:
+            guard Self.handoverReady(runway: mainEndSeconds(deck) - pos, complete: mainComplete(deck),
+                                     songLeft: duration(deck) - pos) else { return }
+            cutToFullMix(deck)
+        }
+    }
+
+    /// Does a source with `runway` seconds of audio past the playhead qualify for a handover? A
+    /// complete source needs only to cover the playhead; a still-arriving one needs
+    /// `stemHandoverRunway` — or whatever is left of the song, near its end. Pure.
+    nonisolated static func handoverReady(runway: Double, complete: Bool, songLeft: Double) -> Bool {
+        guard runway > 0.05 else { return false }
+        if complete { return true }
+        return runway >= min(stemHandoverRunway, max(0.05, songLeft - 0.05))
+    }
+
+    /// Seconds of stem audio a fresh open of a part can play from 0:00. A complete part: its
+    /// length. A partial one (headerless CBR ⇒ an open reports the bytes present): that length,
+    /// capped by bytes ÷ its byte rate (`expectedBytes` over the song's seconds, else 256 kbps),
+    /// minus the torn-frame margin. Pure.
+    nonisolated static func stemPlayableSeconds(lengthSeconds: Double, bytes: Int64, expectedBytes: Int64?,
+                                                songSeconds: Double, complete: Bool) -> Double {
+        if complete { return max(0, lengthSeconds) }
+        var bps = CollectionMixDownloader.bytesPerPlaybackSecond
+        if let e = expectedBytes, e > 0, songSeconds > 0 { bps = Double(e) / songSeconds }
+        let byBytes = bps > 0 ? Double(bytes) / bps : 0
+        return max(0, min(lengthSeconds, byBytes) - streamFrontierMargin)
+    }
+
+    /// Where the wired stems' playable audio ends (song seconds): the frontier while partial,
+    /// else the shortest file's length.
+    private func stemFrontierOrEnd(_ deck: Deck) -> Double {
+        if let f = stemFrontier[deck] { return f }
+        guard let files = stemFiles[deck], !files.isEmpty else { return 0 }
+        return files.values.map { Double($0.length) / $0.processingFormat.sampleRate }.min() ?? 0
+    }
+
+    /// Where the FULL MIX's schedulable audio ends (song seconds): the byte frontier while
+    /// streaming, the window's end for a file, a truncated stream's last frame. 0 = nothing yet.
+    private func mainEndSeconds(_ deck: Deck) -> Double {
+        guard files[deck] != nil, let sr = sampleRates[deck], sr > 0,
+              let start = startFrames[deck], let end = endFrames[deck] else { return 0 }
+        return Double(end - start) / sr
+    }
+
+    /// Is the full mix all there (not still downloading)?
+    private func mainComplete(_ deck: Deck) -> Bool { deckStreams[deck] == nil }
+
+    /// FULL MIX → STEMS at the playhead. A deck that's audibly rendering its full mix crossfades:
+    /// the stems are scheduled from the main voice's exact source position at a host time ~60 ms
+    /// out, started there at gain 0, and the two cross linearly; only once the stems carry the
+    /// deck is the main file stopped. A silent deck (paused, cued, or HELD waiting for bytes)
+    /// switches outright — and a held deck un-holds: the stems ARE playable audio.
+    private func cutToStems(_ deck: Deck) {
+        settleStemFade(deck)
+        let pos = position(deck)
+        let audible = state(deck).isPlaying && engine.isRunning && !streamHeld(deck)
+            && loopWindow(deck) == nil && players[deck]?.isPlaying == true && fileScheduled[deck] == true
+        if audible, let t = handoverHostTime(), let p = mainPlayhead(deck, atHostTime: t) {
+            setVoiceGains(deck, main: 1, stems: 0)
+            guard scheduleStems(deck, fromSeconds: p) else { setVoiceGains(deck, main: 1, stems: 1); dropPendingStems(deck); return }
+            let when = AVAudioTime(hostTime: t)
+            for n in (stemPlayers[deck] ?? [:]).values { n.play(at: when) }
+            commitStemMode(deck, true)
+            runStemFade(deck, toStems: true, atHostTime: t)
+        } else {
+            // Clamp just inside the shortest stem so an end-of-track playhead (the auto tick pins
+            // it at `duration`) still lands on real audio.
+            let from = stemFrontier[deck] == nil ? min(pos, maxStemSeconds(deck)) : pos
+            guard scheduleStems(deck, fromSeconds: from) else { dropPendingStems(deck); return }
+            players[deck]?.stop()                // only NOW silence the single mixed file
+            fileScheduled[deck] = false
+            let wasHeld = streamHeld(deck)
+            if wasHeld { streamHolding[deck] = false }
+            commitStemMode(deck, true)
+            if loopWindow(deck) != nil {
+                armLoop(deck)                    // a live loop follows the deck onto its stems
+            } else if state(deck).isPlaying {
+                startStems(deck)
+                if wasHeld { restampAutoEnd(deck) }
+                startTickIfNeeded()
+            }
+        }
+        DiagLog.shared.telemetry("mixstems", "deck \(deck.rawValue) → stems @\(String(format: "%.1f", pos))s")
+    }
+
+    /// STEMS → FULL MIX at the playhead — `cutToStems` mirrored: an audible stem deck crossfades
+    /// into the main file scheduled from the stems' exact source position; a silent one switches.
+    private func cutToFullMix(_ deck: Deck) {
+        settleStemFade(deck)
+        let pos = position(deck)
+        let stemsRendering = (stemPlayers[deck] ?? [:]).values.contains { $0.isPlaying }
+        let audible = state(deck).isPlaying && engine.isRunning && loopWindow(deck) == nil
+            && stemsRendering && stemsScheduled[deck] == true
+        if audible, let t = handoverHostTime(), let p = stemPlayhead(deck, atHostTime: t),
+           let player = players[deck], scheduleMain(deck, fromSeconds: p) {
+            mainVoiceGain[deck] = 0
+            player.volume = 0
+            player.play(at: AVAudioTime(hostTime: t))
+            commitStemMode(deck, false)
+            runStemFade(deck, toStems: false, atHostTime: t)
+        } else {
+            stopStemNodes(deck)
+            commitStemMode(deck, false)
+            if loopWindow(deck) != nil {
+                armLoop(deck)
+            } else if scheduleMain(deck, fromSeconds: pos), state(deck).isPlaying, startEngineIfNeeded() {
+                players[deck]?.play()            // dead engine → stay scheduled; the watchdog resumes
+            }
+        }
+        DiagLog.shared.telemetry("mixstems", "deck \(deck.rawValue) → full mix @\(String(format: "%.1f", pos))s")
+    }
+
+    /// The handover is committed: the deck's voice of record flips (`stemActive` follows) and the
+    /// pending state clears. NOT recorded — the session log carries the user's GESTURE
+    /// (`setStemMode`); an engine-internal handover (an underrun hand-back) is no user action.
+    private func commitStemMode(_ deck: Deck, _ on: Bool) {
+        mutate(deck) { $0.stemMode = on }
+        stemHandovers[deck] = nil
+        applyStemGains(deck)
+        refreshTransport()
+        persistMixDeckSession()
+    }
+
+    /// Drop a `.toStems` request (failed, superseded, toggled off): unwire stems that never went
+    /// on air. The deck's full mix is untouched — it never stopped. A stem STREAM keeps
+    /// downloading in the loader (it's adopted as burned stems for next time).
+    private func dropPendingStems(_ deck: Deck) {
+        stemHandovers[deck] = nil
+        stemFetchTasks.removeValue(forKey: deck)?.cancel()
+        if !stemActive(deck) { unwireStems(deck) }
+    }
+
+    /// Schedule the deck's single file from `sec` WITHOUT starting it (the stems-off handover's
+    /// incoming voice). False when nothing is schedulable there.
+    private func scheduleMain(_ deck: Deck, fromSeconds sec: Double) -> Bool {
+        guard built, let file = files[deck], let player = players[deck], let sr = sampleRates[deck],
+              let start = startFrames[deck], let end = endFrames[deck] else { return false }
+        let frame = min(max(start, start + AVAudioFramePosition(max(0, sec) * sr)), end)
+        let count = end - frame
+        player.stop()
+        fileScheduled[deck] = false
+        guard count > 0 else { return false }
+        player.scheduleSegment(file, startingFrame: frame, frameCount: AVAudioFrameCount(count),
+                               at: nil, completionHandler: nil)
+        segmentStartSeconds[deck] = sec
+        fileScheduled[deck] = true
+        return true
+    }
+
+    /// The host time a handover starts at — far enough out (~60 ms, the `startStems` lead) that
+    /// the incoming voice is scheduled and primed before its first sample is due.
+    private func handoverHostTime() -> UInt64? {
+        guard engine.isRunning else { return nil }
+        return mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.06)
+    }
+
+    /// The SOURCE position (song seconds) a rendering voice will be at host time `t`: its render
+    /// clock (`playerTime.sampleTime` is in the file's frames and already advances at the
+    /// time-stretch rate — see `truePlayhead`) projected forward at the deck's rate. nil when the
+    /// voice isn't rendering.
+    private func voicePlayhead(_ node: AVAudioPlayerNode, sampleRate sr: Double, segmentStart: Double,
+                               rate: Double, atHostTime t: UInt64) -> Double? {
+        guard sr > 0, let nt = node.lastRenderTime, nt.isHostTimeValid,
+              let pt = node.playerTime(forNodeTime: nt) else { return nil }
+        let ahead = AVAudioTime.seconds(forHostTime: t) - AVAudioTime.seconds(forHostTime: nt.hostTime)
+        return segmentStart + Double(pt.sampleTime) / sr + max(0, ahead) * rate
+    }
+
+    private func mainPlayhead(_ deck: Deck, atHostTime t: UInt64) -> Double? {
+        guard let p = players[deck], let sr = sampleRates[deck] else { return nil }
+        return voicePlayhead(p, sampleRate: sr, segmentStart: segmentStartSeconds[deck] ?? 0,
+                             rate: state(deck).rate, atHostTime: t)
+    }
+
+    private func stemPlayhead(_ deck: Deck, atHostTime t: UInt64) -> Double? {
+        guard let files = stemFiles[deck], let nodes = stemPlayers[deck] else { return nil }
+        for name in Self.stemNames {             // all four share one start time — any rendering one tells
+            guard let n = nodes[name], n.isPlaying, let f = files[name] else { continue }
+            if let p = voicePlayhead(n, sampleRate: f.processingFormat.sampleRate,
+                                     segmentStart: stemSegmentStartSeconds[deck] ?? 0,
+                                     rate: state(deck).rate, atHostTime: t) { return p }
+        }
+        return nil
+    }
+
+    /// Step the handover crossfade from host time `t`. Each step re-checks its generation, so a
+    /// superseding transport action (which `settleStemFade`s first) ends it cleanly.
+    private func runStemFade(_ deck: Deck, toStems: Bool, atHostTime t: UInt64) {
+        stemFadeGen[deck, default: 0] &+= 1
+        let gen = stemFadeGen[deck] ?? 0
+        let task = Task { @MainActor [weak self] in
+            let lead = AVAudioTime.seconds(forHostTime: t) - AVAudioTime.seconds(forHostTime: mach_absolute_time())
+            if lead > 0 { try? await Task.sleep(nanoseconds: UInt64(lead * 1_000_000_000)) }
+            let steps = 6
+            for i in 1...steps {
+                guard let self, !Task.isCancelled, self.stemFadeGen[deck] == gen else { return }
+                let g = Float(i) / Float(steps)
+                self.setVoiceGains(deck, main: toStems ? 1 - g : g, stems: toStems ? g : 1 - g)
+                try? await Task.sleep(nanoseconds: UInt64(Self.stemHandoverFade / Double(steps) * 1_000_000_000))
+            }
+            guard let self, !Task.isCancelled, self.stemFadeGen[deck] == gen else { return }
+            self.settleStemFade(deck)
+        }
+        stemFade[deck] = (toStems, task)
+    }
+
+    /// Land an in-flight handover crossfade NOW: the outgoing voice stops, both gains return to
+    /// 1. Every path that stops, re-schedules or pauses a deck's voices calls this first, so no
+    /// transport action ever sees a half-faded deck. No-op when nothing is fading.
+    private func settleStemFade(_ deck: Deck) {
+        guard let f = stemFade.removeValue(forKey: deck) else { return }
+        stemFadeGen[deck, default: 0] &+= 1
+        f.task.cancel()
+        if f.toStems {
+            players[deck]?.stop()
+            fileScheduled[deck] = false
+        } else {
+            stopStemNodes(deck)
+        }
+        setVoiceGains(deck, main: 1, stems: 1)
+    }
+
+    private func setVoiceGains(_ deck: Deck, main: Float, stems: Float) {
+        mainVoiceGain[deck] = main
+        players[deck]?.volume = main
+        stemVoiceGain[deck] = stems
+        applyStemGains(deck)
+    }
+
+    // MARK: Stem streaming (stems played while they download)
+
+    /// The loader's stem fan-in: pump every deck waiting on / playing `songId`'s stem stream.
+    func stemStreamProgressed(_ songId: String) {
+        for d in Deck.allCases where deckStemStreams[d]?.songId == songId { pumpStems(d) }
+    }
+
+    /// Extend a deck's STREAMING stems to the new frontier: wire the four parts once each has a
+    /// decodable frame, append the next stretch to all four nodes in lockstep while they're on
+    /// air (same seconds range on every part ⇒ they stay sample-locked, exactly like the main
+    /// stream's appends), and let a pending handover re-check its runway. A failed set: a pending
+    /// request drops (the full mix never stopped); stems already on air hand back to it.
+    private func pumpStems(_ deck: Deck) {
+        guard let set = deckStemStreams[deck], built else { return }
+        if set.failed {
+            deckStemStreams[deck] = nil          // the leftover `stemFrontier` keeps bounding what's scheduled
+            DiagLog.shared.log("error", "mixstems deck \(deck.rawValue) stem stream failed \(set.songId)")
+            if stemActive(deck) {
+                stemHandovers[deck] = .toFullMix
+                advanceStemHandover(deck)
+            } else {
+                dropPendingStems(deck)
+            }
+            refreshTransport()
+            return
+        }
+        // Fresh opens: an open sees only the bytes present at open time.
+        var fresh: [String: AVAudioFile] = [:]
+        var frontier = Double.infinity
+        for (name, part) in set.parts {
+            guard part.resolved || part.isComplete,
+                  let f = try? AVAudioFile(forReading: part.finalURL ?? part.fileURL) else { return }
+            let sr = f.processingFormat.sampleRate
+            guard sr > 0 else { return }
+            fresh[name] = f
+            frontier = min(frontier, Self.stemPlayableSeconds(
+                lengthSeconds: Double(f.length) / sr, bytes: part.bytesReceived, expectedBytes: part.expectedBytes,
+                songSeconds: duration(deck), complete: part.isComplete))
+        }
+        guard fresh.count == Self.stemNames.count, frontier.isFinite else { return }
+        if stemFiles[deck]?.isEmpty != false {
+            guard frontier > 0.05, wireStemFiles(deck, fresh, release: nil) else { return }
+        } else if stemActive(deck), stemsScheduled[deck] == true, loopWindow(deck) == nil,
+                  let end = stemEndSeconds[deck], frontier > end {
+            // Small appends while the runway is short, big ones once it's comfortable (each
+            // pending segment pins an open file — see `pumpStream`).
+            let runway = end - position(deck)
+            let chunk = runway < Self.stemUnderrunLead + 0.5 ? 0.05 : (runway < 10 ? 1.0 : 15.0)
+            guard set.isComplete || frontier - end >= chunk else { return }
+            if let nodes = stemPlayers[deck] {
+                for (name, f) in fresh {
+                    guard let node = nodes[name] else { continue }
+                    let sr = f.processingFormat.sampleRate
+                    let a = min(AVAudioFramePosition(end * sr), f.length)
+                    let b = min(AVAudioFramePosition(frontier * sr), f.length)
+                    guard b > a else { continue }
+                    node.scheduleSegment(f, startingFrame: a, frameCount: AVAudioFrameCount(b - a),
+                                         at: nil, completionHandler: nil)
+                }
+            }
+            stemEndSeconds[deck] = frontier
+            stemFiles[deck] = fresh
+        } else if !stemActive(deck) || stemsScheduled[deck] != true {
+            stemFiles[deck] = fresh              // not on air: the next schedule reads the newest bytes
+        }
+        stemFrontier[deck] = frontier
+        if set.isComplete, !stemActive(deck) || (stemEndSeconds[deck] ?? 0) >= frontier || stemsScheduled[deck] != true {
+            finishStemStream(deck, set)
+        }
+        advanceStemHandover(deck)
+    }
+
+    /// The deck's stem stream is complete and fully scheduled: its stems are ordinary complete
+    /// files now. An adopted set is re-acquired through `BurnStore` so a security-scoped burn
+    /// folder stays readable for as long as the deck holds the stems.
+    private func finishStemStream(_ deck: Deck, _ set: MixStreamLoader.StemSet) {
+        if set.adopted, let r = burns.localStemURLs(forSong: set.songId) {
+            stemReleases[deck]?()
+            stemReleases[deck] = r.release
+        }
+        deckStemStreams[deck] = nil
+        stemFrontier[deck] = nil
+    }
+
+    /// Partial stems on air are running out (the tick's check): hand back to the full mix while
+    /// they still have audio to crossfade out of — keeping the stem intent pending while their
+    /// stream is alive, so they re-engage once they have runway again. With no full-mix runway
+    /// either, play the stems out to their last scheduled frame, then HOLD there (Buffering…)
+    /// and resume on whichever source gets runway first. Returns true when the deck held (the
+    /// tick must not advance it).
+    private func stemUnderrun(_ deck: Deck, at pos: Double) -> Bool {
+        guard stemActive(deck), stemFade[deck] == nil, let partial = stemFrontier[deck],
+              var end = stemEndSeconds[deck] else { return false }
+        let songEnd = duration(deck)
+        guard end < songEnd - 0.05, pos >= end - Self.stemUnderrunLead else { return false }
+        // Bytes that landed since the last pump may already cover it — append them first.
+        if deckStemStreams[deck] != nil, partial > end + 0.05 {
+            pumpStems(deck)
+            guard stemActive(deck), let e = stemEndSeconds[deck] else { return false }
+            end = e
+            guard end < songEnd - 0.05, pos >= end - Self.stemUnderrunLead else { return false }
+        }
+        // Keep wanting stems only while their stream can still deliver (and the user still wants them).
+        let wantStems = deckStemStreams[deck] != nil && stemHandovers[deck] != .toFullMix
+        if Self.handoverReady(runway: mainEndSeconds(deck) - pos, complete: mainComplete(deck), songLeft: songEnd - pos) {
+            DiagLog.shared.telemetry("mixstems", "deck \(deck.rawValue) stem underrun at \(String(format: "%.1f", pos))s → full mix")
+            cutToFullMix(deck)
+            if wantStems { stemHandovers[deck] = .toStems }   // intent stands; re-engage with runway
+            return false
+        }
+        guard pos >= end - 0.05 else { return false }       // the stems still have audio — play it out
+        DiagLog.shared.telemetry("mixstems", "deck \(deck.rawValue) stem underrun at \(String(format: "%.1f", pos))s → hold")
+        stopStemNodes(deck)
+        mutate(deck) { $0.stemMode = false }
+        stemHandovers[deck] = wantStems ? .toStems : nil
+        setPosition(deck, min(pos, end))
+        if deckStreams[deck] != nil {
+            players[deck]?.stop()
+            fileScheduled[deck] = false
+            streamHolding[deck] = true           // the main pump (or the stem pump) resumes it
+        } else {
+            rescheduleFile(deck, fromSeconds: min(pos, end))   // unreachable in practice: a whole file has runway
+            if state(deck).isPlaying, startEngineIfNeeded() { players[deck]?.play() }
+            return false
+        }
+        return true
+    }
+
+    /// Resolve + open the deck track's 4 burned stem files and wire them (see `wireStemFiles`).
+    /// Returns false when the track isn't stem-burned locally / a file won't open.
     private func wireStems(_ deck: Deck) -> Bool {
-        guard built, let songId = state(deck).loaded?.songId, let inputMixer = inputMixers[deck] else { return false }
+        guard built, let songId = state(deck).loaded?.songId else { return false }
         // Stem source: a "Pocket DJ" profile item's app-managed stems (no security scope), else the
         // burned set (scoped). Everything downstream is source-agnostic; profile just feeds release=nil.
         let urls: [String: URL]
@@ -3651,23 +4158,50 @@ final class MixEngine {
         for (name, url) in urls {
             if let f = try? AVAudioFile(forReading: url) { opened[name] = f }
         }
-        guard opened.count == Self.stemNames.count else { release?(); return false }
+        guard opened.count == Self.stemNames.count, wireStemFiles(deck, opened, release: release) else {
+            release?(); return false
+        }
+        deckStemStreams[deck] = nil          // complete files on disk supersede a stem stream
+        stemFrontier[deck] = nil
+        return true
+    }
+
+    /// Reconnect each stem node at its file's format (only that link; the chain stays canonical)
+    /// and hold the files + their scope.
+    private func wireStemFiles(_ deck: Deck, _ opened: [String: AVAudioFile], release: (() -> Void)?) -> Bool {
+        guard built, let inputMixer = inputMixers[deck], opened.count == Self.stemNames.count else { return false }
         for (name, file) in opened {
             guard let node = stemPlayers[deck]?[name] else { continue }
             node.stop()
             engine.connect(node, to: inputMixer, format: file.processingFormat)
         }
+        stemsScheduled[deck] = false
         stemReleases[deck]?()              // release a prior wiring's scope, hold the new one
         stemReleases[deck] = release
         stemFiles[deck] = opened
         return true
     }
 
-    /// Tear down a deck's stem wiring (stop nodes, drop files, release the burn-folder scope).
+    /// Tear down a deck's stem wiring (stop nodes, drop files + any stem stream, release the
+    /// burn-folder scope).
     private func unwireStems(_ deck: Deck) {
+        settleStemFade(deck)
         stopStemNodes(deck)
         stemFiles[deck] = nil
+        deckStemStreams[deck] = nil
+        stemFrontier[deck] = nil
+        stemEndSeconds[deck] = nil
+        stemSegmentStartSeconds[deck] = nil
         stemReleases[deck]?(); stemReleases[deck] = nil
+    }
+
+    /// Forget a deck's stem INTENT entirely (track change / eject): bump the generation so any
+    /// in-flight fetch is stale, drop the pending handover, unwire.
+    private func resetStemIntent(_ deck: Deck) {
+        stemIntentGen[deck, default: 0] &+= 1
+        stemFetchTasks.removeValue(forKey: deck)?.cancel()
+        stemHandovers[deck] = nil
+        unwireStems(deck)
     }
 
     /// The longest position (seconds) at which `scheduleStems` still gets real audio — just inside the
@@ -3686,22 +4220,29 @@ final class MixEngine {
         _ = scheduleStems(deck, fromSeconds: min(position(deck), maxStemSeconds(deck)))
     }
 
-    /// Schedule the 4 stem nodes from `posSec` (song-relative). Returns whether anything scheduled.
+    /// Schedule the 4 stem nodes from `posSec` (song-relative) up to the stems' playable end (the
+    /// frontier while they're still streaming). Returns whether anything scheduled.
     private func scheduleStems(_ deck: Deck, fromSeconds posSec: Double) -> Bool {
         guard let files = stemFiles[deck], !files.isEmpty, let nodes = stemPlayers[deck] else { return false }
+        let endSec = stemFrontier[deck]
         var any = false
         for (name, node) in nodes {
             node.stop()
             guard let file = files[name] else { continue }
             let sr = file.processingFormat.sampleRate
             let startFrame = min(max(0, AVAudioFramePosition(max(0, posSec) * sr)), file.length)
-            let count = file.length - startFrame
+            let endFrame = endSec.map { min(file.length, AVAudioFramePosition($0 * sr)) } ?? file.length
+            let count = endFrame - startFrame
             guard count > 0 else { continue }
             node.scheduleSegment(file, startingFrame: startFrame, frameCount: AVAudioFrameCount(count),
                                  at: nil, completionHandler: nil)
             any = true
         }
         stemsScheduled[deck] = any
+        if any {
+            stemSegmentStartSeconds[deck] = max(0, posSec)
+            stemEndSeconds[deck] = endSec ?? stemFrontierOrEnd(deck)
+        }
         return any
     }
 
@@ -3719,12 +4260,14 @@ final class MixEngine {
 
     /// Pause a deck's ACTIVE voices (the single file + any stems) keeping their scheduled position.
     private func pauseActiveNodes(_ deck: Deck) {
+        settleStemFade(deck)               // never park a half-faded handover
         players[deck]?.pause()
         for n in (stemPlayers[deck] ?? [:]).values { n.pause() }
     }
 
     /// Stop a deck's ACTIVE voices (resets their scheduled position).
     private func stopActiveNodes(_ deck: Deck) {
+        settleStemFade(deck)
         players[deck]?.stop()
         for n in (stemPlayers[deck] ?? [:]).values { n.stop() }
         fileScheduled[deck] = false
@@ -3964,8 +4507,8 @@ final class MixEngine {
         setEqGain(.mid, ds.eqMid ?? 0, on: deck)
         setEqGain(.high, ds.eqHigh ?? 0, on: deck)
         if ds.stemMode {
-            setStemMode(true, on: deck)     // stems no longer burned → stays single-file (graceful)
-            if stemActive(deck) {
+            setStemMode(true, on: deck)     // stems not on disk → stream/fetch them; none anywhere → single-file
+            if stemModeOn(deck) {
                 for name in ds.stemMuted where !isStemMuted(name, on: deck) { toggleStemMute(name, on: deck) }
                 for (name, v) in ds.stemVol { setStemVolume(name, v, on: deck) }
             }
@@ -4100,7 +4643,7 @@ final class MixEngine {
             flanger: s.isEnabled(.flanger), filter: s.isEnabled(.filter),
             compStrength: s.strength(.compressor), reverbStrength: s.strength(.reverb),
             flangerStrength: s.strength(.flanger), filterStrength: s.strength(.filter),
-            stemMode: s.stemMode, stemMuted: Array(s.stemMuted).sorted(), stemVol: s.stemVol,
+            stemMode: stemModeOn(deck), stemMuted: Array(s.stemMuted).sorted(), stemVol: s.stemVol,
             loopOn: s.loopOn, loopUnits: s.loopUnits,
             eqLow: s.eqLow, eqMid: s.eqMid, eqHigh: s.eqHigh,
             filterMode: filterMode(deck).rawValue,
@@ -4380,8 +4923,8 @@ final class MixEngine {
     /// The player runs at unity; the stem nodes carry only their per-stem balance.
     private func applyMixGains() {
         guard built else { return }
-        players[.a]?.volume = 1
-        players[.b]?.volume = 1
+        players[.a]?.volume = mainVoiceGain[.a] ?? 1   // unity, except mid-handover crossfade
+        players[.b]?.volume = mainVoiceGain[.b] ?? 1
         applyStemGains(.a)
         applyStemGains(.b)
         applyCueRouting()
@@ -4455,8 +4998,9 @@ final class MixEngine {
     private func applyStemGains(_ deck: Deck) {
         guard let nodes = stemPlayers[deck] else { return }
         let st = state(deck)
+        let voice = stemVoiceGain[deck] ?? 1      // the handover crossfade (1 when settled)
         for (name, node) in nodes {
-            node.volume = st.stemMuted.contains(name) ? 0 : Float(st.stemVol[name] ?? 1.0)
+            node.volume = st.stemMuted.contains(name) ? 0 : Float(st.stemVol[name] ?? 1.0) * voice
         }
     }
 
@@ -4790,6 +5334,7 @@ final class MixEngine {
                     continue
                 }
                 if streamHeld(d) { continue }    // streaming: waiting for bytes — the playhead is frozen
+                if stemUnderrun(d, at: position(d)) { continue }   // partial stems ran dry with nothing to hand to
                 // LOOPING: the playhead folds back into the window instead of advancing to the
                 // end, and the queue is topped up so the repeats never run dry.
                 if let w = loopWindow(d) {
@@ -4807,6 +5352,7 @@ final class MixEngine {
                     pos = min(pos, frontier)
                     setPosition(d, pos)
                     holdStream(d)
+                    advanceStemHandover(d)       // stems waiting with runway? they carry the deck instead
                     continue
                 }
                 setPosition(d, pos)
@@ -5062,7 +5608,7 @@ final class MixEngine {
         pauseBoth()
         tickTask?.cancel(); tickTask = nil
         modTask?.cancel(); modTask = nil
-        unwireStems(.a); unwireStems(.b)
+        for d in Deck.allCases { resetStemIntent(d); mutate(d) { $0.stemMode = false } }   // stems re-request on demand
         if let o = configChangeObserver { NotificationCenter.default.removeObserver(o); configChangeObserver = nil }
         engine.stop()
         engine = AVAudioEngine()               // the orphaned graph is unusable — recreate everything

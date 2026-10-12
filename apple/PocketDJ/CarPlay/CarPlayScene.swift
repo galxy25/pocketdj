@@ -470,7 +470,7 @@ final class CarPlayController {
     /// matching TV's exact one-tap semantics — see `CarPlayModel.toggleStemMute`).
     private func mixStemsSection(_ model: CarPlayModel) -> CPListSection {
         let stemsOn = model.stemModeOn()
-        let mode = CPListItem(text: "Stems", detailText: stemsOn ? "On" : "Off")
+        let mode = CPListItem(text: "Stems", detailText: model.stemsLoading() ? "Loading…" : (stemsOn ? "On" : "Off"))
         mode.handler = { [weak self] _, completion in
             model.setStemMode(!stemsOn); self?.refreshMixTab(); completion()
         }

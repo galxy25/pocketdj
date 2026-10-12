@@ -730,6 +730,31 @@ final class BurnStore {
         return (local, folder.scoped ? { dir.stopAccessingSecurityScopedResource() } : nil)
     }
 
+    /// MIX STREAMING: a deck streamed this song's 4 stems to completion — MOVE them into the
+    /// active burn folder under their burned names, exactly as `burnStems` would have left them
+    /// (a deck's open `AVAudioFile`s keep reading the same inodes). A part already burned keeps
+    /// the existing file. Returns part → burned URL, or nil (no writable folder / a move failed —
+    /// the caller keeps playing its own copies).
+    @discardableResult
+    func adoptStreamedStems(songId: String, files: [String: URL]) -> [String: URL]? {
+        guard Set(files.keys) == Set(Self.stemNames),
+              let folder = resolveBurnFolder(allowRePersist: true) else { return nil }
+        let dir = folder.url
+        defer { if folder.scoped { dir.stopAccessingSecurityScopedResource() } }
+        let fm = FileManager.default
+        var out: [String: URL] = [:]
+        for (name, src) in files {
+            let dest = dir.appendingPathComponent(Self.stemFileName(songId, name))
+            if fm.fileExists(atPath: dest.path) { out[name] = dest; continue }
+            do { try fm.moveItem(at: src, to: dest) } catch {
+                DiagLog.shared.log("error", "mixstream adopt stems \(songId)/\(name) failed: \(error.localizedDescription)")
+                return nil
+            }
+            out[name] = dest
+        }
+        return out
+    }
+
     // MARK: Beat grid (per-beat analysis sidecar) — burned + dynamically fetched like stems
 
     private static func beatgridFileName(_ songId: String) -> String { "analysis-\(songId).json" }
