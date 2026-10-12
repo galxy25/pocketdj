@@ -1,0 +1,7698 @@
+{
+  "v": 1,
+  "generatedAtMs": 1791831600000,
+  "stale": false,
+  "algo": {
+    "version": 1,
+    "params": {
+      "version": 1,
+      "sessionGapMs": 1800000,
+      "minRun": 3,
+      "endOnConsecutiveSkips": 2,
+      "unknownIsPlay": true,
+      "partialIsPlay": true,
+      "excludeSources": [
+        "game"
+      ],
+      "baselineDays": 90,
+      "resultsDays": 90,
+      "maxPockets": 200,
+      "thinBaselinePlays": 50,
+      "categorical": {
+        "minShare": 0.4,
+        "minCount": 2,
+        "minLift": 1.5,
+        "contextMinLift": 1.25,
+        "smoothing": 1,
+        "maxFeatures": 8
+      },
+      "numeric": {
+        "minCoverage": 0.6,
+        "minValues": 3,
+        "maxDispersionRatio": 0.5,
+        "bpmFold": [
+          80,
+          160
+        ]
+      },
+      "harmonic": {
+        "minRate": 0.5,
+        "minLiftOverBaseline": 2,
+        "minPairs": 2
+      },
+      "ctxDominantShare": 0.6,
+      "timeBuckets": [
+        [
+          "night",
+          22,
+          5
+        ],
+        [
+          "morning",
+          5,
+          10
+        ],
+        [
+          "midday",
+          10,
+          14
+        ],
+        [
+          "afternoon",
+          14,
+          18
+        ],
+        [
+          "evening",
+          18,
+          22
+        ]
+      ],
+      "patterns": {
+        "minPockets": 2,
+        "minDistinctDays": 2,
+        "genreKeyMinShare": 0.5,
+        "maxTopSongs": 25
+      },
+      "nightlyRecomputeAfterMs": 72000000
+    }
+  },
+  "baseline": {
+    "plays": 259,
+    "windowDays": 90,
+    "thin": false
+  },
+  "labels": {
+    "places": [
+      {
+        "id": "plc_78da6e61747eab53",
+        "rank": 1,
+        "label": "Location A",
+        "share": 0.62
+      },
+      {
+        "id": "plc_980d5dc41fa9477b",
+        "rank": 2,
+        "label": "Location B",
+        "share": 0.27
+      },
+      {
+        "id": "plc_a1e9266d6ff36f47",
+        "rank": 3,
+        "label": "Location C",
+        "share": 0.04
+      }
+    ],
+    "trips": [
+      {
+        "id": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b",
+        "label": "A → B",
+        "occurrences": 14
+      },
+      {
+        "id": "trp_4f59fe99a08ab8a9",
+        "origin": "plc_980d5dc41fa9477b",
+        "destination": "plc_78da6e61747eab53",
+        "label": "B → A",
+        "occurrences": 12
+      }
+    ]
+  },
+  "pockets": [
+    {
+      "id": "pk_65313e13ce15",
+      "startMs": 1791815880000,
+      "endMs": 1791817080000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-12",
+      "localStartHour": 7.63,
+      "dow": 1,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 6,
+      "skippedCount": 2,
+      "sessionPlays": 8,
+      "members": [
+        {
+          "eventId": "DF647897-2437-4C02-87C8-87F073D68549",
+          "songId": "sng_df6f9d2e2f2a",
+          "atMs": 1791815880000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "480640E7-7E08-4ACB-8C4D-C067CFA8E9EB",
+          "songId": "sng_e517ffed1ba7",
+          "atMs": 1791816060000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "1AD36ED3-DE72-4197-86EB-671B6E16B983",
+          "songId": "sng_24124669befd",
+          "atMs": 1791816300000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "5BBB81CB-54E4-4036-8E39-5F48EFC83979",
+          "songId": "sng_ce1a2fa144ff",
+          "atMs": 1791816600000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "448F5377-3CAF-498E-8467-E7C5D27ABC2F",
+          "songId": "sng_2b11b843b917",
+          "atMs": 1791816840000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "117FAF85-227E-4446-89D8-D0529BBB76FC",
+          "songId": "sng_c47f2d82bad2",
+          "atMs": 1791817080000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "1",
+          "label": "Monday",
+          "share": 1,
+          "baselineShare": 0.1805,
+          "lift": 5.54,
+          "score": 1.712,
+          "count": 6
+        },
+        {
+          "dim": "trip",
+          "value": "trp_f2207a561d231522",
+          "label": "A → B",
+          "share": 1,
+          "baselineShare": 0.2375,
+          "lift": 4.21,
+          "score": 1.437,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 6
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 0.667,
+          "baselineShare": 0.1926,
+          "lift": 3.46,
+          "score": 0.828,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.667,
+          "baselineShare": 0.237,
+          "lift": 2.81,
+          "score": 0.689,
+          "count": 4
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 6
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 119,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.101,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.708,
+          "lo": 0.67,
+          "hi": 0.738,
+          "coverage": 1,
+          "dispersionRatio": 0.118,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2020,
+          "lo": 2016,
+          "hi": 2024,
+          "coverage": 1,
+          "dispersionRatio": 0.134,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.8,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": true
+      },
+      "title": "Weekday morning · A → B · 119–124 BPM · Electronic",
+      "patternId": "pt_2e8b03e418ed"
+    },
+    {
+      "id": "pk_4dcdaf91f4a9",
+      "startMs": 1791755160000,
+      "endMs": 1791756360000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-11",
+      "localStartHour": 14.77,
+      "dow": 0,
+      "dayType": "weekend",
+      "timeBucket": "afternoon",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "F23B2E1D-46F7-43DC-8F18-B6E1398F2728",
+          "songId": "sng_2cb49ca41a10",
+          "atMs": 1791755160000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "A9E9AA59-A8C3-4315-80DF-26D85FB03775",
+          "songId": "sng_ba4ee2efe3cb",
+          "atMs": 1791755340000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "294F3B31-5F04-4708-8C35-03DD1C9CEC85",
+          "songId": "sng_9e601fbf0060",
+          "atMs": 1791755580000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "AAB49982-D670-4E75-8111-B1DC8AAC75E7",
+          "songId": "sng_95f823c31396",
+          "atMs": 1791755880000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "EA492116-90C7-47D8-849E-5CDA238CCADA",
+          "songId": "sng_c266014174ae",
+          "atMs": 1791756120000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "5ACA45D7-ADFD-4065-84A3-978C55C2AF30",
+          "songId": "sng_18431deff048",
+          "atMs": 1791756360000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "place",
+        "placeId": "plc_78da6e61747eab53"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "0",
+          "label": "Sunday",
+          "share": 1,
+          "baselineShare": 0.0865,
+          "lift": 11.57,
+          "score": 2.448,
+          "count": 6
+        },
+        {
+          "dim": "place",
+          "value": "plc_78da6e61747eab53",
+          "label": "Location A",
+          "share": 1,
+          "baselineShare": 0.0954,
+          "lift": 10.48,
+          "score": 2.349,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "afternoon",
+          "label": "Afternoon",
+          "share": 1,
+          "baselineShare": 0.1407,
+          "lift": 7.11,
+          "score": 1.961,
+          "count": 6
+        },
+        {
+          "dim": "dayType",
+          "value": "weekend",
+          "label": "Weekend",
+          "share": 1,
+          "baselineShare": 0.1571,
+          "lift": 6.37,
+          "score": 1.851,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 1,
+          "baselineShare": 0.2491,
+          "lift": 4.02,
+          "score": 1.39,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 0.833,
+          "baselineShare": 0.1815,
+          "lift": 4.59,
+          "score": 1.27,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.5,
+          "baselineShare": 0.163,
+          "lift": 3.07,
+          "score": 0.561,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 131,
+          "lo": 108,
+          "hi": 142,
+          "coverage": 1,
+          "dispersionRatio": 0.826,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.254,
+          "lo": 0.226,
+          "hi": 0.279,
+          "coverage": 1,
+          "dispersionRatio": 0.09,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1971,
+          "lo": 1959,
+          "hi": 1975,
+          "coverage": 1,
+          "dispersionRatio": 0.243,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.6,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": true
+      },
+      "title": "Weekend afternoon · Location A · Jazz",
+      "patternId": "pt_f435d0ce8092"
+    },
+    {
+      "id": "pk_5f8b107fc8ba",
+      "startMs": 1791667500000,
+      "endMs": 1791668700000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-10",
+      "localStartHour": 14.42,
+      "dow": 6,
+      "dayType": "weekend",
+      "timeBucket": "afternoon",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 6,
+      "skippedCount": 0,
+      "sessionPlays": 6,
+      "members": [
+        {
+          "eventId": "DA971845-E0D7-4DBA-8334-CF990A128484",
+          "songId": "sng_18431deff048",
+          "atMs": 1791667500000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "A2278F96-7C34-4FB8-861A-1DA3924FF1C1",
+          "songId": "sng_20ff05537c74",
+          "atMs": 1791667740000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "E54A6588-0379-4AFE-8A3E-260C1379D80B",
+          "songId": "sng_f99916e454b2",
+          "atMs": 1791667980000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "6B819C10-60DF-4C06-8731-BAE2BC257CB7",
+          "songId": "sng_ea6ce45f8481",
+          "atMs": 1791668220000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "C6669319-58B2-47AD-8488-A6E9D4FC4813",
+          "songId": "sng_2cb49ca41a10",
+          "atMs": 1791668460000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "1AA2B56A-E05F-4867-84CC-550D376E792F",
+          "songId": "sng_ba4ee2efe3cb",
+          "atMs": 1791668700000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "place",
+        "placeId": "plc_78da6e61747eab53"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "6",
+          "label": "Saturday",
+          "share": 1,
+          "baselineShare": 0.0714,
+          "lift": 14,
+          "score": 2.639,
+          "count": 6
+        },
+        {
+          "dim": "place",
+          "value": "plc_78da6e61747eab53",
+          "label": "Location A",
+          "share": 1,
+          "baselineShare": 0.0954,
+          "lift": 10.48,
+          "score": 2.349,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "afternoon",
+          "label": "Afternoon",
+          "share": 1,
+          "baselineShare": 0.1407,
+          "lift": 7.11,
+          "score": 1.961,
+          "count": 6
+        },
+        {
+          "dim": "dayType",
+          "value": "weekend",
+          "label": "Weekend",
+          "share": 1,
+          "baselineShare": 0.1571,
+          "lift": 6.37,
+          "score": 1.851,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 1,
+          "baselineShare": 0.2491,
+          "lift": 4.02,
+          "score": 1.39,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 0.667,
+          "baselineShare": 0.1815,
+          "lift": 3.67,
+          "score": 0.867,
+          "count": 4
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.5,
+          "baselineShare": 0.163,
+          "lift": 3.07,
+          "score": 0.561,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 136,
+          "lo": 104,
+          "hi": 142,
+          "coverage": 1,
+          "dispersionRatio": 0.753,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.245,
+          "lo": 0.21,
+          "hi": 0.258,
+          "coverage": 1,
+          "dispersionRatio": 0.08,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1971,
+          "lo": 1959,
+          "hi": 1975,
+          "coverage": 1,
+          "dispersionRatio": 0.261,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.6,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": true
+      },
+      "title": "Weekend afternoon · Location A · Jazz",
+      "patternId": "pt_f435d0ce8092"
+    },
+    {
+      "id": "pk_12e9e0f4e5ab",
+      "startMs": 1791606600000,
+      "endMs": 1791607320000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-09",
+      "localStartHour": 21.5,
+      "dow": 5,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 4,
+      "skippedCount": 0,
+      "sessionPlays": 4,
+      "members": [
+        {
+          "eventId": "1DD915DA-3EF1-4B44-8458-BC42A54046AC",
+          "songId": "sng_5050aade77c4_clean",
+          "atMs": 1791606600000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "991F7802-C021-4F8D-8C22-EDD1DD570C26",
+          "songId": "amrec_1771724281",
+          "atMs": 1791606840000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "C017DC8B-4741-448E-8691-FEF7B2BD98C0",
+          "songId": "sng_2bd6aa178f08",
+          "atMs": 1791607080000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "BDE07BB9-713E-4DA5-84DC-5E8438A0BEEE",
+          "songId": "sng_df6f9d2e2f2a",
+          "atMs": 1791607320000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "5",
+          "label": "Friday",
+          "share": 1,
+          "baselineShare": 0.1128,
+          "lift": 8.87,
+          "score": 2.182,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 1,
+          "baselineShare": 0.1926,
+          "lift": 5.19,
+          "score": 1.647,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 4
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 4
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.5,
+          "baselineShare": 0.237,
+          "lift": 2.11,
+          "score": 0.373,
+          "count": 2
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 120,
+          "lo": 118,
+          "hi": 123,
+          "coverage": 1,
+          "dispersionRatio": 0.132,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.724,
+          "lo": 0.704,
+          "hi": 0.757,
+          "coverage": 1,
+          "dispersionRatio": 0.098,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2018,
+          "lo": 2016,
+          "hi": 2021,
+          "coverage": 1,
+          "dispersionRatio": 0.092,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.333,
+        "baselineRate": 0.194,
+        "pairs": 3,
+        "defining": false
+      },
+      "title": "Weekday evening · 118–123 BPM · Electronic",
+      "patternId": null
+    },
+    {
+      "id": "pk_23c272a2c720",
+      "startMs": 1791557100000,
+      "endMs": 1791558000000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-09",
+      "localStartHour": 7.75,
+      "dow": 5,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 0,
+      "sessionPlays": 5,
+      "members": [
+        {
+          "eventId": "B4667A1B-A8AE-4BCC-8B11-F9E3D7ECD64F",
+          "songId": "sng_d355cc000d8b",
+          "atMs": 1791557100000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "B43732C0-276F-4C21-8B1A-F6174F24E48F",
+          "songId": "sng_2bd6aa178f08",
+          "atMs": 1791557340000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "41038257-F9E3-4465-8473-D77CAF998813",
+          "songId": "sng_df6f9d2e2f2a",
+          "atMs": 1791557580000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "51F822CF-EEC9-4DBC-8CFA-3EFA216F9153",
+          "songId": "sng_e517ffed1ba7",
+          "atMs": 1791557760000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "121F4D2F-CA64-401C-8786-2A5D0E4BF140",
+          "songId": "sng_24124669befd",
+          "atMs": 1791558000000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "5",
+          "label": "Friday",
+          "share": 1,
+          "baselineShare": 0.1128,
+          "lift": 8.87,
+          "score": 2.182,
+          "count": 5
+        },
+        {
+          "dim": "trip",
+          "value": "trp_f2207a561d231522",
+          "label": "A → B",
+          "share": 1,
+          "baselineShare": 0.2375,
+          "lift": 4.21,
+          "score": 1.437,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 0.8,
+          "baselineShare": 0.1926,
+          "lift": 4.15,
+          "score": 1.139,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 5
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.6,
+          "baselineShare": 0.237,
+          "lift": 2.53,
+          "score": 0.557,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 123,
+          "lo": 119,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.115,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.712,
+          "lo": 0.687,
+          "hi": 0.73,
+          "coverage": 1,
+          "dispersionRatio": 0.071,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2019,
+          "lo": 2016,
+          "hi": 2023,
+          "coverage": 1,
+          "dispersionRatio": 0.123,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 1,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": true
+      },
+      "title": "Weekday morning · A → B · 119–124 BPM · Electronic",
+      "patternId": "pt_2e8b03e418ed"
+    },
+    {
+      "id": "pk_73e88618146b",
+      "startMs": 1791515700000,
+      "endMs": 1791516900000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-08",
+      "localStartHour": 20.25,
+      "dow": 4,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "0D9E8F7A-1111-4000-8000-00000000BBBB",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "043A339D-38C1-4874-8080-3A283CB4428A",
+          "songId": "sng_18431deff048",
+          "atMs": 1791515700000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "D5C6D9EB-9314-4419-8F01-0CA376A06ADD",
+          "songId": "sng_20ff05537c74",
+          "atMs": 1791515880000,
+          "outcome": "unknown"
+        },
+        {
+          "eventId": "96925A61-92D4-43F1-8725-DE2AF3E2150E",
+          "songId": "sng_f99916e454b2",
+          "atMs": 1791516120000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "3ACB7689-492F-4320-8DC1-EC61AA3CCCC2",
+          "songId": "sng_ea6ce45f8481",
+          "atMs": 1791516420000,
+          "outcome": "partial"
+        },
+        {
+          "eventId": "AA8F5F32-A245-4B22-8DEA-160D6677F1DF",
+          "songId": "sng_2c8aa912d67c",
+          "atMs": 1791516660000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "4D266145-71FB-4FB0-873D-720E376098C8",
+          "songId": "sng_145cd21a3d44",
+          "atMs": 1791516900000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "4",
+          "label": "Thursday",
+          "share": 1,
+          "baselineShare": 0.2256,
+          "lift": 4.43,
+          "score": 1.489,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.667,
+          "baselineShare": 0.163,
+          "lift": 4.09,
+          "score": 0.939,
+          "count": 4
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 0.667,
+          "baselineShare": 0.2491,
+          "lift": 2.68,
+          "score": 0.656,
+          "count": 4
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 134,
+          "lo": 104,
+          "hi": 140,
+          "coverage": 1,
+          "dispersionRatio": 0.712,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.245,
+          "lo": 0.21,
+          "hi": 0.258,
+          "coverage": 0.667,
+          "dispersionRatio": 0.089,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1971,
+          "lo": 1959,
+          "hi": 2000,
+          "coverage": 1,
+          "dispersionRatio": 0.714,
+          "baselineCenter": 2001,
+          "defining": false
+        }
+      },
+      "harmonic": {
+        "rate": 0.2,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": false
+      },
+      "title": "Weekday evening · Jazz",
+      "patternId": "pt_7a6542de5f57"
+    },
+    {
+      "id": "pk_69366334d27d",
+      "startMs": 1791507780000,
+      "endMs": 1791508800000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-08",
+      "localStartHour": 18.05,
+      "dow": 4,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 1,
+      "sessionPlays": 6,
+      "members": [
+        {
+          "eventId": "7500B494-CF90-4095-85A3-BD7EB27CAD86",
+          "songId": "sng_6b9be13b205c",
+          "atMs": 1791507780000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "1DA74865-EEDF-4F5B-8995-6FCCA1CF22B7",
+          "songId": "sng_5459d757a358",
+          "atMs": 1791508020000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "D71D6C66-9715-4AFE-82B3-67B706D384F0",
+          "songId": "sng_3d96ac27a1d2",
+          "atMs": 1791508260000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "6EB4A028-DC8B-4FCD-81CD-0492B1CBE631",
+          "songId": "sng_e5da88ce56c7",
+          "atMs": 1791508500000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "DB09C355-B5E5-4B06-8BDB-F9D0A6D76FB6",
+          "songId": "sng_bdeab8d16f53",
+          "atMs": 1791508800000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_4f59fe99a08ab8a9",
+        "origin": "plc_980d5dc41fa9477b",
+        "destination": "plc_78da6e61747eab53"
+      },
+      "features": [
+        {
+          "dim": "trip",
+          "value": "trp_4f59fe99a08ab8a9",
+          "label": "B → A",
+          "share": 1,
+          "baselineShare": 0.1188,
+          "lift": 8.42,
+          "score": 2.131,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "hip-hop",
+          "label": "Hip-Hop",
+          "share": 1,
+          "baselineShare": 0.1736,
+          "lift": 5.76,
+          "score": 1.751,
+          "count": 5
+        },
+        {
+          "dim": "dow",
+          "value": "4",
+          "label": "Thursday",
+          "share": 1,
+          "baselineShare": 0.2256,
+          "lift": 4.43,
+          "score": 1.489,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "confident",
+          "label": "Confident",
+          "share": 0.8,
+          "baselineShare": 0.1333,
+          "lift": 6,
+          "score": 1.433,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "dark",
+          "label": "Dark",
+          "share": 0.6,
+          "baselineShare": 0.1111,
+          "lift": 5.4,
+          "score": 1.012,
+          "count": 3
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "gritty",
+          "label": "Gritty",
+          "share": 0.4,
+          "baselineShare": 0.063,
+          "lift": 6.35,
+          "score": 0.74,
+          "count": 2
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 92,
+          "lo": 86,
+          "hi": 97,
+          "coverage": 1,
+          "dispersionRatio": 0.242,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.555,
+          "lo": 0.533,
+          "hi": 0.577,
+          "coverage": 1,
+          "dispersionRatio": 0.079,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2003,
+          "lo": 1994,
+          "hi": 2018,
+          "coverage": 1,
+          "dispersionRatio": 0.443,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": false
+      },
+      "title": "Weekday evening · B → A · 86–97 BPM · Hip-Hop",
+      "patternId": "pt_87fa4138b590"
+    },
+    {
+      "id": "pk_6af08f226e18",
+      "startMs": 1791470280000,
+      "endMs": 1791471480000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-08",
+      "localStartHour": 7.63,
+      "dow": 4,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "488B4D99-AC18-4CD9-85EA-D1BC038B7AEC",
+          "songId": "sng_24124669befd",
+          "atMs": 1791470280000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "173D8200-6B90-4CFF-895A-A6660A45F063",
+          "songId": "sng_ce1a2fa144ff",
+          "atMs": 1791470520000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "9670FE2E-4C0D-4890-8386-C3C040A92BB3",
+          "songId": "sng_2b11b843b917",
+          "atMs": 1791470760000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "A7F161DB-948E-481C-819A-4C6D2AFCBBDD",
+          "songId": "sng_c47f2d82bad2",
+          "atMs": 1791471000000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "8B8D1088-0EB1-4A13-8678-4252BF09751C",
+          "songId": "sng_864189836f21",
+          "atMs": 1791471240000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "DFA48CCD-482F-4843-8211-D8B4869A6E72",
+          "songId": "sng_32df97b4f035",
+          "atMs": 1791471480000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "4",
+          "label": "Thursday",
+          "share": 1,
+          "baselineShare": 0.2256,
+          "lift": 4.43,
+          "score": 1.489,
+          "count": 6
+        },
+        {
+          "dim": "trip",
+          "value": "trp_f2207a561d231522",
+          "label": "A → B",
+          "share": 1,
+          "baselineShare": 0.2375,
+          "lift": 4.21,
+          "score": 1.437,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.833,
+          "baselineShare": 0.237,
+          "lift": 3.52,
+          "score": 1.048,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 6
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 6
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "warm",
+          "label": "Warm",
+          "share": 0.5,
+          "baselineShare": 0.1741,
+          "lift": 2.87,
+          "score": 0.528,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 119,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.106,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.7,
+          "lo": 0.656,
+          "hi": 0.738,
+          "coverage": 1,
+          "dispersionRatio": 0.153,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2020,
+          "lo": 2016,
+          "hi": 2024,
+          "coverage": 1,
+          "dispersionRatio": 0.122,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.8,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": true
+      },
+      "title": "Weekday morning · A → B · 119–124 BPM · Electronic",
+      "patternId": "pt_2e8b03e418ed"
+    },
+    {
+      "id": "pk_27f7b8a931de",
+      "startMs": 1791421800000,
+      "endMs": 1791422820000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-07",
+      "localStartHour": 18.17,
+      "dow": 3,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 1,
+      "sessionPlays": 6,
+      "members": [
+        {
+          "eventId": "5B13BAB3-AECC-43E3-8685-1CAD646A8894",
+          "songId": "sng_6ad2b1e70ef0",
+          "atMs": 1791421800000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "BCE39235-0F4A-46A4-85C1-04820B53F5CF",
+          "songId": "sng_ff82a2c2c91c",
+          "atMs": 1791422040000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "0A4E21E5-E219-4499-8726-51875B2059D8",
+          "songId": "sng_6b9be13b205c",
+          "atMs": 1791422280000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "E45B9CD8-1BE8-4101-8475-C48A37D80EAF",
+          "songId": "sng_5459d757a358",
+          "atMs": 1791422520000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "2D12A60C-02B5-46D6-8BD8-6CA3F69B8EC2",
+          "songId": "sng_3d96ac27a1d2",
+          "atMs": 1791422820000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_4f59fe99a08ab8a9",
+        "origin": "plc_980d5dc41fa9477b",
+        "destination": "plc_78da6e61747eab53"
+      },
+      "features": [
+        {
+          "dim": "trip",
+          "value": "trp_4f59fe99a08ab8a9",
+          "label": "B → A",
+          "share": 1,
+          "baselineShare": 0.1188,
+          "lift": 8.42,
+          "score": 2.131,
+          "count": 5
+        },
+        {
+          "dim": "dow",
+          "value": "3",
+          "label": "Wednesday",
+          "share": 1,
+          "baselineShare": 0.1579,
+          "lift": 6.33,
+          "score": 1.846,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "hip-hop",
+          "label": "Hip-Hop",
+          "share": 1,
+          "baselineShare": 0.1736,
+          "lift": 5.76,
+          "score": 1.751,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "confident",
+          "label": "Confident",
+          "share": 0.8,
+          "baselineShare": 0.1333,
+          "lift": 6,
+          "score": 1.433,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "gritty",
+          "label": "Gritty",
+          "share": 0.4,
+          "baselineShare": 0.063,
+          "lift": 6.35,
+          "score": 0.74,
+          "count": 2
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 5
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 91,
+          "lo": 86,
+          "hi": 96,
+          "coverage": 1,
+          "dispersionRatio": 0.201,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.554,
+          "lo": 0.498,
+          "hi": 0.577,
+          "coverage": 1,
+          "dispersionRatio": 0.133,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2003,
+          "lo": 1996,
+          "hi": 2019,
+          "coverage": 1,
+          "dispersionRatio": 0.463,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": false
+      },
+      "title": "Weekday evening · B → A · 86–96 BPM · Hip-Hop",
+      "patternId": "pt_87fa4138b590"
+    },
+    {
+      "id": "pk_4dbb6b30220f",
+      "startMs": 1791384420000,
+      "endMs": 1791385380000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-07",
+      "localStartHour": 7.78,
+      "dow": 3,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 0,
+      "sessionPlays": 5,
+      "members": [
+        {
+          "eventId": "3CB70960-A241-43BC-8205-1AC9590E430B",
+          "songId": "sng_d355cc000d8b",
+          "atMs": 1791384420000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "BC99AE76-EA42-4EE8-8AC9-B9F4E56FCC5D",
+          "songId": "sng_2bd6aa178f08",
+          "atMs": 1791384660000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "61C3F6EB-E7E8-410B-8298-FD66473D1E1C",
+          "songId": "sng_df6f9d2e2f2a",
+          "atMs": 1791384840000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "1E74420C-4F8F-4588-8E9A-4289973C4511",
+          "songId": "sng_e517ffed1ba7",
+          "atMs": 1791385140000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "DB964EAD-83BA-4126-80B9-541B5DE52EA8",
+          "songId": "sng_24124669befd",
+          "atMs": 1791385380000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "3",
+          "label": "Wednesday",
+          "share": 1,
+          "baselineShare": 0.1579,
+          "lift": 6.33,
+          "score": 1.846,
+          "count": 5
+        },
+        {
+          "dim": "trip",
+          "value": "trp_f2207a561d231522",
+          "label": "A → B",
+          "share": 1,
+          "baselineShare": 0.2375,
+          "lift": 4.21,
+          "score": 1.437,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 0.8,
+          "baselineShare": 0.1926,
+          "lift": 4.15,
+          "score": 1.139,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 5
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.6,
+          "baselineShare": 0.237,
+          "lift": 2.53,
+          "score": 0.557,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 123,
+          "lo": 119,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.115,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.712,
+          "lo": 0.687,
+          "hi": 0.73,
+          "coverage": 1,
+          "dispersionRatio": 0.071,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2019,
+          "lo": 2016,
+          "hi": 2023,
+          "coverage": 1,
+          "dispersionRatio": 0.123,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 1,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": true
+      },
+      "title": "Weekday morning · A → B · 119–124 BPM · Electronic",
+      "patternId": "pt_2e8b03e418ed"
+    },
+    {
+      "id": "pk_5cf5f4b2091d",
+      "startMs": 1791342900000,
+      "endMs": 1791344040000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-06",
+      "localStartHour": 20.25,
+      "dow": 2,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "0D9E8F7A-1111-4000-8000-00000000BBBB",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "4BE859FE-53F5-4D52-8BEF-434F97625B4C",
+          "songId": "sng_ba4ee2efe3cb",
+          "atMs": 1791342900000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "13066EB3-E162-4B82-8419-8C9B12DF9163",
+          "songId": "sng_9e601fbf0060",
+          "atMs": 1791343080000,
+          "outcome": "unknown"
+        },
+        {
+          "eventId": "2327E8AF-31D0-488F-8BD9-D8871543C0F3",
+          "songId": "sng_95f823c31396",
+          "atMs": 1791343320000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "387E46ED-CA8C-4952-8A77-7581E3CCB79B",
+          "songId": "sng_c266014174ae",
+          "atMs": 1791343620000,
+          "outcome": "partial"
+        },
+        {
+          "eventId": "ED4D3C2F-FE22-4F1A-8C11-CDFCFBC7EB5A",
+          "songId": "sng_18431deff048",
+          "atMs": 1791343800000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "B99764E0-59E2-430A-8C92-AA6F802DE691",
+          "songId": "sng_20ff05537c74",
+          "atMs": 1791344040000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "2",
+          "label": "Tuesday",
+          "share": 1,
+          "baselineShare": 0.1654,
+          "lift": 6.05,
+          "score": 1.799,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 1,
+          "baselineShare": 0.2491,
+          "lift": 4.02,
+          "score": 1.39,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.667,
+          "baselineShare": 0.163,
+          "lift": 4.09,
+          "score": 0.939,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 0.667,
+          "baselineShare": 0.1815,
+          "lift": 3.67,
+          "score": 0.867,
+          "count": 4
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 6
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 117,
+          "lo": 104,
+          "hi": 142,
+          "coverage": 1,
+          "dispersionRatio": 0.882,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.254,
+          "lo": 0.21,
+          "hi": 0.279,
+          "coverage": 1,
+          "dispersionRatio": 0.115,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1970,
+          "lo": 1959,
+          "hi": 1975,
+          "coverage": 1,
+          "dispersionRatio": 0.237,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.4,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": false
+      },
+      "title": "Weekday evening · Jazz",
+      "patternId": "pt_7a6542de5f57"
+    },
+    {
+      "id": "pk_e651de1307c5",
+      "startMs": 1791298020000,
+      "endMs": 1791299220000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-06",
+      "localStartHour": 7.78,
+      "dow": 2,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 6,
+      "skippedCount": 2,
+      "sessionPlays": 8,
+      "members": [
+        {
+          "eventId": "87C39ABE-77AF-40A4-8EB4-1596FD3F8559",
+          "songId": "sng_e517ffed1ba7",
+          "atMs": 1791298020000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "2ECF0AD8-25FC-4CE5-816A-18839E24D512",
+          "songId": "sng_24124669befd",
+          "atMs": 1791298200000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "78C84CF9-6699-42D2-8B0E-A7F1C375AEEF",
+          "songId": "sng_ce1a2fa144ff",
+          "atMs": 1791298500000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "7305DAB2-8089-4C90-8846-4E888697CDA4",
+          "songId": "sng_2b11b843b917",
+          "atMs": 1791298680000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "A03EF35D-A05E-4AA7-82F5-04D34B7D7049",
+          "songId": "sng_c47f2d82bad2",
+          "atMs": 1791298980000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "55B486CD-F442-42EC-8E06-10E7639B33C8",
+          "songId": "sng_864189836f21",
+          "atMs": 1791299220000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "2",
+          "label": "Tuesday",
+          "share": 1,
+          "baselineShare": 0.1654,
+          "lift": 6.05,
+          "score": 1.799,
+          "count": 6
+        },
+        {
+          "dim": "trip",
+          "value": "trp_f2207a561d231522",
+          "label": "A → B",
+          "share": 1,
+          "baselineShare": 0.2375,
+          "lift": 4.21,
+          "score": 1.437,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 6
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.667,
+          "baselineShare": 0.237,
+          "lift": 2.81,
+          "score": 0.689,
+          "count": 4
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "warm",
+          "label": "Warm",
+          "share": 0.5,
+          "baselineShare": 0.1741,
+          "lift": 2.87,
+          "score": 0.528,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 119,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.112,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.713,
+          "lo": 0.67,
+          "hi": 0.738,
+          "coverage": 1,
+          "dispersionRatio": 0.119,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2020,
+          "lo": 2016,
+          "hi": 2024,
+          "coverage": 1,
+          "dispersionRatio": 0.134,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.8,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": true
+      },
+      "title": "Weekday morning · A → B · 119–124 BPM · Electronic",
+      "patternId": "pt_2e8b03e418ed"
+    },
+    {
+      "id": "pk_9a4f9a001386",
+      "startMs": 1791248520000,
+      "endMs": 1791249480000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-05",
+      "localStartHour": 18.03,
+      "dow": 1,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 1,
+      "sessionPlays": 6,
+      "members": [
+        {
+          "eventId": "7C85241D-A727-4920-81AF-2634EC2811A5",
+          "songId": "sng_ab8505d69834",
+          "atMs": 1791248520000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "B9502470-C673-46BC-861B-942CD470E62D",
+          "songId": "sng_80b6d4384779",
+          "atMs": 1791248700000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "A8768E29-EF95-4BCD-8FDF-95E929583C00",
+          "songId": "sng_9c22fa04323f",
+          "atMs": 1791248940000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "1E0BFFC3-A57C-47BF-8CC3-20EF9A1AAFD2",
+          "songId": "sng_93c2e67a0cfd",
+          "atMs": 1791249240000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "A8F2C924-677B-42EF-8482-8BA289844556",
+          "songId": "sng_e44e89f6c105",
+          "atMs": 1791249480000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_4f59fe99a08ab8a9",
+        "origin": "plc_980d5dc41fa9477b",
+        "destination": "plc_78da6e61747eab53"
+      },
+      "features": [
+        {
+          "dim": "trip",
+          "value": "trp_4f59fe99a08ab8a9",
+          "label": "B → A",
+          "share": 1,
+          "baselineShare": 0.1188,
+          "lift": 8.42,
+          "score": 2.131,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "hip-hop",
+          "label": "Hip-Hop",
+          "share": 1,
+          "baselineShare": 0.1736,
+          "lift": 5.76,
+          "score": 1.751,
+          "count": 5
+        },
+        {
+          "dim": "dow",
+          "value": "1",
+          "label": "Monday",
+          "share": 1,
+          "baselineShare": 0.1805,
+          "lift": 5.54,
+          "score": 1.712,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "gritty",
+          "label": "Gritty",
+          "share": 0.6,
+          "baselineShare": 0.063,
+          "lift": 9.53,
+          "score": 1.353,
+          "count": 3
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "dark",
+          "label": "Dark",
+          "share": 0.6,
+          "baselineShare": 0.1111,
+          "lift": 5.4,
+          "score": 1.012,
+          "count": 3
+        },
+        {
+          "dim": "artist",
+          "value": "rook avenue",
+          "label": "Rook Avenue",
+          "share": 0.4,
+          "baselineShare": 0.0393,
+          "lift": 10.18,
+          "score": 0.928,
+          "count": 2
+        },
+        {
+          "dim": "mood",
+          "value": "confident",
+          "label": "Confident",
+          "share": 0.6,
+          "baselineShare": 0.1333,
+          "lift": 4.5,
+          "score": 0.902,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 89,
+          "lo": 86,
+          "hi": 96,
+          "coverage": 1,
+          "dispersionRatio": 0.217,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.565,
+          "lo": 0.539,
+          "hi": 0.595,
+          "coverage": 1,
+          "dispersionRatio": 0.098,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2009,
+          "lo": 1999,
+          "hi": 2020,
+          "coverage": 1,
+          "dispersionRatio": 0.359,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": false
+      },
+      "title": "Weekday evening · B → A · 86–96 BPM · Hip-Hop",
+      "patternId": "pt_87fa4138b590"
+    },
+    {
+      "id": "pk_1f9f69b0b089",
+      "startMs": 1791212160000,
+      "endMs": 1791212880000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-05",
+      "localStartHour": 7.93,
+      "dow": 1,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 4,
+      "skippedCount": 0,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "A700B6DD-5D58-4D94-806C-9CC2D1E058FE",
+          "songId": "sng_2b11b843b917",
+          "atMs": 1791212160000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "A3CB7706-5B67-48F2-82AB-A5B27FD614C3",
+          "songId": "sng_c47f2d82bad2",
+          "atMs": 1791212400000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "32BE2692-E79A-4D55-8D2D-1867E1BFBB86",
+          "songId": "sng_864189836f21",
+          "atMs": 1791212640000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "A3C9437F-5330-4F9D-873B-B044559EE82E",
+          "songId": "sng_32df97b4f035",
+          "atMs": 1791212880000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "1",
+          "label": "Monday",
+          "share": 1,
+          "baselineShare": 0.1805,
+          "lift": 5.54,
+          "score": 1.712,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 1,
+          "baselineShare": 0.237,
+          "lift": 4.22,
+          "score": 1.44,
+          "count": 4
+        },
+        {
+          "dim": "trip",
+          "value": "trp_f2207a561d231522",
+          "label": "A → B",
+          "share": 1,
+          "baselineShare": 0.2375,
+          "lift": 4.21,
+          "score": 1.437,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "warm",
+          "label": "Warm",
+          "share": 0.75,
+          "baselineShare": 0.1741,
+          "lift": 4.31,
+          "score": 1.095,
+          "count": 3
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 4
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 4
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 4
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 4
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 123,
+          "lo": 122,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.059,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.7,
+          "lo": 0.656,
+          "hi": 0.738,
+          "coverage": 1,
+          "dispersionRatio": 0.155,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2021,
+          "lo": 2018,
+          "hi": 2024,
+          "coverage": 1,
+          "dispersionRatio": 0.102,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 1,
+        "baselineRate": 0.194,
+        "pairs": 3,
+        "defining": true
+      },
+      "title": "Weekday morning · A → B · 122–124 BPM · Electronic",
+      "patternId": "pt_2e8b03e418ed"
+    },
+    {
+      "id": "pk_d5f32fc523ef",
+      "startMs": 1791150120000,
+      "endMs": 1791151380000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-04",
+      "localStartHour": 14.7,
+      "dow": 0,
+      "dayType": "weekend",
+      "timeBucket": "afternoon",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "54CE4920-6585-4982-80F3-701C20AB6B12",
+          "songId": "sng_f99916e454b2",
+          "atMs": 1791150120000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "368953B2-8CA4-4132-874A-CDAD20BC7031",
+          "songId": "sng_ea6ce45f8481",
+          "atMs": 1791150360000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "37F3FDBA-D810-475A-8081-7589DC156C67",
+          "songId": "sng_2cb49ca41a10",
+          "atMs": 1791150600000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "C715976C-C20B-4CA1-8899-9A45F18C2603",
+          "songId": "sng_ba4ee2efe3cb",
+          "atMs": 1791150840000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "607F5726-AC99-4693-85DE-EFA64612AB49",
+          "songId": "sng_9e601fbf0060",
+          "atMs": 1791151140000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "78ABCA78-B6F8-4CA5-8474-A9C32B366B1F",
+          "songId": "sng_95f823c31396",
+          "atMs": 1791151380000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "place",
+        "placeId": "plc_78da6e61747eab53"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "0",
+          "label": "Sunday",
+          "share": 1,
+          "baselineShare": 0.0865,
+          "lift": 11.57,
+          "score": 2.448,
+          "count": 6
+        },
+        {
+          "dim": "place",
+          "value": "plc_78da6e61747eab53",
+          "label": "Location A",
+          "share": 1,
+          "baselineShare": 0.0954,
+          "lift": 10.48,
+          "score": 2.349,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "afternoon",
+          "label": "Afternoon",
+          "share": 1,
+          "baselineShare": 0.1407,
+          "lift": 7.11,
+          "score": 1.961,
+          "count": 6
+        },
+        {
+          "dim": "dayType",
+          "value": "weekend",
+          "label": "Weekend",
+          "share": 1,
+          "baselineShare": 0.1571,
+          "lift": 6.37,
+          "score": 1.851,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 1,
+          "baselineShare": 0.1815,
+          "lift": 5.51,
+          "score": 1.707,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 1,
+          "baselineShare": 0.2491,
+          "lift": 4.02,
+          "score": 1.39,
+          "count": 6
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.5,
+          "baselineShare": 0.163,
+          "lift": 3.07,
+          "score": 0.561,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 133,
+          "lo": 108,
+          "hi": 142,
+          "coverage": 1,
+          "dispersionRatio": 0.664,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.248,
+          "lo": 0.226,
+          "hi": 0.278,
+          "coverage": 1,
+          "dispersionRatio": 0.077,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1972,
+          "lo": 1964,
+          "hi": 1975,
+          "coverage": 1,
+          "dispersionRatio": 0.163,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.6,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": true
+      },
+      "title": "Weekend afternoon · Location A · Jazz",
+      "patternId": "pt_f435d0ce8092"
+    },
+    {
+      "id": "pk_4790632060f9",
+      "startMs": 1791063540000,
+      "endMs": 1791064740000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-03",
+      "localStartHour": 14.65,
+      "dow": 6,
+      "dayType": "weekend",
+      "timeBucket": "afternoon",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "E5A4F409-2896-4B15-84A3-77FB002ACFD9",
+          "songId": "sng_18431deff048",
+          "atMs": 1791063540000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "23E7223A-B56B-470E-8184-3B7A34D380BC",
+          "songId": "sng_20ff05537c74",
+          "atMs": 1791063780000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "F051ACE7-F85D-4196-860F-5E84A717B841",
+          "songId": "sng_f99916e454b2",
+          "atMs": 1791064020000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "08F10350-5B46-4E96-8775-5B40E96BFD4D",
+          "songId": "sng_ea6ce45f8481",
+          "atMs": 1791064260000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "ADC2BE7B-79E2-45D4-8AD9-F83B37BDDF1E",
+          "songId": "sng_2cb49ca41a10",
+          "atMs": 1791064500000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "F39E46CE-C9CD-47CF-8433-081492608860",
+          "songId": "sng_ba4ee2efe3cb",
+          "atMs": 1791064740000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "place",
+        "placeId": "plc_78da6e61747eab53"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "6",
+          "label": "Saturday",
+          "share": 1,
+          "baselineShare": 0.0714,
+          "lift": 14,
+          "score": 2.639,
+          "count": 6
+        },
+        {
+          "dim": "place",
+          "value": "plc_78da6e61747eab53",
+          "label": "Location A",
+          "share": 1,
+          "baselineShare": 0.0954,
+          "lift": 10.48,
+          "score": 2.349,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "afternoon",
+          "label": "Afternoon",
+          "share": 1,
+          "baselineShare": 0.1407,
+          "lift": 7.11,
+          "score": 1.961,
+          "count": 6
+        },
+        {
+          "dim": "dayType",
+          "value": "weekend",
+          "label": "Weekend",
+          "share": 1,
+          "baselineShare": 0.1571,
+          "lift": 6.37,
+          "score": 1.851,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 1,
+          "baselineShare": 0.2491,
+          "lift": 4.02,
+          "score": 1.39,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 0.667,
+          "baselineShare": 0.1815,
+          "lift": 3.67,
+          "score": 0.867,
+          "count": 4
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.5,
+          "baselineShare": 0.163,
+          "lift": 3.07,
+          "score": 0.561,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 136,
+          "lo": 104,
+          "hi": 142,
+          "coverage": 1,
+          "dispersionRatio": 0.753,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.245,
+          "lo": 0.21,
+          "hi": 0.258,
+          "coverage": 1,
+          "dispersionRatio": 0.08,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1971,
+          "lo": 1959,
+          "hi": 1975,
+          "coverage": 1,
+          "dispersionRatio": 0.261,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.6,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": true
+      },
+      "title": "Weekend afternoon · Location A · Jazz",
+      "patternId": "pt_f435d0ce8092"
+    },
+    {
+      "id": "pk_51444689e7a6",
+      "startMs": 1790952360000,
+      "endMs": 1790953560000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-02",
+      "localStartHour": 7.77,
+      "dow": 5,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "A3E0CA9B-955F-4771-8421-1EC60A8602E2",
+          "songId": "sng_ce1a2fa144ff",
+          "atMs": 1790952360000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "2F536844-601B-444E-8B6B-773A7F724417",
+          "songId": "sng_2b11b843b917",
+          "atMs": 1790952600000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "3177733B-28E4-4437-84D8-7395EA6E07E0",
+          "songId": "sng_c47f2d82bad2",
+          "atMs": 1790952840000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "02729BB0-31C9-4878-8BED-A0FE4E70C4D3",
+          "songId": "sng_864189836f21",
+          "atMs": 1790953080000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "6CE6CEA0-281E-4816-8898-2E1EDE87222C",
+          "songId": "sng_32df97b4f035",
+          "atMs": 1790953320000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "2A0ACF91-9902-4EA9-8123-C30399028400",
+          "songId": "sng_95d9dead7579",
+          "atMs": 1790953560000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "5",
+          "label": "Friday",
+          "share": 1,
+          "baselineShare": 0.1128,
+          "lift": 8.87,
+          "score": 2.182,
+          "count": 6
+        },
+        {
+          "dim": "trip",
+          "value": "trp_f2207a561d231522",
+          "label": "A → B",
+          "share": 1,
+          "baselineShare": 0.2375,
+          "lift": 4.21,
+          "score": 1.437,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.833,
+          "baselineShare": 0.237,
+          "lift": 3.52,
+          "score": 1.048,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 6
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "warm",
+          "label": "Warm",
+          "share": 0.667,
+          "baselineShare": 0.1741,
+          "lift": 3.83,
+          "score": 0.895,
+          "count": 4
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 6
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 120,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.072,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.683,
+          "lo": 0.656,
+          "hi": 0.738,
+          "coverage": 1,
+          "dispersionRatio": 0.138,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2020,
+          "lo": 2016,
+          "hi": 2024,
+          "coverage": 1,
+          "dispersionRatio": 0.126,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 1,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": true
+      },
+      "title": "Weekday morning · A → B · 120–124 BPM · Electronic",
+      "patternId": "pt_2e8b03e418ed"
+    },
+    {
+      "id": "pk_9083e180c448",
+      "startMs": 1790910900000,
+      "endMs": 1790912100000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-01",
+      "localStartHour": 20.25,
+      "dow": 4,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "0D9E8F7A-1111-4000-8000-00000000BBBB",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "335E73DB-FA2D-45BA-8179-5BBD6CE4B813",
+          "songId": "sng_c266014174ae",
+          "atMs": 1790910900000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "5C96B2AF-204A-4FBB-8F74-56CDA8B25174",
+          "songId": "sng_18431deff048",
+          "atMs": 1790911080000,
+          "outcome": "unknown"
+        },
+        {
+          "eventId": "A8947A34-1F5F-4D90-8E6E-3246154A51F5",
+          "songId": "sng_20ff05537c74",
+          "atMs": 1790911320000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "5432854A-A8D5-42D9-8CF6-C31487DDBE1F",
+          "songId": "sng_f99916e454b2",
+          "atMs": 1790911620000,
+          "outcome": "partial"
+        },
+        {
+          "eventId": "25A6409F-121F-4213-86DB-8662A95087A0",
+          "songId": "sng_ea6ce45f8481",
+          "atMs": 1790911860000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "13851654-3124-4386-8890-E4B7AC2F4D7A",
+          "songId": "sng_2c8aa912d67c",
+          "atMs": 1790912100000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "4",
+          "label": "Thursday",
+          "share": 1,
+          "baselineShare": 0.2256,
+          "lift": 4.43,
+          "score": 1.489,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 0.833,
+          "baselineShare": 0.2491,
+          "lift": 3.35,
+          "score": 1.006,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.667,
+          "baselineShare": 0.163,
+          "lift": 4.09,
+          "score": 0.939,
+          "count": 4
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 0.5,
+          "baselineShare": 0.1815,
+          "lift": 2.76,
+          "score": 0.507,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 132,
+          "lo": 104,
+          "hi": 138,
+          "coverage": 1,
+          "dispersionRatio": 0.786,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.247,
+          "lo": 0.21,
+          "hi": 0.279,
+          "coverage": 0.833,
+          "dispersionRatio": 0.112,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1970,
+          "lo": 1959,
+          "hi": 2000,
+          "coverage": 1,
+          "dispersionRatio": 0.628,
+          "baselineCenter": 2001,
+          "defining": false
+        }
+      },
+      "harmonic": {
+        "rate": 0.4,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": false
+      },
+      "title": "Weekday evening · Jazz",
+      "patternId": "pt_7a6542de5f57"
+    },
+    {
+      "id": "pk_3a9aef2249c5",
+      "startMs": 1790903340000,
+      "endMs": 1790904300000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-01",
+      "localStartHour": 18.15,
+      "dow": 4,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 1,
+      "sessionPlays": 6,
+      "members": [
+        {
+          "eventId": "873DBD3C-4123-48D4-8429-FDE5D5EBF781",
+          "songId": "sng_b508c8529337",
+          "atMs": 1790903340000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "257B6A99-D985-49F7-8B57-1372F176B21D",
+          "songId": "sng_6ad2b1e70ef0",
+          "atMs": 1790903520000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "16310F71-95DF-49EB-8733-EEDAEA3C1E03",
+          "songId": "sng_ff82a2c2c91c",
+          "atMs": 1790903760000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "3A4AD85B-854B-4072-87A8-D31A8E52F44D",
+          "songId": "sng_6b9be13b205c",
+          "atMs": 1790904000000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "C1BAB8B0-0457-4B97-81CE-06780B8C6B4D",
+          "songId": "sng_5459d757a358",
+          "atMs": 1790904300000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_4f59fe99a08ab8a9",
+        "origin": "plc_980d5dc41fa9477b",
+        "destination": "plc_78da6e61747eab53"
+      },
+      "features": [
+        {
+          "dim": "trip",
+          "value": "trp_4f59fe99a08ab8a9",
+          "label": "B → A",
+          "share": 1,
+          "baselineShare": 0.1188,
+          "lift": 8.42,
+          "score": 2.131,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "hip-hop",
+          "label": "Hip-Hop",
+          "share": 1,
+          "baselineShare": 0.1736,
+          "lift": 5.76,
+          "score": 1.751,
+          "count": 5
+        },
+        {
+          "dim": "dow",
+          "value": "4",
+          "label": "Thursday",
+          "share": 1,
+          "baselineShare": 0.2256,
+          "lift": 4.43,
+          "score": 1.489,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "confident",
+          "label": "Confident",
+          "share": 0.8,
+          "baselineShare": 0.1333,
+          "lift": 6,
+          "score": 1.433,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "gritty",
+          "label": "Gritty",
+          "share": 0.4,
+          "baselineShare": 0.063,
+          "lift": 6.35,
+          "score": 0.74,
+          "count": 2
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 5
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 92,
+          "lo": 86,
+          "hi": 96,
+          "coverage": 1,
+          "dispersionRatio": 0.199,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.555,
+          "lo": 0.498,
+          "hi": 0.577,
+          "coverage": 1,
+          "dispersionRatio": 0.143,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2011,
+          "lo": 1996,
+          "hi": 2019,
+          "coverage": 1,
+          "dispersionRatio": 0.423,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": false
+      },
+      "title": "Weekday evening · B → A · 86–96 BPM · Hip-Hop",
+      "patternId": "pt_87fa4138b590"
+    },
+    {
+      "id": "pk_5394412fcf82",
+      "startMs": 1790865540000,
+      "endMs": 1790866500000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-10-01",
+      "localStartHour": 7.65,
+      "dow": 4,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 0,
+      "sessionPlays": 5,
+      "members": [
+        {
+          "eventId": "D770C4CD-9A7A-4EA8-8A3B-F4A05BF97524",
+          "songId": "sng_c47f2d82bad2",
+          "atMs": 1790865540000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "05C80A25-027F-4407-85EC-8B7FE0B21760",
+          "songId": "sng_864189836f21",
+          "atMs": 1790865780000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "26B7B49E-516F-4A59-8D92-BB157D7EF6A9",
+          "songId": "sng_32df97b4f035",
+          "atMs": 1790866020000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "27E5CCCB-0D69-4C28-85E9-C04676C3D968",
+          "songId": "sng_95d9dead7579",
+          "atMs": 1790866260000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "6EF7EB18-21F3-4FEB-87B0-136EA1709405",
+          "songId": "sng_5050aade77c4",
+          "atMs": 1790866500000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b"
+      },
+      "features": [
+        {
+          "dim": "mood",
+          "value": "warm",
+          "label": "Warm",
+          "share": 1,
+          "baselineShare": 0.1741,
+          "lift": 5.74,
+          "score": 1.748,
+          "count": 5
+        },
+        {
+          "dim": "dow",
+          "value": "4",
+          "label": "Thursday",
+          "share": 1,
+          "baselineShare": 0.2256,
+          "lift": 4.43,
+          "score": 1.489,
+          "count": 5
+        },
+        {
+          "dim": "trip",
+          "value": "trp_f2207a561d231522",
+          "label": "A → B",
+          "share": 1,
+          "baselineShare": 0.2375,
+          "lift": 4.21,
+          "score": 1.437,
+          "count": 5
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.8,
+          "baselineShare": 0.237,
+          "lift": 3.38,
+          "score": 0.973,
+          "count": 4
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 5
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 118,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.12,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.685,
+          "lo": 0.656,
+          "hi": 0.757,
+          "coverage": 1,
+          "dispersionRatio": 0.172,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2021,
+          "lo": 2016,
+          "hi": 2024,
+          "coverage": 1,
+          "dispersionRatio": 0.132,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.75,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": true
+      },
+      "title": "Weekday morning · A → B · 118–124 BPM · Electronic",
+      "patternId": "pt_2e8b03e418ed"
+    },
+    {
+      "id": "pk_1830d99268e4",
+      "startMs": 1790816640000,
+      "endMs": 1790817540000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-30",
+      "localStartHour": 18.07,
+      "dow": 3,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 1,
+      "sessionPlays": 6,
+      "members": [
+        {
+          "eventId": "2FC663C5-8875-4901-84A2-27A0673EBE91",
+          "songId": "sng_5459d757a358",
+          "atMs": 1790816640000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "44CB9959-C247-4044-8226-A10602C6E9A4",
+          "songId": "sng_3d96ac27a1d2",
+          "atMs": 1790816820000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "2E4D4B93-A041-45D6-88D7-2D5989AF8CE3",
+          "songId": "sng_e5da88ce56c7",
+          "atMs": 1790817060000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "75123EF3-CED1-45A4-85A4-1B82E8595C93",
+          "songId": "sng_bdeab8d16f53",
+          "atMs": 1790817360000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "F51AA551-1632-4612-88C4-F87C26688C98",
+          "songId": "sng_ab8505d69834",
+          "atMs": 1790817540000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_4f59fe99a08ab8a9",
+        "origin": "plc_980d5dc41fa9477b",
+        "destination": "plc_78da6e61747eab53"
+      },
+      "features": [
+        {
+          "dim": "trip",
+          "value": "trp_4f59fe99a08ab8a9",
+          "label": "B → A",
+          "share": 1,
+          "baselineShare": 0.1188,
+          "lift": 8.42,
+          "score": 2.131,
+          "count": 5
+        },
+        {
+          "dim": "dow",
+          "value": "3",
+          "label": "Wednesday",
+          "share": 1,
+          "baselineShare": 0.1579,
+          "lift": 6.33,
+          "score": 1.846,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "hip-hop",
+          "label": "Hip-Hop",
+          "share": 1,
+          "baselineShare": 0.1736,
+          "lift": 5.76,
+          "score": 1.751,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "dark",
+          "label": "Dark",
+          "share": 0.8,
+          "baselineShare": 0.1111,
+          "lift": 7.2,
+          "score": 1.579,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "confident",
+          "label": "Confident",
+          "share": 0.8,
+          "baselineShare": 0.1333,
+          "lift": 6,
+          "score": 1.433,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "gritty",
+          "label": "Gritty",
+          "share": 0.4,
+          "baselineShare": 0.063,
+          "lift": 6.35,
+          "score": 0.74,
+          "count": 2
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 89,
+          "lo": 86,
+          "hi": 97,
+          "coverage": 1,
+          "dispersionRatio": 0.25,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.562,
+          "lo": 0.533,
+          "hi": 0.577,
+          "coverage": 1,
+          "dispersionRatio": 0.079,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2009,
+          "lo": 1994,
+          "hi": 2018,
+          "coverage": 1,
+          "dispersionRatio": 0.441,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": false
+      },
+      "title": "Weekday evening · B → A · 86–97 BPM · Hip-Hop",
+      "patternId": "pt_87fa4138b590"
+    },
+    {
+      "id": "pk_70b1b1c62e4d",
+      "startMs": 1790779620000,
+      "endMs": 1790780820000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-30",
+      "localStartHour": 7.78,
+      "dow": 3,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "DA23AFFD-5A8F-45CC-8021-B94328BC86B8",
+          "songId": "sng_ce1a2fa144ff",
+          "atMs": 1790779620000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "BA2CDF75-2B8B-4487-8590-56C713882992",
+          "songId": "sng_2b11b843b917",
+          "atMs": 1790779800000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "AE01AFA4-DECC-4210-895C-9E37949C969D",
+          "songId": "sng_c47f2d82bad2",
+          "atMs": 1790780100000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "BCEC1751-59D1-41AD-840F-88865E8AECD0",
+          "songId": "sng_864189836f21",
+          "atMs": 1790780340000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "D3FF8B6E-82F5-42B0-8655-70687DC1BA58",
+          "songId": "sng_32df97b4f035",
+          "atMs": 1790780580000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "420A678A-E83D-4079-8507-82DE68832278",
+          "songId": "sng_95d9dead7579",
+          "atMs": 1790780820000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "3",
+          "label": "Wednesday",
+          "share": 1,
+          "baselineShare": 0.1579,
+          "lift": 6.33,
+          "score": 1.846,
+          "count": 6
+        },
+        {
+          "dim": "trip",
+          "value": "trp_f2207a561d231522",
+          "label": "A → B",
+          "share": 1,
+          "baselineShare": 0.2375,
+          "lift": 4.21,
+          "score": 1.437,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.833,
+          "baselineShare": 0.237,
+          "lift": 3.52,
+          "score": 1.048,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 6
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "warm",
+          "label": "Warm",
+          "share": 0.667,
+          "baselineShare": 0.1741,
+          "lift": 3.83,
+          "score": 0.895,
+          "count": 4
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 6
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 120,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.072,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.683,
+          "lo": 0.656,
+          "hi": 0.738,
+          "coverage": 1,
+          "dispersionRatio": 0.138,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2020,
+          "lo": 2016,
+          "hi": 2024,
+          "coverage": 1,
+          "dispersionRatio": 0.126,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 1,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": true
+      },
+      "title": "Weekday morning · A → B · 120–124 BPM · Electronic",
+      "patternId": "pt_2e8b03e418ed"
+    },
+    {
+      "id": "pk_468a29f22634",
+      "startMs": 1790738100000,
+      "endMs": 1790739360000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-29",
+      "localStartHour": 20.25,
+      "dow": 2,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "0D9E8F7A-1111-4000-8000-00000000BBBB",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "96280BB7-3EF4-495C-86CF-7A8B2C6EEE49",
+          "songId": "sng_2cb49ca41a10",
+          "atMs": 1790738100000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "4F7749D9-D9C8-4561-8948-372C0BA7AA4B",
+          "songId": "sng_ba4ee2efe3cb",
+          "atMs": 1790738340000,
+          "outcome": "unknown"
+        },
+        {
+          "eventId": "E942F9AC-4498-4FDA-8055-11D9665121D4",
+          "songId": "sng_9e601fbf0060",
+          "atMs": 1790738580000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "918D67E5-6EE9-465A-88D5-A0DBD3830B5A",
+          "songId": "sng_95f823c31396",
+          "atMs": 1790738820000,
+          "outcome": "partial"
+        },
+        {
+          "eventId": "A57AE766-0E65-4082-8EE0-68BADF016DEB",
+          "songId": "sng_c266014174ae",
+          "atMs": 1790739120000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "4286EA3D-2D82-409C-84C7-9226FD15561F",
+          "songId": "sng_18431deff048",
+          "atMs": 1790739360000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "2",
+          "label": "Tuesday",
+          "share": 1,
+          "baselineShare": 0.1654,
+          "lift": 6.05,
+          "score": 1.799,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 1,
+          "baselineShare": 0.2491,
+          "lift": 4.02,
+          "score": 1.39,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 0.833,
+          "baselineShare": 0.1815,
+          "lift": 4.59,
+          "score": 1.27,
+          "count": 5
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 6
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.5,
+          "baselineShare": 0.163,
+          "lift": 3.07,
+          "score": 0.561,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 131,
+          "lo": 108,
+          "hi": 142,
+          "coverage": 1,
+          "dispersionRatio": 0.826,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.254,
+          "lo": 0.226,
+          "hi": 0.279,
+          "coverage": 1,
+          "dispersionRatio": 0.09,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1971,
+          "lo": 1959,
+          "hi": 1975,
+          "coverage": 1,
+          "dispersionRatio": 0.243,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.6,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": true
+      },
+      "title": "Weekday evening · Jazz",
+      "patternId": "pt_7a6542de5f57"
+    },
+    {
+      "id": "pk_093202fa8916",
+      "startMs": 1790692680000,
+      "endMs": 1790693580000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-29",
+      "localStartHour": 7.63,
+      "dow": 2,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 0,
+      "sessionPlays": 5,
+      "members": [
+        {
+          "eventId": "9CFCAA02-8314-466A-8E5C-F04D7E179389",
+          "songId": "sng_2bd6aa178f08",
+          "atMs": 1790692680000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "F0CF3264-4542-41D1-8956-EE0C5B20CA34",
+          "songId": "sng_df6f9d2e2f2a",
+          "atMs": 1790692920000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "05D8144E-F44F-43E9-80D5-DACB478E6E84",
+          "songId": "sng_e517ffed1ba7",
+          "atMs": 1790693100000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "C7077E73-CE81-48D6-8327-249FB430CAA6",
+          "songId": "sng_24124669befd",
+          "atMs": 1790693340000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "849B2F1A-07FA-4E1D-8814-28513E880229",
+          "songId": "sng_ce1a2fa144ff",
+          "atMs": 1790693580000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "2",
+          "label": "Tuesday",
+          "share": 1,
+          "baselineShare": 0.1654,
+          "lift": 6.05,
+          "score": 1.799,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 1,
+          "baselineShare": 0.1926,
+          "lift": 5.19,
+          "score": 1.647,
+          "count": 5
+        },
+        {
+          "dim": "trip",
+          "value": "trp_f2207a561d231522",
+          "label": "A → B",
+          "share": 1,
+          "baselineShare": 0.2375,
+          "lift": 4.21,
+          "score": 1.437,
+          "count": 5
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 5
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.4,
+          "baselineShare": 0.237,
+          "lift": 1.69,
+          "score": 0.209,
+          "count": 2
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 119,
+          "hi": 123,
+          "coverage": 1,
+          "dispersionRatio": 0.108,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.712,
+          "lo": 0.67,
+          "hi": 0.73,
+          "coverage": 1,
+          "dispersionRatio": 0.101,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2019,
+          "lo": 2016,
+          "hi": 2023,
+          "coverage": 1,
+          "dispersionRatio": 0.123,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.75,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": true
+      },
+      "title": "Weekday morning · A → B · 119–123 BPM · Electronic",
+      "patternId": "pt_2e8b03e418ed"
+    },
+    {
+      "id": "pk_4e58060a10a1",
+      "startMs": 1790644200000,
+      "endMs": 1790645160000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-28",
+      "localStartHour": 18.17,
+      "dow": 1,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 1,
+      "sessionPlays": 6,
+      "members": [
+        {
+          "eventId": "353F81C9-B142-40AB-80C4-8510902106AD",
+          "songId": "sng_e5da88ce56c7",
+          "atMs": 1790644200000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "4FC1FCD1-C503-4ECE-8597-BC0BA09F83BD",
+          "songId": "sng_bdeab8d16f53",
+          "atMs": 1790644380000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "1E3D8E54-E0E9-4EA6-817F-2AF645E3FE88",
+          "songId": "sng_ab8505d69834",
+          "atMs": 1790644620000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "A3EB8B68-B4B1-4CFD-8221-4CF7BC8DD3E3",
+          "songId": "sng_80b6d4384779",
+          "atMs": 1790644920000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "8833F9A1-F60E-4602-80C6-1D088787F345",
+          "songId": "sng_9c22fa04323f",
+          "atMs": 1790645160000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_4f59fe99a08ab8a9",
+        "origin": "plc_980d5dc41fa9477b",
+        "destination": "plc_78da6e61747eab53"
+      },
+      "features": [
+        {
+          "dim": "trip",
+          "value": "trp_4f59fe99a08ab8a9",
+          "label": "B → A",
+          "share": 1,
+          "baselineShare": 0.1188,
+          "lift": 8.42,
+          "score": 2.131,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "hip-hop",
+          "label": "Hip-Hop",
+          "share": 1,
+          "baselineShare": 0.1736,
+          "lift": 5.76,
+          "score": 1.751,
+          "count": 5
+        },
+        {
+          "dim": "dow",
+          "value": "1",
+          "label": "Monday",
+          "share": 1,
+          "baselineShare": 0.1805,
+          "lift": 5.54,
+          "score": 1.712,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "dark",
+          "label": "Dark",
+          "share": 0.8,
+          "baselineShare": 0.1111,
+          "lift": 7.2,
+          "score": 1.579,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "confident",
+          "label": "Confident",
+          "share": 0.8,
+          "baselineShare": 0.1333,
+          "lift": 6,
+          "score": 1.433,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "gritty",
+          "label": "Gritty",
+          "share": 0.4,
+          "baselineShare": 0.063,
+          "lift": 6.35,
+          "score": 0.74,
+          "count": 2
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 93,
+          "lo": 87,
+          "hi": 97,
+          "coverage": 1,
+          "dispersionRatio": 0.224,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.565,
+          "lo": 0.533,
+          "hi": 0.587,
+          "coverage": 1,
+          "dispersionRatio": 0.089,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2007,
+          "lo": 1994,
+          "hi": 2015,
+          "coverage": 1,
+          "dispersionRatio": 0.357,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": false
+      },
+      "title": "Weekday evening · B → A · 87–97 BPM · Hip-Hop",
+      "patternId": "pt_87fa4138b590"
+    },
+    {
+      "id": "pk_366107861d95",
+      "startMs": 1790606280000,
+      "endMs": 1790607240000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-28",
+      "localStartHour": 7.63,
+      "dow": 1,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 1,
+      "sessionPlays": 6,
+      "members": [
+        {
+          "eventId": "2E506465-9F07-4D33-87C1-E96210536545",
+          "songId": "sng_95d9dead7579",
+          "atMs": 1790606280000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "A1081F15-9147-466F-8586-A2FC99ED26AD",
+          "songId": "sng_5050aade77c4",
+          "atMs": 1790606460000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "B5AE8E48-F535-4A4D-861E-AD4BAFD0E130",
+          "songId": "sng_d355cc000d8b",
+          "atMs": 1790606700000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "E4830230-80A0-4B40-8A22-792B0F7DAF42",
+          "songId": "sng_2bd6aa178f08",
+          "atMs": 1790607000000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "88097DA1-AD06-498C-8AD5-E08016E203A9",
+          "songId": "sng_df6f9d2e2f2a",
+          "atMs": 1790607240000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b"
+      },
+      "features": [
+        {
+          "dim": "dow",
+          "value": "1",
+          "label": "Monday",
+          "share": 1,
+          "baselineShare": 0.1805,
+          "lift": 5.54,
+          "score": 1.712,
+          "count": 5
+        },
+        {
+          "dim": "trip",
+          "value": "trp_f2207a561d231522",
+          "label": "A → B",
+          "share": 1,
+          "baselineShare": 0.2375,
+          "lift": 4.21,
+          "score": 1.437,
+          "count": 5
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "warm",
+          "label": "Warm",
+          "share": 0.6,
+          "baselineShare": 0.1741,
+          "lift": 3.45,
+          "score": 0.742,
+          "count": 3
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 0.6,
+          "baselineShare": 0.1926,
+          "lift": 3.12,
+          "score": 0.682,
+          "count": 3
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 5
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 118,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.123,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.704,
+          "lo": 0.682,
+          "hi": 0.757,
+          "coverage": 1,
+          "dispersionRatio": 0.134,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2017,
+          "lo": 2016,
+          "hi": 2021,
+          "coverage": 1,
+          "dispersionRatio": 0.089,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.75,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": true
+      },
+      "title": "Weekday morning · A → B · 118–124 BPM · Electronic",
+      "patternId": "pt_2e8b03e418ed"
+    },
+    {
+      "id": "pk_994ddfcfbb36",
+      "startMs": 1790544240000,
+      "endMs": 1790545440000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-27",
+      "localStartHour": 14.4,
+      "dow": 0,
+      "dayType": "weekend",
+      "timeBucket": "afternoon",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "17B79210-CFD9-46C6-8670-F4F72A2BD3DE",
+          "songId": "sng_9e601fbf0060",
+          "atMs": 1790544240000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "CDB1A362-44D6-4D0D-82E1-F2107E5A143B",
+          "songId": "sng_95f823c31396",
+          "atMs": 1790544480000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "4AA2C6E8-6163-4C7D-8814-2CDEA5F81D92",
+          "songId": "sng_c266014174ae",
+          "atMs": 1790544720000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "99E6AC75-8A9A-4153-8F2B-F5117BB128CF",
+          "songId": "sng_18431deff048",
+          "atMs": 1790545020000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "5996F42D-04D0-4CA8-843E-2F7CB7399C1F",
+          "songId": "sng_20ff05537c74",
+          "atMs": 1790545260000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "95678DB0-6205-4233-8F32-94965CCCF8E9",
+          "songId": "sng_f99916e454b2",
+          "atMs": 1790545440000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "0",
+          "label": "Sunday",
+          "share": 1,
+          "baselineShare": 0.0865,
+          "lift": 11.57,
+          "score": 2.448,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "afternoon",
+          "label": "Afternoon",
+          "share": 1,
+          "baselineShare": 0.1407,
+          "lift": 7.11,
+          "score": 1.961,
+          "count": 6
+        },
+        {
+          "dim": "dayType",
+          "value": "weekend",
+          "label": "Weekend",
+          "share": 1,
+          "baselineShare": 0.1571,
+          "lift": 6.37,
+          "score": 1.851,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 1,
+          "baselineShare": 0.2491,
+          "lift": 4.02,
+          "score": 1.39,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.833,
+          "baselineShare": 0.163,
+          "lift": 5.11,
+          "score": 1.36,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 0.667,
+          "baselineShare": 0.1815,
+          "lift": 3.67,
+          "score": 0.867,
+          "count": 4
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 6
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 117,
+          "lo": 104,
+          "hi": 138,
+          "coverage": 1,
+          "dispersionRatio": 0.79,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.254,
+          "lo": 0.21,
+          "hi": 0.279,
+          "coverage": 1,
+          "dispersionRatio": 0.117,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1970,
+          "lo": 1959,
+          "hi": 1972,
+          "coverage": 1,
+          "dispersionRatio": 0.214,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.4,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": false
+      },
+      "title": "Weekend afternoon · Jazz",
+      "patternId": "pt_d37099907bce"
+    },
+    {
+      "id": "pk_37fd35668ee9",
+      "startMs": 1790459100000,
+      "endMs": 1790460360000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-26",
+      "localStartHour": 14.75,
+      "dow": 6,
+      "dayType": "weekend",
+      "timeBucket": "afternoon",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "EA899C2D-5144-48BE-86B0-8CC086E462E4",
+          "songId": "sng_20ff05537c74",
+          "atMs": 1790459100000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "B5723BDF-BC46-48DB-8406-1BF3694A32A1",
+          "songId": "sng_f99916e454b2",
+          "atMs": 1790459340000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "7F249546-B6D2-4483-80F8-5672319CAAE9",
+          "songId": "sng_ea6ce45f8481",
+          "atMs": 1790459580000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "ECC59E9D-8357-48DF-8C86-4BEF34D5CCBC",
+          "songId": "sng_2cb49ca41a10",
+          "atMs": 1790459880000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "D32ED6A4-AB86-42A3-8350-A9357952C79F",
+          "songId": "sng_ba4ee2efe3cb",
+          "atMs": 1790460120000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "18C3727B-BB62-42A2-8347-1B94051D6D9B",
+          "songId": "sng_9e601fbf0060",
+          "atMs": 1790460360000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "6",
+          "label": "Saturday",
+          "share": 1,
+          "baselineShare": 0.0714,
+          "lift": 14,
+          "score": 2.639,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "afternoon",
+          "label": "Afternoon",
+          "share": 1,
+          "baselineShare": 0.1407,
+          "lift": 7.11,
+          "score": 1.961,
+          "count": 6
+        },
+        {
+          "dim": "dayType",
+          "value": "weekend",
+          "label": "Weekend",
+          "share": 1,
+          "baselineShare": 0.1571,
+          "lift": 6.37,
+          "score": 1.851,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 1,
+          "baselineShare": 0.2491,
+          "lift": 4.02,
+          "score": 1.39,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 0.833,
+          "baselineShare": 0.1815,
+          "lift": 4.59,
+          "score": 1.27,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.5,
+          "baselineShare": 0.163,
+          "lift": 3.07,
+          "score": 0.561,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 133,
+          "lo": 104,
+          "hi": 142,
+          "coverage": 1,
+          "dispersionRatio": 0.742,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.245,
+          "lo": 0.21,
+          "hi": 0.251,
+          "coverage": 1,
+          "dispersionRatio": 0.074,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1972,
+          "lo": 1964,
+          "hi": 1975,
+          "coverage": 1,
+          "dispersionRatio": 0.165,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.6,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": true
+      },
+      "title": "Weekend afternoon · Jazz",
+      "patternId": "pt_d37099907bce"
+    },
+    {
+      "id": "pk_038b5bd52343",
+      "startMs": 1790347320000,
+      "endMs": 1790348220000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-25",
+      "localStartHour": 7.7,
+      "dow": 5,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 0,
+      "sessionPlays": 5,
+      "members": [
+        {
+          "eventId": "56694DA2-A08F-4F2E-8ADB-127994EC749A",
+          "songId": "sng_95d9dead7579",
+          "atMs": 1790347320000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "CA9B77F6-5014-4114-80D5-6F19755442DB",
+          "songId": "sng_5050aade77c4",
+          "atMs": 1790347500000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "54A1DA35-DA60-4862-8D3B-3CD49568AB93",
+          "songId": "sng_d355cc000d8b",
+          "atMs": 1790347740000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "07FC2D27-1305-4398-8F69-7B28F3416FCB",
+          "songId": "sng_2bd6aa178f08",
+          "atMs": 1790347980000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "0337A8AA-D5C5-44F8-8791-3F9E368B49F4",
+          "songId": "sng_df6f9d2e2f2a",
+          "atMs": 1790348220000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "5",
+          "label": "Friday",
+          "share": 1,
+          "baselineShare": 0.1128,
+          "lift": 8.87,
+          "score": 2.182,
+          "count": 5
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "warm",
+          "label": "Warm",
+          "share": 0.6,
+          "baselineShare": 0.1741,
+          "lift": 3.45,
+          "score": 0.742,
+          "count": 3
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 0.6,
+          "baselineShare": 0.1926,
+          "lift": 3.12,
+          "score": 0.682,
+          "count": 3
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.6,
+          "baselineShare": 0.237,
+          "lift": 2.53,
+          "score": 0.557,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 118,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.123,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.704,
+          "lo": 0.682,
+          "hi": 0.757,
+          "coverage": 1,
+          "dispersionRatio": 0.134,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2017,
+          "lo": 2016,
+          "hi": 2021,
+          "coverage": 1,
+          "dispersionRatio": 0.089,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.75,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": true
+      },
+      "title": "Weekday morning · 118–124 BPM · Electronic",
+      "patternId": "pt_01681f315cf8"
+    },
+    {
+      "id": "pk_7f834f9763f6",
+      "startMs": 1790306100000,
+      "endMs": 1790307300000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-24",
+      "localStartHour": 20.25,
+      "dow": 4,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "0D9E8F7A-1111-4000-8000-00000000BBBB",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "6EADAE9C-0DE7-42D2-84D6-E9B7397138A9",
+          "songId": "sng_f99916e454b2",
+          "atMs": 1790306100000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "1F532BE0-0330-4882-858E-65EF7BD56EFF",
+          "songId": "sng_ea6ce45f8481",
+          "atMs": 1790306280000,
+          "outcome": "unknown"
+        },
+        {
+          "eventId": "66B17ECB-EFE4-47B2-8F4C-74DBF62E47E3",
+          "songId": "sng_2c8aa912d67c",
+          "atMs": 1790306520000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "C706077D-714B-4759-8C25-16A2E7F2FB74",
+          "songId": "sng_145cd21a3d44",
+          "atMs": 1790306820000,
+          "outcome": "partial"
+        },
+        {
+          "eventId": "5C6D5BDF-6AB3-4DB1-8B44-29EEABE820E5",
+          "songId": "sng_ff8aace4c6d2",
+          "atMs": 1790307060000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "F113B16A-C6DE-4B80-8625-7576C584BB83",
+          "songId": "sng_f64f167e1d55",
+          "atMs": 1790307300000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "genre",
+          "value": "r&b",
+          "label": "R&B",
+          "share": 0.667,
+          "baselineShare": 0.0302,
+          "lift": 22.08,
+          "score": 2.063,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "romantic",
+          "label": "Romantic",
+          "share": 0.5,
+          "baselineShare": 0.0185,
+          "lift": 27,
+          "score": 1.648,
+          "count": 3
+        },
+        {
+          "dim": "dow",
+          "value": "4",
+          "label": "Thursday",
+          "share": 1,
+          "baselineShare": 0.2256,
+          "lift": 4.43,
+          "score": 1.489,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.667,
+          "baselineShare": 0.163,
+          "lift": 4.09,
+          "score": 0.939,
+          "count": 4
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 6
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 134,
+          "lo": 124,
+          "hi": 146,
+          "coverage": 1,
+          "dispersionRatio": 0.4,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.245,
+          "lo": 0.242,
+          "hi": 0.247,
+          "coverage": 0.333,
+          "dispersionRatio": 0.014,
+          "baselineCenter": 0.526,
+          "defining": false
+        },
+        "year": {
+          "center": 1993,
+          "lo": 1964,
+          "hi": 2000,
+          "coverage": 1,
+          "dispersionRatio": 0.627,
+          "baselineCenter": 2001,
+          "defining": false
+        }
+      },
+      "harmonic": {
+        "rate": 0.2,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": false
+      },
+      "title": "Weekday evening · 124–146 BPM · R&B",
+      "patternId": null
+    },
+    {
+      "id": "pk_c33e295aa32b",
+      "startMs": 1790298420000,
+      "endMs": 1790299380000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-24",
+      "localStartHour": 18.12,
+      "dow": 4,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 1,
+      "sessionPlays": 6,
+      "members": [
+        {
+          "eventId": "4255626D-B16D-4402-8604-C31776DFA276",
+          "songId": "sng_e44e89f6c105",
+          "atMs": 1790298420000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "DCE13692-3A97-47F0-835E-403C6D9CEFF9",
+          "songId": "sng_3d33ac723459",
+          "atMs": 1790298660000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "20DF7DE6-E8E1-4ABE-8A4D-9B4E64269503",
+          "songId": "sng_b508c8529337",
+          "atMs": 1790298840000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "30DEF8D8-F5B7-4352-81B1-54EC213A295D",
+          "songId": "sng_6ad2b1e70ef0",
+          "atMs": 1790299080000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "447D566B-10E0-48C7-86E9-2358041371E7",
+          "songId": "sng_ff82a2c2c91c",
+          "atMs": 1790299380000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "genre",
+          "value": "hip-hop",
+          "label": "Hip-Hop",
+          "share": 1,
+          "baselineShare": 0.1736,
+          "lift": 5.76,
+          "score": 1.751,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "dark",
+          "label": "Dark",
+          "share": 0.8,
+          "baselineShare": 0.1111,
+          "lift": 7.2,
+          "score": 1.579,
+          "count": 4
+        },
+        {
+          "dim": "dow",
+          "value": "4",
+          "label": "Thursday",
+          "share": 1,
+          "baselineShare": 0.2256,
+          "lift": 4.43,
+          "score": 1.489,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "confident",
+          "label": "Confident",
+          "share": 0.8,
+          "baselineShare": 0.1333,
+          "lift": 6,
+          "score": 1.433,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 5
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 5
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 94,
+          "lo": 90,
+          "hi": 96,
+          "coverage": 1,
+          "dispersionRatio": 0.143,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.56,
+          "lo": 0.498,
+          "hi": 0.595,
+          "coverage": 1,
+          "dispersionRatio": 0.165,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2011,
+          "lo": 1996,
+          "hi": 2019,
+          "coverage": 1,
+          "dispersionRatio": 0.393,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": false
+      },
+      "title": "Weekday evening · 90–96 BPM · Hip-Hop",
+      "patternId": "pt_c549568303ef"
+    },
+    {
+      "id": "pk_6329d95ca54f",
+      "startMs": 1790261100000,
+      "endMs": 1790261880000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-24",
+      "localStartHour": 7.75,
+      "dow": 4,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 4,
+      "skippedCount": 0,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "00D818C0-3A09-49CE-8147-CA351F54F0EA",
+          "songId": "sng_5050aade77c4",
+          "atMs": 1790261100000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "CE33EAD9-BAD2-436D-8407-4A91B9E8755D",
+          "songId": "sng_d355cc000d8b",
+          "atMs": 1790261400000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "635EDE36-4D50-449C-8EBF-3EE5259CE0B3",
+          "songId": "sng_2bd6aa178f08",
+          "atMs": 1790261580000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "8932AAB3-4DA6-402C-8A9C-CA3052420CDE",
+          "songId": "sng_df6f9d2e2f2a",
+          "atMs": 1790261880000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "4",
+          "label": "Thursday",
+          "share": 1,
+          "baselineShare": 0.2256,
+          "lift": 4.43,
+          "score": 1.489,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 4
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 4
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 0.75,
+          "baselineShare": 0.1926,
+          "lift": 3.89,
+          "score": 1.02,
+          "count": 3
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "warm",
+          "label": "Warm",
+          "share": 0.5,
+          "baselineShare": 0.1741,
+          "lift": 2.87,
+          "score": 0.528,
+          "count": 2
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.5,
+          "baselineShare": 0.237,
+          "lift": 2.11,
+          "score": 0.373,
+          "count": 2
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 123,
+          "lo": 118,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.137,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.711,
+          "lo": 0.687,
+          "hi": 0.757,
+          "coverage": 1,
+          "dispersionRatio": 0.128,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2017,
+          "lo": 2016,
+          "hi": 2021,
+          "coverage": 1,
+          "dispersionRatio": 0.099,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 1,
+        "baselineRate": 0.194,
+        "pairs": 3,
+        "defining": true
+      },
+      "title": "Weekday morning · 118–124 BPM · Electronic",
+      "patternId": "pt_01681f315cf8"
+    },
+    {
+      "id": "pk_9938f3f18279",
+      "startMs": 1790211900000,
+      "endMs": 1790212800000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-23",
+      "localStartHour": 18.08,
+      "dow": 3,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 0,
+      "sessionPlays": 5,
+      "members": [
+        {
+          "eventId": "2DF9C761-6CF1-415D-89C9-BBA9ACD5CEC8",
+          "songId": "sng_e5da88ce56c7",
+          "atMs": 1790211900000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "72AD6E7F-4F1E-4D2D-8440-B1B1C125351F",
+          "songId": "sng_bdeab8d16f53",
+          "atMs": 1790212140000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "8D2B4AA9-1263-4B3C-8204-49CD14FAA963",
+          "songId": "sng_ab8505d69834",
+          "atMs": 1790212380000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "894A922D-2C78-40E1-8DA0-BA46FFD037F3",
+          "songId": "sng_80b6d4384779",
+          "atMs": 1790212560000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "49018FEA-105F-4CD9-8BDE-532BBB028F00",
+          "songId": "sng_9c22fa04323f",
+          "atMs": 1790212800000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "3",
+          "label": "Wednesday",
+          "share": 1,
+          "baselineShare": 0.1579,
+          "lift": 6.33,
+          "score": 1.846,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "hip-hop",
+          "label": "Hip-Hop",
+          "share": 1,
+          "baselineShare": 0.1736,
+          "lift": 5.76,
+          "score": 1.751,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "dark",
+          "label": "Dark",
+          "share": 0.8,
+          "baselineShare": 0.1111,
+          "lift": 7.2,
+          "score": 1.579,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "confident",
+          "label": "Confident",
+          "share": 0.8,
+          "baselineShare": 0.1333,
+          "lift": 6,
+          "score": 1.433,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "gritty",
+          "label": "Gritty",
+          "share": 0.4,
+          "baselineShare": 0.063,
+          "lift": 6.35,
+          "score": 0.74,
+          "count": 2
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 5
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 93,
+          "lo": 87,
+          "hi": 97,
+          "coverage": 1,
+          "dispersionRatio": 0.224,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.565,
+          "lo": 0.533,
+          "hi": 0.587,
+          "coverage": 1,
+          "dispersionRatio": 0.089,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2007,
+          "lo": 1994,
+          "hi": 2015,
+          "coverage": 1,
+          "dispersionRatio": 0.357,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": false
+      },
+      "title": "Weekday evening · 87–97 BPM · Hip-Hop",
+      "patternId": "pt_c549568303ef"
+    },
+    {
+      "id": "pk_ecbe6c556501",
+      "startMs": 1790174760000,
+      "endMs": 1790175480000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-23",
+      "localStartHour": 7.77,
+      "dow": 3,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 4,
+      "skippedCount": 0,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "9056FE09-0DF5-4CF8-8B91-64DC812CB2BE",
+          "songId": "sng_24124669befd",
+          "atMs": 1790174760000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "CD7D29B5-BF88-44A5-8A81-C05434631BCB",
+          "songId": "sng_ce1a2fa144ff",
+          "atMs": 1790175000000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "841C7454-70CC-4728-812A-361B4CE0F91F",
+          "songId": "sng_2b11b843b917",
+          "atMs": 1790175240000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "B2EA37E4-7DA5-4B24-8897-4FBF41525BD5",
+          "songId": "sng_c47f2d82bad2",
+          "atMs": 1790175480000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "3",
+          "label": "Wednesday",
+          "share": 1,
+          "baselineShare": 0.1579,
+          "lift": 6.33,
+          "score": 1.846,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 4
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 4
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.75,
+          "baselineShare": 0.237,
+          "lift": 3.16,
+          "score": 0.864,
+          "count": 3
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 0.5,
+          "baselineShare": 0.1926,
+          "lift": 2.6,
+          "score": 0.477,
+          "count": 2
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 121,
+          "lo": 119,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.108,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.707,
+          "lo": 0.67,
+          "hi": 0.738,
+          "coverage": 1,
+          "dispersionRatio": 0.144,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2019,
+          "lo": 2016,
+          "hi": 2024,
+          "coverage": 1,
+          "dispersionRatio": 0.141,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.667,
+        "baselineRate": 0.194,
+        "pairs": 3,
+        "defining": true
+      },
+      "title": "Weekday morning · 119–124 BPM · Electronic",
+      "patternId": "pt_01681f315cf8"
+    },
+    {
+      "id": "pk_f4bac993600a",
+      "startMs": 1790133300000,
+      "endMs": 1790134500000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-22",
+      "localStartHour": 20.25,
+      "dow": 2,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "0D9E8F7A-1111-4000-8000-00000000BBBB",
+      "memberCount": 6,
+      "skippedCount": 1,
+      "sessionPlays": 7,
+      "members": [
+        {
+          "eventId": "217EC2D6-CF77-4489-8709-E7EBE84193C1",
+          "songId": "sng_ba4ee2efe3cb",
+          "atMs": 1790133300000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "37201ED3-577B-43CA-84D0-4FBF3507B400",
+          "songId": "sng_9e601fbf0060",
+          "atMs": 1790133540000,
+          "outcome": "unknown"
+        },
+        {
+          "eventId": "5E81E6D2-EF31-4A8C-89D8-76A24DBC274D",
+          "songId": "sng_95f823c31396",
+          "atMs": 1790133780000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "2F5EDAE8-7355-4FB3-8991-B9846ACF3AFD",
+          "songId": "sng_c266014174ae",
+          "atMs": 1790134080000,
+          "outcome": "partial"
+        },
+        {
+          "eventId": "911E6EC7-AEAD-4F43-81B7-B1037356D510",
+          "songId": "sng_18431deff048",
+          "atMs": 1790134320000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "5B873CD7-6364-4569-851F-E04EDC907205",
+          "songId": "sng_20ff05537c74",
+          "atMs": 1790134500000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "2",
+          "label": "Tuesday",
+          "share": 1,
+          "baselineShare": 0.1654,
+          "lift": 6.05,
+          "score": 1.799,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 1,
+          "baselineShare": 0.2491,
+          "lift": 4.02,
+          "score": 1.39,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.667,
+          "baselineShare": 0.163,
+          "lift": 4.09,
+          "score": 0.939,
+          "count": 4
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 0.667,
+          "baselineShare": 0.1815,
+          "lift": 3.67,
+          "score": 0.867,
+          "count": 4
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 6
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 117,
+          "lo": 104,
+          "hi": 142,
+          "coverage": 1,
+          "dispersionRatio": 0.882,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.254,
+          "lo": 0.21,
+          "hi": 0.279,
+          "coverage": 1,
+          "dispersionRatio": 0.115,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1970,
+          "lo": 1959,
+          "hi": 1975,
+          "coverage": 1,
+          "dispersionRatio": 0.237,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.4,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": false
+      },
+      "title": "Weekday evening · Jazz",
+      "patternId": "pt_7a6542de5f57"
+    },
+    {
+      "id": "pk_279a0258acca",
+      "startMs": 1790088360000,
+      "endMs": 1790089260000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-22",
+      "localStartHour": 7.77,
+      "dow": 2,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 1,
+      "sessionPlays": 6,
+      "members": [
+        {
+          "eventId": "C63A1413-D6BB-4F31-8AE5-104A9C57004D",
+          "songId": "sng_df6f9d2e2f2a",
+          "atMs": 1790088360000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "BF0FEA59-0FE3-40A2-8C88-68653EFD0EB2",
+          "songId": "sng_e517ffed1ba7",
+          "atMs": 1790088540000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "17B739D8-2B94-4EAD-8C23-4F328022B89F",
+          "songId": "sng_24124669befd",
+          "atMs": 1790088780000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "E0705CC0-8FE5-47E6-88C7-B4D34A5C13A5",
+          "songId": "sng_ce1a2fa144ff",
+          "atMs": 1790089020000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "C2534805-978D-4478-8377-719B191039D7",
+          "songId": "sng_2b11b843b917",
+          "atMs": 1790089260000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "2",
+          "label": "Tuesday",
+          "share": 1,
+          "baselineShare": 0.1654,
+          "lift": 6.05,
+          "score": 1.799,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 0.8,
+          "baselineShare": 0.1926,
+          "lift": 4.15,
+          "score": 1.139,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 5
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 5
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 5
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.6,
+          "baselineShare": 0.237,
+          "lift": 2.53,
+          "score": 0.557,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 119,
+          "hi": 123,
+          "coverage": 1,
+          "dispersionRatio": 0.093,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.712,
+          "lo": 0.67,
+          "hi": 0.738,
+          "coverage": 1,
+          "dispersionRatio": 0.118,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2019,
+          "lo": 2016,
+          "hi": 2023,
+          "coverage": 1,
+          "dispersionRatio": 0.116,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.75,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": true
+      },
+      "title": "Weekday morning · 119–123 BPM · Electronic",
+      "patternId": "pt_01681f315cf8"
+    },
+    {
+      "id": "pk_24b026feea6f",
+      "startMs": 1790039280000,
+      "endMs": 1790040180000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-21",
+      "localStartHour": 18.13,
+      "dow": 1,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 5,
+      "skippedCount": 1,
+      "sessionPlays": 6,
+      "members": [
+        {
+          "eventId": "05B99B75-665E-4780-8092-8C672C428330",
+          "songId": "sng_93c2e67a0cfd",
+          "atMs": 1790039280000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "6ACCAC42-B30F-4A0A-87F0-639B4610FE89",
+          "songId": "sng_e44e89f6c105",
+          "atMs": 1790039460000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "8452CCC5-8AFC-4E1B-8420-4A8DE189BE22",
+          "songId": "sng_3d33ac723459",
+          "atMs": 1790039700000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "8668A7EA-B6A2-4A2A-8440-B75F19FF212E",
+          "songId": "sng_b508c8529337",
+          "atMs": 1790039940000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "EE25B005-091B-44D8-841E-81443D742E8A",
+          "songId": "sng_6ad2b1e70ef0",
+          "atMs": 1790040180000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "genre",
+          "value": "hip-hop",
+          "label": "Hip-Hop",
+          "share": 1,
+          "baselineShare": 0.1736,
+          "lift": 5.76,
+          "score": 1.751,
+          "count": 5
+        },
+        {
+          "dim": "dow",
+          "value": "1",
+          "label": "Monday",
+          "share": 1,
+          "baselineShare": 0.1805,
+          "lift": 5.54,
+          "score": 1.712,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "confident",
+          "label": "Confident",
+          "share": 0.8,
+          "baselineShare": 0.1333,
+          "lift": 6,
+          "score": 1.433,
+          "count": 4
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 5
+        },
+        {
+          "dim": "mood",
+          "value": "dark",
+          "label": "Dark",
+          "share": 0.6,
+          "baselineShare": 0.1111,
+          "lift": 5.4,
+          "score": 1.012,
+          "count": 3
+        },
+        {
+          "dim": "artist",
+          "value": "dj parcel",
+          "label": "DJ Parcel",
+          "share": 0.4,
+          "baselineShare": 0.0393,
+          "lift": 10.18,
+          "score": 0.928,
+          "count": 2
+        },
+        {
+          "dim": "camelot",
+          "value": "5A",
+          "label": "5A",
+          "share": 0.4,
+          "baselineShare": 0.0393,
+          "lift": 10.18,
+          "score": 0.928,
+          "count": 2
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 5
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 94,
+          "lo": 86,
+          "hi": 96,
+          "coverage": 1,
+          "dispersionRatio": 0.231,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.56,
+          "lo": 0.498,
+          "hi": 0.595,
+          "coverage": 1,
+          "dispersionRatio": 0.162,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2011,
+          "lo": 1996,
+          "hi": 2020,
+          "coverage": 1,
+          "dispersionRatio": 0.404,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0,
+        "baselineRate": 0.194,
+        "pairs": 4,
+        "defining": false
+      },
+      "title": "Weekday evening · 86–96 BPM · Hip-Hop",
+      "patternId": "pt_c549568303ef"
+    },
+    {
+      "id": "pk_d6e1641d7678",
+      "startMs": 1790002020000,
+      "endMs": 1790003220000,
+      "tzOffsetMin": -420,
+      "localDate": "2026-09-21",
+      "localStartHour": 7.78,
+      "dow": 1,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "installId": "6F1C2D3E-0000-4000-8000-00000000AAAA",
+      "memberCount": 6,
+      "skippedCount": 2,
+      "sessionPlays": 8,
+      "members": [
+        {
+          "eventId": "A63924C9-6DCD-47CC-8285-D73D3ED8209A",
+          "songId": "sng_e517ffed1ba7",
+          "atMs": 1790002020000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "5AAD2AE3-4485-4CB1-8744-EEBBAEAAA12D",
+          "songId": "sng_24124669befd",
+          "atMs": 1790002260000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "A6F18CCB-A0E2-4D2E-86FC-EC6F72E0CAD1",
+          "songId": "sng_ce1a2fa144ff",
+          "atMs": 1790002500000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "974C9EF9-E6C5-48FC-8F75-C455B9119554",
+          "songId": "sng_2b11b843b917",
+          "atMs": 1790002680000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "F4EC0E49-7922-4279-8A8F-390561F0DD35",
+          "songId": "sng_c47f2d82bad2",
+          "atMs": 1790002980000,
+          "outcome": "completed"
+        },
+        {
+          "eventId": "288C4913-2CB9-439E-846C-199EBF82A1EE",
+          "songId": "sng_864189836f21",
+          "atMs": 1790003220000,
+          "outcome": "completed"
+        }
+      ],
+      "ctx": null,
+      "features": [
+        {
+          "dim": "dow",
+          "value": "1",
+          "label": "Monday",
+          "share": 1,
+          "baselineShare": 0.1805,
+          "lift": 5.54,
+          "score": 1.712,
+          "count": 6
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 6
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 6
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.667,
+          "baselineShare": 0.237,
+          "lift": 2.81,
+          "score": 0.689,
+          "count": 4
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "warm",
+          "label": "Warm",
+          "share": 0.5,
+          "baselineShare": 0.1741,
+          "lift": 2.87,
+          "score": 0.528,
+          "count": 3
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 0.5,
+          "baselineShare": 0.1926,
+          "lift": 2.6,
+          "score": 0.477,
+          "count": 3
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 119,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.112,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.713,
+          "lo": 0.67,
+          "hi": 0.738,
+          "coverage": 1,
+          "dispersionRatio": 0.119,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2020,
+          "lo": 2016,
+          "hi": 2024,
+          "coverage": 1,
+          "dispersionRatio": 0.134,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.8,
+        "baselineRate": 0.194,
+        "pairs": 5,
+        "defining": true
+      },
+      "title": "Weekday morning · 119–124 BPM · Electronic",
+      "patternId": "pt_01681f315cf8"
+    }
+  ],
+  "patterns": [
+    {
+      "id": "pt_2e8b03e418ed",
+      "key": "weekday|morning|trip:trp_f2207a561d231522|electronic",
+      "title": "Weekday mornings · A → B · 118–124 BPM · Electronic",
+      "pocketIds": [
+        "pk_65313e13ce15",
+        "pk_23c272a2c720",
+        "pk_6af08f226e18",
+        "pk_4dbb6b30220f",
+        "pk_e651de1307c5",
+        "pk_1f9f69b0b089",
+        "pk_51444689e7a6",
+        "pk_5394412fcf82",
+        "pk_70b1b1c62e4d",
+        "pk_093202fa8916",
+        "pk_366107861d95"
+      ],
+      "occurrences": 11,
+      "distinctDays": 11,
+      "firstMs": 1790606280000,
+      "lastMs": 1791815880000,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_f2207a561d231522",
+        "origin": "plc_78da6e61747eab53",
+        "destination": "plc_980d5dc41fa9477b"
+      },
+      "features": [
+        {
+          "dim": "trip",
+          "value": "trp_f2207a561d231522",
+          "label": "A → B",
+          "share": 1,
+          "baselineShare": 0.2375,
+          "lift": 4.21,
+          "score": 1.437,
+          "count": 59
+        },
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 59
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 59
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 59
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.712,
+          "baselineShare": 0.237,
+          "lift": 3,
+          "score": 0.783,
+          "count": 42
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 59
+        },
+        {
+          "dim": "mood",
+          "value": "warm",
+          "label": "Warm",
+          "share": 0.542,
+          "baselineShare": 0.1741,
+          "lift": 3.12,
+          "score": 0.616,
+          "count": 32
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 0.475,
+          "baselineShare": 0.1926,
+          "lift": 2.46,
+          "score": 0.428,
+          "count": 28
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 118,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.104,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.704,
+          "lo": 0.656,
+          "hi": 0.757,
+          "coverage": 1,
+          "dispersionRatio": 0.133,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2019,
+          "lo": 2016,
+          "hi": 2024,
+          "coverage": 1,
+          "dispersionRatio": 0.128,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.875,
+        "baselineRate": 0.194,
+        "pairs": 48,
+        "defining": true
+      },
+      "topSongs": [
+        {
+          "songId": "sng_c47f2d82bad2",
+          "plays": 7
+        },
+        {
+          "songId": "sng_24124669befd",
+          "plays": 6
+        },
+        {
+          "songId": "sng_2b11b843b917",
+          "plays": 6
+        },
+        {
+          "songId": "sng_864189836f21",
+          "plays": 6
+        },
+        {
+          "songId": "sng_ce1a2fa144ff",
+          "plays": 6
+        },
+        {
+          "songId": "sng_32df97b4f035",
+          "plays": 5
+        },
+        {
+          "songId": "sng_df6f9d2e2f2a",
+          "plays": 5
+        },
+        {
+          "songId": "sng_e517ffed1ba7",
+          "plays": 5
+        },
+        {
+          "songId": "sng_2bd6aa178f08",
+          "plays": 4
+        },
+        {
+          "songId": "sng_95d9dead7579",
+          "plays": 4
+        },
+        {
+          "songId": "sng_d355cc000d8b",
+          "plays": 3
+        },
+        {
+          "songId": "sng_5050aade77c4",
+          "plays": 2
+        }
+      ]
+    },
+    {
+      "id": "pt_87fa4138b590",
+      "key": "weekday|evening|trip:trp_4f59fe99a08ab8a9|hip-hop",
+      "title": "Weekday evenings · B → A · 86–97 BPM · Hip-Hop",
+      "pocketIds": [
+        "pk_69366334d27d",
+        "pk_27f7b8a931de",
+        "pk_9a4f9a001386",
+        "pk_3a9aef2249c5",
+        "pk_1830d99268e4",
+        "pk_4e58060a10a1"
+      ],
+      "occurrences": 6,
+      "distinctDays": 6,
+      "firstMs": 1790644200000,
+      "lastMs": 1791507780000,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "ctx": {
+        "kind": "trip",
+        "tripId": "trp_4f59fe99a08ab8a9",
+        "origin": "plc_980d5dc41fa9477b",
+        "destination": "plc_78da6e61747eab53"
+      },
+      "features": [
+        {
+          "dim": "trip",
+          "value": "trp_4f59fe99a08ab8a9",
+          "label": "B → A",
+          "share": 1,
+          "baselineShare": 0.1188,
+          "lift": 8.42,
+          "score": 2.131,
+          "count": 30
+        },
+        {
+          "dim": "genre",
+          "value": "hip-hop",
+          "label": "Hip-Hop",
+          "share": 1,
+          "baselineShare": 0.1736,
+          "lift": 5.76,
+          "score": 1.751,
+          "count": 30
+        },
+        {
+          "dim": "mood",
+          "value": "confident",
+          "label": "Confident",
+          "share": 0.767,
+          "baselineShare": 0.1333,
+          "lift": 5.75,
+          "score": 1.341,
+          "count": 23
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 30
+        },
+        {
+          "dim": "mood",
+          "value": "dark",
+          "label": "Dark",
+          "share": 0.6,
+          "baselineShare": 0.1111,
+          "lift": 5.4,
+          "score": 1.012,
+          "count": 18
+        },
+        {
+          "dim": "mood",
+          "value": "gritty",
+          "label": "Gritty",
+          "share": 0.433,
+          "baselineShare": 0.063,
+          "lift": 6.88,
+          "score": 0.836,
+          "count": 13
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 30
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 30
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 92,
+          "lo": 86,
+          "hi": 97,
+          "coverage": 1,
+          "dispersionRatio": 0.227,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.562,
+          "lo": 0.498,
+          "hi": 0.595,
+          "coverage": 1,
+          "dispersionRatio": 0.116,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2008,
+          "lo": 1994,
+          "hi": 2020,
+          "coverage": 1,
+          "dispersionRatio": 0.427,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0,
+        "baselineRate": 0.194,
+        "pairs": 24,
+        "defining": false
+      },
+      "topSongs": [
+        {
+          "songId": "sng_5459d757a358",
+          "plays": 4
+        },
+        {
+          "songId": "sng_3d96ac27a1d2",
+          "plays": 3
+        },
+        {
+          "songId": "sng_6b9be13b205c",
+          "plays": 3
+        },
+        {
+          "songId": "sng_ab8505d69834",
+          "plays": 3
+        },
+        {
+          "songId": "sng_bdeab8d16f53",
+          "plays": 3
+        },
+        {
+          "songId": "sng_e5da88ce56c7",
+          "plays": 3
+        },
+        {
+          "songId": "sng_6ad2b1e70ef0",
+          "plays": 2
+        },
+        {
+          "songId": "sng_80b6d4384779",
+          "plays": 2
+        },
+        {
+          "songId": "sng_9c22fa04323f",
+          "plays": 2
+        },
+        {
+          "songId": "sng_ff82a2c2c91c",
+          "plays": 2
+        },
+        {
+          "songId": "sng_93c2e67a0cfd",
+          "plays": 1
+        },
+        {
+          "songId": "sng_b508c8529337",
+          "plays": 1
+        },
+        {
+          "songId": "sng_e44e89f6c105",
+          "plays": 1
+        }
+      ]
+    },
+    {
+      "id": "pt_7a6542de5f57",
+      "key": "weekday|evening|-|jazz",
+      "title": "Weekday evenings · Jazz",
+      "pocketIds": [
+        "pk_73e88618146b",
+        "pk_5cf5f4b2091d",
+        "pk_9083e180c448",
+        "pk_468a29f22634",
+        "pk_f4bac993600a"
+      ],
+      "occurrences": 5,
+      "distinctDays": 5,
+      "firstMs": 1790133300000,
+      "lastMs": 1791515700000,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "ctx": null,
+      "features": [
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 0.9,
+          "baselineShare": 0.2491,
+          "lift": 3.61,
+          "score": 1.156,
+          "count": 27
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 30
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.633,
+          "baselineShare": 0.163,
+          "lift": 3.89,
+          "score": 0.86,
+          "count": 19
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 30
+        },
+        {
+          "dim": "dow",
+          "value": "2",
+          "label": "Tuesday",
+          "share": 0.6,
+          "baselineShare": 0.1654,
+          "lift": 3.63,
+          "score": 0.773,
+          "count": 18
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 0.6,
+          "baselineShare": 0.1815,
+          "lift": 3.31,
+          "score": 0.717,
+          "count": 18
+        },
+        {
+          "dim": "dow",
+          "value": "4",
+          "label": "Thursday",
+          "share": 0.4,
+          "baselineShare": 0.2256,
+          "lift": 1.77,
+          "score": 0.229,
+          "count": 12
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 131,
+          "lo": 104,
+          "hi": 142,
+          "coverage": 1,
+          "dispersionRatio": 0.846,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.251,
+          "lo": 0.21,
+          "hi": 0.279,
+          "coverage": 0.9,
+          "dispersionRatio": 0.11,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1970,
+          "lo": 1959,
+          "hi": 2000,
+          "coverage": 1,
+          "dispersionRatio": 0.481,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.4,
+        "baselineRate": 0.194,
+        "pairs": 25,
+        "defining": false
+      },
+      "topSongs": [
+        {
+          "songId": "sng_18431deff048",
+          "plays": 5
+        },
+        {
+          "songId": "sng_20ff05537c74",
+          "plays": 4
+        },
+        {
+          "songId": "sng_c266014174ae",
+          "plays": 4
+        },
+        {
+          "songId": "sng_95f823c31396",
+          "plays": 3
+        },
+        {
+          "songId": "sng_9e601fbf0060",
+          "plays": 3
+        },
+        {
+          "songId": "sng_ba4ee2efe3cb",
+          "plays": 3
+        },
+        {
+          "songId": "sng_2c8aa912d67c",
+          "plays": 2
+        },
+        {
+          "songId": "sng_ea6ce45f8481",
+          "plays": 2
+        },
+        {
+          "songId": "sng_f99916e454b2",
+          "plays": 2
+        },
+        {
+          "songId": "sng_145cd21a3d44",
+          "plays": 1
+        },
+        {
+          "songId": "sng_2cb49ca41a10",
+          "plays": 1
+        }
+      ]
+    },
+    {
+      "id": "pt_01681f315cf8",
+      "key": "weekday|morning|-|electronic",
+      "title": "Weekday mornings · 118–124 BPM · Electronic",
+      "pocketIds": [
+        "pk_038b5bd52343",
+        "pk_6329d95ca54f",
+        "pk_ecbe6c556501",
+        "pk_279a0258acca",
+        "pk_d6e1641d7678"
+      ],
+      "occurrences": 5,
+      "distinctDays": 5,
+      "firstMs": 1790002020000,
+      "lastMs": 1790347320000,
+      "dayType": "weekday",
+      "timeBucket": "morning",
+      "ctx": null,
+      "features": [
+        {
+          "dim": "timeBucket",
+          "value": "morning",
+          "label": "Morning",
+          "share": 1,
+          "baselineShare": 0.3422,
+          "lift": 2.92,
+          "score": 1.072,
+          "count": 24
+        },
+        {
+          "dim": "genre",
+          "value": "electronic",
+          "label": "Electronic",
+          "share": 1,
+          "baselineShare": 0.3547,
+          "lift": 2.82,
+          "score": 1.036,
+          "count": 24
+        },
+        {
+          "dim": "source",
+          "value": "mix",
+          "label": "Mix",
+          "share": 1,
+          "baselineShare": 0.3574,
+          "lift": 2.8,
+          "score": 1.029,
+          "count": 24
+        },
+        {
+          "dim": "mood",
+          "value": "driving",
+          "label": "Driving",
+          "share": 0.625,
+          "baselineShare": 0.1926,
+          "lift": 3.25,
+          "score": 0.736,
+          "count": 15
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 24
+        },
+        {
+          "dim": "mood",
+          "value": "euphoric",
+          "label": "Euphoric",
+          "share": 0.625,
+          "baselineShare": 0.237,
+          "lift": 2.64,
+          "score": 0.606,
+          "count": 15
+        },
+        {
+          "dim": "mood",
+          "value": "warm",
+          "label": "Warm",
+          "share": 0.417,
+          "baselineShare": 0.1741,
+          "lift": 2.39,
+          "score": 0.364,
+          "count": 10
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 122,
+          "lo": 118,
+          "hi": 124,
+          "coverage": 1,
+          "dispersionRatio": 0.117,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.712,
+          "lo": 0.67,
+          "hi": 0.757,
+          "coverage": 1,
+          "dispersionRatio": 0.129,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2018,
+          "lo": 2016,
+          "hi": 2024,
+          "coverage": 1,
+          "dispersionRatio": 0.129,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.789,
+        "baselineRate": 0.194,
+        "pairs": 19,
+        "defining": true
+      },
+      "topSongs": [
+        {
+          "songId": "sng_24124669befd",
+          "plays": 3
+        },
+        {
+          "songId": "sng_2b11b843b917",
+          "plays": 3
+        },
+        {
+          "songId": "sng_ce1a2fa144ff",
+          "plays": 3
+        },
+        {
+          "songId": "sng_df6f9d2e2f2a",
+          "plays": 3
+        },
+        {
+          "songId": "sng_2bd6aa178f08",
+          "plays": 2
+        },
+        {
+          "songId": "sng_5050aade77c4",
+          "plays": 2
+        },
+        {
+          "songId": "sng_c47f2d82bad2",
+          "plays": 2
+        },
+        {
+          "songId": "sng_d355cc000d8b",
+          "plays": 2
+        },
+        {
+          "songId": "sng_e517ffed1ba7",
+          "plays": 2
+        },
+        {
+          "songId": "sng_864189836f21",
+          "plays": 1
+        },
+        {
+          "songId": "sng_95d9dead7579",
+          "plays": 1
+        }
+      ]
+    },
+    {
+      "id": "pt_f435d0ce8092",
+      "key": "weekend|afternoon|place:plc_78da6e61747eab53|jazz",
+      "title": "Weekend afternoons · Location A · Jazz",
+      "pocketIds": [
+        "pk_4dcdaf91f4a9",
+        "pk_5f8b107fc8ba",
+        "pk_d5f32fc523ef",
+        "pk_4790632060f9"
+      ],
+      "occurrences": 4,
+      "distinctDays": 4,
+      "firstMs": 1791063540000,
+      "lastMs": 1791755160000,
+      "dayType": "weekend",
+      "timeBucket": "afternoon",
+      "ctx": {
+        "kind": "place",
+        "placeId": "plc_78da6e61747eab53"
+      },
+      "features": [
+        {
+          "dim": "place",
+          "value": "plc_78da6e61747eab53",
+          "label": "Location A",
+          "share": 1,
+          "baselineShare": 0.0954,
+          "lift": 10.48,
+          "score": 2.349,
+          "count": 24
+        },
+        {
+          "dim": "timeBucket",
+          "value": "afternoon",
+          "label": "Afternoon",
+          "share": 1,
+          "baselineShare": 0.1407,
+          "lift": 7.11,
+          "score": 1.961,
+          "count": 24
+        },
+        {
+          "dim": "dayType",
+          "value": "weekend",
+          "label": "Weekend",
+          "share": 1,
+          "baselineShare": 0.1571,
+          "lift": 6.37,
+          "score": 1.851,
+          "count": 24
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 1,
+          "baselineShare": 0.2491,
+          "lift": 4.02,
+          "score": 1.39,
+          "count": 24
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 0.792,
+          "baselineShare": 0.1815,
+          "lift": 4.36,
+          "score": 1.166,
+          "count": 19
+        },
+        {
+          "dim": "dow",
+          "value": "6",
+          "label": "Saturday",
+          "share": 0.5,
+          "baselineShare": 0.0714,
+          "lift": 7,
+          "score": 0.973,
+          "count": 12
+        },
+        {
+          "dim": "dow",
+          "value": "0",
+          "label": "Sunday",
+          "share": 0.5,
+          "baselineShare": 0.0865,
+          "lift": 5.78,
+          "score": 0.877,
+          "count": 12
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 24
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 135,
+          "lo": 104,
+          "hi": 142,
+          "coverage": 1,
+          "dispersionRatio": 0.759,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.248,
+          "lo": 0.21,
+          "hi": 0.279,
+          "coverage": 1,
+          "dispersionRatio": 0.09,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1972,
+          "lo": 1959,
+          "hi": 1975,
+          "coverage": 1,
+          "dispersionRatio": 0.24,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.6,
+        "baselineRate": 0.194,
+        "pairs": 20,
+        "defining": true
+      },
+      "topSongs": [
+        {
+          "songId": "sng_2cb49ca41a10",
+          "plays": 4
+        },
+        {
+          "songId": "sng_ba4ee2efe3cb",
+          "plays": 4
+        },
+        {
+          "songId": "sng_18431deff048",
+          "plays": 3
+        },
+        {
+          "songId": "sng_ea6ce45f8481",
+          "plays": 3
+        },
+        {
+          "songId": "sng_f99916e454b2",
+          "plays": 3
+        },
+        {
+          "songId": "sng_20ff05537c74",
+          "plays": 2
+        },
+        {
+          "songId": "sng_95f823c31396",
+          "plays": 2
+        },
+        {
+          "songId": "sng_9e601fbf0060",
+          "plays": 2
+        },
+        {
+          "songId": "sng_c266014174ae",
+          "plays": 1
+        }
+      ]
+    },
+    {
+      "id": "pt_c549568303ef",
+      "key": "weekday|evening|-|hip-hop",
+      "title": "Weekday evenings · 86–97 BPM · Hip-Hop",
+      "pocketIds": [
+        "pk_c33e295aa32b",
+        "pk_9938f3f18279",
+        "pk_24b026feea6f"
+      ],
+      "occurrences": 3,
+      "distinctDays": 3,
+      "firstMs": 1790039280000,
+      "lastMs": 1790298420000,
+      "dayType": "weekday",
+      "timeBucket": "evening",
+      "ctx": null,
+      "features": [
+        {
+          "dim": "genre",
+          "value": "hip-hop",
+          "label": "Hip-Hop",
+          "share": 1,
+          "baselineShare": 0.1736,
+          "lift": 5.76,
+          "score": 1.751,
+          "count": 15
+        },
+        {
+          "dim": "mood",
+          "value": "confident",
+          "label": "Confident",
+          "share": 0.8,
+          "baselineShare": 0.1333,
+          "lift": 6,
+          "score": 1.433,
+          "count": 12
+        },
+        {
+          "dim": "mood",
+          "value": "dark",
+          "label": "Dark",
+          "share": 0.733,
+          "baselineShare": 0.1111,
+          "lift": 6.6,
+          "score": 1.384,
+          "count": 11
+        },
+        {
+          "dim": "timeBucket",
+          "value": "evening",
+          "label": "Evening",
+          "share": 1,
+          "baselineShare": 0.327,
+          "lift": 3.06,
+          "score": 1.118,
+          "count": 15
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 15
+        },
+        {
+          "dim": "carPlay",
+          "value": "yes",
+          "label": "CarPlay",
+          "share": 1,
+          "baselineShare": 0.5192,
+          "lift": 1.93,
+          "score": 0.655,
+          "count": 15
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 94,
+          "lo": 86,
+          "hi": 97,
+          "coverage": 1,
+          "dispersionRatio": 0.207,
+          "baselineCenter": 120.3,
+          "defining": true
+        },
+        "energy": {
+          "center": 0.562,
+          "lo": 0.498,
+          "hi": 0.595,
+          "coverage": 1,
+          "dispersionRatio": 0.146,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 2009,
+          "lo": 1994,
+          "hi": 2020,
+          "coverage": 1,
+          "dispersionRatio": 0.404,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0,
+        "baselineRate": 0.194,
+        "pairs": 12,
+        "defining": false
+      },
+      "topSongs": [
+        {
+          "songId": "sng_3d33ac723459",
+          "plays": 2
+        },
+        {
+          "songId": "sng_6ad2b1e70ef0",
+          "plays": 2
+        },
+        {
+          "songId": "sng_b508c8529337",
+          "plays": 2
+        },
+        {
+          "songId": "sng_e44e89f6c105",
+          "plays": 2
+        },
+        {
+          "songId": "sng_80b6d4384779",
+          "plays": 1
+        },
+        {
+          "songId": "sng_93c2e67a0cfd",
+          "plays": 1
+        },
+        {
+          "songId": "sng_9c22fa04323f",
+          "plays": 1
+        },
+        {
+          "songId": "sng_ab8505d69834",
+          "plays": 1
+        },
+        {
+          "songId": "sng_bdeab8d16f53",
+          "plays": 1
+        },
+        {
+          "songId": "sng_e5da88ce56c7",
+          "plays": 1
+        },
+        {
+          "songId": "sng_ff82a2c2c91c",
+          "plays": 1
+        }
+      ]
+    },
+    {
+      "id": "pt_d37099907bce",
+      "key": "weekend|afternoon|-|jazz",
+      "title": "Weekend afternoons · Jazz",
+      "pocketIds": [
+        "pk_994ddfcfbb36",
+        "pk_37fd35668ee9"
+      ],
+      "occurrences": 2,
+      "distinctDays": 2,
+      "firstMs": 1790459100000,
+      "lastMs": 1790544240000,
+      "dayType": "weekend",
+      "timeBucket": "afternoon",
+      "ctx": null,
+      "features": [
+        {
+          "dim": "timeBucket",
+          "value": "afternoon",
+          "label": "Afternoon",
+          "share": 1,
+          "baselineShare": 0.1407,
+          "lift": 7.11,
+          "score": 1.961,
+          "count": 12
+        },
+        {
+          "dim": "dayType",
+          "value": "weekend",
+          "label": "Weekend",
+          "share": 1,
+          "baselineShare": 0.1571,
+          "lift": 6.37,
+          "score": 1.851,
+          "count": 12
+        },
+        {
+          "dim": "genre",
+          "value": "jazz",
+          "label": "Jazz",
+          "share": 1,
+          "baselineShare": 0.2491,
+          "lift": 4.02,
+          "score": 1.39,
+          "count": 12
+        },
+        {
+          "dim": "mood",
+          "value": "mellow",
+          "label": "Mellow",
+          "share": 0.75,
+          "baselineShare": 0.1815,
+          "lift": 4.13,
+          "score": 1.064,
+          "count": 9
+        },
+        {
+          "dim": "dow",
+          "value": "6",
+          "label": "Saturday",
+          "share": 0.5,
+          "baselineShare": 0.0714,
+          "lift": 7,
+          "score": 0.973,
+          "count": 6
+        },
+        {
+          "dim": "mood",
+          "value": "smooth",
+          "label": "Smooth",
+          "share": 0.667,
+          "baselineShare": 0.163,
+          "lift": 4.09,
+          "score": 0.939,
+          "count": 8
+        },
+        {
+          "dim": "dow",
+          "value": "0",
+          "label": "Sunday",
+          "share": 0.5,
+          "baselineShare": 0.0865,
+          "lift": 5.78,
+          "score": 0.877,
+          "count": 6
+        },
+        {
+          "dim": "source",
+          "value": "playlist",
+          "label": "Playlist",
+          "share": 1,
+          "baselineShare": 0.4487,
+          "lift": 2.23,
+          "score": 0.801,
+          "count": 12
+        }
+      ],
+      "numeric": {
+        "bpm": {
+          "center": 128,
+          "lo": 104,
+          "hi": 142,
+          "coverage": 1,
+          "dispersionRatio": 0.816,
+          "baselineCenter": 120.3,
+          "defining": false
+        },
+        "energy": {
+          "center": 0.248,
+          "lo": 0.21,
+          "hi": 0.279,
+          "coverage": 1,
+          "dispersionRatio": 0.105,
+          "baselineCenter": 0.526,
+          "defining": true
+        },
+        "year": {
+          "center": 1971,
+          "lo": 1959,
+          "hi": 1975,
+          "coverage": 1,
+          "dispersionRatio": 0.197,
+          "baselineCenter": 2001,
+          "defining": true
+        }
+      },
+      "harmonic": {
+        "rate": 0.5,
+        "baselineRate": 0.194,
+        "pairs": 10,
+        "defining": true
+      },
+      "topSongs": [
+        {
+          "songId": "sng_20ff05537c74",
+          "plays": 2
+        },
+        {
+          "songId": "sng_9e601fbf0060",
+          "plays": 2
+        },
+        {
+          "songId": "sng_f99916e454b2",
+          "plays": 2
+        },
+        {
+          "songId": "sng_18431deff048",
+          "plays": 1
+        },
+        {
+          "songId": "sng_2cb49ca41a10",
+          "plays": 1
+        },
+        {
+          "songId": "sng_95f823c31396",
+          "plays": 1
+        },
+        {
+          "songId": "sng_ba4ee2efe3cb",
+          "plays": 1
+        },
+        {
+          "songId": "sng_c266014174ae",
+          "plays": 1
+        },
+        {
+          "songId": "sng_ea6ce45f8481",
+          "plays": 1
+        }
+      ]
+    }
+  ]
+}
