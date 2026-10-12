@@ -8,11 +8,14 @@ package com.levi.pocketdj.data.config
  * at prod, but both live here so a future environment switch is a one-line change.
  */
 object Endpoints {
-    const val CATALOG_BASE_PROD = "https://d2p4cubg6se03u.cloudfront.net"
-    const val CATALOG_BASE_DEV = "https://djictbz9w796r.cloudfront.net"
+    // Account-bound bases are read LIVE from [RemoteEndpoints] (docs/design/remote-endpoints.md)
+    // at request time, so a blue ↔ green backend flip needs no release. Compiled-in defaults =
+    // today's blue values (EndpointConfig.COMPILED_IN).
+    val CATALOG_BASE_PROD: String get() = RemoteEndpoints.url(EndpointKey.CATALOG_BASE)
+    val CATALOG_BASE_DEV: String get() = RemoteEndpoints.url(EndpointKey.CATALOG_BASE_DEV)
 
     /** The base every catalog-relative URL resolves against. Android P1 = prod. */
-    const val CATALOG_BASE = CATALOG_BASE_PROD
+    val CATALOG_BASE: String get() = CATALOG_BASE_PROD
 
     // Per-source index documents (exact source-name strings are load-bearing:
     // they match the iOS Settings presets, catalog.md §1).
@@ -20,19 +23,19 @@ object Endpoints {
     const val SOURCE_NAME_APPLE_MUSIC = "Apple Music (Local)"
     const val SOURCE_NAME_DIGITAL = "My Digital"
 
-    const val VINYL_INDEX_URL = "$CATALOG_BASE/current-index.json"
-    const val APPLE_MUSIC_INDEX_URL = "$CATALOG_BASE/apple-music-index.json"
-    const val DIGITAL_INDEX_URL = "$CATALOG_BASE/digital-index.json"
+    val VINYL_INDEX_URL: String get() = "$CATALOG_BASE/current-index.json"
+    val APPLE_MUSIC_INDEX_URL: String get() = "$CATALOG_BASE/apple-music-index.json"
+    val DIGITAL_INDEX_URL: String get() = "$CATALOG_BASE/digital-index.json"
 
     /** Online-search host config — read at launch so the aoss host can rotate. */
-    const val SEARCH_CONFIG_URL = "$CATALOG_BASE/search-config.json"
+    val SEARCH_CONFIG_URL: String get() = RemoteEndpoints.url(EndpointKey.SEARCH_CONFIG_URL)
 
     /** Favorites seed — not Phase 1, recorded for later phases. */
-    const val FAVORITES_SEED_URL = "$CATALOG_BASE/favorites-seed.json"
+    val FAVORITES_SEED_URL: String get() = "$CATALOG_BASE/favorites-seed.json"
 
     /** Public rips bucket — public-read, works with the rip server offline. */
-    const val RIPS_BASE = "https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com"
-    const val RIPS_MANIFEST_URL = "$RIPS_BASE/rips/manifest.json"
+    val RIPS_BASE: String get() = RemoteEndpoints.url(EndpointKey.RIPS_BASE)
+    val RIPS_MANIFEST_URL: String get() = "$RIPS_BASE/rips/manifest.json"
 
     /**
      * Rip server: NO shipped default — the user pastes their own (Tailscale

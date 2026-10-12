@@ -13,6 +13,7 @@ import com.levi.pocketdj.data.applemusic.MusicKitDeveloperTokenClient
 import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.CatalogService
 import com.levi.pocketdj.data.collections.CollectionsStore
+import com.levi.pocketdj.data.config.RemoteEndpoints
 import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.data.rips.RipServerClient
 import com.levi.pocketdj.data.rips.RipsRepository
@@ -27,6 +28,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 
 /**
@@ -49,6 +51,18 @@ class AppGraph private constructor(context: Context) {
     val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     val json = PdjJson.lenient
+
+    /** Launch (force) + foreground (throttled 15 min) fetch of the remote endpoint config. */
+    fun refreshEndpoints(force: Boolean = false) {
+        appScope.launch(Dispatchers.IO) {
+            val changed = RemoteEndpoints.refresh(httpClient, force = force)
+            if (changed || force) {
+                android.util.Log.i("PocketDJ", "[endpoints] ${if (changed) "changed" else "checked"} ${RemoteEndpoints.summary}")
+            }
+            // A flipped backend: re-read the rips manifest from the new bucket.
+            if (changed) runCatching { ripsRepository.refresh() }
+        }
+    }
 
     /**
      * Shared OkHttp client. Read timeout 30 s = the iOS per-request doctrine for
@@ -193,6 +207,12 @@ class AppGraph private constructor(context: Context) {
     }
 
     init {
+        // Remote endpoint config (docs/design/remote-endpoints.md): load the persisted last-good
+        // doc synchronously (tiny file) so every first request already resolves to it, then
+        // fetch the latest in the background — never blocking launch.
+        RemoteEndpoints.install(File(appContext.filesDir, "pocketdj-endpoints.json"))
+        android.util.Log.i("PocketDJ", "[endpoints] launch ${RemoteEndpoints.summary}")
+        refreshEndpoints(force = true)
         // Restore + persist the Browse view-state (kind/filters/sort/layout/mode,
         // browse.md §7). Wired here (once, app-scoped) so it survives regardless
         // of which screen renders first.

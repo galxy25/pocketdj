@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import com.levi.pocketdj.data.PdjJson
 import com.levi.pocketdj.data.config.Endpoints
+import com.levi.pocketdj.data.config.RemoteEndpoints
 import java.io.IOException
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
@@ -155,8 +156,11 @@ class AppSettingsStore(
 
     private fun decodeSources(raw: String?): List<SourceConfig> {
         if (raw.isNullOrBlank()) return AppSettings.defaultSources()
+        // Built-in sources persist their catalog host; rebase them onto the LIVE endpoint
+        // config at read time (remote endpoints — a backend flip must not strand them).
         return runCatching { json.decodeFromString<List<SourceConfig>>(raw) }
             .getOrElse { AppSettings.defaultSources() }
+            .map { it.copy(url = RemoteEndpoints.rebaseCatalogUrl(it.url)) }
     }
 
     suspend fun setSources(sources: List<SourceConfig>) {
