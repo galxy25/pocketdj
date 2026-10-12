@@ -263,6 +263,30 @@ final class ListeningPocketsServiceTests: XCTestCase {
         XCTAssertEqual(events.first?["outcome"] as? String, "skipped")
     }
 
+    /// The server keeps `ord` immutable from the first insert, so it must not restart per upload:
+    /// two same-minute plays sent by DIFFERENT flushes still get 0 and 1 (a 0/0 tie would fall
+    /// back to the random UUID on the server and could flip a skip run's order).
+    func testOrdIsStableAcrossFlushes() async throws {
+        let env = makeEnv(locationOn: false)
+        let first = play(env, "sng_a", minutesAgo: 30, seconds: 5)
+        await env.svc.flushNow()
+        XCTAssertEqual(Spy.events(try XCTUnwrap(env.spy.posts().last)).first?["ord"] as? Int, 0)
+        // A second play in the same minute lands after that upload (a quick skip).
+        let second = play(env, "sng_b", minutesAgo: 30, seconds: 40)
+        env.history.markSkipped(eventId: second.id)
+        await env.svc.flushNow()
+        let resend = Spy.events(try XCTUnwrap(env.spy.posts().last))
+        XCTAssertEqual(resend.map { $0["id"] as? String }, [second.id.uuidString],
+                       "only the new play re-sends")
+        XCTAssertEqual(resend.first?["ord"] as? Int, 1, "its ord counts the play uploaded earlier")
+        // A peer's play in that minute is its own stream: ord restarts for it.
+        let peer = play(env, "sng_p", minutesAgo: 30, seconds: 20, origin: .some("PEER-INSTALL"))
+        let ords = ListeningPocketsService.ordinals(env.history.events, installId: env.history.installId)
+        XCTAssertEqual(ords[first.id], 0)
+        XCTAssertEqual(ords[second.id], 1)
+        XCTAssertEqual(ords[peer.id], 0)
+    }
+
     func testFingerprintsPersistAcrossRelaunchAndResetOnProfileChange() async throws {
         let env = makeEnv(locationOn: false)
         play(env, "sng_a", minutesAgo: 30)

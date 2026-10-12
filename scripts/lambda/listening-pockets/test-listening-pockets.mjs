@@ -806,6 +806,95 @@ test('a raw PlayHistoryStore document converts on the fly', () => {
   assert.deepEqual(toUpload([wire()]).shape, 'events');
 });
 
+// ── APP ↔ CLOUD end-to-end contract ─────────────────────────────────────────────────────────────
+// `apple/Tests/Fixtures/listening-pockets-upload.app.json` is NOT hand-written: the Swift test
+// `ListeningPocketsContractTests.testAppUploadMatchesGolden` produces it from real PlayEvents driven
+// through the app's real store + upload service, and fails when the app's body drifts from it. Here
+// it goes through the REAL ingest (handler POST → inline compute → GET) and the local runner; the
+// output must equal `listening-pockets-results.app.json`, which the Swift test
+// `testCloudResultsForTheAppUploadDecode` decodes with the app's own decoder. Regenerate (after the
+// Swift golden) with: POCKETS_REGEN_CONTRACT=1 node --test scripts/lambda/listening-pockets/test-listening-pockets.mjs
+
+const APP_FIXTURES = join(HERE, '..', '..', '..', 'apple', 'Tests', 'Fixtures');
+const APP_UPLOAD = join(APP_FIXTURES, 'listening-pockets-upload.app.json');
+const APP_RESULTS = join(APP_FIXTURES, 'listening-pockets-results.app.json');
+
+test('app contract: the app-generated upload is a valid upload.v1 batch the server ingests whole', () => {
+  const up = JSON.parse(readFileSync(APP_UPLOAD, 'utf8'));
+  assert.equal(up.v, 1);
+  assert.match(up.installId, /^[A-Za-z0-9-]{8,64}$/);
+  assert.ok(up.events.length > 50 && up.events.length <= 2000, 'a real scenario, one batch');
+  for (const e of up.events) {
+    assert.ok(cleanEvent(e, up.installId, up.sentAtMs), `row ${e.id} cleans`);
+    assert.equal(e.atMs % MIN, 0, 'minute-floored on the device');
+    for (const k of ['tzOffsetMin', 'source', 'fraction', 'originInstallId', 'artist', 'carPlay', 'ctx']) {
+      assert.ok(k in e, `${k} is sent as an explicit key (null when unknown)`);
+    }
+  }
+  // (stream, atMs, ord) is unique — the device's ord fully orders same-minute plays.
+  const keys = up.events.map((e) => `${e.originInstallId ?? up.installId}|${e.atMs}|${e.ord}`);
+  assert.equal(new Set(keys).size, keys.length);
+  const { doc, rejected } = buildEventsDoc(toUpload(up), up.sentAtMs);
+  assert.equal(rejected, 0);
+  assert.equal(doc.events.length, up.events.length);
+  // The device's ctx survives ingest verbatim (no app ctx is silently downgraded to "none").
+  for (const e of up.events.filter((x) => x.ctx)) {
+    assert.deepEqual(doc.events.find((r) => r.id === e.id.toUpperCase()).ctx, e.ctx);
+  }
+});
+
+test('app contract: handler POST → compute → GET and the local runner both yield the app results golden', async () => {
+  const up = JSON.parse(readFileSync(APP_UPLOAD, 'utf8'));
+  const prevFeatures = process.env.POCKETS_FEATURES_FILE;
+  const realNow = Date.now;
+  process.env.POCKETS_FEATURES_FILE = join(FIXTURE_DIR, 'features.sample.json');
+  Date.now = () => up.sentAtMs;   // the device's clock at upload = the compute's `now`
+  let got;
+  try {
+    const p = freshProfile();
+    const post = await call('POST', '/pockets/events', { profile: p, body: up });
+    assert.equal(post.status, 200, JSON.stringify(post.json));
+    assert.equal(post.json.rejected, 0);
+    assert.equal(post.json.accepted, up.events.length);
+    got = await call('GET', '/pockets/results', { profile: p });
+    assert.equal(got.status, 200);
+  } finally {
+    Date.now = realNow;
+    process.env.POCKETS_FEATURES_FILE = prevFeatures;
+  }
+  assert.deepEqual(validateResults(got.json), []);
+
+  // The CLI path on the same file must agree with the deployed handler path.
+  const out = join(HOME, 'app-results.json');
+  const r = spawnSync(process.execPath, [join(HERE, 'run-local.mjs'), '--events', APP_UPLOAD,
+    '--features', join(FIXTURE_DIR, 'features.sample.json'), '--now', String(up.sentAtMs), '--out', out],
+  { encoding: 'utf8' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(readFileSync(out, 'utf8')), got.json, 'run-local == handler');
+
+  if (process.env.POCKETS_REGEN_CONTRACT) writeFileSync(APP_RESULTS, `${JSON.stringify(got.json, null, 2)}\n`);
+  assert.deepEqual(got.json, JSON.parse(readFileSync(APP_RESULTS, 'utf8')),
+    'cloud output drifted from apple/Tests/Fixtures/listening-pockets-results.app.json — regenerate (POCKETS_REGEN_CONTRACT=1) and re-run the Swift contract tests');
+
+  // What the scenario means (so a regenerated golden cannot quietly bless nonsense).
+  const byId = new Map(up.events.map((e) => [e.id.toUpperCase(), e]));
+  const res = got.json;
+  assert.ok(res.pockets.length > 0 && res.patterns.length > 0);
+  for (const p of res.pockets) {
+    for (const m of p.members) {
+      const e = byId.get(m.eventId);
+      assert.ok(e, `member ${m.eventId} is an uploaded play`);
+      assert.notEqual(e.outcome, 'skipped');
+    }
+  }
+  const ab = res.patterns.find((t) => t.ctx?.kind === 'trip' && /A → B/.test(t.title));
+  const ba = res.patterns.find((t) => t.ctx?.kind === 'trip' && /B → A/.test(t.title));
+  assert.ok(ab && ba && ab.id !== ba.id, 'direction of travel splits the commute patterns');
+  assert.match(ab.title, /Electronic/);
+  assert.equal(ab.numeric.bpm.defining, true);
+  assert.ok(!res.pockets.some((p) => p.timeBucket === 'midday'), 'PSSP hunting never makes a pocket');
+});
+
 // ── A dependency-free validator for results.v1 (§5.2): every required key, every type ─────────
 
 function validateResults(doc) {

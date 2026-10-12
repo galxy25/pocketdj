@@ -31,7 +31,8 @@ struct ListeningPocketsUploadEvent: Encodable, Equatable {
     var songId: String
     /// Play START, epoch ms FLOORED to the minute (coarse time on the wire).
     var atMs: Int64
-    /// Order among this upload's events sharing `atMs` + stream (originInstallId ?? installId).
+    /// Order among the plays sharing `atMs` + stream (originInstallId ?? installId) — over the
+    /// whole history, so it is stable across uploads (`ListeningPocketsService.ordinals`).
     var ord: Int
     var tzOffsetMin: Int?
     var source: String?

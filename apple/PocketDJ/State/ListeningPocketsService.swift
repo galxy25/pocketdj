@@ -270,9 +270,11 @@ final class ListeningPocketsService {
         if pruned.count != sync.sent.count { sync.sent = pruned; persistSync() }
 
         let locationOn = locationOptedIn?() ?? provider.isActive
+        let ords = Self.ordinals(history.events, installId: history.installId)
         var pending: [(event: ListeningPocketsUploadEvent, fingerprint: String)] = []
         for e in window {
-            let wire = wireEvent(e, locationOn: locationOn)
+            var wire = wireEvent(e, locationOn: locationOn)
+            wire.ord = ords[e.id] ?? 0
             let fp = Self.fingerprint(wire)
             if sync.sent[wire.id] != fp { pending.append((wire, fp)) }
         }
@@ -298,7 +300,7 @@ final class ListeningPocketsService {
             let slice = Array(pending.prefix(Self.batchCap))
             let batch = ListeningPocketsUploadBatch(
                 deviceId: deviceIdProvider(), installId: history.installId,
-                sentAtMs: Int64(nowMs), events: Self.assignOrd(slice.map(\.event)),
+                sentAtMs: Int64(nowMs), events: slice.map(\.event),
                 places: places, trips: trips)
             do {
                 _ = try await client.postEvents(batch, key: creds.key, profileId: creds.profileId)
@@ -351,7 +353,7 @@ final class ListeningPocketsService {
 
     private var nowMs: Double { now().timeIntervalSince1970 * 1000 }
 
-    /// One history event → its upload row (`ord` assigned per batch by `assignOrd`).
+    /// One history event → its upload row (`ord` is filled in from `ordinals`).
     func wireEvent(_ e: PlayHistoryStore.PlayEvent, locationOn: Bool) -> ListeningPocketsUploadEvent {
         let tz = e.tzOffsetMin
             ?? TimeZone.current.secondsFromGMT(for: Date(timeIntervalSince1970: e.playedAt / 1000)) / 60
@@ -369,17 +371,26 @@ final class ListeningPocketsService {
         Int64((ms / 60_000).rounded(.down)) * 60_000
     }
 
-    /// `ord` = order among THIS batch's events sharing `atMs` and stream (originInstallId ??
-    /// uploader), in play order — restores the sequence the minute-flooring erased.
-    static func assignOrd(_ events: [ListeningPocketsUploadEvent]) -> [ListeningPocketsUploadEvent] {
+    /// `ord` = an event's position among the plays sharing its minute-floored `atMs` and stream
+    /// (originInstallId ?? this install — the server's stream key), in play order. Restores the
+    /// sequence the minute-flooring erased. Computed over the WHOLE log, not per batch: the server
+    /// keeps `ord` immutable from the first insert, so two same-minute plays uploaded by different
+    /// flushes (the second one's fingerprint moved later) must not both claim `ord` 0 — a tie
+    /// falls back to the random UUID and can flip a skip run across a pocket boundary.
+    static func ordinals(_ events: [PlayHistoryStore.PlayEvent], installId: String) -> [UUID: Int] {
         var seen: [String: Int] = [:]
-        return events.map { e in
-            var e = e
-            let key = "\(e.originInstallId ?? "-")|\(e.atMs)"
-            e.ord = seen[key, default: 0]
-            seen[key] = e.ord + 1
-            return e
+        var out: [UUID: Int] = [:]
+        out.reserveCapacity(events.count)
+        let ordered = events.sorted {
+            $0.playedAt != $1.playedAt ? $0.playedAt < $1.playedAt : $0.id.uuidString < $1.id.uuidString
         }
+        for e in ordered {
+            let key = "\(e.originInstallId ?? installId)|\(flooredMinute(e.playedAt))"
+            let n = seen[key, default: 0]
+            out[e.id] = n
+            seen[key] = n + 1
+        }
+        return out
     }
 
     /// Everything about an event that can CHANGE after its first upload — a moved fingerprint

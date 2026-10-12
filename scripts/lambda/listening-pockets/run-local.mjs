@@ -48,18 +48,20 @@ export function outcomeOf(e) {
 
 /**
  * A device PlayHistoryStore document → upload events, the way `ListeningPocketsService` builds them:
- * minute-floored `atMs` plus `ord` (order within the minute), the event's own `tzOffsetMin` or the
+ * minute-floored `atMs` plus `ord` (order within the stream's minute), the event's own `tzOffsetMin` or the
  * local offset at that instant.
  */
 export function historyToUploadEvents(doc, { tzOffsetAt = (ms) => -new Date(ms).getTimezoneOffset() } = {}) {
   const events = (Array.isArray(doc?.events) ? doc.events : [])
     .filter((e) => e && typeof e.id === 'string' && typeof e.songId === 'string' && Number.isFinite(e.playedAt))
     .sort((a, b) => a.playedAt - b.playedAt || (a.id < b.id ? -1 : 1));
+  // `ord` per (stream, minute) — the server's stream key, as `ListeningPocketsService.ordinals` does.
   const ordByMinute = new Map();
   return events.map((e) => {
     const atMs = Math.floor(e.playedAt / 60_000) * 60_000;
-    const ord = ordByMinute.get(atMs) || 0;
-    ordByMinute.set(atMs, ord + 1);
+    const key = `${e.originInstallId ?? doc.installId ?? '-'}|${atMs}`;
+    const ord = ordByMinute.get(key) || 0;
+    ordByMinute.set(key, ord + 1);
     return {
       id: e.id, songId: e.songId, atMs, ord,
       tzOffsetMin: Number.isInteger(e.tzOffsetMin) ? e.tzOffsetMin : tzOffsetAt(e.playedAt),
