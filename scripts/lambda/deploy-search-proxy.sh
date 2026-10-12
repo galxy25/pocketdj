@@ -15,8 +15,9 @@
 # The browser keeps signing for the aoss host (search-config.json) and fetching the
 # same-origin /pocketdj path — no PWA change. Idempotent-ish.
 set -euo pipefail
-export AWS_PROFILE="${AWS_PROFILE:-levi}"
-REGION="us-west-2"; ACCT="011183829623"
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
+export AWS_PROFILE="${AWS_PROFILE:-$PDJ_PROFILE}"
+REGION="$PDJ_REGION"; ACCT="$PDJ_ACCOUNT"
 FN="pocketdj-search-proxy"; ROLE="pocketdj-search-proxy-role"; API_NAME="pocketdj-search"
 SELF="$(cd "$(dirname "$0")" && pwd)"
 AOSS_HOST="$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('public/search-config.json','utf8')).host)")"
@@ -64,8 +65,8 @@ say "repointing CloudFront /pocketdj origins -> $API_DOMAIN"
 python3 - "$API_DOMAIN" <<PY
 import sys, botocore.session
 api = sys.argv[1]
-cf = botocore.session.Session(profile='levi').create_client('cloudfront')
-for dist_id in ['E123GKAO9JVETP', 'E1SP8M1SIF7Q8D']:
+cf = botocore.session.Session(profile='${PDJ_PROFILE}').create_client('cloudfront')
+for dist_id in ['${PDJ_CF_DEV}', '${PDJ_CF_PROD}']:
     r = cf.get_distribution_config(Id=dist_id); etag, cfg = r['ETag'], r['DistributionConfig']
     for o in cfg['Origins']['Items']:
         if o['Id'] == 'pocketdj-aoss' or any(s in o['DomainName'] for s in ('.on.aws','.aoss.','lambda-url','execute-api')):

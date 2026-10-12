@@ -23,15 +23,19 @@ from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 from botocore.httpsession import URLLib3Session
 
-REGION = 'us-west-2'
-ACCT = '011183829623'
+# Account/profile/admin come from scripts/lib/aws-env.mjs (POCKETDJ_ENV, default blue).
+import os, subprocess
+AWS_ENV = json.loads(subprocess.check_output(
+    ['node', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib', 'aws-env.mjs'), '--json']))
+REGION = AWS_ENV['region']
+ACCT = AWS_ENV['account']
 GROUP = 'pocketdj-sz-grp'
 COLL = 'pocketdj-sz'
 NETPOL = 'pocketdj-sz-net'
 DATAPOL = 'pocketdj-sz-data'
 ENDPOINT_FILE = __file__.rsplit('/', 2)[0] + '/.aoss-sz-endpoint.txt'
 
-sess = botocore.session.Session(profile='levi')
+sess = botocore.session.Session(profile=AWS_ENV['profile'])
 oss = sess.create_client('opensearchserverless', region_name=REGION)
 creds = sess.get_credentials().get_frozen_credentials()
 
@@ -78,7 +82,7 @@ except oss.exceptions.ResourceNotFoundException:
     oss.create_access_policy(name=DATAPOL, type='data', policy=json.dumps([
         {"Rules": [{"Resource": [f"index/{COLL}/*"], "Permission": ["aoss:*"], "ResourceType": "index"},
                    {"Resource": [f"collection/{COLL}"], "Permission": ["aoss:*"], "ResourceType": "collection"}],
-         "Principal": [f"arn:aws:iam::{ACCT}:user/Developer"], "Description": "AB test admin"},
+         "Principal": [AWS_ENV['adminArn']], "Description": "AB test admin"},
         {"Rules": [{"Resource": [f"index/{COLL}/*"], "Permission": ["aoss:ReadDocument", "aoss:DescribeIndex"],
                     "ResourceType": "index"}],
          "Principal": [f"arn:aws:iam::{ACCT}:user/djpocketsearch"], "Description": "AB test read-only"}]))
