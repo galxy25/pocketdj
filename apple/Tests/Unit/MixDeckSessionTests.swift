@@ -594,6 +594,43 @@ final class MixEngineSessionTests: XCTestCase {
         e.stopAutoMix()
     }
 
+    /// A deck restored in STEM mode whose stems aren't on disk must not start fetching/streaming
+    /// them at launch (~32 MB of transfers for a deck nobody is listening to, competing with the
+    /// songs that will play): the intent restores ("Loading stems…") and the fetch waits for the
+    /// deck's first play.
+    func testRestoredStemModeDefersFetchingStemsUntilTheDeckPlays() async throws {
+        let store = makeStore()
+        let e = makeEngine(store: store)
+        e.ensureEngine()
+        try XCTSkipUnless(e.isReady, "no audio device on this test host")
+        wireStudioResolve(e, files: ["smp_st": try makeSineWAV(seconds: 2)])
+        var fetches: [String] = []
+        e.stemFetcher = { id in fetches.append(id); return false }
+        let t = MixDeckSessionStore.TrackRef(songId: "smp_st", title: "S", artist: "A", bpm: 120, camelot: "8A",
+                                             key: nil, albumId: nil, lengthMs: 2_000)
+        let a = MixDeckSessionStore.DeckSnapshot(
+            track: t, positionMs: 0, volume: 1, rate: 1, pitch: 0,
+            compressor: false, reverb: false, flanger: false, filter: false,
+            compStrength: 0.5, reverbStrength: 0.5, flangerStrength: 0.5, filterStrength: 0.5,
+            stemMode: true, stemMuted: [], stemVol: [:])
+        store.save(.init(deckA: a, deckB: nil, crossfader: 0, leadDeck: "A", auto: nil,
+                         wasRunning: false, updatedAt: 0))
+        await waitUntil("snapshot on disk") { store.load() != nil }
+        e.restorePersistedMixIfIdle()
+        e.materializePendingRestoreIfNeeded()
+
+        XCTAssertEqual(e.loaded(.a)?.songId, "smp_st")
+        XCTAssertEqual(e.stemHandover(.a), .toStems, "the stem intent restores (Loading stems…)")
+        XCTAssertFalse(e.stemFetchPendingForTesting(.a), "…but nothing is fetched for a silent deck")
+        XCTAssertTrue(fetches.isEmpty)
+
+        e.play(.a)
+        await waitUntil("the first play fetches the stems") { fetches == ["smp_st"] }
+        await waitUntil("none exist: the request drops, the full mix plays on") { e.stemHandover(.a) == nil }
+        XCTAssertTrue(e.playerNodeIsPlayingForTesting(.a))
+        e.pause(.a)
+    }
+
     // MARK: CarPlay cold-resume (field report, Levi, 2026-09-04)
 
     /// The NEW variant the tvOS fix above didn't cover on paper: a session parked over an hour

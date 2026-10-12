@@ -12,7 +12,7 @@ file (`mix-audio-graph.svg`).
 │                                                                                  │
 │  player ────────────┐    ← AVAudioPlayerNode; player→inputMixer is the ONLY      │
 │  (main file)        │      link reconnected per load (at the FILE's format)      │
-│   ⇅ HANDOVER: main ↔ stems cross at ONE host time (60 ms linear fade, voice      │
+│   ⇅ HANDOVER: main ↔ stems cross at ONE sample time (60 ms linear fade, voice    │
 │     gains on the source nodes) — never a stop-then-start; see "Zero dead air"    │
 │                     ▼                                                            │
 │  stem "vocals" ─→ inputMixer ─→ timePitch ─→ SLOT 0 ─→ SLOT 1 ─→ SLOT 2 ─→ SLOT 3│
@@ -80,7 +80,7 @@ file (`mix-audio-graph.svg`).
 |---|---|---|---|
 | Pre-fader VU | `trim` output | `MixDeckLevels.prePeak/preRMS` | 4096-frame buffers (~10 Hz); peak + RMS ballistics run on the tap thread. **Post-FX** despite the "pre-fader" name. |
 | Post-fader VU | `mainGain` output | `MixDeckLevels.postPeak/postRMS` | Same shape, after volume × crossfade. |
-| Envelope follower | `inputMixer` output | `MixDeckEnvelope.value` | **Pre-FX** (a filter driven by it can't hear itself and feed back), post-stem-merge. 1024-frame buffers (~23 ms) with time-constant ballistics (8 ms attack / 180 ms release) so the host's delivered buffer size can't change the follower's speed. Drives the FX modulation's audio-reactive source. |
+| Envelope follower | `inputMixer` output | `MixDeckEnvelope.value` | **Pre-FX** (a filter driven by it can't hear itself and feed back), post-stem-merge. 1024-frame buffers (~23 ms) with time-constant ballistics (8 ms attack / 180 ms release) so the host's delivered buffer size can't change the follower's speed. Drives the FX modulation's audio-reactive source. The same callback feeds `MixDeckCapture` (a test seam: raw samples while armed, for sample-resolution dead-air / alignment probes). |
 | Recording | `houseSum` output | `MixTapSink` + `MixTapPulse` liveness | Installed once at build, never per-recording — adding/removing a tap on a live node pauses the decks on-device. |
 
 ## Zero dead air — the stem handover
@@ -102,17 +102,43 @@ decided in one place (`MixEngine.advanceStemHandover`):
 ```
 
 - **The switch itself** (`cutToStems` / `cutToFullMix`): on an audibly-playing deck the incoming
-  voice is scheduled from the OUTGOING voice's render-clock position projected to a host time
-  ~60 ms out, started there with `play(at:)` at gain 0, and the two cross linearly over 60 ms
-  (linear, not equal-power: stems sum back to the mix, so the voices are coherent). Only then is
-  the outgoing voice stopped. A silent deck (paused, cued, or HELD for bytes) switches outright.
-  Every transport path that stops/re-schedules voices `settleStemFade`s first.
+  voice is scheduled from the OUTGOING voice's source position at a SAMPLE time ~60 ms out on the
+  deck's render clock (`stemStartTime`; read off the outgoing player's own clock at that frame),
+  started there with `play(at:)` at gain 0, and the two cross linearly over 60 ms (linear, not
+  equal-power: stems sum back to the mix, so the voices are coherent). Only then is the outgoing
+  voice stopped. A silent deck (paused, cued, or HELD for bytes) switches outright. Every
+  transport path that stops/re-schedules voices `settleStemFade`s first.
+- **Four stems, one frame.** Every stem start (`startStems`, the handover) is ONE sample-time
+  `AVAudioTime` for all four nodes. A host-time start is converted by each node on its own and
+  lands them samples apart (measured on a bare engine: node pairs at r 0.80–0.96 instead of 1.0;
+  hundreds of samples in the simulator) — four copies summed out of step comb-filter for the
+  rest of the song.
+- **Encoder priming.** The Demucs stems are lameenc mp3s with no Xing/Info tag, so Core Audio
+  can't trim LAME's 576-sample priming granule: they decode 576 samples (13 ms) late against the
+  tagged full mix (measured on real stem sets, r 0.9998). `mp3PrimingFrames` reads it off the
+  first frame at wiring; every stem frame↔second mapping (`stemFrame`) skips it.
 - **Sources across streaming:** stems not on disk STREAM (`MixStreamLoader.openStems`, public
   objects, all four together, adopted into the burn folder when done) or are fetched whole
   (`stemFetcher`). A streaming source that runs dry hands over to the other one when it has audio:
   partial stems hand back to the full mix `stemUnderrunLead` (1 s) before their frontier and
   re-engage with 4 s of runway; a HELD full mix is rescued by stems that have runway. A deck HOLDS
-  (Buffering…) only when neither source has audio at the playhead.
+  (Buffering…) only when neither source has audio at the playhead AND one of them can still grow
+  — the pump of whichever grows first resumes it.
+- **A dead full-mix stream under stems** is TRUNCATED, not complete (`mainTruncated`): its last
+  frame is final, a handover onto it needs real runway, and `mainUnderrun` hands back to the
+  stems (or holds for them) before it runs out. Once neither voice can grow
+  (`settleDeadSources`), the song ends where the longer one's audio does — the old truncate path,
+  so the auto-mix moves on instead of a playhead running over silence.
+- **Streaming stems' opens.** The pump re-opens the four parts only on real byte growth (a whole
+  append chunk past the scheduled end while on air; 15 s while looping), and ALWAYS keeps the
+  newest opens: `stemFrontier` never runs ahead of the files in `stemFiles`, and
+  `stemEndSeconds` is the end all four parts really reached. A loop on streaming stems needs the
+  whole window inside their frontier. A set adopted into the burn folder is opened there under
+  the folder's scope; adoption is all-or-nothing.
+- **Transfers nobody wants are cancelled.** A stem stream is cancelled (`cancelStems`) the moment
+  no deck wants it — toggled off (or the `.toFullMix` handover landed), track change, eject — and
+  runs at low task priority under the song streams. A restored stem-mode deck streams/fetches its
+  stems only on its first play.
 - **Generations:** `stemIntentGen` is bumped by every request, track change and eject; a fetch
   completing for a superseded request touches nothing. Fade steps check `stemFadeGen`.
 
@@ -150,12 +176,16 @@ decided in one place (`MixEngine.advanceStemHandover`):
   past it holds at the target until the bytes arrive). The frame↔byte map trusts the LAME/Xing
   full-length header of our 256 kbps CBR rips; a headerless file plays only once complete. An
   analog song without a fetchable per-song cut streams its whole album side up to `startMs`.
-- **Handover alignment is render-clock accurate, not sample-locked.** The incoming voice starts
-  at the outgoing voice's projected source position for the start host time; at a non-1.0×
-  tempo the projection rides the time-stretch's rate, so expect sub-buffer (≈ms) error, hidden
+- **Handover alignment is sample-locked only on one render clock.** When the outgoing and
+  incoming voices render at the same rate (both 44.1 kHz — every Demucs stem set against a
+  44.1 kHz rip) the incoming voice starts on the outgoing one's exact frame. A full mix at another
+  rate (a 48 kHz rip) falls back to a host-time projection: expect a few samples of error, hidden
   under the 60 ms crossfade. A handover on a LOOPING deck re-arms the loop on the new voices
   (the pre-handover re-schedule, a brief gap) instead of crossfading.
+- **Other multi-node starts still use host times.** `StemPlayer`, `NowPlayingDSP` and the Studio
+  engines start their node groups on a shared HOST time — the same few-samples-apart flaw the
+  Mix stems had; not changed here.
 - **Stem streams are not range-windowed.** Stems stream whole (≈4 × 8 MB for a 4-minute song)
-  alongside the deck's own stream; on a slow link they compete for bandwidth with the on-air
-  full mix. The full mix still plays first-come (the handover waits), but its own runway can
-  shrink while stems download.
+  alongside the deck's own stream. They run at low task priority and are cancelled once unwanted,
+  but on a slow link a WANTED set still shares the pipe with the on-air full mix, whose runway can
+  shrink while they download.

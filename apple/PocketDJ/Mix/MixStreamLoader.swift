@@ -297,6 +297,23 @@ final class MixStreamLoader {
         DiagLog.shared.telemetry("mixstream", "stems done \(base)")
     }
 
+    /// Stop streaming `songId`'s stems — no deck wants them any more (toggled off, track changed,
+    /// ejected). Stem sets ride outside the song lane's `maxConcurrent` cap, so an abandoned set
+    /// left running would compete with the on-air and next songs' streams for the whole ~32 MB.
+    /// A completed set is kept (it's already adopted as burned stems); an incomplete one's files
+    /// are swept (a deck still reading leftovers keeps its open handles).
+    func cancelStems(_ songId: String) {
+        guard let set = stemSets[songId], !set.isComplete else { return }
+        for p in set.parts.values {
+            cancelTransfer(p)
+            streams[p.songId] = nil
+            sources[p.songId] = nil
+            try? FileManager.default.removeItem(at: p.fileURL)
+        }
+        stemSets[songId] = nil
+        DiagLog.shared.telemetry("mixstream", "stems cancel \(songId)")
+    }
+
     /// Cancel streams (collection run cancelled). Deck-pinned songs are left alone.
     func cancel(songIds: [String]) {
         let pinned = pinnedIds?() ?? []
@@ -319,6 +336,9 @@ final class MixStreamLoader {
         // double-auth 400 that poisoned burns). The public cut URL needs none either.
         if offset > 0 { req.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range") }
         let task = session.dataTask(with: req)
+        // Stem parts yield to the song streams a deck is playing (or about to): an on-air deck
+        // starved of its own bytes is Buffering… — dead air — while stems are a nice-to-have.
+        if Self.stemSongId(fromKey: s.songId) != nil { task.priority = URLSessionTask.lowPriority }
         let id = task.taskIdentifier
         if offset == 0 { try? Data().write(to: s.fileURL) }
         sink.register(task: id, file: s.fileURL, offset: offset)
@@ -336,8 +356,9 @@ final class MixStreamLoader {
 
     /// Keep at most `maxConcurrent` live transfers: cancel the OLDEST one no deck is playing.
     private func makeRoom() {
-        // Stem parts ride their own lane (a set is opened for an on-air deck only) — never
-        // counted against, or evicted for, the song streams' cap.
+        // Stem parts ride their own lane (a set is opened for an on-air deck only, at LOW task
+        // priority, and cancelled the moment no deck wants it — `cancelStems`) — never counted
+        // against, or evicted for, the song streams' cap.
         let live = streams.values.filter { !$0.isComplete && !$0.failed && Self.stemSongId(fromKey: $0.songId) == nil }
         guard live.count >= Self.maxConcurrent else { return }
         let pinned = pinnedIds?() ?? []

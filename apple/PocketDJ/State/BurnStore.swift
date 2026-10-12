@@ -734,7 +734,8 @@ final class BurnStore {
     /// active burn folder under their burned names, exactly as `burnStems` would have left them
     /// (a deck's open `AVAudioFile`s keep reading the same inodes). A part already burned keeps
     /// the existing file. Returns part → burned URL, or nil (no writable folder / a move failed —
-    /// the caller keeps playing its own copies).
+    /// the caller keeps playing its own copies). ALL OR NOTHING: a move that fails part-way moves
+    /// the parts already moved back, so the caller's files are exactly where it left them.
     @discardableResult
     func adoptStreamedStems(songId: String, files: [String: URL]) -> [String: URL]? {
         guard Set(files.keys) == Set(Self.stemNames),
@@ -743,13 +744,16 @@ final class BurnStore {
         defer { if folder.scoped { dir.stopAccessingSecurityScopedResource() } }
         let fm = FileManager.default
         var out: [String: URL] = [:]
+        var moved: [(from: URL, to: URL)] = []
         for (name, src) in files {
             let dest = dir.appendingPathComponent(Self.stemFileName(songId, name))
             if fm.fileExists(atPath: dest.path) { out[name] = dest; continue }
             do { try fm.moveItem(at: src, to: dest) } catch {
                 DiagLog.shared.log("error", "mixstream adopt stems \(songId)/\(name) failed: \(error.localizedDescription)")
+                for m in moved { try? fm.moveItem(at: m.to, to: m.from) }   // roll back: no half-adopted set
                 return nil
             }
+            moved.append((src, dest))
             out[name] = dest
         }
         return out
