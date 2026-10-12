@@ -14,7 +14,9 @@ import Foundation
 /// `$default` route answers every `/pockets/*` path with not-found, and the service must read
 /// that as "not available yet", silently — not as a sync error.
 struct ListeningPocketsClient {
-    var base: URL = Config.listeningPocketsBase
+    /// Injected base (tests); nil ⇒ `Config.listeningPocketsBase` read LIVE per request.
+    var base: URL? = nil
+    private var resolvedBase: URL { base ?? Config.listeningPocketsBase }
     var enrollSecret: String = Config.recEngineEnrollSecret
     var transport: (URLRequest) async throws -> (Data, URLResponse) = {
         try await URLSession.shared.data(for: $0)
@@ -33,7 +35,7 @@ struct ListeningPocketsClient {
     private func request(_ path: String, method: String, key: String, profileId: String,
                          body: Data? = nil, timeout: TimeInterval = 20,
                          enroll: Bool = false) throws -> URLRequest {
-        var req = URLRequest(url: base.appendingPathComponent(path), timeoutInterval: timeout)
+        var req = URLRequest(url: resolvedBase.appendingPathComponent(path), timeoutInterval: timeout)
         req.httpMethod = method
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         if enroll, !enrollSecret.isEmpty {
@@ -99,7 +101,7 @@ struct ListeningPocketsClient {
     /// `GET /pockets/health` — unauthenticated reachability probe.
     func health() async -> Bool {
         struct Health: Decodable { let ok: Bool?; let service: String? }
-        var req = URLRequest(url: base.appendingPathComponent("pockets/health"), timeoutInterval: 12)
+        var req = URLRequest(url: resolvedBase.appendingPathComponent("pockets/health"), timeoutInterval: 12)
         req.httpMethod = "GET"
         guard let (data, resp) = try? await transport(req),
               (200..<300).contains((resp as? HTTPURLResponse)?.statusCode ?? 0),

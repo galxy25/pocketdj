@@ -62,11 +62,19 @@ actor SearchConfig {
 
     /// Memoized load: the first caller starts the fetch, concurrent callers await the
     /// SAME Task, later callers get the cached result. Failures keep the baked defaults.
-    private lazy var loadTask = Task<Resolved, Never> { await SearchConfig.load() }
+    private var loadTask: Task<Resolved, Never>?
+    /// The remote-endpoint generation the memoized load was made under: when the backend flips
+    /// (blue ↔ green), `searchConfigURL` moves with it, so the next search reloads from there.
+    private var loadedGeneration = -1
 
     /// host resolution: user override → global search-config.json → baked default.
     func resolved() async -> Resolved {
-        var r = await loadTask.value
+        let gen = Config.endpoints.generation
+        if loadTask == nil || gen != loadedGeneration {
+            loadedGeneration = gen
+            loadTask = Task<Resolved, Never> { await SearchConfig.load() }
+        }
+        var r = await loadTask!.value
         if let u = userHost { r.host = u }
         return r
     }
@@ -85,7 +93,11 @@ actor SearchConfig {
     private static func load() async -> Resolved {
         var r = Resolved()
         do {
-            let (data, resp) = try await URLSession.shared.data(from: Config.searchConfigURL)
+            // Bypass the local URL cache: deploys before 2026-10 served this file
+            // `max-age=31536000,immutable`, which would pin a swapped host for a year.
+            let req = URLRequest(url: Config.searchConfigURL, cachePolicy: .reloadIgnoringLocalCacheData,
+                                 timeoutInterval: 15)
+            let (data, resp) = try await URLSession.shared.data(for: req)
             guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else { return r }
             let c = try JSONDecoder().decode(Remote.self, from: data)
             if let h = c.host, !h.isEmpty { r.host = h }

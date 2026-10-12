@@ -500,6 +500,10 @@ struct PocketDJApp: App {
         // Remote telemetry persists across launches too — the store is the truth, the logger
         // mirrors it (`DiagLog.telemetryEnabled`; the TestFlight/DEBUG gate applies inside).
         DiagLog.shared.telemetryEnabled = settings.remoteTelemetryEnabled
+        // Remote endpoint config (docs/design/remote-endpoints.md): the active backend already
+        // resolved synchronously (cached last-good → compiled-in); this fetches the latest doc in
+        // the background (never blocks launch) and logs an `[endpoints]` diag line.
+        EndpointResolver.refreshAndLog(force: true)
         #if os(macOS)
         // RECOVERY/DEMO seam: rebuild ledger entries from sidecar+audio pairs already in the
         // app-storage burns dir, on explicit request only (PDJ_ADOPT_ORPHANS=1). Same machinery
@@ -1896,6 +1900,8 @@ struct PocketDJApp: App {
                     switch phase {
                     case .active:
                         streaming.onScenePhaseActive()
+                        // Foreground re-check of the remote endpoint config (throttled to 15 min).
+                        EndpointResolver.refreshAndLog()
                         // PLAY-COUNT CAPTURE — first run, and auto-resume.
                         //
                         // The Apple baseline ships empty, so until a capture lands Browse's

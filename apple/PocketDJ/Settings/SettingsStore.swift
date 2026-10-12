@@ -109,7 +109,14 @@ struct SourceConfig: Identifiable, Codable, Hashable {
     var urlString: String
     var enabled: Bool = true
 
-    var url: URL? { URL(string: urlString.trimmingCharacters(in: .whitespaces)) }
+    /// The URL to fetch. A built-in source persisted with a catalog host baked in
+    /// (`https://<cloudfront>/current-index.json`) follows the LIVE endpoint config — the stored
+    /// string is left as-is, the host is rebased at read time (see
+    /// `EndpointResolver.rebasedCatalogURL`). Custom user sources pass through untouched.
+    var url: URL? {
+        URL(string: urlString.trimmingCharacters(in: .whitespaces))
+            .map { Config.endpoints.rebasedCatalogURL($0) }
+    }
 }
 
 /// Persisted app settings (UserDefaults). Mirrors the PWA's Settings: data
@@ -604,7 +611,7 @@ final class SettingsStore {
     var hasMyDigital: Bool {
         let url = Config.digitalIndexURL.absoluteString
         let name = Config.digitalSourceName
-        return sources.contains { $0.name == name || $0.urlString == url }
+        return sources.contains { $0.name == name || $0.url?.absoluteString == url }
     }
 
     /// Opt-in: add the "My Digital" source (raw digital audio files indexed + uploaded to
@@ -639,11 +646,11 @@ final class SettingsStore {
             (streaming, Config.appleMusicSourceName, Config.appleMusicIndexURL.absoluteString),
         ]
         for b in builtins {
-            let present = sources.contains { $0.name == b.name || $0.urlString == b.url }
+            let present = sources.contains { $0.name == b.name || $0.url?.absoluteString == b.url }
             if b.want && !present {
                 sources.append(SourceConfig(name: b.name, urlString: b.url, enabled: true))
             } else if !b.want && present {
-                sources.removeAll { $0.name == b.name || $0.urlString == b.url }
+                sources.removeAll { $0.name == b.name || $0.url?.absoluteString == b.url }
             }
         }
         persist()
