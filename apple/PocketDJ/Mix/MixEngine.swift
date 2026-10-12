@@ -4037,6 +4037,16 @@ final class MixEngine {
             refreshTransport()
             return
         }
+        // Four parts each report ~4×/s: re-open (4 file opens) only once the slowest part's
+        // byte frontier has moved a meaningful step since the last open — or the set completed.
+        if !set.isComplete, stemFiles[deck]?.isEmpty == false, let last = stemFrontier[deck] {
+            let byBytes = set.parts.values.map {
+                Self.stemPlayableSeconds(lengthSeconds: .infinity, bytes: $0.bytesReceived,
+                                         expectedBytes: $0.expectedBytes, songSeconds: duration(deck),
+                                         complete: false)
+            }.min() ?? 0
+            guard byBytes >= last + 0.5 else { return }
+        }
         // Fresh opens: an open sees only the bytes present at open time.
         var fresh: [String: AVAudioFile] = [:]
         var frontier = Double.infinity
