@@ -182,6 +182,11 @@ targets:
         # Bluetooth MIDI (I3) — CABTMIDICentralViewController triggers a Bluetooth prompt; without
         # this string it crashes on first BLE access. Scalar, so it rides INFOPLIST_KEY_*.
         INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: "PocketDJ connects to Bluetooth MIDI keyboards so you can play and record the virtual instruments."
+        # Listening pockets ▸ places & trips (OPT-IN, default off, iOS only). CLVisit +
+        # significant-change monitoring only — deliberately NO `location` UIBackgroundMode. The
+        # prompt never fires unless the user turns the toggle on. Coordinates stay on device.
+        INFOPLIST_KEY_NSLocationWhenInUseUsageDescription: "PocketDJ can notice which of your places you're at while you listen, to find the music that fits each one. Your location stays on this device; only anonymous labels like \"Location A\" are used."
+        INFOPLIST_KEY_NSLocationAlwaysAndWhenInUseUsageDescription: "Allow Always so PocketDJ can tell your places and trips apart while music plays in the background, such as the trip from Location A to Location B. Your location stays on this device."
         # --- MusicKit + ShazamKit entitlements ---------------------------------
         # Both app-service entitlements live in one .entitlements file. They are
         # only ENFORCED when signing for a device/distribution (the App ID must
