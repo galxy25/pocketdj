@@ -1295,6 +1295,20 @@ final class MixEngine {
     func backdateAutoDeckEndForTesting(secondsLeft: Double) {
         autoDeckEndsAt[autoLiveDeck] = Date().addingTimeInterval(secondsLeft)
     }
+    /// Back-date the in-flight crossfade's start (as if `seconds` of it had already elapsed).
+    func backdateAutoFadeStartForTesting(seconds: Double) {
+        autoFadeStartedAt = autoFadeStartedAt?.addingTimeInterval(-seconds)
+    }
+    /// Stamp a deck's stream-hold stall clock as if it had been holding `seconds` already.
+    func backdateStreamHoldForTesting(_ deck: Deck, seconds: Double) {
+        streamHeldSince[deck] = Date().addingTimeInterval(-seconds)
+    }
+    @ObservationIgnored private var streamHeldSince: [Deck: Date] = [:]
+    @ObservationIgnored private var autoExtending = false
+    static var autoStallSkipSeconds: Double = 8
+    var autoExtendingForTesting: Bool { autoExtending }
+    var autoQueueIdsForTesting: [String] { autoQueue.map(\.loadable.songId) }
+    var autoLivePosForTesting: Int { autoLivePos }
     // tvOS silent-resume seams: reproduce the OS dropping every node's never-rendered schedule
     // behind the engine's back (the first-start output renegotiation / an engine uninit) —
     // `stop()` flushes each node's queue WITHOUT updating the engine's bookkeeping, exactly

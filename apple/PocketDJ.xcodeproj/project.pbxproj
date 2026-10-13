@@ -378,6 +378,7 @@
 		9AEF31B8C7E8AEC3F66292F3 /* CuePlumbingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BF7BCE3590F102AC79B4A74F /* CuePlumbingTests.swift */; };
 		9B10316A855E559D97BB8B05 /* ImportedSongsStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 637EF1F988EFD872543EA3FC /* ImportedSongsStoreTests.swift */; };
 		9BAA85B5CB0F93649AB8AEAB /* CollectionRipBurn.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B719954C73F95F9F2329F05 /* CollectionRipBurn.swift */; };
+		9BD494DAF74A8CF3224CBD5A /* MixEndOfSongTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12A7A9B460E0F816D8FB61AE /* MixEndOfSongTests.swift */; };
 		9C2463F5C42EE7CF7023FA11 /* PlayCountTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E37ABBB944419E658310FAE /* PlayCountTests.swift */; };
 		9C9B89343EB84F672EB3A276 /* PlaybackSessionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 38A2F4427A9C462CA78F3632 /* PlaybackSessionStore.swift */; };
 		9CC22E1B5BF166EA42B75FE6 /* MixSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5960B1BEBB6DBDAB4E21461C /* MixSession.swift */; };
@@ -694,6 +695,7 @@
 		109776E1236EA96193C63455 /* MixStreamingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixStreamingTests.swift; sourceTree = "<group>"; };
 		114B066AD3EE709562FCA10B /* EditAudioAnalysisView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EditAudioAnalysisView.swift; sourceTree = "<group>"; };
 		1257BA85F5D7802FE83926D5 /* APPLE_MUSIC_SETUP.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = APPLE_MUSIC_SETUP.md; sourceTree = "<group>"; };
+		12A7A9B460E0F816D8FB61AE /* MixEndOfSongTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixEndOfSongTests.swift; sourceTree = "<group>"; };
 		12B8946BC54B554F1789BD45 /* StudioSliceEditorView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioSliceEditorView.swift; sourceTree = "<group>"; };
 		12D96AAD5B322D1E24EB05B1 /* SMFWriterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SMFWriterTests.swift; sourceTree = "<group>"; };
 		14016A8002CDCF4016101456 /* QueueBuilderStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QueueBuilderStateTests.swift; sourceTree = "<group>"; };
@@ -1426,6 +1428,7 @@
 				F786D640626FDC10E8C41F41 /* MixAutoResetTests.swift */,
 				3E6370C72934900CF37DD26F /* MixBurnFixture.swift */,
 				E44A42CB8C055BE3AB40D4D2 /* MixDeckSessionTests.swift */,
+				12A7A9B460E0F816D8FB61AE /* MixEndOfSongTests.swift */,
 				F4AD30694DB4ECEC615800AA /* MixEngineTests.swift */,
 				07286082F4AC73282CFB8B60 /* MixPlayOutcomeBridgeTests.swift */,
 				C86121DD37BEE5F5D72A8A72 /* MixRecorderTests.swift */,
@@ -2527,6 +2530,7 @@
 				B958BC8BAABBAD6C4F1560CB /* MixAutoResetTests.swift in Sources */,
 				EA8AD8E950DA31640E3900C1 /* MixBurnFixture.swift in Sources */,
 				2214A4BCE61DB8C470C0C8AD /* MixDeckSessionTests.swift in Sources */,
+				9BD494DAF74A8CF3224CBD5A /* MixEndOfSongTests.swift in Sources */,
 				C8E817F720036B4090DBB138 /* MixEngineTests.swift in Sources */,
 				24F73A29B297689C66FE0D32 /* MixPlayOutcomeBridgeTests.swift in Sources */,
 				0A420C679FC34124D6A2F253 /* MixRecorderTests.swift in Sources */,

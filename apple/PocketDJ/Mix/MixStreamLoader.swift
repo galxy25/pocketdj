@@ -541,6 +541,8 @@ final class MixStreamLoader {
         if finished { complete(s) } else { onProgress?(songId) }
         return s
     }
+    /// The rip server stopped answering (a presign/HTTP failure): new streams refused for the cooldown.
+    func tripServerDownForTesting() { tripServerDown("test") }
     func failStreamForTesting(_ songId: String) {
         guard let s = streams[songId] else { return }
         fail(s, why: "test")
