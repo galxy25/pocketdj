@@ -527,7 +527,9 @@ final class RipsStore {
     /// a queued rip THROWS, `tryPlay` returns false, and the coordinator can fall through to
     /// a streaming provider or surface an honest error. The rip keeps running server-side and
     /// lands for next time. Background/download callers keep the long wait.
-    static let interactivePlayWaitSeconds = 20
+    static var interactivePlayWaitSeconds = 20
+    /// Per-request timeout for one `/jobs/<id>` status poll (seconds).
+    static var jobPollTimeoutSeconds: Double = 10
 
     /// MUST-1: the rips bucket is private — a playable URL for an already-cached song
     /// now costs one round trip to `GET /rips/presign` (bearer-gated) instead of being

@@ -1224,6 +1224,10 @@ final class SetlistPlayer {
     /// before it reaches `player.load`. The `playGeneration` guard inside `playCurrent` is the
     /// backstop for a resolve already past its last cancellation point.
     @ObservationIgnored private var playTask: Task<Void, Never>?
+    /// A cloud resolve slower than this hops to an on-device row (seconds).
+    static var resolveStallSeconds: Double = 6
+    /// A live capture still playing this long past its known length is abandoned (seconds).
+    static var liveEndGraceSeconds: Double = 45
 
     /// THE way to invoke `playCurrent` — every call site funnels through here so the
     /// cancel-the-previous rule can't be forgotten at one of them.

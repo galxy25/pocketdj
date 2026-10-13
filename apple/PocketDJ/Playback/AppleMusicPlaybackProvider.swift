@@ -140,7 +140,10 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// plumbed through, repeat-one swallowed the skip-park as a natural end and REPLAYED the
     /// same song: with repeat-one on, the car's ⏭ could never leave the track (Levi,
     /// 2026-08-19). nil ⇒ not ended.
-    enum EndReason { case natural, systemSkip }
+    enum EndReason { case natural, systemSkip, neverStarted }
+    /// Seconds a play MusicKit accepted may take to actually start before it counts as dead.
+    static var startTimeoutSeconds: Double = 12
+    nonisolated static func neverStarted(everPlayed: Bool, waitedSeconds: Double, intentionalPause: Bool) -> Bool { false }
     nonisolated static func endReason(stopped: Bool, paused: Bool,
                                       playbackTime: Double, expectedDuration: Double,
                                       maxObserved: Double, intentionalPause: Bool) -> EndReason? {

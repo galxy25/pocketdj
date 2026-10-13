@@ -301,6 +301,8 @@ final class PlayerEngine {
     /// "start the deck's current row" instead of firing a toggle that is silently refused
     /// (or, worse, resumes a stale item from the previous row).
     var hasLoadedItem: Bool { externalActive || player.currentItem != nil }
+    /// TEST SEAM: the loaded AVPlayerItem (to post its item notifications).
+    var currentItemForTesting: AVPlayerItem? { player.currentItem }
 
     /// Toggle off the player's REAL `timeControlStatus` — NOT the async rate-KVO-observed
     /// `isPlaying`, which lags a tap and made rapid back-to-back play/pause unreliable.
