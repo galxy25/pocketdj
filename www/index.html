@@ -4,12 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>PocketDJ — Rip, Burn, Mix Your Music</title>
-<meta name="description" content="PocketDJ — rip, burn, and mix the music you own. Coming soon to the Apple App Store and Google Play.">
+<meta name="description" content="PocketDJ turns the music you already own into a real DJ rig: two decks, Auto-DJ, stems, a producer studio, and a party request line. On the App Store for iPhone, iPad, Mac, Apple TV and Apple Vision Pro.">
 <meta name="theme-color" content="#000000">
+<meta name="color-scheme" content="dark">
+<meta name="apple-itunes-app" content="app-id=6784031333">
 <link rel="icon" href="/icon.png">
 <link rel="apple-touch-icon" href="/icon.png">
 <meta property="og:title" content="PocketDJ — Rip, Burn, Mix Your Music">
-<meta property="og:description" content="Coming soon.">
+<meta property="og:description" content="Your music. Two decks. One tap. Now on the App Store for iPhone, iPad, Mac, Apple TV and Apple Vision Pro.">
 <meta property="og:image" content="/icon.png">
 <meta property="og:type" content="website">
 <style>
@@ -17,33 +19,34 @@
     --bg:#000;
     --teal:#00a99d;
     --teal-lit:#2ee6d6;
+    --gold:#f2c66b;
     --ink:#f4f7f7;
+    --body:#c3cccc;
     --dim:#7d8a8a;
     --chrome-1:#e9f1f2;
     --chrome-2:#8fa3a6;
     --chrome-3:#3a4547;
+    --panel:rgba(255,255,255,.035);
+    --rim:rgba(233,241,242,.12);
   }
 
   *{box-sizing:border-box}
   html,body{margin:0;padding:0}
+  html{scroll-behavior:smooth}
 
   body{
     background:var(--bg);
     color:var(--ink);
     font:400 17px/1.6 -apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Inter,Helvetica,Arial,sans-serif;
     -webkit-font-smoothing:antialiased;
-    min-height:100svh;
-    display:grid;
-    place-items:center;
-    padding:clamp(1.5rem,5vw,4rem);
     overflow-x:hidden;
     position:relative;
   }
+  img{max-width:100%;height:auto}
 
   /* ── Chrome edges ──────────────────────────────────────────────────────────
      Not a closed frame. Four separate bars, each fading to nothing before it
-     reaches the corners, so the enclosure is implied rather than drawn — the
-     object is still emerging, not yet fully lit.                              */
+     reaches the corners, so the enclosure is implied rather than drawn.       */
   .edge{position:fixed;pointer-events:none;z-index:2}
   .edge-t,.edge-b{left:0;right:0;height:1px}
   .edge-l,.edge-r{top:0;bottom:0;width:1px}
@@ -73,8 +76,14 @@
     55%{opacity:0}
   }
 
-  main{
+  /* ── Hero ─────────────────────────────────────────────────────────────── */
+  .hero-wrap{
     position:relative;z-index:4;
+    min-height:100svh;
+    display:grid;place-items:center;
+    padding:clamp(2.5rem,7vw,4.5rem) 16px clamp(2rem,5vw,3rem);
+  }
+  .hero-inner{
     text-align:center;
     max-width:44rem;
     animation:emerge 1.5s cubic-bezier(.16,1,.3,1) both;
@@ -109,7 +118,7 @@
   }
 
   .hero{
-    margin:0 0 clamp(2.4rem,6vw,3.4rem);
+    margin:0 0 clamp(2.2rem,5.5vw,3rem);
     font-size:clamp(1.9rem,7vw,3.4rem);
     line-height:1.12;
     font-weight:700;
@@ -122,57 +131,166 @@
   }
   @keyframes shimmer{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
 
+  /* ── Store buttons ────────────────────────────────────────────────────── */
   .buttons{display:flex;flex-direction:column;gap:.95rem;align-items:center}
   @media (min-width:620px){.buttons{flex-direction:row;justify-content:center}}
+
+  /* Apple's badge, unaltered, on a holographic halo so it still belongs here. */
+  .appstore{
+    position:relative;display:inline-block;line-height:0;border-radius:11px;
+    transition:transform .25s cubic-bezier(.16,1,.3,1);
+    animation:pulse 3.4s ease-in-out infinite;
+  }
+  .appstore img{height:56px;width:auto;display:block}
+  .appstore:hover{transform:translateY(-2px)}
+  .appstore:focus-visible{outline:2px solid var(--teal-lit);outline-offset:4px}
 
   .btn{
     position:relative;
     display:inline-flex;align-items:center;justify-content:center;gap:.6rem;
-    padding:1rem 1.7rem;
-    width:100%;max-width:22rem;
-    border-radius:999px;
+    height:56px;padding:0 1.6rem;
+    min-width:168px;
+    border-radius:11px;
     font-size:.95rem;font-weight:600;letter-spacing:.01em;
-    color:var(--ink);
+    color:var(--dim);
     text-decoration:none;
-    background:rgba(255,255,255,.028);
-    border:1px solid transparent;
-    /* Holographic rim: gradient painted into the border box only. */
-    background-image:
-      linear-gradient(rgba(255,255,255,.028),rgba(255,255,255,.028)),
-      linear-gradient(115deg,#ff6ec7 0%,#8a7dff 18%,#2ee6d6 38%,#7dffb0 55%,#ffe97d 72%,#ff8fa3 88%,#ff6ec7 100%);
-    background-origin:border-box;
-    background-clip:padding-box,border-box;
-    background-size:100% 100%,300% 100%;
-    animation:holo 7s linear infinite,pulse 3.4s ease-in-out infinite;
-    cursor:default;
-    overflow:hidden;
+    background:rgba(255,255,255,.02);
+    border:1px solid rgba(125,138,138,.35);
+    cursor:not-allowed;
+    user-select:none;
   }
-  .btn::before{
-    content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
-    background:linear-gradient(115deg,transparent 30%,rgba(255,255,255,.16) 48%,transparent 66%);
-    background-size:280% 100%;
-    animation:holo 7s linear infinite;
-  }
-  .btn span{position:relative;z-index:1}
-  @keyframes holo{0%{background-position:0 0,0% 50%}100%{background-position:0 0,300% 50%}}
+  .btn small{display:block;font-size:.66rem;font-weight:500;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);opacity:.8;line-height:1.3}
+  .btn .stack{text-align:left;line-height:1.25}
+  .btn svg{width:22px;height:22px;fill:currentColor;opacity:.8}
+
   @keyframes pulse{
     0%,100%{box-shadow:0 0 0 0 rgba(46,230,214,.26),0 0 26px -6px rgba(138,125,255,.34)}
     50%{box-shadow:0 0 0 9px rgba(46,230,214,0),0 0 44px -4px rgba(138,125,255,.5)}
   }
-  .btn small{display:block;font-size:.72rem;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin-bottom:.15rem}
-  .btn .stack{position:relative;z-index:1;text-align:center}
+
+  .platforms{
+    margin:1.4rem 0 0;
+    font-size:.82rem;color:var(--dim);letter-spacing:.02em;
+  }
+  .platforms b{color:var(--body);font-weight:600}
+  .platforms .dot{opacity:.45;margin:0 .4rem}
+
+  .scroll-cue{
+    display:inline-block;margin-top:clamp(2rem,5vw,3rem);
+    font-size:.78rem;letter-spacing:.14em;text-transform:uppercase;
+    color:var(--dim);text-decoration:none;
+  }
+  .scroll-cue::after{content:"";display:block;margin:.5rem auto 0;width:1px;height:28px;background:linear-gradient(var(--chrome-2),transparent)}
+  .scroll-cue:hover{color:var(--teal-lit)}
+
+  /* ── Tour ─────────────────────────────────────────────────────────────── */
+  .tour{position:relative;z-index:4;max-width:68rem;margin:0 auto;padding:0 16px}
+
+  .lede{
+    text-align:center;max-width:38rem;margin:0 auto clamp(3rem,8vw,5.5rem);
+  }
+  .lede h2{
+    margin:0 0 .8rem;font-size:clamp(1.6rem,5vw,2.4rem);line-height:1.15;letter-spacing:-.015em;font-weight:700;
+  }
+  .lede p{margin:0;color:var(--body)}
+
+  .kicker{
+    display:inline-block;margin-bottom:.7rem;
+    font-size:.74rem;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--teal-lit);
+  }
+
+  .row{
+    display:grid;gap:clamp(1.8rem,4vw,4rem);align-items:center;
+    grid-template-columns:1fr;
+    margin-bottom:clamp(4rem,10vw,7rem);
+  }
+  @media (min-width:820px){
+    .row{grid-template-columns:minmax(0,5fr) minmax(0,6fr)}
+    .row.flip{grid-template-columns:minmax(0,6fr) minmax(0,5fr)}
+    .row.flip .shot{order:2}
+  }
+
+  .shot{display:flex;justify-content:center}
+  .phone{
+    width:min(300px,78vw);
+    border-radius:38px;
+    padding:9px;
+    background:linear-gradient(160deg,#2a3234,#0b0f10 40%,#1c2324);
+    box-shadow:0 0 0 1px var(--rim),0 30px 80px -24px rgba(0,169,157,.45),0 12px 30px rgba(0,0,0,.8);
+  }
+  .phone img{display:block;width:100%;height:auto;border-radius:30px}
+
+  .copy h3{margin:0 0 .8rem;font-size:clamp(1.5rem,4.2vw,2.1rem);line-height:1.15;letter-spacing:-.015em;font-weight:700}
+  .copy p{margin:0 0 1rem;color:var(--body)}
+  .copy ul{margin:0;padding:0;list-style:none;display:grid;gap:.55rem}
+  .copy li{position:relative;padding-left:1.4rem;color:var(--body);font-size:.96rem}
+  .copy li::before{content:"";position:absolute;left:0;top:.62em;width:.55rem;height:.55rem;border-radius:50%;background:radial-gradient(circle at 35% 35%,var(--teal-lit),var(--teal) 70%)}
+  .copy li b{color:var(--ink);font-weight:600}
+
+  .tag{
+    display:inline-block;vertical-align:.15em;margin-left:.35rem;padding:.08rem .5rem;
+    font-size:.66rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+    color:#1a1203;background:var(--gold);border-radius:999px;
+  }
+
+  /* Illustrations for features without an App Store shot. */
+  .art{
+    width:min(340px,86vw);aspect-ratio:1/1;border-radius:32px;
+    background:radial-gradient(120% 90% at 30% 10%,rgba(46,230,214,.16),transparent 60%),var(--panel);
+    box-shadow:0 0 0 1px var(--rim),0 30px 80px -30px rgba(138,125,255,.45);
+    display:grid;place-items:center;padding:2rem;
+  }
+  .pocket-stack{width:100%;display:grid;gap:.7rem}
+  .chip{
+    display:flex;align-items:center;gap:.8rem;padding:.75rem .95rem;border-radius:16px;
+    background:rgba(255,255,255,.05);box-shadow:0 0 0 1px rgba(233,241,242,.10);
+    font-size:.9rem;
+  }
+  .chip i{flex:none;width:34px;height:34px;border-radius:50%;
+    background:radial-gradient(circle,#0b0f10 22%,var(--gold) 24%,#c99a3c 60%,var(--gold) 62%,#b88a30 100%)}
+  .chip span{display:block;line-height:1.25}
+  .chip small{color:var(--dim);font-size:.78rem}
+  .chip:nth-child(2){margin-left:1.2rem}
+  .chip:nth-child(3){margin-left:2.4rem}
+  .verdict{margin-top:.4rem;text-align:center;font-size:.82rem;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--teal-lit)}
+
+  /* "And more" cards */
+  .more{display:grid;gap:1rem;grid-template-columns:1fr;margin-bottom:clamp(4rem,10vw,7rem)}
+  @media (min-width:620px){.more{grid-template-columns:repeat(2,minmax(0,1fr))}}
+  @media (min-width:980px){.more{grid-template-columns:repeat(4,minmax(0,1fr))}}
+  .card{
+    padding:1.4rem 1.3rem;border-radius:22px;background:var(--panel);box-shadow:0 0 0 1px var(--rim);
+  }
+  .card svg{width:30px;height:30px;stroke:var(--teal-lit);fill:none;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;margin-bottom:.7rem}
+  .card h4{margin:0 0 .4rem;font-size:1.05rem}
+  .card p{margin:0;color:var(--body);font-size:.92rem;line-height:1.55}
+
+  /* Every screen */
+  .screens h3{text-align:center;margin:0 0 .6rem;font-size:clamp(1.5rem,4.2vw,2.1rem);letter-spacing:-.015em}
+  .screens > p{text-align:center;color:var(--body);max-width:36rem;margin:0 auto 2rem}
+  .gallery{display:grid;gap:1rem;grid-template-columns:1fr}
+  @media (min-width:820px){.gallery{grid-template-columns:repeat(3,minmax(0,1fr))}}
+  .gallery figure{margin:0}
+  .gallery img{display:block;width:100%;border-radius:16px;box-shadow:0 0 0 1px var(--rim),0 20px 50px -20px rgba(0,0,0,.9)}
+  .gallery figcaption{margin-top:.6rem;font-size:.82rem;color:var(--dim);text-align:center;letter-spacing:.02em}
+
+  .cta{text-align:center;padding:clamp(4rem,10vw,6rem) 0 0}
+  .cta p{margin:0 0 1.4rem;font-size:clamp(1.3rem,4vw,1.7rem);font-weight:700;letter-spacing:-.01em}
 
   footer{
     position:relative;z-index:4;
-    margin-top:clamp(3rem,8vw,5rem);
+    padding:clamp(3rem,8vw,5rem) 16px clamp(2rem,5vw,3rem);
+    text-align:center;
     font-size:.8rem;color:var(--dim);letter-spacing:.02em;
   }
   footer a{color:var(--dim);text-decoration:none;border-bottom:1px solid rgba(125,138,138,.3)}
   footer a:hover{color:var(--teal-lit);border-bottom-color:var(--teal-lit)}
   footer .sep{opacity:.4;margin:0 .55rem}
+  footer .legal{display:block;margin-top:1rem;font-size:.72rem;opacity:.75}
 
   @media (prefers-reduced-motion:reduce){
     *,*::before,*::after{animation:none!important;transition:none!important}
+    html{scroll-behavior:auto}
     .hero{background-position:50% 50%}
   }
 </style>
@@ -185,24 +303,230 @@
   <div class="edge edge-l"></div><div class="edge edge-r"></div>
   <div class="sheen"></div>
 
-  <main>
-    <h1 class="wordmark">PocketDJ</h1>
+  <header class="hero-wrap">
+    <div class="hero-inner">
+      <h1 class="wordmark">PocketDJ</h1>
 
-    <div class="icon-wrap">
-      <img class="icon" src="/icon.png" width="176" height="176"
-           alt="PocketDJ app icon — a shirt pocket holding a DJ mixer with headphones">
+      <div class="icon-wrap">
+        <img class="icon" src="/icon.png" width="176" height="176"
+             alt="PocketDJ app icon — a shirt pocket holding a DJ mixer with headphones">
+      </div>
+
+      <p class="hero">Rip, Burn, Mix<br>Your Music</p>
+
+      <div class="buttons">
+        <a class="appstore" href="https://apps.apple.com/app/id6784031333">
+          <img src="/img/app-store-badge.svg" width="168" height="56" alt="Download on the App Store">
+        </a>
+        <span class="btn" role="text" aria-disabled="true" aria-label="Android app: coming soon">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17.6 9.48l1.84-3.18a.38.38 0 00-.66-.38l-1.86 3.22A11.4 11.4 0 0012 8.2c-1.77 0-3.43.38-4.92.94L5.22 5.92a.38.38 0 00-.66.38L6.4 9.48A10.8 10.8 0 001 18h22a10.8 10.8 0 00-5.4-8.52zM7 15.25a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5zm10 0a1.25 1.25 0 110-2.5 1.25 1.25 0 010 2.5z"/></svg>
+          <span class="stack"><small>Coming soon</small>Android</span>
+        </span>
+      </div>
+
+      <p class="platforms">
+        One purchase: <b>iPhone</b><span class="dot">·</span><b>iPad</b><span class="dot">·</span><b>Mac</b><span class="dot">·</span><b>Apple&nbsp;TV</b><span class="dot">·</span><b>Apple&nbsp;Vision&nbsp;Pro</b>
+      </p>
+
+      <a class="scroll-cue" href="#tour">See what it does</a>
     </div>
+  </header>
 
-    <p class="hero">Rip, Burn, Mix<br>Your Music</p>
+  <main class="tour" id="tour">
 
-    <div class="buttons">
-      <span class="btn" role="text" aria-label="Coming soon to the Apple App Store">
-        <span class="stack"><small>Coming soon to</small>Apple App Store</span>
-      </span>
-      <span class="btn" role="text" aria-label="Coming soon to the Android app store">
-        <span class="stack"><small>Coming soon to</small>Android App Store</span>
-      </span>
-    </div>
+    <section class="lede">
+      <span class="kicker">Your music. Two decks. One tap.</span>
+      <h2>A real DJ rig, built from the music you already own.</h2>
+      <p>Start with your Apple Music, or plug in your own sources like vinyl you've digitized.
+         Nothing is preloaded, and nothing leaves your device unless you ask.</p>
+    </section>
+
+    <!-- MIX -->
+    <section class="row">
+      <div class="shot">
+        <div class="phone">
+          <img src="/img/iphone-mix.webp" width="600" height="1304" loading="lazy" decoding="async"
+               alt="Mix screen: Deck A auto-mixing, with waveform, cue, tempo, pitch, EQ knobs and an effects rack">
+        </div>
+      </div>
+      <div class="copy">
+        <span class="kicker">Mix</span>
+        <h3>Two decks. Blend for real.</h3>
+        <p>Put a track on each deck and ride the crossfader. Every track shows its BPM and
+           Camelot key, so you can spot a harmonic match before you commit to it.</p>
+        <ul>
+          <li><b>Tempo, pitch and 3-band EQ</b> on every deck</li>
+          <li><b>Effects rack:</b> Punch, Hall, Flanger and a low-pass sweep</li>
+          <li><b>Cue points and loops</b> to jump straight to the drop</li>
+          <li><b>Stems:</b> pull the vocal out mid-phrase</li>
+          <li><b>Auto-DJ</b> runs the night with timed crossfades and key-aware glides. Grab the wheel whenever you like</li>
+          <li><b>Record the whole set</b> while it plays</li>
+          <li><b>Streaming mode</b> starts a deck while the song is still arriving<span class="tag">Coming in 1.0.2</span></li>
+          <li><b>Crate A/B</b> auto-mixes between two collections<span class="tag">Coming in 1.0.2</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- PRODUCER -->
+    <section class="row flip">
+      <div class="shot">
+        <div class="phone">
+          <img src="/img/iphone-studio.webp" width="600" height="1304" loading="lazy" decoding="async"
+               alt="Producer screen: a 16-step sequencer with kick, clap and hat rows at 124 BPM">
+        </div>
+      </div>
+      <div class="copy">
+        <span class="kicker">Producer</span>
+        <h3>A studio next to your library.</h3>
+        <p>Not a separate app to export into. Pull a sound out of any track and build with it right there.</p>
+        <ul>
+          <li><b>Samples and loops</b> sliced from your own songs</li>
+          <li><b>16-step sequencer</b> with per-row mixer decks</li>
+          <li><b>Software instruments</b> to play live</li>
+          <li><b>Demuxer:</b> split a song into stems and pull out its chords and lyrics</li>
+          <li><b>Tracks:</b> arrange it all on a multitrack timeline with beat matching</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- NOW PLAYING -->
+    <section class="row">
+      <div class="shot">
+        <div class="phone">
+          <img src="/img/iphone-nowplaying.webp" width="600" height="1304" loading="lazy" decoding="async"
+               alt="Now Playing: a spinning gold record with transport controls and an Up Next queue">
+        </div>
+      </div>
+      <div class="copy">
+        <span class="kicker">Now Playing</span>
+        <h3>One deck that follows you.</h3>
+        <p>A gold record that spins at the song's tempo, with your queue, transport and
+           up-next exactly where you left them, on whichever screen you pick up next.</p>
+        <ul>
+          <li><b>CarPlay</b> and Lock Screen controls</li>
+          <li><b>Home Screen widgets</b> for what's playing</li>
+          <li><b>Siri and Shortcuts</b> to start a playlist hands-free</li>
+          <li><b>Stems in Now Playing</b><span class="tag">Coming in 1.0.2</span></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- BROWSE -->
+    <section class="row flip">
+      <div class="shot">
+        <div class="phone">
+          <img src="/img/iphone-browse.webp" width="600" height="1304" loading="lazy" decoding="async"
+               alt="Browser: songs listed with BPM, Camelot key, musical key and length">
+        </div>
+      </div>
+      <div class="copy">
+        <span class="kicker">Browse</span>
+        <h3>Every song, read like a DJ.</h3>
+        <p>Your whole library by album, song or artist, each with tempo, Camelot key and length
+           at a glance. Search by artist, album or genre, and filter down to exactly the
+           crate you need.</p>
+        <ul>
+          <li><b>Recognize</b> a song playing nearby and add it to your library on the spot</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ORGANIZE -->
+    <section class="row">
+      <div class="shot">
+        <div class="phone">
+          <img src="/img/iphone-playlists.webp" width="600" height="1304" loading="lazy" decoding="async"
+               alt="Playlists screen listing playlists and reusable Pockets">
+        </div>
+      </div>
+      <div class="copy">
+        <span class="kicker">Organize</span>
+        <h3>Playlists, Pockets and Setlists.</h3>
+        <p>Playlists for the quick stuff. Pockets are reusable blocks you build sets out of.
+           Setlists run start to finish, or hand any of them to Auto-DJ.</p>
+      </div>
+    </section>
+
+    <!-- IN THE POCKET -->
+    <section class="row flip">
+      <div class="shot">
+        <div class="art" role="img" aria-label="Illustration: three songs stacked as a predicted pocket">
+          <div class="pocket-stack">
+            <div class="chip"><i></i><span>Song one<br><small>Plays straight through</small></span></div>
+            <div class="chip"><i></i><span>Song two<br><small>No skip</small></span></div>
+            <div class="chip"><i></i><span>Song three<br><small>Still going</small></span></div>
+            <div class="verdict">In the pocket</div>
+          </div>
+        </div>
+      </div>
+      <div class="copy">
+        <span class="kicker">New game<span class="tag">Coming in 1.0.2</span></span>
+        <h3>In the Pocket.</h3>
+        <p>PocketDJ bets on three or four songs you'll play straight through right now, based on
+           the time of day and, if you turn on places &amp; trips, where you are. Play them without
+           skipping to land the pocket, then type or dictate how it felt. Every round teaches it your taste.</p>
+        <ul>
+          <li><b>Listening Pockets</b> finds the runs you play without skipping and what they share:
+              artists, genres, tempo, time of day. Off until you turn it on.</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- AND MORE -->
+    <section class="more" aria-label="More features">
+      <div class="card">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><path d="M14 14h3v3h-3zM20 14v.01M14 20h.01M17 20h4v-3"/></svg>
+        <h4>Jukebox</h4>
+        <p>Host a request line at a party. Guests scan a code and queue songs from your library, no app to download.</p>
+      </div>
+      <div class="card">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 11h4M8 9v4M15 12h.01M18 10h.01"/><path d="M17.3 5H6.7a4 4 0 00-3.95 3.4L2 14.5A2.6 2.6 0 006.6 16.6L9 14h6l2.4 2.6a2.6 2.6 0 004.6-2.1l-.75-6.1A4 4 0 0017.3 5z"/></svg>
+        <h4>Games</h4>
+        <p>Gem Collector and Music with Friends turn your library into play, with In the Pocket joining the lineup.</p>
+      </div>
+      <div class="card">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 0118 0"/><path d="M7 12a5 5 0 0110 0"/><circle cx="12" cy="12" r="1.5"/><path d="M12 13.5V21"/></svg>
+        <h4>Your sources</h4>
+        <p>Connect Apple Music for playback and search through your subscription, or add your own sources in Settings.</p>
+      </div>
+      <div class="card">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18a4.5 4.5 0 01-.6-8.96A6 6 0 0118 8.5a4 4 0 01-1 7.9"/><path d="M12 12v8M9 17l3 3 3-3"/></svg>
+        <h4>Offline and private</h4>
+        <p>Downloaded songs mix offline. Settings and sessions sync through your own private iCloud.</p>
+      </div>
+    </section>
+
+    <!-- EVERY SCREEN -->
+    <section class="screens">
+      <span class="kicker" style="display:block;text-align:center">One purchase</span>
+      <h3>Every screen you own.</h3>
+      <p>iPhone and iPad, Mac and Apple Vision Pro get the full rig. Apple TV gets a lean-back
+         version: Now Playing, Auto-DJ, Browse, For You and Jukebox. Buy once, use it everywhere.</p>
+      <div class="gallery">
+        <figure>
+          <img src="/img/mac-mix.webp" width="1200" height="750" loading="lazy" decoding="async"
+               alt="PocketDJ on Mac: two decks side by side with colored cue pads and a crossfader">
+          <figcaption>Mac</figcaption>
+        </figure>
+        <figure>
+          <img src="/img/vision-nowplaying.webp" width="1200" height="675" loading="lazy" decoding="async"
+               alt="PocketDJ on Apple Vision Pro: a floating window with the gold record and listening history">
+          <figcaption>Apple Vision Pro</figcaption>
+        </figure>
+        <figure>
+          <img src="/img/tv-nowplaying.webp" width="1200" height="675" loading="lazy" decoding="async"
+               alt="PocketDJ on Apple TV: Now Playing with Mix, Browse, For You and Jukebox tabs">
+          <figcaption>Apple TV</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section class="cta">
+      <p>Bring your music. We'll bring the decks.</p>
+      <a class="appstore" href="https://apps.apple.com/app/id6784031333">
+        <img src="/img/app-store-badge.svg" width="168" height="56" alt="Download on the App Store">
+      </a>
+    </section>
   </main>
 
   <footer>
@@ -215,6 +539,7 @@
     <a href="mailto:contact@pocket-dj.com">contact@pocket-dj.com</a>
     <span class="sep">·</span>
     <span>&copy; 2026 PocketDJ</span>
+    <span class="legal">Apple, the Apple logo, iPhone, iPad, Mac, Apple TV, Apple Vision Pro and CarPlay are trademarks of Apple Inc., registered in the U.S. and other countries. App Store is a service mark of Apple Inc.</span>
   </footer>
 
 </body>
