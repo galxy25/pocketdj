@@ -61,6 +61,12 @@ final class ListeningPocketsService {
     @ObservationIgnored var onDisabled: (() -> Void)?
     /// Supplies this install's id + device id for the batch envelope (test seam).
     @ObservationIgnored var deviceIdProvider: () -> String = { DeviceIdentity.current }
+    /// "In the Pocket" rounds to upload (`InThePocketStore.uploadWires`), given this install's id.
+    /// nil ⇒ no game wired (tests, older call sites) — the flush is events-only, exactly as before.
+    @ObservationIgnored var roundsProvider: ((String) -> [InThePocketRoundWire])?
+    /// False once `POST /pockets/rounds` answered 404 (a backend without the route). Rounds stay
+    /// QUEUED — unacknowledged — and every later flush tries again. Silent, like `serviceAvailable`.
+    private(set) var roundsServiceAvailable = true
 
     @ObservationIgnored private let syncFileURL: URL
     @ObservationIgnored private let cacheFileURL: URL
@@ -72,6 +78,8 @@ final class ListeningPocketsService {
     static let windowDays: Double = 90
     /// Events per POST — half the server's 2000 cap so a batch stays far under its 4 MB body.
     static let batchCap = 1000
+    /// Rounds per POST — the server's cap.
+    static let roundsBatchCap = 50
     /// Results younger than this are served from cache on tab appear.
     static let resultsTTLMs: Double = 10 * 60 * 1000
     static let maxPlaces = 200
@@ -106,6 +114,9 @@ final class ListeningPocketsService {
         /// this, clearing `sent` would make the next flush re-send the whole 90-day window. Survives
         /// every reset except account deletion (`clearLocal`).
         var uploadFloorMs: Double?
+        /// Round UUID string → the round fingerprint the server acknowledged (the events idea:
+        /// a round whose feedback / rating changed after its first upload re-sends).
+        var sentRounds: [String: String] = [:]
 
         init() {}
         init(from decoder: Decoder) throws {
@@ -115,6 +126,7 @@ final class ListeningPocketsService {
             sent = (try? c.decode([String: String].self, forKey: .sent)) ?? [:]
             lastResultsGeneratedAtMs = (try? c.decodeIfPresent(Double.self, forKey: .lastResultsGeneratedAtMs)) ?? nil
             uploadFloorMs = (try? c.decodeIfPresent(Double.self, forKey: .uploadFloorMs)) ?? nil
+            sentRounds = (try? c.decode([String: String].self, forKey: .sentRounds)) ?? [:]
         }
     }
 
@@ -301,7 +313,8 @@ final class ListeningPocketsService {
             let fp = Self.fingerprint(wire)
             if sync.sent[wire.id] != fp { pending.append((wire, fp)) }
         }
-        guard !pending.isEmpty else { return false }
+        // Rounds ride the same flush, AFTER the plays (a round's songs are plays too).
+        guard !pending.isEmpty else { return await uploadRounds(creds: creds, epoch: epoch) }
 
         let places: [ListeningPocketsPlaceWire]?
         let trips: [ListeningPocketsTripWire]?
@@ -352,6 +365,42 @@ final class ListeningPocketsService {
             serviceAvailable = true
             syncError = nil
             lastSentAtMs = nowMs
+        }
+        let roundsSent = await uploadRounds(creds: creds, epoch: epoch)
+        return sentAny || roundsSent
+    }
+
+    /// Upload every finished "In the Pocket" round whose fingerprint moved, in ≤ 50 batches.
+    /// Acknowledged ONLY on 2xx; ANY failure — a 404 from a backend without `/pockets/rounds`
+    /// above all — leaves the rest queued for the next flush, silently (the events path owns the
+    /// user-visible sync error). Rounds before the "Delete cloud data" floor never upload again.
+    private func uploadRounds(creds: (key: String, profileId: String), epoch: Int) async -> Bool {
+        guard let roundsProvider else { return false }
+        let floorMs = max(nowMs - Self.windowDays * 86_400_000, sync.uploadFloorMs ?? 0)
+        let wires = roundsProvider(history.installId).filter { Double($0.startedAtMs) >= floorMs }
+        let ids = Set(wires.map(\.id))
+        let pruned = sync.sentRounds.filter { ids.contains($0.key) }
+        if pruned.count != sync.sentRounds.count { sync.sentRounds = pruned; persistSync() }
+        var pending = wires.filter { sync.sentRounds[$0.id] != $0.fingerprint }
+        var sentAny = false
+        while !pending.isEmpty {
+            let slice = Array(pending.prefix(Self.roundsBatchCap))
+            let batch = InThePocketRoundsBatch(deviceId: deviceIdProvider(), installId: history.installId,
+                                               sentAtMs: Int64(nowMs), rounds: slice)
+            do {
+                _ = try await client.postRounds(batch, key: creds.key, profileId: creds.profileId)
+            } catch ListeningPocketsClient.ClientError.notFound {
+                if epoch == flushEpoch { roundsServiceAvailable = false }
+                return sentAny
+            } catch {
+                return sentAny
+            }
+            guard epoch == flushEpoch else { return sentAny }
+            for w in slice { sync.sentRounds[w.id] = w.fingerprint }
+            persistSync()
+            pending.removeFirst(slice.count)
+            sentAny = true
+            roundsServiceAvailable = true
         }
         return sentAny
     }
@@ -539,6 +588,8 @@ final class ListeningPocketsService {
     var acknowledgedFingerprints: [String: String] { sync.sent }
     /// Plays before this never upload (set by "Delete cloud data"; tests).
     var uploadFloorMs: Double? { sync.uploadFloorMs }
+    /// Round fingerprints acknowledged so far (tests + the game's "uploaded" tick).
+    var acknowledgedRounds: [String: String] { sync.sentRounds }
 
     private func persistSync() {
         if let data = try? JSONEncoder().encode(sync) { try? data.write(to: syncFileURL, options: .atomic) }

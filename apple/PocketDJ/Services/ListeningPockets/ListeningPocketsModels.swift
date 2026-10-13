@@ -133,6 +133,9 @@ struct ListeningPocketsResults: Decodable, Equatable {
     var labels: Labels?
     var pockets: [ListeningPocket]
     var patterns: [ListeningPocketPattern]
+    /// "In the Pocket" round labels folded into per-context target multipliers (`rounds` on the
+    /// wire, present only once the profile has played the game). See `learnFromRounds`.
+    var roundLearning: ListeningPocketsRoundLearning? = nil
 
     struct Baseline: Decodable, Equatable {
         var plays: Int?
@@ -176,6 +179,7 @@ struct ListeningPocketsResults: Decodable, Equatable {
         labels = (try? c.decodeIfPresent(Labels.self, forKey: LPKey("labels"))) ?? nil
         pockets = c.lpArray(ListeningPocket.self, "pockets")
         patterns = c.lpArray(ListeningPocketPattern.self, "patterns")
+        roundLearning = (try? c.decodeIfPresent(ListeningPocketsRoundLearning.self, forKey: LPKey("rounds"))) ?? nil
     }
 
     /// Server-side label for a place/trip id (the uploaded snapshot), if it has one.
@@ -419,6 +423,73 @@ struct ListeningPocketPattern: Decodable, Equatable, Hashable, Identifiable {
     }
 
     var songIds: [String] { topSongs.map(\.songId) }
+}
+
+/// The `rounds` section of results: how "In the Pocket" rounds have gone, and per context which
+/// scorer targets predicted well (multiplier > 1) or badly (< 1). Lenient like everything here.
+struct ListeningPocketsRoundLearning: Decodable, Equatable {
+    var total: Int
+    var pocket: Int
+    var broke: Int
+    var abandoned: Int
+    var pocketRate: Double?
+    var contexts: [Context]
+
+    struct Context: Decodable, Equatable {
+        /// `dayType|timeBucket|*` or `dayType|timeBucket|place:<id>` / `trip:<id>`.
+        var key: String
+        var rounds: Int
+        var weights: [Weight]
+        init(key: String, rounds: Int, weights: [Weight]) {
+            self.key = key; self.rounds = rounds; self.weights = weights
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: LPKey.self)
+            guard let key = c.lpString("key") else {
+                throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "context without key"))
+            }
+            self.key = key
+            rounds = c.lpInt("rounds") ?? 0
+            weights = c.lpArray(Weight.self, "weights")
+        }
+    }
+
+    struct Weight: Decodable, Equatable {
+        var dim: String
+        var value: String
+        var pos: Int
+        var neg: Int
+        var multiplier: Double
+        init(dim: String, value: String, pos: Int, neg: Int, multiplier: Double) {
+            self.dim = dim; self.value = value; self.pos = pos; self.neg = neg; self.multiplier = multiplier
+        }
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: LPKey.self)
+            guard let dim = c.lpString("dim"), let value = c.lpString("value"),
+                  let m = c.lpDouble("multiplier") else {
+                throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "weight without dim/value/multiplier"))
+            }
+            self.dim = dim; self.value = value; multiplier = m
+            pos = c.lpInt("pos") ?? 0
+            neg = c.lpInt("neg") ?? 0
+        }
+    }
+
+    init(total: Int = 0, pocket: Int = 0, broke: Int = 0, abandoned: Int = 0,
+         pocketRate: Double? = nil, contexts: [Context]) {
+        self.total = total; self.pocket = pocket; self.broke = broke; self.abandoned = abandoned
+        self.pocketRate = pocketRate; self.contexts = contexts
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: LPKey.self)
+        total = c.lpInt("total") ?? 0
+        pocket = c.lpInt("pocket") ?? 0
+        broke = c.lpInt("broke") ?? 0
+        abandoned = c.lpInt("abandoned") ?? 0
+        pocketRate = c.lpDouble("pocketRate")
+        contexts = c.lpArray(Context.self, "contexts")
+    }
 }
 
 // MARK: - Lenient decoding helpers (file-private)

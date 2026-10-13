@@ -259,6 +259,28 @@ final class ListeningPlaceEngineTests: XCTestCase {
         XCTAssertEqual(e.label(for: loop, now: at(30)), "A ↺")
     }
 
+    /// The In the Pocket context GUESS: inside a stay → that place (even though `lookup` would
+    /// still say `.pending`); just left → the trip most often taken from there; long gone → nil.
+    func testCurrentGuessForPrediction() {
+        var e = engine(); let ids = IdGen()
+        commute(&e, ids)                                 // A→B twice
+        let a = placeId(e, at: 1, now: 60)!, b = placeId(e, at: 9, now: 60)!
+        stay(&e, A, 50, nil, ids: ids, now: 51)          // back at A, still there
+        XCTAssertEqual(e.currentGuess(now: at(51)), .place(a))
+        if case .settled = e.lookup(at: at(51), now: at(51)) { XCTFail("lookup must not settle this recent") }
+
+        var left = engine(); let ids2 = IdGen()
+        commute(&left, ids2)
+        stay(&left, A, 50, 56, ids: ids2)                // left A at 56, not arrived anywhere yet
+        let guess = left.currentGuess(now: at(56.3))
+        XCTAssertEqual(guess?.isTrip, true)
+        XCTAssertEqual(guess?.origin, placeId(left, at: 1, now: 60))
+        XCTAssertEqual(guess?.destination, placeId(left, at: 9, now: 60), "predicted: where A usually leads")
+        XCTAssertNotNil(b)
+        XCTAssertNil(left.currentGuess(now: at(70)), "four hours after leaving there is no guess")
+        XCTAssertNil(ListeningPlaceEngine().currentGuess(now: at(1)), "not tracking → nothing")
+    }
+
     func testGapOverFourHoursIsNotATrip() {
         var e = engine(); let ids = IdGen()
         stay(&e, A, 0, 8, ids: ids)

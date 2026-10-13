@@ -14,7 +14,7 @@
 // every list is sorted with a full tie-break, so a re-run never reshuffles ids, features or titles.
 
 import { createHash } from 'node:crypto';
-import { POCKET_PARAMS } from './params.mjs';
+import { POCKET_PARAMS, ROUND_PARAMS } from './params.mjs';
 import { detect } from './detect.mjs';
 import { resolveSong } from './features.mjs';
 
@@ -388,6 +388,90 @@ export function clusterPatterns(internal, baseline, labels, params = POCKET_PARA
   return patterns;
 }
 
+// ── "In the Pocket" rounds → labels ─────────────────────────────────────────────────────────────
+
+/// A round's label: +1 stayed in the pocket, −1 broke early (song ≤ `earlySkipMaxSong`), 0 otherwise
+/// (a late break or an abandoned round says little about the prediction).
+export function roundLabel(r, rp = ROUND_PARAMS) {
+  if (r?.outcome === 'pocket') return 1;
+  if (r?.outcome === 'broke' && Number.isInteger(r.brokeAt) && r.brokeAt <= rp.earlySkipMaxSong) return -1;
+  return 0;
+}
+
+/// The context keys a round credits: always the relaxed `dayType|timeBucket|*`, plus the exact
+/// `dayType|timeBucket|place:<id>` / `trip:<id>` when it was played somewhere known. A round with no
+/// time context credits nothing (it cannot be matched to a future round's context).
+export function roundContextKeys(r) {
+  const c = r?.context;
+  if (!c?.dayType || !c?.timeBucket) return [];
+  const keys = [`${c.dayType}|${c.timeBucket}|*`];
+  const ctxKey = ctxKeyOf(c.ctx);
+  if (ctxKey !== '-') keys.push(`${c.dayType}|${c.timeBucket}|${ctxKey}`);
+  return keys;
+}
+
+/// Laplace-smoothed positive rate, doubled so "no evidence" is exactly 1.0, clamped.
+export function roundMultiplier(pos, neg, rp = ROUND_PARAMS) {
+  const s = rp.smoothing;
+  const m = (2 * (pos + s)) / (pos + neg + 2 * s);
+  return round(Math.min(rp.maxMultiplier, Math.max(rp.minMultiplier, m)), 3);
+}
+
+/**
+ * Stored rounds → the `rounds` section of a results document: overall counts, and per context the
+ * scorer targets that predicted well (multiplier > 1) or badly (< 1). The app multiplies its own
+ * target weights by these when it builds the next round in a matching context (exact key first,
+ * then the relaxed one). Pure + deterministic: contexts and weights are sorted with full tie-breaks.
+ */
+export function learnFromRounds(rounds, { nowMs = Date.now(), params = POCKET_PARAMS, rp = ROUND_PARAMS } = {}) {
+  const from = nowMs - params.resultsDays * DAY_MS;
+  const list = (Array.isArray(rounds) ? rounds : []).filter((r) => r && Number.isFinite(r.startedAtMs) && r.startedAtMs >= from);
+  const counts = { pocket: 0, broke: 0, abandoned: 0 };
+  let positives = 0; let negatives = 0;
+  const ctxs = new Map();
+  for (const r of list) {
+    if (r.outcome in counts) counts[r.outcome] += 1;
+    const label = roundLabel(r, rp);
+    if (label > 0) positives += 1; else if (label < 0) negatives += 1;
+    for (const key of roundContextKeys(r)) {
+      if (!ctxs.has(key)) {
+        const [dayType, timeBucket] = key.split('|');
+        ctxs.set(key, { key, dayType, timeBucket, ctx: key.endsWith('|*') ? null : r.context.ctx,
+          rounds: 0, positives: 0, negatives: 0, weights: new Map() });
+      }
+      const g = ctxs.get(key);
+      g.rounds += 1;
+      if (label > 0) g.positives += 1; else if (label < 0) g.negatives += 1;
+      if (label === 0) continue;
+      const seen = new Set();
+      for (const t of r.targets || []) {
+        const wk = `${t.dim}\u0000${t.value}`;
+        if (seen.has(wk)) continue;
+        seen.add(wk);
+        if (!g.weights.has(wk)) g.weights.set(wk, { dim: t.dim, value: t.value, pos: 0, neg: 0 });
+        const w = g.weights.get(wk);
+        if (label > 0) w.pos += 1; else w.neg += 1;
+      }
+    }
+  }
+  const decided = counts.pocket + counts.broke;
+  const contexts = [...ctxs.values()].map((g) => ({
+    key: g.key, dayType: g.dayType, timeBucket: g.timeBucket, ctx: g.ctx,
+    rounds: g.rounds, positives: g.positives, negatives: g.negatives,
+    weights: [...g.weights.values()]
+      .map((w) => ({ ...w, multiplier: roundMultiplier(w.pos, w.neg, rp) }))
+      .sort((a, b) => (b.pos + b.neg) - (a.pos + a.neg) || Math.abs(b.multiplier - 1) - Math.abs(a.multiplier - 1)
+        || (a.dim < b.dim ? -1 : a.dim > b.dim ? 1 : 0) || (a.value < b.value ? -1 : a.value > b.value ? 1 : 0))
+      .slice(0, rp.maxWeightsPerContext),
+  })).sort((a, b) => b.rounds - a.rounds || (a.key < b.key ? -1 : 1)).slice(0, rp.maxContexts);
+  return {
+    v: 1, params: JSON.parse(JSON.stringify(rp)),
+    total: list.length, ...counts, positives, negatives,
+    pocketRate: decided ? round(counts.pocket / decided, 3) : null,
+    contexts,
+  };
+}
+
 // ── The whole job ───────────────────────────────────────────────────────────────────────────────
 
 /// The params block a results document echoes (`algo.params`): the full knob set.
@@ -475,10 +559,16 @@ export function computeResults(eventsDoc, features, { nowMs = Date.now(), params
   internal.sort((a, b) => b.startMs - a.startMs || (a.id < b.id ? -1 : 1));
   const out = internal.slice(0, params.maxPockets).map(({ _members, ...rest }) => rest);
 
-  return {
+  const doc = {
     v: 1, generatedAtMs: nowMs, stale: false, algo: algoOf(params),
     baseline: { plays: baseline.N, windowDays: params.baselineDays, thin: baseline.thin },
     labels: { places: placesSnap, trips: tripsSnap },
     pockets: out, patterns,
   };
+  // "In the Pocket" labels — only when the profile has played the game, so a profile that never
+  // has computes exactly the document it always did.
+  if (Array.isArray(eventsDoc?.rounds) && eventsDoc.rounds.length) {
+    doc.rounds = learnFromRounds(eventsDoc.rounds, { nowMs, params });
+  }
+  return doc;
 }

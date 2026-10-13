@@ -141,6 +141,8 @@ Our servers use this to find your pockets and describe what they have in common,
 
 **Places and trips, if you turn them on.** On iPhone, a separate setting, **Use places & trips in pockets**, is off by default and needs pockets to be on. It uses iOS visit reports to learn, on your device, which of your places you were at during a play or that you were travelling between two of them. Your places are numbered by how much time you spend at each (Location A, Location B, …) and are never identified as home, work, or an address. What is uploaded is the anonymous label for each play (a random place id, or a random trip id with its starting and ending place ids) and a summary of your places and trips: each place's "Location A"-style name and the share of your time spent there (for example 62%), and each trip's name (such as "A → B") and how many times you have made it. **Your raw location never leaves your device.** Raw visit data is deleted from the device after 30 days, and turning the setting off erases all place data from the device.
 
+**The "In the Pocket" game.** The game needs listening pockets on (it offers the same switch, and never turns it on for you). Each round, PocketDJ picks three or four songs it predicts you will play straight through, using the time of day, weekday or weekend, and — only if places & trips is on — the anonymous label of the place or trip you are probably at. When a round ends, PocketDJ uploads it with your pockets data, as an example the analysis learns from: when it started (rounded down to the minute) and your time-zone offset, that context (time-of-day bucket, day of the week, and the anonymous place or trip id if any), the songs, what the prediction was based on (for example a genre or a tempo range), whether each song was played through or skipped, and — only if you give them — your 1–5 rating and the feedback you write (up to 2,000 characters). **If you dictate feedback with the microphone button, the speech is turned into text on your device; the audio is never uploaded or kept, and only the text in the field is sent.** You can edit the feedback after the round; the edited text replaces the earlier copy. Rounds are kept on the device too, and are erased from our servers by **Delete cloud data** like the rest of your pockets data.
+
 **Turning things off.** Turning the engine or pockets off stops all uploads, and also turns places & trips off and erases your places from the device. Data already uploaded stays on our servers until you choose **Delete cloud data** ([§13](#13-deleting-your-data-and-your-account)), so that turning a switch off and on again doesn't erase your history. After **Delete cloud data**, plays from before the deletion are never uploaded for listening pockets again; only plays after it are.
 
 <!-- #TOUPDATE: OPEN DECISION (Levi) — the App Store privacy label and PrivacyInfo.xcprivacy. Opaque place/trip ids derived from location are arguably "Coarse Location, linked, App Functionality, not tracking". The manifest was deliberately NOT changed in this pass; decide, then update the manifest, Appendix B, and §10/§12.1 together. -->
@@ -201,10 +203,11 @@ Metadata in the public catalog was assembled with help from public sources inclu
 
 ## 7. Microphone
 
-PocketDJ asks for microphone access for exactly two things:
+PocketDJ asks for microphone access for exactly three things:
 
 1. **Recording samples and takes in Studio.** These stay on your device ([§3](#3-what-stays-on-your-device)) unless you choose to separate one into stems, which uploads that recording.
 2. **Song recognition.** ShazamKit takes over the microphone, derives a signature, and sends only the signature ([§5.3](#53-song-recognition-shazamkit)).
+3. **Dictating feedback in "In the Pocket".** Only from the moment you tap the feedback field's microphone button until you tap it again. Apple Speech turns it into text **on your device** — PocketDJ requires on-device recognition and shows no microphone button where the device can't do it locally — and the audio is neither stored nor sent anywhere. The resulting text is uploaded only as the round's feedback ([§4.6](#46-listening-history-recommendations-and-listening-pockets)).
 
 PocketDJ does not listen in the background, does not record without an explicit action from you, and has no ambient-listening feature.
 

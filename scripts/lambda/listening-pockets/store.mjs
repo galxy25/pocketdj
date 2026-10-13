@@ -2,6 +2,7 @@
 // `pockets/` prefix (the function's IAM role reaches nothing else):
 //
 //   pockets/events/<sha256(profileId)>.json   the stored play rows + TOFU keyHash + dirty flag
+//                                             (+ `rounds`: "In the Pocket" game rounds, once any arrive)
 //   pockets/results/<sha256(profileId)>.json  the last results.v1 document
 //
 // S3 with ETag-conditional puts, or the local filesystem when POCKETS_LOCAL_DIR is set (tests and
@@ -14,7 +15,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { POCKET_LIMITS } from './params.mjs';
+import { POCKET_LIMITS, POCKET_PARAMS } from './params.mjs';
 
 const REGION = process.env.AWS_REGION || 'us-west-2';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -292,4 +293,136 @@ export function applyRetention(doc, nowMs = Date.now()) {
     doc.events.splice(0, Math.max(1, Math.ceil(doc.events.length / 8)));
   }
   return before - doc.events.length;
+}
+
+// ── "In the Pocket" rounds ──────────────────────────────────────────────────────────────────────
+// A round is the game's PREDICTION (3–4 songs the scorer expected to play through without a skip,
+// in a stated context, from stated targets) plus what actually happened and the player's optional
+// rating / free-text feedback. Rounds live in the SAME events document (`doc.rounds`) as the plays,
+// so they share its TOFU key binding, its dirty/rev bookkeeping (a new round recomputes), its
+// retention, and `DELETE /state`. The array is only created when the first round arrives — a
+// profile that never played keeps the exact document shape it had before the game existed.
+
+const ROUND_OUTCOMES = new Set(['pocket', 'broke', 'abandoned']);
+const SONG_OUTCOMES = new Set(['completed', 'skipped', 'partial', 'unknown', 'notPlayed']);
+const ROUND_MODES = new Set(['cloud', 'history', 'cold']);
+const DAY_TYPES = new Set(['weekday', 'weekend']);
+const TARGET_DIMS = new Set(['artist', 'genre', 'mood', 'camelot', 'bpm', 'energy', 'year',
+  'timeBucket', 'dayType', 'dow', 'source', 'place', 'trip', 'carPlay', 'song']);
+
+/// Free text, capped in UTF-16 code units (never splitting a surrogate pair), control characters
+/// other than newline/tab stripped. Empty after trimming → null.
+export function capText(v, max = POCKET_LIMITS.maxFeedbackChars) {
+  if (typeof v !== 'string') return null;
+  // eslint-disable-next-line no-control-regex
+  let s = v.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim();
+  if (s.length > max) {
+    s = s.slice(0, max);
+    const last = s.charCodeAt(s.length - 1);
+    if (last >= 0xd800 && last <= 0xdbff) s = s.slice(0, -1);
+  }
+  return s === '' ? null : s;
+}
+
+const finiteOr = (x, d = null) => (Number.isFinite(x) ? x : d);
+const minuteFloor = (ms) => Math.floor(ms / 60_000) * 60_000;
+
+/**
+ * One uploaded round → the stored row, or null (counted as `rejected`). Like `cleanEvent`, time is
+ * floored to the minute here whatever the client sent, every string is bounded, unknown tokens in
+ * optional fields degrade instead of rejecting the round — but a round with no songs, no id, or an
+ * outcome this build does not know is not a label and is rejected.
+ */
+export function cleanRound(r, uploaderInstallId, nowMs = Date.now()) {
+  if (!r || typeof r !== 'object') return null;
+  if (typeof r.id !== 'string' || !UUID_RE.test(r.id)) return null;
+  if (!ROUND_OUTCOMES.has(r.outcome)) return null;
+  if (!Number.isFinite(r.startedAtMs) || r.startedAtMs <= 0) return null;
+  const startedAtMs = minuteFloor(r.startedAtMs);
+  if (startedAtMs > nowMs + POCKET_LIMITS.futureSkewMs) return null;
+  if (startedAtMs < nowMs - POCKET_LIMITS.retentionDays * DAY_MS) return null;
+  const songsIn = Array.isArray(r.songs) ? r.songs.slice(0, POCKET_LIMITS.maxRoundSongs) : [];
+  const songs = [];
+  for (const s of songsIn) {
+    if (!s || typeof s !== 'object') continue;
+    const songId = str(s.songId);
+    if (!songId) continue;
+    const fraction = Number.isFinite(s.fraction) ? Math.round(Math.min(1, Math.max(0, s.fraction)) * 1000) / 1000 : null;
+    songs.push({
+      songId, artist: str(s.artist),
+      score: Number.isFinite(s.score) ? Math.round(s.score * 1000) / 1000 : null,
+      outcome: SONG_OUTCOMES.has(s.outcome) ? s.outcome : 'unknown',
+      fraction,
+    });
+  }
+  if (songs.length === 0) return null;
+  const c = r.context && typeof r.context === 'object' ? r.context : {};
+  const bucketNames = new Set(POCKET_PARAMS.timeBuckets.map((b) => b[0]));
+  const context = {
+    timeBucket: bucketNames.has(c.timeBucket) ? c.timeBucket : null,
+    dayType: DAY_TYPES.has(c.dayType) ? c.dayType : null,
+    dow: Number.isInteger(c.dow) && c.dow >= 0 && c.dow <= 6 ? c.dow : null,
+    ctx: cleanCtx(c.ctx),
+  };
+  const targets = (Array.isArray(r.targets) ? r.targets : []).slice(0, POCKET_LIMITS.maxRoundTargets)
+    .filter((t) => t && TARGET_DIMS.has(t.dim) && str(t.value, 64))
+    .map((t) => ({ dim: t.dim, value: str(t.value, 64),
+      weight: Number.isFinite(t.weight) ? Math.round(t.weight * 1000) / 1000 : null }));
+  const brokeAt = r.outcome === 'broke' && Number.isInteger(r.brokeAt) && r.brokeAt >= 1 && r.brokeAt <= songs.length
+    ? r.brokeAt : null;
+  if (r.outcome === 'broke' && brokeAt == null) return null;   // a break with no position is not a label
+  const ended = Number.isFinite(r.endedAtMs) && r.endedAtMs >= startedAtMs ? minuteFloor(r.endedAtMs) : null;
+  return {
+    id: r.id.toUpperCase(),
+    installId: typeof r.originInstallId === 'string' && INSTALL_RE.test(r.originInstallId) ? r.originInstallId : uploaderInstallId,
+    startedAtMs, endedAtMs: ended,
+    updatedAtMs: Math.min(finiteOr(r.updatedAtMs, startedAtMs), nowMs + POCKET_LIMITS.futureSkewMs),
+    tzOffsetMin: Number.isInteger(r.tzOffsetMin) && Math.abs(r.tzOffsetMin) <= 840 ? r.tzOffsetMin : null,
+    context,
+    mode: ROUND_MODES.has(r.mode) ? r.mode : null,
+    seed: str(r.seed, 32),
+    algoVersion: Number.isInteger(r.algoVersion) ? r.algoVersion : null,
+    targets,
+    songs,
+    outcome: r.outcome,
+    brokeAt,
+    rating: Number.isInteger(r.rating) && r.rating >= 1 && r.rating <= 5 ? r.rating : null,
+    feedback: capText(r.feedback),
+    appVersion: str(r.appVersion, 32),
+  };
+}
+
+/**
+ * Fold cleaned rounds into a document, PER ROUND ID. A round is mutable on the device (feedback and
+ * a rating can be added after it ends), so the row with the newer `updatedAtMs` REPLACES the stored
+ * one whole; an equal-or-older re-send changes nothing. Then retention (`retentionDays`) and the
+ * `maxStoredRounds` cap, oldest first. Returns the counts the POST answers with.
+ */
+export function mergeRounds(doc, rows, nowMs = Date.now()) {
+  if (!Array.isArray(doc.rounds)) doc.rounds = [];
+  const byId = new Map(doc.rounds.map((r, i) => [r.id, i]));
+  let accepted = 0; let updated = 0; let unchanged = 0;
+  for (const r of rows) {
+    const i = byId.get(r.id);
+    if (i === undefined) {
+      byId.set(r.id, doc.rounds.length);
+      doc.rounds.push(r);
+      accepted += 1;
+      continue;
+    }
+    const cur = doc.rounds[i];
+    if ((r.updatedAtMs ?? 0) > (cur.updatedAtMs ?? 0) && JSON.stringify({ ...r, updatedAtMs: 0 }) !== JSON.stringify({ ...cur, updatedAtMs: 0 })) {
+      doc.rounds[i] = r;
+      updated += 1;
+    } else {
+      unchanged += 1;
+    }
+  }
+  const before = doc.rounds.length;
+  const from = nowMs - POCKET_LIMITS.retentionDays * DAY_MS;
+  doc.rounds = doc.rounds.filter((r) => r.startedAtMs >= from)
+    .sort((a, b) => a.startedAtMs - b.startedAtMs || (a.id < b.id ? -1 : 1));
+  if (doc.rounds.length > POCKET_LIMITS.maxStoredRounds) doc.rounds.splice(0, doc.rounds.length - POCKET_LIMITS.maxStoredRounds);
+  const evicted = before - doc.rounds.length;
+  return { accepted, updated, unchanged, evicted, changed: accepted + updated + evicted > 0 };
 }

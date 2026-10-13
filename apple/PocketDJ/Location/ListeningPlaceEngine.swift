@@ -244,6 +244,33 @@ struct ListeningPlaceEngine: Codable {
         return unresolved
     }
 
+    // MARK: - Current context (a GUESS, for prediction — never stamped onto a play)
+
+    /// Best guess at the context RIGHT NOW, for the "In the Pocket" game's round builder — not
+    /// `lookup`, which deliberately answers `.pending` for anything this recent (settling is
+    /// write-once, so it must wait for back-dated CLVisits). A guess is free to be wrong: it only
+    /// picks which pocket profile to aim at, and it is never written onto a play.
+    ///   · inside a stay that has not reported a departure → that place;
+    ///   · departed within `maxTripDuration` and not arrived anywhere → a trip from that place,
+    ///     its destination predicted as the one most often reached from there (ties → id order),
+    ///     else the "Leaving A" trip; nil when neither trip id exists yet;
+    ///   · anything else (no tracking, long gone, nothing known) → nil.
+    func currentGuess(now: Date) -> ListeningContextTag? {
+        guard trackingStartedAt != nil, let seg = timeline.last, seg.start <= now else { return nil }
+        guard let end = seg.end, end <= now else { return .place(seg.placeId) }
+        guard now.timeIntervalSince(end) <= params.maxTripDuration else { return nil }
+        let prefix = seg.placeId + ">"
+        let best = tripOccurrences(now: now)
+            .filter { $0.key.hasPrefix(prefix) && !$0.key.hasSuffix(">?") }
+            .sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+            .first
+        if let best {
+            let (o, d) = Self.splitKey(best.key)
+            if let tag = tripTag(origin: o, destination: d) { return tag }
+        }
+        return tripTag(origin: seg.placeId, destination: nil)
+    }
+
     // MARK: - Labels
 
     /// Places ranked by share of dwell time over the rank window, only those with at least

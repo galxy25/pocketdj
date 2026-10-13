@@ -8,6 +8,7 @@ struct GamesView: View {
     @Environment(GameScoreboardStore.self) private var gameScores
     @Environment(MusicWithFriendsStore.self) private var friends
     @Environment(CollectorsPuzzleEngine.self) private var puzzle
+    @Environment(InThePocketStore.self) private var inThePocket
     @Environment(SettingsStore.self) private var settings
     @Environment(ProfileStore.self) private var profile
 
@@ -55,6 +56,9 @@ struct GamesView: View {
         List {
             Section {
                 puzzleCard
+            }
+            Section {
+                inThePocketCard
             }
             Section {
                 friendsCard
@@ -143,6 +147,51 @@ struct GamesView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("games-card-puzzle")
+    }
+
+    private var inThePocketCard: some View {
+        let stats = gameScores.inThePocketStats()
+        return Button {
+            path.append(InThePocketRoute())
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "waveform.path")
+                    .font(.title2)
+                    .foregroundStyle(Theme.accent)
+                    .frame(width: 36)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text(GameKind.inThePocket.label).font(.headline).foregroundStyle(Theme.fg)
+                        if inThePocket.activeRound != nil {
+                            Text("Round in progress")
+                                .font(.caption2.weight(.semibold))
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Theme.accent.opacity(0.2), in: Capsule())
+                                .foregroundStyle(Theme.accent)
+                        }
+                    }
+                    Text("3–4 songs picked for right now. Play them all without skipping.")
+                        .font(.subheadline).foregroundStyle(Theme.fgDim)
+                    Text(Self.inThePocketSummary(stats))
+                        .font(.caption).foregroundStyle(Theme.accent)
+                        .accessibilityIdentifier("games-stats-inThePocket")
+                }
+                Spacer()
+                Image(systemName: "chevron.right").foregroundStyle(Theme.fgDim)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("games-card-inthepocket")
+    }
+
+    /// "12 rounds · 58% in the pocket · best streak 3".
+    static func inThePocketSummary(_ s: GameScoreboardStore.InThePocketStats) -> String {
+        guard s.rounds > 0 else { return "No rounds yet" }
+        var parts = ["\(s.rounds) round\(s.rounds == 1 ? "" : "s")"]
+        if let r = s.pocketRate { parts.append("\(Int((r * 100).rounded()))% in the pocket") }
+        parts.append("best streak \(s.bestStreak)")
+        return parts.joined(separator: " · ")
     }
 
     private var puzzleInProgress: Bool {

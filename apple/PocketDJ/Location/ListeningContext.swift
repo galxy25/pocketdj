@@ -119,6 +119,14 @@ protocol ListeningContextProviding: AnyObject {
     /// "Location A" / "A → B" / "Leaving A" / "A ↺"; nil for kind none or an id this device no
     /// longer knows (pruned/erased → the UI says "Earlier place").
     func label(for tag: ListeningContextTag) -> String?
+    /// Best GUESS at where the user is right now (a place, or a trip with its likely
+    /// destination) — for prediction only ("In the Pocket" round building), never stamped onto
+    /// a play. nil when inactive or unknown. Defaulted below so stubs need not implement it.
+    func currentContextGuess() -> ListeningContextTag?
+}
+
+extension ListeningContextProviding {
+    func currentContextGuess() -> ListeningContextTag? { nil }
 }
 
 /// The provider for platforms/tests with no location: always `.unavailable`.
