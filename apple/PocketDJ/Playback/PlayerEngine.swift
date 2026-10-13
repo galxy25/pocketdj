@@ -89,8 +89,24 @@ final class PlayerEngine {
     /// Resume / pause the streaming player (driven by the remote play/pause commands).
     private var externalPlay: (() -> Void)?
     private var externalPause: (() -> Void)?
+    /// The streaming source's playback speed for the card (the Now Playing DSP's tempo); nil ⇒ 1×.
+    private var externalRate: (() -> Double)?
     /// ~1 Hz ticker that refreshes the card's elapsed time + play state while external.
     @ObservationIgnored private var externalTicker: Task<Void, Never>?
+
+    // MARK: Card timeline (song-relative) + stall state
+    //
+    // An analog album rip is ONE shared mp3 with per-song offsets, and the AVPlayer clock is
+    // absolute-in-file. The system card must show the SONG's own timeline — elapsed from the
+    // song's start and the song's length — or CarPlay draws a cursor crawling across a
+    // 45-minute album bar (reads as "not moving"), which then keeps going into the next song.
+    /// The current song's start inside the loaded file (seconds); 0 for per-song files.
+    @ObservationIgnored private var cardOffsetSec: Double = 0
+    /// True while AVPlayer WANTS to play but is waiting for data (`timeControlStatus ==
+    /// .waitingToPlayAtSpecifiedRate`): `rate` is already non-zero then, but the audio isn't
+    /// moving — the card must publish rate 0 or the cursor runs ahead and snaps back.
+    @ObservationIgnored private var isStalled = false
+    private var timeControlObservation: NSKeyValueObservation?
 
     /// Fired when the CURRENT item plays to its natural end (finite mp3 / burnt-local file).
     /// The setlist sequencer (Feature 3) owns this to auto-advance; nil means no consumer.
@@ -197,6 +213,15 @@ final class PlayerEngine {
                 }
             }
         }
+        timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
+            Task { @MainActor in
+                guard let self, !self.externalActive else { return }
+                let stalled = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                guard stalled != self.isStalled else { return }
+                self.isStalled = stalled
+                self.updateNowPlayingInfo()   // stall ⇒ rate 0; playing again ⇒ rate 1 at the real position
+            }
+        }
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] player, _ in
             Task { @MainActor in
                 guard let self else { return }
@@ -241,6 +266,8 @@ final class PlayerEngine {
         nowPlayingTitle = title
         nowPlayingArtist = artist
         nowPlayingSongId = songId
+        cardOffsetSec = live ? 0 : max(0, Double(songStartMs ?? 0) / 1000)
+        isStalled = false
         refreshArtwork(for: songId)   // async: fetches the cover, then re-pushes the card
 
         let item = AVPlayerItem(url: url)
@@ -281,7 +308,11 @@ final class PlayerEngine {
 
     func play() {
         // External mode: resume the streaming player, not our idle AVPlayer.
-        if externalActive { NPLog.trace("engine.play → external stream"); externalPlay?(); isPlaying = true; updateNowPlayingInfo(); return }
+        if externalActive {
+            NPLog.trace("engine.play → external stream"); externalPlay?(); isPlaying = true
+            clock.currentTime = externalPosition?() ?? clock.currentTime   // resume FROM the live position
+            updateNowPlayingInfo(); return
+        }
         // IDLE GUARD: no item and not external ⇒ there is NO audio for this engine to start.
         // A blind play() here used to re-claim the arbiter and re-write the Now Playing card
         // with the PREVIOUS track's stale title (the macOS "ghost second card" bug) and flip
@@ -293,7 +324,11 @@ final class PlayerEngine {
         player.play(); isPlaying = true; updateNowPlayingInfo()
     }
     func pause() {
-        if externalActive { NPLog.trace("engine.pause → external stream"); externalPause?(); isPlaying = false; updateNowPlayingInfo(); return }
+        if externalActive {
+            NPLog.trace("engine.pause → external stream"); externalPause?(); isPlaying = false
+            clock.currentTime = externalPosition?() ?? clock.currentTime   // pin WHERE the audio stopped
+            updateNowPlayingInfo(); return
+        }
         guard player.currentItem != nil else { NPLog.trace("engine.pause REFUSED (idle)"); return }
         player.pause(); isPlaying = false; updateNowPlayingInfo()
     }
@@ -315,9 +350,11 @@ final class PlayerEngine {
     /// Arm/disarm the position-based end boundary for the CURRENTLY-loaded item WITHOUT
     /// reloading it — used when the setlist sequencer ADOPTS a track that another surface
     /// (a row ▶) just started, so the adopted track still auto-advances at its known length.
-    func setEndBoundary(ms: Int?) {
+    func setEndBoundary(ms: Int?, songStartMs: Int? = nil) {
         endBoundarySec = (isLive ? nil : ms).map { Double($0) / 1000 }
+        if let songStartMs, !isLive { cardOffsetSec = max(0, Double(songStartMs) / 1000) }
         trackEndSignaled = false
+        updateNowPlayingInfo()   // the card's song window changed
     }
 
     /// Evaluate the position boundary against `seconds`, signalling end ONCE if it's passed.
@@ -364,13 +401,19 @@ final class PlayerEngine {
         externalActive = true
         externalPosition = position
         externalIsPlaying = isPlaying
+        externalRate = rate
         externalPlay = play
         externalPause = pause
+        cardOffsetSec = 0
+        isStalled = false
 
-        clock.currentTime = 0
+        // Seed the card from the stream's LIVE state — never a hard-coded 0:00 / playing. A
+        // restored session resuming mid-song published 0:00 for the first second (field
+        // 2026-10-04: pos=0 then 207), and a DSP engaged while PAUSED published a running cursor.
+        clock.currentTime = position()
         clock.duration = durationSeconds
         duration = durationSeconds
-        self.isPlaying = true                         // `isPlaying` param shadows the property here
+        self.isPlaying = isPlaying()                  // `isPlaying` param shadows the property here
         nowPlayingTitle = title
         nowPlayingArtist = artist
         nowPlayingSongId = songId
@@ -401,6 +444,10 @@ final class PlayerEngine {
         clock.currentTime = externalPosition?() ?? clock.currentTime
         updateNowPlayingInfo()
     }
+
+    /// Re-publish the external card NOW from the live providers (e.g. right after the caller
+    /// started the external audio, instead of waiting up to a second for the ticker).
+    func refreshExternalNowPlaying() { if externalActive { externalTick() } }
 
     #if DEBUG
     /// Tests: run one external-ticker beat synchronously (the real ticker sleeps 1 s between beats).
@@ -443,6 +490,7 @@ final class PlayerEngine {
         guard externalActive else { return }
         externalActive = false
         externalPosition = nil; externalIsPlaying = nil; externalPlay = nil; externalPause = nil
+        externalRate = nil
         externalTicker?.cancel(); externalTicker = nil
     }
 
@@ -457,7 +505,7 @@ final class PlayerEngine {
     /// A scrub on the system card / CarPlay (`changePlaybackPositionCommand`): the card's
     /// timeline → this engine's clock.
     func seekFromCard(toCardSeconds seconds: Double) {
-        seek(to: seconds)
+        seek(to: seconds + cardOffsetSec)
     }
 
     /// Stop playback and release the current item (used when the player panel closes).
@@ -470,6 +518,7 @@ final class PlayerEngine {
         // — the setlist sequencer owns that hook across its own play()/stop() lifecycle.
         if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
         clock.currentTime = 0; clock.duration = 0; duration = 0; isPlaying = false; isLive = false
+        cardOffsetSec = 0; isStalled = false
         pendingSeekMs = nil
         endBoundarySec = nil; trackEndSignaled = false
         scopeRelease?(); scopeRelease = nil   // release the user-folder file's security scope
@@ -681,12 +730,22 @@ final class PlayerEngine {
         // Through the ONE card funnel (`NowPlayingCardPublisher`): it writes the dict AND the
         // explicit playbackState (CarPlay's Now Playing template + watchOS read it, not just the
         // dict's PlaybackRate), enforces the moving-cursor invariants, and traces (rate-limited).
+        // The SONG's timeline (see `cardOffsetSec`): elapsed from the song's start; duration =
+        // the armed end boundary (the song's own end inside a shared file), else the file's rest.
+        let cardDuration: Double? = {
+            guard !isLive else { return nil }
+            if let end = endBoundarySec, end > cardOffsetSec { return end - cardOffsetSec }
+            return duration > cardOffsetSec ? duration - cardOffsetSec : nil
+        }()
+        // Advancing = playing AND not stalled on the network; external rate = the source's tempo.
         NowPlayingCardPublisher.shared.publish(
             writer: externalActive ? "engine-ext" : "engine",
             title: nowPlayingTitle, artist: nowPlayingArtist,
-            elapsed: currentTime, duration: isLive ? nil : duration,
-            advancing: isPlaying, rate: 1, isLive: isLive, artwork: nowPlayingArtwork,
-            detail: "art=\(nowPlayingArtwork != nil)")
+            elapsed: currentTime - cardOffsetSec, duration: cardDuration,
+            advancing: isPlaying && !isStalled,
+            rate: externalActive ? (externalRate?() ?? 1) : 1,
+            isLive: isLive, artwork: nowPlayingArtwork,
+            detail: "art=\(nowPlayingArtwork != nil)\(isStalled ? " stalled" : "")\(cardOffsetSec > 0 ? " off=\(Int(cardOffsetSec))" : "")")
         // The lock-screen ♥ fill state — pushed on every card write (this method re-runs on each
         // load/play/pause/seek AND on a favorite change via refreshFavoriteState). Reads through
         // the injected closure; stays false when unwired (tests) or no current song.
@@ -755,6 +814,11 @@ final class PlayerEngine {
             NPLog.trace("engine card ANNOUNCE refused (arbiter owned elsewhere)")
             return
         }
+        // The OUTGOING stream's impersonation ends here: its ~1 Hz ticker would otherwise keep
+        // re-publishing the ENDED track's clock (and duration, paused) under THIS title while the
+        // next track resolves — field 2026-10-04 20:10:36 "Try It … pos=302 dur=301", for 20 s
+        // when the resolve was slow. The next hand-off (AM / local load) re-arms whatever it needs.
+        endExternalNowPlaying()
         nowPlayingTitle = title
         nowPlayingArtist = artist
         nowPlayingSongId = songId

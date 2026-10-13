@@ -914,11 +914,14 @@ final class SetlistPlayer {
             durationSeconds: it.lengthMs.map { Double($0) / 1000 } ?? dsp.duration,
             position: { [weak dsp] in dsp?.currentTime ?? 0 },
             isPlaying: { [weak dsp] in dsp?.isPlaying ?? false },
+            rate: { [weak dsp] in dsp?.rate ?? 1 },   // the card's cursor moves at the DSP's tempo
             play: { [weak dsp] in dsp?.resume() },
             pause: { [weak dsp] in dsp?.pause() })
         // 3) Only now that the AVPlayer is idle, start the DSP audio if we were playing — so exactly one
-        //    engine ever sounds during the swap.
+        //    engine ever sounds during the swap — and re-publish the card from the DSP's live state
+        //    at once (it was published paused a moment ago, before the DSP sounded).
         if wasPlaying { dsp.resume() }
+        player.refreshExternalNowPlaying()
         mixEngaged = true
         NPLog.trace("setlist ENGAGE mix → DSP id=\(it.id) at=\(Int(atSeconds))s playing=\(wasPlaying)")
         persistSession()
@@ -1079,7 +1082,8 @@ final class SetlistPlayer {
             // The EDITION ladder: a substituted row's burned file lives under the variant id,
             // a pre-edition burn under the base.
             if hasDeviceFile(queue[pos]) { loadedAnyDeviceTrack = true }
-            player.setEndBoundary(ms: sharedFileEndBoundaryMs(queue[pos], startMs: rips.nowPlaying?.startMs))
+            player.setEndBoundary(ms: sharedFileEndBoundaryMs(queue[pos], startMs: rips.nowPlaying?.startMs),
+                                  songStartMs: rips.nowPlaying?.startMs)
         }
     }
 
@@ -1415,7 +1419,8 @@ final class SetlistPlayer {
                 // END OF THE WHOLE FILE — arm the per-song length boundary to advance at this
                 // track's own end. A digital cloud rip is per-song (startMs nil → no boundary,
                 // the natural end governs). `nowPlaying.startMs` is what the rip path resolved.
-                player.setEndBoundary(ms: sharedFileEndBoundaryMs(it, startMs: rips.nowPlaying?.startMs))
+                player.setEndBoundary(ms: sharedFileEndBoundaryMs(it, startMs: rips.nowPlaying?.startMs),
+                                      songStartMs: rips.nowPlaying?.startMs)
             }
         }
     }
