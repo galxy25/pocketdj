@@ -5112,22 +5112,15 @@ final class MixEngine {
         if like.isActive { like.isActive = false }
         refreshArtworkIfNeeded(for: track.songId)
         let playing = isPlaying(deck)
-        var info: [String: Any] = [
-            MPMediaItemPropertyTitle: track.title,
-            MPMediaItemPropertyArtist: track.artist,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: position(deck),
-            MPNowPlayingInfoPropertyPlaybackRate: playing ? state(deck).rate : 0.0,
-        ]
         let dur = duration(deck)
-        if dur > 0 { info[MPMediaItemPropertyPlaybackDuration] = dur }
-        if let nowPlayingArtwork, nowPlayingArtworkSongId == track.songId {
-            info[MPMediaItemPropertyArtwork] = nowPlayingArtwork
-        }
-        NPLog.trace("mix card WRITE title=\(track.title) playing=\(playing)")
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-        // Explicit playbackState so CarPlay (head-unit Now Playing + system Now Playing app) and
-        // watchOS reflect the deck's transport, not just the info dict's PlaybackRate.
-        MPNowPlayingInfoCenter.default().playbackState = playing ? .playing : .paused
+        // Through the ONE card funnel: dict + explicit playbackState (CarPlay's head-unit Now
+        // Playing + watchOS read it), moving-cursor invariants, rate-limited trace.
+        NowPlayingCardPublisher.shared.publish(
+            writer: "mix", title: track.title, artist: track.artist,
+            elapsed: position(deck), duration: dur > 0 ? dur : nil,
+            advancing: playing, rate: state(deck).rate,
+            artwork: nowPlayingArtworkSongId == track.songId ? nowPlayingArtwork : nil,
+            detail: "deck=\(deck.rawValue)")
     }
 
     /// Fetch cover art for the now-playing card ONLY when the song id actually changed since the

@@ -184,6 +184,7 @@
 		42658B018DC0D88CFCB6A8F4 /* CollectionsBatchAddTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85F233B547CE674B0B4A00A5 /* CollectionsBatchAddTests.swift */; };
 		43BB757610F0F5EBEACEECDA /* PocketDJApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE90C1896C86E7B65A2D0B03 /* PocketDJApp.swift */; };
 		44BE307FBFCDD54032180E0A /* DiscoverStubServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E6EA2BC888099AF42D98F507 /* DiscoverStubServer.swift */; };
+		44E41E7C67CF72780EEB943C /* CarPlayCursorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E181DD6F9ADC058A4736F4C /* CarPlayCursorTests.swift */; };
 		45B417BABDCB20A2A8AA077D /* CollectionSortFilter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 778196F2DA5CB9658F84424A /* CollectionSortFilter.swift */; };
 		45C997C26EF0D80AB477CA50 /* RowSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0EE754AA0FCC750467CFC458 /* RowSelectionTests.swift */; };
 		4661F6F6019FDEDE22724A73 /* PlayHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C17166D49C05392DF713E26 /* PlayHistoryStore.swift */; };
@@ -208,6 +209,7 @@
 		506FFA93E51CE0EF9AEA7572 /* stream-noise-12s.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 8B257B408D67EEAE24087A22 /* stream-noise-12s.mp3 */; };
 		50AFF7753809D4765F5063E5 /* StudioSliceEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 12B8946BC54B554F1789BD45 /* StudioSliceEditorView.swift */; };
 		50CC6524B0F24DC694BD30ED /* DemuxChordDetailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2E03FA39CA13DD4EF52F719 /* DemuxChordDetailView.swift */; };
+		50D3485D00EEAD4D433610AC /* NowPlayingCardPublisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5336A4E6D12BB9E9ABD1B56 /* NowPlayingCardPublisher.swift */; };
 		50D5B90D705DE20789DFEA36 /* Config.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C814FEF25275F5A6AE683C1 /* Config.swift */; };
 		5132858B9EE1202BB1FE30EA /* ScoreEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E8F8A39E852CE145BFCB5433 /* ScoreEditorView.swift */; };
 		52BCACFFDD213DD01519B984 /* DemuxCutSampleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E48EB821B769D436B3742E49 /* DemuxCutSampleView.swift */; };
@@ -686,6 +688,7 @@
 		0DF90EDBE036D5F9F11C894E /* CoverImage.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverImage.swift; sourceTree = "<group>"; };
 		0DFBBF88CB66890F0A32B5EE /* DebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugView.swift; sourceTree = "<group>"; };
 		0E03F079CBD183396624647B /* CollectionsStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CollectionsStore.swift; sourceTree = "<group>"; };
+		0E181DD6F9ADC058A4736F4C /* CarPlayCursorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CarPlayCursorTests.swift; sourceTree = "<group>"; };
 		0E7EAA0A7C8A152F9720756F /* PerformanceUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PerformanceUITests.swift; sourceTree = "<group>"; };
 		0E8B2B5E242F0301084ECB8D /* ShareText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareText.swift; sourceTree = "<group>"; };
 		0EE754AA0FCC750467CFC458 /* RowSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RowSelectionTests.swift; sourceTree = "<group>"; };
@@ -1221,6 +1224,7 @@
 		F4AD30694DB4ECEC615800AA /* MixEngineTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixEngineTests.swift; sourceTree = "<group>"; };
 		F4D8CDDDB9F4AC700D6F394C /* ForYouTiles.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForYouTiles.swift; sourceTree = "<group>"; };
 		F4F1D25EF06B349AF8BAF9A5 /* AppleMusicFavoritesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppleMusicFavoritesTests.swift; sourceTree = "<group>"; };
+		F5336A4E6D12BB9E9ABD1B56 /* NowPlayingCardPublisher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingCardPublisher.swift; sourceTree = "<group>"; };
 		F565A9615F9D6F6E967FBA2F /* ForYouRefreshSchedule.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ForYouRefreshSchedule.swift; sourceTree = "<group>"; };
 		F5AC468FF2E994E4EB541A68 /* RecRecordingIdentityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecRecordingIdentityTests.swift; sourceTree = "<group>"; };
 		F5C27B3C871F858E95AB735A /* MusicWithFriendsViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MusicWithFriendsViews.swift; sourceTree = "<group>"; };
@@ -1350,6 +1354,7 @@
 				DD27EBDBE7AE172887D49FD9 /* BurnStoreStopTests.swift */,
 				55EE54CFFA09027EA18F9392 /* BurnStoreStorageTests.swift */,
 				7304C1DA297093F0EA312C68 /* BurnStoreTests.swift */,
+				0E181DD6F9ADC058A4736F4C /* CarPlayCursorTests.swift */,
 				08A5B9D460F0C6D10D61D128 /* CarPlayForYouTests.swift */,
 				AFE215EC932D67777D5AE364 /* CarPlayModelTests.swift */,
 				6DAAFAA96145CBB68FAFE3CF /* CatalogLaunchCacheTests.swift */,
@@ -1864,6 +1869,7 @@
 			children = (
 				CEE53668B264B16244CBCEF1 /* AppleMusicPlaybackProvider.swift */,
 				C5A90AB83D9B1C5A88939E3F /* NowPlayingArbiter.swift */,
+				F5336A4E6D12BB9E9ABD1B56 /* NowPlayingCardPublisher.swift */,
 				70CA1E471270B08E47CCA895 /* NowPlayingDSP.swift */,
 				2C8D035465188F057BDE8ADF /* PlaybackCoordinator.swift */,
 				536A129FD74DBD265C5F3B65 /* PlayerEngine.swift */,
@@ -2451,6 +2457,7 @@
 				14326B8322F07EF0184BBC6B /* BurnStoreStopTests.swift in Sources */,
 				4173DFDD68E018F9460C5D07 /* BurnStoreStorageTests.swift in Sources */,
 				5D7F079408A49731738024B8 /* BurnStoreTests.swift in Sources */,
+				44E41E7C67CF72780EEB943C /* CarPlayCursorTests.swift in Sources */,
 				D3627826CFCC1907C434CFF2 /* CarPlayForYouTests.swift in Sources */,
 				207E4B489CDFD1770B3A6DF3 /* CarPlayModelTests.swift in Sources */,
 				3207B15DD6F8B7CF85EC997B /* CatalogLaunchCacheTests.swift in Sources */,
@@ -2828,6 +2835,7 @@
 				3FB988D8D7449175B8693F6E /* NavigationDestinations.swift in Sources */,
 				BDBBDDB012144478D91D3ED4 /* NotificationRouter.swift in Sources */,
 				90BCD1BC6CBAB5CA623C2397 /* NowPlayingArbiter.swift in Sources */,
+				50D3485D00EEAD4D433610AC /* NowPlayingCardPublisher.swift in Sources */,
 				496C05CDC9A14B272E4B774D /* NowPlayingDSP.swift in Sources */,
 				732C2979CF058E0BB98E9D9A /* NowPlayingExpandedView.swift in Sources */,
 				686E9034C4D7C2EA0C21C1E8 /* NowPlayingMixPanel.swift in Sources */,

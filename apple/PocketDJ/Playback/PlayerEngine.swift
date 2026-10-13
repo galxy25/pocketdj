@@ -219,7 +219,8 @@ final class PlayerEngine {
     /// `endBoundaryMs` (optional) arms a position-based end boundary (absolute ms in the
     /// file) so the sequencer advances at the track's own length inside a shared album mp3.
     func load(url: URL, live: Bool, startMs: Int?, title: String = "", artist: String = "",
-              songId: String? = nil, endBoundaryMs: Int? = nil, scopeRelease: (() -> Void)? = nil) {
+              songId: String? = nil, endBoundaryMs: Int? = nil, songStartMs: Int? = nil,
+              scopeRelease: (() -> Void)? = nil) {
         // Loading a real item ends any external-source impersonation (Apple Music handoff).
         NPLog.trace("engine.load title=\(title) live=\(live)")
         endExternalNowPlaying()
@@ -345,6 +346,7 @@ final class PlayerEngine {
                                  durationSeconds: Double,
                                  position: @escaping () -> Double,
                                  isPlaying: @escaping () -> Bool,
+                                 rate: (() -> Double)? = nil,
                                  play: @escaping () -> Void,
                                  pause: @escaping () -> Void) {
         // Idle our AVPlayer + drop any per-item end observer / boundary from a prior local track
@@ -388,12 +390,23 @@ final class PlayerEngine {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard let self, self.externalActive, !Task.isCancelled else { return }
-                self.isPlaying = self.externalIsPlaying?() ?? self.isPlaying
-                self.clock.currentTime = self.externalPosition?() ?? self.clock.currentTime
-                self.updateNowPlayingInfo()
+                self.externalTick()
             }
         }
     }
+
+    /// One external-ticker beat: mirror the stream's live play state + position into the card.
+    private func externalTick() {
+        isPlaying = externalIsPlaying?() ?? isPlaying
+        clock.currentTime = externalPosition?() ?? clock.currentTime
+        updateNowPlayingInfo()
+    }
+
+    #if DEBUG
+    /// Tests: run one external-ticker beat synchronously (the real ticker sleeps 1 s between beats).
+    /// A no-op unless external — exactly the guard the real ticker loop applies.
+    func externalTickForTesting() { if externalActive { externalTick() } }
+    #endif
 
     /// Idle our AVPlayer for an external streaming source (Apple Music) WITHOUT taking over the
     /// system Now Playing card. Used on **macOS**, where MusicKit's `ApplicationMusicPlayer`
@@ -439,6 +452,12 @@ final class PlayerEngine {
         player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero)
         clock.currentTime = max(0, seconds)
         updateNowPlayingInfo()
+    }
+
+    /// A scrub on the system card / CarPlay (`changePlaybackPositionCommand`): the card's
+    /// timeline → this engine's clock.
+    func seekFromCard(toCardSeconds seconds: Double) {
+        seek(to: seconds)
     }
 
     /// Stop playback and release the current item (used when the player panel closes).
@@ -569,7 +588,7 @@ final class PlayerEngine {
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let self, NowPlayingArbiter.shared.isActive(self), !self.isLive,
                   let e = event as? MPChangePlaybackPositionCommandEvent else { return .commandFailed }
-            self.seek(to: e.positionTime); return .success
+            self.seekFromCard(toCardSeconds: e.positionTime); return .success
         }
         // NEXT / PREVIOUS drive the setlist sequencer (Feature: background audio). They reject
         // input (and stay disabled) when no set is running (`onNext`/`onPrevious` nil).
@@ -659,21 +678,15 @@ final class PlayerEngine {
             return
         }
         guard !nowPlayingTitle.isEmpty || !nowPlayingArtist.isEmpty else { clearNowPlayingInfo(); return }
-        var info: [String: Any] = [
-            MPMediaItemPropertyTitle: nowPlayingTitle,
-            MPMediaItemPropertyArtist: nowPlayingArtist,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: currentTime,
-            MPNowPlayingInfoPropertyPlaybackRate: isPlaying ? 1.0 : 0.0,
-            MPNowPlayingInfoPropertyIsLiveStream: isLive,
-        ]
-        if !isLive, duration > 0 { info[MPMediaItemPropertyPlaybackDuration] = duration }
-        if let nowPlayingArtwork { info[MPMediaItemPropertyArtwork] = nowPlayingArtwork }
-        NPLog.trace("engine card WRITE title=\(nowPlayingTitle) playing=\(isPlaying) pos=\(Int(currentTime)) dur=\(Int(duration)) art=\(nowPlayingArtwork != nil) external=\(externalActive)")
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-        // Also set the explicit playbackState: CarPlay (the head-unit Now Playing template + the
-        // system "Now Playing" app) and watchOS rely on it, not just the info dict's PlaybackRate.
-        // Without it a phone-started track shows on the CarPlay dashboard but not in Now Playing.
-        MPNowPlayingInfoCenter.default().playbackState = isPlaying ? .playing : .paused
+        // Through the ONE card funnel (`NowPlayingCardPublisher`): it writes the dict AND the
+        // explicit playbackState (CarPlay's Now Playing template + watchOS read it, not just the
+        // dict's PlaybackRate), enforces the moving-cursor invariants, and traces (rate-limited).
+        NowPlayingCardPublisher.shared.publish(
+            writer: externalActive ? "engine-ext" : "engine",
+            title: nowPlayingTitle, artist: nowPlayingArtist,
+            elapsed: currentTime, duration: isLive ? nil : duration,
+            advancing: isPlaying, rate: 1, isLive: isLive, artwork: nowPlayingArtwork,
+            detail: "art=\(nowPlayingArtwork != nil)")
         // The lock-screen ♥ fill state — pushed on every card write (this method re-runs on each
         // load/play/pause/seek AND on a favorite change via refreshFavoriteState). Reads through
         // the injected closure; stays false when unwired (tests) or no current song.
@@ -745,16 +758,11 @@ final class PlayerEngine {
         nowPlayingTitle = title
         nowPlayingArtist = artist
         nowPlayingSongId = songId
-        var info: [String: Any] = [
-            MPMediaItemPropertyTitle: title,
-            MPMediaItemPropertyArtist: artist,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: 0.0,
-            MPNowPlayingInfoPropertyPlaybackRate: 0.0,
-        ]
         refreshArtwork(for: songId)
-        if let nowPlayingArtwork { info[MPMediaItemPropertyArtwork] = nowPlayingArtwork }
         NPLog.trace("engine card ANNOUNCE title=\(title)")
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        NowPlayingCardPublisher.shared.publish(
+            writer: "engine-announce", title: title, artist: artist, elapsed: 0, duration: nil,
+            advancing: false, artwork: nowPlayingArtwork, updatesPlaybackState: false)
     }
 
     /// Try each candidate URL in order; return the first that decodes to an image (mirrors
@@ -775,8 +783,7 @@ final class PlayerEngine {
     private func clearNowPlayingInfo() {
         guard NowPlayingArbiter.shared.isActive(self) else { return }   // don't wipe the Mix's card
         NPLog.trace("engine card CLEAR (+resign)")
-        MPNowPlayingInfoCenter.default().playbackState = .stopped
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        NowPlayingCardPublisher.shared.clear(writer: "engine")
         // Reset the ♥ fill: nil-ing the card leaves `likeCommand.isActive` stuck TRUE, so a favorited
         // track's filled heart would bleed into the next owner / the idle lock screen. This is the sole
         // resign funnel, so clearing it here also covers the resign path.
