@@ -1636,6 +1636,11 @@ struct PocketDJApp: App {
             DiagLog.shared.reloadCredentials()
             DiagLog.shared.log("diag", "credsync pull: \(result)")
         }
+        // `.pdjdiagkey` import (Settings ▸ Debug picker/drop, or the file opened from Finder/
+        // Files): saves the key, materializes the doc above, and pushes it right away.
+        DiagKeyImportModel.shared.makeImporter = { [weak cloudSync] in
+            DiagKeyImporter.app(push: { await cloudSync?.pushDirty() })
+        }
         // ONBOARDING PUSH GATE (R1): until the first-run flow resolves, no push may run —
         // a store file materialized mid-onboarding (an empty flush, an intent-written doc)
         // must never LWW-overwrite a returning user's cloud data. Pulls stay allowed (the
@@ -1809,7 +1814,15 @@ struct PocketDJApp: App {
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through
                 // here; route it to the owning provider.
+                .diagKeyImportAlerts(origin: .openedFile)
                 .onOpenURL { url in
+                    // A diag-writer key file (.pdjdiagkey from scripts/green/export-diag-key.sh)
+                    // opened from Finder/Files — independent of onboarding (it touches only the
+                    // Keychain + the "diag-key" credsync doc).
+                    if DiagKeyImportModel.handles(url) {
+                        Task { await DiagKeyImportModel.shared.begin(url, origin: .openedFile) }
+                        return
+                    }
                     // A Music with Friends link (https://jukebox.pocket-dj.com/mwf/<id>/ OR
                     // pocketdj://mwf/<id>) — parsed BEFORE JukeboxLink. No collision risk:
                     // "mwf" is 3 chars, so JukeboxLink's id validation rejects these URLs

@@ -24,6 +24,18 @@
 				<string>com.pocketdj.collection</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>PocketDJ Diagnostics Key</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>com.pocketdj.diagkey</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
@@ -103,6 +115,24 @@
 				<array>
 					<string>application/x-pocketdj-collection</string>
 					<string>application/zip</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>PocketDJ Diagnostics Key</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.pocketdj.diagkey</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>pdjdiagkey</string>
 				</array>
 			</dict>
 		</dict>
