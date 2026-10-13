@@ -41,6 +41,9 @@
 		<!-- queues published to a hosted session. NOTE: documents synced to -->
 		<!-- the user's PRIVATE CloudKit database are deliberately NOT       -->
 		<!-- counted here — see §5.2 of the privacy-manifest spec.           -->
+		<!-- Also: In the Pocket round feedback (typed/dictated TEXT), used  -->
+		<!-- to tune pocket picks (Personalization) and judge the algorithm  -->
+		<!-- (Analytics). Matches the App Store label (2026-10-13).          -->
 		<!-- ============================================================== -->
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
@@ -52,6 +55,8 @@
 			<key>NSPrivacyCollectedDataTypePurposes</key>
 			<array>
 				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+				<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
+				<string>NSPrivacyCollectedDataTypePurposeProductPersonalization</string>
 			</array>
 		</dict>
 
@@ -149,6 +154,26 @@
 			</array>
 		</dict>
 
+
+		<!-- ============================================================== -->
+		<!-- Location ▸ Coarse Location                                     -->
+		<!-- Listening pockets "places & trips" (iOS, opt-in): opaque place -->
+		<!-- / trip ids derived on device from CLVisit; raw coordinates     -->
+		<!-- never leave the device. Matches the App Store label.           -->
+		<!-- ============================================================== -->
+		<dict>
+			<key>NSPrivacyCollectedDataType</key>
+			<string>NSPrivacyCollectedDataTypeCoarseLocation</string>
+			<key>NSPrivacyCollectedDataTypeLinked</key>
+			<true/>
+			<key>NSPrivacyCollectedDataTypeTracking</key>
+			<false/>
+			<key>NSPrivacyCollectedDataTypePurposes</key>
+			<array>
+				<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+				<string>NSPrivacyCollectedDataTypePurposeProductPersonalization</string>
+			</array>
+		</dict>
 	</array>
 
 	<key>NSPrivacyAccessedAPITypes</key>

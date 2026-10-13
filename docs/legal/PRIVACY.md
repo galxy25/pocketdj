@@ -145,7 +145,7 @@ Our servers use this to find your pockets and describe what they have in common,
 
 **Turning things off.** Turning the engine or pockets off stops all uploads, and also turns places & trips off and erases your places from the device. Data already uploaded stays on our servers until you choose **Delete cloud data** ([§13](#13-deleting-your-data-and-your-account)), so that turning a switch off and on again doesn't erase your history. After **Delete cloud data**, plays from before the deletion are never uploaded for listening pockets again; only plays after it are.
 
-<!-- #TOUPDATE: OPEN DECISION (Levi) — the App Store privacy label and PrivacyInfo.xcprivacy. Opaque place/trip ids derived from location are arguably "Coarse Location, linked, App Functionality, not tracking". The manifest was deliberately NOT changed in this pass; decide, then update the manifest, Appendix B, and §10/§12.1 together. -->
+<!-- Decided 2026-10-13: declared as Location ▸ Coarse Location (linked, App Functionality + Product Personalization, not tracking) on the App Store label and in PrivacyInfo.xcprivacy; see Appendix B. -->
 
 ---
 
@@ -276,7 +276,7 @@ A host can optionally let guests hear the current track on their own phones. It 
 - We do not track you across other companies' apps and websites. The app declares no tracking and no tracking domains, and requests no tracking permission.
   <!-- #TOUPDATE: the behavioral half is true — there is no tracking SDK in the binary. The DECLARATION half is not: NOTHING IS DECLARED AT ALL. There is no `.xcprivacy` in either target (`find apple -name "*.xcprivacy" -not -path "*/build*"` → nothing; the only hits are ZIPFoundation's own manifest inside build output) and no `NSPrivacyTracking` key anywhere in the repo. "Declares no tracking" asserts the existence of a file that does not exist. The manifest is NOT optional here — the app uses UserDefaults (`pdj.settings.v1`) and file timestamps, both API-declaration categories. Ship the manifests (Appendix B) or drop the clause. Appendix B repeats this claim and is at least covered by its own block marker; this one was bare, in the most quotable list in the document. -->
 - We do not run ads.
-- We do not collect your location, contacts, health, financial, or browsing data. Your raw location is never collected. If you turn on places & trips for listening pockets, we receive anonymous place and trip ids, such as "Location A" or "A → B", and never coordinates ([§4.6](#46-listening-history-recommendations-and-listening-pockets)).
+- We do not collect your precise location, contacts, health, financial, or browsing data. Your raw location is never collected. If you turn on places & trips for listening pockets, we receive anonymous place and trip ids (declared on the App Store label as Coarse Location), such as "Location A" or "A → B", and never coordinates ([§4.6](#46-listening-history-recommendations-and-listening-pockets)).
 - We do not auto-upload diagnostics or crash reports to ourselves.
 - We do not read your iCloud private database.
 - We do not copy audio out of Apple Music.
@@ -490,12 +490,15 @@ App Review rejects under Guideline 5.1.1 when the privacy label and the privacy 
 | Identifiers ▸ User ID | §13 (profile identifier), §9.2 (guest browser identifier) |
 | User Content ▸ Audio Data | §4.1, §4.2, §7, §8 — **including microphone recordings and recorded mixes sent for stem separation** |
 | User Content ▸ Other User Content | §5.1 (collections, edits, favorites, imported songs) |
+| User Content ▸ Other User Content — also *Analytics* and *Product Personalization* | §4.6 (In the Pocket round feedback you type or dictate, used to tune pocket picks and judge how well they work) |
+| Location ▸ Coarse Location — also *Product Personalization* | §4.6 (opt-in places & trips: anonymous place and trip ids, never coordinates) |
+| Usage Data ▸ Product Interaction (listening pockets) | §4.6 (opt-in play outcomes for listening pockets and In the Pocket rounds) |
 | Usage Data ▸ Product Interaction | §9.1 (now-playing and queue snapshots published during a jukebox session) |
 | Search History | §4.4 |
 | Usage Data ▸ Other + User Content ▸ Other | §4.5 (server logs — song ids, and jukebox request text) <!-- #TOUPDATE: MAPPING CORRECTED, VERIFY BEFORE FILING. This row previously mapped *Diagnostics ▸ Other* to §4.5 (server logs), which is very likely wrong: in Apple's definitions *Diagnostics* means crash, performance, and other diagnostic data collected FROM THE DEVICE — and §10 of this policy correctly says we collect none of that, so declaring Diagnostics would contradict our own text. Backend request logs containing song ids map to *Usage Data*, and the text of a guest's jukebox request is *User Content*. Confirm both against Apple's current category definitions in App Store Connect before filling the label, and make sure the guest-side entry is not overlooked simply because guests are not app users. --> |
 
-<!-- #TOUPDATE: listening pockets (§4.6) adds opt-in uploads of play outcomes (Usage Data ▸ Product Interaction) and anonymous place and trip ids derived from location. Whether those ids must be declared as Location ▸ Coarse Location (linked, App Functionality, not tracking) is Levi's open decision. Until it is made, "location" below is in question, and the label, PrivacyInfo.xcprivacy and this appendix must change together. -->
-**Declared not collected:** location, contacts, health, financial info, browsing history, advertising data, purchases, crash data, and — with the §3 exception stated in this policy — device-only microphone audio and on-device speech transcripts.
+<!-- Decided by Levi 2026-10-13: Coarse Location IS declared (label published 2026-10-13; PrivacyInfo.xcprivacy updated to match). -->
+**Declared not collected:** precise location, contacts, health, financial info, browsing history, advertising data, purchases, crash data, and — with the §3 exception stated in this policy — device-only microphone audio and on-device speech transcripts.
 
 **Three things to get right when transcribing the label:**
 
