@@ -94,6 +94,16 @@ targets:
               public.mime-type:
                 - application/x-pocketdj-collection
                 - application/zip
+          # Diag-writer key file written by scripts/green/export-diag-key.sh; opening it
+          # (Finder/Files) imports the key (DiagKeyImportModel via onOpenURL).
+          - UTTypeIdentifier: com.pocketdj.diagkey
+            UTTypeDescription: PocketDJ Diagnostics Key
+            UTTypeConformsTo:
+              - public.json
+              - public.data
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - pdjdiagkey
           # Pasteboard/drag type for a list of song ids (multi-select drag & copy/paste).
           # No filename extension / no CFBundleDocumentTypes entry — pasteboard-only type.
           - UTTypeIdentifier: com.pocketdj.songlist
@@ -107,6 +117,11 @@ targets:
             LSHandlerRank: Owner
             LSItemContentTypes:
               - com.pocketdj.collection
+          - CFBundleTypeName: PocketDJ Diagnostics Key
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.pocketdj.diagkey
         # Document-based apps MUST declare how they open files (else ITMS-90737 on upload).
         # We declare in-place support: importCollectionFile() takes security-scoped access
         # (url.startAccessingSecurityScopedResource) before collections.importAny, so an

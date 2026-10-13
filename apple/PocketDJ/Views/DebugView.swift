@@ -25,6 +25,10 @@ struct DebugView: View {
     /// Remote endpoint readout (blue/green backend) — re-read after a manual re-check.
     @State private var endpointsSummary = Config.endpoints.summary
     @State private var endpointsChecking = false
+    /// `.pdjdiagkey` import (scripts/green/export-diag-key.sh) — picker + drop target state.
+    @State private var showKeyImporter = false
+    @State private var keyDropTargeted = false
+    private var keyImport: DiagKeyImportModel { DiagKeyImportModel.shared }
 
     private var diag: MixDiag { MixDiag.shared }
     private var archive: DebugSessionStore { DebugSessionStore.shared }
@@ -229,12 +233,55 @@ struct DebugView: View {
             if let diagKeySaveError {
                 Text(diagKeySaveError).font(.caption).foregroundStyle(.red)
             }
+            #if !os(tvOS)
+            importKeyRow
+            #endif
         } header: {
             Text("Remote diagnostics key")
         } footer: {
-            Text("Write-only S3 key for the diagnostic bucket. Stored in the Keychain and synced to your other devices through iCloud; with no key, remote logs are held on the device and nothing uploads.")
+            Text("Write-only S3 key for the diagnostic bucket. Stored in the Keychain and synced to your other devices through iCloud; with no key, remote logs are held on the device and nothing uploads. On a Mac, run scripts/green/export-diag-key.sh and import the .pdjdiagkey file it writes to Downloads — no typing.")
+        }
+        // Re-read "Stored" after an import from ANY surface (picker, drop, opened file).
+        .onChange(of: keyImport.importCount) { _, _ in
+            diagKeyStored = DiagKeySync.app.store.load() != nil
+            diagKeySaveError = nil
         }
     }
+
+    #if !os(tvOS)
+    /// "Import upload key from file…" — NSOpenPanel / document picker, plus a drop target: a
+    /// `.pdjdiagkey` dragged onto this row imports the same way. Alerts (account mismatch →
+    /// confirm; success → delete the file, default yes) come from `DiagKeyImportModel`.
+    private var importKeyRow: some View {
+        Button {
+            showKeyImporter = true
+        } label: {
+            Label(keyDropTargeted ? "Drop to import upload key" : "Import upload key from file…",
+                  systemImage: "key.horizontal")
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .accessibilityIdentifier("debug-diagkey-import")
+        .listRowBackground(keyDropTargeted ? Color.accentColor.opacity(0.15) : nil)
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let url = urls.first(where: { $0.isFileURL }) else { return false }
+            Task { await keyImport.begin(url, origin: .settings) }
+            return true
+        } isTargeted: { keyDropTargeted = $0 }
+        .fileImporter(isPresented: $showKeyImporter,
+                      allowedContentTypes: [.pocketDJDiagKey, .json],
+                      allowsMultipleSelection: false) { result in
+            switch result {
+            case .success(let urls):
+                guard let url = urls.first else { return }
+                Task { await keyImport.begin(url, origin: .settings) }
+            case .failure(let error):
+                DiagLog.shared.log("diag", "key import picker failed: \(type(of: error))")
+            }
+        }
+        .diagKeyImportAlerts(origin: .settings)
+    }
+    #endif
 
     /// Persisted preference + live push into the logger (whose singleton may already exist);
     /// the launch path does the same push so a relaunch resumes streaming.
