@@ -203,9 +203,16 @@ final class DemuxStore {
     /// second spanning the whole track, both `.done` so no analysis runs (the sim's
     /// speech daemon can't initialize — DemuxTranscriberFieldProbeTests). Idempotent.
     func seedFixtureIfRequested() {
-        guard ProcessInfo.processInfo.environment["PDJ_SEED_DEMUX"] == "1" else { return }
+        // `showcase` = the same seed under a song-like title (the website tour's Demuxer shot).
+        let mode = ProcessInfo.processInfo.environment["PDJ_SEED_DEMUX"]
+        guard mode == "1" || mode == "showcase" else { return }
         let id = "dmx_fixture"
-        guard document(for: id) == nil else { return }
+        let title = mode == "showcase" ? "Golden Hour" : "Demux Proof"
+        if var existing = document(for: id) {
+            // The demux cache survives relaunches; keep the title in step with the seed mode.
+            if existing.displayName != title { existing.displayName = title; save(existing) }
+            return
+        }
         guard let dir = Self.audioDir(under: cacheDir) else { return }
         let seconds = 180
         let name = "\(id).caf"
@@ -213,7 +220,7 @@ final class DemuxStore {
         if !FileManager.default.fileExists(atPath: url.path) {
             guard Self.writeSeedAudio(to: url, seconds: seconds) else { return }
         }
-        var doc = DemuxDocument(sourceKey: id, displayName: "Demux Proof")
+        var doc = DemuxDocument(sourceKey: id, displayName: title)
         doc.importedFileName = name
         doc.durationMs = seconds * 1_000
         let roots: [(pc: Int, minor: Bool)] = [(0, false), (7, false), (9, true), (5, false)]

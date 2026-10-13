@@ -150,4 +150,138 @@ final class AppStoreScreenshotTests: XCTestCase {
 
         app.terminate()
     }
+
+    // MARK: - pocket-dj.com tour (www/) — NOT part of the App Store upload
+
+    /// The Producer carousel on pocket-dj.com: one populated shot per Studio sub-tab the
+    /// website's Producer bullets name. Same seeds as the listing's Producer shot, landed on
+    /// each tab via `PDJ_STUDIO_TAB`.
+    func testCaptureWebsiteProducerTour() {
+        let base: [String: String] = [
+            "PDJ_SEED_STUDIO": "showcase",
+            "PDJ_SEED_BURNS": "showcase",
+            "PDJ_SEED_DEMUX": "showcase",
+        ]
+        for tab in ["samples", "instruments", "demuxer", "tracks"] {
+            var env = base
+            env["PDJ_STUDIO_TAB"] = tab
+            let app = launch(section: "Performance", extra: env)
+            sleep(5)
+            if tab == "demuxer" {
+                if !app.any("demux-file-row-dmx_fixture").waitForExistence(timeout: 3) {
+                    let group = app.any("demux-group-imported")
+                    if group.waitForExistence(timeout: 5) { group.tap() }
+                }
+                let row = app.any("demux-file-row-dmx_fixture")
+                if row.waitForExistence(timeout: 10) {
+                    row.tap()
+                    _ = app.any("demux-timeline").waitForExistence(timeout: 20)
+                    sleep(3)
+                }
+            }
+            if tab == "tracks" {
+                let row = app.any("tracks-arr-row-arr_showcase")
+                expect(row, "showcase arrangement listed")
+                row.tap()
+                _ = app.any("tracks-play").waitForExistence(timeout: 10)
+                sleep(2)
+                // Zoom out to fit so the whole 32-second build (every lane's clips) is on screen.
+                let zoomOut = app.buttons["tracks-zoom-out"]
+                for _ in 0..<8 where zoomOut.exists && zoomOut.isEnabled { zoomOut.tap(); usleep(400_000) }
+                sleep(2)
+            }
+            shot(app, "www-producer-\(tab)")
+            app.terminate()
+        }
+    }
+
+    /// The Games carousel on pocket-dj.com: the Games home (cards + scoreboard), a live
+    /// Collectors Puzzle round, and an In the Pocket round.
+    func testCaptureWebsiteGamesTour() {
+        let env: [String: String] = [
+            "PDJ_SEED_GAMES": "1",
+            "PDJ_SEED_COLLECTIONS": "showcase",
+            "PDJ_SEED_BURNS": "showcase",
+            "PDJ_SEED_HISTORY": "fixture",
+        ]
+        var app = launch(section: "Games", extra: env)
+        expect(app.any("games-card-puzzle"), "Games home")
+        sleep(3)
+        shot(app, "www-games-home")
+
+        app.any("games-card-puzzle").tap()
+        _ = app.any("puzzle-round-length").waitForExistence(timeout: 10)
+        sleep(2)
+        shot(app, "www-games-puzzle-setup")
+        let target = app.buttons.matching(NSPredicate(
+            format: "identifier BEGINSWITH %@", "puzzle-target-")).firstMatch
+        if app.swipeTo(target) {
+            for _ in 0..<6 where target.frame.maxY > app.el("puzzle-start").frame.minY { app.swipeUp() }
+            target.tap()
+        }
+        let start = app.el("puzzle-start")
+        let deadline = Date().addingTimeInterval(15)
+        while !start.isEnabled && Date() < deadline { usleep(300_000) }
+        if start.isEnabled { start.tap() }
+        if app.el("puzzle-assign-0").waitForExistence(timeout: 15) {
+            sleep(4)
+            app.el("puzzle-assign-0").tap()
+            sleep(3)
+        }
+        shot(app, "www-games-puzzle-round")
+        app.terminate()
+
+        // Listening pockets via the canned-results fixture seam (zero network) so the game is
+        // enabled; the round builds on-device from the seeded history.
+        var itpEnv = env
+        itpEnv["PDJ_POCKETS_FIXTURE"] = "1"
+        app = launch(section: "Games", extra: itpEnv)
+        expect(app.any("games-card-inthepocket"), "In the Pocket card")
+        app.any("games-card-inthepocket").tap()
+        _ = app.any("itp-screen").waitForExistence(timeout: 10)
+        sleep(2)
+        shot(app, "www-games-itp-1")
+        let build = app.any("itp-build")
+        if build.waitForExistence(timeout: 5), build.isHittable { build.tap() }
+        _ = app.any("itp-song-0").waitForExistence(timeout: 20)
+        sleep(2)
+        shot(app, "www-games-itp-2")
+        let startItp = app.any("itp-start")
+        if startItp.waitForExistence(timeout: 5), startItp.isHittable { startItp.tap(); sleep(4) }
+        shot(app, "www-games-itp-3")
+        app.terminate()
+    }
+
+    /// The Mix hero on pocket-dj.com: an iPad in LANDSCAPE so both decks, every control and the
+    /// crossfader read as one board. iPad only (a phone can't fit `sideBySide`).
+    func testCaptureWebsiteIPadMixLandscape() throws {
+        #if canImport(UIKit) && !os(macOS)
+        guard UIDevice.current.userInterfaceIdiom == .pad else { throw XCTSkip("iPad only") }
+        XCUIDevice.shared.orientation = .landscapeLeft
+        let app = launch(section: "Mix", extra: [
+            "PDJ_SEED_BURNS": "showcase",
+            "PDJ_SEED_MIX_DECK_SESSION": "showcase",
+            "PDJ_MIX_DECK_LAYOUT": "sideBySide",
+        ])
+        XCUIDevice.shared.orientation = .landscapeLeft
+        expect(app.staticTexts["Elevator to the Moon"], "Mix deck A track")
+        sleep(3)   // let the rotation settle before any tap (coordinates follow the new frame)
+        let resume = app.buttons["mix-auto-resume"]
+        if resume.waitForExistence(timeout: 5), resume.isHittable { resume.tap() }
+        sleep(2)
+        // Landscape is short: nudge the board up so the crossfader clears the bottom edge.
+        let from = app.coordinate(withNormalizedOffset: CGVector(dx: 0.965, dy: 0.80))
+        from.press(forDuration: 0.1, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.965, dy: 0.66)))
+        sleep(4)
+        // `app.screenshot()` composites in PORTRAIT space after a rotation (the board comes out
+        // clipped under a black band); the screen capture is orientation-correct.
+        let att = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        att.name = "www-ipad-mix-landscape"
+        att.lifetime = .keepAlways
+        add(att)
+        app.terminate()
+        #else
+        throw XCTSkip("iPad only")
+        #endif
+    }
 }
