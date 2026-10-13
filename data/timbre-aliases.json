@@ -1,10 +1,10 @@
 {
  "v": 1,
- "generatedAt": "2026-10-12T11:01:02.930Z",
+ "generatedAt": "2026-10-13T11:01:20.287Z",
  "counts": {
-  "audioBearing": 16311,
-  "candidates": 94280,
-  "aliases": 3670,
+  "audioBearing": 16321,
+  "candidates": 94270,
+  "aliases": 3668,
   "rejectedLane1": 0
  },
  "rejectedLane1": [],
@@ -281,7 +281,10 @@
   },
   "sng_0491179abf32": {
    "to": "sng_d609d1b7fe27",
-   "dLenMs": 0
+   "dLenMs": 0,
+   "alternatives": [
+    "sng_b56f86e739d9"
+   ]
   },
   "sng_049424d9a00e": {
    "to": "sng_9b2a1a10b8d4",
@@ -1050,7 +1053,10 @@
   },
   "sng_1225a0180235": {
    "to": "sng_db358dda3dd8",
-   "dLenMs": 63
+   "dLenMs": 63,
+   "alternatives": [
+    "sng_f17b3a4aee1b"
+   ]
   },
   "sng_125984c9500a": {
    "to": "sng_1eec08de216b",
@@ -7749,13 +7755,6 @@
    "to": "sng_8f021099a363",
    "dLenMs": 134
   },
-  "sng_83750b797c2d": {
-   "to": "sng_2bb6ce912127",
-   "dLenMs": 0,
-   "alternatives": [
-    "sng_23735345483c"
-   ]
-  },
   "sng_8392d1787f83": {
    "to": "sng_832c5ee6046a",
    "dLenMs": 65
@@ -10753,10 +10752,6 @@
    "to": "sng_710bdb780cf8",
    "dLenMs": 1
   },
-  "sng_b56f86e739d9": {
-   "to": "sng_d609d1b7fe27",
-   "dLenMs": 73
-  },
   "sng_b5798c84fb40": {
    "to": "sng_f414e1ba61ff",
    "dLenMs": 0
@@ -13425,6 +13420,10 @@
    "to": "sng_69baa3ab6b53",
    "dLenMs": 0
   },
+  "sng_e17dea97a89f": {
+   "to": "sng_95a55f6d63b9",
+   "dLenMs": 0
+  },
   "sng_e19323412aa1": {
    "to": "sng_2aa2d51c8491",
    "dLenMs": 40
@@ -13899,6 +13898,10 @@
    "to": "sng_5e7a9ae7cc41",
    "dLenMs": 274
   },
+  "sng_e945023e3fa0": {
+   "to": "sng_f55260d73a73",
+   "dLenMs": 1
+  },
   "sng_e9935e0f6116": {
    "to": "sng_bc5450e41f58",
    "dLenMs": 0
@@ -14329,10 +14332,6 @@
   },
   "sng_f17065bb204a": {
    "to": "sng_710bdb780cf8",
-   "dLenMs": 0
-  },
-  "sng_f17b3a4aee1b": {
-   "to": "sng_db358dda3dd8",
    "dLenMs": 0
   },
   "sng_f17baac0936e": {
@@ -14806,10 +14805,6 @@
   "sng_f98c651dd0eb": {
    "to": "sng_65e4aca17359",
    "dLenMs": 1
-  },
-  "sng_f990f97e7de9": {
-   "to": "sng_167b5a8d45b2",
-   "dLenMs": 0
   },
   "sng_f9ab2aad58d7": {
    "to": "sng_1cdbd74c1ed7",
