@@ -1493,11 +1493,14 @@ final class StudioStore {
                                             seconds: 0.5, aac: false)
 
         let now = nowMs
-        addSample(StudioSample(id: sampleId, name: "Seeded Sample", fileName: sampleFile,
+        // `showcase` gives the two fixed-id rows names a producer would actually use (the website
+        // tour shoots the Samples list); `=1` keeps the names UI tests have always asserted.
+        let showcase = mode == "showcase"
+        addSample(StudioSample(id: sampleId, name: showcase ? "Vocal Chop" : "Seeded Sample", fileName: sampleFile,
                                wasUserFolder: false, createdAt: now, durationMs: sampleMs,
                                source: .track(songId: "sng_1", startMs: 0, endMs: sampleMs),
                                grid: StudioGrid(bpm: 120, firstDownbeatMs: 0, beatsMs: [])))
-        addLoop(StudioLoop(id: loopId, name: "Seeded Loop", sampleId: sampleId, anchorMs: 0,
+        addLoop(StudioLoop(id: loopId, name: showcase ? "Chop Loop" : "Seeded Loop", sampleId: sampleId, anchorMs: 0,
                            beats: .one, bpm: 120, lengthMs: 500, frames: loopFrames,
                            fileName: loopFile, wasUserFolder: false, createdAt: now))
         var steps = Array(repeating: false, count: StudioPattern.defaultStepCount)
@@ -1569,7 +1572,51 @@ final class StudioStore {
         for (slot, name) in pads.enumerated() {
             setCue(songId: "sng_16", slot: slot, positionMs: at[slot], name: name)
         }
+
+        seedShowcaseArrangement(now: now)
     }
+
+    /// A four-lane multitrack sketch for the Tracks tab (website tour): drums, bass, chord stabs
+    /// and a vocal chop laid out as a 32-second build at the groove's 124 BPM. Each clip is a REAL
+    /// baked file in the arranger's app-managed dir, pulsed on the beat so its waveform reads as
+    /// music rather than a solid block. Beat grids are pre-filled so Beat Match is live.
+    private func seedShowcaseArrangement(now: Double) {
+        guard arrangements.isEmpty, let dir = try? Self.arrangementsDir() else { return }
+        let bpm = 124.0
+        let beat = 60.0 / bpm
+        // (track, colour, tone Hz, pulse period s, clips as (start s, length s))
+        let lanes: [(name: String, color: Int, hz: Double, pulse: Double, clips: [(Double, Double)])] = [
+            ("Drums",      0, 60,  beat,     [(0, 16), (16, 16)]),
+            ("Bass",       1, 110, beat / 2, [(4, 12), (20, 12)]),
+            ("Chord Stab", 2, 523, beat * 2, [(8, 8), (24, 8)]),
+            ("Vocal Chop", 3, 330, beat * 4, [(12, 4), (28, 4)]),
+        ]
+        var tracks: [StudioTrack] = []
+        for (li, lane) in lanes.enumerated() {
+            var clips: [StudioClip] = []
+            for (ci, c) in lane.clips.enumerated() {
+                let id = "clip_showcase_\(li)_\(ci)"
+                let file = Self.clipFileName(id)
+                let frames = Self.writeSeedTone(to: dir.appendingPathComponent(file), seconds: c.1,
+                                                aac: true, hz: lane.hz, pulse: lane.pulse)
+                guard frames > 0 else { continue }
+                clips.append(StudioClip(id: id, name: lane.name, fileName: file,
+                                        startMs: Int(c.0 * 1000), durationMs: Int(c.1 * 1000),
+                                        source: .sample, sourceId: nil,
+                                        grid: StudioGrid(bpm: bpm, firstDownbeatMs: 0, beatsMs: []),
+                                        createdAt: now))
+            }
+            tracks.append(StudioTrack(id: "trk_showcase_\(li)", name: lane.name, clips: clips,
+                                      colorIndex: lane.color, createdAt: now))
+        }
+        arrangements.append(StudioArrangement(id: Self.showcaseArrangementId, name: "Rooftop",
+                                              tracks: tracks, bpm: bpm, beatMatchEnabled: true,
+                                              createdAt: now, updatedAt: now))
+        saveNow()
+    }
+
+    /// The showcase arrangement's fixed id (the website driver opens it from the Tracks list).
+    static let showcaseArrangementId = "arr_showcase"
 
     /// The showcase groove's fixed id — the screenshot driver opens this pattern directly so the
     /// Producer shot lands on the step grid rather than the pattern list.
@@ -1580,7 +1627,7 @@ final class StudioStore {
     /// capture/render engines, never here.
     @discardableResult
     private static func writeSeedTone(to url: URL, seconds: Double, aac: Bool,
-                                      hz: Double = 440) -> Int64 {
+                                      hz: Double = 440, pulse: Double? = nil) -> Int64 {
         let sr = 44_100.0
         var settings: [String: Any] = [
             AVFormatIDKey: aac ? kAudioFormatMPEG4AAC : kAudioFormatLinearPCM,
@@ -1599,7 +1646,12 @@ final class StudioStore {
         buf.frameLength = frames
         if let p = buf.floatChannelData?[0] {
             for i in 0..<Int(frames) {
-                p[i] = sinf(Float(i) * 2 * .pi * Float(hz) / Float(sr)) * 0.5
+                // `pulse` (s): a decaying hit every period — a waveform with shape, not a block.
+                let amp: Float = pulse.map { per in
+                    let t = (Double(i) / sr).truncatingRemainder(dividingBy: per)
+                    return Float(0.15 + 0.6 * exp(-t * 9))
+                } ?? 0.5
+                p[i] = sinf(Float(i) * 2 * .pi * Float(hz) / Float(sr)) * amp
             }
         }
         guard (try? file.write(from: buf)) != nil else { return 0 }
