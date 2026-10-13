@@ -572,6 +572,44 @@ final class RipsStore {
         return presignedUrl
     }
 
+    // MARK: Presign prefetch (the next songs' URLs, resolved while the current one plays)
+
+    /// Presigned URLs fetched AHEAD of need, with the moment they were minted. Requested with a
+    /// 6 h TTL and trusted for 5 h.
+    @ObservationIgnored private var presignPrefetch: [String: (url: URL, at: Date)] = [:]
+    @ObservationIgnored private var presignPrefetchInFlight: Set<String> = []
+    nonisolated static let prefetchTTLSeconds = 21_600
+    nonisolated static let prefetchUsableSeconds: TimeInterval = 5 * 3600
+
+    /// A still-fresh prefetched presigned URL for `songId`, if any.
+    func prefetchedURL(_ songId: String) -> URL? {
+        guard let e = presignPrefetch[songId] else { return nil }
+        guard Date().timeIntervalSince(e.at) < Self.prefetchUsableSeconds else {
+            presignPrefetch[songId] = nil
+            return nil
+        }
+        return e.url
+    }
+
+    /// Fire-and-forget: presign `songIds` (ripped rows only) so the upcoming songs start without
+    /// a network round trip at the boundary — over cellular THE silent gap, and an offline moment
+    /// at the boundary then no longer skips the set into silence.
+    func prefetchPresigned(_ songIds: [String]) {
+        guard hasServer else { return }
+        for id in songIds {
+            guard let entry = manifest[id], !entry.key.hasPrefix("hls/"),
+                  prefetchedURL(id) == nil, !presignPrefetchInFlight.contains(id) else { continue }
+            presignPrefetchInFlight.insert(id)
+            Task { [weak self] in
+                guard let self else { return }
+                let url = try? await self.presignedURL(for: id, ttlSeconds: Self.prefetchTTLSeconds)
+                self.presignPrefetchInFlight.remove(id)
+                if let url { self.presignPrefetch[id] = (url, Date()) }
+                NPLog.trace("prefetch presign \(id) \(url != nil ? "ok" : "FAILED")")
+            }
+        }
+    }
+
     @discardableResult
     func ensureURL(_ songId: String, allowLive: Bool,
                    maxWaitSeconds: Int = 1800) async throws -> URL {
@@ -594,6 +632,12 @@ final class RipsStore {
             guard hasServer else {
                 if let cached = cachedURL(songId) { return cached }
                 throw RipError.noServer
+            }
+            // Resolved AHEAD of the song boundary (`prefetchPresigned`, while the previous song
+            // played): no network round trip in the silent gap between songs.
+            if let pre = prefetchedURL(songId) {
+                NPLog.trace("ensureURL \(songId): prefetched presign (no round trip)")
+                return pre
             }
             return try await presignedURL(for: songId)
         }
@@ -642,7 +686,10 @@ final class RipsStore {
         }
 
         // Poll /jobs/<id> until ready (or the live stream appears).
-        for _ in 0..<max(1, maxWaitSeconds) {
+        // WALL-CLOCK bound: the old iteration count let each poll take URLSession's 60 s default
+        // on a dead cellular link, so a "20 s" interactive wait could park a ▶/⏭ for minutes.
+        let pollDeadline = Date().addingTimeInterval(Double(max(1, maxWaitSeconds)))
+        while Date() < pollDeadline {
             try await Self.sleep1s()
             guard let v = try? await fetchJob(jobId, base: base, token: tok) else { continue }
             view = v
@@ -692,6 +739,7 @@ final class RipsStore {
 
     private func fetchJob(_ jobId: String, base: String, token: String) async throws -> Job {
         var request = URLRequest(url: URL(string: "\(base)/jobs/\(jobId.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? jobId)")!)
+        request.timeoutInterval = Self.jobPollTimeoutSeconds
         applyAuth(&request, token: token)
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {

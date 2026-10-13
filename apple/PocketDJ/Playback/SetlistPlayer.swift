@@ -513,6 +513,7 @@ final class SetlistPlayer {
     private func armEngineHooks() {
         // The lock screen / Control Center next/prev advance the SET.
         player.onTrackEnded = { [weak self] in self?.handleEnded() }
+        player.onTrackFailed = { [weak self] in self?.handleFailed() }
         player.onNext = { [weak self] in self?.skipNext() }
         player.onPrevious = { [weak self] in self?.skipPrevious() }
         player.setNextPreviousEnabled(true)
@@ -541,6 +542,9 @@ final class SetlistPlayer {
         isRunning = false
         waitingForLive = false
         player.onTrackEnded = nil          // release ownership of the shared hook
+        player.onTrackFailed = nil
+        resolveStallTask?.cancel(); resolveStallTask = nil
+        liveBackstopTask?.cancel(); liveBackstopTask = nil
         player.onNext = nil
         player.onPrevious = nil
         player.setNextPreviousEnabled(false)
@@ -1131,6 +1135,15 @@ final class SetlistPlayer {
         advanceToNext()
     }
 
+    /// The current item FAILED mid-song (network error on a streamed mp3): a dead source —
+    /// advance (no repeat), same ownership guard as `handleEnded`.
+    private func handleFailed() {
+        guard isRunning, index < queue.count,
+              let npId = rips.nowPlaying?.songId, queue[index].matches(npId) else { return }
+        DiagLog.shared.log("playback", "advance: item failed mid-song song=\(queue[index].id) index=\(index)")
+        advanceToNext()
+    }
+
     /// End of an Apple Music STREAMING track (MusicKit's player finished — or was system-⏭'d
     /// past — the song). Mirrors `handleEnded` but guards on the Apple Music now-playing id
     /// (the streaming path keys off `coordinator.appleMusic.nowPlaying`, never
@@ -1146,6 +1159,13 @@ final class SetlistPlayer {
               coordinator.activeBackend == .appleMusic,
               let npId = coordinator.appleMusic.nowPlaying?.songId,
               queue[index].matches(npId) else { return }
+        if reason == .neverStarted {
+            // MusicKit accepted the play but the stream never started: a dead source — advance
+            // (never replay it under repeat-one; that would sit silent forever).
+            DiagLog.shared.log("playback", "advance: AM never started song=\(queue[index].id) index=\(index)")
+            advanceToNext()
+            return
+        }
         if reason == .systemSkip {
             NPLog.trace("setlist AM system-skip → advance from index \(index)")
             noteAdvanceAway()   // the live AM position reads ~0 here (the detection tick clobbers
@@ -1183,7 +1203,7 @@ final class SetlistPlayer {
     private func advanceToNext() {
         guard isRunning else { return }
         // The auto-advance = the "completed a track" ML signal (vs the explicit-skip lines above).
-        DiagLog.shared.telemetry("playback", "advance from=\(queue.indices.contains(index) ? queue[index].id : "?") index=\(index)")
+        DiagLog.shared.log("playback", "advance from=\(queue.indices.contains(index) ? queue[index].id : "?") index=\(index)/\(queue.count)")
         waitingForLive = false
         index += 1
         if index >= queue.count {
@@ -1228,6 +1248,87 @@ final class SetlistPlayer {
     static var resolveStallSeconds: Double = 6
     /// A live capture still playing this long past its known length is abandoned (seconds).
     static var liveEndGraceSeconds: Double = 45
+    /// How many upcoming rows get their presigned URL resolved ahead of the boundary.
+    static let prefetchAhead = 3
+    /// How far ahead a stalled resolve looks for an on-device row to play instead.
+    static let hopLookahead = 50
+    @ObservationIgnored private var resolveStallTask: Task<Void, Never>?
+    @ObservationIgnored private var liveBackstopTask: Task<Void, Never>?
+    /// The generation whose cloud resolve is still awaiting (nil when none is).
+    @ObservationIgnored private var resolvingGeneration: Int?
+
+    /// Resolve the next rows' presigned URLs WHILE this one plays (cloud mode, ripped rows with
+    /// no device file) — the boundary then starts the next song with no network round trip.
+    private func prefetchUpcoming() {
+        guard isRunning, playbackMode() != .device, index + 1 < queue.count else { return }
+        let ids = queue[(index + 1)..<min(queue.count, index + 1 + Self.prefetchAhead)]
+            .filter { !StudioFactory.isStudioId($0.id) && !ProfileSourceStore.isProfileSongId($0.id) && !hasDeviceFile($0) }
+            .map(\.resolveId)
+        if !ids.isEmpty { rips.prefetchPresigned(Array(ids)) }
+    }
+
+    /// Is this row playable from THIS device with no network (burned file / studio / profile)?
+    private func rowOnDevice(_ it: Item) -> Bool {
+        if StudioFactory.isStudioId(it.id) {
+            guard let res = studioResolve?(it.id) else { return false }
+            res.release?(); return true
+        }
+        if ProfileSourceStore.isProfileSongId(it.id) {
+            guard let res = profileResolve?(it.id) else { return false }
+            res.release?(); return true
+        }
+        return hasDeviceFile(it)
+    }
+
+    /// The cloud resolve for generation `gen` has run `resolveStallSeconds` with no audio (a
+    /// cellular dead zone): play the next ON-DEVICE row now and DEFER the stalled row right
+    /// behind it (reordered, never dropped). No on-device row ⇒ keep waiting (the request
+    /// timeouts still bound it).
+    private func armResolveStall(gen: Int) {
+        resolveStallTask?.cancel()
+        let wait = Self.resolveStallSeconds
+        resolveStallTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0.05, wait) * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.isRunning,
+                  self.resolvingGeneration == gen, self.playGeneration == gen,
+                  self.index < self.queue.count else { return }
+            let stalled = self.queue[self.index]
+            let end = min(self.queue.count, self.index + 1 + Self.hopLookahead)
+            guard self.index + 1 < end,
+                  let j = ((self.index + 1)..<end).first(where: { self.rowOnDevice(self.queue[$0]) }) else {
+                DiagLog.shared.log("playback", "resolve stalled \(Int(wait))s song=\(stalled.id) — no on-device row to hop to; waiting")
+                return
+            }
+            let row = self.queue.remove(at: j)
+            self.queue.insert(row, at: self.index)
+            DiagLog.shared.log("playback", "resolve stalled \(Int(wait))s song=\(stalled.id) → hop to on-device \(row.id) (deferred stalled row)")
+            self.persistSession(positionMs: 0)
+            self.startPlayCurrent(fresh: true)
+        }
+    }
+
+    /// A LIVE capture (stream-through-rip) has no length boundary and ends only on the server's
+    /// ENDLIST — a wedged capture / a playlist reload dying on cellular left the set silent on
+    /// `waitingForLive` until someone pressed Next. Backstop: once it has PLAYED its known length
+    /// plus `liveEndGraceSeconds` (time the listener had it paused doesn't count), advance.
+    private func armLiveBackstop(gen: Int, lengthMs: Int?) {
+        liveBackstopTask?.cancel()
+        guard let lengthMs, lengthMs > 0 else { return }
+        let budget = Double(lengthMs) / 1000 + Self.liveEndGraceSeconds
+        let step = min(1.0, max(0.05, Self.liveEndGraceSeconds / 2))
+        liveBackstopTask = Task { [weak self] in
+            var played = 0.0
+            while played < budget {
+                try? await Task.sleep(nanoseconds: UInt64(step * 1_000_000_000))
+                guard !Task.isCancelled, let self, self.isRunning, self.playGeneration == gen,
+                      self.waitingForLive else { return }
+                if !self.player.pausedByListener { played += step }   // a deliberate pause doesn't count
+            }
+            guard let self, !Task.isCancelled, self.playGeneration == gen, self.waitingForLive else { return }
+            DiagLog.shared.log("playback", "advance: live capture past its length+grace song=\(self.queue.indices.contains(self.index) ? self.queue[self.index].id : "?")")
+            self.advanceToNext()
+        }
+    }
 
     /// THE way to invoke `playCurrent` — every call site funnels through here so the
     /// cancel-the-previous rule can't be forgotten at one of them.
@@ -1274,6 +1375,10 @@ final class SetlistPlayer {
         playGeneration &+= 1
         let playGen = playGeneration
         let it = queue[index]
+        resolveStallTask?.cancel(); resolveStallTask = nil
+        liveBackstopTask?.cancel(); liveBackstopTask = nil
+        resolvingGeneration = nil
+        prefetchUpcoming()   // the NEXT songs' URLs resolve while this one plays
 
         // STUDIO rows (sample/loop/pattern — spec §8): resolved via the StudioStore seam
         // BEFORE burns/coordinator, and ABOVE the device/cloud split — a studio item is a
@@ -1390,8 +1495,21 @@ final class SetlistPlayer {
             // has claimed the deck, this run must do NOTHING — neither advance, nor arm
             // boundaries for, nor hand the card to, a track the listener already skipped past
             // (the stems-toggle generation discipline: commit only at your own generation).
+            // ZERO DEAD AIR in the gap: hold a background runway (a locked phone / CarPlay is
+            // otherwise suspended here — nothing renders audio) and arm the stall hop.
+            let runway = PlaybackRunway("pocketdj-resolve-\(it.id)")
+            resolvingGeneration = playGen
+            armResolveStall(gen: playGen)
+            let t0 = Date()
             await coordinator.play(id: it.id, title: it.title, artist: it.artist,
                                    atMs: resumeAtMs, variant: it.variant)
+            runway.end()
+            if resolvingGeneration == playGen { resolvingGeneration = nil }
+            if playGen == playGeneration { resolveStallTask?.cancel(); resolveStallTask = nil }
+            let ms = Int(Date().timeIntervalSince(t0) * 1000)
+            if ms > 3000 || coordinator.lastErrorMessage != nil {
+                DiagLog.shared.log("playback", "resolve song=\(it.id) ms=\(ms) err=\(coordinator.lastErrorMessage != nil ? 1 : 0) cancelled=\(Task.isCancelled ? 1 : 0) backend=\(coordinator.activeBackend.map { "\($0)" } ?? "-")")
+            }
             // `Task.isCancelled` first: a superseding skip cancels this task, which makes the
             // resolve throw into `lastErrorMessage` — without this check the error branch below
             // would read that CANCELLATION as a dead source and spuriously advance the deck a
@@ -1413,6 +1531,7 @@ final class SetlistPlayer {
             // A live HLS capture has no natural end → don't rely on the hook; offer "Next".
             if player.isLive {
                 waitingForLive = true
+                armLiveBackstop(gen: playGen, lengthMs: it.lengthMs)
             } else {
                 // A cloud rip of an ANALOG album is ONE shared mp3 + per-song startMs (the rip
                 // server transcodes the whole side once), so its natural end only fires at the

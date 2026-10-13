@@ -125,6 +125,11 @@ final class PlayerEngine {
     @ObservationIgnored var isCurrentFavorite: (() -> Bool)?
     /// The end-of-track NotificationCenter observer, re-registered per loaded item.
     private var endObserver: NSObjectProtocol?
+    /// Per-item failed-to-play-to-end + playback-stalled observers.
+    private var failObserver: NSObjectProtocol?
+    private var stallObserver: NSObjectProtocol?
+    /// Fired when the current item FAILS mid-song (a dead source — the sequencer advances).
+    var onTrackFailed: (() -> Void)?
     /// The AVAudioSession interruption observer (iOS) — re-activates + resumes after a call /
     /// other-app interruption ends so a backgrounded set keeps playing per the user's intent.
     private var interruptionObserver: NSObjectProtocol?
@@ -231,6 +236,7 @@ final class PlayerEngine {
         self.scopeRelease?()
         self.scopeRelease = scopeRelease
         isLive = live
+        pausedByListener = false
         clock.currentTime = 0
         clock.duration = 0
         duration = 0
@@ -255,6 +261,27 @@ final class PlayerEngine {
             forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.signalTrackEnded() }
         }
+        // MID-SONG FAILURE (a network error on a streamed mp3 over cellular): the item never
+        // posts DidPlayToEndTime — without this the set sat silent until ⏭. Same one-shot latch
+        // as the natural end, routed to `onTrackFailed` (a dead source ADVANCES — it never
+        // replays under repeat-one). Stalls are logged only: AVPlayer resumes those itself.
+        if let failObserver { NotificationCenter.default.removeObserver(failObserver) }
+        failObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime, object: item, queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                let err = note.userInfo?[AVPlayerItemFailedToPlayToEndTimeErrorKey] as? NSError
+                NPLog.trace("engine item FAILED mid-song \(err.map { "\($0.domain)#\($0.code)" } ?? "?")")
+                DiagLog.shared.log("playback", "item failed-to-end song=\(self?.nowPlayingSongId ?? "?") err=\(err.map { "\($0.domain)#\($0.code)" } ?? "?")")
+                self?.signalTrackFailed()
+            }
+        }
+        if let stallObserver { NotificationCenter.default.removeObserver(stallObserver) }
+        stallObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled, object: item, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                DiagLog.shared.log("playback", "item stalled song=\(self?.nowPlayingSongId ?? "?")")
+            }
+        }
         player.replaceCurrentItem(with: item)
         NowPlayingArbiter.shared.claim(self)   // this engine started audio → own the lock-screen card
         // Re-assert the setlist-driven ⏭/⏮ enablement on every claim: the Mix engine flips the SAME
@@ -267,6 +294,11 @@ final class PlayerEngine {
     }
 
     private func itemBecameReady(_ item: AVPlayerItem) {
+        if item.status == .failed {
+            let err = item.error as NSError?
+            NPLog.trace("engine item status FAILED \(err.map { "\($0.domain)#\($0.code)" } ?? "?")")
+            DiagLog.shared.log("playback", "item load failed song=\(nowPlayingSongId ?? "?") err=\(err.map { "\($0.domain)#\($0.code)" } ?? "?")")
+        }
         guard item.status == .readyToPlay else { return }
         let d = item.duration.seconds
         if d.isFinite, d > 0 { clock.duration = d; duration = d }
@@ -289,13 +321,18 @@ final class PlayerEngine {
         NowPlayingArbiter.shared.claim(self)
         setNextPreviousEnabled(onNext != nil)   // reclaim heals ⏭/⏮ after a Mix auto-mix flipped them
         setLikeCommandEnabled(true)             // …and heals the ♥ a Mix card interlude disabled
+        pausedByListener = false
         player.play(); isPlaying = true; updateNowPlayingInfo()
     }
     func pause() {
         if externalActive { NPLog.trace("engine.pause → external stream"); externalPause?(); isPlaying = false; updateNowPlayingInfo(); return }
         guard player.currentItem != nil else { NPLog.trace("engine.pause REFUSED (idle)"); return }
+        pausedByListener = true
         player.pause(); isPlaying = false; updateNowPlayingInfo()
     }
+    /// The loaded item was paused ON PURPOSE (our `pause()`), as opposed to not rendering
+    /// because it is loading / stalled / dead. Reset by `play()` and every `load`.
+    private(set) var pausedByListener = false
     /// Does this engine actually hold audio to act on? Exactly the condition the play /
     /// pause / toggle idle guards above refuse on — surfaced so a ▶ SURFACE can route to
     /// "start the deck's current row" instead of firing a toggle that is silently refused
@@ -338,6 +375,14 @@ final class PlayerEngine {
         onTrackEnded?()
     }
 
+    /// The current item FAILED mid-song: fire `onTrackFailed` (falling back to `onTrackEnded`)
+    /// at most once per item — the same latch as the natural end.
+    private func signalTrackFailed() {
+        guard !trackEndSignaled else { return }
+        trackEndSignaled = true
+        if let onTrackFailed { onTrackFailed() } else { onTrackEnded?() }
+    }
+
     /// Take over the Now Playing card + remote transport on behalf of an EXTERNAL streaming
     /// player (Apple Music via MusicKit). Idles our own AVPlayer so only the stream sounds,
     /// claims the arbiter (so ⏭/⏮/play/pause reach us), publishes the card, and starts a ~1 Hz
@@ -354,6 +399,8 @@ final class PlayerEngine {
         player.pause()
         player.replaceCurrentItem(with: nil)
         if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
+        if let failObserver { NotificationCenter.default.removeObserver(failObserver); self.failObserver = nil }
+        if let stallObserver { NotificationCenter.default.removeObserver(stallObserver); self.stallObserver = nil }
         statusObservation?.invalidate(); statusObservation = nil
         endBoundarySec = nil; trackEndSignaled = true
         pendingSeekMs = nil
@@ -409,6 +456,8 @@ final class PlayerEngine {
         player.pause()
         player.replaceCurrentItem(with: nil)
         if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
+        if let failObserver { NotificationCenter.default.removeObserver(failObserver); self.failObserver = nil }
+        if let stallObserver { NotificationCenter.default.removeObserver(stallObserver); self.stallObserver = nil }
         statusObservation?.invalidate(); statusObservation = nil
         endBoundarySec = nil; trackEndSignaled = true
         pendingSeekMs = nil
@@ -452,6 +501,8 @@ final class PlayerEngine {
         // Drop the per-item end observer (a nil'd item can't fire). Do NOT nil `onTrackEnded`
         // — the setlist sequencer owns that hook across its own play()/stop() lifecycle.
         if let endObserver { NotificationCenter.default.removeObserver(endObserver); self.endObserver = nil }
+        if let failObserver { NotificationCenter.default.removeObserver(failObserver); self.failObserver = nil }
+        if let stallObserver { NotificationCenter.default.removeObserver(stallObserver); self.stallObserver = nil }
         clock.currentTime = 0; clock.duration = 0; duration = 0; isPlaying = false; isLive = false
         pendingSeekMs = nil
         endBoundarySec = nil; trackEndSignaled = false
