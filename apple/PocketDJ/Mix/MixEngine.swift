@@ -1303,9 +1303,6 @@ final class MixEngine {
     func backdateStreamHoldForTesting(_ deck: Deck, seconds: Double) {
         streamHeldSince[deck] = Date().addingTimeInterval(-seconds)
     }
-    @ObservationIgnored private var streamHeldSince: [Deck: Date] = [:]
-    @ObservationIgnored private var autoExtending = false
-    static var autoStallSkipSeconds: Double = 8
     var autoExtendingForTesting: Bool { autoExtending }
     var autoQueueIdsForTesting: [String] { autoQueue.map(\.loadable.songId) }
     var autoLivePosForTesting: Int { autoLivePos }
@@ -1718,6 +1715,7 @@ final class MixEngine {
     private func clearStream(_ deck: Deck) {
         deckStreams[deck] = nil
         streamHolding[deck] = nil
+        streamHeldSince[deck] = nil
         mainTruncated.remove(deck)         // (a stems-carried failure re-marks it after clearing)
         streamWindowMs[deck] = nil
         streamFullEnd[deck] = nil
@@ -1750,6 +1748,148 @@ final class MixEngine {
         guard deckStreams[deck] != nil, let sr = sampleRates[deck], sr > 0,
               let start = startFrames[deck], let end = endFrames[deck] else { return nil }
         return Double(end - start) / sr
+    }
+
+    // MARK: Zero dead air at the SONG BOUNDARY (auto machine readiness)
+    //
+    // Field (Levi, CarPlay on cellular, 2026-10-12 — the streaming-mode TestFlight): "it was
+    // pausing at the end of songs and I had to skip forward multiple times". The machine fired
+    // its transitions on the wall clock alone, so it crossfaded INTO a standby deck still
+    // Buffering… (dead air until bytes came), a Skip landed on the next not-yet-downloaded song
+    // and held again, a Skip pressed during that silent fade was IGNORED, and a closed stream
+    // gate (offline / server cooldown) DROPPED every ripped-but-not-burned song from the queue
+    // — draining a ripped-union mix to its end. The rules now:
+    //  • a transition only begins into a deck that can AIR (`deckReadyToAir` strict, or
+    //    `deckCanAir` lenient at the last moment); a not-ready standby is replaced by a READY
+    //    upcoming song (`promoteReadyUpcoming`) — the not-ready one is deferred, never dropped;
+    //  • nothing ready at the end of the live song ⇒ the live song keeps playing (`extendLive`
+    //    replays it) and the machine transitions the moment the next has audio;
+    //  • a crossfade whose incoming deck is holding is FROZEN (the outgoing stays on air);
+    //  • a Skip during such a frozen fade re-targets past the held song;
+    //  • a live deck stalled on an underrun hands over to a ready song after `autoStallSkipSeconds`;
+    //  • a ripped song the stream gate refuses right now is DEFERRED, not dropped.
+    // Every decision logs one `mixadvance` line (always-on lane).
+
+    /// Seconds of downloaded runway past the playhead that make a streaming deck "ready" — the
+    /// strict bar a transition prefers (a stream that has fallen this far behind will likely
+    /// underrun mid-song on a flaky network).
+    nonisolated static let autoReadyRunway: Double = 15
+    /// With this little left of the live song and NOTHING able to air, the live song is
+    /// replayed instead of the mix going silent.
+    nonisolated static let autoExtendAtSecondsLeft: Double = 0.5
+    /// A live deck frozen on an underrun this long hands over to a ready song.
+    static var autoStallSkipSeconds: Double = 8
+
+    /// When each PLAYING deck's stream hold began (tick-maintained) — the stall clock.
+    @ObservationIgnored private var streamHeldSince: [Deck: Date] = [:]
+    /// The live song was replayed because nothing could air: transition the moment one can.
+    @ObservationIgnored private var autoExtending = false
+    /// The in-flight crossfade is frozen on a holding incoming deck since this moment.
+    @ObservationIgnored private var autoFadeHeldSince: Date?
+    /// Throttle for the repeating "waiting for the next song" line (one per wait, not per tick).
+    @ObservationIgnored private var autoAwaitLogged: String?
+
+    private func advLog(_ msg: String) { DiagLog.shared.log("mixadvance", msg) }
+
+    /// STRICT readiness: the deck holds a track that will play through — an on-disk file, a
+    /// finished stream, or a stream with `autoReadyRunway` downloaded past its playhead.
+    func deckReadyToAir(_ deck: Deck) -> Bool {
+        guard state(deck).loaded != nil else { return false }
+        guard let s = deckStreams[deck] else { return files[deck] != nil || stemActive(deck) }
+        if streamHeld(deck) { return false }
+        if s.isComplete { return true }
+        guard let frontier = streamFrontierSeconds(deck) else { return false }
+        let pos = position(deck)
+        return frontier - pos >= min(Self.autoReadyRunway, max(0, duration(deck) - pos) - 0.1)
+    }
+
+    /// LENIENT readiness: the deck would make sound right now (not holding for bytes).
+    func deckCanAir(_ deck: Deck) -> Bool {
+        guard state(deck).loaded != nil else { return false }
+        if deckStreams[deck] == nil { return files[deck] != nil || stemActive(deck) }
+        return !streamHeld(deck)
+    }
+
+    /// Is `songId`'s audio fully on this device (a burn / studio / profile file, or a finished
+    /// stream) — a load of it airs at once.
+    private func songOnDevice(_ songId: String) -> Bool {
+        if burns.hasLocalFile(forSong: songId) { return true }
+        if let s = streamer?.stream(for: songId), s.isComplete, !s.failed { return true }
+        if StudioFactory.isStudioId(songId), let res = studioResolve?(songId) { res.release?(); return true }
+        if ProfileSourceStore.isProfileSongId(songId), let res = profileResolve?(songId) { res.release?(); return true }
+        return false
+    }
+
+    /// A load of `songId` failed only because the stream gate is closed RIGHT NOW (ripped, not
+    /// on disk, but offline / server cooldown / recent failure) — defer it, don't drop it.
+    private func transientlyUnloadable(_ songId: String) -> Bool {
+        guard let streamer, streamer.isRipped(songId) else { return false }
+        return !burns.hasLocalFile(forSong: songId) && !streamer.canStream(songId)
+    }
+
+    /// Move queue item `j` to `p` (p ≤ j) — the items between shift back one. Cursors at/after
+    /// `p` are the caller's to settle (every caller sets `autoNextToLoad` past the slot).
+    private func moveAutoItem(from j: Int, to p: Int) {
+        guard j != p, autoQueue.indices.contains(j), p >= 0, p < j else { return }
+        let item = autoQueue.remove(at: j)
+        autoQueue.insert(item, at: p)
+    }
+
+    /// The standby deck can't air its song yet: find the first unplayed upcoming song that is
+    /// fully ON DEVICE, move it into the next slot, and load it onto the standby deck. The
+    /// not-ready song stays queued right behind it (its download keeps running).
+    private func promoteReadyUpcoming(reason: String) -> Bool {
+        let deck = other(autoLiveDeck)
+        let p = autoLivePos + 1
+        guard p < autoQueue.count else { return false }
+        let liveId = state(autoLiveDeck).loaded?.songId
+        let waiting = autoQueue[p].loadable.songId
+        var j = p + 1
+        while j < autoQueue.count {
+            let sid = autoQueue[j].loadable.songId
+            if sid != liveId, recorder?.hasPlayed(sid) != true, songOnDevice(sid) {
+                if loadAuto(autoQueue[j], onto: deck) {
+                    moveAutoItem(from: j, to: p)
+                    autoNextToLoad = max(autoNextToLoad, p + 1)
+                    advLog("promote \(sid) over not-ready \(waiting) (\(reason))")
+                    return true
+                }
+            }
+            j += 1
+        }
+        return false
+    }
+
+    /// Nothing can air at the end of the live song: replay it (music beats silence) and let the
+    /// idle lane transition the moment the next song has audio.
+    private func extendLive(reason: String) {
+        let live = autoLiveDeck
+        advLog("extend \(state(live).loaded?.songId ?? "-") — \(reason)")
+        restart(live)
+        if !state(live).isPlaying { play(live) }
+        let durMs = autoDeckDurationMs[live] ?? Int(duration(live) * 1000)
+        autoDeckEndsAt[live] = Date().addingTimeInterval(Double(durMs) / 1000 / max(0.05, state(live).rate))
+        autoExtending = true
+    }
+
+    /// Back out of a crossfade whose incoming deck can't air (holding, or ejected by a dead
+    /// stream): the outgoing deck takes the fader back and stays live, the incoming is
+    /// silenced (still loaded — it keeps downloading). The cursor never moved.
+    private func abandonTransition(reason: String) {
+        let from = autoFadeFrom, to = other(from)
+        advLog("abandon fade → \(state(to).loaded?.songId ?? "-") — \(reason)")
+        abortGlide()
+        autoPrerollStartedAt = nil
+        autoPostrollStartedAt = nil
+        autoTransitionIsGlide = false
+        autoFadeStartedAt = nil
+        autoFadeHeldSince = nil
+        autoTransitionRepeatOne = false
+        autoTransitionWrap = false
+        if let restore = pendingFadeRestore { autoFadeSeconds = restore; pendingFadeRestore = nil }
+        applyCrossfader(from == .a ? 0 : 1)
+        autoLiveDeck = from
+        if state(to).loaded != nil { silence(to) }
     }
 
     /// Bytes of file per second of audio for a growing LAME mp3. Its header claims the FULL
@@ -2933,6 +3073,9 @@ final class MixEngine {
         autoLeadSeconds = max(1, lead)
         autoFadeSeconds = max(0.2, fade)
         pendingFadeRestore = nil
+        autoExtending = false
+        autoFadeHeldSince = nil
+        autoAwaitLogged = nil
         autoQueue = shuffled ? items.shuffled() : items
         autoLivePos = 0
         autoLiveDeck = .a
@@ -2956,13 +3099,20 @@ final class MixEngine {
         // A queue item whose file vanished (purged burn / detached folder) must not claim a deck —
         // the machine would burn a whole transition on silence. Drop unloadable LEADING items, then
         // preload the next loadable onto B; ALL unloadable ⇒ no mix (mirrors the empty-queue guard).
-        while !autoQueue.isEmpty, !loadAuto(autoQueue[0], onto: .a) { autoQueue.removeFirst() }
-        guard !autoQueue.isEmpty else {
+        // SHUFFLED: the order is ours to pick — open on a song that's ON DEVICE when there is one,
+        // so the mix starts sounding at once instead of on a Buffering… stream (zero dead air).
+        if shuffled, !songOnDevice(autoQueue[0].loadable.songId),
+           let j = autoQueue.firstIndex(where: { songOnDevice($0.loadable.songId) }) {
+            advLog("start: open on on-device \(autoQueue[j].loadable.songId) over streaming \(autoQueue[0].loadable.songId)")
+            moveAutoItem(from: j, to: 0)
+        }
+        guard loadAutoSlot(0, onto: .a) else {
+            autoQueue = []
             refreshAutoStatus()
             persistMixDeckSession()   // the eject above emptied both decks — land that state
             return
         }
-        while autoQueue.count > 1, !loadAuto(autoQueue[1], onto: .b) { autoQueue.remove(at: 1) }
+        _ = loadAutoSlot(1, onto: .b)
         autoNextToLoad = min(2, autoQueue.count)
 
         let now = Date()
@@ -3105,8 +3255,13 @@ final class MixEngine {
     /// loaded item's queue index, or nil when nothing unplayed can be loaded at all.
     @discardableResult
     private func loadNextUnplayed(onto deck: Deck, excludingDeck exclude: Deck? = nil) -> Int? {
-        while let k = nextUnplayedQueueIndex(excludingDeck: exclude) {
+        var deferred = Set<String>()
+        while let k = nextUnplayedQueueIndex(excludingDeck: exclude, skipping: deferred) {
             if loadAuto(autoQueue[k], onto: deck) { return k }
+            if transientlyUnloadable(autoQueue[k].loadable.songId) {
+                deferred.insert(autoQueue[k].loadable.songId)   // stream gate closed now — keep it
+                continue
+            }
             autoQueue.remove(at: k)                  // unloadable — it can never play; drop it
             if autoNextToLoad > k { autoNextToLoad -= 1 }
             if autoLivePos > k { autoLivePos -= 1 }
@@ -3116,11 +3271,11 @@ final class MixEngine {
 
     /// First index in the auto queue whose song hasn't started playing this session (nil ⇒ all played).
     /// `excludingDeck` skips whatever is loaded on that deck (e.g. the live deck's current track).
-    private func nextUnplayedQueueIndex(excludingDeck exclude: Deck? = nil) -> Int? {
+    private func nextUnplayedQueueIndex(excludingDeck exclude: Deck? = nil, skipping: Set<String> = []) -> Int? {
         let skip = exclude.flatMap { state($0).loaded?.songId }
         for (i, item) in autoQueue.enumerated() {
             let sid = item.loadable.songId
-            if sid == skip { continue }
+            if sid == skip || skipping.contains(sid) { continue }
             if recorder?.hasPlayed(sid) == true { continue }
             return i
         }
@@ -3141,6 +3296,9 @@ final class MixEngine {
         autoPostrollStartedAt = nil
         autoTransitionIsGlide = false
         pendingFadeRestore = nil
+        autoExtending = false
+        autoFadeHeldSince = nil
+        autoAwaitLogged = nil
         autoPaused = false
         autoResumeEndDeck = nil
         autoResumeFromRestore = false
@@ -3262,7 +3420,37 @@ final class MixEngine {
                 beginAutoCrossfade(now: now)     // start the incoming deck + the volume sweep
                 startGlideCrossfade()            // snap outgoing to target, offset incoming, beat-sync
             }
-        } else if let fadeStart = autoFadeStartedAt {                      // CROSSFADE (volume sweep)
+        } else if var fadeStart = autoFadeStartedAt {                      // CROSSFADE (volume sweep)
+            let from = autoFadeFrom, to = other(from)
+            // ZERO DEAD AIR: never sweep the fader onto a deck that isn't making sound.
+            if state(to).loaded == nil {
+                // The incoming stream died before any audio (its deck was ejected): back out —
+                // the outgoing stays on air and the idle lane picks the next song.
+                abandonTransition(reason: "incoming deck emptied")
+                refreshAutoStatus()
+                return
+            }
+            if streamHeld(to) {
+                // Incoming is Buffering…: FREEZE the sweep (the outgoing keeps playing) until it
+                // has runway. If the outgoing runs out first, replay it rather than go silent.
+                if autoFadeHeldSince == nil {
+                    autoFadeHeldSince = now
+                    advLog("fade frozen — \(state(to).loaded?.songId ?? "-") buffering")
+                }
+                if duration(from) - position(from) <= Self.autoExtendAtSecondsLeft {
+                    abandonTransition(reason: "outgoing ran out while incoming buffering")
+                    extendLive(reason: "next still buffering")
+                }
+                refreshAutoStatus()
+                return
+            }
+            if let heldSince = autoFadeHeldSince {
+                fadeStart = fadeStart.addingTimeInterval(now.timeIntervalSince(heldSince))
+                autoFadeStartedAt = fadeStart
+                autoFadeHeldSince = nil
+                restampAutoEnd(to)
+                advLog("fade resumed — \(state(to).loaded?.songId ?? "-") has audio")
+            }
             let p = min(max(now.timeIntervalSince(fadeStart) / autoFadeSeconds, 0), 1)
             applyCrossfader(autoFadeFrom == .a ? p : 1 - p)
             if p >= 1 { finishAutoCrossfade() }
@@ -3291,6 +3479,19 @@ final class MixEngine {
             guard !state(autoLiveDeck).loopOn else { return }
             guard let endsAt = autoDeckEndsAt[autoLiveDeck] else { return }
             let secondsLeft = endsAt.timeIntervalSince(now)
+            // STALLED LIVE DECK: a stream underrun mid-song (cellular dead zone) is dead air —
+            // after `autoStallSkipSeconds` hand over to a song that can air right now.
+            if let since = streamHeldSince[autoLiveDeck], state(autoLiveDeck).isPlaying,
+               now.timeIntervalSince(since) >= Self.autoStallSkipSeconds,
+               autoLivePos + 1 < autoQueue.count, ensureNextPreloaded(),
+               standbyCanAir(reason: "live stalled") {
+                advLog("stall-skip \(state(autoLiveDeck).loaded?.songId ?? "-") held \(Int(now.timeIntervalSince(since)))s → \(state(other(autoLiveDeck)).loaded?.songId ?? "-")")
+                reportDeckEnded(autoLiveDeck, .stopped)
+                autoExtending = false
+                beginImmediateTransition(fade: 1)
+                refreshAutoStatus()
+                return
+            }
             if secondsLeft <= autoLeadSeconds, autoRepeat == .one, ensureRepeatOnePreloaded() {
                 // REPEAT ONE: replay the on-air track — the standby deck holds the SAME item and
                 // the finish freezes the cursor. A failed re-preload (file purged mid-mix) falls
@@ -3303,8 +3504,34 @@ final class MixEngine {
                 // track is live, AFTER all preloading already ran, so the idle deck holds a retired
                 // (or no) track. Transitioning into it would double-play the old track or fade to
                 // silence. On failure the unloadable tail was dropped; the natural end takes over.
-                if secondsLeft <= autoLeadSeconds, ensureNextPreloaded() {
-                    beginAdvanceTransition(now: now, secondsLeft: secondsLeft)
+                //
+                // READINESS: the window opens at the lead (or at once while the live song is
+                // being EXTENDED), but the transition only begins into a deck that can air — a
+                // ready standby, a promoted on-device song, or (at the very end) one that at
+                // least has its first seconds. Nothing at all ⇒ the live song is extended.
+                if secondsLeft <= autoLeadSeconds || autoExtending {
+                    let atEnd = secondsLeft <= Self.autoExtendAtSecondsLeft
+                    let hasNext = ensureNextPreloaded()
+                    if hasNext, deckReadyToAir(other(autoLiveDeck))
+                        || promoteReadyUpcoming(reason: "auto")
+                        || ((atEnd || autoExtending) && deckCanAir(other(autoLiveDeck))) {
+                        if autoExtending || autoAwaitLogged != nil {
+                            advLog("advance → \(state(other(autoLiveDeck)).loaded?.songId ?? "-") after wait (left=\(String(format: "%.1f", secondsLeft))s)")
+                        }
+                        let extended = autoExtending
+                        autoExtending = false
+                        autoAwaitLogged = nil
+                        beginAdvanceTransition(now: now, secondsLeft: extended ? max(secondsLeft, autoFadeSeconds) : secondsLeft)
+                    } else if atEnd, hasNext || autoLivePos + 1 < autoQueue.count {
+                        extendLive(reason: hasNext ? "next not ready (\(state(other(autoLiveDeck)).loaded?.songId ?? "-"))"
+                                                   : "no loadable next (stream gate closed)")
+                    } else {
+                        let waiting = state(other(autoLiveDeck)).loaded?.songId ?? "-"
+                        if autoAwaitLogged != waiting {
+                            autoAwaitLogged = waiting
+                            advLog("await next \(waiting) — buffering (left=\(String(format: "%.1f", secondsLeft))s)")
+                        }
+                    }
                 }
             } else if secondsLeft <= autoLeadSeconds, autoRepeat == .all, !autoQueue.isEmpty,
                       ensureWrapPreloaded() {
@@ -3352,10 +3579,33 @@ final class MixEngine {
     /// restored to the configured baseline once the crossfade finishes (see `finishAutoCrossfade`), so
     /// a one-off fast skip never shortens the next AUTOMATIC crossfade.
     func skipToNext(fadeSeconds: Double) {
-        guard autoEnabled, autoMixing, isReady, !autoTransitioning else { return }
+        guard autoEnabled, autoMixing, isReady else { return }
+        if autoTransitioning {
+            // A Skip during a crossfade FROZEN on a buffering incoming deck must not be swallowed
+            // (field: "I had to skip forward multiple times"): the listener hears the outgoing
+            // song still playing — back out and skip PAST the held song. Any other in-flight
+            // transition still ignores it (a double-advance would jump the fader).
+            guard autoFadeStartedAt != nil, autoPostrollStartedAt == nil,
+                  state(other(autoFadeFrom)).loaded == nil || streamHeld(other(autoFadeFrom)) else {
+                advLog("skip ignored — transition in flight")
+                return
+            }
+            let held = other(autoFadeFrom)
+            let heldId = state(held).loaded?.songId
+            abandonTransition(reason: "skip while incoming buffering")
+            // Defer the held song to the END of the queue (it keeps downloading; it never aired).
+            let p = autoLivePos + 1
+            if let heldId, p < autoQueue.count, autoQueue[p].loadable.songId == heldId, autoQueue.count > p + 1 {
+                autoQueue.append(autoQueue.remove(at: p))
+                advLog("skip: deferred buffering \(heldId) to the end")
+                if state(held).loaded?.songId == heldId { ejectForReplacement(held) }
+            }
+        }
         // The listen ends at the moment of the SKIP, not when the crossfade finishes retiring it
         // (by then a fast fade has played on). Covers `remoteSkip` — CarPlay / lock-screen ⏭.
         reportDeckEnded(autoLiveDeck, .skip)
+        autoExtending = false
+        autoAwaitLogged = nil
         // An explicit skip OVERRIDES repeat-one (next means next — the universal transport
         // convention); repeat-ALL turns the last-track skip into a wrap to the queue head.
         var wrapping = false
@@ -3363,28 +3613,59 @@ final class MixEngine {
             // Late-append safety (see the tick): the incoming deck must actually hold the next
             // queue item before a transition fires into it. All-unloadable tail ⇒ last track.
             guard ensureNextPreloaded() else {
+                if autoLivePos + 1 < autoQueue.count {
+                    // Only stream-gated songs are left (offline / server cooldown): keep the live
+                    // song playing — ending the mix here was the silent "skip killed it" path.
+                    advLog("skip: nothing loadable now — live song keeps playing")
+                    return
+                }
+                advLog("skip: queue exhausted — mix ends")
                 stopAutoMix()
                 autoEndedExhausted = true
                 return
             }
+            // One press = one AUDIBLE next song: prefer a ready song over a buffering one.
+            let ready = standbyCanAir(reason: "skip")
+            advLog("skip → \(state(other(autoLiveDeck)).loaded?.songId ?? "-") ready=\(ready ? 1 : 0)")
         } else if autoRepeat == .all, !autoQueue.isEmpty, ensureWrapPreloaded() {
             wrapping = true
         } else {                                                                // last track → end
+            advLog("skip on last track — mix ends")
             stopAutoMix()
             autoEndedExhausted = true   // skip-exhausted twin of the natural end above
             return
         }
         autoTransitionWrap = wrapping
+        beginImmediateTransition(fade: fadeSeconds)
+        refreshAutoStatus()
+    }
+
+    /// Can the standby deck air the next song — strictly ready, or after promoting an on-device
+    /// song into the slot, or at least with its first seconds of audio (lenient)?
+    private func standbyCanAir(reason: String) -> Bool {
+        let standby = other(autoLiveDeck)
+        return deckReadyToAir(standby) || promoteReadyUpcoming(reason: reason) || deckCanAir(standby)
+    }
+
+    /// Start a transition NOW (skip / stall hand-over): no preroll, a one-off fade length that
+    /// the finish restores to the configured baseline.
+    private func beginImmediateTransition(fade: Double) {
         if anyGlide {
             // A manual skip glides too, but with NO preroll (skip = advance now); it still applies the
             // effect / pitch offset on the incoming deck + rolls it back off in the postroll.
-            beginGlideTransition(now: Date(), preroll: 0, fade: fadeSeconds)
+            beginGlideTransition(now: Date(), preroll: 0, fade: fade)
         } else {
-            pendingFadeRestore = autoFadeSeconds
-            autoFadeSeconds = max(0.2, fadeSeconds)
+            if pendingFadeRestore == nil { pendingFadeRestore = autoFadeSeconds }
+            autoFadeSeconds = max(0.2, fade)
             beginAutoCrossfade(now: Date())
         }
-        refreshAutoStatus()
+    }
+
+    /// Empty a standby deck whose (never-aired) song was skipped past, so the next preload
+    /// re-loads the deck from the queue rather than finding the deferred song still on it.
+    private func ejectForReplacement(_ deck: Deck) {
+        reportDeckEnded(deck, .stopped)
+        ejectDeckCore(deck)
     }
 
     private func beginAutoCrossfade(now: Date) {
@@ -3466,24 +3747,57 @@ final class MixEngine {
     /// `autoLivePos + 1` — the caller must not begin a transition.
     private func ensureNextPreloaded() -> Bool {
         let deck = other(autoLiveDeck)
-        while autoLivePos + 1 < autoQueue.count {
-            let next = autoQueue[autoLivePos + 1]
+        let p = autoLivePos + 1
+        var j = p
+        var deferred: [String] = []
+        while j < autoQueue.count {
+            let next = autoQueue[j]
             if state(deck).loaded?.songId == next.loadable.songId {
                 // Already preloaded — or a queue DUPLICATE of what this deck still holds, which is
                 // equally fine: `beginAutoCrossfade` re-schedules the segment via `restart`, so
                 // even a fully-consumed player replays. Re-stamp the duration in case the queue
                 // entry differs (an insert of the same song with another length).
                 autoDeckDurationMs[deck] = next.durationMs
-                autoNextToLoad = max(autoNextToLoad, autoLivePos + 2)
+                moveAutoItem(from: j, to: p)
+                autoNextToLoad = max(autoNextToLoad, p + 1)
+                if !deferred.isEmpty { advLog("defer \(deferred) — stream gate closed; next \(next.loadable.songId)") }
                 return true
             }
             if loadAuto(next, onto: deck) {
                 // The deck just committed to index livePos+1 — later inserts must land after it.
-                autoNextToLoad = max(autoNextToLoad, autoLivePos + 2)
+                moveAutoItem(from: j, to: p)
+                autoNextToLoad = max(autoNextToLoad, p + 1)
+                if !deferred.isEmpty { advLog("defer \(deferred) — stream gate closed; next \(next.loadable.songId)") }
                 return true
             }
-            autoQueue.remove(at: autoLivePos + 1)
-            if autoNextToLoad > autoLivePos + 1 { autoNextToLoad -= 1 }
+            if transientlyUnloadable(next.loadable.songId) {
+                // Ripped but the stream gate is closed RIGHT NOW (offline / rip-server cooldown
+                // / a recent failure): it can play later — keep it queued, try the one after.
+                // (Dropping these drained a ripped-union mix to silence on a cellular dead zone.)
+                deferred.append(next.loadable.songId)
+                j += 1
+                continue
+            }
+            autoQueue.remove(at: j)                    // permanently unloadable — drop it
+            if autoNextToLoad > j { autoNextToLoad -= 1 }
+        }
+        if !deferred.isEmpty { advLog("no loadable next — \(deferred.count) deferred (stream gate closed)") }
+        return false
+    }
+
+    /// Load the first loadable queue item at or after slot `p` onto `deck`, moving it INTO `p`.
+    /// Permanently unloadable items are dropped; ripped songs the stream gate refuses right now
+    /// stay queued behind it (deferred). False when nothing at/after `p` can load.
+    private func loadAutoSlot(_ p: Int, onto deck: Deck) -> Bool {
+        var j = p
+        while j < autoQueue.count {
+            if loadAuto(autoQueue[j], onto: deck) {
+                if j != p { advLog("slot \(p): deferred \(j - p) gated song(s) for \(autoQueue[j].loadable.songId)") }
+                moveAutoItem(from: j, to: p)
+                return true
+            }
+            if transientlyUnloadable(autoQueue[j].loadable.songId) { j += 1; continue }
+            autoQueue.remove(at: j)
         }
         return false
     }
@@ -5662,7 +5976,20 @@ final class MixEngine {
                     if !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
                     continue
                 }
-                if streamHeld(d) { continue }    // streaming: waiting for bytes — the playhead is frozen
+                if streamHeld(d) {               // streaming: waiting for bytes — the playhead is frozen
+                    if streamHeldSince[d] == nil {
+                        streamHeldSince[d] = now
+                        advLog("deck \(d.rawValue) holding \(state(d).loaded?.songId ?? "-") at \(String(format: "%.1f", position(d)))s auto=\(autoMixing ? 1 : 0)")
+                    }
+                    // …and so is its auto end clock (held seconds aren't played seconds) —
+                    // otherwise a long hold burns the song's wall-clock runway and fires a
+                    // transition "at its end" while most of it is still unplayed.
+                    if autoMixing, let t = autoDeckEndsAt[d] { autoDeckEndsAt[d] = t.addingTimeInterval(dt) }
+                    continue
+                }
+                if let since = streamHeldSince.removeValue(forKey: d) {
+                    advLog("deck \(d.rawValue) resumed after \(String(format: "%.1f", now.timeIntervalSince(since)))s hold")
+                }
                 if stemUnderrun(d, at: position(d)) { continue }   // partial stems ran dry with nothing to hand to
                 if mainUnderrun(d, at: position(d)) { continue }   // a cut-short full mix ran dry, stems still coming
                 // LOOPING: the playhead folds back into the window instead of advancing to the
@@ -5687,6 +6014,10 @@ final class MixEngine {
                 }
                 setPosition(d, pos)
                 if pos >= dur, !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
+            }
+            // The stall clock only runs for a deck that is PLAYING and HOLDING right now.
+            for d in Deck.allCases where streamHeldSince[d] != nil && !(state(d).isPlaying && streamHeld(d)) {
+                streamHeldSince[d] = nil
             }
         } else if deckA.isPlaying || deckB.isPlaying || autoMixing {
             // WATCHDOG: the system stopped the engine (route change / missed interruption-.ended /
