@@ -1,0 +1,9 @@
+[
+  {
+    "IntegrationId": "7kj9xqp",
+    "IntegrationType": "AWS_PROXY",
+    "PayloadFormatVersion": "2.0",
+    "TimeoutInMillis": 30000,
+    "Function": "pocketdj-am-playlist-sync"
+  }
+]

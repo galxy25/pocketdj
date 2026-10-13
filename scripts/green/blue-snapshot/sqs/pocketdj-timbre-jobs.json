@@ -1,0 +1,9 @@
+{
+  "VisibilityTimeout": "1800",
+  "MaximumMessageSize": "1048576",
+  "MessageRetentionPeriod": "345600",
+  "DelaySeconds": "0",
+  "ReceiveMessageWaitTimeSeconds": "0",
+  "SqsManagedSseEnabled": "true",
+  "RedrivePolicy": "{\"deadLetterTargetArn\":\"arn:aws:sqs:us-west-2:011183829623:pocketdj-timbre-jobs-dlq\",\"maxReceiveCount\":3}"
+}

@@ -1,0 +1,19 @@
+{
+  "FunctionName": "pocketdj-search-proxy",
+  "Runtime": "nodejs20.x",
+  "Handler": "index.handler",
+  "MemorySize": 256,
+  "Timeout": 20,
+  "Architectures": [
+    "x86_64"
+  ],
+  "EphemeralStorage": {
+    "Size": 512
+  },
+  "Role": "pocketdj-search-proxy-role",
+  "Environment": {
+    "Variables": {
+      "AOSS_HOST": "mii9dwge3uiee2tvivt5.aoss.us-west-2.on.aws"
+    }
+  }
+}

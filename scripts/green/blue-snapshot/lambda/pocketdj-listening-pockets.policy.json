@@ -1,0 +1,34 @@
+{
+  "Version": "2012-10-17",
+  "Id": "default",
+  "Statement": [
+    {
+      "Sid": "apigw-invoke",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "apigateway.amazonaws.com"
+      },
+      "Action": "lambda:InvokeFunction",
+      "Resource": "arn:aws:lambda:us-west-2:011183829623:function:pocketdj-listening-pockets",
+      "Condition": {
+        "ArnLike": {
+          "AWS:SourceArn": "arn:aws:execute-api:us-west-2:011183829623:n5ordrwfe9/*"
+        }
+      }
+    },
+    {
+      "Sid": "events-nightly",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "events.amazonaws.com"
+      },
+      "Action": "lambda:InvokeFunction",
+      "Resource": "arn:aws:lambda:us-west-2:011183829623:function:pocketdj-listening-pockets",
+      "Condition": {
+        "ArnLike": {
+          "AWS:SourceArn": "arn:aws:events:us-west-2:011183829623:rule/pocketdj-listening-pockets-nightly"
+        }
+      }
+    }
+  ]
+}

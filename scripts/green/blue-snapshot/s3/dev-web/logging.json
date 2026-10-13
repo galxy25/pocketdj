@@ -1,0 +1,6 @@
+{
+  "LoggingEnabled": {
+    "TargetBucket": "pocketdj-logs-011183829623",
+    "TargetPrefix": "s3-access/dev-web/"
+  }
+}

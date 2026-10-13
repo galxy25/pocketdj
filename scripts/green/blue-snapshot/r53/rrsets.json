@@ -1,0 +1,205 @@
+[
+  {
+    "Name": "pocket-dj.com.",
+    "Type": "A",
+    "AliasTarget": {
+      "HostedZoneId": "Z2FDTNDATAQYW2",
+      "DNSName": "d20r2rqpcnebjm.cloudfront.net.",
+      "EvaluateTargetHealth": false
+    }
+  },
+  {
+    "Name": "pocket-dj.com.",
+    "Type": "MX",
+    "TTL": 300,
+    "ResourceRecords": [
+      {
+        "Value": "10 inbound-smtp.us-west-2.amazonaws.com"
+      }
+    ]
+  },
+  {
+    "Name": "pocket-dj.com.",
+    "Type": "NS",
+    "TTL": 172800,
+    "ResourceRecords": [
+      {
+        "Value": "ns-1752.awsdns-27.co.uk."
+      },
+      {
+        "Value": "ns-1106.awsdns-10.org."
+      },
+      {
+        "Value": "ns-25.awsdns-03.com."
+      },
+      {
+        "Value": "ns-668.awsdns-19.net."
+      }
+    ]
+  },
+  {
+    "Name": "pocket-dj.com.",
+    "Type": "SOA",
+    "TTL": 900,
+    "ResourceRecords": [
+      {
+        "Value": "ns-1752.awsdns-27.co.uk. awsdns-hostmaster.amazon.com. 1 7200 900 1209600 86400"
+      }
+    ]
+  },
+  {
+    "Name": "pocket-dj.com.",
+    "Type": "TXT",
+    "TTL": 300,
+    "ResourceRecords": [
+      {
+        "Value": "\"v=spf1 include:amazonses.com ~all\""
+      }
+    ]
+  },
+  {
+    "Name": "_154871d47dc6373c8fe74afe13895d43.pocket-dj.com.",
+    "Type": "CNAME",
+    "TTL": 300,
+    "ResourceRecords": [
+      {
+        "Value": "_dc27277673588fb08cd30d9afa5c2a6c.jkddzztszm.acm-validations.aws."
+      }
+    ]
+  },
+  {
+    "Name": "_dmarc.pocket-dj.com.",
+    "Type": "TXT",
+    "TTL": 300,
+    "ResourceRecords": [
+      {
+        "Value": "\"v=DMARC1; p=none; rua=mailto:levismschoen@gmail.com\""
+      }
+    ]
+  },
+  {
+    "Name": "5d2ilnyb6yhvvmwkl5rpgyp7ro6er3kw._domainkey.pocket-dj.com.",
+    "Type": "CNAME",
+    "TTL": 300,
+    "ResourceRecords": [
+      {
+        "Value": "5d2ilnyb6yhvvmwkl5rpgyp7ro6er3kw.dkim.amazonses.com"
+      }
+    ]
+  },
+  {
+    "Name": "7zv2sdjpy3yswu4ui4qyi7rcv5yiw5b3._domainkey.pocket-dj.com.",
+    "Type": "CNAME",
+    "TTL": 300,
+    "ResourceRecords": [
+      {
+        "Value": "7zv2sdjpy3yswu4ui4qyi7rcv5yiw5b3.dkim.amazonses.com"
+      }
+    ]
+  },
+  {
+    "Name": "p524kxouluo6ylcwytum2w33qyfvbbgi._domainkey.pocket-dj.com.",
+    "Type": "CNAME",
+    "TTL": 300,
+    "ResourceRecords": [
+      {
+        "Value": "p524kxouluo6ylcwytum2w33qyfvbbgi.dkim.amazonses.com"
+      }
+    ]
+  },
+  {
+    "Name": "app.pocket-dj.com.",
+    "Type": "A",
+    "AliasTarget": {
+      "HostedZoneId": "Z2FDTNDATAQYW2",
+      "DNSName": "d2p4cubg6se03u.cloudfront.net.",
+      "EvaluateTargetHealth": false
+    }
+  },
+  {
+    "Name": "_77b6ed6de5fb006cbd496cb940772651.app.pocket-dj.com.",
+    "Type": "CNAME",
+    "TTL": 300,
+    "ResourceRecords": [
+      {
+        "Value": "_9faa06465b30ac41f9e9dbeedd3b3712.jkddzztszm.acm-validations.aws"
+      }
+    ]
+  },
+  {
+    "Name": "dev.app.pocket-dj.com.",
+    "Type": "A",
+    "AliasTarget": {
+      "HostedZoneId": "Z2FDTNDATAQYW2",
+      "DNSName": "djictbz9w796r.cloudfront.net.",
+      "EvaluateTargetHealth": false
+    }
+  },
+  {
+    "Name": "_f32c6600986a29ef5157a329ce26a9b1.dev.app.pocket-dj.com.",
+    "Type": "CNAME",
+    "TTL": 300,
+    "ResourceRecords": [
+      {
+        "Value": "_405e11f1f07182b3285b9a69d564c027.jkddzztszm.acm-validations.aws."
+      }
+    ]
+  },
+  {
+    "Name": "jukebox.pocket-dj.com.",
+    "Type": "A",
+    "AliasTarget": {
+      "HostedZoneId": "Z2FDTNDATAQYW2",
+      "DNSName": "d3jlgkneh3xj10.cloudfront.net.",
+      "EvaluateTargetHealth": false
+    }
+  },
+  {
+    "Name": "_d299e2a19682eb374ebe741dc81da991.jukebox.pocket-dj.com.",
+    "Type": "CNAME",
+    "TTL": 300,
+    "ResourceRecords": [
+      {
+        "Value": "_48918bbd30ee0e441f1a1467ed26af86.jkddzztszm.acm-validations.aws."
+      }
+    ]
+  },
+  {
+    "Name": "legal.pocket-dj.com.",
+    "Type": "A",
+    "AliasTarget": {
+      "HostedZoneId": "Z2FDTNDATAQYW2",
+      "DNSName": "d7hqmfs8guzv3.cloudfront.net.",
+      "EvaluateTargetHealth": false
+    }
+  },
+  {
+    "Name": "_316beb7c461be1eb727d8b69867b4f95.legal.pocket-dj.com.",
+    "Type": "CNAME",
+    "TTL": 300,
+    "ResourceRecords": [
+      {
+        "Value": "_eae8d496b9902a6c227fd045462d30ed.jkddzztszm.acm-validations.aws."
+      }
+    ]
+  },
+  {
+    "Name": "www.pocket-dj.com.",
+    "Type": "A",
+    "AliasTarget": {
+      "HostedZoneId": "Z2FDTNDATAQYW2",
+      "DNSName": "d20r2rqpcnebjm.cloudfront.net.",
+      "EvaluateTargetHealth": false
+    }
+  },
+  {
+    "Name": "_f138ee03bbb869f9fe549c91c15ba515.www.pocket-dj.com.",
+    "Type": "CNAME",
+    "TTL": 300,
+    "ResourceRecords": [
+      {
+        "Value": "_6a86d4a952860c94bfbdad77b275f343.jkddzztszm.acm-validations.aws."
+      }
+    ]
+  }
+]

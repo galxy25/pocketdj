@@ -1,0 +1,24 @@
+{
+  "Rules": [
+    {
+      "Expiration": {
+        "Days": 365
+      },
+      "ID": "expire-old-logs",
+      "Filter": {
+        "Prefix": ""
+      },
+      "Status": "Enabled"
+    },
+    {
+      "Expiration": {
+        "Days": 14
+      },
+      "ID": "expire-diag",
+      "Filter": {
+        "Prefix": "diag/"
+      },
+      "Status": "Enabled"
+    }
+  ]
+}

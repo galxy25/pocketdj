@@ -1,0 +1,16 @@
+[
+  {
+    "IntegrationId": "95i1h8c",
+    "IntegrationType": "AWS_PROXY",
+    "PayloadFormatVersion": "2.0",
+    "TimeoutInMillis": 30000,
+    "Function": "pocketdj-rec-engine"
+  },
+  {
+    "IntegrationId": "s5evr1a",
+    "IntegrationType": "AWS_PROXY",
+    "PayloadFormatVersion": "2.0",
+    "TimeoutInMillis": 30000,
+    "Function": "pocketdj-listening-pockets"
+  }
+]

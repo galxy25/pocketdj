@@ -1,0 +1,9 @@
+[
+  {
+    "IntegrationId": "np4ywx7",
+    "IntegrationType": "AWS_PROXY",
+    "PayloadFormatVersion": "2.0",
+    "TimeoutInMillis": 30000,
+    "Function": "pocketdj-search-proxy"
+  }
+]

@@ -1,0 +1,22 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowSESInboundPuts",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "ses.amazonaws.com"
+      },
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::pocketdj-mail-011183829623/inbound/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:SourceAccount": "011183829623"
+        },
+        "StringLike": {
+          "aws:SourceArn": "arn:aws:ses:us-west-2:011183829623:receipt-rule-set/*"
+        }
+      }
+    }
+  ]
+}

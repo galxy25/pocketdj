@@ -1,0 +1,7 @@
+[
+  {
+    "Id": "listening-pockets",
+    "Input": "{\"job\":\"nightly\"}",
+    "Function": "pocketdj-listening-pockets"
+  }
+]

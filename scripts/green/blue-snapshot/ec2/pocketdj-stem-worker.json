@@ -1,0 +1,32 @@
+{
+  "IamInstanceProfile": {
+    "Name": "pocketdj-stem-worker"
+  },
+  "ImageId": "ami-0e042d0c5d176a86c",
+  "InstanceType": "m7i.large",
+  "KeyName": "pocketdj-stem-key",
+  "InstanceInitiatedShutdownBehavior": "terminate",
+  "UserData": "IyEvYmluL2Jhc2gKIyBMYXVuY2gtdGVtcGxhdGUgYm9vdCBzY3JpcHQgZm9yIGEgUG9ja2V0REogc3RlbSB3b3JrZXIuIEJha2VkIGV4cGVjdGF0aW9ucyAoZ29sZGVuIEFNSSk6CiMgbm9kZSBhdCAvdXNyL2Jpbi9ub2RlLCB0aGUgd29ya2VyIGF0IC9ob21lL3VidW50dS9zdGVtLXdvcmtlci5tanMgKyBzZXBhcmF0ZS1vbmUucHksIGFuZCBhCiMgcHl0aG9uIHZlbnYgYXQgL2hvbWUvdWJ1bnR1L3ZlbnYtc3RlbXMgd2l0aCBkZW11Y3MgaW5zdGFsbGVkLiBUaGUgaW5zdGFuY2UgbGF1bmNoZXMgd2l0aAojIEluc3RhbmNlSW5pdGlhdGVkU2h1dGRvd25CZWhhdmlvcj10ZXJtaW5hdGUsIHNvIGBzaHV0ZG93biAtaCBub3dgIGJlbG93ID0gdGVybWluYXRlID0gc2NhbGUtdG8tMC4KZXhlYyA+PiAvdmFyL2xvZy9zdGVtLXdvcmtlci5sb2cgMj4mMQplY2hvICI9PT0gc3RlbSB3b3JrZXIgYm9vdCAkKGRhdGUgLXUpID09PSIKY2QgL2hvbWUvdWJ1bnR1CiMgUHVsbCB0aGUgQ1VSUkVOVCB3b3JrZXIgY29kZSBmcm9tIFMzIOKAlCB0aGUgQU1JIGNhcnJpZXMgb25seSB0aGUgaGVhdnkgZGVwcyAoZGVtdWNzL3RvcmNoL25vZGUpLAojIHNvIGEgY29kZSBjaGFuZ2UgaXMganVzdCBhbiBgYXdzIHMzIGNwYCwgbmV2ZXIgYSByZS1iYWtlLCBhbmQgYm9vdHMgY2FuJ3QgcnVuIHN0YWxlIGJha2VkIGNvZGUuCkI9czM6Ly9wb2NrZXRkai1yaXBzLTAxMTE4MzgyOTYyMy93b3JrZXItY29kZQpzdWRvIC11IHVidW50dSBhd3MgczMgY3AgJEIvc3RlbS13b3JrZXIubWpzICAgICAgL2hvbWUvdWJ1bnR1L3N0ZW0td29ya2VyLm1qcyAgICAgIC0tcmVnaW9uIHVzLXdlc3QtMiAtLW9ubHktc2hvdy1lcnJvcnMKc3VkbyAtdSB1YnVudHUgYXdzIHMzIGNwICRCL3NlcGFyYXRlLW9uZS5weSAgICAgIC9ob21lL3VidW50dS9zZXBhcmF0ZS1vbmUucHkgICAgICAtLXJlZ2lvbiB1cy13ZXN0LTIgLS1vbmx5LXNob3ctZXJyb3JzCnN1ZG8gLXUgdWJ1bnR1IGF3cyBzMyBjcCAkQi9hbmFseXplLW9uZS5weSAgICAgICAvaG9tZS91YnVudHUvYW5hbHl6ZS1vbmUucHkgICAgICAgLS1yZWdpb24gdXMtd2VzdC0yIC0tb25seS1zaG93LWVycm9ycwpzdWRvIC11IHVidW50dSBhd3MgczMgY3AgJEIvYW5hbHl6ZS1iZWF0Z3JpZC5weSAgL2hvbWUvdWJ1bnR1L2FuYWx5emUtYmVhdGdyaWQucHkgIC0tcmVnaW9uIHVzLXdlc3QtMiAtLW9ubHktc2hvdy1lcnJvcnMKc3VkbyAtdSB1YnVudHUgYXdzIHMzIGNwICRCL3RyYW5zY3JpYmUtb25lLnB5ICAgIC9ob21lL3VidW50dS90cmFuc2NyaWJlLW9uZS5weSAgICAtLXJlZ2lvbiB1cy13ZXN0LTIgLS1vbmx5LXNob3ctZXJyb3JzCiMgbGlicm9zYSBmb3IgdGhlIGFuYWx5c2lzIHRhc2ssIGZhc3Rlci13aGlzcGVyIGZvciB0aGUgbHlyaWNzIHRhc2suIElkZW1wb3RlbnQgKyBmYXN0IHdoZW4gYWxyZWFkeQojIHByZXNlbnQgKGJlY29tZXMgYSBuby1vcCBvbmNlIGJha2VkIGludG8gdGhlIEFNSSkuIHNvdW5kZmlsZS9hdWRpb3JlYWQgZ2l2ZSBsaWJyb3NhIGl0cyBtcDMgbG9hZGVyCiMgKGZmbXBlZyBpcyBpbnN0YWxsZWQpLiBmYXN0ZXItd2hpc3BlciBkb3dubG9hZHMgaXRzIENUcmFuc2xhdGUyIG1vZGVsIGZyb20gSHVnZ2luZ0ZhY2Ugb24gdGhlIEZJUlNUCiMgbHlyaWNzIGpvYiAod29ya2VycyBoYXZlIG91dGJvdW5kIGludGVybmV0KSDigJQgYWNjZXB0ZWQgZm9yIG5vdzsgYmFrZSB0aGUgbW9kZWwgaW50byB0aGUgQU1JIGxhdGVyLgpzdWRvIC11IHVidW50dSAvaG9tZS91YnVudHUvdmVudi1zdGVtcy9iaW4vcGlwIGluc3RhbGwgLXEgbGlicm9zYSBzb3VuZGZpbGUgYXVkaW9yZWFkIGZhc3Rlci13aGlzcGVyIDI+JjEgfCB0YWlsIC0xCnN1ZG8gLXUgdWJ1bnR1IGVudiBcCiAgUE9DS0VUREpfU1RFTV9ERVZJQ0U9Y3B1IFwKICBQT0NLRVRESl9TVEVNX0lETEVfU0VDT05EUz0xMjAgXAogIFBPQ0tFVERKX1NURU1fUE9MTF9TRUNPTkRTPTEwIFwKICAvdXNyL2Jpbi9ub2RlIC9ob21lL3VidW50dS9zdGVtLXdvcmtlci5tanMgLS1zZXJ2ZQplY2hvICI9PT0gd29ya2VyIHJldGlyZWQ7IHRlcm1pbmF0aW5nICQoZGF0ZSAtdSkgPT09IgpzaHV0ZG93biAtaCBub3cK",
+  "TagSpecifications": [
+    {
+      "ResourceType": "instance",
+      "Tags": [
+        {
+          "Key": "Name",
+          "Value": "pocketdj-stem-worker"
+        },
+        {
+          "Key": "pocketdj-stem-worker",
+          "Value": "1"
+        }
+      ]
+    }
+  ],
+  "SecurityGroupIds": [
+    "sg-053afe62aa1e78bf9"
+  ],
+  "MetadataOptions": {
+    "HttpTokens": "required",
+    "HttpEndpoint": "enabled"
+  }
+}

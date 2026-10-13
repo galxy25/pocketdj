@@ -1,0 +1,14 @@
+{
+  "Rules": [
+    {
+      "Expiration": {
+        "Days": 30
+      },
+      "ID": "expire-raw-mail",
+      "Filter": {
+        "Prefix": "inbound/"
+      },
+      "Status": "Enabled"
+    }
+  ]
+}

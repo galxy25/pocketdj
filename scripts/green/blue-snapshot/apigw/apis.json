@@ -1,0 +1,17 @@
+[
+  {
+    "Name": "pocketdj-search",
+    "ApiId": "fnlg100ir5",
+    "ProtocolType": "HTTP"
+  },
+  {
+    "Name": "pocketdj-rec-engine",
+    "ApiId": "n5ordrwfe9",
+    "ProtocolType": "HTTP"
+  },
+  {
+    "Name": "pocketdj-am-playlist-sync",
+    "ApiId": "ynwdaa8vh2",
+    "ProtocolType": "HTTP"
+  }
+]

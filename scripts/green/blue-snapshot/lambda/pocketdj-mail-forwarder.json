@@ -1,0 +1,21 @@
+{
+  "FunctionName": "pocketdj-mail-forwarder",
+  "Runtime": "python3.12",
+  "Handler": "lambda_function.lambda_handler",
+  "MemorySize": 256,
+  "Timeout": 30,
+  "Architectures": [
+    "x86_64"
+  ],
+  "EphemeralStorage": {
+    "Size": 512
+  },
+  "Role": "pocketdj-mail-forwarder",
+  "Environment": {
+    "Variables": {
+      "FORWARD_TO": "levismschoen@gmail.com",
+      "MAIL_FROM": "forwarder@pocket-dj.com",
+      "MAIL_BUCKET": "pocketdj-mail-011183829623"
+    }
+  }
+}

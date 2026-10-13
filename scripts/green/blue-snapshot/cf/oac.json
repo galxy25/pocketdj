@@ -1,0 +1,18 @@
+[
+  {
+    "Id": "E2KC78DUA03I2D",
+    "Description": "OAC for legal site",
+    "Name": "pocketdj-legal-oac",
+    "SigningProtocol": "sigv4",
+    "SigningBehavior": "always",
+    "OriginAccessControlOriginType": "s3"
+  },
+  {
+    "Id": "E118VVQZEKIVR3",
+    "Description": "OAC for www",
+    "Name": "pocketdj-www-oac",
+    "SigningProtocol": "sigv4",
+    "SigningBehavior": "always",
+    "OriginAccessControlOriginType": "s3"
+  }
+]

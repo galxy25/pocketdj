@@ -1,0 +1,14 @@
+{
+  "Rules": [
+    {
+      "Expiration": {
+        "Days": 1
+      },
+      "ID": "expire-jobs",
+      "Filter": {
+        "Prefix": "am-sync-jobs/"
+      },
+      "Status": "Enabled"
+    }
+  ]
+}

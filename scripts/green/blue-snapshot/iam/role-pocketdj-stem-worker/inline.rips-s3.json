@@ -1,0 +1,39 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+      ],
+      "Resource": "arn:aws:s3:::pocketdj-rips-011183829623/*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:ListBucket"
+      ],
+      "Resource": "arn:aws:s3:::pocketdj-rips-011183829623"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:SendMessage",
+        "sqs:GetQueueAttributes",
+        "sqs:ChangeMessageVisibility"
+      ],
+      "Resource": [
+        "arn:aws:sqs:us-west-2:011183829623:pocketdj-stem-jobs",
+        "arn:aws:sqs:us-west-2:011183829623:pocketdj-stem-results",
+        "arn:aws:sqs:us-west-2:011183829623:pocketdj-stem-jobs-dlq",
+        "arn:aws:sqs:us-west-2:011183829623:pocketdj-timbre-jobs",
+        "arn:aws:sqs:us-west-2:011183829623:pocketdj-timbre-results",
+        "arn:aws:sqs:us-west-2:011183829623:pocketdj-timbre-jobs-dlq"
+      ]
+    }
+  ]
+}
