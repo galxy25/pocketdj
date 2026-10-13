@@ -447,6 +447,7 @@ extension AppleMusicPlaybackProvider {
             let player = ApplicationMusicPlayer.shared
             var everPlayed = false
             let armedAt = Date()
+            var polls = 0
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 guard let self, !Task.isCancelled else { return }
@@ -485,6 +486,17 @@ extension AppleMusicPlaybackProvider {
                     }
                 }
                 self.lastPollPlaybackTime = t
+                // CARD DIAGNOSTIC (~every 10 s): MusicKit's OWN view of the clock — status, its
+                // playbackRate and playbackTime — next to the smoothed position our impersonated
+                // card publishes. iOS routes CarPlay's ⏭ to MusicKit's player, so if the head
+                // unit's cursor freezes while our `card PUB` lines advance, this line shows
+                // whether MusicKit's player (the other card source) reports itself stalled.
+                polls += 1
+                if polls % 25 == 0 {
+                    NPLog.trace("AM clock status=\(status) mkRate=\(String(format: "%.2f", player.state.playbackRate)) "
+                        + "mkTime=\(String(format: "%.1f", t)) smooth=\(String(format: "%.1f", self.positionSeconds)) "
+                        + "playing=\(self.isPlaying)")
+                }
                 if Self.neverStarted(everPlayed: everPlayed, waitedSeconds: Date().timeIntervalSince(armedAt),
                                      intentionalPause: self.pauseWasIntentional) {
                     NPLog.trace("AM monitor: NEVER STARTED after \(Int(Date().timeIntervalSince(armedAt)))s (status=\(status)) → dead source")

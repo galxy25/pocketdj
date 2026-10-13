@@ -69,7 +69,8 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
             }
             if atMs != nil, now.live { lastCueDropped = true }
             player.load(url: now.url, live: now.live, startMs: now.seekMs ?? now.startMs,
-                        title: now.title, artist: now.artist, songId: now.songId)
+                        title: now.title, artist: now.artist, songId: now.songId,
+                        songStartMs: now.live ? nil : now.startMs)
             DiagLog.shared.telemetry("ripreq", "tryPlay ok song=\(song.id) live=\(now.live) elapsedMs=\(Int(-t0.timeIntervalSinceNow * 1000))")
             return true
         } catch {

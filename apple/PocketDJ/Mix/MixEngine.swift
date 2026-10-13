@@ -586,7 +586,13 @@ final class MixEngine {
         // `stemUnderrun`) — still Buffering…
         let buffering = Set(Deck.allCases.filter { streamHolding[$0] == true })
         let streaming = Set(deckStreams.keys)
-        if buffering != bufferingDecks { bufferingDecks = buffering }
+        if buffering != bufferingDecks {
+            bufferingDecks = buffering
+            // A hold freezes the playhead and a resume restarts it: the card's rate must follow
+            // AT ONCE (rate 0 while held, the deck's tempo again on resume) — waiting for the ~1 Hz
+            // tick left a running cursor over a frozen deck, or a frozen one over a resumed deck.
+            updateSystemNowPlaying()
+        }
         if streaming != streamingDecks { streamingDecks = streaming }
     }
     /// The catalog length the load asked for (the analog window), until the file attaches.
@@ -5440,22 +5446,17 @@ final class MixEngine {
         if like.isActive { like.isActive = false }
         refreshArtworkIfNeeded(for: track.songId)
         let playing = isPlaying(deck)
-        var info: [String: Any] = [
-            MPMediaItemPropertyTitle: track.title,
-            MPMediaItemPropertyArtist: track.artist,
-            MPNowPlayingInfoPropertyElapsedPlaybackTime: position(deck),
-            MPNowPlayingInfoPropertyPlaybackRate: playing ? state(deck).rate : 0.0,
-        ]
+        // A streaming deck HELD for bytes has play intent but a frozen playhead → not advancing.
+        let advancing = playing && !streamHeld(deck)
         let dur = duration(deck)
-        if dur > 0 { info[MPMediaItemPropertyPlaybackDuration] = dur }
-        if let nowPlayingArtwork, nowPlayingArtworkSongId == track.songId {
-            info[MPMediaItemPropertyArtwork] = nowPlayingArtwork
-        }
-        NPLog.trace("mix card WRITE title=\(track.title) playing=\(playing)")
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-        // Explicit playbackState so CarPlay (head-unit Now Playing + system Now Playing app) and
-        // watchOS reflect the deck's transport, not just the info dict's PlaybackRate.
-        MPNowPlayingInfoCenter.default().playbackState = playing ? .playing : .paused
+        // Through the ONE card funnel: dict + explicit playbackState (CarPlay's head-unit Now
+        // Playing + watchOS read it), moving-cursor invariants, rate-limited trace.
+        NowPlayingCardPublisher.shared.publish(
+            writer: "mix", title: track.title, artist: track.artist,
+            elapsed: position(deck), duration: dur > 0 ? dur : nil,
+            advancing: advancing, rate: state(deck).rate,
+            artwork: nowPlayingArtworkSongId == track.songId ? nowPlayingArtwork : nil,
+            detail: "deck=\(deck.rawValue)")
     }
 
     /// Fetch cover art for the now-playing card ONLY when the song id actually changed since the
