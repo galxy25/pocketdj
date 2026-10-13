@@ -9,9 +9,10 @@
 # The image tarball is the exact image that measured the existing corpus, NOT a rebuild from the
 # Dockerfile — see scripts/timbre-worker-userdata.sh for why that distinction is load-bearing.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
 cd "$(dirname "$0")/.."
-export AWS_PROFILE="${AWS_PROFILE:-levi}"
-B=s3://pocketdj-rips-011183829623/worker-code
+export AWS_PROFILE="${AWS_PROFILE:-$PDJ_PROFILE}"
+B="$PDJ_WORKER_CODE_BASE"   # blue: s3://pocketdj-rips-011183829623/worker-code
 R="--region us-west-2 --only-show-errors"
 aws s3 cp scripts/timbre-worker.mjs                                  $B/timbre-worker.mjs      $R
 aws s3 cp scripts/timbre-batch.mjs                                   $B/timbre-batch.mjs       $R

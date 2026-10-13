@@ -24,8 +24,9 @@ import { computeResults } from './analyze.mjs';
 import { detect } from './detect.mjs';
 import { indexFeatures } from './features.mjs';
 import { cleanEvent, cleanLabels, mergeEvents, freshEventsDoc } from './store.mjs';
+import { AWS_ENV } from '../../lib/aws-env.mjs';
 
-const DEFAULT_FEATURES_URL = 'https://d2p4cubg6se03u.cloudfront.net/rec-features.json';
+const DEFAULT_FEATURES_URL = `${AWS_ENV.cdn.prod}/rec-features.json`;
 
 function parseArgs(argv) {
   const out = {};

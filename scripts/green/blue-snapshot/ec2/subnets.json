@@ -1,0 +1,18 @@
+[
+  {
+    "SubnetId": "subnet-00f9be279c616ff01",
+    "AvailabilityZone": "us-west-2b"
+  },
+  {
+    "SubnetId": "subnet-055bd6cc3fb64e8b7",
+    "AvailabilityZone": "us-west-2d"
+  },
+  {
+    "SubnetId": "subnet-0c623f93e8a27ea34",
+    "AvailabilityZone": "us-west-2c"
+  },
+  {
+    "SubnetId": "subnet-00a23032877bbe190",
+    "AvailabilityZone": "us-west-2a"
+  }
+]

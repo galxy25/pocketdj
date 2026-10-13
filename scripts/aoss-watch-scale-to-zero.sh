@@ -14,8 +14,9 @@
 #
 # Usage: bash scripts/aoss-watch-scale-to-zero.sh [intervalSec] [maxMinutes]
 set -uo pipefail
-export AWS_PROFILE="${AWS_PROFILE:-levi}"
-REGION="${AWS_REGION:-us-west-2}"
+. "$(dirname "${BASH_SOURCE[0]}")/lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
+export AWS_PROFILE="${AWS_PROFILE:-$PDJ_PROFILE}"
+REGION="${AWS_REGION:-$PDJ_REGION}"
 INTERVAL="${1:-300}"        # 5 min
 MAX_MIN="${2:-120}"         # 2 h
 GROUP="pocketdj-sz-grp"
@@ -28,13 +29,13 @@ ago_utc() { date -u -v-"$1"M +%FT%TZ 2>/dev/null || date -u -d "$1 min ago" +%FT
 # latest datapoint of the GROUP-scoped OCU metric over the last 20 min (period 60s)
 group_ocu() { # $1 = SearchOCU|IndexingOCU
   aws cloudwatch get-metric-statistics --namespace AWS/AOSS --metric-name "$1" \
-    --dimensions Name=CollectionGroupId,Value="$GROUPID" Name=CollectionGroupName,Value="$GROUP" Name=ClientId,Value=011183829623 \
+    --dimensions Name=CollectionGroupId,Value="$GROUPID" Name=CollectionGroupName,Value="$GROUP" Name=ClientId,Value="$PDJ_ACCOUNT" \
     --start-time "$(ago_utc 20)" --end-time "$(now_utc)" --period 60 --statistics Average --region "$REGION" 2>/dev/null \
     | python3 -c "import sys,json;p=sorted(json.load(sys.stdin).get('Datapoints',[]),key=lambda x:x['Timestamp']);print(f\"{p[-1]['Average']:.3f}\" if p else '0.000')"
 }
 acct_ocu() { # account-level (old collection floor) for context
   aws cloudwatch get-metric-statistics --namespace AWS/AOSS --metric-name "$1" \
-    --dimensions Name=ClientId,Value=011183829623 \
+    --dimensions Name=ClientId,Value="$PDJ_ACCOUNT" \
     --start-time "$(ago_utc 20)" --end-time "$(now_utc)" --period 60 --statistics Average --region "$REGION" 2>/dev/null \
     | python3 -c "import sys,json;p=sorted(json.load(sys.stdin).get('Datapoints',[]),key=lambda x:x['Timestamp']);print(f\"{p[-1]['Average']:.3f}\" if p else 'nan')"
 }

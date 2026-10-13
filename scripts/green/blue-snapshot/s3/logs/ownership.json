@@ -1,0 +1,9 @@
+{
+    "OwnershipControls": {
+        "Rules": [
+            {
+                "ObjectOwnership": "BucketOwnerPreferred"
+            }
+        ]
+    }
+}

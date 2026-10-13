@@ -1,0 +1,19 @@
+[
+  {
+    "Rules": [
+      {
+        "Resource": [
+          "collection/pocketdj-search"
+        ],
+        "ResourceType": "collection"
+      },
+      {
+        "Resource": [
+          "collection/pocketdj-search"
+        ],
+        "ResourceType": "dashboard"
+      }
+    ],
+    "AllowFromPublic": true
+  }
+]

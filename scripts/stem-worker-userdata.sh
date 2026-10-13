@@ -8,6 +8,9 @@ echo "=== stem worker boot $(date -u) ==="
 cd /home/ubuntu
 # Pull the CURRENT worker code from S3 — the AMI carries only the heavy deps (demucs/torch/node),
 # so a code change is just an `aws s3 cp`, never a re-bake, and boots can't run stale baked code.
+# BLUE literal on purpose: this runs on the instance with no repo (so no scripts/lib/aws-env.sh), and
+# no repo script builds the launch template from it. A launch template in another account (green)
+# must carry a copy with that account's bucket substituted — see docs/aws-green-cutover.md.
 B=s3://pocketdj-rips-011183829623/worker-code
 sudo -u ubuntu aws s3 cp $B/stem-worker.mjs      /home/ubuntu/stem-worker.mjs      --region us-west-2 --only-show-errors
 sudo -u ubuntu aws s3 cp $B/separate-one.py      /home/ubuntu/separate-one.py      --region us-west-2 --only-show-errors

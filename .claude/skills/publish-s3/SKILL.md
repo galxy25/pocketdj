@@ -26,7 +26,9 @@ Live HTTPS URLs (CloudFront):
 - **dev:**  https://djictbz9w796r.cloudfront.net  (distribution `E123GKAO9JVETP`)
 - **prod:** https://d2p4cubg6se03u.cloudfront.net  (distribution `E1SP8M1SIF7Q8D`)
 
-`deploy.sh` shells out to `aws --profile levi`, so a **background agent can run it**.
+`deploy.sh` shells out to `aws --profile levi`, so a **background agent can run it**. (Blue/green: the
+profile, buckets and distribution ids come from `scripts/lib/aws-env.sh`; `POCKETDJ_ENV=green scripts/deploy.sh dev`
+targets the standalone account with profile `llc`. The ids above are BLUE.)
 Overridable env: `AWS_PROFILE_OVERRIDE`, `AWS_REGION_OVERRIDE`, `CF_ID_DEV`,
 `CF_ID_PROD`, `SKIP_BUILD`.
 

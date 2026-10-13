@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Deploy the PocketDJ LISTENING POCKETS Lambda and mount it on the EXISTING rec-engine HTTP API.
 # Cloned from scripts/lambda/rec-engine/deploy.sh. NEEDS LEVI'S APPROVAL TO RUN — it creates an
-# IAM role, a function, two API routes and an EventBridge rule in account 011183829623.
+# IAM role, a function, two API routes and an EventBridge rule in the POCKETDJ_ENV account
+# (blue: 011183829623).
 #
 #   scripts/lambda/listening-pockets/deploy.sh
 #
@@ -24,12 +25,13 @@
 # MAX_PROFILES: preserved from this function's own config across re-runs (default 10); export
 # MAX_PROFILES=<n> to change it.
 set -euo pipefail
-export AWS_PROFILE="${AWS_PROFILE:-levi}"
-REGION="us-west-2"; ACCT="011183829623"
+. "$(dirname "${BASH_SOURCE[0]}")/../../lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
+export AWS_PROFILE="${AWS_PROFILE:-$PDJ_PROFILE}"
+REGION="$PDJ_REGION"; ACCT="$PDJ_ACCOUNT"
 FN="pocketdj-listening-pockets"; ROLE="pocketdj-listening-pockets-role"
 REC_FN="pocketdj-rec-engine"; API_NAME="pocketdj-rec-engine"
 REC_BUCKET="pocketdj-rec-${ACCT}"
-FEATURES_URL="https://d2p4cubg6se03u.cloudfront.net/rec-features.json"
+FEATURES_URL="${PDJ_CDN_PROD}/rec-features.json"
 LAMBDA_ARN="arn:aws:lambda:${REGION}:${ACCT}:function:${FN}"
 RULE="pocketdj-listening-pockets-nightly"
 SELF="$(cd "$(dirname "$0")" && pwd)"

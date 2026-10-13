@@ -27,10 +27,11 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TIMBRE_VERSION } from './lib/audio-analyze.mjs';
 import { isUsableTimbreRow } from './lib/timbre-hygiene.mjs';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PUBLIC = join(__dirname, '..', 'public');
-const CDN = 'https://d2p4cubg6se03u.cloudfront.net';
+const CDN = AWS_ENV.cdn.prod;   // blue: https://d2p4cubg6se03u.cloudfront.net
 const OUT = join(PUBLIC, 'rec-features.json');
 const fromCdn = process.argv.includes('--from-cdn');
 

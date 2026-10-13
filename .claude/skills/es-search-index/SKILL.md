@@ -16,6 +16,10 @@ explicit, type (album/song), sourceType (analog/digital), source (name).
 **Reference run:** 118,971 docs (13,581 albums + 105,390 songs across both
 sources) — delete + recreate + bulk load in **~40s**.
 
+> **Blue/green.** Account, profile and hosts come from `scripts/lib/aws-env.mjs`. The commands below
+> are the BLUE values (profile `levi`); for the standalone account set `POCKETDJ_ENV=green` and use
+> `--profile llc` (`node scripts/lib/aws-env.mjs --get profile`).
+
 ## Backend (already provisioned, profile `levi`, us-west-2)
 - Collection: `pocketdj-search` (id `mii9dwge3uiee2tvivt5`), type SEARCH, **NextGen** in collection group `pocketdj-search-grp` (min-OCU **0**, standby ENABLED) → **truly scales to $0 when idle** (~10 min idle → 0 OCU; ~16 s cold-start on the first query after idle). Rebuilt from the classic 1.0-OCU-floor collection on 2026-07-02.
 - Endpoint: `https://mii9dwge3uiee2tvivt5.aoss.us-west-2.on.aws` — but **clients read the host from `public/search-config.json`** (native `SearchConfig` actor + PWA `loadSearchConfig`), so a future collection swap changes the host WITHOUT a client rebuild. A swap also writes `.aoss-prod-endpoint.txt`.

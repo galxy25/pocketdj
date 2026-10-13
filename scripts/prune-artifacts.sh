@@ -23,6 +23,7 @@
 #
 # Usage:  scripts/prune-artifacts.sh [--apply]        (default: dry run)
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
 
 APPLY=0
 [ "${1:-}" = "--apply" ] && APPLY=1
@@ -60,7 +61,7 @@ if [ -d "$PDJ/digital/audio" ]; then
   say "  $N mp3(s), $(du -sh "$PDJ/digital/audio" | cut -f1)"
   say "  RE-VERIFYING against S3 before deleting…"
   if [ "$APPLY" = 1 ]; then
-    aws s3 ls s3://pocketdj-rips-011183829623/rips/ --profile levi 2>/dev/null \
+    aws s3 ls "s3://$PDJ_RIPS_BUCKET/rips/" --profile "$PDJ_PROFILE" 2>/dev/null \
       | awk '{print $4, $3}' | grep '\.mp3' > /tmp/pdj-s3-rips.txt || true
     MISSING=$(cd "$PDJ/digital/audio" && for f in *.mp3; do
         grep -q "^$f " /tmp/pdj-s3-rips.txt || echo "$f"; done | wc -l | tr -d ' ')

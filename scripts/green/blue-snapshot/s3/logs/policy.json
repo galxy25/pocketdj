@@ -1,0 +1,70 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "S3ServerAccessLogsPolicy",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "logging.s3.amazonaws.com"
+      },
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::pocketdj-logs-011183829623/s3-access/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:SourceAccount": "011183829623"
+        },
+        "ArnLike": {
+          "aws:SourceArn": [
+            "arn:aws:s3:::pocketdj-rips-011183829623",
+            "arn:aws:s3:::pocketdj-dev-web-011183829623",
+            "arn:aws:s3:::pocketdj-prod-web-011183829623"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "CloudFrontLogsPolicy",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "delivery.logs.amazonaws.com"
+      },
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::pocketdj-logs-011183829623/cloudfront/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:SourceAccount": "011183829623",
+          "s3:x-amz-acl": "bucket-owner-full-control"
+        }
+      }
+    },
+    {
+      "Sid": "CloudTrailAclCheck",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "cloudtrail.amazonaws.com"
+      },
+      "Action": "s3:GetBucketAcl",
+      "Resource": "arn:aws:s3:::pocketdj-logs-011183829623",
+      "Condition": {
+        "StringEquals": {
+          "aws:SourceAccount": "011183829623"
+        }
+      }
+    },
+    {
+      "Sid": "CloudTrailWrite",
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "cloudtrail.amazonaws.com"
+      },
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::pocketdj-logs-011183829623/cloudtrail/AWSLogs/011183829623/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:SourceAccount": "011183829623",
+          "s3:x-amz-acl": "bucket-owner-full-control"
+        }
+      }
+    }
+  ]
+}

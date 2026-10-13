@@ -10,12 +10,13 @@
 #   SKIP_THUMBS=1 scripts/mirror-art.sh dev   # re-upload only (art dir already built)
 #   INDEX=index-out/current/index.json scripts/mirror-art.sh dev
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
 
 ENV="${1:-dev}"
 case "$ENV" in dev|prod) ;; *) echo "usage: scripts/mirror-art.sh <dev|prod>"; exit 1 ;; esac
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
-PROFILE="${AWS_PROFILE_OVERRIDE:-levi}"
+PROFILE="${AWS_PROFILE_OVERRIDE:-$PDJ_PROFILE}"
 ACCT="$(aws sts get-caller-identity --profile "$PROFILE" --query Account --output text)"
 BUCKET="pocketdj-${ENV}-web-${ACCT}"
 INDEX="${INDEX:-index-out/current/index.json}"
@@ -34,7 +35,7 @@ aws s3 sync "$ART_DIR" "s3://$BUCKET/art/" --profile "$PROFILE" \
   --content-type image/jpeg --cache-control "public,max-age=31536000,immutable" --size-only
 
 CF_ID=""
-case "$ENV" in dev) CF_ID="${CF_ID_DEV:-E123GKAO9JVETP}" ;; prod) CF_ID="${CF_ID_PROD:-E1SP8M1SIF7Q8D}" ;; esac
+case "$ENV" in dev) CF_ID="${CF_ID_DEV:-$PDJ_CF_DEV}" ;; prod) CF_ID="${CF_ID_PROD:-$PDJ_CF_PROD}" ;; esac
 if [ -n "$CF_ID" ]; then
   echo "▶ Invalidating CloudFront /art/* …"
   aws cloudfront create-invalidation --distribution-id "$CF_ID" --paths "/art/*" \

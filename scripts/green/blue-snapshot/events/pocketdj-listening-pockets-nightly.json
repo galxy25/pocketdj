@@ -1,0 +1,6 @@
+{
+  "Name": "pocketdj-listening-pockets-nightly",
+  "ScheduleExpression": "cron(30 11 * * ? *)",
+  "State": "ENABLED",
+  "Description": "PocketDJ listening pockets: nightly recompute (04:30 PDT)"
+}

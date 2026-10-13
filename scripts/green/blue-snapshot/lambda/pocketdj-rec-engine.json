@@ -1,0 +1,22 @@
+{
+  "FunctionName": "pocketdj-rec-engine",
+  "Runtime": "nodejs20.x",
+  "Handler": "index.handler",
+  "MemorySize": 1024,
+  "Timeout": 60,
+  "Architectures": [
+    "x86_64"
+  ],
+  "EphemeralStorage": {
+    "Size": 512
+  },
+  "Role": "pocketdj-rec-engine-role",
+  "Environment": {
+    "Variables": {
+      "REC_ENROLL_SECRET": "<copied-from-blue-at-provision>",
+      "MAX_PROFILES": "10",
+      "FEATURES_URL": "https://d2p4cubg6se03u.cloudfront.net/rec-features.json",
+      "REC_BUCKET": "pocketdj-rec-011183829623"
+    }
+  }
+}

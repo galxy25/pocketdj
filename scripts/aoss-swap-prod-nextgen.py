@@ -22,12 +22,16 @@ from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSRequest
 from botocore.httpsession import URLLib3Session
 
-REGION = 'us-west-2'
+# Account/profile/admin come from scripts/lib/aws-env.mjs (POCKETDJ_ENV, default blue).
+import os, subprocess
+AWS_ENV = json.loads(subprocess.check_output(
+    ['node', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lib', 'aws-env.mjs'), '--json']))
+REGION = AWS_ENV['region']
 NAME = 'pocketdj-search'
 GROUP = 'pocketdj-search-grp'
 ENDPOINT_FILE = __file__.rsplit('/', 2)[0] + '/.aoss-prod-endpoint.txt'
 
-sess = botocore.session.Session(profile='levi')
+sess = botocore.session.Session(profile=AWS_ENV['profile'])
 oss = sess.create_client('opensearchserverless', region_name=REGION)
 creds = sess.get_credentials().get_frozen_credentials()
 

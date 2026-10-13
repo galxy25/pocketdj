@@ -37,6 +37,8 @@
     <!-- The agent's DEDICATED pocketdj clone, checked out on `main`. -->
     <key>POCKETDJ_AGENT_REPO</key>
     <string>/Users/REPLACE_ME/pocketdj</string>
+    <key>POCKETDJ_ENV</key>
+    <string>blue</string>
     <key>AWS_PROFILE</key>
     <string>levi</string>
     <!-- launchd has a minimal PATH; include node, aws, claude, jq, git locations. -->

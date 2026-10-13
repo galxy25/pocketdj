@@ -20,12 +20,13 @@ import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const arg = (f, d) => { const i = process.argv.indexOf(f); return i >= 0 ? process.argv[i + 1] : d; };
 const REGION = process.env.AWS_REGION || 'us-west-2';
-const PROFILE = process.env.AWS_PROFILE || 'levi';
-const REC_BUCKET = process.env.POCKETDJ_REC_BUCKET || 'pocketdj-rec-011183829623';
+const PROFILE = process.env.AWS_PROFILE || AWS_ENV.profile;
+const REC_BUCKET = process.env.POCKETDJ_REC_BUCKET || AWS_ENV.buckets.rec;
 export const TIMBRE_MIN_VECTORS = 3;      // mirrors TIMBRE_MIN_VECTORS in lambda/rec-engine/index.mjs
 
 const pct = (a, b) => (b > 0 ? Math.round((a / b) * 1000) / 10 : 0);

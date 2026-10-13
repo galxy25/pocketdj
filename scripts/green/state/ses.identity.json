@@ -1,0 +1,11 @@
+{
+  "VerificationStatus": "PENDING",
+  "Dkim": {
+    "Status": "PENDING",
+    "Tokens": [
+      "tmtiojvx7njcjdb7rw2khsj7atlsbewr",
+      "ps57bmtcschurz7frhl6gr2y3mczaqdg",
+      "kaxb4r3ih2wxslozu7nrmh7d643pzxpc"
+    ]
+  }
+}

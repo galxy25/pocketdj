@@ -1,0 +1,20 @@
+{
+  "FunctionName": "pocketdj-am-playlist-sync",
+  "Runtime": "nodejs20.x",
+  "Handler": "index.handler",
+  "MemorySize": 256,
+  "Timeout": 300,
+  "Architectures": [
+    "x86_64"
+  ],
+  "EphemeralStorage": {
+    "Size": 512
+  },
+  "Role": "pocketdj-am-playlist-sync-role",
+  "Environment": {
+    "Variables": {
+      "SECRET_ID": "pocketdj/am-playlist-sync",
+      "JOBS_BUCKET": "pocketdj-am-sync-jobs-011183829623"
+    }
+  }
+}

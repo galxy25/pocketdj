@@ -13,12 +13,13 @@
 # first (scripts/validate-endpoints.ts); a doc the clients would reject is never published.
 # CONFIG_ONLY=1 skips the build + site sync and publishes just that doc (+ invalidation).
 #
-# Uses AWS profile "levi". Buckets are public static-website hosts with the SPA
+# Uses AWS profile "levi" (blue; POCKETDJ_ENV=green -> "llc", see scripts/lib/aws-env.mjs). Buckets are public static-website hosts with the SPA
 # error-document = index.html. Cache strategy is the important bit:
 #   - hashed assets/*  -> immutable, 1-year cache
 #   - index.html, sw.js, registerSW.js, manifest.webmanifest -> no-cache
 #     so the auto-updating service worker always picks up a new deploy.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/aws-env.sh"
 
 ENV="${1:-}"
 case "$ENV" in
@@ -26,8 +27,8 @@ case "$ENV" in
   *) echo "usage: scripts/deploy.sh <dev|prod>"; exit 1 ;;
 esac
 
-PROFILE="${AWS_PROFILE_OVERRIDE:-levi}"
-REGION="${AWS_REGION_OVERRIDE:-us-west-2}"
+PROFILE="${AWS_PROFILE_OVERRIDE:-$PDJ_PROFILE}"
+REGION="${AWS_REGION_OVERRIDE:-$PDJ_REGION}"
 ACCT="$(aws sts get-caller-identity --profile "$PROFILE" --query Account --output text)"
 BUCKET="pocketdj-${ENV}-web-${ACCT}"
 ENDPOINT="http://${BUCKET}.s3-website-${REGION}.amazonaws.com"
@@ -127,8 +128,8 @@ echo "✓ Deployed [$ENV]: $ENDPOINT (endpoints env=$ENDPOINTS_ENV)"
 # at just-deleted asset hashes). Distribution ids per env:
 CF_ID=""
 case "$ENV" in
-  dev)  CF_ID="${CF_ID_DEV:-E123GKAO9JVETP}" ;;
-  prod) CF_ID="${CF_ID_PROD:-E1SP8M1SIF7Q8D}" ;;
+  dev)  CF_ID="${CF_ID_DEV:-$PDJ_CF_DEV}" ;;
+  prod) CF_ID="${CF_ID_PROD:-$PDJ_CF_PROD}" ;;
 esac
 if [ -n "$CF_ID" ]; then
   INV=$(aws cloudfront create-invalidation --distribution-id "$CF_ID" --paths "/*" \

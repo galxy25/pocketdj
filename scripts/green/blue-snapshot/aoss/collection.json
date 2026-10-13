@@ -1,0 +1,7 @@
+{
+  "name": "pocketdj-search",
+  "type": "SEARCH",
+  "standbyReplicas": "ENABLED",
+  "collectionGroupName": "pocketdj-search-grp",
+  "description": "PocketDJ prod search (NextGen scale-to-zero)"
+}

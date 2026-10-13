@@ -32,6 +32,7 @@
 #   POCKETDJ_NODE_CMD / POCKETDJ_GIT_CMD — shim the tools.
 #   --dry-run — print every mutating step WITHOUT cloning/committing/publishing.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="${POCKETDJ_NIGHTLY_REPO:-$(cd "$SELF_DIR/.." && pwd)}"
@@ -50,17 +51,17 @@ AUTH_ARGS=()
 WORK="${POCKETDJ_DIGITAL_WORK:-$HOME/.pocketdj/digital}"
 STATE_DIR="$HOME/.pocketdj/digital-sync"
 MARKER="$STATE_DIR/last-published-index.sha256"
-PROFILE="${AWS_PROFILE:-levi}"
+PROFILE="${AWS_PROFILE:-$PDJ_PROFILE}"
 REGION="${AWS_REGION:-us-west-2}"
 # NOTE: audio analysis (bpm/key/beat-grid) is CLOUD-only now — the indexer no longer runs the
 # `pocketdj-audio` Docker image, and POST /ingest-digital auto-enqueues each un-analyzed song to
 # the SQS workers. So this script no longer babysits Docker (no ensure_docker / --no-analyze).
 # Dev web bucket + CloudFront that serve "My Digital" (art uploaded during the walk; the
-# index published here in ship()). CF dev distribution = E123GKAO9JVETP.
-CF_DEV="E123GKAO9JVETP"
+# index published here in ship()). CF dev distribution = $PDJ_CF_DEV (blue: E123GKAO9JVETP).
+CF_DEV="$PDJ_CF_DEV"
 # OpenSearch (online search) refresh after a ship — so new tracks are online-searchable the
 # same night. Host from public/search-config.json (single source of truth), else prod host.
-ES_HOST_DEFAULT="mii9dwge3uiee2tvivt5.aoss.us-west-2.on.aws"
+ES_HOST_DEFAULT="$PDJ_AOSS_HOST"
 ES_HOST="$("$NODE" -e "try{process.stdout.write(JSON.parse(require('fs').readFileSync('$REPO/public/search-config.json','utf8')).host)}catch(e){process.stdout.write('$ES_HOST_DEFAULT')}" 2>/dev/null || echo "$ES_HOST_DEFAULT")"
 ES_ENDPOINT="${POCKETDJ_ES_ENDPOINT:-https://$ES_HOST}"
 ES_SOURCES="${POCKETDJ_ES_SOURCES:-public/current-index.json,public/apple-music-index.json,public/digital-index.json}"

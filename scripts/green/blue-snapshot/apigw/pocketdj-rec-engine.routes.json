@@ -1,0 +1,17 @@
+[
+  {
+    "RouteKey": "ANY /pockets",
+    "Target": "integrations/s5evr1a",
+    "AuthorizationType": "NONE"
+  },
+  {
+    "RouteKey": "ANY /pockets/{proxy+}",
+    "Target": "integrations/s5evr1a",
+    "AuthorizationType": "NONE"
+  },
+  {
+    "RouteKey": "$default",
+    "Target": "integrations/95i1h8c",
+    "AuthorizationType": "NONE"
+  }
+]

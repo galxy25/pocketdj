@@ -1,0 +1,25 @@
+[
+  {
+    "Name": "forward-all",
+    "Enabled": true,
+    "TlsPolicy": "Optional",
+    "Recipients": [
+      "pocket-dj.com"
+    ],
+    "Actions": [
+      {
+        "S3Action": {
+          "BucketName": "pocketdj-mail-011183829623",
+          "ObjectKeyPrefix": "inbound/"
+        }
+      },
+      {
+        "LambdaAction": {
+          "FunctionArn": "arn:aws:lambda:us-west-2:011183829623:function:pocketdj-mail-forwarder",
+          "InvocationType": "Event"
+        }
+      }
+    ],
+    "ScanEnabled": true
+  }
+]

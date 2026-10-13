@@ -28,6 +28,7 @@
 #   POCKETDJ_DOWNLOADS_DIR — where the change-sets land (default ~/Downloads; override for tests).
 #   POCKETDJ_AM_REINDEX_SEARCH=1 — also refresh the OpenSearch index after deploy (default off).
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
 
 DRY_RUN=0
 VIA_CLAUDE=0
@@ -206,7 +207,7 @@ process_one() {
   if [ "${POCKETDJ_AM_REINDEX_SEARCH:-0}" = "1" ]; then
     run "$NODE" "$REPO/scripts/es-index.mjs" \
       --sources "$REPO/public/current-index.json,$REPO/public/apple-music-index.json,$REPO/public/digital-index.json" \
-      --profile levi --region us-west-2 || log "search reindex failed (non-fatal)"
+      --profile "$PDJ_PROFILE" --region "$PDJ_REGION" || log "search reindex failed (non-fatal)"
   fi
   # (7) MARK CONSUMED — only after full success.
   run mv "$CS" "$PROCESSED"/

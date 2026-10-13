@@ -1,0 +1,46 @@
+[
+  {
+    "Rules": [
+      {
+        "Resource": [
+          "index/pocketdj-search/*"
+        ],
+        "Permission": [
+          "aoss:ReadDocument",
+          "aoss:DescribeIndex"
+        ],
+        "ResourceType": "index"
+      }
+    ],
+    "Principal": [
+      "arn:aws:iam::011183829623:user/djpocketsearch"
+    ],
+    "Description": "read-only search"
+  },
+  {
+    "Rules": [
+      {
+        "Resource": [
+          "index/pocketdj-search/*"
+        ],
+        "Permission": [
+          "aoss:*"
+        ],
+        "ResourceType": "index"
+      },
+      {
+        "Resource": [
+          "collection/pocketdj-search"
+        ],
+        "Permission": [
+          "aoss:*"
+        ],
+        "ResourceType": "collection"
+      }
+    ],
+    "Principal": [
+      "arn:aws:iam::011183829623:user/Developer"
+    ],
+    "Description": "indexer admin"
+  }
+]

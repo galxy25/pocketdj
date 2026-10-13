@@ -14,6 +14,7 @@ import { readdirSync, statSync, writeFileSync, mkdirSync, existsSync, readFileSy
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const a = {};
@@ -25,9 +26,9 @@ const LENGTH_MS = parseInt(a['length-ms'] || '0', 10) || null;
 // track — a variant key must never hold wrong-edition audio.
 const EXPL = a.explicitness === 'clean' || a.explicitness === 'explicit' ? a.explicitness : null;
 const LIBRARY_XML = (a['library-xml'] || join(homedir(), 'Downloads', 'Library.xml')).replace(/^~/, homedir());
-const BUCKET = a.bucket || 'pocketdj-rips-011183829623';
+const BUCKET = a.bucket || AWS_ENV.buckets.rips;
 const REGION = a.region || 'us-west-2';
-const PROFILE = a.profile || 'levi';
+const PROFILE = a.profile || AWS_ENV.profile;
 const STATUS = a.status;
 const TMP = (a.tmp || join(homedir(), '.pocketdj', 'rips')).replace(/^~/, homedir());
 const AH_REC_DIR = (a['ah-recordings-dir'] || join(homedir(), 'Music', 'Audio Hijack')).replace(/^~/, homedir());

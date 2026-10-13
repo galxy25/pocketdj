@@ -1,0 +1,9 @@
+[
+  {
+    "StageName": "$default",
+    "AutoDeploy": true,
+    "DefaultRouteSettings": {
+      "DetailedMetricsEnabled": false
+    }
+  }
+]

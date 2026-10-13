@@ -29,6 +29,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { promisify } from 'node:util';
+import { AWS_ENV } from './lib/aws-env.mjs';
 import { buildTimbreBatches, wantTimbre, timbreKeyFor, timbreHealth, readResultRows,
   crossesTimbreProvenance } from './lib/timbre-jobs.mjs';
 
@@ -39,10 +40,10 @@ const FORCE = process.argv.includes('--force');
 const MAX = Number(arg('--max', Infinity));
 const BATCH = Number(arg('--batch', 50));
 const CONC = Number(arg('--conc', 12));
-const BUCKET = process.env.POCKETDJ_RIPS_BUCKET || 'pocketdj-rips-011183829623';
+const BUCKET = process.env.POCKETDJ_RIPS_BUCKET || AWS_ENV.buckets.rips;
 const REGION = process.env.AWS_REGION || 'us-west-2';
-const PROFILE = process.env.AWS_PROFILE || 'levi';
-const QUEUE = process.env.POCKETDJ_TIMBRE_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-timbre-jobs';
+const PROFILE = process.env.AWS_PROFILE || AWS_ENV.profile;
+const QUEUE = process.env.POCKETDJ_TIMBRE_JOBS_QUEUE || AWS_ENV.queues.timbreJobs;
 
 async function loadManifest() {
   const src = arg('--manifest', null);
