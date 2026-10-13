@@ -104,6 +104,9 @@ final class PlaybackSessionStore {
         /// Whether the running queue's upcoming tail is live-shuffled. Optional/defaulted so
         /// pre-existing snapshots still decode.
         var shuffleEnabled: Bool? = nil
+        /// The session's Stem Lock + the stem set it carries (`StemLockState`). Optional/defaulted
+        /// like the two above (nil = lock off), so no schema bump.
+        var stemLock: StemLockState? = nil
         /// Epoch ms of the last write (informational — a session never expires on its own).
         var updatedAt: Double
     }

@@ -10,7 +10,8 @@ import SwiftUI
 /// ENGAGE = swap-on-touch: every control first calls `SetlistPlayer.engageMix()` (idempotent), which
 /// on the FIRST touch hands the current track's audio off the `AVPlayer` into the DSP graph AT the
 /// current position; the control then applies to the truly-playing track. Control state is EPHEMERAL
-/// — `SetlistPlayer` resets it on every track change.
+/// — `SetlistPlayer` resets it on every track change, unless the session's STEM LOCK (the 🔒 beside the
+/// Stems toggle) carries the stem set forward (see `StemLock`).
 ///
 /// Reuses the Mix tab's `DeckSlider` / `EffectButton` / `StepButton` / `ChipStrengthPopover`, bound to
 /// `NowPlayingDSP` instead of a `MixEngine` deck. iPhone-portrait width constraints are handled by the
@@ -51,6 +52,12 @@ struct NowPlayingMixPanel: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
             .accessibilityIdentifier("np-mix-panel")
+        } else if sequencer.stemLock.enabled, sequencer.isRunning {
+            // The panel hides on a track that can't be mixed (a stream, Apple Music) — but a
+            // session locked to stems must still say why this track plays the full mix.
+            StemLockStatusRow(indicator: sequencer.stemLockIndicator)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 4)
         }
     }
 
@@ -67,6 +74,10 @@ struct NowPlayingMixPanel: View {
                 if sequencer.mixEngaged {
                     Circle().fill(Theme.accent).frame(width: 6, height: 6)
                         .accessibilityLabel("Engaged")
+                }
+                if sequencer.stemLock.enabled {
+                    Image(systemName: "lock.fill").font(.caption2)
+                        .accessibilityLabel("Stem Lock on")
                 }
                 Spacer()
             }
@@ -132,6 +143,7 @@ struct NowPlayingMixPanel: View {
                     MixBufferingBadge(text: h == .toStems ? "Loading stems…" : "Loading full mix…",
                                       a11yId: "np-mix-stems-pending")
                 }
+                stemLockButton
                 Button {
                     engage()
                     dsp.setStemMode(!dsp.stemMode)
@@ -147,6 +159,9 @@ struct NowPlayingMixPanel: View {
                 .disabled(!stemsObtainable)
                 .accessibilityIdentifier("np-mix-stems-toggle")
                 .accessibilityValue(dsp.stemsLoading ? "Loading" : (dsp.stemMode ? "On" : "Off"))
+            }
+            if sequencer.stemLockIndicator == .unavailable {
+                StemLockStatusRow(indicator: .unavailable)
             }
             if !stemsObtainable {
                 Text("No stems for this track")
@@ -164,6 +179,59 @@ struct NowPlayingMixPanel: View {
     }
 }
 
+extension NowPlayingMixPanel {
+    /// STEM LOCK — carry this track's stem set (on/off + which parts) to every following track
+    /// of the session. Session state, not a mix control: it doesn't engage the DSP by itself.
+    fileprivate var stemLockButton: some View {
+        let locked = sequencer.stemLock.enabled
+        return Button {
+            sequencer.setStemLock(!locked)
+        } label: {
+            Image(systemName: locked ? "lock.fill" : "lock.open")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(locked ? Theme.accent : Theme.fgDim)
+                .padding(.horizontal, 8).padding(.vertical, 3)
+                .background(Capsule().fill(Theme.bgOverlay))
+                .overlay(Capsule().stroke(locked ? Theme.accent : Theme.border))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Stem Lock")
+        .accessibilityValue(locked ? "On" : "Off")
+        .accessibilityHint("Keeps this stem setup for the next tracks")
+        .accessibilityIdentifier("np-mix-stem-lock")
+    }
+}
+
+/// The small, unobtrusive Stem Lock line for a locked session whose CURRENT track can't do the
+/// carried stems (or is still bringing them up while the panel is hidden): the full mix plays,
+/// and the lock carries on to the next track.
+struct StemLockStatusRow: View {
+    let indicator: StemLock.Indicator
+
+    private var text: String? {
+        switch indicator {
+        case .unavailable: return "Stem Lock · no stems for this track — full mix"
+        case .loading: return "Stem Lock · stems loading…"
+        case .active: return "Stem Lock · stems on"
+        case .idle: return "Stem Lock · stems off"
+        case .off: return nil
+        }
+    }
+
+    var body: some View {
+        if let text {
+            HStack(spacing: 5) {
+                Image(systemName: "lock.fill")
+                Text(text).lineLimit(1).minimumScaleFactor(0.8)
+            }
+            .font(.caption2)
+            .foregroundStyle(Theme.fgDim)
+            .accessibilityElement(children: .combine)
+            .accessibilityIdentifier("np-stem-lock-status")
+        }
+    }
+}
+
 /// One stem pad for the Now Playing mix panel — TAP toggles MUTE; LONG-PRESS (iOS) / RIGHT-CLICK
 /// (macOS) opens the fixed-width volume popover (the `ChipStrengthPopover` the Mix tab uses). Bound to
 /// `NowPlayingDSP`. A dedicated pad (the Mix tab's `StemPad` is bound to `MixEngine`).
@@ -177,6 +245,8 @@ private struct NowPlayingStemPad: View {
 
     private var muted: Bool { dsp.isStemMuted(stem) }
     private var color: Color { Theme.accent }
+    /// Stem Lock: an un-muted part a PARTIAL set hasn't got yet — it plays once it lands.
+    private var pending: Bool { !muted && dsp.unwiredStemParts.contains(stem) }
 
     private static func icon(_ stem: String) -> String {
         switch stem {
@@ -200,6 +270,7 @@ private struct NowPlayingStemPad: View {
         .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
             .strokeBorder(muted ? Theme.border : color, lineWidth: 1))
         .foregroundStyle(muted ? Theme.fgDim : color)
+        .opacity(pending ? 0.55 : 1)
         .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
         .onTapGesture { onInteract(); dsp.toggleStemMute(stem) }
         .onLongPressGesture(minimumDuration: 0.4) { showPopover = true }
@@ -211,7 +282,7 @@ private struct NowPlayingStemPad: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(stem.capitalized)
-        .accessibilityValue(muted ? "Muted" : "On")
+        .accessibilityValue(muted ? "Muted" : (pending ? "Loading" : "On"))
         .accessibilityIdentifier(a11y)
         .accessibilityAddTraits(.isButton)
     }

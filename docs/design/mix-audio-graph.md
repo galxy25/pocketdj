@@ -238,6 +238,60 @@ handover (`advanceStemHandover` / `cutToStems` / `cutToFullMix`, built on `StemS
   `stemStartFramesForTesting()`, `setMainFrontierForTesting` / `releaseMainFrontierForTesting`,
   `simulateEngineStopForTesting`, `simulateInterruptionForTesting`.
 
+### Stem Lock — carrying the stem set across tracks (Now Playing only)
+
+The lock button (🔒, `np-mix-stem-lock`) beside the panel's Stems toggle turns on **Stem Lock** for
+the current playback SESSION (`SetlistPlayer.stemLock`, model + download lane in
+`apple/PocketDJ/Playback/StemLock.swift`). No graph topology changes; the Mix tab is untouched.
+
+- **Session scope.** A session is one `SetlistPlayer` run — one `sessionId`. A fresh
+  `SetlistPlayer.play(...)` (any new playlist / queue / collection play) mints a new id and clears
+  the lock; `stop()` / end-of-set clears it too. Live-queue edits, play-now, skips, jumps, repeats,
+  restore and the first ▶ after a restore keep it. Persisted in the durable snapshot
+  (`PlaybackSessionStore.Snapshot.stemLock`, optional — no schema bump). Off by default.
+- **What carries.** Stems on/off, the muted parts and the per-part gains. The carry is updated
+  ONLY by user stem actions (`NowPlayingDSP.onUserStemChange` — the toggle, a pad's mute, a pad's
+  gain; the lock's own calls go through `applyStemMode` / `applyCarriedStemControls`, which don't
+  notify). Turning the lock on snapshots the current track's state; a mid-track change is what
+  carries; turning stems OFF while locked carries "stems off" (the next track plays the plain
+  AVPlayer path, as if unlocked). A track that can't do stems never overwrites the carry.
+- **Applying it at a track start** (`SetlistPlayer.applyStemLockOnTrackStart`, called right after
+  the AVPlayer is handed the new local file — same turn): engage the DSP at the song's top
+  (`engageMix(atSeconds:play:)` — the AVPlayer clock hasn't moved yet), set the carried mutes/gains,
+  `stemPartsRequired` = the carried ENABLED parts, then `applyStemMode(true)`. Everything after is
+  the ordinary zero-dead-air handover above: the FULL MIX plays from the first second; enabled parts
+  on disk → crossfade at once; otherwise stream/fetch while "Loading stems…" shows, then cross over.
+- **Partial sets.** With `stemPartsRequired` set, the burned-on-disk lane may wire only the enabled
+  parts (`BurnStore.localStemPartURLs`), so the switch never waits on a muted part. A part that lands
+  later JOINS (`NowPlayingDSP.stemPartsLanded`): on air it's scheduled from the stems' exact playhead
+  and started on one sample frame against the rendering group (no `generation` bump — the joining
+  node had nothing armed); the pads show a not-yet-landed un-muted part dimmed ("Loading"). A set
+  that has to STREAM still streams and waits for all four parts (the stem stream lane is all-or-
+  nothing).
+- **Unavailable.** Not a local file (a cloud stream, Apple Music, a live capture), no stems
+  anywhere, or the DSP refused the file → the full mix plays, `stemLockIndicator == .unavailable`
+  (a one-line "Stem Lock · no stems for this track — full mix" under the panel, or in its place when
+  the panel is hidden), and the lock carries on to the next track.
+- **Download/stream order** (`StemLockPrefetcher`, one fetch at a time, only while the lock carries
+  stems): ① the playing track's missing ENABLED parts when a partial set is on air; ② the next
+  track's WHOLE SONG (through the shared `MixStreamLoader` — a finished stream is adopted as a burn,
+  so the boundary plays a local file the DSP can take over; never in device mode); ③ its enabled
+  stems in priority **vocals → drums → other → bass** (`BurnStore.burnStemPart`, the same file names
+  as a whole-set burn / streamed adoption); ④ the further tracks of the existing 3-track prefetch
+  window, each song-then-stems; ⑤ LAST, every MUTED part. Network: Wi-Fi = the whole window;
+  cellular = the next track only; Low Data Mode = the next track's song + enabled stems only (muted
+  parts skipped); offline = nothing. Each step holds a `PlaybackRunway`. A next track with no stems
+  gets one fire-and-forget cloud separation request (`RipsStore.stemify`, owner installs only,
+  deduped per song id) — playback never waits on it. A finished analog per-song CUT stream (not
+  adopted into the ledger) is played from its local file when the lock wants stems. Lock off →
+  nothing beyond the ordinary presign prefetch (no speculative stem fetch).
+- **DiagLog** `[stemlock]` lines (also on the `nowplaying` NPLog trace): lock on/off + carry, the
+  per-track carry decision (`→ on air` / `full mix first, stems loading` / `UNAVAILABLE (…)`),
+  `carry updated mid-track`, `prefetch order net=… a → b → …`, each `prefetch <step> ok|FAILED ms=`,
+  cancels, `stemify request`, and `handover song=… full mix → stems after Nms`.
+- **Surfaces.** CarPlay / lock screen / widgets show the DSP's card as for any engaged track (one
+  card writer). tvOS gets the same lock button (its Now Playing tab reuses `NowPlayingPanel` whole).
+
 ## Known limitations
 
 - **The graph is write-once.** No node is ever attached/detached/reconnected while running; the

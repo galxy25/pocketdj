@@ -734,6 +734,55 @@ final class BurnStore {
         return (local, folder.scoped ? { dir.stopAccessingSecurityScopedResource() } : nil)
     }
 
+    // MARK: Stem PARTS (Now Playing Stem Lock — one part at a time, in priority order)
+
+    /// Local URLs for the stem parts of `songId` that are ALREADY on disk in the active burn
+    /// folder — any subset of the four (`localStemURLs` is the all-or-nothing read). nil when no
+    /// part is present / the folder is unresolvable. Same scope contract: the caller invokes
+    /// `release` when done reading.
+    func localStemPartURLs(forSong songId: String) -> (urls: [String: URL], release: (() -> Void)?)? {
+        guard let folder = resolveBurnFolder(allowRePersist: false, requireWritable: false) else { return nil }
+        let dir = folder.url
+        var urls: [String: URL] = [:]
+        for name in Self.stemNames {
+            let u = dir.appendingPathComponent(Self.stemFileName(songId, name))
+            if FileManager.default.fileExists(atPath: u.path) { urls[name] = u }
+        }
+        guard !urls.isEmpty else {
+            if folder.scoped { dir.stopAccessingSecurityScopedResource() }
+            return nil
+        }
+        return (urls, folder.scoped ? { dir.stopAccessingSecurityScopedResource() } : nil)
+    }
+
+    /// The stem part names of `songId` on disk (existence only; scope released at once).
+    func stemPartsBurned(forSong songId: String) -> Set<String> {
+        guard let got = localStemPartURLs(forSong: songId) else { return [] }
+        got.release?()
+        return Set(got.urls.keys)
+    }
+
+    /// BURN ONE stem part (download once → persists under the same name `burnStems` uses, so a
+    /// part-by-part burn and a whole-set burn / a streamed-set adoption all land on the same
+    /// file). Idempotent: an existing part returns true with no network. False when the song
+    /// isn't stemmed in the manifest, the folder is unwritable, or the download failed (a
+    /// cancelled task included — the partial download is never written).
+    func burnStemPart(forSong songId: String, part: String) async -> Bool {
+        guard Self.stemNames.contains(part),
+              let url = rips.stemURLs(forSong: songId)?[part],
+              let folder = resolveBurnFolder(allowRePersist: true) else { return false }
+        let dir = folder.url
+        defer { if folder.scoped { dir.stopAccessingSecurityScopedResource() } }
+        let dest = dir.appendingPathComponent(Self.stemFileName(songId, part))
+        if FileManager.default.fileExists(atPath: dest.path) { return true }
+        do {
+            let data = try await rips.downloadBytes(url)
+            guard !Task.isCancelled else { return false }
+            try data.write(to: dest, options: .atomic)
+            return true
+        } catch { return false }
+    }
+
     /// MIX STREAMING: a deck streamed this song's 4 stems to completion — MOVE them into the
     /// active burn folder under their burned names, exactly as `burnStems` would have left them
     /// (a deck's open `AVAudioFile`s keep reading the same inodes). A part already burned keeps

@@ -83,7 +83,10 @@ final class SetlistPlayer {
         // `queueGeneration` is what lets the DEFERRED cold rebuild (see `persistSession`)
         // recognize it is stale: a snapshot built for generation N must never be memoized
         // or persisted once the queue has moved to N+1.
-        didSet { sessionRowsMemo = nil; queueIdsMemo = nil; queueGeneration &+= 1 }
+        didSet {
+            sessionRowsMemo = nil; queueIdsMemo = nil; queueGeneration &+= 1
+            scheduleStemLockReplan()           // a live-queue edit can change the upcoming tracks
+        }
     }
     /// Monotonic queue identity for the off-main session-row projection (see above).
     @ObservationIgnored private var queueGeneration = 0
@@ -275,7 +278,9 @@ final class SetlistPlayer {
     /// F4 SEAM (wired at app init): the single-deck DSP engine the Now Playing mix mini-panel drives.
     /// nil in unit tests that don't exercise the hand-off. The sequencer owns the AVPlayer↔DSP swap so
     /// end-advance, the durable session, and the single-owner lock-screen card stay coherent across it.
-    @ObservationIgnored var dsp: NowPlayingDSP?
+    @ObservationIgnored var dsp: NowPlayingDSP? {
+        didSet { wireStemLockHooks() }
+    }
 
     /// F4 SEAM (wired at app init): reads whether a Mix-tab session (deck / Auto-DJ) is active —
     /// `MixEngine.isRunning || autoMixing`. A Mix session and the Now Playing mix panel are mutually
@@ -357,6 +362,8 @@ final class SetlistPlayer {
         isHeldForResume = false
         pendingResumeMs = nil
         armEngineHooks()
+        // STEM LOCK is per SESSION: a fresh run (new `sessionId`) starts unlocked.
+        resetStemLock()
         // Durable session: a fresh run gets a fresh identity + an immediate snapshot, and the
         // ~1 Hz position sampler starts feeding the store's throttled refresh.
         sessionId = "pses_" + UUID().uuidString
@@ -566,6 +573,7 @@ final class SetlistPlayer {
         isHeldForResume = false
         pendingResumeMs = nil
         sessionId = ""
+        resetStemLock()                    // the session is over — so is its Stem Lock
         sessionStore?.clear()
     }
 
@@ -886,6 +894,7 @@ final class SetlistPlayer {
         // variant id, a legacy burn under the base) even though `np.songId` is the base — the same
         // split `playCurrent` resolves through.
         return StudioFactory.isStudioId(np.songId) || hasDeviceFile(queue[index])
+            || stemLockStreamedFile?(queue[index].resolveId) == np.url   // Stem Lock: a prefetched cut
     }
 
     /// The full F4 eligibility gate: mixable current track AND no active Mix-tab session (mutually
@@ -897,13 +906,18 @@ final class SetlistPlayer {
     /// external-source path so the lock-screen/CarPlay card keeps exactly ONE writer (the same
     /// mechanism the Apple Music hand-off uses). Idempotent — a no-op once engaged, or when the track
     /// isn't mixable / the DSP isn't wired. A brief, possibly-audible transition is accepted.
-    func engageMix() {
+    func engageMix() { engageMix(atSeconds: nil, play: nil) }
+
+    /// `engageMix` with the position + play state stated by the caller instead of read off the
+    /// AVPlayer — the Stem Lock engages in the SAME turn the AVPlayer was handed the new track,
+    /// before its clock (or a resume seek) has moved and before it reports playing.
+    private func engageMix(atSeconds at: Double?, play: Bool?) {
         guard isRunning, index < queue.count, !mixEngaged, let dsp, currentTrackMixable,
               let np = rips.nowPlaying else { return }
         let it = queue[index]
         let startSec = Double(np.startMs ?? 0) / 1000
-        let atSeconds = max(0, player.currentTime - startSec)   // AVPlayer clock is absolute-in-file
-        let wasPlaying = player.isPlaying
+        let atSeconds = at ?? max(0, player.currentTime - startSec)   // AVPlayer clock is absolute-in-file
+        let wasPlaying = play ?? player.isPlaying
         dsp.onReachedEnd = { [weak self] in self?.handleDSPEnded() }
         // 1) Open the file WITHOUT sounding yet (`play: false`) so `dsp.duration` is known — the
         //    AVPlayer is still the only voice at this instant, so no double-audio. This must precede
@@ -979,6 +993,201 @@ final class SetlistPlayer {
                 if self.mixEngaged, self.mixSessionActive?() == true { self.endMixEngagement() }
             }
         }
+    }
+
+    // MARK: - Stem Lock (carry the Now Playing stem set across tracks — see `StemLock`)
+
+    /// The session's Stem Lock and the stem set it carries. Off by default; persisted in the
+    /// durable session; cleared by a new session (`play`) and by `stop()`.
+    private(set) var stemLock = StemLockState()
+    /// The song (by row id) whose carried stems could not be brought up — drives the
+    /// "unavailable" indicator. Cleared on every track start.
+    private(set) var stemLockUnavailableSongId: String?
+    /// The download lane pairing upcoming tracks' whole songs with their stems (wired at app
+    /// init; nil in tests that don't exercise it — the lock then only carries the stem state).
+    @ObservationIgnored var stemLockPrefetcher: StemLockPrefetcher? {
+        didSet {
+            stemLockPrefetcher?.onStepFinished = { [weak self] step, ok in self?.stemLockStepFinished(step, ok) }
+        }
+    }
+    /// SEAM: a COMPLETE whole-song stream file for an audio id that the burn ledger didn't adopt
+    /// (an analog per-song cut) — wired to the shared `MixStreamLoader`. nil = none.
+    @ObservationIgnored var stemLockStreamedFile: ((String) -> URL?)?
+    /// SEAM: can this audio id's whole song be fetched right now (ripped + server + network)?
+    @ObservationIgnored var stemLockSongFetchable: ((String) -> Bool)?
+    /// True while the lock itself drives the DSP (its stem calls must not read as user changes).
+    @ObservationIgnored private var applyingStemLock = false
+    /// When the lock asked the current track for its stems (the handover-timing line).
+    @ObservationIgnored private var stemLockRequestedAt: (songId: String, at: Date)?
+    @ObservationIgnored private var stemLockReplanQueued = false
+
+    /// What the Now Playing surfaces show for the lock on the current track.
+    var stemLockIndicator: StemLock.Indicator {
+        guard stemLock.enabled else { return .off }
+        guard stemLock.stemsOn, let id = currentSongId, !isHeldForResume else { return .idle }
+        if stemLockUnavailableSongId == id { return .unavailable }
+        guard mixEngaged, let dsp else { return .loading }        // the track is still starting
+        if dsp.stemsOnAir { return .active }
+        return dsp.stemsLoading ? .loading : .unavailable          // a request that dropped
+    }
+
+    /// Turn the session's Stem Lock on/off. ON captures the CURRENT track's stem state as the
+    /// set to carry (stems off when the track isn't engaged); OFF forgets it — later tracks reset
+    /// as before (the current track keeps whatever it is playing). No-op with no session.
+    func setStemLock(_ on: Bool) {
+        guard isRunning else { return }
+        var st = StemLockState()
+        if on {
+            st.enabled = true
+            captureStemLock(into: &st)
+        }
+        stemLock = st
+        stemLockUnavailableSongId = nil
+        if !on { stemLockPrefetcher?.cancelAll() }
+        StemLock.log("lock \(on ? "ON" : "OFF") session=\(sessionId) song=\(currentSongId ?? "-")\(on ? " carry " + st.logSummary : "")")
+        persistSession()
+        scheduleStemLockReplan()
+    }
+
+    /// The current track's stem state (when the DSP owns it) into `st`.
+    private func captureStemLock(into st: inout StemLockState) {
+        guard mixEngaged, let dsp else { st.stemsOn = false; st.muted = []; st.volumes = [:]; return }
+        st.stemsOn = dsp.stemMode
+        st.muted = dsp.mutedStems.sorted()
+        st.volumes = dsp.stemVolumes
+    }
+
+    /// New session / stop: unlocked, nothing carried, nothing downloading for it.
+    private func resetStemLock() {
+        if stemLock.enabled { StemLock.log("lock cleared (session ended / new session)") }
+        stemLock = StemLockState()
+        stemLockUnavailableSongId = nil
+        stemLockRequestedAt = nil
+        stemLockPrefetcher?.cancelAll()
+    }
+
+    /// The DSP's user-change + handover hooks (re-armed whenever the DSP seam is set).
+    private func wireStemLockHooks() {
+        dsp?.onUserStemChange = { [weak self] in self?.stemControlsChangedByUser() }
+        dsp?.onStemsOnAir = { [weak self] songId in self?.stemsWentOnAir(songId) }
+    }
+
+    /// The listener changed the stem state mid-track: that is what carries forward now.
+    private func stemControlsChangedByUser() {
+        guard stemLock.enabled, !applyingStemLock, mixEngaged, let dsp else { return }
+        var st = stemLock
+        captureStemLock(into: &st)
+        guard st != stemLock else { return }
+        stemLock = st
+        // An unmuted part the partial set lacks becomes an ENABLED part: it must arrive first.
+        if dsp.stemPartsRequired != nil { dsp.stemPartsRequired = Set(st.enabledParts) }
+        if st.stemsOn, let id = currentSongId, stemLockUnavailableSongId == id, dsp.stemMode {
+            stemLockUnavailableSongId = nil
+        }
+        StemLock.log("carry updated mid-track song=\(currentSongId ?? "-") \(st.logSummary)")
+        persistSession()
+        scheduleStemLockReplan()
+    }
+
+    private func stemsWentOnAir(_ songId: String) {
+        guard stemLock.wantsStems, let req = stemLockRequestedAt, req.songId == songId else { return }
+        stemLockRequestedAt = nil
+        let ms = Int(Date().timeIntervalSince(req.at) * 1000)
+        StemLock.log("handover song=\(songId) full mix → stems after \(ms)ms @\(String(format: "%.2f", dsp?.currentTime ?? 0))s")
+    }
+
+    /// A NEW track just started (the AVPlayer was handed its source this turn — or the stream /
+    /// Apple Music resolve just landed). Locked with stems: hand it to the DSP on the full mix at
+    /// once (zero dead air — it plays from its first sample) with the carried mutes/gains, and ask
+    /// for the stems; the DSP's handover crosses over as soon as the ENABLED parts are buffered.
+    /// A track that can't do stems keeps the full mix and flags the indicator; the lock stays.
+    /// `liveClock`: the audio started earlier (an adopted row ▶) — engage at the AVPlayer's
+    /// current position instead of the song's top / the resume offset.
+    private func applyStemLockOnTrackStart(resumeAtMs: Int?, liveClock: Bool = false) {
+        stemLockUnavailableSongId = nil
+        stemLockRequestedAt = nil
+        defer { scheduleStemLockReplan() }
+        guard stemLock.enabled, isRunning, index < queue.count else { return }
+        let it = queue[index]
+        guard stemLock.stemsOn else {
+            StemLock.log("carry song=\(it.id) stems=off → full mix")
+            return
+        }
+        guard let dsp, currentTrackMixable, mixSessionActive?() != true else {
+            stemLockUnavailableSongId = it.id
+            StemLock.log("carry song=\(it.id) \(stemLock.logSummary) → UNAVAILABLE (not a local file) — full mix, lock kept")
+            return
+        }
+        if !mixEngaged {
+            engageMix(atSeconds: liveClock ? nil : (resumeAtMs.map { Double($0) / 1000 } ?? 0),
+                      play: !player.pausedByListener)
+        }
+        guard mixEngaged else {
+            stemLockUnavailableSongId = it.id
+            StemLock.log("carry song=\(it.id) → UNAVAILABLE (DSP refused the file) — full mix, lock kept")
+            return
+        }
+        applyingStemLock = true
+        defer { applyingStemLock = false }
+        dsp.applyCarriedStemControls(muted: Set(stemLock.muted), volumes: stemLock.volumes)
+        dsp.stemPartsRequired = Set(stemLock.enabledParts)
+        let t0 = Date()
+        stemLockRequestedAt = (it.id, t0)
+        guard dsp.applyStemMode(true) else {
+            stemLockRequestedAt = nil
+            stemLockUnavailableSongId = it.id
+            StemLock.log("carry song=\(it.id) \(stemLock.logSummary) → UNAVAILABLE (no stems) — full mix, lock kept")
+            return
+        }
+        let local = burns.stemPartsBurned(forSong: it.id)
+        StemLock.log("carry song=\(it.id) \(stemLock.logSummary) local=\(local.sorted().joined(separator: ",")) → \(dsp.stemsOnAir ? "on air" : "full mix first, stems loading")")
+    }
+
+    /// A prefetch step finished: a stem part of the PLAYING track joins its partial set.
+    private func stemLockStepFinished(_ step: StemLockPrefetcher.Step, _ ok: Bool) {
+        guard ok, case let .stem(songId, _) = step, mixEngaged, currentSongId == songId else { return }
+        dsp?.stemPartsLanded(songId)
+    }
+
+    /// Coalesce re-plans (a queue edit + a track start in one turn plan once).
+    private func scheduleStemLockReplan() {
+        guard let pf = stemLockPrefetcher, stemLock.enabled || !pf.isIdle, !stemLockReplanQueued else { return }
+        stemLockReplanQueued = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.stemLockReplanQueued = false
+            self.replanStemLock()
+        }
+    }
+
+    /// Re-plan the Stem Lock download lane from the current queue position (see
+    /// `StemLockPrefetcher.plan` for the order). Lock off / stems off / held / idle: cancel —
+    /// the ordinary presign prefetch is all that runs then (no speculative stem fetch).
+    func replanStemLock() {
+        guard let pf = stemLockPrefetcher else { return }
+        guard stemLock.wantsStems, isRunning, !isHeldForResume, index < queue.count else { pf.cancelAll(); return }
+        let upcoming = queue[(index + 1)..<min(queue.count, index + 1 + Self.prefetchAhead)]
+            .filter { !StudioFactory.isStudioId($0.id) && !ProfileSourceStore.isProfileSongId($0.id) }
+            .map(stemLockTrack)
+        var current: StemLockPrefetcher.Track?
+        if mixEngaged, let dsp, dsp.stemMode, !dsp.unwiredStemParts.isEmpty {
+            let t = stemLockTrack(queue[index])
+            // A missing part that is on disk by now (landed between events) joins right here.
+            if !t.stemsLocal.isDisjoint(with: dsp.unwiredStemParts) { dsp.stemPartsLanded(t.songId) }
+            current = t
+        }
+        pf.apply(StemLockPrefetcher.plan(current: current, upcoming: upcoming, carry: stemLock,
+                                         network: pf.network(), window: Self.prefetchAhead))
+    }
+
+    private func stemLockTrack(_ it: Item) -> StemLockPrefetcher.Track {
+        // Device mode plays ONLY burned files — the lock never downloads a whole song into it.
+        let fetchable = playbackMode() != .device && (stemLockSongFetchable?(it.resolveId) ?? false)
+        return .init(songId: it.id, audioId: it.resolveId, title: it.title, artist: it.artist,
+                     songLocal: hasDeviceFile(it) || stemLockStreamedFile?(it.resolveId) != nil,
+                     songFetchable: fetchable,
+                     stemsLocal: burns.stemPartsBurned(forSong: it.id),
+                     stemsRemote: burns.stemsRemote(forSong: it.id))
     }
 
     // MARK: - Internals
@@ -1089,6 +1298,9 @@ final class SetlistPlayer {
             player.setEndBoundary(ms: sharedFileEndBoundaryMs(queue[pos], startMs: rips.nowPlaying?.startMs),
                                   songStartMs: rips.nowPlaying?.startMs)
         }
+        // The row's own play started the audio a hop ago: the lock takes it over from wherever
+        // the AVPlayer's clock is now.
+        applyStemLockOnTrackStart(resumeAtMs: nil, liveClock: true)
     }
 
     /// Hand the system Now Playing card to the Apple Music stream for `it` — the shared tail
@@ -1402,6 +1614,7 @@ final class SetlistPlayer {
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: nil, rips: rips, player: player,
                           endBoundaryMs: nil, atMs: resumeAtMs, release: res.release)
+            applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
             return
         }
 
@@ -1419,6 +1632,7 @@ final class SetlistPlayer {
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: nil, rips: rips, player: player,
                           endBoundaryMs: nil, atMs: resumeAtMs, release: res.release)
+            applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
             return
         }
 
@@ -1452,6 +1666,7 @@ final class SetlistPlayer {
                               startMs: start, rips: rips, player: player,
                               endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: start),
                               atMs: resumeAtMs, release: res.release)
+                applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
                 // Finite local file → the end notification (or length boundary) advances us.
             } else {
                 // Nothing on device for this edition. Device mode can't stream, so the row is
@@ -1475,6 +1690,16 @@ final class SetlistPlayer {
                           startMs: start, rips: rips, player: player,
                           endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: start),
                           atMs: resumeAtMs, release: res.release)
+            applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
+        } else if stemLock.wantsStems, let url = stemLockStreamedFile?(it.resolveId) {
+            // STEM LOCK: the prefetch finished this song as a per-song CUT stream (an analog cut
+            // isn't adopted into the burn ledger) — play that local file, so the carried stems
+            // can take it over, instead of streaming the same bytes again.
+            coordinator.stopAppleMusicIfActive()
+            playLocalFile(url, songId: it.id, title: it.title, artist: it.artist,
+                          startMs: nil, rips: rips, player: player,
+                          endBoundaryMs: nil, atMs: resumeAtMs)
+            applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
         } else {
             // SILENCE THE OUTGOING TRACK FIRST. Resolving a cloud row is an async round-trip
             // (an Apple Music lookup, or a rip that may still be queued), and until it lands
@@ -1530,8 +1755,10 @@ final class SetlistPlayer {
             // Auto-advance rides `coordinator.appleMusic.onTrackEnded` (wired in play()) either way.
             if coordinator.activeBackend == .appleMusic {
                 handOffCardToAppleMusic(for: it)
+                applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)   // (unavailable: not a local file)
                 return
             }
+            applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)       // a stream: full mix, lock kept
             // A live HLS capture has no natural end → don't rely on the hook; offer "Next".
             if player.isLive {
                 waitingForLive = true
@@ -1615,6 +1842,10 @@ final class SetlistPlayer {
         // command state is (re)pushed by `armEngineHooks` when real playback starts.
         repeatMode = RepeatMode(rawValue: snap.repeatMode ?? "") ?? .off
         shuffleEnabled = snap.shuffleEnabled ?? false
+        // The session's Stem Lock (and the stem set it carries) rides the snapshot too: the
+        // first ▶ (`resumeFromHold` → `playCurrent`) re-applies it to the resumed track.
+        stemLock = snap.stemLock ?? StemLockState()
+        stemLockUnavailableSongId = nil
         canonicalOrder = shuffleEnabled ? queue.map(\.uid) : nil
         currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[index].repeatCount)
         deviceQueueUnplayable = false
@@ -1784,6 +2015,7 @@ final class SetlistPlayer {
             isPlaying: sessionIsPlaying(),
             repeatMode: repeatMode.rawValue,
             shuffleEnabled: shuffleEnabled,
+            stemLock: stemLock.enabled ? stemLock : nil,
             updatedAt: Date().timeIntervalSince1970 * 1000)
         sessionStore.save(snap)
     }
