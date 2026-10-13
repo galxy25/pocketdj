@@ -510,6 +510,48 @@ ec2(){
   done
 }
 
+# ------------------------------------------------------------------- copied data that names blue
+# Run AFTER every data-sync (incl. the cutover re-sync): a few copied objects embed blue
+# coordinates and would make green talk to blue.
+#  - web buckets' search-config.json: the AOSS host clients read at launch.
+#  - web buckets' config/endpoints.json (remote endpoint config, feat/remote-endpoints): green's copy.
+#  - rips worker-code/*: the worker sources EC2 workers pull at boot (their bucket/queue defaults).
+# Same-length id swaps keep sizes equal, and the rewritten object is newer, so a later
+# `aws s3 sync` without --delete leaves them alone; SYNC_DELETE re-syncs must re-run this.
+web_config(){
+  local aoss; aoss=$(state_get aoss.host); [ -n "$aoss" ] || die "aoss host unknown"
+  for n in prod-web dev-web; do
+    local bk; bk=$(gbucket "$n")
+    if g s3api head-object --bucket "$bk" --key search-config.json >/dev/null 2>&1; then
+      local meta; meta=$(g s3api head-object --bucket "$bk" --key search-config.json --output json)
+      g s3 cp "s3://$bk/search-config.json" - --only-show-errors \
+        | jq --arg h "$aoss" '.host=$h' \
+        | g s3 cp - "s3://$bk/search-config.json" --only-show-errors \
+            --content-type "$(jq -r .ContentType <<<"$meta")" --cache-control "$(jq -r '.CacheControl // "no-cache"' <<<"$meta")"
+      say "$bk/search-config.json host -> $aoss"
+    fi
+    if [ -f "$REPO/config/endpoints.green.json" ]; then
+      g s3 cp "$REPO/config/endpoints.green.json" "s3://$bk/config/endpoints.json" --only-show-errors \
+        --content-type application/json --cache-control "no-cache"
+      say "$bk/config/endpoints.json <- config/endpoints.green.json"
+    fi
+  done
+  for key in dev prod; do
+    local id; id=$(state_get "cf.$key.id")
+    [ -n "$id" ] && g cloudfront create-invalidation --distribution-id "$id" --paths /search-config.json /config/endpoints.json >/dev/null
+  done
+}
+worker_code(){
+  local bk; bk=$(gbucket rips)
+  for k in $(g s3api list-objects-v2 --bucket "$bk" --prefix worker-code/ --output json \
+      | jq -r '.Contents[]?|select(.Size < 2000000)|.Key'); do
+    if g s3 cp "s3://$bk/$k" - --only-show-errors | grep -q "$BA"; then
+      g s3 cp "s3://$bk/$k" - --only-show-errors | to_green | g s3 cp - "s3://$bk/$k" --only-show-errors
+      say "rewrote $k ($BA -> $GA)"
+    fi
+  done
+}
+
 # ------------------------------------------------------------------------------------------ main
 run(){
   case "$1" in
@@ -527,7 +569,9 @@ run(){
     acm) acm ;;
     ses) ses ;;
     ec2) ec2 ;;
-    all) for p in s3 iam sqs secrets aoss lambda apis events cf s3-policies lambda r53 acm ses ec2; do run "$p"; done ;;
+    web-config) web_config ;;
+    worker-code) worker_code ;;
+    all) for p in s3 iam sqs secrets aoss lambda apis events cf s3-policies lambda r53 acm ses ec2 web-config worker-code; do run "$p"; done ;;
     *) die "unknown phase $1" ;;
   esac
 }
