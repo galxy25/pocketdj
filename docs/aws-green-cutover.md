@@ -118,9 +118,13 @@ Each step lists its rollback. Steps marked **BLUE CHANGE** modify blue and need 
 that moment.
 
 ### 0. Before (any time)
-1. Levi: raise green quotas — EC2 Spot + On-Demand standard vCPU are **5** (blue: 64; timbre worker
-   c7g.2xlarge needs 8); SES production access in us-west-2 (green is sandboxed, 200/day, verified
-   recipients only — the mail forwarder sends via SES).
+1. Green quotas — EC2 Spot + On-Demand standard vCPU (were 5, auto-raised to 32/16; blue: 64; timbre
+   worker c7g.2xlarge needs 8). 64/64 requested 2026-10-13 (PENDING). SES production access in
+   us-west-2 filed 2026-10-13 with blue's approved use case (PENDING; green is sandboxed until then,
+   200/day, verified recipients only — the mail forwarder sends via SES).
+   Status: `aws sesv2 get-account --profile llc --region us-west-2 --query Details.ReviewDetails`.
+   The temporary blue→green copy grant is ON again (2026-10-13) for the final re-sync; remove it after
+   with `bash scripts/green/provision.sh s3-policies`.
 2. Golden stem AMI (see above).
 3. `bash scripts/green/smoke.sh` — expect all PASS.
 
