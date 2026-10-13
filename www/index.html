@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PocketDJ — Rip, Burn, Mix Your Music</title>
+<meta name="description" content="PocketDJ — rip, burn, and mix the music you own. Coming soon to the Apple App Store and Google Play.">
+<meta name="theme-color" content="#000000">
+<link rel="icon" href="/icon.png">
+<link rel="apple-touch-icon" href="/icon.png">
+<meta property="og:title" content="PocketDJ — Rip, Burn, Mix Your Music">
+<meta property="og:description" content="Coming soon.">
+<meta property="og:image" content="/icon.png">
+<meta property="og:type" content="website">
+<style>
+  :root{
+    --bg:#000;
+    --teal:#00a99d;
+    --teal-lit:#2ee6d6;
+    --ink:#f4f7f7;
+    --dim:#7d8a8a;
+    --chrome-1:#e9f1f2;
+    --chrome-2:#8fa3a6;
+    --chrome-3:#3a4547;
+  }
+
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font:400 17px/1.6 -apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Inter,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    min-height:100svh;
+    display:grid;
+    place-items:center;
+    padding:clamp(1.5rem,5vw,4rem);
+    overflow-x:hidden;
+    position:relative;
+  }
+
+  /* ── Chrome edges ──────────────────────────────────────────────────────────
+     Not a closed frame. Four separate bars, each fading to nothing before it
+     reaches the corners, so the enclosure is implied rather than drawn — the
+     object is still emerging, not yet fully lit.                              */
+  .edge{position:fixed;pointer-events:none;z-index:2}
+  .edge-t,.edge-b{left:0;right:0;height:1px}
+  .edge-l,.edge-r{top:0;bottom:0;width:1px}
+  .edge-t{top:0;background:linear-gradient(90deg,transparent 0%,transparent 14%,var(--chrome-3) 30%,var(--chrome-1) 50%,var(--chrome-3) 70%,transparent 86%,transparent 100%)}
+  .edge-b{bottom:0;background:linear-gradient(90deg,transparent 0%,transparent 22%,var(--chrome-3) 40%,var(--chrome-2) 50%,var(--chrome-3) 60%,transparent 78%,transparent 100%)}
+  .edge-l{left:0;background:linear-gradient(180deg,transparent 0%,transparent 18%,var(--chrome-3) 34%,var(--chrome-2) 50%,var(--chrome-3) 66%,transparent 82%,transparent 100%)}
+  .edge-r{right:0;background:linear-gradient(180deg,transparent 0%,transparent 18%,var(--chrome-3) 34%,var(--chrome-2) 50%,var(--chrome-3) 66%,transparent 82%,transparent 100%)}
+
+  /* Soft spill inward from each chrome bar — the gradient shadow. */
+  .glow{position:fixed;pointer-events:none;z-index:1;opacity:.5}
+  .glow-t{top:0;left:0;right:0;height:34vh;background:radial-gradient(120% 100% at 50% 0%,rgba(180,205,208,.16) 0%,rgba(0,169,157,.06) 34%,transparent 70%)}
+  .glow-b{bottom:0;left:0;right:0;height:28vh;background:radial-gradient(120% 100% at 50% 100%,rgba(140,168,172,.11) 0%,transparent 68%)}
+  .glow-l{top:0;bottom:0;left:0;width:22vw;background:radial-gradient(100% 120% at 0% 50%,rgba(150,178,182,.09) 0%,transparent 66%)}
+  .glow-r{top:0;bottom:0;right:0;width:22vw;background:radial-gradient(100% 120% at 100% 50%,rgba(150,178,182,.09) 0%,transparent 66%)}
+
+  /* Slow sweep across the top edge — a highlight travelling over metal. */
+  .sheen{
+    position:fixed;top:0;left:0;right:0;height:1px;z-index:3;pointer-events:none;
+    background:linear-gradient(90deg,transparent 0%,transparent 40%,rgba(255,255,255,.85) 50%,transparent 60%,transparent 100%);
+    background-size:220% 100%;
+    animation:sweep 9s ease-in-out infinite;
+  }
+  @keyframes sweep{
+    0%,100%{background-position:180% 0;opacity:0}
+    45%{opacity:.9}
+    50%{background-position:-80% 0;opacity:.9}
+    55%{opacity:0}
+  }
+
+  main{
+    position:relative;z-index:4;
+    text-align:center;
+    max-width:44rem;
+    animation:emerge 1.5s cubic-bezier(.16,1,.3,1) both;
+  }
+  @keyframes emerge{from{opacity:0;transform:translateY(14px) scale(.985);filter:blur(6px)}to{opacity:1;transform:none;filter:none}}
+
+  .wordmark{
+    margin:0 0 clamp(1.6rem,4vw,2.4rem);
+    font-size:clamp(1.6rem,5.5vw,2.6rem);
+    font-weight:600;
+    letter-spacing:.16em;
+    text-transform:uppercase;
+    background:linear-gradient(180deg,#fff 0%,var(--chrome-1) 34%,var(--chrome-2) 66%,var(--chrome-3) 100%);
+    -webkit-background-clip:text;background-clip:text;
+    -webkit-text-fill-color:transparent;color:transparent;
+    text-shadow:0 0 42px rgba(0,169,157,.22);
+  }
+
+  .icon-wrap{position:relative;display:inline-block;margin-bottom:clamp(1.8rem,4.5vw,2.8rem)}
+  .icon-wrap::after{
+    content:"";position:absolute;inset:-22%;z-index:-1;border-radius:50%;
+    background:radial-gradient(circle,rgba(0,169,157,.34) 0%,rgba(0,169,157,.10) 42%,transparent 68%);
+    filter:blur(22px);
+    animation:breathe 5.5s ease-in-out infinite;
+  }
+  @keyframes breathe{0%,100%{opacity:.6;transform:scale(.96)}50%{opacity:1;transform:scale(1.05)}}
+
+  .icon{
+    width:clamp(120px,26vw,176px);height:auto;display:block;
+    border-radius:23%;
+    box-shadow:0 0 0 1px rgba(233,241,242,.16),0 24px 70px -18px rgba(0,169,157,.55),0 8px 26px rgba(0,0,0,.9);
+  }
+
+  .hero{
+    margin:0 0 clamp(2.4rem,6vw,3.4rem);
+    font-size:clamp(1.9rem,7vw,3.4rem);
+    line-height:1.12;
+    font-weight:700;
+    letter-spacing:-.02em;
+    background:linear-gradient(105deg,#fff 0%,#dfeaeb 26%,var(--teal-lit) 52%,#dfeaeb 74%,#fff 100%);
+    background-size:220% 100%;
+    -webkit-background-clip:text;background-clip:text;
+    -webkit-text-fill-color:transparent;color:transparent;
+    animation:shimmer 8s ease-in-out infinite;
+  }
+  @keyframes shimmer{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+
+  .buttons{display:flex;flex-direction:column;gap:.95rem;align-items:center}
+  @media (min-width:620px){.buttons{flex-direction:row;justify-content:center}}
+
+  .btn{
+    position:relative;
+    display:inline-flex;align-items:center;justify-content:center;gap:.6rem;
+    padding:1rem 1.7rem;
+    width:100%;max-width:22rem;
+    border-radius:999px;
+    font-size:.95rem;font-weight:600;letter-spacing:.01em;
+    color:var(--ink);
+    text-decoration:none;
+    background:rgba(255,255,255,.028);
+    border:1px solid transparent;
+    /* Holographic rim: gradient painted into the border box only. */
+    background-image:
+      linear-gradient(rgba(255,255,255,.028),rgba(255,255,255,.028)),
+      linear-gradient(115deg,#ff6ec7 0%,#8a7dff 18%,#2ee6d6 38%,#7dffb0 55%,#ffe97d 72%,#ff8fa3 88%,#ff6ec7 100%);
+    background-origin:border-box;
+    background-clip:padding-box,border-box;
+    background-size:100% 100%,300% 100%;
+    animation:holo 7s linear infinite,pulse 3.4s ease-in-out infinite;
+    cursor:default;
+    overflow:hidden;
+  }
+  .btn::before{
+    content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;
+    background:linear-gradient(115deg,transparent 30%,rgba(255,255,255,.16) 48%,transparent 66%);
+    background-size:280% 100%;
+    animation:holo 7s linear infinite;
+  }
+  .btn span{position:relative;z-index:1}
+  @keyframes holo{0%{background-position:0 0,0% 50%}100%{background-position:0 0,300% 50%}}
+  @keyframes pulse{
+    0%,100%{box-shadow:0 0 0 0 rgba(46,230,214,.26),0 0 26px -6px rgba(138,125,255,.34)}
+    50%{box-shadow:0 0 0 9px rgba(46,230,214,0),0 0 44px -4px rgba(138,125,255,.5)}
+  }
+  .btn small{display:block;font-size:.72rem;font-weight:500;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);margin-bottom:.15rem}
+  .btn .stack{position:relative;z-index:1;text-align:center}
+
+  footer{
+    position:relative;z-index:4;
+    margin-top:clamp(3rem,8vw,5rem);
+    font-size:.8rem;color:var(--dim);letter-spacing:.02em;
+  }
+  footer a{color:var(--dim);text-decoration:none;border-bottom:1px solid rgba(125,138,138,.3)}
+  footer a:hover{color:var(--teal-lit);border-bottom-color:var(--teal-lit)}
+  footer .sep{opacity:.4;margin:0 .55rem}
+
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation:none!important;transition:none!important}
+    .hero{background-position:50% 50%}
+  }
+</style>
+</head>
+<body>
+
+  <div class="glow glow-t"></div><div class="glow glow-b"></div>
+  <div class="glow glow-l"></div><div class="glow glow-r"></div>
+  <div class="edge edge-t"></div><div class="edge edge-b"></div>
+  <div class="edge edge-l"></div><div class="edge edge-r"></div>
+  <div class="sheen"></div>
+
+  <main>
+    <h1 class="wordmark">PocketDJ</h1>
+
+    <div class="icon-wrap">
+      <img class="icon" src="/icon.png" width="176" height="176"
+           alt="PocketDJ app icon — a shirt pocket holding a DJ mixer with headphones">
+    </div>
+
+    <p class="hero">Rip, Burn, Mix<br>Your Music</p>
+
+    <div class="buttons">
+      <span class="btn" role="text" aria-label="Coming soon to the Apple App Store">
+        <span class="stack"><small>Coming soon to</small>Apple App Store</span>
+      </span>
+      <span class="btn" role="text" aria-label="Coming soon to the Android app store">
+        <span class="stack"><small>Coming soon to</small>Android App Store</span>
+      </span>
+    </div>
+  </main>
+
+  <footer>
+    <a href="/support.html">Support</a>
+    <span class="sep">·</span>
+    <a href="https://legal.pocket-dj.com/privacy/">Privacy</a>
+    <span class="sep">·</span>
+    <a href="https://legal.pocket-dj.com/terms/">Terms</a>
+    <span class="sep">·</span>
+    <a href="mailto:contact@pocket-dj.com">contact@pocket-dj.com</a>
+    <span class="sep">·</span>
+    <span>&copy; 2026 PocketDJ</span>
+  </footer>
+
+</body>
+</html>
