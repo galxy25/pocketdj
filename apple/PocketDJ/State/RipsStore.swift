@@ -218,7 +218,11 @@ final class RipsStore {
 
     // MARK: Config
 
-    private let ripsBase: URL
+    /// Injected bucket base (tests); nil ⇒ read `Config.ripsBase` LIVE per request so a remote
+    /// endpoint flip (docs/design/remote-endpoints.md) reaches the manifest + every stream URL
+    /// without relaunch. Already-resolved URLs held by in-flight work are left alone.
+    private let ripsBaseOverride: URL?
+    private var ripsBase: URL { ripsBaseOverride ?? Config.ripsBase }
     private let session: URLSession
     /// Settings supply the rip-server URL + token (set by the app at launch).
     var settings: SettingsStore?
@@ -250,8 +254,8 @@ final class RipsStore {
     @ObservationIgnored private static let diag = Logger(subsystem: "com.levi.pocketdj", category: "rips")
     private func dlog(_ s: String) { Self.diag.info("\(s, privacy: .public)") }
 
-    init(ripsBase: URL = Config.ripsBase, session: URLSession = .shared) {
-        self.ripsBase = ripsBase
+    init(ripsBase: URL? = nil, session: URLSession = .shared) {
+        self.ripsBaseOverride = ripsBase
         self.session = session
     }
 

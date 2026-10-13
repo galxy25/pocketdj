@@ -180,7 +180,9 @@ final class InstrumentPackStore {
 
     // MARK: Internals
 
-    @ObservationIgnored private let indexURL: URL
+    /// Injected index URL (tests); nil ⇒ `Config.instrumentsIndexURL` read LIVE (remote endpoints).
+    @ObservationIgnored private let indexURLOverride: URL?
+    private var indexURL: URL { indexURLOverride ?? Config.instrumentsIndexURL }
     @ObservationIgnored private let session: URLSession
     /// Cache-directory override (tests point it at a temp dir); nil ⇒ CatalogService's
     /// `Application Support/catalog-cache/` — the pack index rides the same explicit file-cache
@@ -198,9 +200,9 @@ final class InstrumentPackStore {
         MixDiag.shared.append(s)
     }
 
-    init(indexURL: URL = Config.instrumentsIndexURL, session: URLSession = .shared,
+    init(indexURL: URL? = nil, session: URLSession = .shared,
          cacheDir: URL? = nil) {
-        self.indexURL = indexURL
+        self.indexURLOverride = indexURL
         self.session = session
         self.cacheDir = cacheDir
         // OFFLINE-FIRST: serve the last good index from disk immediately (a few KB — cheap at

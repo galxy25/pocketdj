@@ -10,9 +10,12 @@ import { getItem, putItem } from '../storage/repo';
 import { useDataStore } from './useDataStore';
 import { isSong } from '../types/model';
 import { SILENT_MP3 } from '../lib/silentAudio';
+import { endpoint } from '../config/remoteEndpoints';
 
-const PUBLIC_BASE = 'https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com';
-const MANIFEST_URL = `${PUBLIC_BASE}/rips/manifest.json`;
+// Public rips bucket: read LIVE from the remote endpoint config at request time (never
+// cached at module load) so a blue↔green flip applies to the next request.
+const publicBase = (): string => endpoint('ripsBase');
+const manifestUrl = (): string => `${publicBase()}/rips/manifest.json`;
 const LS_KEY = 'pdj.rip.v1';
 // Minimum rip-server protocol the app needs (2 = live HLS streaming). A reachable
 // server reporting less triggers an "outdated — restart it" banner.
@@ -158,7 +161,7 @@ export const useRipsStore = create<RipState>((set, get) => {
     },
     refreshManifest: async () => {
       try {
-        const r = await fetch(`${MANIFEST_URL}?t=${Date.now()}`, { cache: 'no-store' });
+        const r = await fetch(`${manifestUrl()}?t=${Date.now()}`, { cache: 'no-store' });
         if (r.ok) {
           const manifest = await r.json();
           set({ manifest });
@@ -168,7 +171,7 @@ export const useRipsStore = create<RipState>((set, get) => {
     },
     urlFor: (songId) => {
       const e = get().manifest[songId];
-      if (e) return `${PUBLIC_BASE}/${e.key}`;
+      if (e) return `${publicBase()}/${e.key}`;
       const j = get().jobs[songId];
       return j?.url || null;
     },
@@ -225,7 +228,7 @@ export const useRipsStore = create<RipState>((set, get) => {
       const e = get().manifest[song.id];
       const startMs = live ? null : opts && 'startMs' in opts ? opts.startMs ?? null : e?.startMs ?? null;
       // single play clears any setlist queue (no next/prev)
-      set({ queue: null, queueIndex: -1, nowPlaying: { songId: song.id, title: song.title, artist: song.artist, url, startMs, live, waveform: live ? null : e?.waveform ? `${PUBLIC_BASE}/${e.waveform}` : null } });
+      set({ queue: null, queueIndex: -1, nowPlaying: { songId: song.id, title: song.title, artist: song.artist, url, startMs, live, waveform: live ? null : e?.waveform ? `${publicBase()}/${e.waveform}` : null } });
     },
     download: async (song) => {
       const url = await get().ensureUrl(song.id);
@@ -252,7 +255,7 @@ export const useRipsStore = create<RipState>((set, get) => {
       const url = await get().ensureUrl(t.id, { allowLive: true });
       const live = url.includes('/hls/');
       const e = get().manifest[t.id];
-      set({ nowPlaying: { songId: t.id, title: t.title, artist: t.artist, url, startMs: live ? null : e?.startMs ?? null, live, waveform: live ? null : e?.waveform ? `${PUBLIC_BASE}/${e.waveform}` : null } });
+      set({ nowPlaying: { songId: t.id, title: t.title, artist: t.artist, url, startMs: live ? null : e?.startMs ?? null, live, waveform: live ? null : e?.waveform ? `${publicBase()}/${e.waveform}` : null } });
     },
     next: () => { const { queue, queueIndex } = get(); if (queue && queueIndex + 1 < queue.length) void get().playAt(queueIndex + 1); },
     prev: () => { const { queue, queueIndex } = get(); if (queue && queueIndex > 0) void get().playAt(queueIndex - 1); },

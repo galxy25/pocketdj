@@ -104,7 +104,10 @@ final class AMPlaylistSyncClient {
         }
     }
 
-    private let base: URL
+    /// Injected base (tests); nil ⇒ `Config.amPlaylistSyncBase` read LIVE per submit/poll start.
+    /// A poll loop captures its job URL once, so an endpoint flip never strands a running job.
+    private let baseOverride: URL?
+    private var base: URL { baseOverride ?? Config.amPlaylistSyncBase }
     private let tokens: MusicUserTokenService
     /// Give up when the server publishes NO new progress for this long (a healthy large sync
     /// advances every few seconds; three quiet minutes means the backend truly died).
@@ -112,12 +115,12 @@ final class AMPlaylistSyncClient {
     private let pollInterval: TimeInterval
     private let defaults: UserDefaults
 
-    init(base: URL = Config.amPlaylistSyncBase,
+    init(base: URL? = nil,
          tokens: MusicUserTokenService? = nil,
          stallTimeout: TimeInterval = 180,
          pollInterval: TimeInterval = 2,
          defaults: UserDefaults = .standard) {
-        self.base = base
+        self.baseOverride = base
         self.tokens = tokens ?? MusicUserTokenService(base: base)
         self.stallTimeout = stallTimeout
         self.pollInterval = pollInterval

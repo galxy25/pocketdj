@@ -10,33 +10,43 @@ enum Config {
     /// distribution. Flip to `.dev` locally to develop against the dev distribution.
     static var environment: Environment = .prod
 
+    /// The live endpoint resolver (docs/design/remote-endpoints.md). EVERY account-bound base
+    /// below reads it at call time, so a remotely-fetched config (blue ↔ green AWS account flip)
+    /// applies to the next request without an app release. Tests swap this to prove call sites
+    /// follow the resolver; production never reassigns it.
+    static var endpoints: EndpointResolver = .shared
+
     /// CloudFront site that serves `current-index.json` and `/art/…`.
     static var catalogBase: URL {
         switch environment {
-        case .dev:  return URL(string: "https://djictbz9w796r.cloudfront.net")!
-        case .prod: return URL(string: "https://d2p4cubg6se03u.cloudfront.net")!
+        case .dev:  return endpoints.url(.catalogBaseDev)
+        case .prod: return endpoints.url(.catalogBase)
         }
     }
 
     /// Public S3 rips bucket: `rips/manifest.json` + `rips/<songId>.mp3`.
-    static let ripsBase = URL(string: "https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com")!
+    static var ripsBase: URL { endpoints.url(.ripsBase) }
+
+    /// Private diag-log bucket (DiagLog's SigV4 PutObject target).
+    static var diagLogsBase: URL { endpoints.url(.diagLogsBase) }
 
     /// First-party Apple Music PLAYLIST-SYNC endpoint (WS2) — the AWS API Gateway HTTP API in front
     /// of the `pocketdj-am-playlist-sync` Lambda, replacing the iMac/Tailscale `/am-sync` path.
     /// Unlike the rip/jukebox servers (user-configured, seeded blank), this is a fixed FIRST-PARTY
     /// cloud endpoint, so it ships seeded. `GET /musickit-token`, `POST /pull`, `POST /push`. The
     /// per-user Music-User-Token is minted on-device and sent per call (never stored server-side).
-    static let amPlaylistSyncBase = URL(string: "https://ynwdaa8vh2.execute-api.us-west-2.amazonaws.com")!
+    static var amPlaylistSyncBase: URL { endpoints.url(.amPlaylistSyncBase) }
 
     /// First-party PocketDJ RECOMMENDATION-ENGINE endpoint — API Gateway HTTP API in front of the
     /// `pocketdj-rec-engine` Lambda (scripts/lambda/rec-engine). Only used while the Settings toggle
     /// "Use PocketDJ Recommendation Engine" is ON (default OFF); nothing is sent otherwise.
-    static let recEngineBase = URL(string: "https://n5ordrwfe9.execute-api.us-west-2.amazonaws.com")!
+    static var recEngineBase: URL { endpoints.url(.recEngineBase) }
 
     /// LISTENING-POCKETS endpoint — the `pocketdj-listening-pockets` Lambda is mounted at
-    /// `/pockets` on the SAME HTTP API as the rec engine, so this is an alias, not a second host.
+    /// `/pockets` on the SAME HTTP API as the rec engine, so by default this is an alias, not a
+    /// second host (the remote doc may split it out; absent, it derives from `recEngineBase`).
     /// Same consent (rec engine ON + "Find my listening pockets" ON) and the same bearer key.
-    static let listeningPocketsBase = recEngineBase
+    static var listeningPocketsBase: URL { endpoints.url(.listeningPocketsBase) }
 
     /// ENROLLMENT SECRET for the recommendation engine (`REC_ENROLL_SECRET` on the Lambda,
     /// sent as `X-PocketDJ-Enroll`). The server requires it to CREATE a profile's state object
@@ -104,7 +114,10 @@ enum Config {
     /// ONLINE-search host config (`{ host, region, index }`), served by the same
     /// CloudFront. Read at launch so the aoss collection can be swapped (e.g. a
     /// scale-to-zero rebuild → new host) WITHOUT shipping a new client build.
-    static var searchConfigURL: URL { catalogBase.appendingPathComponent("search-config.json") }
+    static var searchConfigURL: URL {
+        environment == .dev ? catalogBase.appendingPathComponent("search-config.json")
+                            : endpoints.url(.searchConfigURL)
+    }
 
     /// Studio ▸ Instruments pack index (`{version, attribution, sharedBanks, packs}`),
     /// listing the downloadable SoundFont banks. Lives on the public rips bucket — the

@@ -17,7 +17,9 @@ import Foundation
 /// A 403 is not one condition — the body names it (`key-mismatch` vs `enrollment-required`)
 /// and the recoveries differ, so `run` maps it to distinct `ClientError`s.
 struct RecEngineClient {
-    var base: URL = Config.recEngineBase
+    /// Injected base (tests); nil ⇒ `Config.recEngineBase` read LIVE per request (remote endpoints).
+    var base: URL? = nil
+    private var resolvedBase: URL { base ?? Config.recEngineBase }
     /// The shared enrollment secret (`Config.recEngineEnrollSecret`) — see its doc: the server
     /// requires it to CREATE a profile's state and accepts it in place of a mismatched key on
     /// DELETE. Rides only the two routes that can create or destroy state; the read routes
@@ -44,7 +46,7 @@ struct RecEngineClient {
     private func request(_ path: String, method: String, key: String, profileId: String,
                          query: [URLQueryItem] = [], body: Data? = nil,
                          timeout: TimeInterval = 20, enroll: Bool = false) throws -> URLRequest {
-        guard var comps = URLComponents(url: base.appendingPathComponent(path),
+        guard var comps = URLComponents(url: resolvedBase.appendingPathComponent(path),
                                         resolvingAgainstBaseURL: false) else {
             throw ClientError.badResponse
         }
@@ -142,7 +144,7 @@ struct RecEngineClient {
     /// `GET /health` — unauthenticated reachability probe.
     func health() async -> Bool {
         struct Health: Decodable { let ok: Bool? }
-        var req = URLRequest(url: base.appendingPathComponent("health"), timeoutInterval: 12)
+        var req = URLRequest(url: resolvedBase.appendingPathComponent("health"), timeoutInterval: 12)
         req.httpMethod = "GET"
         guard let (data, resp) = try? await transport(req),
               (200..<300).contains((resp as? HTTPURLResponse)?.statusCode ?? 0),

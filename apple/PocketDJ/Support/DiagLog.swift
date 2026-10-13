@@ -38,7 +38,12 @@ final class DiagLog {
     /// Diag-writer identity (IAM user pocketdj-diag-writer; PutObject on diag/* only), read
     /// from the Keychain. nil ⇒ logging is a no-op. Refreshed by `reloadCredentials()`.
     private var credentials: DiagCredentialStore.Credentials?
-    private static let bucketHost = "pocketdj-logs-011183829623.s3.us-west-2.amazonaws.com"
+    /// The private diag bucket's host, read LIVE from the remote endpoint config (`diagLogsBase`)
+    /// so an account move re-points uploads without a release. The writer key must belong to the
+    /// same account — it is Keychain/credsync-delivered, never in the binary.
+    private static var bucketHost: String {
+        Config.diagLogsBase.host ?? EndpointConfig.compiledIn.url(.diagLogsBase).host!
+    }
     private static let region = "us-west-2"
 
     /// One cached formatter — a fresh `ISO8601DateFormatter` per line was measurable overhead
@@ -107,6 +112,9 @@ final class DiagLog {
 
         if enabled, credentials != nil {
             log("launch", "build=\(build) platform=\(platform) device=\(deviceId)")
+            // Which backend (blue/green AWS account) this launch resolved to, and from where
+            // (cached last-good / compiled-in; the async fetch logs its own result line).
+            log("endpoints", "launch \(Config.endpoints.summary)")
         }
     }
 
@@ -213,6 +221,7 @@ final class DiagLog {
     // MARK: SigV4 PUT (pure CryptoKit — no SDK)
 
     private static func put(key: String, body: Data, credentials: DiagCredentialStore.Credentials) async {
+        let bucketHost = Self.bucketHost   // one host per request: signed Host == URL host
         let now = Date()
         let amzFmt = DateFormatter()
         amzFmt.dateFormat = "yyyyMMdd'T'HHmmss'Z'"

@@ -29,10 +29,12 @@ final class MusicUserTokenService {
         }
     }
 
-    private let base: URL
+    /// Injected base (tests); nil ⇒ `Config.amPlaylistSyncBase` read LIVE per request.
+    private let baseOverride: URL?
+    private var base: URL { baseOverride ?? Config.amPlaylistSyncBase }
     private var cachedDevToken: (token: String, expMs: Double)?
 
-    init(base: URL = Config.amPlaylistSyncBase) { self.base = base }
+    init(base: URL? = nil) { self.baseOverride = base }
 
     /// App-wide developer token from the sync Lambda (`GET /musickit-token`), cached until it has
     /// < 7 days of life. It's app-wide + low-value on its own (useless without a user token).

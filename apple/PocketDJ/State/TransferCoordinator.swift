@@ -241,6 +241,9 @@ final class TransferCoordinator: NSObject {
         guard !token.isEmpty else { return false }
         if url.query?.contains("X-Amz-Signature") == true { return false }
         if url.host?.hasSuffix("amazonaws.com") == true { return false }
+        // The rips bucket may be fronted by a CDN/own-domain host after an endpoint flip
+        // (docs/design/remote-endpoints.md) — it is still the public bucket, never the rip server.
+        if let host = url.host?.lowercased(), host == Config.ripsBase.host?.lowercased() { return false }
         return true
     }
 

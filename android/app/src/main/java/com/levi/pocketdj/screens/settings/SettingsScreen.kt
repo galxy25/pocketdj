@@ -43,6 +43,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.config.Endpoints
+import com.levi.pocketdj.data.config.RemoteEndpoints
 import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.data.rips.RipServerClient
 import com.levi.pocketdj.data.settings.AppSettings
@@ -464,6 +465,8 @@ fun SettingsScreen(
             AboutRow("Android", "${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})")
             AboutRow("Catalog", Endpoints.CATALOG_BASE)
             AboutRow("Rips", Endpoints.RIPS_BASE)
+            // Which backend (blue/green AWS account) + where it came from — remote endpoints.
+            AboutRow("Backend", RemoteEndpoints.summary)
 
             Spacer(Modifier.height(24.dp))
         }

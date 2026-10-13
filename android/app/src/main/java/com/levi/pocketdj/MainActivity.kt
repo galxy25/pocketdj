@@ -76,6 +76,12 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    override fun onStart() {
+        super.onStart()
+        // Foreground re-check of the remote endpoint config (throttled inside to 15 min).
+        AppGraph.get(this).refreshEndpoints()
+    }
 }
 
 const val SETTINGS_ROUTE = "settings"

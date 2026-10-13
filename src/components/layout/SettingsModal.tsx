@@ -10,6 +10,7 @@ import { countItems } from '../../storage/repo';
 import { useAppStore } from '../../store/useAppStore';
 import { useSearchStore } from '../../store/useSearchStore';
 import { effectiveSearchHost } from '../../search/esClient';
+import { endpointsSnapshot } from '../../config/remoteEndpoints';
 import { useRipsStore } from '../../store/useRipsStore';
 import { CURRENT_DATA_VERSION, getDataVersion, runMigrations } from '../../storage/migrations';
 
@@ -472,6 +473,11 @@ export function SettingsModal({ open, onClose }: { open: boolean; onClose: () =>
         >
           ⚠ Reset everything (deletes pockets &amp; playlists too)
         </button>
+        {/* Debug readout: which backend (blue/green) this session resolves to, and from where
+            (remote fetch / cached last-good / compiled-in). See docs/design/remote-endpoints.md. */}
+        <p className="pdj-settings__hint" data-testid="settings-endpoints" style={{ opacity: 0.6, fontSize: '0.75em' }}>
+          Backend: {endpointsSnapshot().config.env} ({endpointsSnapshot().source}, {endpointsSnapshot().lastOutcome})
+        </p>
       </div>
     </Modal>
   );

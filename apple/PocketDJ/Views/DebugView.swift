@@ -19,6 +19,9 @@ struct DebugView: View {
     @State private var diagKeyID = ""
     @State private var diagKeySecret = ""
     @State private var diagKeyStored = DiagCredentialStore().load() != nil
+    /// Remote endpoint readout (blue/green backend) — re-read after a manual re-check.
+    @State private var endpointsSummary = Config.endpoints.summary
+    @State private var endpointsChecking = false
 
     private var diag: MixDiag { MixDiag.shared }
     private var archive: DebugSessionStore { DebugSessionStore.shared }
@@ -61,6 +64,32 @@ struct DebugView: View {
                     Label(copiedBuild ? "Copied" : "Copy version", systemImage: "doc.on.doc")
                 }
                 .accessibilityIdentifier("debug-build-copy")
+            }
+            // Which AWS account (blue/green) this install talks to and where that came from
+            // (remote fetch / cached last-good / compiled-in). docs/design/remote-endpoints.md.
+            Section("Backend") {
+                LabeledContent("Endpoints") {
+                    Text(endpointsSummary)
+                        .font(.caption2.monospaced())
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                }
+                .accessibilityIdentifier("debug-endpoints")
+                Button {
+                    endpointsChecking = true
+                    Task {
+                        let resolver = Config.endpoints
+                        let changed = await resolver.refresh(force: true)
+                        DiagLog.shared.log("endpoints", "\(changed ? "changed" : "checked") (manual) \(resolver.summary)")
+                        endpointsSummary = resolver.summary
+                        endpointsChecking = false
+                    }
+                } label: {
+                    Label(endpointsChecking ? "Checking…" : "Re-check endpoints",
+                          systemImage: "arrow.clockwise")
+                }
+                .disabled(endpointsChecking)
+                .accessibilityIdentifier("debug-endpoints-recheck")
             }
         }
         .formStyle(.grouped)

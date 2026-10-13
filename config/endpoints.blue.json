@@ -1,0 +1,18 @@
+{
+  "v": 1,
+  "env": "blue",
+  "endpoints": {
+    "catalogBase": "https://d2p4cubg6se03u.cloudfront.net",
+    "catalogBaseDev": "https://djictbz9w796r.cloudfront.net",
+    "ripsBase": "https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com",
+    "amPlaylistSyncBase": "https://ynwdaa8vh2.execute-api.us-west-2.amazonaws.com",
+    "recEngineBase": "https://n5ordrwfe9.execute-api.us-west-2.amazonaws.com",
+    "listeningPocketsBase": "https://n5ordrwfe9.execute-api.us-west-2.amazonaws.com",
+    "diagLogsBase": "https://pocketdj-logs-011183829623.s3.us-west-2.amazonaws.com",
+    "searchConfigURL": "https://d2p4cubg6se03u.cloudfront.net/search-config.json"
+  },
+  "aliases": {
+    "catalogBase": [],
+    "catalogBaseDev": []
+  }
+}
