@@ -54,4 +54,34 @@ export const POCKET_LIMITS = Object.freeze({
   maxProfilesDefault: 10,            // enrollment cap when MAX_PROFILES is unset
   nightlyLowTimeMs: 25_000,          // chain a continuation when less than this remains
   nightlyMaxHops: 20,
+  // ── "In the Pocket" rounds (POST /rounds) ─────────────────────────────────────────────────────
+  maxBatchRounds: 50,                // rounds in one upload
+  maxStoredRounds: 500,              // per profile, oldest-first eviction (same retentionDays)
+  maxRoundSongs: 6,                  // songs per round (the game plays 3–4)
+  maxRoundTargets: 16,               // scorer targets (features) recorded per round
+  maxFeedbackChars: 2000,            // free-text feedback, in UTF-16 code units
+});
+
+/// "IN THE POCKET" — how game rounds become labels for the analysis (`learnFromRounds` in
+/// analyze.mjs). Deliberately NOT part of `POCKET_PARAMS`: that object is echoed whole as
+/// `algo.params` in every results document, and a profile with no rounds must keep computing the
+/// byte-identical document it did before the game existed (the app-contract goldens pin it). The
+/// `rounds` section of a results document echoes THIS object instead, only when rounds exist.
+///
+///   positive  = the round stayed in the pocket (every song played through, no skip)
+///   negative  = the round broke at song ≤ `earlySkipMaxSong` (the prediction missed early)
+///   neutral   = a late break, or an abandoned round — not used as a label
+///
+/// Each label is credited to every scorer TARGET the round was built from (genre, artist, BPM band,
+/// place, …), per context (`dayType|timeBucket|<place|trip|*>`). A target's multiplier is the
+/// Laplace-smoothed positive rate, doubled so "no evidence" is exactly 1.0, then clamped:
+///   multiplier = clamp(2 · (pos + s) / (pos + neg + 2s), min, max)
+export const ROUND_PARAMS = Object.freeze({
+  version: 1,
+  earlySkipMaxSong: 2,
+  smoothing: 1,
+  minMultiplier: 0.25,
+  maxMultiplier: 2,
+  maxContexts: 40,
+  maxWeightsPerContext: 24,
 });

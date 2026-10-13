@@ -186,14 +186,16 @@ targets:
         # the prompts never fire unless the matching feature is enabled at
         # runtime (ShazamKit mic capture / MusicKit authorization), so shipping
         # them in the default build is harmless.
-        #   • Microphone — Studio sample recording + the "?♪?" ShazamKit recognizer.
-        INFOPLIST_KEY_NSMicrophoneUsageDescription: "PocketDJ uses the microphone to record samples and to identify songs that are playing."
+        #   • Microphone — Studio sample recording + the "?♪?" ShazamKit recognizer + In the
+        #     Pocket's dictated feedback (on-device speech; the audio never leaves the device).
+        INFOPLIST_KEY_NSMicrophoneUsageDescription: "PocketDJ uses the microphone to record samples, to identify songs that are playing, and to let you dictate feedback in In the Pocket."
         #   • Apple Music — MusicKit catalog search + playback when linked.
         INFOPLIST_KEY_NSAppleMusicUsageDescription: "PocketDJ uses Apple Music to play and search tracks from your subscription."
         #   • Speech recognition — the Producer tab's Demuxer transcribes lyrics
         #     ON DEVICE (requiresOnDeviceRecognition; audio never leaves the
-        #     device). The prompt fires only when the user runs a transcription.
-        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "PocketDJ transcribes song lyrics on this device so they can be shown in time with the music."
+        #     device). The prompt fires only when the user runs a transcription — or taps the
+        #     In the Pocket feedback mic (also on device whenever the recognizer supports it).
+        INFOPLIST_KEY_NSSpeechRecognitionUsageDescription: "PocketDJ transcribes on this device: song lyrics, so they can be shown in time with the music, and the feedback you dictate in In the Pocket."
         # Bluetooth MIDI (I3) — CABTMIDICentralViewController triggers a Bluetooth prompt; without
         # this string it crashes on first BLE access. Scalar, so it rides INFOPLIST_KEY_*.
         INFOPLIST_KEY_NSBluetoothAlwaysUsageDescription: "PocketDJ connects to Bluetooth MIDI keyboards so you can play and record the virtual instruments."

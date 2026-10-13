@@ -80,6 +80,19 @@ struct ListeningPocketsClient {
             ?? ListeningPocketsUploadResponse()
     }
 
+    /// `POST /pockets/rounds` — upload finished "In the Pocket" rounds (≤ 50 per batch). Same auth
+    /// and enrollment as `postEvents` (the game can be a profile's first upload). A 404 means the
+    /// route isn't deployed yet — the caller keeps the rounds queued.
+    func postRounds(_ batch: InThePocketRoundsBatch, key: String,
+                    profileId: String) async throws -> ListeningPocketsUploadResponse {
+        let body = try JSONEncoder().encode(batch)
+        let data = try await runRaw(try request("pockets/rounds", method: "POST", key: key,
+                                                profileId: profileId, body: body, timeout: 30,
+                                                enroll: true))
+        return (try? JSONDecoder().decode(ListeningPocketsUploadResponse.self, from: data))
+            ?? ListeningPocketsUploadResponse()
+    }
+
     /// `GET /pockets/results` — the decoded document AND its raw bytes (the service caches the
     /// bytes so the tab renders offline, and re-decodes them with this same lenient decoder).
     func results(key: String, profileId: String) async throws -> (ListeningPocketsResults, Data) {

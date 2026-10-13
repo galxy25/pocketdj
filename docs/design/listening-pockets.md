@@ -87,7 +87,8 @@ Auth matches the rec engine: a bearer key, a scoped `X-PocketDJ-Profile`, and `X
 |---|---|
 | `POST /pockets/events` (upload.v1, ≤ 2000 events, ≤ 4 MB) | `200 {ok, accepted, updated, unchanged, rejected, total, dirty}` |
 | `GET /pockets/results` | the results.v1 document, `stale = events changed since the last compute`. Before any upload it returns the empty shape. |
-| `DELETE /pockets/state` | Accepts the bound key **or** the enroll secret. Deletes both objects. |
+| `POST /pockets/rounds` (rounds.v1, ≤ 50 rounds, ≤ 4 MB) | "In the Pocket" game rounds — see [In the Pocket](#in-the-pocket-the-game-that-labels-pockets). `200 {ok, accepted, updated, unchanged, rejected, total, dirty}` |
+| `DELETE /pockets/state` | Accepts the bound key **or** the enroll secret. Deletes both objects (rounds included). |
 | `GET /pockets/health` | Unauthenticated. `{ok:true, service:'listening-pockets', version:1}` |
 
 **Merge rules, per event id:**
@@ -127,6 +128,63 @@ Storage limits: 20k events per profile, 180-day retention, and every string capp
 After an intended change, regenerate in order: the Swift golden first (`TEST_RUNNER_PDJ_REGEN_POCKETS_CONTRACT=1 xcodebuild test … -only-testing:PocketDJTests/ListeningPocketsContractTests/testAppUploadMatchesGolden` on an iOS simulator), then `POCKETS_REGEN_CONTRACT=1 node --test …`.
 
 `ord` is the play's position among the plays in the same stream and floored minute, counted over the device's whole history rather than per upload. The server keeps `ord` from the first insert, so a same-minute play uploaded by a later flush still gets the next number instead of tying at 0.
+
+## In the Pocket: the game that labels pockets
+
+**Games ▸ In the Pocket** turns pocket detection into a prediction the user can grade. A round bets on 3–4 songs the user will play straight through *right now, here*; whatever happens is a labelled example the analysis learns from. The game needs **Find my listening pockets** on (it shows the same opt-in offer — `ListeningPocketsOptInView` — and never flips it).
+
+App code: `apple/PocketDJ/Games/InThePocket/`.
+
+| File | Role |
+|---|---|
+| `InThePocketModels.swift` | `InThePocketContext` (the cloud's time buckets), round / song / outcome types, the rounds.v1 wire |
+| `InThePocketScorer.swift` | pure, seeded round builder; `InThePocketLearning` (the cloud formula, on device) |
+| `InThePocketRoundEvaluator.swift` | pure outcome state machine over the play-history log |
+| `InThePocketStore.swift` | app-scoped: build off-main, play via `SetlistPlayer` (`itp_<round id>` run tag → History "Game · In the Pocket"), 1 Hz tracking, local file, scoreboard, upload rows |
+| `FeedbackDictation.swift` | the feedback mic: `SFSpeechRecognizer`, `requiresOnDeviceRecognition` always (no mic where the device can't) |
+| `InThePocketView.swift` | the screen |
+
+**Context.** Time bucket + weekday/weekend + day of week from the device clock and UTC offset (the same buckets as `params.mjs`), plus — only while places & trips is on — a *guess* at the current place or trip: `ListeningPlaceEngine.currentGuess` (inside an open stay → that place; left within 4 h → the trip most often taken from there, else "Leaving A"). A guess is never stamped onto a play; settling stays write-once.
+
+**Building a round** (`InThePocketScorer`, deterministic given its seed, which is stored and uploaded):
+
+1. **Profile.** `cloud`: every pattern and pocket whose time bucket matches now, weighted `2 (+1 same day type) (+2 same place/trip)`, patterns × `1 + ln(occurrences)`. Their *musical* defining features (genre, artist, mood, camelot) become weighted targets; their BPM range a band; their member/top songs "seed songs". `history`, when there are no matching cloud results: the same profile from this device's own non-skipped plays in this context (bucket + day type, else bucket). `cold`: from all non-skipped plays.
+2. **Round learning** multiplies target weights for this context (the cloud's `rounds` section, exact context key then relaxed; else the same formula over this device's finished rounds) and adds targets with multiplier ≥ 1.25 on ≥ 2 positive rounds.
+3. **Score** every playable candidate (rip manifest, burned, or Apple Music with a store id): matched target weights + `0.6 ·` BPM fit + `0.8 ·` seed strength + familiarity (play-through rate, play count). Candidates related to nothing are dropped; anything played in the last 48 h, or in the last three rounds, is excluded.
+4. **Pick** a seeded weighted draw from the top 8, then for each next song re-rank for coherence (+0.3 same genre, +0.3·e^(−ΔBPM/10)) and diversity (−1 per same artist) and draw from the top 6. **4 songs in `cloud` mode, 3 otherwise.**
+
+The UI shows *why* as opaque chips: "Weekday evening · Location A · 118–126 BPM · Funk/Soul", and says when the round came from history instead of pocket results.
+
+**Tracking** reuses the app's one skip machinery: `SkipTracker` writes `wasSkipped` / `listenedFraction` onto the `PlayHistoryStore` events every surface records, and `InThePocketRoundEvaluator` reads the log since ▶. Song *k* starts when the next event is song *k*; a replay of an earlier round song (⏮) is ignored; any other song is foreign. A skip verdict breaks the round at once ("Broke at song *k*"). A song is played through when the next round song starts unskipped, or it reaches 90 %, or — once the round has ended — it reached 50 % or its fraction is unknown. All played through = **in the pocket**. A foreign play, the sequencer no longer running the round's tag, "End round", or 3 h idle ends the round; anything unresolved is **abandoned**. End signals settle for 8 s (a skip verdict can land one track late; the last song's fraction lands with the stop checkpoint). Pausing produces no events, so it is never a skip. The store's ticker runs app-scoped, so leaving the screen does not stop tracking.
+
+**Feedback.** During or after a round: an optional 1–5 rating and a free-text field (typed or dictated; capped at 2000 UTF-16 units on device and again on the server). Dictation appends the live transcript to what was typed; denied permission disables the mic with an explanation; tvOS has no mic.
+
+**Upload.** Finished rounds ride `ListeningPocketsService`'s flush after the plays, under the same gate, key and enrollment. Each round is acknowledged by fingerprint only on 2xx (a later feedback edit moves `updatedAtMs` and re-sends). **A 404 — a backend without the route — leaves every round queued, silently, for the next flush**; so does any other failure. Rounds before the "Delete cloud data" floor never upload. The local file `pocketdj-in-the-pocket.json` is device-local (never CloudSync'd) and is erased with the account. Scoreboard rows (`GameKind.inThePocket`, score = songs played through, `detail.outcome`) sync like every game; the Games card shows rounds played, pocket rate (pocket ÷ decided rounds) and best streak.
+
+### `POST /pockets/rounds` (rounds.v1)
+
+```
+{ v:1, installId, deviceId?, sentAtMs, rounds:[{
+    id (UUID), originInstallId?, startedAtMs, endedAtMs?, updatedAtMs, tzOffsetMin,
+    context:{ timeBucket, dayType, dow, ctx: {kind:'place',placeId} | {kind:'trip',tripId,origin,destination} | null },
+    mode: cloud|history|cold, seed, algoVersion,
+    targets:[{dim, value, weight}],              // what the prediction was built from (bpm as "lo-hi")
+    songs:[{songId, artist, score, outcome: completed|skipped|partial|notPlayed, fraction}],
+    outcome: pocket|broke|abandoned, brokeAt (1-based, required for broke), rating 1–5?, feedback?, appVersion }] }
+```
+
+Same auth, enrollment, profile cap, 4 MB body limit and ETag read-merge-write as `/events` (one shared `upsertProfile` path). `cleanRound` floors times to the minute, bounds every string, caps feedback at 2000 characters (no split surrogate pairs, control characters stripped), degrades unknown optional tokens and rejects non-labels (bad id, unknown outcome, no songs, a break without a position, outside retention). Rounds are stored in the **same events object** (`doc.rounds`, created only when the first round arrives — an events-only profile keeps its exact document shape), merged per id with the newer `updatedAtMs` replacing the row, 180-day retention, 500 per profile oldest first. A change marks the document dirty and recomputes, exactly like plays. `DELETE /state` removes them with everything else.
+
+### How rounds feed the analysis
+
+`learnFromRounds` (analyze.mjs; knobs in `ROUND_PARAMS`, kept OUT of `POCKET_PARAMS` so `algo.params` — and every results document of a profile that never played — is unchanged):
+
+- **Labels.** `pocket` = positive; `broke` at song ≤ 2 = negative (the prediction missed early); a late break or an abandoned round = neutral.
+- **Contexts.** Each round credits `dayType|timeBucket|*`, and also `dayType|timeBucket|place:<id>` / `trip:<id>` when it had one.
+- **Weights.** Every target of a labelled round gets `pos`/`neg` in each of its contexts; `multiplier = clamp(2·(pos+1)/(pos+neg+2), 0.25, 2)` — exactly 1 with no evidence, 1.6 after three pockets, 0.4 after three early breaks.
+- **Output.** Results gain `rounds: {v, params, total, pocket, broke, abandoned, positives, negatives, pocketRate, contexts:[{key, dayType, timeBucket, ctx, rounds, positives, negatives, weights:[{dim, value, pos, neg, multiplier}]}]}` — present only once the profile has rounds. The app multiplies its next round's target weights by them (`InThePocketLearning` is the same formula on device, used until the cloud has recomputed).
+
+Game plays are recorded with source `game`, which detection already excludes (`excludeSources`): a round never manufactures the pockets it is graded against; its label reaches the analysis only through `/rounds`.
 
 ## Running it
 

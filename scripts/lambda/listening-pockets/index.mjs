@@ -21,8 +21,11 @@
 //    URL does not, and a prefix that silently 404s is the rip-server bug we are not repeating) ──
 //   GET    /health    -> { ok:true, service:'listening-pockets', version:1 }   (unauthenticated)
 //   POST   /events    -> merge an upload.v1 batch, mark dirty, async-invoke the compute job
+//   POST   /rounds    -> merge a rounds.v1 batch ("In the Pocket" game rounds: the prediction, the
+//                        per-song outcome, optional rating + free-text feedback ≤ 2000 chars) into
+//                        the SAME document — same auth, enrollment, cap, dirty/compute as /events
 //   GET    /results   -> the stored results.v1 document (stale = events changed since compute)
-//   DELETE /state     -> delete both objects
+//   DELETE /state     -> delete both objects (rounds live in the events object, so they go too)
 //
 // ── Jobs (NOT HTTP: dispatched on `event.job` before any routing, never reachable from the API) ─
 //   { job:'compute', p:<profileHash> }          one profile: detect + analyze + store results
@@ -43,7 +46,7 @@ import { loadFeatures } from './features.mjs';
 import {
   Precondition, readEvents, writeEvents, readResults, readResultsVersioned, writeResults, deleteResults,
   deleteProfile, countProfiles, listProfileHashes, listResultHashes, cleanEvent, cleanLabels, mergeEvents,
-  freshEventsDoc, INSTALL_RE,
+  freshEventsDoc, INSTALL_RE, cleanRound, mergeRounds,
 } from './store.mjs';
 
 const REGION = process.env.AWS_REGION || 'us-west-2';
@@ -232,6 +235,53 @@ async function runJob(event, context) {
   return { ok: false, error: 'unknown-job' };
 }
 
+// ── The shared write path (POST /events and POST /rounds) ───────────────────────────────────────
+
+/**
+ * Read-merge-write the profile's events document with ETag-conditional puts; on a conflict re-read
+ * and re-merge (3×), then 503 — the app records acknowledgements only on 2xx, so it simply re-sends
+ * next flush. Creating the document needs the enrollment secret and is capped at MAX_PROFILES; a
+ * bound profile must present the bound key. `apply(doc)` mutates the document and returns
+ * `{ changed, answer }`; a change bumps `rev`, marks it dirty and kicks a compute (best-effort —
+ * the nightly run picks up anything still dirty, so a failed compute never fails an accepted upload).
+ */
+async function upsertProfile(event, auth, nowMs, apply) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const read = await readEvents(auth.profileHash);
+    const doc = read ? read.doc : freshEventsDoc(nowMs);
+    if (!doc.keyHash) {
+      if (!enrollOk(event)) return reply(403, { error: 'enrollment-required' });
+      const maxProfiles = defaultMaxProfiles();
+      if (await countProfiles(maxProfiles) >= maxProfiles) {
+        return reply(403, { error: 'profile-cap-reached', max: maxProfiles });
+      }
+      doc.keyHash = auth.keyHash;   // trust-on-first-use bind
+    } else if (doc.keyHash !== auth.keyHash) {
+      return reply(403, { error: 'key-mismatch' });
+    }
+    const { changed, answer } = apply(doc);
+    // An identical re-send changes nothing and must not trigger a recompute.
+    if (changed) { doc.dirty = true; doc.rev = (Number.isInteger(doc.rev) ? doc.rev : 0) + 1; }
+    doc.updatedAtMs = nowMs;
+    try {
+      await writeEvents(auth.profileHash, doc, { ifMatch: read?.etag });
+    } catch (e) {
+      if (e instanceof Precondition) continue;
+      throw e;
+    }
+    if (changed) {
+      try {
+        if (inlineCompute()) await computeProfile(auth.profileHash, { nowMs });
+        else await invokeSelf({ job: 'compute', p: auth.profileHash });
+      } catch (e) {
+        console.error(`[listening-pockets] compute ${inlineCompute() ? 'run' : 'invoke'} failed: ${e.message}`);
+      }
+    }
+    return reply(200, answer());
+  }
+  return reply(503, { error: 'conflict-retry' });
+}
+
 // ── Handler ─────────────────────────────────────────────────────────────────────────────────────
 
 export async function handler(event, context) {
@@ -249,76 +299,65 @@ export async function handler(event, context) {
   if (auth.fail) return auth.fail;
 
   try {
-    if (method === 'POST' && path === '/events') {
+    if (method === 'POST' && (path === '/events' || path === '/rounds')) {
       if (bodyBytes(event) > POCKET_LIMITS.maxBodyBytes) {
         return reply(413, { error: 'body-too-large', max: POCKET_LIMITS.maxBodyBytes });
       }
       let body;
       try { body = parseBody(event); } catch { return reply(400, { error: 'bad-request' }); }
-      if (!body || typeof body !== 'object' || body.v !== 1 || !Array.isArray(body.events)
+      const listKey = path === '/events' ? 'events' : 'rounds';
+      if (!body || typeof body !== 'object' || body.v !== 1 || !Array.isArray(body[listKey])
           || typeof body.installId !== 'string' || !INSTALL_RE.test(body.installId)) {
         return reply(400, { error: 'bad-request' });
       }
-      if (body.events.length > POCKET_LIMITS.maxBatchEvents) {
-        return reply(400, { error: 'batch-too-large', max: POCKET_LIMITS.maxBatchEvents });
-      }
       const nowMs = Date.now();
-      const rows = []; let rejected = 0;
-      for (const e of body.events) {
-        const r = cleanEvent(e, body.installId, nowMs);
-        if (r) rows.push(r); else rejected += 1;
-      }
-      const carriesLabels = Array.isArray(body.places) || Array.isArray(body.trips);
-      const labels = carriesLabels ? cleanLabels(body.places, body.trips) : null;
-
-      // Read-merge-write with ETag-conditional puts; on a conflict re-read and re-merge (3×), then
-      // 503 — the app records fingerprints only on 2xx, so it simply re-sends next flush.
-      for (let attempt = 0; attempt < 3; attempt++) {
-        const read = await readEvents(auth.profileHash);
-        const doc = read ? read.doc : freshEventsDoc(nowMs);
-        if (!doc.keyHash) {
-          if (!enrollOk(event)) return reply(403, { error: 'enrollment-required' });
-          const maxProfiles = defaultMaxProfiles();
-          if (await countProfiles(maxProfiles) >= maxProfiles) {
-            return reply(403, { error: 'profile-cap-reached', max: maxProfiles });
+      if (path === '/events') {
+        if (body.events.length > POCKET_LIMITS.maxBatchEvents) {
+          return reply(400, { error: 'batch-too-large', max: POCKET_LIMITS.maxBatchEvents });
+        }
+        const rows = []; let rejected = 0;
+        for (const e of body.events) {
+          const r = cleanEvent(e, body.installId, nowMs);
+          if (r) rows.push(r); else rejected += 1;
+        }
+        const carriesLabels = Array.isArray(body.places) || Array.isArray(body.trips);
+        const labels = carriesLabels ? cleanLabels(body.places, body.trips) : null;
+        return upsertProfile(event, auth, nowMs, (doc) => {
+          const merged = mergeEvents(doc, rows, nowMs);
+          let labelsChanged = false;
+          if (labels) {
+            const prev = JSON.stringify({ places: doc.labels?.places || [], trips: doc.labels?.trips || [] });
+            labelsChanged = prev !== JSON.stringify(labels);
+            doc.labels = { ...labels, atMs: nowMs };
           }
-          doc.keyHash = auth.keyHash;   // trust-on-first-use bind
-        } else if (doc.keyHash !== auth.keyHash) {
-          return reply(403, { error: 'key-mismatch' });
-        }
-        const merged = mergeEvents(doc, rows, nowMs);
-        let labelsChanged = false;
-        if (labels) {
-          const prev = JSON.stringify({ places: doc.labels?.places || [], trips: doc.labels?.trips || [] });
-          labelsChanged = prev !== JSON.stringify(labels);
-          doc.labels = { ...labels, atMs: nowMs };
-        }
-        const changed = merged.changed || labelsChanged;
-        // An identical re-send changes nothing and must not trigger a recompute.
-        if (changed) { doc.dirty = true; doc.rev = (Number.isInteger(doc.rev) ? doc.rev : 0) + 1; }
-        doc.updatedAtMs = nowMs;
-        try {
-          await writeEvents(auth.profileHash, doc, { ifMatch: read?.etag });
-        } catch (e) {
-          if (e instanceof Precondition) continue;
-          throw e;
-        }
-        if (changed) {
-          // Best-effort either way: the nightly run picks up anything still dirty, so a failed
-          // compute or invoke must never fail an upload the store already accepted.
-          try {
-            if (inlineCompute()) await computeProfile(auth.profileHash, { nowMs });
-            else await invokeSelf({ job: 'compute', p: auth.profileHash });
-          } catch (e) {
-            console.error(`[listening-pockets] compute ${inlineCompute() ? 'run' : 'invoke'} failed: ${e.message}`);
-          }
-        }
-        return reply(200, {
-          ok: true, accepted: merged.accepted, updated: merged.updated, unchanged: merged.unchanged,
-          rejected, total: doc.events.length, dirty: !!doc.dirty,
+          return {
+            changed: merged.changed || labelsChanged,
+            answer: () => ({ ok: true, accepted: merged.accepted, updated: merged.updated, unchanged: merged.unchanged,
+              rejected, total: doc.events.length, dirty: !!doc.dirty }),
+          };
         });
       }
-      return reply(503, { error: 'conflict-retry' });
+      // POST /rounds — "In the Pocket" game rounds (labelled training data, see learnFromRounds).
+      if (body.rounds.length > POCKET_LIMITS.maxBatchRounds) {
+        return reply(400, { error: 'batch-too-large', max: POCKET_LIMITS.maxBatchRounds });
+      }
+      const rows = []; let rejected = 0;
+      for (const r of body.rounds) {
+        const c = cleanRound(r, body.installId, nowMs);
+        if (c) rows.push(c); else rejected += 1;
+      }
+      return upsertProfile(event, auth, nowMs, (doc) => {
+        // Nothing valid and nothing stored yet: leave the document's shape alone.
+        if (!rows.length && !Array.isArray(doc.rounds)) {
+          return { changed: false, answer: () => ({ ok: true, accepted: 0, updated: 0, unchanged: 0, rejected, total: 0, dirty: !!doc.dirty }) };
+        }
+        const merged = mergeRounds(doc, rows, nowMs);
+        return {
+          changed: merged.changed,
+          answer: () => ({ ok: true, accepted: merged.accepted, updated: merged.updated, unchanged: merged.unchanged,
+            rejected, total: doc.rounds.length, dirty: !!doc.dirty }),
+        };
+      });
     }
 
     if (method === 'GET' && path === '/results') {

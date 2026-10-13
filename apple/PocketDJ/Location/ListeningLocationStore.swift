@@ -196,6 +196,11 @@ final class ListeningLocationStore: ListeningContextProviding {
         return engine.lookup(at: date, now: now())
     }
 
+    func currentContextGuess() -> ListeningContextTag? {
+        guard isActive else { return nil }
+        return engine.currentGuess(now: now())
+    }
+
     func placeLabels() -> [ListeningPlaceLabel] {
         guard isSupported, isEnabled else { return [] }
         return engine.rankedPlaces(now: now())

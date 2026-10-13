@@ -12,12 +12,16 @@ import Observation
 /// `GameScoreboardStoreTests.testGameKindTokensAreFrozenWhileLabelsAreFree`.
 enum GameKind: String, Codable, CaseIterable {
     case collectorsPuzzle, musicWithFriends
+    /// "In the Pocket": score = songs of the round played through (0…4); `detail["outcome"]` is
+    /// pocket | broke | abandoned.
+    case inThePocket
 
     /// Human label for scoreboard headers.
     var label: String {
         switch self {
         case .collectorsPuzzle: return "Gem Collector"
         case .musicWithFriends: return "Music with Friends"
+        case .inThePocket: return "In the Pocket"
         }
     }
 }
@@ -196,6 +200,33 @@ final class GameScoreboardStore {
     /// Newest first.
     func recentRuns(_ game: GameKind, limit: Int) -> [RunRecord] {
         Array(runs.lazy.filter { $0.game == game.rawValue }.suffix(limit).reversed())
+    }
+
+    /// "In the Pocket" stats, from the synced run log (so every device agrees): rounds played,
+    /// the share of DECIDED rounds (pocket or broke — an abandoned round predicted nothing) that
+    /// stayed in the pocket, and the longest run of consecutive pocket rounds (abandoned rounds
+    /// neither extend nor break a streak).
+    struct InThePocketStats: Equatable {
+        var rounds: Int
+        var pockets: Int
+        var pocketRate: Double?
+        var bestStreak: Int
+        var currentStreak: Int
+    }
+
+    func inThePocketStats() -> InThePocketStats {
+        let runs = self.runs.filter { $0.game == GameKind.inThePocket.rawValue }.sorted { $0.at < $1.at }
+        var pockets = 0, decided = 0, streak = 0, best = 0
+        for r in runs {
+            switch r.detail?["outcome"] {
+            case "pocket": pockets += 1; decided += 1; streak += 1; best = max(best, streak)
+            case "broke": decided += 1; streak = 0
+            default: break
+            }
+        }
+        return InThePocketStats(rounds: runs.count, pockets: pockets,
+                                pocketRate: decided > 0 ? Double(pockets) / Double(decided) : nil,
+                                bestStreak: best, currentStreak: streak)
     }
 
     // MARK: - Deletion (the user-facing pair — see `clear()` for the erasure path)

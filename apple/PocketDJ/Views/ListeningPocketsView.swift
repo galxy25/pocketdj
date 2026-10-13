@@ -87,36 +87,7 @@ struct ListeningPocketsView: View {
     }
 
     private func optIn(_ pockets: ListeningPocketsService) -> some View {
-        ScrollView {
-            VStack(spacing: 12) {
-                Image(systemName: "waveform.path").font(.system(size: 34)).foregroundStyle(Theme.fgDim)
-                Text("Find your listening pockets?")
-                    .font(.title3.weight(.semibold)).foregroundStyle(Theme.fg)
-                Text("A pocket is a stretch where you played three or more songs in a row without skipping. PocketDJ can find yours and show what they have in common.")
-                    .multilineTextAlignment(.center).foregroundStyle(Theme.fgDim)
-                Text(ListeningPocketsService.consentText)
-                    .font(.caption).multilineTextAlignment(.center).foregroundStyle(Theme.fgDim)
-                HStack(spacing: 12) {
-                    Button("Not now") { choose(false, pockets) }
-                        .buttonStyle(.bordered)
-                        .accessibilityIdentifier("pockets-optin-decline")
-                    Button("Turn on") { choose(true, pockets) }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("pockets-optin-accept")
-                }
-                .padding(.top, 4)
-            }
-            .padding(32)
-            .frame(maxWidth: .infinity)
-        }
-        .accessibilityIdentifier("pockets-optin")
-    }
-
-    /// Record the answer exactly as the Settings toggle would (persist, then the service's gate).
-    private func choose(_ on: Bool, _ pockets: ListeningPocketsService) {
-        settings.listeningPocketsEnabled = on
-        settings.persist()
-        pockets.enabledDidChange()
+        ListeningPocketsOptInView(pockets: pockets)
     }
 
     private func emptyState(detail: String?) -> some View {
@@ -133,6 +104,59 @@ struct ListeningPocketsView: View {
             .frame(maxWidth: .infinity)
         }
         .accessibilityIdentifier("pockets-empty")
+    }
+}
+
+/// THE listening-pockets opt-in offer — the disclosure + "Not now" / "Turn on", recording the
+/// answer exactly as the Settings toggle would. Shared by History ▸ Pockets and the "In the
+/// Pocket" game (which needs pockets on and never turns them on by itself). `lead` swaps the
+/// first paragraph for the surface's own reason to ask.
+struct ListeningPocketsOptInView: View {
+    let pockets: ListeningPocketsService
+    var title = "Find your listening pockets?"
+    var lead = "A pocket is a stretch where you played three or more songs in a row without skipping. PocketDJ can find yours and show what they have in common."
+    @Environment(SettingsStore.self) private var settings
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 12) {
+                Image(systemName: "waveform.path").font(.system(size: 34)).foregroundStyle(Theme.fgDim)
+                Text(title)
+                    .font(.title3.weight(.semibold)).foregroundStyle(Theme.fg)
+                    .multilineTextAlignment(.center)
+                Text(lead)
+                    .multilineTextAlignment(.center).foregroundStyle(Theme.fgDim)
+                Text(ListeningPocketsService.consentText)
+                    .font(.caption).multilineTextAlignment(.center).foregroundStyle(Theme.fgDim)
+                if !settings.recEngineEnabled {
+                    // Pockets ride the recommendation engine's consent AND key: without it the
+                    // switch below can't open the gate, so say what else is needed.
+                    Text("Listening pockets also need Recommendations turned on in Settings.")
+                        .font(.caption.weight(.semibold)).multilineTextAlignment(.center)
+                        .foregroundStyle(Theme.accent2)
+                        .accessibilityIdentifier("pockets-optin-needs-recs")
+                }
+                HStack(spacing: 12) {
+                    Button("Not now") { choose(false) }
+                        .buttonStyle(.bordered)
+                        .accessibilityIdentifier("pockets-optin-decline")
+                    Button("Turn on") { choose(true) }
+                        .buttonStyle(.borderedProminent)
+                        .accessibilityIdentifier("pockets-optin-accept")
+                }
+                .padding(.top, 4)
+            }
+            .padding(32)
+            .frame(maxWidth: .infinity)
+        }
+        .accessibilityIdentifier("pockets-optin")
+    }
+
+    /// Record the answer exactly as the Settings toggle would (persist, then the service's gate).
+    private func choose(_ on: Bool) {
+        settings.listeningPocketsEnabled = on
+        settings.persist()
+        pockets.enabledDidChange()
     }
 }
 

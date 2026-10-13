@@ -52,9 +52,10 @@ process.env.MAX_PROFILES = '1000';
 
 const { POCKET_PARAMS } = await import('./params.mjs');
 const { normalizeEvents, sessionize, detectPockets, detect, pocketIdFor } = await import('./detect.mjs');
-const { computeResults, foldBpm, localTimeOf, titleFor, camelotNeighbors, emptyResults } = await import('./analyze.mjs');
+const { computeResults, foldBpm, localTimeOf, titleFor, camelotNeighbors, emptyResults, learnFromRounds, roundLabel, roundMultiplier } = await import('./analyze.mjs');
+const { ROUND_PARAMS, POCKET_LIMITS } = await import('./params.mjs');
 const { indexFeatures, resolveSong, identityKeys } = await import('./features.mjs');
-const { cleanEvent, mergeEvents, freshEventsDoc, cleanCtx } = await import('./store.mjs');
+const { cleanEvent, mergeEvents, freshEventsDoc, cleanCtx, cleanRound, mergeRounds, capText } = await import('./store.mjs');
 const { handler, normalizePath, computeProfile, _test } = await import('./index.mjs');
 const { historyToUploadEvents, toUpload, buildEventsDoc } = await import('./run-local.mjs');
 
@@ -806,6 +807,161 @@ test('nightly sweeps results whose events object is gone', async () => {
   assert.ok(out.orphans >= 1);
   assert.equal(existsSync(orphanPath), false);
   assert.ok(existsSync(resultsPath(live)), 'live profiles keep their results');
+});
+
+
+// ── "In the Pocket" rounds (POST /rounds + learnFromRounds) ─────────────────────────────────────
+
+/// A wire-shape round (what the app's InThePocketRoundWire encodes).
+const roundWire = (over = {}) => ({
+  id: over.id || uid(), originInstallId: INSTALL, startedAtMs: NOW - 2 * HOUR + 17_000, endedAtMs: NOW - HOUR,
+  updatedAtMs: NOW - HOUR, tzOffsetMin: -420,
+  context: { timeBucket: 'evening', dayType: 'weekday', dow: 2, ctx: { kind: 'place', placeId: PLACE_A } },
+  mode: 'cloud', seed: '12345', algoVersion: 1,
+  targets: [{ dim: 'genre', value: 'funk', weight: 0.8 }, { dim: 'bpm', value: '118-126', weight: 0.5 }],
+  songs: [E(1), E(2), E(3), E(4)].map((songId, i) => ({ songId, artist: `A${i}`, score: 0.5, outcome: 'completed', fraction: 0.97 })),
+  outcome: 'pocket', brokeAt: null, rating: 4, feedback: 'felt right', appVersion: '1.0.1', ...over,
+});
+const roundsBatch = (rounds) => ({ v: 1, installId: INSTALL, sentAtMs: NOW, rounds });
+const round3 = (x) => Math.round(x * 1000) / 1000;
+
+test('cleanRound: minute floor, uppercase id, capped feedback, degraded tokens, rejects non-labels', () => {
+  const r = cleanRound(roundWire({ id: uid().toLowerCase() }), INSTALL, NOW);
+  assert.equal(r.startedAtMs % MIN, 0);
+  assert.equal(r.id, r.id.toUpperCase());
+  assert.equal(r.feedback, 'felt right');
+  assert.deepEqual(r.context.ctx, { kind: 'place', placeId: PLACE_A });
+  // 2000-character cap, never splitting a surrogate pair; control chars stripped; blank → null.
+  const long = cleanRound(roundWire({ feedback: `${'x'.repeat(1999)}😀tail` }), INSTALL, NOW);
+  assert.equal(long.feedback.length, 1999, 'the pair straddling the cap is dropped whole');
+  assert.equal(capText('a\u0000b\nc'), 'ab\nc');
+  assert.equal(capText('   '), null);
+  assert.equal(cleanRound(roundWire({ feedback: 'y'.repeat(5000) }), INSTALL, NOW).feedback.length, POCKET_LIMITS.maxFeedbackChars);
+  // Unknown optional tokens degrade.
+  const odd = cleanRound(roundWire({ mode: 'psychic', rating: 9, context: { timeBucket: 'brunch', dayType: 'holiday', dow: 9, ctx: { kind: 'zeppelin' } },
+    targets: [{ dim: 'vibes', value: 'x' }, { dim: 'genre', value: 'soul' }],
+    songs: [{ songId: E(1), outcome: 'teleported', fraction: 3 }] }), INSTALL, NOW);
+  assert.equal(odd.mode, null); assert.equal(odd.rating, null);
+  assert.deepEqual(odd.context, { timeBucket: null, dayType: null, dow: null, ctx: { kind: 'none' } });
+  assert.deepEqual(odd.targets, [{ dim: 'genre', value: 'soul', weight: null }]);
+  assert.deepEqual(odd.songs[0], { songId: E(1), artist: null, score: null, outcome: 'unknown', fraction: 1 });
+  // Rejected: bad id, unknown outcome, no songs, a break with no position, out of the retention window.
+  for (const bad of [roundWire({ id: 'nope' }), roundWire({ outcome: 'meh' }), roundWire({ songs: [] }),
+    roundWire({ outcome: 'broke', brokeAt: null }), roundWire({ outcome: 'broke', brokeAt: 9 }),
+    roundWire({ startedAtMs: NOW - 400 * DAY }), roundWire({ startedAtMs: NOW + 3 * DAY }), null]) {
+    assert.equal(cleanRound(bad, INSTALL, NOW), null);
+  }
+});
+
+test('mergeRounds: a newer updatedAtMs replaces the round, a re-send changes nothing, retention', () => {
+  const doc = freshEventsDoc(NOW);
+  const id = uid();
+  const first = cleanRound(roundWire({ id, feedback: null, rating: null, updatedAtMs: NOW - HOUR }), INSTALL, NOW);
+  assert.deepEqual(mergeRounds(doc, [first], NOW).accepted, 1);
+  const again = mergeRounds(doc, [first], NOW);
+  assert.deepEqual([again.accepted, again.updated, again.unchanged, again.changed], [0, 0, 1, false]);
+  const withFeedback = cleanRound(roundWire({ id, feedback: 'later thoughts', rating: 2, updatedAtMs: NOW - 30 * MIN }), INSTALL, NOW);
+  assert.equal(mergeRounds(doc, [withFeedback], NOW).updated, 1);
+  assert.equal(doc.rounds[0].feedback, 'later thoughts');
+  const stale = cleanRound(roundWire({ id, feedback: 'stale', updatedAtMs: NOW - 2 * HOUR }), INSTALL, NOW);
+  assert.equal(mergeRounds(doc, [stale], NOW).unchanged, 1);
+  assert.equal(doc.rounds[0].feedback, 'later thoughts', 'an older copy never overwrites a newer one');
+  // Retention drops rounds older than retentionDays at merge time.
+  doc.rounds.push({ ...doc.rounds[0], id: uid(), startedAtMs: NOW - 200 * DAY });
+  mergeRounds(doc, [], NOW);
+  assert.equal(doc.rounds.length, 1);
+});
+
+test('learnFromRounds: pocket = positive, early break = negative, late break / abandoned neutral; multipliers per context', () => {
+  const ctxPlace = { kind: 'place', placeId: PLACE_A };
+  const mk = (outcome, brokeAt, targets, ctx = ctxPlace) => cleanRound(roundWire({
+    outcome, brokeAt, targets, context: { timeBucket: 'evening', dayType: 'weekday', dow: 2, ctx },
+  }), INSTALL, NOW);
+  const funk = [{ dim: 'genre', value: 'funk' }];
+  const rock = [{ dim: 'genre', value: 'rock' }];
+  const rounds = [mk('pocket', null, funk), mk('pocket', null, funk), mk('pocket', null, funk),
+    mk('broke', 1, rock), mk('broke', 2, rock), mk('broke', 4, funk), mk('abandoned', null, rock),
+    mk('pocket', null, funk, null)];
+  assert.equal(roundLabel(rounds[0]), 1);
+  assert.equal(roundLabel(rounds[3]), -1);
+  assert.equal(roundLabel(rounds[5]), 0, 'a break at song 4 is not an early skip');
+  assert.equal(roundLabel(rounds[6]), 0);
+  const out = learnFromRounds(rounds, { nowMs: NOW });
+  assert.deepEqual([out.total, out.pocket, out.broke, out.abandoned, out.positives, out.negatives], [8, 4, 3, 1, 4, 2]);
+  assert.equal(out.pocketRate, round3(4 / 7));
+  assert.deepEqual(out.params, JSON.parse(JSON.stringify(ROUND_PARAMS)));
+  const exact = out.contexts.find((c) => c.key === `weekday|evening|place:${PLACE_A}`);
+  const relaxed = out.contexts.find((c) => c.key === 'weekday|evening|*');
+  assert.equal(exact.rounds, 7); assert.equal(relaxed.rounds, 8, 'the no-place round credits only the relaxed key');
+  assert.deepEqual(exact.ctx, ctxPlace); assert.equal(relaxed.ctx, null);
+  const w = (c, v) => c.weights.find((x) => x.dim === 'genre' && x.value === v);
+  assert.deepEqual([w(exact, 'funk').pos, w(exact, 'funk').neg], [3, 0]);
+  assert.equal(w(exact, 'funk').multiplier, roundMultiplier(3, 0));
+  assert.ok(w(exact, 'funk').multiplier > 1 && w(exact, 'rock').multiplier < 1);
+  assert.equal(w(relaxed, 'funk').pos, 4);
+  // The formula: no evidence is exactly 1; clamped both ways.
+  assert.equal(roundMultiplier(0, 0), 1);
+  assert.equal(roundMultiplier(3, 0), 1.6);    // 2·4/5
+  assert.equal(roundMultiplier(0, 3), 0.4);    // 2·1/5
+  assert.ok(roundMultiplier(1000, 0) <= ROUND_PARAMS.maxMultiplier);
+  assert.equal(roundMultiplier(0, 1000), ROUND_PARAMS.minMultiplier);
+  assert.equal(roundMultiplier(9, 0, { ...ROUND_PARAMS, maxMultiplier: 1.5 }), 1.5);
+  // Deterministic regardless of input order.
+  assert.deepEqual(learnFromRounds(rounds.slice().reverse(), { nowMs: NOW }), out);
+});
+
+test('POST /rounds: same auth as /events, stored in the events document, feeds GET /results, deleted by DELETE /state', async () => {
+  const p = freshProfile();
+  // Auth + validation mirror /events exactly.
+  assert.equal((await call('POST', '/pockets/rounds', { profile: null, body: roundsBatch([]) })).status, 400);
+  assert.equal((await call('POST', '/pockets/rounds', { profile: p, key: null, body: roundsBatch([]) })).status, 401);
+  const noEnroll = await call('POST', '/pockets/rounds', { profile: p, enroll: null, body: roundsBatch([roundWire()]) });
+  assert.deepEqual([noEnroll.status, noEnroll.json.error], [403, 'enrollment-required']);
+  assert.equal(existsSync(eventsPath(p)), false);
+  assert.equal((await call('POST', '/pockets/rounds', { profile: p, body: { v: 1, installId: INSTALL } })).status, 400);
+  assert.equal((await call('POST', '/pockets/rounds', { profile: p, body: { ...roundsBatch([]), v: 2 } })).status, 400);
+  const tooMany = await call('POST', '/rounds', { profile: p, body: roundsBatch(Array.from({ length: 51 }, () => roundWire())) });
+  assert.deepEqual([tooMany.status, tooMany.json.error], [400, 'batch-too-large']);
+  // Events first (a profile with plays), then a round on top.
+  await call('POST', '/events', { profile: p, body: batch(wireSeq('PPP', NOW - 3 * HOUR)) });
+  const before = await call('GET', '/results', { profile: p });
+  assert.equal('rounds' in before.json, false, 'no rounds ⇒ the results document is unchanged');
+  const r1 = roundWire();
+  const ok = await call('POST', '/pockets/rounds', { profile: p, enroll: null, body: roundsBatch([r1, roundWire({ id: 'bad' })]) });
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.json, { ok: true, accepted: 1, updated: 0, unchanged: 0, rejected: 1, total: 1, dirty: true });
+  const mismatch = await call('POST', '/rounds', { profile: p, key: OTHER_KEY, body: roundsBatch([roundWire()]) });
+  assert.deepEqual([mismatch.status, mismatch.json.error], [403, 'key-mismatch']);
+  const stored = JSON.parse(readFileSync(eventsPath(p), 'utf8'));
+  assert.equal(stored.rounds.length, 1);
+  assert.equal(stored.events.length, 3, 'the plays are untouched');
+  const got = await call('GET', '/pockets/results', { profile: p });
+  assert.equal(got.json.rounds.total, 1);
+  assert.equal(got.json.rounds.pocket, 1);
+  assert.ok(got.json.rounds.contexts.some((c) => c.key === `weekday|evening|place:${PLACE_A}`));
+  assert.deepEqual(validateResults(got.json), []);
+  // A re-send of the same round changes nothing; feedback edited later is an update.
+  const resend = await call('POST', '/rounds', { profile: p, body: roundsBatch([r1]) });
+  assert.deepEqual([resend.json.accepted, resend.json.updated, resend.json.unchanged], [0, 0, 1]);
+  const edited = await call('POST', '/rounds', { profile: p, body: roundsBatch([{ ...r1, feedback: 'too slow', updatedAtMs: NOW }]) });
+  assert.equal(edited.json.updated, 1);
+  // DELETE /state takes the rounds with it.
+  assert.equal((await call('DELETE', '/pockets/state', { profile: p })).status, 200);
+  assert.equal(existsSync(eventsPath(p)), false);
+  assert.equal((await call('GET', '/results', { profile: p })).json.rounds, undefined);
+});
+
+test('POST /rounds can enroll a fresh profile (the game may be the first upload); an empty batch leaves the shape alone', async () => {
+  const p = freshProfile();
+  const empty = await call('POST', '/rounds', { profile: p, body: roundsBatch([]) });
+  assert.equal(empty.status, 200);
+  assert.equal('rounds' in JSON.parse(readFileSync(eventsPath(p), 'utf8')), false);
+  const first = await call('POST', '/rounds', { profile: p, body: roundsBatch([roundWire({ outcome: 'broke', brokeAt: 1 })]) });
+  assert.equal(first.json.accepted, 1);
+  const got = await call('GET', '/results', { profile: p });
+  assert.equal(got.json.rounds.broke, 1);
+  assert.equal(got.json.rounds.negatives, 1);
+  assert.deepEqual(got.json.pockets, []);
 });
 
 // ── Local runner + contract ─────────────────────────────────────────────────────────────────────

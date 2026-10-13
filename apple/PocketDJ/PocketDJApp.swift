@@ -144,6 +144,9 @@ struct PocketDJApp: App {
         if let id, id.hasPrefix(CollectorsPuzzleEngine.runTagPrefix) {
             return (.game, GameKind.collectorsPuzzle.label)
         }
+        if let id, id.hasPrefix(InThePocketStore.runTagPrefix) {
+            return (.game, GameKind.inThePocket.label)
+        }
         return collections?.historyContext(forSourceSetlistId: id) ?? (.setlist, nil)
     }
 
@@ -317,6 +320,8 @@ struct PocketDJApp: App {
     /// APP-SCOPED Music with Friends engine — turn-based suggestion sessions on the
     /// SAME jukebox broker; holds the persisted session list + deep-link signals.
     @State private var friends: MusicWithFriendsStore
+    /// "In the Pocket" — app-scoped like the puzzle engine (a round keeps tracking off-screen).
+    @State private var inThePocket: InThePocketStore
     /// The App Intents bridge (Siri/Shortcuts/Spotlight → live stores). Constructed +
     /// registered with `AppDependencyManager` in `init()` so an intent that background-
     /// launches the app (no scene) still finds fully-wired stores. Also injected into
@@ -1517,6 +1522,36 @@ struct PocketDJApp: App {
             await listeningPockets?.deleteCloudData(key: key, profileId: profileId)
         }
         _listeningPockets = State(initialValue: listeningPockets)
+        // ── In the Pocket ──────────────────────────────────────────────────────
+        // The game bets on 3–4 songs for right now (time + day + — opt-in, iOS — the place/trip
+        // GUESS) from the pocket results + history, plays them through the shared sequencer,
+        // tracks them via the history log's skip/fraction verdicts, and hands finished rounds to
+        // the pockets flush as labelled training data (same gate, same key, `/pockets/rounds`).
+        let inThePocket = InThePocketStore(history: playHistory, scoreboard: gameScores,
+                                           fileURL: InThePocketStore.launchURL())
+        inThePocket.catalogSnapshot = { [weak app] in (app?.songsById ?? [:], app?.albumsById ?? [:]) }
+        inThePocket.audioAvailability = { [weak rips, weak burns, weak coordinator] in
+            CollectorsPuzzleEngine.AudioAvailability(
+                ripManifest: rips?.manifest ?? [:],
+                burnedIds: burns?.readyBurnedIds ?? [],
+                canStreamAppleMusic: coordinator?.canStreamAppleMusic ?? false)
+        }
+        inThePocket.results = { [weak listeningPockets] in listeningPockets?.results }
+        inThePocket.contextGuess = { [weak listeningLocation] in
+            // Only while places & trips is ON (the same toggle that lets `ctx` upload at all).
+            guard let loc = listeningLocation, loc.isEnabled, let tag = loc.currentContextGuess() else { return (nil, nil) }
+            return (tag, loc.label(for: tag))
+        }
+        inThePocket.play = { [weak setlistPlayer] items, tag in setlistPlayer?.play(items, sourceSetlistId: tag) }
+        inThePocket.ownsRun = { [weak setlistPlayer] tag in
+            guard let sp = setlistPlayer else { return false }
+            return sp.isRunning && sp.sourceSetlistId == tag
+        }
+        inThePocket.onRoundsChanged = { [weak listeningPockets] in listeningPockets?.flushSoon() }
+        listeningPockets.roundsProvider = { [weak inThePocket] installId in
+            inThePocket?.uploadWires(installId: installId) ?? []
+        }
+        _inThePocket = State(initialValue: inThePocket)
         // Fixture guard lives HERE (not inside the service): UI-test runs must never
         // touch a real iCloud account, but the unit-test scheme sets PDJ_USE_FIXTURE
         // globally and the sync engine itself must stay drivable by tests.
@@ -1686,10 +1721,12 @@ struct PocketDJApp: App {
             guard let recEngine else { return true }
             return await recEngine.deleteCloudData()
         }
-        accountDeletion.recClearLocal = { [weak recEngine, weak listeningPockets, weak listeningLocation] cloudDeleted in
+        accountDeletion.recClearLocal = { [weak recEngine, weak listeningPockets, weak listeningLocation, weak inThePocket] cloudDeleted in
             // Listening pockets' device-local files + the on-device place/trip data go with the
-            // account (location: off + erased — the same as turning the toggle off).
+            // account (location: off + erased — the same as turning the toggle off), and so do
+            // the In the Pocket rounds (they hold free-text feedback).
             listeningPockets?.clearLocal()
+            inThePocket?.clearLocal()
             listeningLocation?.setEnabled(false)
             recEngine?.clearLocal(cloudDeleted: cloudDeleted)
         }
@@ -1810,6 +1847,7 @@ struct PocketDJApp: App {
                 .environment(recEngine)
                 .environment(listeningLocation)
                 .environment(listeningPockets)
+                .environment(inThePocket)
                 .preferredColorScheme(.dark)
                 .tint(Theme.accent)
                 // A streaming provider's OAuth redirect (if any) comes back through
@@ -1876,6 +1914,8 @@ struct PocketDJApp: App {
                 .task { recEngine.startAutoFlush() }
                 // Listening-pockets auto-flush: same contract (idempotent, gated inside).
                 .task { listeningPockets.startAutoFlush() }
+                // A round that was playing when the app went away keeps (or finishes) tracking.
+                .task { inThePocket.resumeTrackingIfNeeded() }
                 // …and the same gate, observed: any path that closes it (not only the Settings
                 // toggles, which also call `enabledDidChange`) turns places & trips off.
                 .onChange(of: listeningPockets.isEnabled) { _, on in

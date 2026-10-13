@@ -64,6 +64,7 @@ extension View {
             .navigationDestination(for: JukeboxRoute.self) { _ in JukeboxView() }
             .navigationDestination(for: JukeboxJoinRoute.self) { JukeboxJoinView(entry: $0.entry) }
             .navigationDestination(for: CollectorsPuzzleRoute.self) { _ in CollectorsPuzzleView(path: path) }
+            .navigationDestination(for: InThePocketRoute.self) { _ in InThePocketView() }
             .navigationDestination(for: MwFSessionRoute.self) { MusicWithFriendsSessionView(sessionId: $0.sessionId, path: path) }
             // For You tiles. `.new` gets its own screen (releases are ALBUMS, not songs); the
             // other two kinds are both ranked song lists and share one view.
