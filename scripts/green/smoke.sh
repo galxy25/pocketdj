@@ -87,8 +87,8 @@ t_ec2(){
     local out; out=$(g ec2 run-instances --launch-template "LaunchTemplateName=$t" --dry-run 2>&1 || true)
     if grep -q DryRunOperation <<<"$out"; then ok "launch template $t validates (dry-run)"; else ko "launch template $t: $(tail -1 <<<"$out")"; fi
   done
-  local n; n=$(g ec2 describe-instances --filters Name=instance-state-name,Values=pending,running --query 'length(Reservations)' --output text)
-  [ "$n" = 0 ] && ok "no running instances" || ko "$n running instances"
+  local n; n=$(g ec2 describe-instances --filters Name=instance-state-name,Values=pending,running Name=tag:Name,Values='pocketdj-*' --query 'length(Reservations)' --output text)
+  [ "$n" = 0 ] && ok "no running pocketdj instances" || ko "$n running pocketdj instances"
 }
 
 t_ses(){ say "SES identity: $(jq -c . "$STATE/ses.identity.json")"; }

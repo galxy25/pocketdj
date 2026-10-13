@@ -78,7 +78,23 @@ Single source of truth for every coordinate: `scripts/lib/aws-env.mjs` (JS) and 
 ## Data
 
 Copied server-side with `scripts/green/data-sync.sh` (blue = read-only source). Counts/bytes at
-copy time are in `scripts/green/state/sync-logs/<bucket>.log` (untracked). Re-sync command for
+copy time are in `scripts/green/state/sync-logs/<bucket>.log` (untracked). Initial copy
+2026-10-13 00:00–00:40Z; the temporary cross-account grant was removed afterwards (verified:
+blue's Developer now gets AccessDenied on green buckets).
+
+| Bucket | blue objects / bytes | green objects / bytes | Note |
+|---|---|---|---|
+| am-sync-jobs | 2 / 7,256 | 2 / 7,256 | match |
+| dev-web | 11,164 / 135,207,964 | 11,164 / 135,207,964 (+ green config/endpoints.json) | match |
+| legal-site | 6 / 204,659 | 6 / 204,659 | match |
+| logs | 171,110+ / ~268 MB | 171,167 / ~273 MB | blue keeps receiving logs; green adds its own access logs |
+| mail | 2 / 14,411 | 3 / 15,056 | +1 = SES's AMAZON_SES_SETUP_NOTIFICATION |
+| prod-web | 7,466 / 124,007,810 | 7,467 / 124,008,551 | +config/endpoints.json, rewritten search-config.json |
+| rec | 2 / 3,975,611 | 2 / 3,975,611 | match |
+| rips | 54,000 / 227,552,979,855 | 54,000 / 227,552,979,855 | match (4 worker-code files then rewritten in place, same sizes) |
+| www | 3 / 168,494 | 3 / 168,494 | match |
+
+Search index rebuilt in green from `public/{current,apple-music,digital}-index.json`: 124,762 docs. Re-sync command for
 cutover (copies changes AND mirrors deletes, then re-applies green-specific objects):
 
 ```bash
