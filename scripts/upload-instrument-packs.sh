@@ -12,10 +12,11 @@
 # Everything lives under the public "rips/" prefix (the only prefix the bucket policy
 # makes world-readable). Uploads use the same AWS profile as every other S3 publisher.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
 
-BUCKET="${POCKETDJ_RIPS_BUCKET:-pocketdj-rips-011183829623}"
+BUCKET="${POCKETDJ_RIPS_BUCKET:-$PDJ_RIPS_BUCKET}"
 REGION="${AWS_REGION:-us-west-2}"
-PROFILE="${AWS_PROFILE_OVERRIDE:-${AWS_PROFILE:-levi}}"
+PROFILE="${AWS_PROFILE_OVERRIDE:-${AWS_PROFILE:-$PDJ_PROFILE}}"
 PREFIX="rips/instruments"
 
 # arg 1: path to the SoundFont (.sf2). Default: GeneralUser GS 2.0.3.

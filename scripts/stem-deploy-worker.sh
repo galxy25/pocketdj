@@ -58,9 +58,10 @@
 # The python helpers live under .claude/skills/analog-indexer/ (one copy, shared with the local
 # indexer path) and are FLATTENED into worker-code/ because userdata fetches them by bare name.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
 cd "$(dirname "$0")/.."
-export AWS_PROFILE="${AWS_PROFILE:-levi}"
-BUCKET=pocketdj-rips-011183829623
+export AWS_PROFILE="${AWS_PROFILE:-$PDJ_PROFILE}"
+BUCKET="$PDJ_RIPS_BUCKET"   # blue: pocketdj-rips-011183829623
 PREFIX=worker-code
 B="s3://$BUCKET/$PREFIX"
 R="--region us-west-2 --only-show-errors"

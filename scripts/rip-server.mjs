@@ -31,6 +31,7 @@ import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './l
 import { runOsascriptAsync } from './lib/am-music.mjs';
 import { captureWithHeal, createHealGate, healMusic, WEDGED_REASON } from './lib/music-health.mjs';
 import { foldCloudReindex } from './lib/cloud-reindex-fold.mjs';
+import { AWS_ENV } from './lib/aws-env.mjs';
 import { artifactRoot as amArtifactRoot, snapshotDir as amSnapshotDir,
          ensureDirs as ensureArtifactDirs, pruneArtifacts } from './lib/am-artifacts.mjs';
 const LYRICS_VERSION = 1;   // timed-lyrics sidecar version; keep in sync with LYRICS_VERSION in scripts/stem-worker.mjs
@@ -79,9 +80,9 @@ const CFG = {
   musicKitKeyId: process.env.MUSICKIT_KID || '9JRN4H68X4',
   musicKitTeamId: process.env.MUSICKIT_TEAM || 'EC27UF79GL',
   musicKitTtlSec: parseInt(process.env.MUSICKIT_TTL_SEC || String(150 * 24 * 3600), 10), // 150 d ≤ 6 mo cap
-  profile: process.env.AWS_PROFILE || 'levi',
+  profile: process.env.AWS_PROFILE || AWS_ENV.profile,
   region: process.env.AWS_REGION || 'us-west-2',
-  bucket: process.env.RIP_BUCKET || 'pocketdj-rips-011183829623',
+  bucket: process.env.RIP_BUCKET || AWS_ENV.buckets.rips,
   analogBase: (process.env.POCKETDJ_ANALOG_BASE || join(homedir(), 'Downloads')).replace(/^~/, homedir()),
   libraryXml: (process.env.POCKETDJ_LIBRARY_XML || join(homedir(), 'Downloads', 'Library.xml')).replace(/^~/, homedir()),
   // ---- AM-sync (daily 04:00 + on-demand /am-sync): keep "Apple Music (Local)" in step ----
@@ -143,9 +144,9 @@ const CFG = {
   // arrives fully analyzed with zero taps. Follows stemOffload (the cloud fleet absorbs the
   // Demucs load; the local serial path would choke on bulk rips). POCKETDJ_AUTO_STEM_ON_RIP=0/1 overrides.
   autoStemOnRip: process.env.POCKETDJ_AUTO_STEM_ON_RIP != null ? process.env.POCKETDJ_AUTO_STEM_ON_RIP !== '0' : process.env.POCKETDJ_STEM_OFFLOAD !== '0',
-  stemJobsQueue: process.env.POCKETDJ_STEM_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-jobs',
-  stemResultsQueue: process.env.POCKETDJ_STEM_RESULTS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-results',
-  stemDlqQueue: process.env.POCKETDJ_STEM_DLQ_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-stem-jobs-dlq',
+  stemJobsQueue: process.env.POCKETDJ_STEM_JOBS_QUEUE || AWS_ENV.queues.stemJobs,
+  stemResultsQueue: process.env.POCKETDJ_STEM_RESULTS_QUEUE || AWS_ENV.queues.stemResults,
+  stemDlqQueue: process.env.POCKETDJ_STEM_DLQ_QUEUE || AWS_ENV.queues.stemDlq,
   // ---- Cloud TIMBRE offload (scripts/timbre-worker.mjs on the arm64 fleet) ----
   // The 14-axis recommendation vector. OWN queues, not the stem lane's: the stem fleet is x86_64
   // and cannot run the calibrated arm64 pocketdj-audio image, and a timbre job landing on the
@@ -161,9 +162,9 @@ const CFG = {
   // that script cannot invent; a nightly gated on an empty credential file is exactly how the
   // corpus froze for 14 days. A sweep with nothing to sweep costs nothing.
   timbreSweepMs: Number(process.env.POCKETDJ_TIMBRE_SWEEP_MS || 6 * 60 * 60_000),
-  timbreJobsQueue: process.env.POCKETDJ_TIMBRE_JOBS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-timbre-jobs',
-  timbreResultsQueue: process.env.POCKETDJ_TIMBRE_RESULTS_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-timbre-results',
-  timbreDlqQueue: process.env.POCKETDJ_TIMBRE_DLQ_QUEUE || 'https://sqs.us-west-2.amazonaws.com/011183829623/pocketdj-timbre-jobs-dlq',
+  timbreJobsQueue: process.env.POCKETDJ_TIMBRE_JOBS_QUEUE || AWS_ENV.queues.timbreJobs,
+  timbreResultsQueue: process.env.POCKETDJ_TIMBRE_RESULTS_QUEUE || AWS_ENV.queues.timbreResults,
+  timbreDlqQueue: process.env.POCKETDJ_TIMBRE_DLQ_QUEUE || AWS_ENV.queues.timbreDlq,
   // The DURABLE RESULT CORPUS — <results>/*.ndjson, where every vector this corpus has ever had
   // actually lives. The manifest stamp is the ongoing record; this is the historical one, and
   // the sweep MUST consult it or it re-runs 5,388 already-measured songs on EC2 forever.

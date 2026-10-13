@@ -27,6 +27,7 @@
 #   POCKETDJ_NODE_CMD / POCKETDJ_GIT_CMD — shim the tools.
 #   --dry-run — print every mutating step WITHOUT cloning/resolving/committing/publishing.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="${POCKETDJ_NIGHTLY_REPO:-$(cd "$SELF_DIR/.." && pwd)}"
@@ -38,10 +39,10 @@ CACHE="${POCKETDJ_LINK_CACHE:-$STATE_DIR/links-cache.ndjson}"
 LINK_INDEXES="${POCKETDJ_LINK_INDEXES:-apple-music}"
 LINK_BATCH="${POCKETDJ_LINK_BATCH:-800}"
 LINK_SERVICES="${POCKETDJ_LINK_SERVICES:-spotify,youtube}"
-PROFILE="${AWS_PROFILE:-levi}"
+PROFILE="${AWS_PROFILE:-$PDJ_PROFILE}"
 # Per-index CDN home (mirrors deploy.sh:77-78): vinyl + Apple Music → PROD, My Digital → DEV.
-CF_DEV="E123GKAO9JVETP"
-CF_PROD="E1SP8M1SIF7Q8D"
+CF_DEV="$PDJ_CF_DEV"
+CF_PROD="$PDJ_CF_PROD"
 # The published documents this pipeline can touch: the three catalog indexes plus the
 # recommendation-engine feature file DERIVED from them (stage 4) — the rec Lambda scores
 # against the CDN copy, so every index change must carry the derived file with it or the

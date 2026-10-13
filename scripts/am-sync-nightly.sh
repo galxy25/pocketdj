@@ -23,6 +23,7 @@
 #   POCKETDJ_NODE_CMD / POCKETDJ_GIT_CMD / POCKETDJ_DEPLOY_CMD — shim the tools.
 #   --dry-run — print every mutating step WITHOUT cloning/pulling/committing/deploying.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO="${POCKETDJ_NIGHTLY_REPO:-$(cd "$SELF_DIR/.." && pwd)}"
@@ -37,7 +38,7 @@ MARKER="$STATE_DIR/last-deployed-index.sha256"
 # that a newly-added track shows up in online search the same night. Skip with POCKETDJ_SKIP_ES=1.
 # Endpoint host comes from public/search-config.json (single source of truth; survives a
 # collection swap / scale-to-zero rebuild), falling back to the current prod host.
-ES_HOST_DEFAULT="mii9dwge3uiee2tvivt5.aoss.us-west-2.on.aws"
+ES_HOST_DEFAULT="$PDJ_AOSS_HOST"
 ES_HOST="$("$NODE" -e "try{process.stdout.write(JSON.parse(require('fs').readFileSync('$REPO/public/search-config.json','utf8')).host)}catch(e){process.stdout.write('$ES_HOST_DEFAULT')}" 2>/dev/null || echo "$ES_HOST_DEFAULT")"
 ES_ENDPOINT="${POCKETDJ_ES_ENDPOINT:-https://$ES_HOST}"
 ES_SOURCES="${POCKETDJ_ES_SOURCES:-public/current-index.json,public/apple-music-index.json,public/digital-index.json}"
@@ -154,7 +155,7 @@ ship() {
     [ -n "${POCKETDJ_ES_LYRICS_BASE:-}" ] && LYRICS_ARG=(--lyrics-base "$POCKETDJ_ES_LYRICS_BASE")
     run "$NODE" "$REPO/scripts/es-index.mjs" \
       --endpoint "$ES_ENDPOINT" --index pocketdj \
-      --profile "${AWS_PROFILE:-levi}" --region "${AWS_REGION:-us-west-2}" \
+      --profile "${AWS_PROFILE:-$PDJ_PROFILE}" --region "${AWS_REGION:-$PDJ_REGION}" \
       --sources "$ES_SOURCES" ${LYRICS_ARG[@]+"${LYRICS_ARG[@]}"} \
       || log "⚠ OpenSearch reindex failed (non-fatal) — online search may lag until the next run"
   fi

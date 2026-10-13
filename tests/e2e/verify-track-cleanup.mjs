@@ -13,8 +13,9 @@
 import { chromium } from '@playwright/test';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { AWS_ENV } from '../../scripts/lib/aws-env.mjs';
 
-const BASE = process.argv[2] || 'https://djictbz9w796r.cloudfront.net';
+const BASE = process.argv[2] || AWS_ENV.cdn.dev;
 const PROOF = join(process.cwd(), 'tests', 'e2e', 'proof', 'track-cleanup');
 mkdirSync(PROOF, { recursive: true });
 

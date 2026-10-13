@@ -88,9 +88,10 @@
 //   POCKETDJ_STEM_PIN_SUBNET (the single subnet `--revert` restores),
 //   POCKETDJ_STEM_MAX_WORKERS (read only to compare against the spot quota).
 import { execFileSync } from 'node:child_process';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const REGION = process.env.AWS_REGION || 'us-west-2';
-const PROFILE = process.env.AWS_PROFILE || 'levi';
+const PROFILE = process.env.AWS_PROFILE || AWS_ENV.profile;
 const TEMPLATE = process.env.POCKETDJ_STEM_LAUNCH_TEMPLATE || 'pocketdj-stem-worker';
 // The AZ the template pinned before the multi-AZ restructure, and the one `--revert` puts back.
 const PIN_SUBNET = process.env.POCKETDJ_STEM_PIN_SUBNET || 'subnet-00a23032877bbe190';   // us-west-2a
@@ -115,9 +116,9 @@ const SPOT_QUOTA_CODE = 'L-34B43A08';   // All Standard (A,C,D,H,I,M,R,T,Z) Spot
 
 // The worker's instance role, and the queue whose messages it hands back on a reclaim.
 const WORKER_ROLE = process.env.POCKETDJ_STEM_WORKER_ROLE || 'pocketdj-stem-worker';
-const WORKER_CODE_BUCKET = process.env.POCKETDJ_RIPS_BUCKET || 'pocketdj-rips-011183829623';
+const WORKER_CODE_BUCKET = process.env.POCKETDJ_RIPS_BUCKET || AWS_ENV.buckets.rips;
 const JOBS_QUEUE_ARN = process.env.POCKETDJ_STEM_JOBS_QUEUE_ARN
-  || 'arn:aws:sqs:us-west-2:011183829623:pocketdj-stem-jobs';
+  || AWS_ENV.stemJobsArn;
 
 /// PREFLIGHT: can the worker actually execute the release path it now depends on?
 ///
@@ -137,7 +138,7 @@ function iamPreflight() {
   let results;
   try {
     results = j('iam', 'simulate-principal-policy',
-      '--policy-source-arn', `arn:aws:iam::011183829623:role/${WORKER_ROLE}`,
+      '--policy-source-arn', `arn:aws:iam::${AWS_ENV.account}:role/${WORKER_ROLE}`,
       '--action-names', ...needed, '--resource-arns', JOBS_QUEUE_ARN).EvaluationResults;
   } catch (e) { console.log(`\n  worker IAM: simulate failed (${e.message.split('\n')[0]})`); return; }
   const missing = results.filter((r) => r.EvalDecision !== 'allowed').map((r) => r.EvalActionName);
@@ -149,10 +150,10 @@ function iamPreflight() {
     + '\n    FALLBACKS do not: an unparseable body, a job past the spot-requeue hop cap, or a re-send'
     + '\n    that failed all end in STRANDED and wait out the 1800s visibility timeout. Grant it:'
     + `\n\n    aws iam get-role-policy --role-name ${WORKER_ROLE} --policy-name rips-s3 \\`
-    + '\n      --query PolicyDocument --output json --profile levi > /tmp/rips-s3.json'
+    + `\n      --query PolicyDocument --output json --profile ${PROFILE} > /tmp/rips-s3.json`
     + '\n    # add "sqs:ChangeMessageVisibility" to the sqs Action list in /tmp/rips-s3.json, then:'
     + `\n    aws iam put-role-policy --role-name ${WORKER_ROLE} --policy-name rips-s3 \\`
-    + '\n      --policy-document file:///tmp/rips-s3.json --profile levi\n');
+    + `\n      --policy-document file:///tmp/rips-s3.json --profile ${PROFILE}\n`);
 }
 
 /// PREFLIGHT: is the DEPLOYED worker spot-aware? The workers do not run this repo's

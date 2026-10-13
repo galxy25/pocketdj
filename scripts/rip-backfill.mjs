@@ -105,6 +105,7 @@ import { homedir } from 'node:os';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { normArtist, comparableTitle, loadLibraryXML, loadLibraryTSV, indexLibrary, findInLibrary } from './lib/am-match.mjs';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const execFile = promisify(execFileCb);
 const REPO = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -136,12 +137,12 @@ const CFG = {
     .split(',').map((s) => s.trim()).filter(Boolean),
   ripServer: (a['rip-server'] || process.env.RIP_SERVER || 'http://localhost:8787').replace(/\/$/, ''),
   ripToken: a['rip-token'] || process.env.RIP_TOKEN || '',
-  bucket: a.bucket || process.env.POCKETDJ_RIPS_BUCKET || 'pocketdj-rips-011183829623',
+  bucket: a.bucket || process.env.POCKETDJ_RIPS_BUCKET || AWS_ENV.buckets.rips,
   // Test seam: read the manifest from a local file instead of S3 (smoke tests / offline planning
   // against a snapshot). Production leaves this unset — S3 is the authority.
   manifestFile: (a['manifest-file'] || process.env.POCKETDJ_MANIFEST_FILE || '').replace(/^~/, HOME) || null,
   region: a.region || process.env.AWS_REGION || 'us-west-2',
-  profile: a.profile || process.env.AWS_PROFILE || 'levi',
+  profile: a.profile || process.env.AWS_PROFILE || AWS_ENV.profile,
   // The library file the CAPTURE will match against (rip-one passes CFG.libraryXml through to the
   // rip skill), so classification and capture agree on what "has a library row" means.
   libraryXml: (a['library-xml'] || process.env.POCKETDJ_LIBRARY_XML || join(HOME, 'Downloads', 'Library.xml')).replace(/^~/, HOME),

@@ -21,12 +21,13 @@ import { join } from 'node:path';
 import { homedir, tmpdir } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { TIMBRE_VERSION } from './lib/audio-analyze.mjs';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const arg = (f, d) => { const i = process.argv.indexOf(f); return i >= 0 ? process.argv[i + 1] : d; };
 const PREFIX = arg('--prefix', 'rips/timbre-parity/');
-const BUCKET = process.env.POCKETDJ_RIPS_BUCKET || 'pocketdj-rips-011183829623';
+const BUCKET = process.env.POCKETDJ_RIPS_BUCKET || AWS_ENV.buckets.rips;
 const REGION = process.env.AWS_REGION || 'us-west-2';
-const PROFILE = process.env.AWS_PROFILE || 'levi';
+const PROFILE = process.env.AWS_PROFILE || AWS_ENV.profile;
 const RESULTS = join(homedir(), '.pocketdj', 'timbre-batch', 'results');
 export const EPS = 1e-4;
 

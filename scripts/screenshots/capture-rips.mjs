@@ -9,12 +9,13 @@
 import { chromium } from 'playwright';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { AWS_ENV } from '../lib/aws-env.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT = resolve(__dirname, '../../docs/storybook');
 const BASE = process.env.PDJ_BASE || 'http://localhost:5173';
 const RIP_URL = process.env.RIP_URL || 'http://localhost:8787';
-const MANIFEST = 'https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com/rips/manifest.json';
+const MANIFEST = `${AWS_ENV.ripsPublicBase}/rips/manifest.json`;
 const MOBILE = { width: 402, height: 874 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

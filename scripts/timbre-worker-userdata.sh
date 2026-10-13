@@ -19,6 +19,9 @@ exec >> $LOG 2>&1
 set -x
 IID=$(curl -sf -X PUT http://169.254.169.254/latest/api/token -H 'X-aws-ec2-metadata-token-ttl-seconds: 300' \
       | { read -r T; curl -sf http://169.254.169.254/latest/meta-data/instance-id -H "X-aws-ec2-metadata-token: $T"; })
+# BLUE literal on purpose: this runs on the instance with no repo (so no scripts/lib/aws-env.sh), and
+# no repo script builds the launch template from it. A launch template in another account (green)
+# must carry a copy with that account's bucket substituted — see docs/aws-green-cutover.md.
 ship() { aws s3 cp $LOG "s3://pocketdj-rips-011183829623/worker-logs/${IID:-unknown}.log" --region us-west-2 --only-show-errors || true; }
 trap ship EXIT
 echo "=== timbre worker boot $(date -u) instance=$IID ==="

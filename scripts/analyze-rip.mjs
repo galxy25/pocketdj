@@ -13,13 +13,14 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { join, basename } from 'node:path';
 import { homedir } from 'node:os';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const a = {};
 for (let i = 2; i < process.argv.length; i++) { const k = process.argv[i]; if (k === '--no-upload') a.noUpload = true; else if (k.startsWith('--')) a[k.slice(2)] = process.argv[++i]; }
 const SERVER = (a.server || process.env.RIP_SERVER || 'http://localhost:8787').replace(/\/$/, '');
-const BUCKET = a.bucket || 'pocketdj-rips-011183829623';
+const BUCKET = a.bucket || AWS_ENV.buckets.rips;
 const REGION = a.region || 'us-west-2';
-const PROFILE = a.profile || process.env.AWS_PROFILE || 'levi';
+const PROFILE = a.profile || process.env.AWS_PROFILE || AWS_ENV.profile;
 const TOKEN = a.token || process.env.RIP_TOKEN || '';
 const TMP = join(homedir(), '.pocketdj', 'rips');
 mkdirSync(TMP, { recursive: true });

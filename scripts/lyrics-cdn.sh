@@ -7,10 +7,11 @@
 #   scripts/lyrics-cdn.sh prod
 #   SKIP_BUILD=1 scripts/lyrics-cdn.sh dev    # re-upload only (index-out/lyrics already built)
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
 ENV="${1:-dev}"; case "$ENV" in dev|prod) ;; *) echo "usage: scripts/lyrics-cdn.sh <dev|prod>"; exit 1 ;; esac
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"; cd "$ROOT"
-PROFILE="${AWS_PROFILE_OVERRIDE:-levi}"
+PROFILE="${AWS_PROFILE_OVERRIDE:-$PDJ_PROFILE}"
 ACCT="$(aws sts get-caller-identity --profile "$PROFILE" --query Account --output text)"
 BUCKET="pocketdj-${ENV}-web-${ACCT}"
 INDEX="${INDEX:-index-out/current/index.json}"
@@ -27,7 +28,7 @@ aws s3 sync "$OUT" "s3://$BUCKET/lyrics/" --profile "$PROFILE" --delete \
   --content-type "text/plain; charset=utf-8" --cache-control "public,max-age=86400"
 
 CF_ID=""
-case "$ENV" in dev) CF_ID="${CF_ID_DEV:-E123GKAO9JVETP}" ;; prod) CF_ID="${CF_ID_PROD:-E1SP8M1SIF7Q8D}" ;; esac
+case "$ENV" in dev) CF_ID="${CF_ID_DEV:-$PDJ_CF_DEV}" ;; prod) CF_ID="${CF_ID_PROD:-$PDJ_CF_PROD}" ;; esac
 if [ -n "$CF_ID" ]; then
   aws cloudfront create-invalidation --distribution-id "$CF_ID" --paths "/lyrics/*" \
     --profile "$PROFILE" --query 'Invalidation.Id' --output text 2>/dev/null || true

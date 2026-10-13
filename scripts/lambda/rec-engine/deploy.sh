@@ -30,14 +30,15 @@
 #
 # Idempotent-ish; safe to re-run to update code.
 set -euo pipefail
+. "$(dirname "${BASH_SOURCE[0]}")/../../lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
 SHOW_SECRET=0
 for arg in "$@"; do [ "$arg" = "--show-secret" ] && SHOW_SECRET=1; done
-export AWS_PROFILE="${AWS_PROFILE:-levi}"
-REGION="us-west-2"; ACCT="011183829623"
+export AWS_PROFILE="${AWS_PROFILE:-$PDJ_PROFILE}"
+REGION="$PDJ_REGION"; ACCT="$PDJ_ACCOUNT"
 FN="pocketdj-rec-engine"; ROLE="pocketdj-rec-engine-role"; API_NAME="pocketdj-rec-engine"
 # Private state bucket: ONE JSON object per profile under rec/state/.
 REC_BUCKET="pocketdj-rec-${ACCT}"
-FEATURES_URL="https://d2p4cubg6se03u.cloudfront.net/rec-features.json"
+FEATURES_URL="${PDJ_CDN_PROD}/rec-features.json"
 LAMBDA_ARN="arn:aws:lambda:${REGION}:${ACCT}:function:${FN}"
 SELF="$(cd "$(dirname "$0")" && pwd)"
 say(){ echo "[deploy-rec-engine] $*"; }

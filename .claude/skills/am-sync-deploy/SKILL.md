@@ -84,7 +84,7 @@ scripts/deploy.sh dev
 scripts/deploy.sh prod
 # (6) OPTIONAL search refresh (non-fatal) — see es-search-index skill.
 node scripts/es-index.mjs --sources public/current-index.json,public/apple-music-index.json \
-  --profile levi --region us-west-2 || true
+  --profile levi --region us-west-2 || true   # blue; green: POCKETDJ_ENV=green + --profile llc
 # (7) MARK CONSUMED — only after full success.
 mv "$CS" "$PROCESSED"/; mv "$SNAP" "$PROCESSED"/ 2>/dev/null || true
 ```

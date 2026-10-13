@@ -12,8 +12,9 @@
 # Secrets Manager holds ONLY the MusicKit signing material { p8, kid, team } — the .p8 never ships
 # in the deploy artifact. Idempotent-ish; safe to re-run to update code.
 set -euo pipefail
-export AWS_PROFILE="${AWS_PROFILE:-levi}"
-REGION="us-west-2"; ACCT="011183829623"
+. "$(dirname "${BASH_SOURCE[0]}")/../../lib/aws-env.sh"   # PDJ_* fallbacks for POCKETDJ_ENV (default blue)
+export AWS_PROFILE="${AWS_PROFILE:-$PDJ_PROFILE}"
+REGION="$PDJ_REGION"; ACCT="$PDJ_ACCOUNT"
 FN="pocketdj-am-playlist-sync"; ROLE="pocketdj-am-playlist-sync-role"; API_NAME="pocketdj-am-playlist-sync"
 SECRET_ID="pocketdj/am-playlist-sync"
 # Private bucket for async job results (POST /pull|/push -> worker writes here -> GET /job/{id} reads).

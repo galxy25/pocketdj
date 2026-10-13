@@ -58,11 +58,12 @@ import { dirname, resolve, join } from 'node:path';
 import { homedir } from 'node:os';
 import { pathToFileURL } from 'node:url';
 import { collectionSongIds } from './resolve-explicit-variants.mjs';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const expand = (p) => (p && p.startsWith('~') ? p.replace(/^~/, homedir()) : p);
 
 const DEFAULT_MANIFEST =
-  'https://pocketdj-rips-011183829623.s3.us-west-2.amazonaws.com/rips/manifest.json';
+  `${AWS_ENV.ripsPublicBase}/rips/manifest.json`;
 
 const COLLECTIONS_DEFAULTS = [
   join(homedir(), 'Library', 'Containers', 'com.levi.pocketdj', 'Data', 'Library',

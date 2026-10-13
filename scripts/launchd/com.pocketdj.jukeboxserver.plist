@@ -28,6 +28,8 @@
   </array>
   <key>EnvironmentVariables</key>
   <dict>
+    <key>POCKETDJ_ENV</key>
+    <string>blue</string>
     <key>AWS_PROFILE</key>
     <string>levi</string>
     <key>HOME</key>

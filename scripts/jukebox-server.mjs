@@ -24,6 +24,7 @@ import { homedir, hostname } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as apns from './apns.mjs';
+import { AWS_ENV } from './lib/aws-env.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -35,9 +36,9 @@ const VERSION = 3;
 const CFG = {
   port: parseInt(process.env.JUKEBOX_PORT || '8788', 10),
   token: process.env.JUKEBOX_TOKEN || '',            // bearer for host/create endpoints; empty = open (local dev)
-  profile: process.env.AWS_PROFILE || 'levi',
+  profile: process.env.AWS_PROFILE || AWS_ENV.profile,
   region: process.env.AWS_REGION || 'us-west-2',
-  bucket: process.env.JUKEBOX_WEB_BUCKET || 'pocketdj-dev-web-011183829623', // per-env web bucket
+  bucket: process.env.JUKEBOX_WEB_BUCKET || AWS_ENV.buckets.devWeb, // per-env web bucket
   // Public base for guest URLs + state.json. Default is the dedicated jukebox
   // distribution (jukebox.pocket-dj.com), whose origin path is /jukebox — so the
   // public path is /<id>/ while the S3 keys stay jukebox/<id>/... (unchanged below).
