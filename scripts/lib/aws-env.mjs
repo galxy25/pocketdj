@@ -75,17 +75,17 @@ export const ENVS = {
   green: build({
     name: 'green', account: '623170744161', profile: 'llc', adminUser: 'levi',
     cloudfront: {
-      dev: { id: 'PENDING', domain: 'PENDING.cloudfront.net', alias: 'dev.app.pocket-dj.com' },
-      prod: { id: 'PENDING', domain: 'PENDING.cloudfront.net', alias: 'app.pocket-dj.com' },
-      legal: { id: 'PENDING', domain: 'PENDING.cloudfront.net', alias: 'legal.pocket-dj.com' },
-      www: { id: 'PENDING', domain: 'PENDING.cloudfront.net', alias: 'www.pocket-dj.com' },
-      jukebox: { id: 'PENDING', domain: 'PENDING.cloudfront.net', alias: 'jukebox.pocket-dj.com' },
+      dev: { id: 'E2O4IE7VGLBNQ5', domain: 'd1zb3ydtksjw1r.cloudfront.net', alias: 'dev.app.pocket-dj.com' },
+      prod: { id: 'E2CHNQT5S5WLU3', domain: 'd1j6qufkowz1xq.cloudfront.net', alias: 'app.pocket-dj.com' },
+      legal: { id: 'E2B0F6795P6Z6S', domain: 'd1ucyuf4465q66.cloudfront.net', alias: 'legal.pocket-dj.com' },
+      www: { id: 'ELX7JB4JIT29F', domain: 'd3cxthv1ih70b5.cloudfront.net', alias: 'www.pocket-dj.com' },
+      jukebox: { id: 'EKSX6E9IZE4PW', domain: 'd1igcuqw3ey3p0.cloudfront.net', alias: 'jukebox.pocket-dj.com' },
     },
-    aossHost: 'PENDING.aoss.us-west-2.on.aws',
+    aossHost: 'l4srqmhutoh0wlko9y55.aoss.us-west-2.on.aws',
     apis: {
-      search: 'https://PENDING.execute-api.us-west-2.amazonaws.com',
-      recEngine: 'https://PENDING.execute-api.us-west-2.amazonaws.com',
-      amPlaylistSync: 'https://PENDING.execute-api.us-west-2.amazonaws.com',
+      search: 'https://zoj32t7rh6.execute-api.us-west-2.amazonaws.com',
+      recEngine: 'https://kwgk9osywa.execute-api.us-west-2.amazonaws.com',
+      amPlaylistSync: 'https://webhj3e832.execute-api.us-west-2.amazonaws.com',
     },
   }),
 };
