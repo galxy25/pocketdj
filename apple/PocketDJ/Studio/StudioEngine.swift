@@ -528,6 +528,11 @@ final class StudioEngine {
     /// Park the sample player NODE while leaving intent playing (the macOS device-switch state).
     func parkSamplePlayerForTesting() { samplePlayer?.pause() }
     func samplePlayerIsPlayingForTesting() -> Bool { samplePlayer?.isPlaying ?? false }
+    /// The render frame each USED pattern row started on (`StemSync.startFrame`) — one value
+    /// when the rows started together.
+    func patternRowStartFramesForTesting() -> [AVAudioFramePosition?] {
+        patternBuffers.keys.sorted().filter { rowPlayers.indices.contains($0) }.map { StemSync.startFrame(of: rowPlayers[$0]) }
+    }
 
     // MARK: - Sample audition
 
@@ -927,7 +932,7 @@ final class StudioEngine {
     }
 
     /// Start the loaded pattern from the top of the bar. Steps are scheduled sample-accurately
-    /// on each row player's own timeline (all started at ONE shared host time, so their
+    /// on each row player's own timeline (all started on ONE sample frame, so their
     /// timelines coincide); the tick keeps a 1-bar horizon armed.
     func startPattern() {
         guard loadedPatternId != nil else { return }
@@ -1007,8 +1012,8 @@ final class StudioEngine {
         patternLoopSteps[row][col] = loop
     }
 
-    /// (Re)anchor and start the pattern: schedule passes 0+1, start every used row player at one
-    /// shared host time, and re-base the UI step clock. Also the RECOVERY restart — after an
+    /// (Re)anchor and start the pattern: schedule passes 0+1, start every used row player on one
+    /// sample frame, and re-base the UI step clock. Also the RECOVERY restart — after an
     /// engine outage the host clock has drifted from the frozen player timelines, so unlike the
     /// sample/loop voices (pause()+play() re-prime) the only truthful pattern resume is from the
     /// top of a bar. Caller must ensure the engine is RUNNING (play(at:) on a dead engine traps).
@@ -1018,10 +1023,12 @@ final class StudioEngine {
         armedThroughSlot = 0
         for slot in 0..<Self.patternHorizonSlots { armSlot(slot) }   // bounded: a few bars, not the whole song
         armedThroughSlot = Self.patternHorizonSlots
-        let when = AVAudioTime(hostTime: mach_absolute_time()
-            + AVAudioTime.hostTime(forSeconds: Self.patternStartLatency))
-        for (row, _) in patternBuffers { rowPlayers[row].play(at: when) }
-        patternClock.startedAtHost = CACurrentMediaTime() + Self.patternStartLatency
+        // ONE sample frame for every row (`StemSync.startTogether`): the steps are scheduled at
+        // sample times on each row player's OWN timeline, so rows started on a shared HOST time
+        // (which each node converts on its own) would play every step a few samples apart.
+        let rows = patternBuffers.keys.sorted().filter { rowPlayers.indices.contains($0) }.map { rowPlayers[$0] }
+        let start = StemSync.startTogether(rows, lead: Self.patternStartLatency)
+        patternClock.startedAtHost = AVAudioTime.seconds(forHostTime: start.hostTime)   // same mach clock as CACurrentMediaTime
         patternClock.bpm = patternBpm
         patternClock.stepCount = patternStepCount
         patternClock.startStep = patternStartStep

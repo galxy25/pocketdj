@@ -108,15 +108,24 @@ decided in one place (`MixEngine.advanceStemHandover`):
   equal-power: stems sum back to the mix, so the voices are coherent). Only then is the outgoing
   voice stopped. A silent deck (paused, cued, or HELD for bytes) switches outright. Every
   transport path that stops/re-schedules voices `settleStemFade`s first.
+- **One fade at a time.** While a handover crossfade is in flight `advanceStemHandover` does
+  nothing: a toggle (or a pump / seek event) only moves the intent, and the fade's landing re-runs
+  the decision. Superseding a fade early — what rapid toggling used to do — settled it first,
+  stopping its OUTGOING voice while the incoming one could still be inside its 60 ms start lead:
+  up to 60 ms of dead air (`testRapidTogglesLandOnTheLastIntentWithoutDeadAir` now judges this at
+  sample resolution, > 2 ms of silence fails). A fade cut short by a transport action (pause, seek,
+  stop) re-checks a moved intent once that action finishes (`settleStemFade` defers an
+  `advanceStemHandover`), so it is never stranded.
 - **Four stems, one frame.** Every stem start (`startStems`, the handover) is ONE sample-time
-  `AVAudioTime` for all four nodes. A host-time start is converted by each node on its own and
+  `AVAudioTime` for all four nodes — `StemSync.startTogether` / `StemSync.sampleStart`
+  (`apple/PocketDJ/Playback/StemSync.swift`, shared by every engine that starts a node group). A host-time start is converted by each node on its own and
   lands them samples apart (measured on a bare engine: node pairs at r 0.80–0.96 instead of 1.0;
   hundreds of samples in the simulator) — four copies summed out of step comb-filter for the
   rest of the song.
 - **Encoder priming.** The Demucs stems are lameenc mp3s with no Xing/Info tag, so Core Audio
   can't trim LAME's 576-sample priming granule: they decode 576 samples (13 ms) late against the
   tagged full mix (measured on real stem sets, r 0.9998). `mp3PrimingFrames` reads it off the
-  first frame at wiring; every stem frame↔second mapping (`stemFrame`) skips it.
+  first frame at wiring; every stem frame↔second mapping (`stemFrame` → `StemSync.frame`) skips it.
 - **Sources across streaming:** stems not on disk STREAM (`MixStreamLoader.openStems`, public
   objects, all four together, adopted into the burn folder when done) or are fetched whole
   (`stemFetcher`). A streaming source that runs dry hands over to the other one when it has audio:
@@ -137,10 +146,67 @@ decided in one place (`MixEngine.advanceStemHandover`):
   the folder's scope; adoption is all-or-nothing.
 - **Transfers nobody wants are cancelled.** A stem stream is cancelled (`cancelStems`) the moment
   no deck wants it — toggled off (or the `.toFullMix` handover landed), track change, eject — and
-  runs at low task priority under the song streams. A restored stem-mode deck streams/fetches its
+  runs at low task priority under the song streams. A set is CLAIMED per engine (`openStems` /
+  `cancelStems` take an `owner`: `mixStemOwner`, `nowPlayingStemOwner`): when the Mix deck and
+  Now Playing joined the same song's set, one letting go only drops its claim — the transfer stops
+  when the last holder lets go (a cancel notifies no one, so the other engine would otherwise wait
+  on "Loading stems…" forever). A restored stem-mode deck streams/fetches its
   stems only on its first play.
 - **Generations:** `stemIntentGen` is bumped by every request, track change and eject; a fetch
   completing for a superseded request touches nothing. Fade steps check `stemFadeGen`.
+- **Shared, not copied.** The pure pieces — sample-frame start, voice playhead at a handover
+  moment, mp3 priming, the frame↔second map, handover readiness, a partial part's playable
+  seconds, fresh opens of a streaming set, the linear crossfade stepper — live in `StemSync`;
+  `MixEngine` forwards its old names (`handoverReady`, `mp3PrimingFrames`, …) there. The stem
+  stream itself is the one `MixStreamLoader`: Mix listens via `onStemProgress`, any other engine
+  via `addStemListener`.
+
+## Now Playing — the same rule on one deck (`NowPlayingDSP`)
+
+The Now Playing mix mini-panel's engine (`apple/PocketDJ/Playback/NowPlayingDSP.swift`) is a
+single-deck fork of this deck chain — `player` + 4 stem nodes → `inputMixer` → TimePitch →
+comp → EQ → reverb → flanger → limiter — and its stems toggle now follows the same zero-dead-air
+handover (`advanceStemHandover` / `cutToStems` / `cutToFullMix`, built on `StemSync`):
+
+- **Intent first.** `setStemMode(true)` refuses (returns false, touches nothing) only when the
+  track has no stems anywhere — not burned, not a profile item's, not in the catalog
+  (`BurnStore.stemsRemote`). Otherwise it records `.toStems`; stems on disk switch at once (paused)
+  or cross over at the playhead (playing); stems not on disk STREAM through the shared
+  `MixStreamLoader` stem lane (the panel shows "Loading stems…" next to the toggle) or are
+  fetched whole (`stemFetcher` → `BurnStore.burnStems`). The full song plays on meanwhile.
+- **The switch** is the Mix deck's: incoming voice scheduled from the outgoing one's exact source
+  position, started on one sample frame ~60 ms out at gain 0, 60 ms LINEAR crossfade, outgoing
+  stopped when it lands. Paused / not yet rendering: an outright switch.
+- **One fade at a time.** While a crossfade is in flight a new toggle only moves the intent; the
+  fade's landing re-runs the decision (the Mix deck does the same). A fade cut short by a pause
+  re-checks the moved intent right after (an outright switch on the paused song).
+- **Streaming stems on air** are appended to all four nodes in lockstep as bytes land (the Mix
+  pump's re-open throttle); a 10 Hz monitor (only while partial stems are on air or a handover is
+  pending) hands back to the full song `underrunLead` (1 s) before their frontier, keeping the
+  request so they re-engage with 4 s of runway. A failed stem stream drops a pending request or
+  hands on-air stems back. The full song is always a COMPLETE local file here
+  (`SetlistPlayer.currentTrackMixable` gates on it), so the full song never holds; the
+  `.toFullMix` path still checks its runway (`setMainFrontierForTesting` exercises it).
+- **The end-of-track generation** (`generation`, guarding `handleReachedEnd` →
+  `SetlistPlayer.handleDSPEnded` → advance) is bumped ONLY at a handover's COMMIT — before the
+  incoming voice is scheduled (so it captures the new generation), after the outgoing one is known
+  to have a successor. Pending requests never touch it, so a request that never lands can't
+  swallow the song's real end, and the outgoing voice's flushed completion (stop() fires it) is
+  always stale — a toggle can never fake an end and skip the song. Only a stem segment that runs
+  to the parts' real end arms the lead stem's end handler; a streaming segment's end is just the
+  frontier. Track change (`disengage`) bumps `stemIntentGen`, cancels the fetch/stream/monitor,
+  lands any fade.
+- **The system stopping the engine.** A route change / sample-rate flip
+  (`.AVAudioEngineConfigurationChange`) restarts the song AT its playhead; an interruption
+  `.began` pauses there and `.ended` + `.shouldResume` resumes what it paused. With the engine
+  stopped `lastRenderTime` is nil, so the playhead is carried by `playAnchor` (the last live
+  reading + its host time, projected at the deck's rate) — before, `currentTime` fell back to the
+  current segment's START, so a resume (or a pending stem handover acting meanwhile) replayed the
+  song from there. Not handled: a media-services reset (the Mix engine rebuilds its graph; this
+  one doesn't).
+- **Test seams:** `captureForTesting()` taps `inputMixer` (installed on first use only),
+  `stemStartFramesForTesting()`, `setMainFrontierForTesting` / `releaseMainFrontierForTesting`,
+  `simulateEngineStopForTesting`, `simulateInterruptionForTesting`.
 
 ## Known limitations
 
@@ -182,9 +248,16 @@ decided in one place (`MixEngine.advanceStemHandover`):
   rate (a 48 kHz rip) falls back to a host-time projection: expect a few samples of error, hidden
   under the 60 ms crossfade. A handover on a LOOPING deck re-arms the loop on the new voices
   (the pre-handover re-schedule, a brief gap) instead of crossfading.
-- **Other multi-node starts still use host times.** `StemPlayer`, `NowPlayingDSP` and the Studio
-  engines start their node groups on a shared HOST time — the same few-samples-apart flaw the
-  Mix stems had; not changed here.
+- **Every synced node group starts on one sample frame** (`StemSync.startTogether`): the Mix
+  deck stems, `NowPlayingDSP`, `StemPlayer` (SongDetail stem audition, which also skips the stems'
+  mp3 priming now) and the Studio step sequencer's pattern rows (`StudioEngine
+  .restartPatternFromTop`; its steps are scheduled on each row player's own timeline). Measured
+  with `StemSync.startFrame` (the render frame a node's player time 0 fell on): a shared host time
+  lands nodes 1–2 frames apart on the simulator, the sample time 0. Deliberately left alone: the
+  OFFLINE renderers (`StudioRender`, manual rendering mode — every player starts on render frame 0
+  by construction) and `InstrumentEngine`'s click (one node anchored to a host-time beat grid,
+  not a group). A group whose nodes run at different sample rates can't share a sample timeline
+  and falls back to one host time.
 - **Stem streams are not range-windowed.** Stems stream whole (≈4 × 8 MB for a 4-minute song)
   alongside the deck's own stream. They run at low task priority and are cancelled once unwanted,
   but on a slow link a WANTED set still shares the pipe with the on-air full mix, whose runway can

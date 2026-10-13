@@ -1275,6 +1275,14 @@ public SF Symbol exists).
   (`observeMixSessionForEngagement`) since the hidden panel would otherwise be a second
   audio source. The panel reuses the Mix tab's `DeckSlider`/`EffectButton` components,
   bound to the DSP instead of a deck.
+  **Stems follow the Mix deck's zero-dead-air handover** (see
+  [mix-audio-graph.md § Now Playing](../design/mix-audio-graph.md)): the toggle is enabled for
+  any track with stems anywhere (burned, profile, or in the catalog); asking for stems not on
+  disk streams them through the shared `MixStreamLoader` stem lane ("Loading stems…" beside the
+  toggle) while the full song keeps playing, then crosses over sample-aligned (one sample frame,
+  mp3 priming compensated, 60 ms linear crossfade); toggling back, a failed fetch, or a track
+  change drops the request; the end-of-track `generation` is bumped only at a handover's commit,
+  so a toggle can never fake an end and skip the song.
 - **♥ favorite** — the transport row's trailing edge carries the current track's ♥
   (`favoriteToggle`, the same reusable control every song row uses, reading/writing
   `FavoritesStore`); hidden while the deck is idle, and a track with no Apple Music id

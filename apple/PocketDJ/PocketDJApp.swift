@@ -579,6 +579,8 @@ struct PocketDJApp: App {
         mixStreamer.onProgress = { [weak mix] songId in mix?.streamProgressed(songId) }
         mixStreamer.pinnedIds = { [weak mix] in mix?.streamingSongIds ?? [] }
         mix.streamer = mixStreamer
+        // Now Playing stems stream through the same loader's stem lane (one transfer per song).
+        setlistPlayer.dsp?.streamer = mixStreamer
         mix.artworkURLsProvider = artworkURLsProvider
         // F4: a Mix-tab session (deck / Auto-DJ) starting must tear down a live Now Playing mix
         // engagement — the panel hides then, so the DSP would otherwise keep rendering a hidden second

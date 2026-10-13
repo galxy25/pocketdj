@@ -667,14 +667,14 @@ final class MixEngine {
     @ObservationIgnored var stemFetcher: ((String) async -> Bool)?
     /// Seconds of runway a STREAMING source needs past the playhead before a handover onto it
     /// (complete files need only to cover the playhead). Mirrors `streamResumeRunway`.
-    nonisolated static let stemHandoverRunway: Double = 4
+    nonisolated static let stemHandoverRunway: Double = StemSync.handoverRunway
     /// The handover crossfade. LINEAR, not equal-power: stems sum back to the full mix, so the
     /// two voices are coherent — linear gains keep the sum constant (equal-power would bump it
     /// +3 dB mid-fade).
-    nonisolated static let stemHandoverFade: Double = 0.06
+    nonisolated static let stemHandoverFade: Double = StemSync.handoverFade
     /// Partial stems hand back to the full mix this far before their frontier (while they still
     /// have audio to crossfade out of); they re-engage once they have `stemHandoverRunway` again.
-    nonisolated static let stemUnderrunLead: Double = 1.0
+    nonisolated static let stemUnderrunLead: Double = StemSync.underrunLead
     #if os(iOS)
     @ObservationIgnored private var interruptionObserver: NSObjectProtocol?
     @ObservationIgnored private var routeChangeObserver: NSObjectProtocol?
@@ -1268,6 +1268,11 @@ final class MixEngine {
         return files.values.map { stemSongSeconds(deck, $0) }.min()
     }
     func isStreamingStemsForTesting(_ deck: Deck) -> Bool { deckStemStreams[deck] != nil }
+    /// The render frame each wired stem node started on (`StemSync.startFrame`) — one value
+    /// when they started together.
+    func stemStartFramesForTesting(_ deck: Deck) -> [AVAudioFramePosition?] {
+        Self.stemNames.compactMap { stemFiles[deck]?[$0] != nil ? stemPlayers[deck]?[$0] : nil }.map { StemSync.startFrame(of: $0) }
+    }
     /// The LIVE filter-band frequency on a slot's filter node — lets a modulation test assert the
     /// LFO actually moves the graph (and snaps back) without reaching into AVAudio.
     func slotFilterFrequencyForTesting(_ i: Int, on deck: Deck) -> Float? {
@@ -3907,8 +3912,13 @@ final class MixEngine {
     /// on every event that can change the answer — the request itself, a stem/main stream pump,
     /// a fetch landing, a seek, the tick's underrun checks. Idempotent; never stops a voice that
     /// has no successor with runway.
+    ///
+    /// ONE FADE AT A TIME: while a handover crossfade is in flight this leaves the intent where
+    /// it is — the fade's landing re-runs it. Superseding a fade early (`cutTo…` settles it first)
+    /// stops its OUTGOING voice while the incoming one may still sit inside its start lead, not
+    /// yet rendering: up to `handoverLead` (60 ms) of dead air on a rapid toggle.
     private func advanceStemHandover(_ deck: Deck) {
-        guard let h = stemHandovers[deck], state(deck).loaded != nil, built else { return }
+        guard let h = stemHandovers[deck], state(deck).loaded != nil, built, stemFade[deck] == nil else { return }
         let pos = position(deck)
         switch h {
         case .toStems:
@@ -3942,9 +3952,7 @@ final class MixEngine {
     /// complete source needs only to cover the playhead; a still-arriving one needs
     /// `stemHandoverRunway` — or whatever is left of the song, near its end. Pure.
     nonisolated static func handoverReady(runway: Double, complete: Bool, songLeft: Double) -> Bool {
-        guard runway > 0.05 else { return false }
-        if complete { return true }
-        return runway >= min(stemHandoverRunway, max(0.05, songLeft - 0.05))
+        StemSync.handoverReady(runway: runway, complete: complete, songLeft: songLeft)
     }
 
     /// Seconds of stem audio a fresh open of a part can play from 0:00. A complete part: its
@@ -3953,11 +3961,9 @@ final class MixEngine {
     /// minus the torn-frame margin. Pure.
     nonisolated static func stemPlayableSeconds(lengthSeconds: Double, bytes: Int64, expectedBytes: Int64?,
                                                 songSeconds: Double, complete: Bool) -> Double {
-        if complete { return max(0, lengthSeconds) }
-        var bps = CollectionMixDownloader.bytesPerPlaybackSecond
-        if let e = expectedBytes, e > 0, songSeconds > 0 { bps = Double(e) / songSeconds }
-        let byBytes = bps > 0 ? Double(bytes) / bps : 0
-        return max(0, min(lengthSeconds, byBytes) - streamFrontierMargin)
+        StemSync.playableSeconds(lengthSeconds: lengthSeconds, bytes: bytes, expectedBytes: expectedBytes,
+                                 songSeconds: songSeconds, complete: complete,
+                                 fallbackBytesPerSecond: CollectionMixDownloader.bytesPerPlaybackSecond)
     }
 
     /// Where the wired stems' playable audio ends (song seconds): the frontier while partial,
@@ -3970,58 +3976,25 @@ final class MixEngine {
 
     /// Song seconds a stem file covers: its frames past the encoder priming.
     private func stemSongSeconds(_ deck: Deck, _ file: AVAudioFile) -> Double {
-        let sr = file.processingFormat.sampleRate
-        guard sr > 0 else { return 0 }
-        return Double(max(0, file.length - (stemPrimeFrames[deck] ?? 0))) / sr
+        StemSync.songSeconds(file, prime: stemPrimeFrames[deck] ?? 0)
     }
 
     /// The stem FILE frame that plays song second `sec` (past the priming), clamped to `limit`
     /// (default: the file's length).
     private func stemFrame(_ deck: Deck, _ file: AVAudioFile, atSeconds sec: Double,
                            limit: AVAudioFramePosition? = nil) -> AVAudioFramePosition {
-        let prime = stemPrimeFrames[deck] ?? 0
-        let f = prime + AVAudioFramePosition(max(0, sec) * file.processingFormat.sampleRate)
-        return min(max(prime, f), min(limit ?? file.length, file.length))
+        StemSync.frame(file, prime: stemPrimeFrames[deck] ?? 0, atSeconds: sec, limit: limit)
     }
 
-    /// Encoder priming a decoder can't see: frames to skip at the head of an mp3 so its frame
-    /// `t·sr` lines up with second `t` of the music. A LAME-family encoder pads one 576-sample
-    /// granule ahead of the audio; a TAGGED file (Xing/Info gapless header — every rip and burn)
-    /// says so and Core Audio trims it, but the Demucs stems (lameenc, no tag) carry it unseen —
-    /// measured on real stem sets against their tagged full mix: the summed stems decode exactly
-    /// 576 samples (13 ms) LATE, correlation 0.9998 — a flam on every handover crossfade and a
-    /// replayed/skipped sliver at each switch, uncorrected. (Core Audio trims the decoder's own
-    /// delay either way.) `header` is the file's first few KB; non-mp3 data ⇒ 0. Pure.
+    /// Encoder priming a decoder can't see (headerless Demucs stem mp3s decode one 576-sample
+    /// granule late vs the tagged full mix) — see `StemSync.mp3PrimingFrames`.
     nonisolated static func mp3PrimingFrames(header: Data) -> AVAudioFramePosition {
-        let b = [UInt8](header.prefix(8192))
-        var i = 0
-        if b.count >= 10, b[0] == 0x49, b[1] == 0x44, b[2] == 0x33 {          // "ID3" v2 tag
-            let size = (Int(b[6] & 0x7F) << 21) | (Int(b[7] & 0x7F) << 14) | (Int(b[8] & 0x7F) << 7) | Int(b[9] & 0x7F)
-            i = 10 + size + ((b[5] & 0x10) != 0 ? 10 : 0)
-        }
-        // The first MPEG audio frame header: 11 sync bits, a real version, Layer III.
-        while i + 4 <= b.count {
-            if b[i] == 0xFF, b[i + 1] & 0xE0 == 0xE0, (b[i + 1] >> 3) & 0x3 != 1, (b[i + 1] >> 1) & 0x3 == 1 { break }
-            i += 1
-        }
-        guard i + 4 <= b.count else { return 0 }
-        let mpeg1 = (b[i + 1] >> 3) & 0x3 == 3
-        let mono = (b[i + 3] >> 6) & 0x3 == 3
-        let sideInfo = mpeg1 ? (mono ? 17 : 32) : (mono ? 9 : 17)
-        func tag(at o: Int, _ s: String) -> Bool {
-            let t = Array(s.utf8)
-            return o + t.count <= b.count && Array(b[o..<(o + t.count)]) == t
-        }
-        let x = i + 4 + sideInfo
-        if tag(at: x, "Xing") || tag(at: x, "Info") || tag(at: i + 36, "VBRI") { return 0 }
-        return 576
+        StemSync.mp3PrimingFrames(header: header)
     }
 
     /// `mp3PrimingFrames` of the file at `url` (0 for non-mp3 / unreadable).
     nonisolated static func mp3PrimingFrames(ofFileAt url: URL) -> AVAudioFramePosition {
-        guard url.pathExtension.lowercased() == "mp3", let h = try? FileHandle(forReadingFrom: url) else { return 0 }
-        defer { try? h.close() }
-        return mp3PrimingFrames(header: (try? h.read(upToCount: 8192)) ?? Data())
+        StemSync.mp3PrimingFrames(ofFileAt: url)
     }
 
     /// Where the FULL MIX's schedulable audio ends (song seconds): the byte frontier while
@@ -4151,34 +4124,15 @@ final class MixEngine {
         return true
     }
 
-    /// The SOURCE position (song seconds) a rendering voice will be at host time `t`: its render
-    /// clock (`playerTime.sampleTime` is in the file's frames and already advances at the
-    /// time-stretch rate — see `truePlayhead`) projected forward at the deck's rate. nil when the
-    /// voice isn't rendering.
-    private func voicePlayhead(_ node: AVAudioPlayerNode, sampleRate sr: Double, segmentStart: Double,
-                               rate: Double, atHostTime t: UInt64) -> Double? {
-        guard sr > 0, let nt = node.lastRenderTime, nt.isHostTimeValid,
-              let pt = node.playerTime(forNodeTime: nt) else { return nil }
-        let ahead = AVAudioTime.seconds(forHostTime: t) - AVAudioTime.seconds(forHostTime: nt.hostTime)
-        return segmentStart + Double(pt.sampleTime) / sr + max(0, ahead) * rate
-    }
-
-    /// …at the handover moment `start` (`stemStartTime`): read off the voice's own player clock
-    /// at that very SAMPLE time when it runs on the same render clock as the stems — exact —
-    /// else projected by host time.
+    /// The SOURCE position (song seconds) a rendering voice will be at the handover moment
+    /// `start` (`stemStartTime`) — see `StemSync.voicePlayhead`.
     private func voicePlayhead(_ node: AVAudioPlayerNode, sampleRate sr: Double, segmentStart: Double,
                                rate: Double, at start: StemStart) -> Double? {
-        if sr > 0, onClock(node, start.when), let pt = node.playerTime(forNodeTime: start.when), pt.isSampleTimeValid {
-            return segmentStart + Double(pt.sampleTime) / sr
-        }
-        return voicePlayhead(node, sampleRate: sr, segmentStart: segmentStart, rate: rate, atHostTime: start.hostTime)
+        StemSync.voicePlayhead(node, sampleRate: sr, segmentStart: segmentStart, rate: rate, at: start)
     }
 
     /// Does `node` render on the clock `t` is expressed in (same sample rate ⇒ same timeline)?
-    private func onClock(_ node: AVAudioNode, _ t: AVAudioTime) -> Bool {
-        guard t.isSampleTimeValid, let nt = node.lastRenderTime, nt.isSampleTimeValid else { return false }
-        return nt.sampleRate == t.sampleRate
-    }
+    private func onClock(_ node: AVAudioNode, _ t: AVAudioTime) -> Bool { StemSync.onClock(node, t) }
 
     private func mainPlayhead(_ deck: Deck, at start: StemStart) -> Double? {
         guard let p = players[deck], let sr = sampleRates[deck] else { return nil }
@@ -4214,13 +4168,16 @@ final class MixEngine {
             }
             guard let self, !Task.isCancelled, self.stemFadeGen[deck] == gen else { return }
             self.settleStemFade(deck)
+            self.advanceStemHandover(deck)       // the intent may have moved while it faded
         }
         stemFade[deck] = (toStems, task)
     }
 
     /// Land an in-flight handover crossfade NOW: the outgoing voice stops, both gains return to
     /// 1. Every path that stops, re-schedules or pauses a deck's voices calls this first, so no
-    /// transport action ever sees a half-faded deck. No-op when nothing is fading.
+    /// transport action ever sees a half-faded deck. No-op when nothing is fading. An intent that
+    /// moved during the fade (`advanceStemHandover` defers to it) is re-checked once the caller's
+    /// transport action has finished — a fade cut short by a pause must not strand it.
     private func settleStemFade(_ deck: Deck) {
         guard let f = stemFade.removeValue(forKey: deck) else { return }
         stemFadeGen[deck, default: 0] &+= 1
@@ -4232,6 +4189,13 @@ final class MixEngine {
             stopStemNodes(deck)
         }
         setVoiceGains(deck, main: 1, stems: 1)
+        if stemHandovers[deck] != nil {
+            let intent = stemIntentGen[deck] ?? 0
+            Task { @MainActor [weak self] in
+                guard let self, self.stemIntentGen[deck] == intent else { return }
+                self.advanceStemHandover(deck)
+            }
+        }
     }
 
     private func setVoiceGains(_ deck: Deck, main: Float, stems: Float) {
@@ -4288,29 +4252,13 @@ final class MixEngine {
         // lives in the burn folder now: open it THERE, under the folder's scope (a user-picked
         // folder is security-scoped — a bare open of `finalURL` fails), which the deck then holds
         // exactly like burned stems'.
-        var urls: [String: URL] = [:]
-        var scope: (() -> Void)?
-        if set.isComplete, set.adopted, let r = burns.localStemURLs(forSong: set.songId) {
-            urls = r.urls; scope = r.release
-        } else {
-            for (name, part) in set.parts {
-                guard part.resolved || part.isComplete else { return }
-                urls[name] = part.finalURL ?? part.fileURL
-            }
-        }
-        let prime = stemPrimeFrames[deck] ?? urls[Self.stemNames[0]].map { Self.mp3PrimingFrames(ofFileAt: $0) } ?? 0
-        var fresh: [String: AVAudioFile] = [:]
-        var frontier = Double.infinity
-        for (name, url) in urls {
-            guard let part = set.parts[name], let f = try? AVAudioFile(forReading: url),
-                  f.processingFormat.sampleRate > 0 else { scope?(); return }
-            fresh[name] = f
-            frontier = min(frontier, Self.stemPlayableSeconds(
-                lengthSeconds: Double(max(0, f.length - prime)) / f.processingFormat.sampleRate,
-                bytes: part.bytesReceived, expectedBytes: part.expectedBytes,
-                songSeconds: duration(deck), complete: part.isComplete))
-        }
-        guard fresh.count == Self.stemNames.count, frontier.isFinite else { scope?(); return }
+        guard let src = StemSync.partURLs(set, adopted: { [burns] in burns.localStemURLs(forSong: $0) }) else { return }
+        let scope = src.scope
+        let prime = stemPrimeFrames[deck] ?? src.urls[Self.stemNames[0]].map { Self.mp3PrimingFrames(ofFileAt: $0) } ?? 0
+        guard let opened = StemSync.openStreamingParts(set, urls: src.urls, prime: prime, songSeconds: duration(deck),
+                                                       fallbackBytesPerSecond: CollectionMixDownloader.bytesPerPlaybackSecond),
+              opened.files.count == Self.stemNames.count else { scope?(); return }
+        let fresh = opened.files, frontier = opened.frontier
         stemReopenCountForTesting += 1
         if stemFiles[deck]?.isEmpty != false {
             guard frontier > 0.05, wireStemFiles(deck, fresh, release: scope) else { scope?(); return }
@@ -4348,10 +4296,8 @@ final class MixEngine {
 
     /// The slowest part's playable seconds by BYTES alone (no open) — the pump's throttle input.
     private func stemBytesSeconds(_ set: MixStreamLoader.StemSet, _ deck: Deck) -> Double {
-        set.parts.values.map {
-            Self.stemPlayableSeconds(lengthSeconds: .infinity, bytes: $0.bytesReceived,
-                                     expectedBytes: $0.expectedBytes, songSeconds: duration(deck), complete: false)
-        }.min() ?? 0
+        StemSync.bytesSeconds(set, songSeconds: duration(deck),
+                              fallbackBytesPerSecond: CollectionMixDownloader.bytesPerPlaybackSecond)
     }
 
     /// The deck's stem stream completed (its final opens are wired, an adopted set under the burn
@@ -4595,9 +4541,8 @@ final class MixEngine {
     /// Start the deck's stem nodes at ONE shared SAMPLE time → sample-accurate sync.
     private func startStems(_ deck: Deck) {
         guard startEngineIfNeeded() else { return }   // play(at:) on a dead engine is the same uncatchable trap
-        let when = stemStartTime(deck, lead: Self.handoverLead)?.when
-            ?? AVAudioTime(hostTime: mach_absolute_time() + AVAudioTime.hostTime(forSeconds: 0.06))
-        for n in (stemPlayers[deck] ?? [:]).values { n.play(at: when) }
+        let nodes = Self.stemNames.compactMap { stemPlayers[deck]?[$0] }
+        StemSync.startTogether(nodes, clocks: [inputMixers[deck]], lead: Self.handoverLead, rate: state(deck).rate)
     }
 
     /// A start time `lead` seconds out for the deck's 4 stem nodes, as a SAMPLE time on their
@@ -4610,22 +4555,15 @@ final class MixEngine {
     /// nodes have no render time yet (the caller falls back to a host time).
     private func stemStartTime(_ deck: Deck, lead: Double) -> StemStart? {
         guard engine.isRunning else { return nil }
-        let clocks: [AVAudioNode?] = [stemPlayers[deck]?[Self.stemNames[0]], inputMixers[deck]]
-        guard let rt = clocks.lazy.compactMap({ $0?.lastRenderTime })
-                .first(where: { $0.isSampleTimeValid && $0.isHostTimeValid && $0.sampleRate > 0 }) else { return nil }
-        // `lead` from NOW (the last render cycle may be a little behind or ahead of the wall
-        // clock). The deck's voices sit upstream of its time-stretch, so their timeline runs at
-        // the deck's rate × wall time (see `truePlayhead`).
-        let sinceRender = AVAudioTime.seconds(forHostTime: mach_absolute_time()) - AVAudioTime.seconds(forHostTime: rt.hostTime)
-        let ahead = max(0, sinceRender) + lead
-        let frames = AVAudioFramePosition(ahead * rt.sampleRate * max(0.05, state(deck).rate))
-        return StemStart(when: AVAudioTime(sampleTime: rt.sampleTime + frames, atRate: rt.sampleRate),
-                         hostTime: rt.hostTime + AVAudioTime.hostTime(forSeconds: ahead))
+        // The deck's voices sit upstream of its time-stretch, so their timeline runs at the
+        // deck's rate × wall time (see `truePlayhead`).
+        return StemSync.sampleStart(clocks: [stemPlayers[deck]?[Self.stemNames[0]], inputMixers[deck]],
+                                    lead: lead, rate: state(deck).rate)
     }
-    typealias StemStart = (when: AVAudioTime, hostTime: UInt64)
+    typealias StemStart = StemSync.Start
     /// How far out a handover's incoming voice starts — scheduled and primed before its first
     /// sample is due (the `startStems` lead).
-    nonisolated static let handoverLead: Double = 0.06
+    nonisolated static let handoverLead: Double = StemSync.startLead
 
     private func stopStemNodes(_ deck: Deck) {
         for n in (stemPlayers[deck] ?? [:]).values { n.stop() }
