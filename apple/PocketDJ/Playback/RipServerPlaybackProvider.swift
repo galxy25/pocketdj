@@ -56,9 +56,17 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
         // UI toast flattens away. Ids only, no titles.
         let t0 = Date()
         DiagLog.shared.telemetry("ripreq", "tryPlay start song=\(song.id)")
+        // SUPERSEDE TICKET (mirrors the Apple Music provider): a resolve that lands after a
+        // newer tryPlay began must not load its (skipped-past) song over the newer one.
+        tryPlayGeneration &+= 1
+        let ticket = tryPlayGeneration
         do {
             let now = try await rips.play((id: song.id, title: song.name, artist: song.artist),
                                           startMs: nil, atMs: atMs)
+            guard ticket == tryPlayGeneration else {
+                DiagLog.shared.telemetry("ripreq", "tryPlay superseded song=\(song.id)")
+                return false
+            }
             if atMs != nil, now.live { lastCueDropped = true }
             player.load(url: now.url, live: now.live, startMs: now.seekMs ?? now.startMs,
                         title: now.title, artist: now.artist, songId: now.songId)
@@ -79,6 +87,7 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
     /// before playing); this flag is the honest signal for the race where the rip went live
     /// between the check and the play.
     private(set) var lastCueDropped = false
+    private var tryPlayGeneration = 0
 
     /// Can this backend seek `songId` to a cue RIGHT NOW? Only a DURABLE cached S3 mp3
     /// seeks; a song that would rip on demand (or is mid-rip) streams live HLS, which

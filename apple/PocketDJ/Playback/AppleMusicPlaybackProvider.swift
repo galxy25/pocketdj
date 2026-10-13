@@ -140,7 +140,18 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// plumbed through, repeat-one swallowed the skip-park as a natural end and REPLAYED the
     /// same song: with repeat-one on, the car's ⏭ could never leave the track (Levi,
     /// 2026-08-19). nil ⇒ not ended.
-    enum EndReason { case natural, systemSkip }
+    /// `.neverStarted`: `play()` was ACCEPTED but the stream never reached `.playing` within
+    /// `startTimeoutSeconds` (an unavailable / placeholder row, a buffering failure on cellular)
+    /// — a dead source: the set ADVANCES (never replays it under repeat-one). Before, the monitor
+    /// ignored everything until the first `.playing`, so such a row was silent until ⏭.
+    enum EndReason { case natural, systemSkip, neverStarted }
+    /// Seconds a play MusicKit accepted may take to actually start before it counts as dead.
+    nonisolated(unsafe) static var startTimeoutSeconds: Double = 12
+    /// Pure verdict for the never-started case. A listener pause before audio started is not a
+    /// dead source.
+    nonisolated static func neverStarted(everPlayed: Bool, waitedSeconds: Double, intentionalPause: Bool) -> Bool {
+        !everPlayed && !intentionalPause && waitedSeconds >= startTimeoutSeconds
+    }
     nonisolated static func endReason(stopped: Bool, paused: Bool,
                                       playbackTime: Double, expectedDuration: Double,
                                       maxObserved: Double, intentionalPause: Bool) -> EndReason? {
@@ -435,6 +446,7 @@ extension AppleMusicPlaybackProvider {
         stateMonitor = Task { [weak self] in
             let player = ApplicationMusicPlayer.shared
             var everPlayed = false
+            let armedAt = Date()
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 guard let self, !Task.isCancelled else { return }
@@ -473,6 +485,16 @@ extension AppleMusicPlaybackProvider {
                     }
                 }
                 self.lastPollPlaybackTime = t
+                if Self.neverStarted(everPlayed: everPlayed, waitedSeconds: Date().timeIntervalSince(armedAt),
+                                     intentionalPause: self.pauseWasIntentional) {
+                    NPLog.trace("AM monitor: NEVER STARTED after \(Int(Date().timeIntervalSince(armedAt)))s (status=\(status)) → dead source")
+                    DiagLog.shared.log("playback", "am never-started song=\(self.nowPlaying?.songId ?? "?") status=\(status)")
+                    self.isPlaying = false
+                    self.freezePositionClock()
+                    self.stateMonitor = nil
+                    self.onTrackEnded?(.neverStarted)
+                    return
+                }
                 guard everPlayed else { continue }   // ignore the pre-roll before audio starts
                 if t > self.monitorMaxPlaybackTime { self.monitorMaxPlaybackTime = t }
                 // System remote ⏮ also lands in MusicKit (never our handler): it rewinds its

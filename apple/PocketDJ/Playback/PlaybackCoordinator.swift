@@ -102,6 +102,9 @@ final class PlaybackCoordinator {
     /// lifetime total twice. Every other backend is ours alone and accumulates permanently.
     @ObservationIgnored var onPlay: ((String, PlaybackBackend) -> Void)?
 
+    /// Bumped by every `play` — see its SUPERSEDE TOKEN.
+    @ObservationIgnored private var playToken = 0
+
     init(ripProvider: RipServerPlaybackProvider, appleMusic: AppleMusicPlaybackProvider) {
         self.ripProvider = ripProvider
         self.appleMusic = appleMusic
@@ -178,14 +181,28 @@ final class PlaybackCoordinator {
     /// favorites must key the BASE song (the real catalog identity). Callers other than the
     /// id-convenience below pass nothing.
     func play(_ song: IndexSong, atMs: Int? = nil, statsId: String? = nil) async {
+        // SUPERSEDE TOKEN: a skip storm overlaps plays. A superseded play must not touch the
+        // shared state the NEWER one owns — before, an older resolve's late failure wrote
+        // `lastErrorMessage` after the newer play cleared it, and the sequencer read that as
+        // the NEWER row being a dead source and skipped again (one ⏭ = two songs, or a silent
+        // stop at the end); it could also stop the newer backend mid-cycle.
+        playToken &+= 1
+        let token = playToken
         lastErrorMessage = nil
         for provider in providers(for: song) {
+            guard token == playToken else { return }
             // Switching backends: stop the previously-active one so two engines don't both
             // play (e.g. Apple Music wins after a prior rip, or vice-versa).
             if let active = activeBackend, active != provider.backend {
                 providerFor(active)?.stop()
             }
-            if await provider.tryPlay(song, atMs: atMs) {
+            let won = await provider.tryPlay(song, atMs: atMs)
+            guard token == playToken else {
+                NPLog.trace("coordinator: play \(song.id) superseded — standing down (won=\(won))")
+                if !won, provider.backend == .ripServer { _ = ripProvider.takeLastError() }   // stale — never the newer play's
+                return
+            }
+            if won {
                 activeBackend = provider.backend
                 onPlay?(statsId ?? song.id, provider.backend)
                 // Ask the server to prepare this user's OWN copy, if they have one.

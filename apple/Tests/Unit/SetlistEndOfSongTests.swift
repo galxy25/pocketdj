@@ -1,0 +1,299 @@
+import AVFoundation
+import XCTest
+@testable import PocketDJ
+
+/// ZERO DEAD AIR at the song boundary of a Now Playing set (a Pocket played in shuffle) — the
+/// field report "pausing at the end of songs and I had to skip forward multiple times" (Levi,
+/// CarPlay on cellular, 2026-10-12). The rip server + S3 are a scripted `URLProtocol`: per-song
+/// presign that can FAIL (offline), HANG (cellular dead zone), or fail after a delay; rip jobs
+/// whose poll never answers. Every test drives the REAL sequencer / coordinator / providers.
+@MainActor
+final class SetlistEndOfSongTests: XCTestCase {
+    private let ripsBase = URL(string: "https://rips.test")!
+    private var saved: (stall: Double, grace: Double, amStart: Double, wait: Int, poll: Double)!
+
+    override func setUp() {
+        super.setUp()
+        EOSStub.reset()
+        saved = (SetlistPlayer.resolveStallSeconds, SetlistPlayer.liveEndGraceSeconds,
+                 AppleMusicPlaybackProvider.startTimeoutSeconds,
+                 RipsStore.interactivePlayWaitSeconds, RipsStore.jobPollTimeoutSeconds)
+    }
+
+    override func tearDown() {
+        SetlistPlayer.resolveStallSeconds = saved.stall
+        SetlistPlayer.liveEndGraceSeconds = saved.grace
+        AppleMusicPlaybackProvider.startTimeoutSeconds = saved.amStart
+        RipsStore.interactivePlayWaitSeconds = saved.wait
+        RipsStore.jobPollTimeoutSeconds = saved.poll
+        EOSStub.reset()
+        super.tearDown()
+    }
+
+    // MARK: Harness
+
+    private struct Rig { let rips: RipsStore; let burns: BurnStore; let player: PlayerEngine
+                         let coord: PlaybackCoordinator; let seq: SetlistPlayer }
+
+    private func makeRig(server: String = "https://server.test") -> Rig {
+        let config = URLSessionConfiguration.ephemeral
+        config.protocolClasses = [EOSStub.self]
+        let rips = RipsStore(ripsBase: ripsBase, session: URLSession(configuration: config))
+        let settings = SettingsStore(defaults: UserDefaults(suiteName: "test.\(UUID().uuidString)")!)
+        settings.ripServerURL = server
+        settings.ripToken = ""
+        rips.settings = settings
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pdj-eosburn-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: url) }
+        let burns = BurnStore(rips: rips, fileURL: url)
+        let player = PlayerEngine()
+        let coord = PlaybackCoordinator(ripProvider: RipServerPlaybackProvider(rips: rips, player: player),
+                                        appleMusic: AppleMusicPlaybackProvider(provider: AppleMusicProvider()))
+        let seq = SetlistPlayer(player: player, rips: rips, burns: burns, coordinator: coord)
+        return Rig(rips: rips, burns: burns, player: player, coord: coord, seq: seq)
+    }
+
+    private func manifest(_ rips: RipsStore, _ ids: [String]) {
+        var m: [String: RipsStore.ManifestEntry] = [:]
+        for id in ids { m[id] = .init(key: "rips/\(id).mp3", source: "digital") }
+        rips.setManifest(m)
+    }
+
+    private func burn(_ r: Rig, _ id: String) async {
+        _ = await r.burns.burn([(id: id, title: id, artist: "A")])
+        XCTAssertNotNil(r.burns.localURL(forSong: id), "precondition: \(id) is burned")
+        EOSStub.presignCount = [:]
+    }
+
+    private func item(_ id: String, lengthMs: Int? = nil) -> SetlistPlayer.Item {
+        .init(id: id, title: id, artist: "A", lengthMs: lengthMs)
+    }
+
+    /// Wait (bounded) for the asserted condition.
+    private func waitUntil(_ message: String, timeout: TimeInterval = 3, _ predicate: () -> Bool) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !predicate() && Date() < deadline { try? await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertTrue(predicate(), "timed out waiting: \(message)")
+    }
+
+    // MARK: 1 — the next song's URL is resolved BEFORE the boundary
+
+    /// The set is playing over cellular; the network drops out before the current song ends.
+    /// The advance must still start the next ripped song: its presigned URL was fetched while
+    /// the current one played (pre-fix: the presign happened AT the boundary, failed offline,
+    /// and the set skipped every row until it stopped — silence).
+    func testAdvanceUsesTheUpcomingURLFetchedDuringTheCurrentSong() async {
+        let r = makeRig()
+        manifest(r.rips, ["c1", "c2"])
+        r.seq.play([item("c1"), item("c2")])
+        await waitUntil("c1 playing") { r.rips.nowPlaying?.songId == "c1" }
+        await waitUntil("c2's URL pre-resolved while c1 plays") { EOSStub.presignCount["c2", default: 0] >= 1 }
+
+        EOSStub.offline = true                        // dead zone: every request now fails
+        r.player.onTrackEnded?()                      // c1 ends naturally
+        await waitUntil("c2 starts from its pre-resolved URL") { r.rips.nowPlaying?.songId == "c2" }
+        XCTAssertTrue(r.seq.isRunning, "the set is still running — no silent stop")
+        XCTAssertEqual(r.seq.index, 1)
+        r.seq.stop()
+    }
+
+    // MARK: 2 — a stalled resolve hops to a song that's on the device
+
+    /// The next row's resolve HANGS (a cellular dead zone swallows the presign): after
+    /// `resolveStallSeconds` the set plays the next ON-DEVICE row instead, and the stalled row is
+    /// DEFERRED right behind it (reordered, never dropped). Pre-fix: silence for the full request
+    /// timeout, per row, per skip press.
+    func testStalledResolveHopsToAnOnDeviceRowAndDefersTheStalledOne() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["hang", "b1"])
+        await burn(r, "b1")
+        EOSStub.hangPresign = ["hang"]
+        r.seq.play([item("hang"), item("b1")])
+        await waitUntil("hopped onto the burned row") { r.rips.nowPlaying?.songId == "b1" }
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "hang"], "the stalled row is deferred, not dropped")
+        XCTAssertEqual(r.seq.index, 0)
+        r.seq.stop()
+    }
+
+    /// The stall window holds a UIKit background-task assertion: a locked/CarPlay phone with no
+    /// audio playing between songs is otherwise suspended mid-resolve, and only the NEXT remote
+    /// press wakes it (the "skip several times" signature).
+    func testCloudResolveHoldsABackgroundRunway() async {
+        SetlistPlayer.resolveStallSeconds = 30
+        let r = makeRig()
+        manifest(r.rips, ["hang"])
+        EOSStub.hangPresign = ["hang"]
+        let before = PlaybackRunway.activeCount
+        r.seq.play([item("hang")])
+        await waitUntil("runway held during the resolve") { PlaybackRunway.activeCount == before + 1 }
+        r.seq.stop()
+        await waitUntil("runway released") { PlaybackRunway.activeCount == before }
+    }
+
+    // MARK: 3 — no silent waits without a bound
+
+    /// A rip job whose status poll never answers (cellular): the interactive wait is a WALL-CLOCK
+    /// bound. Pre-fix it counted iterations, each up to URLSession's 60 s default — a ▶/⏭ that
+    /// landed on an un-ripped row could sit silent for many minutes.
+    func testRipJobPollIsBoundedByWallClock() async throws {
+        RipsStore.interactivePlayWaitSeconds = 2
+        RipsStore.jobPollTimeoutSeconds = 1
+        let r = makeRig()
+        r.rips.setManifest([:])
+        EOSStub.ripPostBody = Data(#"{"jobId":"j1","songId":"new","phase":"queued"}"#.utf8)
+        EOSStub.hangJobs = true
+        let t0 = Date()
+        var finished = false
+        let task = Task {
+            _ = try? await r.rips.play((id: "new", title: "N", artist: "A"))
+            finished = true
+        }
+        await waitUntil("the play resolve gives up within its bound", timeout: 6) { finished }
+        task.cancel()
+        XCTAssertGreaterThanOrEqual(EOSStub.jobPolls, 1, "the job was polled")
+        XCTAssertLessThan(Date().timeIntervalSince(t0), 6)
+    }
+
+    /// A live HLS capture whose ENDLIST never arrives (the capture wedged, or the playlist reload
+    /// died on cellular): advance once the song's known length + grace has passed. Pre-fix:
+    /// `waitingForLive` — silence until someone pressed Next.
+    func testLiveCaptureThatNeverEndsAdvancesAfterItsLength() async {
+        SetlistPlayer.liveEndGraceSeconds = 0.2
+        let r = makeRig(server: "")
+        r.rips.setManifest(["live": .init(key: "hls/live/stream.m3u8", source: "digital"),
+                            "next": .init(key: "hls/next/stream.m3u8", source: "digital")])
+        r.seq.play([item("live", lengthMs: 200), item("next", lengthMs: 300_000)])
+        await waitUntil("live capture playing") { r.rips.nowPlaying?.songId == "live" }
+        await waitUntil("advanced past the never-ending capture") { r.seq.index == 1 }
+        XCTAssertTrue(r.seq.isRunning)
+        r.seq.stop()
+    }
+
+    /// An AVPlayer item that FAILS mid-song (network error on the presigned mp3) never posts
+    /// DidPlayToEndTime — the set must advance on the failure. Pre-fix: silence until ⏭.
+    func testItemFailedToPlayToEndAdvances() async {
+        let r = makeRig()
+        manifest(r.rips, ["c1", "c2"])
+        r.seq.play([item("c1"), item("c2")])
+        await waitUntil("c1 playing") { r.rips.nowPlaying?.songId == "c1" }
+        let current = r.player.currentItemForTesting
+        XCTAssertNotNil(current)
+        NotificationCenter.default.post(name: .AVPlayerItemFailedToPlayToEndTime, object: current)
+        await waitUntil("advanced off the failed item") { r.rips.nowPlaying?.songId == "c2" }
+        XCTAssertEqual(r.seq.index, 1)
+        r.seq.stop()
+    }
+
+    // MARK: 4 — Apple Music accepted the play but never started
+
+    func testAppleMusicNeverStartedVerdict() {
+        AppleMusicPlaybackProvider.startTimeoutSeconds = 12
+        XCTAssertTrue(AppleMusicPlaybackProvider.neverStarted(everPlayed: false, waitedSeconds: 13, intentionalPause: false))
+        XCTAssertFalse(AppleMusicPlaybackProvider.neverStarted(everPlayed: false, waitedSeconds: 5, intentionalPause: false),
+                       "a slow start is just buffering")
+        XCTAssertFalse(AppleMusicPlaybackProvider.neverStarted(everPlayed: true, waitedSeconds: 60, intentionalPause: false))
+        XCTAssertFalse(AppleMusicPlaybackProvider.neverStarted(everPlayed: false, waitedSeconds: 60, intentionalPause: true),
+                       "the listener paused it before it started — not a dead source")
+    }
+
+    /// The never-started end ADVANCES (a dead source) — even under repeat-one, which would
+    /// otherwise replay the silent row forever.
+    func testAppleMusicNeverStartedAdvancesEvenUnderRepeatOne() async {
+        let r = makeRig()
+        manifest(r.rips, ["am1", "c2"])
+        r.seq.play([item("am1"), item("c2")])
+        await waitUntil("am1 resolved") { r.rips.nowPlaying?.songId == "am1" }
+        r.seq.setRepeatMode(.one)
+        r.coord.setActiveBackendForTests(.appleMusic)
+        r.coord.appleMusic.setNowPlayingForTests(.init(songId: "am1", title: "am1", artist: "A"))
+        r.coord.appleMusic.onTrackEnded?(.neverStarted)
+        await waitUntil("advanced off the silent stream") { r.seq.index == 1 }
+        r.seq.stop()
+    }
+
+    // MARK: 5 — skip storms: a superseded resolve must not poison the newer one
+
+    /// ⏭ pressed while row A's presign is still out: A's late FAILURE must not land in the
+    /// coordinator's shared error after B started — pre-fix, B's sequencer read it as B being a
+    /// dead source and skipped AGAIN (one press = two songs, or a silent stop at the end).
+    func testSupersededResolveFailureDoesNotPoisonTheNewerPlay() async {
+        let r = makeRig()
+        manifest(r.rips, ["slowfail", "b"])
+        EOSStub.delayedFailPresign = ["slowfail": 0.4]
+        let a = Task { await r.coord.play(id: "slowfail", title: "A", artist: "A") }
+        try? await Task.sleep(nanoseconds: 50_000_000)
+        await r.coord.play(id: "b", title: "B", artist: "A")
+        XCTAssertNil(r.coord.lastErrorMessage, "B played")
+        _ = await a.value
+        XCTAssertNil(r.coord.lastErrorMessage, "A's late failure belongs to a superseded play")
+        XCTAssertEqual(r.rips.nowPlaying?.songId, "b")
+    }
+}
+
+// MARK: - Stub rip server / S3
+
+private final class EOSStub: URLProtocol {
+    nonisolated(unsafe) static var offline = false
+    nonisolated(unsafe) static var hangPresign: Set<String> = []
+    nonisolated(unsafe) static var delayedFailPresign: [String: Double] = [:]
+    nonisolated(unsafe) static var presignCount: [String: Int] = [:]
+    nonisolated(unsafe) static var ripPostBody = Data("{}".utf8)
+    nonisolated(unsafe) static var hangJobs = false
+    nonisolated(unsafe) static var jobPolls = 0
+    private static let lock = NSLock()
+
+    static func reset() {
+        lock.lock(); defer { lock.unlock() }
+        offline = false; hangPresign = []; delayedFailPresign = [:]; presignCount = [:]
+        ripPostBody = Data("{}".utf8); hangJobs = false; jobPolls = 0
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func stopLoading() {}
+
+    private func respond(_ status: Int, _ body: Data, json: Bool = false) {
+        let resp = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
+                                   headerFields: json ? ["Content-Type": "application/json"] : nil)!
+        client?.urlProtocol(self, didReceive: resp, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func startLoading() {
+        let url = request.url!
+        Self.lock.lock()
+        let offline = Self.offline
+        Self.lock.unlock()
+        if offline { client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet)); return }
+        if url.path.hasSuffix("/rips/presign") {
+            let song = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "songId" })?.value ?? "song"
+            Self.lock.lock()
+            Self.presignCount[song, default: 0] += 1
+            let hang = Self.hangPresign.contains(song)
+            let delayFail = Self.delayedFailPresign[song]
+            Self.lock.unlock()
+            if hang { return }                                   // never answers
+            if let delayFail {
+                DispatchQueue.global().asyncAfter(deadline: .now() + delayFail) { [self] in
+                    respond(500, Data())
+                }
+                return
+            }
+            respond(200, Data(#"{"url":"https://s3.test/rips/\#(song).mp3?X-Amz-Signature=x"}"#.utf8), json: true)
+            return
+        }
+        if url.path.hasSuffix("/rip"), request.httpMethod == "POST" {
+            respond(200, Self.ripPostBody, json: true); return
+        }
+        if url.path.contains("/jobs/") {
+            Self.lock.lock(); Self.jobPolls += 1; let hang = Self.hangJobs; Self.lock.unlock()
+            if hang { return }
+            respond(200, Data(#"{"phase":"queued"}"#.utf8), json: true); return
+        }
+        respond(200, Data("BURNT-MP3".utf8))
+    }
+}

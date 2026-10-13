@@ -161,6 +161,36 @@ decided in one place (`MixEngine.advanceStemHandover`):
   stream itself is the one `MixStreamLoader`: Mix listens via `onStemProgress`, any other engine
   via `addStemListener`.
 
+## Zero dead air at the song boundary — Auto-DJ readiness
+
+No graph change: these rules live in the auto machine (`autoFire` / `skipToNext`) and decide
+WHEN a crossfade may sweep the fader. Field origin: CarPlay on cellular with a streaming
+(ripped-union) mix — the machine crossfaded on the wall clock alone, into a deck still
+Buffering…, and a Skip landed on the next buffering song (2026-10-12).
+
+- **Readiness.** `deckReadyToAir` (strict): an on-disk file, a finished stream, or a stream with
+  `autoReadyRunway` (15 s) downloaded past its playhead. `deckCanAir` (lenient): not holding.
+- **Natural transition.** At the lead window the standby deck must be strictly ready; else an
+  unplayed ON-DEVICE upcoming song is PROMOTED into the slot (`promoteReadyUpcoming` — the
+  buffering song stays queued right behind it); else the machine waits, the live song playing on.
+  With `autoExtendAtSecondsLeft` (0.5 s) left, a lenient-ready standby still goes; with nothing
+  able to air, the live song is REPLAYED (`extendLive`) and the transition fires the moment the
+  next can air.
+- **Frozen fade.** A crossfade whose incoming deck is holding does not advance (the outgoing
+  stays fully audible); it resumes, re-timed, when the incoming has runway. The outgoing running
+  out meanwhile ⇒ back out (`abandonTransition`) and extend. An incoming deck EJECTED mid-fade
+  (its stream died before audio) ⇒ back out; the idle lane picks the next song.
+- **Skip.** Prefers a ready song (same promotion). A Skip during a frozen fade is not swallowed:
+  it backs out, defers the buffering song to the queue's end, and targets the next one.
+- **Stalled live deck.** A live stream frozen on an underrun for `autoStallSkipSeconds` (8 s)
+  hands over to a song that can air (1 s fade). Held seconds don't burn the deck's end clock.
+- **Stream gate.** A ripped song `canStream` refuses right now (offline / rip-server cooldown /
+  recent failure) is DEFERRED, not dropped from the queue (`transientlyUnloadable`); with only
+  such songs left, the natural end and Skip keep the live song playing instead of ending the mix.
+- **Shuffled start** opens on an on-device song when the queue has one.
+- **Trace:** every wait / promote / extend / freeze / abandon / stall-skip / defer decision logs
+  one `mixadvance` DiagLog line (always-on lane).
+
 ## Now Playing — the same rule on one deck (`NowPlayingDSP`)
 
 The Now Playing mix mini-panel's engine (`apple/PocketDJ/Playback/NowPlayingDSP.swift`) is a

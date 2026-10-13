@@ -198,6 +198,11 @@ final class MixStreamLoader {
         return true
     }
 
+    /// Is `songId` in the rip manifest (streamable in principle)? A ripped song `canStream`
+    /// refuses is only TEMPORARILY unplayable (offline / server cooldown / a recent failure) —
+    /// the auto machine defers it instead of dropping it from the queue.
+    func isRipped(_ songId: String) -> Bool { rips.manifest[songId] != nil }
+
     func stream(for songId: String) -> Stream? { streams[songId] }
 
     /// A transfer for `songId` is live (started, not complete, not failed).
@@ -541,6 +546,8 @@ final class MixStreamLoader {
         if finished { complete(s) } else { onProgress?(songId) }
         return s
     }
+    /// The rip server stopped answering (a presign/HTTP failure): new streams refused for the cooldown.
+    func tripServerDownForTesting() { tripServerDown("test") }
     func failStreamForTesting(_ songId: String) {
         guard let s = streams[songId] else { return }
         fail(s, why: "test")
