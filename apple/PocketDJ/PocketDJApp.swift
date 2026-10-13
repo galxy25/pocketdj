@@ -590,6 +590,18 @@ struct PocketDJApp: App {
         mix.streamer = mixStreamer
         // Now Playing stems stream through the same loader's stem lane (one transfer per song).
         setlistPlayer.dsp?.streamer = mixStreamer
+        // STEM LOCK download lane: the next track's whole song (through this same loader — a
+        // finished stream is adopted as a burn) paired with its stems, part by part in priority
+        // order. Idle unless a session's Stem Lock carries stems.
+        setlistPlayer.stemLockPrefetcher = StemLockPrefetcher.live(
+            streamer: mixStreamer, burns: burns, rips: rips,
+            isCatalogOwner: { [weak coordinator] in coordinator?.isCatalogOwner() ?? false })
+        setlistPlayer.stemLockSongFetchable = { [weak mixStreamer] id in mixStreamer?.canStream(id) ?? false }
+        setlistPlayer.stemLockStreamedFile = { [weak mixStreamer] id in
+            guard let s = mixStreamer?.stream(for: id), s.isComplete, !s.adopted, s.isCut,
+                  let url = s.finalURL, FileManager.default.fileExists(atPath: url.path) else { return nil }
+            return url
+        }
         mix.artworkURLsProvider = artworkURLsProvider
         // F4: a Mix-tab session (deck / Auto-DJ) starting must tear down a live Now Playing mix
         // engagement — the panel hides then, so the DSP would otherwise keep rendering a hidden second

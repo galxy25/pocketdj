@@ -23,7 +23,8 @@ import UIKit
 /// with no DSP surface, so `SetlistPlayer` hands the current track's audio off to this engine AT its
 /// current position when the user first touches a mix control (`SetlistPlayer.engageMix`). The
 /// control state is EPHEMERAL — it resets on every track change (`resetControls`), so nothing here is
-/// ever persisted.
+/// ever persisted. (STEM LOCK — `SetlistPlayer.stemLock`, `StemLock.swift` — re-applies a carried stem
+/// set on the next track; the session, not this engine, owns and persists it.)
 ///
 /// Reuses `MixEngine.Effect` / `MixEngine.rateRange` / `.pitchRange` / `.volumeRange` / `.stemNames`
 /// so the Mix tab's control components (`DeckSlider` / `EffectButton`) bind straight to it.
@@ -60,7 +61,14 @@ final class NowPlayingDSP {
     @ObservationIgnored private var segEndFrame: AVAudioFramePosition = 0
     /// Held security scopes for a user-folder burned file / stems (released on disengage).
     @ObservationIgnored private var fileRelease: (() -> Void)?
-    @ObservationIgnored private var stemFiles: [String: AVAudioFile] = [:]
+    @ObservationIgnored private var stemFiles: [String: AVAudioFile] = [:] {
+        didSet {
+            // STEM LOCK: a wired set may be PARTIAL (only the parts a carried stem set needs —
+            // see `stemPartsRequired`). Publish which parts are missing so the pads can say so.
+            let missing: Set<String> = stemFiles.isEmpty ? [] : Set(MixEngine.stemNames).subtracting(stemFiles.keys)
+            if missing != unwiredStemParts { unwiredStemParts = missing }
+        }
+    }
     @ObservationIgnored private var stemRelease: (() -> Void)?
     /// Bumped on every (re)schedule/stop so a stale completion can't flip state after the fact.
     @ObservationIgnored private var generation = 0
@@ -163,6 +171,25 @@ final class NowPlayingDSP {
     /// True when the engaged song has burned stems on disk (drives the stem sub-section; a track can
     /// be DSP-able for tempo/pitch/gain/effects yet have NO stems).
     private(set) var stemsAvailable = false
+    /// STEM LOCK: stem parts NOT wired while a PARTIAL set is (empty when nothing is wired or all
+    /// four are). A part listed here is silent until it lands on disk and joins (`stemPartsLanded`).
+    private(set) var unwiredStemParts: Set<String> = []
+
+    // MARK: Stem Lock seams (`SetlistPlayer` drives these — see `SetlistPlayer` "Stem Lock")
+
+    /// The parts a stems request may go on air WITHOUT waiting for the rest — the carried set's
+    /// ENABLED (un-muted) parts. nil (the default, and after every engage/disengage) = all four,
+    /// i.e. exactly the pre-Stem-Lock behaviour. Only the BURNED-on-disk lane honours it: a set
+    /// that has to stream still streams (and waits for) all four parts.
+    @ObservationIgnored var stemPartsRequired: Set<String>?
+    /// Fired after a USER-facing stem control changed the stem state (`setStemMode` accepted,
+    /// `toggleStemMute`, `setStemVolume`) — never by `applyStemMode` / `applyCarriedStemControls`
+    /// or an internal drop (a failed stream / an underrun), so the state a Stem Lock carries is
+    /// only ever changed by the listener.
+    @ObservationIgnored var onUserStemChange: (() -> Void)?
+    /// Fired when a handover to the stems COMMITS (`cutToStems`) with the engaged song's id —
+    /// the Stem Lock handover-timing line.
+    @ObservationIgnored var onStemsOnAir: ((String) -> Void)?
 
     /// Fired when the engaged song's slice plays to its natural end — `SetlistPlayer` owns this to
     /// auto-advance the set while the DSP owns the audio (the AVPlayer's own end hooks are idle then).
@@ -196,6 +223,10 @@ final class NowPlayingDSP {
     var stemsLoading: Bool { _stemHandover == .toStems }
     func isStemMuted(_ name: String) -> Bool { _stemMuted.contains(name) }
     func stemVolume(_ name: String) -> Double { _stemVol[name] ?? 1.0 }
+    /// The muted parts (the Stem Lock capture).
+    var mutedStems: Set<String> { _stemMuted }
+    /// The per-part gains the user moved (the Stem Lock capture).
+    var stemVolumes: [String: Double] { _stemVol }
 
     /// Current song-relative position (seconds), read off the PLAYING node's render clock (drift-free,
     /// rate-scaled; non-observable). Falls back to `pausedAt` while paused or before the scheduled
@@ -417,6 +448,7 @@ final class NowPlayingDSP {
 
         resetStemIntent()                              // a prior engage's stems/request/stream go
         _stemMode = false
+        stemPartsRequired = nil                        // a Stem Lock carry re-states it per track
         fileRelease?()                                 // release a prior engage's scope
         fileRelease = release
         file = f
@@ -457,6 +489,7 @@ final class NowPlayingDSP {
         isEngaged = false
         loadedSongId = nil
         stemsAvailable = false
+        stemPartsRequired = nil
         pausedAt = 0
         duration = 0
         clockNode = nil
@@ -552,6 +585,14 @@ final class NowPlayingDSP {
     /// re-arm main on failure").
     @discardableResult
     func setStemMode(_ on: Bool) -> Bool {
+        let ok = applyStemMode(on)
+        if ok { onUserStemChange?() }
+        return ok
+    }
+
+    /// `setStemMode` minus the user-change notification — the Stem Lock's carry-forward.
+    @discardableResult
+    func applyStemMode(_ on: Bool) -> Bool {
         guard isEngaged, built, let songId = loadedSongId else { return false }
         stemIntentGen &+= 1                      // any in-flight fetch for the old intent is stale
         stemFetchTask?.cancel(); stemFetchTask = nil
@@ -728,6 +769,7 @@ final class NowPlayingDSP {
             if was { startScheduled(stemMode: true, fromSongSeconds: from) } else { pausedAt = pos }
         }
         NPLog.trace("npdsp → stems @\(String(format: "%.2f", pos))s")
+        if _stemMode, let id = loadedSongId { onStemsOnAir?(id) }
         refreshStemMonitor()
     }
 
@@ -997,11 +1039,84 @@ final class NowPlayingDSP {
     func toggleStemMute(_ name: String) {
         if _stemMuted.contains(name) { _stemMuted.remove(name) } else { _stemMuted.insert(name) }
         applyStemGains()
+        onUserStemChange?()
     }
 
     func setStemVolume(_ name: String, _ v: Double) {
         _stemVol[name] = min(max(v, 0), 1)
         applyStemGains()
+        onUserStemChange?()
+    }
+
+    /// STEM LOCK: state the carried per-part mutes + gains (no user-change notification). Applied
+    /// BEFORE the stems are asked for, so they come up at the carried mix.
+    func applyCarriedStemControls(muted: Set<String>, volumes: [String: Double]) {
+        _stemMuted = muted.intersection(MixEngine.stemNames)
+        _stemVol = volumes.filter { MixEngine.stemNames.contains($0.key) }.mapValues { min(max($0, 0), 1) }
+        applyStemGains()
+    }
+
+    // MARK: Stem Lock — partial sets + late-landing parts
+
+    /// Would a set holding `parts` satisfy the current request? All four without a lock carry;
+    /// with one, every REQUIRED part (and at least one part — the lead/clock).
+    private func stemSetAcceptable(_ parts: Set<String>) -> Bool {
+        guard let req = stemPartsRequired else { return parts.count == MixEngine.stemNames.count }
+        return !parts.isEmpty && req.isSubset(of: parts)
+    }
+
+    /// A stem part of `songId` landed on disk (the Stem Lock prefetcher burns them one at a
+    /// time). While a PARTIAL burned set is wired for that song, the new part JOINS: on air it is
+    /// scheduled from the stems' exact playhead and started on one sample frame against the
+    /// rendering group (silent if the carried set mutes it — gains apply at once); otherwise it
+    /// is simply wired and rides the next schedule. Never touches `generation`: the joining node
+    /// had nothing scheduled, so its stop flushes no completion, and the lead's armed end stays
+    /// valid. A part whose format would need a reconnect on the running graph is left out
+    /// (Demucs parts share one format — not seen in practice).
+    func stemPartsLanded(_ songId: String, attempt: Int = 0) {
+        guard built, isEngaged, loadedSongId == songId, !stemFiles.isEmpty, stemFrontier == nil,
+              stemStream == nil, stemFiles.count < MixEngine.stemNames.count else { return }
+        guard stemFade == nil else { retryJoin(songId, attempt); return }
+        guard let got = burns.localStemPartURLs(forSong: songId) else { return }
+        var fresh: [String: AVAudioFile] = [:]
+        for (name, url) in got.urls where stemFiles[name] == nil {
+            guard let node = stemNodes[name], let f = try? AVAudioFile(forReading: url) else { continue }
+            guard node.outputFormat(forBus: 0) == f.processingFormat else {
+                NPLog.trace("npdsp stem part \(name) can't join: format \(f.processingFormat) ≠ node \(node.outputFormat(forBus: 0))")
+                continue
+            }
+            fresh[name] = f
+        }
+        guard !fresh.isEmpty else { got.release?(); return }
+        if _stemMode, isPlaying {
+            guard stemsRendering,
+                  let start = StemSync.sampleStart(clocks: stemVoices() + [inputMixer], lead: StemSync.startLead, rate: _rate),
+                  let p = stemPlayhead(at: start) else {
+                got.release?(); retryJoin(songId, attempt); return
+            }
+            for (name, f) in fresh {
+                guard let node = stemNodes[name] else { continue }
+                let a = StemSync.frame(f, prime: stemPrime, atSeconds: p)
+                guard f.length - a > 0 else { continue }
+                node.stop()                       // idle node: nothing armed, nothing flushed
+                node.scheduleSegment(f, startingFrame: a, frameCount: AVAudioFrameCount(f.length - a), at: nil,
+                                     completionHandler: nil)
+                node.play(at: StemSync.sharesTimeline(node, start.when) ? start.when : AVAudioTime(hostTime: start.hostTime))
+            }
+        }
+        let held = stemRelease
+        stemRelease = { held?(); got.release?() }
+        stemFiles.merge(fresh) { old, _ in old }
+        applyStemGains()
+        NPLog.trace("npdsp stem parts joined \(fresh.keys.sorted()) → \(stemFiles.count)/4")
+    }
+
+    private func retryJoin(_ songId: String, _ attempt: Int) {
+        guard attempt < 20 else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            self?.stemPartsLanded(songId, attempt: attempt + 1)
+        }
     }
 
     // MARK: - Graph apply
@@ -1195,8 +1310,10 @@ final class NowPlayingDSP {
         let release: (() -> Void)?
         if ProfileSourceStore.isProfileSongId(songId), let u = profileStemResolve?(songId) {
             urls = u; release = nil
-        } else if let r = burns.localStemURLs(forSong: songId) {
+        } else if stemPartsRequired == nil, let r = burns.localStemURLs(forSong: songId) {
             urls = r.urls; release = r.release
+        } else if stemPartsRequired != nil, let r = burns.localStemPartURLs(forSong: songId) {
+            urls = r.urls; release = r.release    // Stem Lock: a partial set may do
         } else {
             return false
         }
@@ -1204,7 +1321,7 @@ final class NowPlayingDSP {
         for (name, url) in urls {
             if let f = try? AVAudioFile(forReading: url) { opened[name] = f }
         }
-        guard opened.count == MixEngine.stemNames.count, wireStemFiles(opened, release: release) else {
+        guard stemSetAcceptable(Set(opened.keys)), wireStemFiles(opened, release: release) else {
             release?(); return false
         }
         releaseStemStream()                       // complete files on disk supersede a stem stream
@@ -1217,7 +1334,7 @@ final class NowPlayingDSP {
     /// on the running graph lands asynchronously, and a node re-wired in the same turn it starts
     /// can come up out of step with its siblings) and hold the files + scope + the set's priming.
     private func wireStemFiles(_ opened: [String: AVAudioFile], release: (() -> Void)?) -> Bool {
-        guard built, opened.count == MixEngine.stemNames.count else { return false }
+        guard built, opened.count == MixEngine.stemNames.count || stemSetAcceptable(Set(opened.keys)) else { return false }
         for (name, f) in opened {
             guard let node = stemNodes[name] else { continue }
             node.stop()
