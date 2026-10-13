@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Security
 
 /// Settings ▸ Debug — capture-session diagnostics for REMOTE (TestFlight) debugging. The flow is
 /// deliberate: turn capture ON → reproduce the issue → turn it OFF → the frozen session appears
@@ -18,7 +19,9 @@ struct DebugView: View {
     @State private var confirmDeleteAll = false
     @State private var diagKeyID = ""
     @State private var diagKeySecret = ""
-    @State private var diagKeyStored = DiagCredentialStore().load() != nil
+    @State private var diagKeyStored = DiagCredentialStore.launchDefault().load() != nil
+    /// Non-nil after a Save whose Keychain write failed — shown, never swallowed.
+    @State private var diagKeySaveError: String?
     /// Remote endpoint readout (blue/green backend) — re-read after a manual re-check.
     @State private var endpointsSummary = Config.endpoints.summary
     @State private var endpointsChecking = false
@@ -176,15 +179,28 @@ struct DebugView: View {
         #endif
     }
 
-    /// The S3 diag-writer key lives ONLY in the Keychain (iCloud-synced to the owner's other
-    /// devices) — never in the binary, git, or SettingsStore. Fields clear after Save so the
-    /// secret is never re-displayed.
+    /// The S3 diag-writer key lives in the Keychain — never in the binary, git, or
+    /// SettingsStore — and reaches the owner's other devices via the "diag-key" credsync doc
+    /// (`DiagKeySync`). Fields clear after Save so the secret is never re-displayed. The
+    /// "Upload" row is the pipeline's health readout: a missing key or a failing PUT is
+    /// visible here instead of silently disabling remote logs (the 2026-10 iOS outage).
     private var diagKeySection: some View {
         Section {
+            TimelineView(.periodic(from: .now, by: 5)) { context in
+                let status = DiagLog.shared.uploadStatus
+                LabeledContent("Upload") {
+                    Text(status.summary(now: context.date))
+                        .font(.caption)
+                        .foregroundStyle(status.healthy ? Color.secondary : Color.red)
+                        .multilineTextAlignment(.trailing)
+                        .textSelection(.enabled)
+                }
+                .accessibilityIdentifier("debug-diag-upload-status")
+            }
             if diagKeyStored {
                 LabeledContent("Diag key", value: "Stored")
                 Button("Remove diag key", role: .destructive) {
-                    DiagCredentialStore().clear()
+                    DiagCredentialStore.launchDefault().clear()
                     diagKeyStored = false
                     DiagLog.shared.reloadCredentials()
                 }
@@ -199,17 +215,24 @@ struct DebugView: View {
             SecureField("Secret access key", text: $diagKeySecret)
                 .accessibilityIdentifier("debug-diagkey-secret")
             Button("Save diag key") {
-                DiagCredentialStore().save(accessKeyID: diagKeyID, secret: diagKeySecret)
+                let status = DiagKeySync.app.store.save(accessKeyID: diagKeyID, secret: diagKeySecret)
                 diagKeyID = ""; diagKeySecret = ""
-                diagKeyStored = DiagCredentialStore().load() != nil
+                diagKeyStored = DiagKeySync.app.store.load() != nil
+                diagKeySaveError = status == errSecSuccess ? nil : "Keychain save failed (OSStatus \(status))"
                 DiagLog.shared.reloadCredentials()
+                // Mirror into the credsync doc so every other device adopts it on its next pass.
+                DiagKeySync.app.materialize()
+                DiagLog.shared.log("diag", "key saved in Settings: keychain=\(status) stored=\(diagKeyStored)")
             }
             .disabled(diagKeyID.isEmpty || diagKeySecret.isEmpty)
             .accessibilityIdentifier("debug-diagkey-save")
+            if let diagKeySaveError {
+                Text(diagKeySaveError).font(.caption).foregroundStyle(.red)
+            }
         } header: {
             Text("Remote diagnostics key")
         } footer: {
-            Text("Write-only S3 key for the diagnostic bucket. Stored in the Keychain and synced via iCloud Keychain; with no key, remote logging does nothing.")
+            Text("Write-only S3 key for the diagnostic bucket. Stored in the Keychain and synced to your other devices through iCloud; with no key, remote logs are held on the device and nothing uploads.")
         }
     }
 

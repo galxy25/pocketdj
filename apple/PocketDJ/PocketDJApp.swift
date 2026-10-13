@@ -1625,6 +1625,17 @@ struct PocketDJApp: App {
             // sources goes from empty catalog to full library in the same launch pass.
             if let s = settings, s.sources != before { Task { await app?.reload() } }
         }
+        // DIAG KEY (credsync lane, own doc — see DiagKeySync for why it isn't a field on the
+        // credentials doc): entered once on any device, adopted by every other one, so remote
+        // diag logs can't silently stop on a device that never had the key typed in (the
+        // 2026-10 iOS outage). Empty never wins: a keyless device never materializes the
+        // doc, and an empty pull never clears a key.
+        DiagKeySync.app.materialize()
+        cloudSync.register("diag-key", fileURL: DiagKeySync.app.fileURL) {
+            let result = DiagKeySync.app.applyPulled()
+            DiagLog.shared.reloadCredentials()
+            DiagLog.shared.log("diag", "credsync pull: \(result)")
+        }
         // ONBOARDING PUSH GATE (R1): until the first-run flow resolves, no push may run —
         // a store file materialized mid-onboarding (an empty flush, an intent-written doc)
         // must never LWW-overwrite a returning user's cloud data. Pulls stay allowed (the
