@@ -54,26 +54,20 @@ struct DiagKeyFile: Codable, Equatable {
         guard raw.type == typeTag else { return .failure(.wrongType) }
         guard let v = raw.schemaVersion else { return .failure(.missing("schemaVersion")) }
         guard v == 1 else { return .failure(.unsupportedVersion(v)) }
-        func req(_ s: String?, _ name: String) -> Result<String, Invalid> {
+        func nonEmpty(_ s: String?) -> String? {
             let t = (s ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            return t.isEmpty ? .failure(.missing(name)) : .success(t)
+            return t.isEmpty ? nil : t
         }
-        do {
-            let env = try req(raw.env, "env").get()
-            let account = try req(raw.account, "account").get()
-            let id = try req(raw.accessKeyID, "accessKeyID").get()
-            let secret = try req(raw.secret, "secret").get()
-            guard id.range(of: #"^(AKIA|ASIA)[A-Z0-9]{16}$"#, options: .regularExpression) != nil
-            else { return .failure(.badAccessKeyID) }
-            guard account.range(of: #"^[0-9]{12}$"#, options: .regularExpression) != nil
-            else { return .failure(.badAccount) }
-            return .success(DiagKeyFile(type: typeTag, schemaVersion: v, env: env, account: account,
-                                        accessKeyID: id, secret: secret, exportedAt: raw.exportedAt))
-        } catch let e as Invalid {
-            return .failure(e)
-        } catch {
-            return .failure(.notJSON)
-        }
+        guard let env = nonEmpty(raw.env) else { return .failure(.missing("env")) }
+        guard let account = nonEmpty(raw.account) else { return .failure(.missing("account")) }
+        guard let id = nonEmpty(raw.accessKeyID) else { return .failure(.missing("accessKeyID")) }
+        guard let secret = nonEmpty(raw.secret) else { return .failure(.missing("secret")) }
+        guard id.range(of: #"^(AKIA|ASIA)[A-Z0-9]{16}$"#, options: .regularExpression) != nil
+        else { return .failure(.badAccessKeyID) }
+        guard account.range(of: #"^[0-9]{12}$"#, options: .regularExpression) != nil
+        else { return .failure(.badAccount) }
+        return .success(DiagKeyFile(type: typeTag, schemaVersion: v, env: env, account: account,
+                                    accessKeyID: id, secret: secret, exportedAt: raw.exportedAt))
     }
 
     /// Every field optional so a missing one is reported by NAME rather than as "not JSON".

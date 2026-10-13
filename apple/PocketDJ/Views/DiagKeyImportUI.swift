@@ -114,6 +114,7 @@ struct DiagKeyImportAlerts: ViewModifier {
 }
 
 extension View {
+    @MainActor
     func diagKeyImportAlerts(_ model: DiagKeyImportModel = .shared, origin: DiagKeyImportModel.Origin) -> some View {
         modifier(DiagKeyImportAlerts(model: model, origin: origin))
     }
