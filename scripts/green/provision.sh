@@ -361,7 +361,7 @@ cf_desired(){   # $1 key, $2 blue id -> green DistributionConfig on stdout
       .CallerReference=$ref
     | .Comment=(.Comment+" [green]")
     | .Aliases={"Quantity":0}
-    | .ViewerCertificate={"CloudFrontDefaultCertificate":true,"MinimumProtocolVersion":"TLSv1","CertificateSource":"cloudfront"}' <<<"$cfg"
+    | .ViewerCertificate={"CloudFrontDefaultCertificate":true,"MinimumProtocolVersion":"TLSv1","SSLSupportMethod":"vip","CertificateSource":"cloudfront"}' <<<"$cfg"
 }
 cf_dists(){
   for kv in $CF_KEYS; do

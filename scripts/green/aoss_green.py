@@ -49,8 +49,11 @@ data = to_green(open(f'{SNAP}/data.json').read())
 
 try:
     cur = oss.get_security_policy(name=NETPOL, type='network')['securityPolicyDetail']
-    oss.update_security_policy(name=NETPOL, type='network', policyVersion=cur['policyVersion'], policy=json.dumps(json.loads(net)))
-    log('net policy updated')
+    if cur['policy'] != json.loads(net):
+        oss.update_security_policy(name=NETPOL, type='network', policyVersion=cur['policyVersion'], policy=json.dumps(json.loads(net)))
+        log('net policy updated')
+    else:
+        log('net policy unchanged')
 except oss.exceptions.ResourceNotFoundException:
     oss.create_security_policy(name=NETPOL, type='network', policy=json.dumps(json.loads(net))); log('net policy created')
 
