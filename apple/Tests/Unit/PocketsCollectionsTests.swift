@@ -432,6 +432,19 @@ final class PocketsCollectionsTests: XCTestCase {
                        0.5 + 0.5 * exp(-1), accuracy: 1e-9)
     }
 
+    /// Membership is CURRENT and retroactive: a song added to a collection AFTER it was played
+    /// still labels that old play, and the add-recency scale is measured from NOW.
+    func testMembershipIsRetroactiveAndRecencyIsFromNow() {
+        // r1 was played weeks ago (every evening in `plays`); it joined "Late adds" only yesterday.
+        let late = InThePocketScorer.CollectionInfo(id: "pls_late", name: "Late adds", songIds: ["r1", "zz"],
+                                                    addedAtMs: ["r1": Self.nowMs - Self.day])
+        let p = InThePocketScorer.scoreCandidates(Self.input(collections: [late])).profile
+        XCTAssertNotNil(p.membership["pls_late"], "an add after the play still counts")
+        let index = InThePocketScorer.MembershipIndex(Self.input(collections: [late]))
+        XCTAssertEqual(index.hard("r1", refMs: Self.nowMs)["pls_late"] ?? 0,
+                       0.5 + 0.5 * exp(-1.0 / 45), accuracy: 1e-9, "age = now − add, not play − add")
+    }
+
     /// No collections ⇒ the round is exactly what it was before the feature; collections that
     /// touch nothing in the round are inert too.
     func testNoCollectionsParity() {

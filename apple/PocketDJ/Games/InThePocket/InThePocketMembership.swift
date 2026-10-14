@@ -14,7 +14,7 @@ import Foundation
 ///
 /// The PROFILE membership vector (what "a pocket here, now" expresses) comes from the cloud's
 /// pattern/pocket `membership` weighted by context match, else from this device's contextual
-/// plays (hard membership at play time + soft membership), then is nudged by the live session
+/// plays (CURRENT hard membership, recency from now — retroactive — plus soft), then is nudged by the live session
 /// (what played in the last hour, hard + soft). Each candidate gains `w · cosine(m(s), profile)`.
 extension InThePocketScorer {
 
@@ -51,8 +51,9 @@ extension InThePocketScorer {
         }
     }
 
-    /// `0.5 + 0.5·e^(−ageDays/45)` relative to `refMs`; unknown ⇒ 0.75. An add AFTER the
-    /// reference (the song was played, then added) counts as fresh.
+    /// `0.5 + 0.5·e^(−ageDays/45)` with ageDays = (refMs − addAt) clamped ≥ 0; unknown ⇒ 0.75.
+    /// Callers pass NOW: membership is current and retroactive (Levi, 2026-10-13) — never gated
+    /// on the add predating a play.
     static func addScale(_ addedAtMs: Double?, refMs: Double) -> Double {
         guard let a = addedAtMs else { return unknownAddScale }
         let ageDays = max(0, refMs - a) / 86_400_000
@@ -110,7 +111,9 @@ extension InThePocketScorer {
                 .prefix(softBasisSongs).map(\.key))
             var acc: [String: Double] = [:]
             for p in kept {
-                for (id, w) in vector(p.songId, refMs: p.atMs, withSoft: softIds.contains(p.songId)) {
+                // Membership is CURRENT and retroactive: a song added to a playlist after this
+                // play still expresses it; recency is measured from NOW, never from the play.
+                for (id, w) in vector(p.songId, refMs: input.nowMs, withSoft: softIds.contains(p.songId)) {
                     acc[id, default: 0] += w
                 }
             }
