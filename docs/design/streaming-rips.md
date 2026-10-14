@@ -413,6 +413,10 @@ the manifest or the offloads.
   catalog songs captured from Apple Music trust only Music.app's duration (the vinyl length is a
   different edition). No expected length → accepted and logged.
 - **Short:** more than max(5 %, 5 s) short → `short-capture`, retried through the backoff ladder.
+- **Editions:** Apple Music sometimes serves a shorter (or longer) edition than the catalog row. When the capture
+  matches Music.app's OWN duration for the track within the same tolerances, it is accepted as `shorter-edition` /
+  `longer-edition` and the manifest records `editionMs` (the `/rip-repair` audit judges against it). A capture short
+  against Music.app's duration too (54 s captured, Music.app 221 s) is still `short-capture`.
 - **Long:** more than 20 s long after trimming → `long-capture`, retried.
 - **Trim:** a silent tail past the expected length (−60 dB, ≥0.5 s, reaching EOF) is cut with
   0.25 s padding. Music is never trimmed.

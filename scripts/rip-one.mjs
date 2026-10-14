@@ -206,7 +206,10 @@ async function main() {
     musicMs: ripTrack?.durationSec ? ripTrack.durationSec * 1000 : null,
     sourceType: SOURCE_TYPE,
   });
+  // Music.app's own duration lets a complete capture of a shorter/longer Apple Music EDITION
+  // pass (it would otherwise retry forever against the catalog length).
   const verdict = guardCaptureFile(mp3, { expectedMs: exp.expectedMs, analog: exp.analog, cfg: lengthGuardConfig(),
+    musicMs: ripTrack?.durationSec ? ripTrack.durationSec * 1000 : null,
     log: (m) => console.error(`${m} (${SONG})`) });
   console.error(describeVerdict(SONG, verdict, exp.source) + (ripTrack?.durationSec ? ` [Music.app duration ${ripTrack.durationSec}s]` : ''));
   if (verdict.verdict === 'short' || verdict.verdict === 'long') {
@@ -214,7 +217,8 @@ async function main() {
     fail(`${verdict.reason}: measured ${verdict.measuredMs} ms vs expected ${verdict.expectedMs} ms (${exp.source})`, verdict.reason);
   }
   const lengthInfo = { measuredMs: verdict.measuredMs ?? null, expectedMs: exp.expectedMs, expectedSource: exp.source,
-    lengthVerdict: verdict.verdict === 'skip' ? `skip:${verdict.reason}` : verdict.verdict,
+    lengthVerdict: verdict.verdict === 'skip' ? `skip:${verdict.reason}` : (verdict.reason || verdict.verdict),
+    ...(verdict.editionMs ? { editionMs: verdict.editionMs } : {}),
     ...(verdict.trimmedFromMs ? { trimmedFromMs: verdict.trimmedFromMs } : {}) };
 
   const key = `rips/${SONG}.mp3`;

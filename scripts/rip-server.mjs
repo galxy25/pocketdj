@@ -1344,6 +1344,9 @@ async function runDigitalJob(job, song) {
       // the catalog length only as a fallback for an older worker.
       albumId: song.albumId, startMs: null, durationMs: st.measuredMs ?? song.length ?? null, rippedAt: Date.now(),
       ...(st.trimmedFromMs ? { trimmedFromMs: st.trimmedFromMs } : {}),
+      // Apple Music served a different-length edition than the catalog row (Music.app's own
+      // duration); the /rip-repair audit judges this capture against it, not the catalog.
+      ...(st.editionMs ? { editionMs: st.editionMs } : {}),
     };
     await saveManifest();
     job.url = publicUrl(st.key);
