@@ -55,7 +55,8 @@ const { normalizeEvents, sessionize, detectPockets, detect, pocketIdFor } = awai
 const { computeResults, foldBpm, localTimeOf, titleFor, camelotNeighbors, emptyResults, learnFromRounds, roundLabel, roundMultiplier } = await import('./analyze.mjs');
 const { ROUND_PARAMS, POCKET_LIMITS } = await import('./params.mjs');
 const { indexFeatures, resolveSong, identityKeys } = await import('./features.mjs');
-const { cleanEvent, mergeEvents, freshEventsDoc, cleanCtx, cleanRound, mergeRounds, capText } = await import('./store.mjs');
+const { cleanEvent, mergeEvents, freshEventsDoc, cleanCtx, cleanRound, mergeRounds, capText,
+  cleanCollections, mergeCollectionsUpload, cleanAddEvents } = await import('./store.mjs');
 const { handler, normalizePath, computeProfile, _test } = await import('./index.mjs');
 const { historyToUploadEvents, toUpload, buildEventsDoc } = await import('./run-local.mjs');
 
@@ -1048,6 +1049,17 @@ test('app contract: the app-generated upload is a valid upload.v1 batch the serv
       assert.ok(k in e, `${k} is sent as an explicit key (null when unknown)`);
     }
   }
+  // pockets-collections.md (additive, optional): context ids, a membership snapshot and the add
+  // history ingest whole when the app sends them — and their absence is equally valid.
+  for (const e of up.events.filter((x) => x.contextId != null)) {
+    assert.ok(cleanEvent(e, up.installId, up.sentAtMs).contextId, `row ${e.id} keeps its contextId`);
+  }
+  if (up.collections !== undefined) {
+    assert.equal(cleanCollections(up.collections, up.sentAtMs, up.sentAtMs).list.length, up.collections.length, 'every collection is kept');
+  }
+  if (up.addEvents !== undefined) {
+    assert.equal(cleanAddEvents(up.addEvents, up.installId, up.sentAtMs).length, up.addEvents.length, 'every add event is kept');
+  }
   // (stream, atMs, ord) is unique — the device's ord fully orders same-minute plays.
   const keys = up.events.map((e) => `${e.originInstallId ?? up.installId}|${e.atMs}|${e.ord}`);
   assert.equal(new Set(keys).size, keys.length);
@@ -1141,6 +1153,11 @@ function validateResults(doc) {
       at(`${path}.${k}.defining`, typeof v.defining === 'boolean', 'boolean');
     }
   };
+  // pockets-collections.md: optional, top 12, desc.
+  const membership = (path, m) => {
+    at(path, Array.isArray(m) && m.length <= 12 && m.every((x) => isStr(x.collectionId) && isNum(x.weight))
+      && m.every((x, i) => i === 0 || m[i - 1].weight >= x.weight), 'array ≤ 12 of {collectionId, weight}, desc');
+  };
   req('$', doc, ['v', 'generatedAtMs', 'stale', 'algo', 'pockets', 'patterns']);
   at('$.v', doc.v === 1, 'const 1');
   at('$.generatedAtMs', doc.generatedAtMs === null || isInt(doc.generatedAtMs), 'integer|null');
@@ -1183,6 +1200,7 @@ function validateResults(doc) {
     if (p.harmonic != null) at(`${P}.harmonic`, isNum(p.harmonic.rate) && isNum(p.harmonic.baselineRate) && typeof p.harmonic.defining === 'boolean', 'shape');
     at(`${P}.title`, isStr(p.title) && p.title.length > 0, 'non-empty string');
     at(`${P}.patternId`, p.patternId === null || p.patternId === undefined || isStr(p.patternId), 'string|null');
+    if ('membership' in p) membership(`${P}.membership`, p.membership);
   });
   (doc.patterns || []).forEach((t, i) => {
     const P = `$.patterns[${i}]`;
@@ -1196,7 +1214,13 @@ function validateResults(doc) {
     (t.features || []).forEach((f, j) => feature(`${P}.features[${j}]`, f));
     numeric(`${P}.numeric`, t.numeric);
     at(`${P}.topSongs`, Array.isArray(t.topSongs) && t.topSongs.every((s) => isStr(s.songId) && isInt(s.plays)), 'shape');
+    if ('membership' in t) membership(`${P}.membership`, t.membership);
+    if ('collectionCandidates' in t) {
+      at(`${P}.collectionCandidates`, Array.isArray(t.collectionCandidates) && t.collectionCandidates.length <= 40
+        && t.collectionCandidates.every((c) => isStr(c.songId) && isNum(c.score) && Array.isArray(c.via) && c.via.every(isStr)), 'shape');
+    }
   });
+  if ('collectionsSeen' in doc) at('$.collectionsSeen', isInt(doc.collectionsSeen) && doc.collectionsSeen >= 0, 'integer ≥ 0');
   return errs;
 }
 
@@ -1209,4 +1233,268 @@ test('the contract validator itself catches a broken document', () => {
   assert.ok(errs.some((e) => e.startsWith('$.pockets[0].title')));
   assert.ok(errs.some((e) => e.startsWith('$.patterns[0].occurrences')));
   assert.ok(errs.some((e) => e.startsWith('$.stale')));
+});
+
+// ── Pockets × collections (docs/design/pockets-collections.md) ──────────────────────────────────
+
+const { buildCollectionModel, cosine } = await import('./collections.mjs');
+const { makeSongInfo } = await import('./analyze.mjs');
+const ALL_SONGS = catalog.songs.map((s) => s.i);
+const colDoc = (list) => ({ atMs: 0, list: list.map((c) => ({ kind: 'playlist', adds: [], ...c })) });
+
+test('collections: an old upload without the new fields keeps working and keeps its stored shape', async () => {
+  const p = freshProfile();
+  const post = await call('POST', '/pockets/events', { profile: p, body: batch(wireSeq('PPPP', NOW - 3 * HOUR)) });
+  assert.equal(post.status, 200);
+  assert.equal(post.json.accepted, 4);
+  const stored = JSON.parse(readFileSync(eventsPath(p), 'utf8'));
+  assert.equal('collections' in stored, false);
+  assert.equal('addEvents' in stored, false);
+  assert.ok(stored.events.every((e) => !('contextId' in e) && !('contextKind' in e)));
+  const got = await call('GET', '/pockets/results', { profile: p });
+  assert.equal(got.json.collectionsSeen, 0);
+  assert.equal(got.json.algo.version, 2);
+  assert.ok(got.json.pockets.length && got.json.pockets.every((x) => !('membership' in x)));
+  assert.deepEqual(validateResults(got.json), []);
+
+  // The same profile then upgrades: context ids + a snapshot + add history are stored and used.
+  const rows = wireSeq('PPPP', NOW - 2 * HOUR).map((e) => ({ ...e, contextId: 'pls_house', contextKind: 'playlist' }));
+  const up = batch(rows, {
+    collections: [{ id: 'pls_house', kind: 'playlist', name: 'House Party', songIds: [E(1), E(2), E(3), E(4)],
+      adds: [{ songId: E(1), atMs: NOW - 10 * DAY }] }],
+    addEvents: [{ songId: E(1), collectionId: 'pls_house', atMs: NOW - 10 * DAY, kind: 'add' }],
+    futureField: { anything: true },
+  });
+  const post2 = await call('POST', '/pockets/events', { profile: p, body: up });
+  assert.equal(post2.status, 200, JSON.stringify(post2.json));
+  const stored2 = readFileSync(eventsPath(p), 'utf8');
+  assert.equal(stored2.includes('House Party'), false, 'names are never stored');
+  const doc2 = JSON.parse(stored2);
+  assert.equal(doc2.collections.list.length, 1);
+  assert.equal(doc2.addEvents.length, 1);
+  assert.equal(doc2.events.find((e) => e.id === rows[0].id.toUpperCase()).contextId, 'pls_house');
+  const got2 = await call('GET', '/pockets/results', { profile: p });
+  assert.equal(got2.json.collectionsSeen, 1);
+  assert.ok(got2.json.pockets.every((x) => Array.isArray(x.membership)));
+  assert.ok(got2.json.pockets.some((x) => x.membership[0]?.collectionId === 'pls_house'));
+  assert.deepEqual(validateResults(got2.json), []);
+  // An identical re-send changes nothing (no recompute churn).
+  const again = await call('POST', '/pockets/events', { profile: p, body: up });
+  assert.equal(again.json.dirty, false);
+});
+
+test('collections: snapshot caps, opaque ids, dedup, adds only for members, context id rules, add-event merge', () => {
+  const now = Date.UTC(2026, 9, 12, 19, 0);
+  // ≤ 500 collections.
+  const many = Array.from({ length: 600 }, (_, i) => ({ id: `c${i}`, kind: 'playlist', songIds: [E(1)] }));
+  assert.equal(cleanCollections(many, now, now).list.length, POCKET_LIMITS.maxCollections);
+  // ≤ 5000 songs each, ≤ 100k in total.
+  const big = Array.from({ length: 30 }, (_, i) => ({ id: `b${i}`, kind: 'pocket', songIds: Array.from({ length: 6000 }, (_, j) => `s${i}_${j}`) }));
+  const snap = cleanCollections(big, now, now);
+  assert.ok(snap.list.every((c) => c.songIds.length <= POCKET_LIMITS.maxCollectionSongs));
+  assert.equal(snap.list[0].songIds.length, 5000);
+  assert.equal(snap.list.reduce((s, c) => s + c.songIds.length, 0), POCKET_LIMITS.maxSnapshotSongs);
+  // Ids: opaque tokens only (a display name fails), duplicates keep the first, unknown kind → null.
+  const odd = cleanCollections([
+    { id: 'Sunday Jazz', kind: 'playlist', songIds: [J(1)] },
+    { id: 'x'.repeat(65), kind: 'playlist', songIds: [J(1)] },
+    { id: 'pls_1', kind: 'playlist', songIds: [J(1), J(1), J(2)], adds: [{ songId: J(1), atMs: now - 90_000 }, { songId: H(1), atMs: now }, { songId: J(2), atMs: now + 10 * DAY }] },
+    { id: 'pls_1', kind: 'playlist', songIds: [H(1)] },
+    { id: 'pkt_2', kind: 'folder', songIds: [H(2)] },
+    { id: 'no_songs', kind: 'playlist' },
+  ], now, now);
+  assert.deepEqual(odd.list.map((c) => c.id), ['pls_1', 'pkt_2']);
+  assert.deepEqual(odd.list[0].songIds, [J(1), J(2)]);
+  assert.deepEqual(odd.list[0].adds, [[J(1), Math.floor((now - 90_000) / MIN) * MIN]], 'non-members and far-future adds dropped, minute-floored');
+  assert.equal(odd.list[1].kind, null);
+  // Event context: kept when opaque and of a known kind; a name or unknown kind drops it.
+  const ctxRow = (over) => cleanEvent(wire({ atMs: now - HOUR, ...over }), INSTALL, now);
+  assert.equal(ctxRow({ contextId: 'pls_1', contextKind: 'setlist' }).contextKind, 'setlist');
+  assert.equal(ctxRow({ contextId: 'pls_1' }).contextId, 'pls_1');
+  assert.equal('contextId' in ctxRow({ contextId: 'Sunday Jazz', contextKind: 'playlist' }), false);
+  assert.equal('contextId' in ctxRow({ contextId: 'pls_1', contextKind: 'artist' }), false);
+  // Snapshot: replaced wholesale, an OLDER snapshot is ignored; add events union-merged + capped.
+  const doc = freshEventsDoc(now);
+  assert.equal(mergeCollectionsUpload(doc, { sentAtMs: now, collections: [{ id: 'a1', songIds: [E(1)] }] }, INSTALL, now).changed, true);
+  assert.equal(mergeCollectionsUpload(doc, { sentAtMs: now - HOUR, collections: [{ id: 'old', songIds: [E(2)] }] }, INSTALL, now).changed, false);
+  assert.equal(doc.collections.list[0].id, 'a1');
+  mergeCollectionsUpload(doc, { sentAtMs: now + MIN, collections: [{ id: 'b1', songIds: [E(3)] }] }, INSTALL, now + MIN);
+  assert.deepEqual(doc.collections.list.map((c) => c.id), ['b1']);
+  const adds = Array.from({ length: 6000 }, (_, i) => ({ songId: `s${i}`, collectionId: 'a1', atMs: now - i * MIN, kind: i % 7 ? 'add' : 'remove' }));
+  mergeCollectionsUpload(doc, { addEvents: adds.slice(0, 3000) }, INSTALL, now);
+  mergeCollectionsUpload(doc, { addEvents: adds.slice(2000, 6000) }, IPAD, now);
+  assert.equal(doc.addEvents.length, POCKET_LIMITS.maxStoredAddEvents);
+  assert.equal(doc.addEvents[0].atMs, now, 'newest kept');
+  assert.equal(new Set(doc.addEvents.map((a) => `${a.songId}|${a.atMs}|${a.kind}`)).size, doc.addEvents.length, 'union, no duplicates');
+  assert.equal(mergeCollectionsUpload(doc, { addEvents: adds.slice(0, 10) }, INSTALL, now).changed, false, 'a re-send changes nothing');
+  assert.equal(cleanAddEvents([{ songId: E(1), collectionId: 'a1', atMs: now - 400 * DAY, kind: 'add' },
+    { songId: E(1), collectionId: 'a1', atMs: now, kind: 'move' }], INSTALL, now).length, 0);
+});
+
+/// The electronic pocket of the defining-features test, plus a collections snapshot.
+function collectionScenario({ lateAdds = false } = {}) {
+  const nowMs = Date.UTC(2026, 9, 12, 19, 0);
+  const pocketStart = Date.UTC(2026, 9, 12, 14, 40);
+  const pocketRows = seq('PPPPPP', pocketStart, { tz: -420 }).map((r) => ({ ...r, contextId: 'pls_house', contextKind: 'playlist' }));
+  const house = [E(1), E(2), E(3), E(4), E(5), E(6)];
+  const list = [
+    { id: 'pls_house', songIds: house, adds: house.map((s) => [s, nowMs - 30 * DAY]) },
+    { id: 'src_all', kind: 'source', songIds: ALL_SONGS },
+    { id: 'pls_jazz', songIds: [J(1), J(2), J(3)] },
+  ];
+  if (lateAdds) list.push({ id: 'pls_late', songIds: house, adds: house.map((s) => [s, nowMs - HOUR]) });
+  return { nowMs, pocketRows, doc: { events: [...mixedBaseline(nowMs), ...pocketRows], collections: colDoc(list) } };
+}
+
+test('collections: the collection a pocket concentrates becomes a DEFINING feature (and the play context)', () => {
+  const { nowMs, pocketRows, doc } = collectionScenario();
+  const res = computeResults(doc, FEATS, { nowMs });
+  const p = res.pockets.find((x) => x.members[0].eventId === pocketRows[0].id);
+  const col = p.features.find((f) => f.dim === 'collection');
+  assert.ok(col, JSON.stringify(p.features.map((f) => `${f.dim}:${f.value}`)));
+  assert.equal(col.value, 'pls_house');
+  assert.equal(col.share, 1);
+  assert.ok(col.lift > 1.5);
+  assert.ok(!p.features.some((f) => f.dim === 'collection' && f.value === 'src_all'), 'the whole library is not defining');
+  assert.ok(p.features.some((f) => f.dim === 'playContext' && f.value === 'pls_house'));
+  assert.equal(res.collectionsSeen, 3);
+  assert.equal(p.membership[0].collectionId, 'pls_house');
+  assert.ok(Math.abs(p.membership.reduce((s, m) => s + m.weight, 0) - 1) < 1e-3, 'L1-normalised');
+  assert.ok(p.membership.length <= POCKET_PARAMS.collections.membershipTopK);
+  // The plain profile's analysis is unchanged by the dims existing.
+  const plain = computeResults({ events: doc.events.map(({ contextId, contextKind, ...r }) => r) }, FEATS, { nowMs });
+  assert.ok(!plain.pockets.some((x) => x.features.some((f) => f.dim === 'collection' || f.dim === 'playContext')));
+});
+
+test('collections: membership is CURRENT — a song added after an old pocket re-labels it (retroactive)', () => {
+  const { nowMs, pocketRows, doc } = collectionScenario({ lateAdds: true });
+  const res = computeResults(doc, FEATS, { nowMs });
+  const p = res.pockets.find((x) => x.members[0].eventId === pocketRows[0].id);
+  assert.ok(p.features.some((f) => f.dim === 'collection' && f.value === 'pls_house'));
+  assert.ok(p.features.some((f) => f.dim === 'collection' && f.value === 'pls_late'), 'added after the plays: still counts');
+  const w = (id) => p.membership.find((m) => m.collectionId === id)?.weight ?? 0;
+  assert.ok(w('pls_late') > w('pls_house'), `a fresher add (vs NOW) expresses its playlist more: ${w('pls_late')} vs ${w('pls_house')}`);
+  // Without the late snapshot entry the same pocket does not carry it — and with it removed again, it stops counting.
+  const before = computeResults({ ...doc, collections: { ...doc.collections,
+    list: doc.collections.list.filter((c) => c.id !== 'pls_late') } }, FEATS, { nowMs });
+  const pb = before.pockets.find((x) => x.members[0].eventId === pocketRows[0].id);
+  assert.ok(!pb.membership.some((m) => m.collectionId === 'pls_late'));
+  // Add-time recency is relative to the ANALYSIS time: fresh = 1.0, unknown = 0.75, one half-life
+  // = 0.5 + 0.5/e, a (clock-skewed) future add clamps to age 0 — whatever the play time.
+  const m = buildCollectionModel({ collections: colDoc([
+    { id: 'fresh', songIds: [E(1)], adds: [[E(1), nowMs]] },
+    { id: 'unknown', songIds: [E(1)] },
+    { id: 'aged', songIds: [E(1)], adds: [[E(1), nowMs - 45 * DAY]] },
+    { id: 'future', songIds: [E(1)], adds: [[E(1), nowMs + HOUR]] },
+  ]) }, makeSongInfo(FEATS), POCKET_PARAMS, nowMs);
+  const v = m.vectorOf(E(1));
+  assert.equal(v.get('fresh'), 1);
+  assert.equal(v.get('unknown'), 0.75);
+  assert.ok(Math.abs(v.get('aged') - (0.5 + 0.5 / Math.E)) < 1e-9);
+  assert.equal(v.get('future'), 1);
+  assert.deepEqual(m.collectionsOf(E(1)), ['aged', 'fresh', 'future', 'unknown']);
+  assert.deepEqual(m.collectionsOf('sng_e00000000001_clean'), ['aged', 'fresh', 'future', 'unknown'], 'variant ids resolve');
+});
+
+test('collections: a new snapshot upload recomputes, so OLD pockets re-label immediately (not only nightly)', async () => {
+  const p = freshProfile();
+  // An old pocket (three days ago) plus enough other listening that a collection can stand out.
+  const baseline = [];
+  for (let d = 4; d <= 12; d++) {
+    baseline.push(...wireSeq('PSPSP', NOW - d * DAY, { songs: [H(1), H(2), J(1), J(2), H(3)] }));
+  }
+  const pocket = wireSeq('PPPPP', NOW - 3 * DAY);
+  const first = await call('POST', '/pockets/events', { profile: p, body: batch([...baseline, ...pocket],
+    { collections: [{ id: 'pls_jazz', kind: 'playlist', songIds: [J(1), J(2), J(3)] }] }) });
+  assert.equal(first.status, 200, JSON.stringify(first.json));
+  const r1 = (await call('GET', '/pockets/results', { profile: p })).json;
+  const old1 = r1.pockets.find((x) => x.members[0].eventId === pocket[0].id.toUpperCase());
+  assert.ok(old1, 'the old pocket');
+  assert.ok(!old1.membership.some((m) => m.collectionId === 'pls_new'));
+  // Today the user files those songs into a new playlist. The upload carries ONLY the snapshot.
+  const songs = [E(1), E(2), E(3), E(4), E(5), E(6)];
+  const up = await call('POST', '/pockets/events', { profile: p, body: batch([], { sentAtMs: NOW + 1, collections: [
+    { id: 'pls_jazz', kind: 'playlist', songIds: [J(1), J(2), J(3)] },
+    { id: 'pls_new', kind: 'playlist', songIds: songs, adds: songs.map((songId) => ({ songId, atMs: NOW })) },
+  ] }) });
+  assert.equal(up.status, 200);
+  assert.equal(up.json.dirty, true, 'a snapshot-only change marks the profile dirty…');
+  const r2 = (await call('GET', '/pockets/results', { profile: p })).json;
+  assert.equal(r2.stale, false, '…and kicks a compute (inline here; async self-invoke when deployed) that clears it');
+  assert.ok(r2.generatedAtMs >= r1.generatedAtMs);
+  const old2 = r2.pockets.find((x) => x.id === old1.id);
+  assert.equal(old2.membership[0].collectionId, 'pls_new', JSON.stringify(old2.membership));
+  assert.ok(old2.features.some((f) => f.dim === 'collection' && f.value === 'pls_new'), JSON.stringify(old2.features.map((f) => `${f.dim}:${f.value}`)));
+});
+
+test('collections: SOFT membership — a non-member that sounds like a collection expresses it', () => {
+  const info = makeSongInfo(FEATS);
+  const m = buildCollectionModel({ collections: colDoc([
+    { id: 'house', songIds: [E(1), E(2), E(3), E(4), E(5)] },
+    { id: 'rap', songIds: [H(1), H(2), H(3), H(4)] },
+    { id: 'tiny', songIds: [J(1), J(2)] },
+  ]) }, info);
+  const cp = POCKET_PARAMS.collections;
+  const e6 = m.vectorOf(E(6));
+  assert.ok(e6.get('house') >= cp.softMax * cp.softMin && e6.get('house') <= cp.softMax, `soft ${e6.get('house')}`);
+  assert.equal(e6.has('rap'), false, 'not similar to the hip-hop crate');
+  assert.equal(m.centroids.has('tiny'), false, '< 3 resolvable members: hard only');
+  assert.equal(m.vectorOf(J(3)).has('tiny'), false);
+  assert.equal(m.vectorOf(E(1)).get('house'), cp.unknownAddWeight, 'a member is hard, never soft');
+  assert.ok(m.simTo(info(H(1)), 'house') < cp.softMin);
+  assert.ok(cosine(e6, new Map([['house', 1]])) > 0.99);
+});
+
+test('collections: pattern membership + candidates — collection members and co-added songs, never topSongs', () => {
+  const nowMs = Date.UTC(2026, 9, 12, 19, 0);
+  const songs = [E(1), E(2), E(3)];
+  const rows = [
+    ...seq('PPP', Date.UTC(2026, 9, 5, 14, 40), { tz: -420, songs }),
+    ...seq('PPP', Date.UTC(2026, 9, 6, 14, 40), { tz: -420, songs }),
+    ...seq('PPP', Date.UTC(2026, 9, 7, 14, 40), { tz: -420, songs }),
+  ];
+  const t = nowMs - 20 * DAY;
+  const doc = {
+    events: [...mixedBaseline(nowMs), ...rows],
+    collections: colDoc([
+      { id: 'house', songIds: [E(1), E(2), E(3), 'sng_e00000000001_clean', E(4), E(5)], adds: [[E(5), t], [E(4), t - DAY]] },
+      { id: 'rap', songIds: [H(1), H(2), H(3)] },
+    ]),
+    addEvents: [
+      { songId: E(1), collectionId: 'pls_mix', atMs: t + HOUR, kind: 'add', installId: INSTALL },
+      { songId: J(2), collectionId: 'pls_mix', atMs: t + HOUR + 5 * MIN, kind: 'add', installId: INSTALL },
+      { songId: H(4), collectionId: 'pls_mix', atMs: t + 3 * HOUR, kind: 'add', installId: INSTALL },     // a different session
+      { songId: J(3), collectionId: 'pls_mix', atMs: t + HOUR + 2 * MIN, kind: 'add', installId: IPAD },  // another install
+    ],
+  };
+  const res = computeResults(doc, FEATS, { nowMs });
+  const pt = res.patterns.find((x) => x.topSongs.some((s) => s.songId === E(1)));
+  assert.ok(pt, 'the recurring morning pattern');
+  assert.equal(pt.membership[0].collectionId, 'house');
+  const ids = pt.collectionCandidates.map((c) => c.songId);
+  for (const s of [E(1), E(2), E(3), 'sng_e00000000001_clean']) assert.ok(!ids.includes(s), `${s} is a topSong (any id)`);
+  assert.ok(ids.includes(E(4)) && ids.includes(E(5)), `members of the top collection: ${ids}`);
+  const j2 = pt.collectionCandidates.find((c) => c.songId === J(2));
+  assert.ok(j2, 'co-added with a topSong');
+  assert.deepEqual(j2.via, ['pls_mix']);
+  assert.ok(!ids.includes(H(4)), 'added outside the session');
+  assert.ok(!ids.includes(J(3)), 'added on another install');
+  assert.deepEqual(pt.collectionCandidates.find((c) => c.songId === E(4)).via, ['house']);
+  assert.ok(pt.collectionCandidates.length <= POCKET_PARAMS.collections.maxCandidates);
+  for (let i = 1; i < pt.collectionCandidates.length; i++) assert.ok(pt.collectionCandidates[i - 1].score >= pt.collectionCandidates[i].score);
+  assert.ok(pt.collectionCandidates.find((c) => c.songId === E(4)).score > j2.score, 'the musical member outranks the jazz co-add');
+  assert.deepEqual(validateResults(res), []);
+  assert.deepEqual(computeResults(doc, FEATS, { nowMs }), res, 'deterministic');
+});
+
+test('collections: rounds learn a collection target', () => {
+  const ctx = { kind: 'place', placeId: PLACE_A };
+  const mk = (outcome, brokeAt) => cleanRound(roundWire({ outcome, brokeAt,
+    targets: [{ dim: 'collection', value: 'pls_house', weight: 0.7 }, { dim: 'genre', value: 'house' }],
+    context: { timeBucket: 'evening', dayType: 'weekday', dow: 2, ctx } }), INSTALL, NOW);
+  const r = mk('pocket', null);
+  assert.deepEqual(r.targets[0], { dim: 'collection', value: 'pls_house', weight: 0.7 });
+  const out = learnFromRounds([mk('pocket', null), mk('pocket', null), mk('broke', 1)], { nowMs: NOW });
+  const w = out.contexts.find((c) => c.key === `weekday|evening|place:${PLACE_A}`).weights.find((x) => x.dim === 'collection');
+  assert.deepEqual([w.value, w.pos, w.neg, w.multiplier], ['pls_house', 2, 1, roundMultiplier(2, 1)]);
 });

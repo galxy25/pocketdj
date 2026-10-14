@@ -45,7 +45,7 @@ import { computeResults, emptyResults } from './analyze.mjs';
 import { loadFeatures } from './features.mjs';
 import {
   Precondition, readEvents, writeEvents, readResults, readResultsVersioned, writeResults, deleteResults,
-  deleteProfile, countProfiles, listProfileHashes, listResultHashes, cleanEvent, cleanLabels, mergeEvents,
+  deleteProfile, countProfiles, listProfileHashes, listResultHashes, cleanEvent, cleanLabels, mergeEvents, mergeCollectionsUpload,
   freshEventsDoc, INSTALL_RE, cleanRound, mergeRounds,
 } from './store.mjs';
 
@@ -324,6 +324,8 @@ export async function handler(event, context) {
         const labels = carriesLabels ? cleanLabels(body.places, body.trips) : null;
         return upsertProfile(event, auth, nowMs, (doc) => {
           const merged = mergeEvents(doc, rows, nowMs);
+          // Optional collection membership snapshot + add history (pockets-collections.md).
+          const cols = mergeCollectionsUpload(doc, body, body.installId, nowMs);
           let labelsChanged = false;
           if (labels) {
             const prev = JSON.stringify({ places: doc.labels?.places || [], trips: doc.labels?.trips || [] });
@@ -331,7 +333,7 @@ export async function handler(event, context) {
             doc.labels = { ...labels, atMs: nowMs };
           }
           return {
-            changed: merged.changed || labelsChanged,
+            changed: merged.changed || labelsChanged || cols.changed,
             answer: () => ({ ok: true, accepted: merged.accepted, updated: merged.updated, unchanged: merged.unchanged,
               rejected, total: doc.events.length, dirty: !!doc.dirty }),
           };

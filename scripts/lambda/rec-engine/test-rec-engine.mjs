@@ -2356,3 +2356,89 @@ test('timbre parity fixture: the Lambda reproduces every value the device is hel
   }
   for (const c of fx.adjectiveCases) assert.deepEqual(timbreAdjectives(c.centroid), c.words);
 });
+
+// ── scoreCollections: song-level ADD HISTORY (pockets-collections.md) ───────────────────────────
+
+const { COLLECTION_ADD_PARAMS, addSongSim } = await import('./index.mjs');
+const MINUTE = 60 * 1000;
+const INST_A = '6F1C2D3E-0000-4000-8000-00000000AAAA';
+const INST_B = '0D9E8F7A-1111-4000-8000-00000000BBBB';
+const addAct = (itemId, collectionId, atMs, installId) => ({ id: uid(), atMs, kind: 'add', itemId, collectionId,
+  ...(installId ? { installId } : {}) });
+/// Two jazz crates that score identically for sng_e4 on similarity alone.
+const addState = (activity) => ({
+  v: 1, plays: [], favorites: {}, puzzle: [], activity,
+  collections: { atMs: 0, list: [
+    { id: 'pls_a', kind: 'playlist', name: 'A', songIds: ['sng_j1', 'sng_x1'] },
+    { id: 'pls_b', kind: 'playlist', name: 'B', songIds: ['sng_j2', 'sng_x2'] },
+  ] },
+});
+const scoreOf = (out, id) => out.suggestions.find((s) => s.id === id)?.score ?? 0;
+const reasonsOf = (out, id) => out.suggestions.find((s) => s.id === id)?.reasons ?? [];
+
+test('scoreCollections co-add: a song added in the same session as a crate\'s members boosts that crate', () => {
+  const t = NOW - 40 * DAY;   // old enough that the collection-wide recency term is ~0
+  const base = scoreCollections(addState([]), featureIndex(), 'sng_e4', { nowMs: NOW, threshold: 0 });
+  // sng_e4 and sng_j1 were added (to some other playlist) ten minutes apart → pls_a holds a co-added song.
+  const co = scoreCollections(addState([addAct('sng_e4', 'pls_other', t, INST_A), addAct('sng_j1', 'pls_other', t + 10 * MINUTE, INST_A)]),
+    featureIndex(), 'sng_e4', { nowMs: NOW, threshold: 0 });
+  assert.ok(scoreOf(co, 'pls_a') > scoreOf(base, 'pls_a') + 0.4, `${scoreOf(co, 'pls_a')} vs ${scoreOf(base, 'pls_a')}`);
+  assert.ok(reasonsOf(co, 'pls_a').includes('Added alongside songs in this collection'));
+  assert.equal(scoreOf(co, 'pls_b'), scoreOf(base, 'pls_b'), 'the other crate is untouched');
+  // Outside the 30-minute session: no credit.
+  const far = scoreCollections(addState([addAct('sng_e4', 'pls_other', t, INST_A), addAct('sng_j1', 'pls_other', t + 31 * MINUTE, INST_A)]),
+    featureIndex(), 'sng_e4', { nowMs: NOW, threshold: 0 });
+  assert.equal(scoreOf(far, 'pls_a'), scoreOf(base, 'pls_a'));
+  // Two installs never chain into one session.
+  const twoDevices = scoreCollections(addState([addAct('sng_e4', 'pls_other', t, INST_A), addAct('sng_j1', 'pls_other', t + 5 * MINUTE, INST_B)]),
+    featureIndex(), 'sng_e4', { nowMs: NOW, threshold: 0 });
+  assert.equal(scoreOf(twoDevices, 'pls_a'), scoreOf(base, 'pls_a'));
+  // A bulk import (over sessionMaxSongs songs) says nothing.
+  const bulk = [addAct('sng_e4', 'pls_other', t), addAct('sng_j1', 'pls_other', t + MINUTE)];
+  for (let i = 0; i < COLLECTION_ADD_PARAMS.sessionMaxSongs; i++) bulk.push(addAct(`sng_bulk${i}`, 'pls_other', t + MINUTE));
+  assert.equal(scoreOf(scoreCollections(addState(bulk), featureIndex(), 'sng_e4', { nowMs: NOW, threshold: 0 }), 'pls_a'), scoreOf(base, 'pls_a'));
+  // The weight is a param.
+  const off = scoreCollections(addState([addAct('sng_e4', 'pls_other', t), addAct('sng_j1', 'pls_other', t + 10 * MINUTE)]),
+    featureIndex(), 'sng_e4', { nowMs: NOW, threshold: 0, addParams: { ...COLLECTION_ADD_PARAMS, coAddWeight: 0 } });
+  assert.equal(scoreOf(off, 'pls_a'), scoreOf(base, 'pls_a'));
+});
+
+test('scoreCollections add recency: a crate that recently gained songs LIKE the target outranks one that gained unlike ones', () => {
+  // Two crates, identical similarity for sng_e1 (one electronic + one jazz member each, mirrored).
+  const state = (activity) => ({
+    v: 1, plays: [], favorites: {}, puzzle: [], activity,
+    collections: { atMs: 0, list: [
+      { id: 'pls_a', kind: 'playlist', name: 'A', songIds: ['sng_e4', 'sng_j1'] },
+      { id: 'pls_b', kind: 'playlist', name: 'B', songIds: ['sng_e4', 'sng_j1'] },
+    ] },
+  });
+  // Both were touched equally recently (same whole-collection lastActivity) — but pls_a's recent
+  // add was the electronic song, pls_b's the jazz one.
+  const out = scoreCollections(state([addAct('sng_e4', 'pls_a', NOW - DAY), addAct('sng_j1', 'pls_b', NOW - DAY)]),
+    featureIndex(), 'sng_e1', { nowMs: NOW, threshold: 0 });
+  assert.ok(scoreOf(out, 'pls_a') > scoreOf(out, 'pls_b'), `${scoreOf(out, 'pls_a')} vs ${scoreOf(out, 'pls_b')}`);
+  assert.ok(reasonsOf(out, 'pls_a').includes('Similar songs added here recently') || out.suggestions[0].id === 'pls_a');
+  // Recency decays: the same add 60 days ago is worth much less than yesterday's.
+  const old = scoreCollections(state([addAct('sng_e4', 'pls_a', NOW - 60 * DAY), addAct('sng_j1', 'pls_b', NOW - 60 * DAY)]),
+    featureIndex(), 'sng_e1', { nowMs: NOW, threshold: 0 });
+  assert.ok(scoreOf(out, 'pls_a') - scoreOf(out, 'pls_b') > scoreOf(old, 'pls_a') - scoreOf(old, 'pls_b'));
+  // A song added and then removed (no longer a member) earns nothing.
+  const removed = scoreCollections({ ...state([addAct('sng_e5', 'pls_a', NOW - DAY), addAct('sng_j1', 'pls_b', NOW - DAY)]) },
+    featureIndex(), 'sng_e1', { nowMs: NOW, threshold: 0 });
+  assert.equal(scoreOf(removed, 'pls_a'), scoreOf(removed, 'pls_b'));
+  // The similarity itself.
+  const f = featureIndex();
+  assert.ok(addSongSim(f.get('sng_e4'), f.get('sng_e1')) >= COLLECTION_ADD_PARAMS.addRecencyMinSim);
+  assert.ok(addSongSim(f.get('sng_j1'), f.get('sng_e1')) < COLLECTION_ADD_PARAMS.addRecencyMinSim);
+  assert.equal(addSongSim(f.get('sng_x1'), f.get('sng_e1')), null, 'too few comparable facts');
+});
+
+test('cleanActivity keeps a well-formed installId and drops a malformed one', () => {
+  const state = { v: 1, plays: [], favorites: {}, activity: [], puzzle: [], collections: { atMs: 0, list: [] } };
+  mergeBatch(state, { activity: [
+    { id: 'a1', atMs: 1, kind: 'add', itemId: 'sng_e1', collectionId: 'c', installId: INST_A },
+    { id: 'a2', atMs: 2, kind: 'add', itemId: 'sng_e1', collectionId: 'c', installId: 'bad id!' },
+  ] });
+  assert.equal(state.activity[0].installId, INST_A);
+  assert.equal('installId' in state.activity[1], false);
+});

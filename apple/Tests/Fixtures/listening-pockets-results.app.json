@@ -3,9 +3,9 @@
   "generatedAtMs": 1791831600000,
   "stale": false,
   "algo": {
-    "version": 1,
+    "version": 2,
     "params": {
-      "version": 1,
+      "version": 2,
       "sessionGapMs": 1800000,
       "minRun": 3,
       "endOnConsecutiveSkips": 2,
@@ -73,6 +73,35 @@
         "minDistinctDays": 2,
         "genreKeyMinShare": 0.5,
         "maxTopSongs": 25
+      },
+      "collections": {
+        "softMax": 0.6,
+        "softMin": 0.55,
+        "minCentroidMembers": 3,
+        "centroidSample": 200,
+        "simWeights": {
+          "genre": 0.3,
+          "bpm": 0.2,
+          "camelot": 0.15,
+          "timbre": 0.2,
+          "mood": 0.15
+        },
+        "simMinWeight": 0.5,
+        "bpmSigmaMin": 10,
+        "addHalfLifeDays": 45,
+        "unknownAddWeight": 0.75,
+        "addSessionGapMs": 1800000,
+        "addSessionMaxSongs": 50,
+        "membershipTopK": 12,
+        "maxCandidates": 40,
+        "candidateTopCollections": 6,
+        "candidatePerCollection": 300,
+        "coAddSaturation": 3,
+        "candidateBlend": {
+          "membership": 0.55,
+          "coAdd": 0.25,
+          "features": 0.2
+        }
       },
       "nightlyRecomputeAfterMs": 72000000
     }
@@ -6400,5 +6429,6 @@
         }
       ]
     }
-  ]
+  ],
+  "collectionsSeen": 0
 }

@@ -8,13 +8,19 @@ of when a song is added to a collection for that feature set and for the collect
 ## Concepts
 - **Membership vector m(s)**: for song s, a sparse map collectionId → weight.
   - Hard membership = 1.0 (song is directly in the collection, incl. via an album node or a child pocket, flattened).
+    Membership is **CURRENT and retroactive** (Levi, 2026-10-13): a song's hard memberships are its memberships in the
+    LATEST snapshot, for every play old or new. Adding a song to a playlist today re-labels the older pockets it played
+    in (their `membership` and `collection` features) on the next compute; a removal stops counting the same way. A
+    snapshot upload that changes anything marks the profile dirty and kicks a compute, so this happens right away, not
+    only nightly.
   - **Soft membership** (the "similar to other songs in a playlist" part): for a song NOT in collection c, weight =
     `SOFT_MAX (0.6) × sim(s, centroid(c))` when sim ≥ SOFT_MIN (0.55), else 0. `sim` blends what we already have per song in
     rec-features: genre share in c, BPM gaussian vs c's median (fold 80–160), Camelot neighbour fraction, timbre-profile fit
     (reuse the rec-engine's `timbreProfile`/`timbreFit` math — copy, don't import across lambdas), mood Jaccard. Weights live in
     params so they're tunable. Collections with < 3 resolvable members get no centroid (hard membership only).
-  - **Add-time recency**: hard weight is scaled by `0.5 + 0.5·exp(-ageDays/ADD_HALF_LIFE_DAYS (45))` relative to the play
-    time, i.e. a song that was freshly added to a playlist expresses that playlist more strongly. Unknown add time → 0.75.
+  - **Add-time recency**: hard weight is scaled by `0.5 + 0.5·exp(-ageDays/ADD_HALF_LIFE_DAYS (45))` with
+    `ageDays = max(0, (now − addAt) / 1 day)` measured from the ANALYSIS time (never the play time), i.e. a song that was
+    freshly added to a playlist expresses that playlist more strongly. Unknown add time → 0.75.
 - **Pocket membership vector M(P)** = mean of m(s) over the pocket's non-skipped members (L1-normalised top 12 kept).
 - **Add sessions**: songs added to any collection within 30 min of each other by the same install form an add session;
   co-added pairs are an affinity signal ("the user thought these went together").
