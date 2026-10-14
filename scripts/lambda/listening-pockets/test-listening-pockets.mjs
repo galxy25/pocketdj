@@ -1366,28 +1366,65 @@ test('collections: the collection a pocket concentrates becomes a DEFINING featu
   assert.ok(!plain.pockets.some((x) => x.features.some((f) => f.dim === 'collection' || f.dim === 'playContext')));
 });
 
-test('collections: a song added AFTER the play was not a member at that play', () => {
+test('collections: membership is CURRENT — a song added after an old pocket re-labels it (retroactive)', () => {
   const { nowMs, pocketRows, doc } = collectionScenario({ lateAdds: true });
   const res = computeResults(doc, FEATS, { nowMs });
   const p = res.pockets.find((x) => x.members[0].eventId === pocketRows[0].id);
   assert.ok(p.features.some((f) => f.dim === 'collection' && f.value === 'pls_house'));
-  assert.ok(!p.features.some((f) => f.dim === 'collection' && f.value === 'pls_late'), 'added after the plays');
+  assert.ok(p.features.some((f) => f.dim === 'collection' && f.value === 'pls_late'), 'added after the plays: still counts');
   const w = (id) => p.membership.find((m) => m.collectionId === id)?.weight ?? 0;
-  assert.ok(w('pls_house') > w('pls_late'), `hard (as of the play) beats soft: ${w('pls_house')} vs ${w('pls_late')}`);
-  // Add-time recency on the hard weight: fresh = 1.0, unknown = 0.75, one half-life = 0.5 + 0.5/e.
+  assert.ok(w('pls_late') > w('pls_house'), `a fresher add (vs NOW) expresses its playlist more: ${w('pls_late')} vs ${w('pls_house')}`);
+  // Without the late snapshot entry the same pocket does not carry it — and with it removed again, it stops counting.
+  const before = computeResults({ ...doc, collections: { ...doc.collections,
+    list: doc.collections.list.filter((c) => c.id !== 'pls_late') } }, FEATS, { nowMs });
+  const pb = before.pockets.find((x) => x.members[0].eventId === pocketRows[0].id);
+  assert.ok(!pb.membership.some((m) => m.collectionId === 'pls_late'));
+  // Add-time recency is relative to the ANALYSIS time: fresh = 1.0, unknown = 0.75, one half-life
+  // = 0.5 + 0.5/e, a (clock-skewed) future add clamps to age 0 — whatever the play time.
   const m = buildCollectionModel({ collections: colDoc([
     { id: 'fresh', songIds: [E(1)], adds: [[E(1), nowMs]] },
     { id: 'unknown', songIds: [E(1)] },
     { id: 'aged', songIds: [E(1)], adds: [[E(1), nowMs - 45 * DAY]] },
-    { id: 'future', songIds: [E(1)], adds: [[E(1), nowMs + DAY]] },
-  ]) }, makeSongInfo(FEATS));
-  const v = m.vectorOf(E(1), nowMs);
+    { id: 'future', songIds: [E(1)], adds: [[E(1), nowMs + HOUR]] },
+  ]) }, makeSongInfo(FEATS), POCKET_PARAMS, nowMs);
+  const v = m.vectorOf(E(1));
   assert.equal(v.get('fresh'), 1);
   assert.equal(v.get('unknown'), 0.75);
   assert.ok(Math.abs(v.get('aged') - (0.5 + 0.5 / Math.E)) < 1e-9);
-  assert.equal(v.has('future'), false, 'no centroid (1 member) and not yet a member');
-  assert.deepEqual(m.collectionsAt(E(1), nowMs), ['aged', 'fresh', 'unknown']);
-  assert.deepEqual(m.collectionsAt('sng_e00000000001_clean', nowMs + 2 * DAY), ['aged', 'fresh', 'future', 'unknown'], 'variant ids resolve');
+  assert.equal(v.get('future'), 1);
+  assert.deepEqual(m.collectionsOf(E(1)), ['aged', 'fresh', 'future', 'unknown']);
+  assert.deepEqual(m.collectionsOf('sng_e00000000001_clean'), ['aged', 'fresh', 'future', 'unknown'], 'variant ids resolve');
+});
+
+test('collections: a new snapshot upload recomputes, so OLD pockets re-label immediately (not only nightly)', async () => {
+  const p = freshProfile();
+  // An old pocket (three days ago) plus enough other listening that a collection can stand out.
+  const baseline = [];
+  for (let d = 4; d <= 12; d++) {
+    baseline.push(...wireSeq('PSPSP', NOW - d * DAY, { songs: [H(1), H(2), J(1), J(2), H(3)] }));
+  }
+  const pocket = wireSeq('PPPPP', NOW - 3 * DAY);
+  const first = await call('POST', '/pockets/events', { profile: p, body: batch([...baseline, ...pocket],
+    { collections: [{ id: 'pls_jazz', kind: 'playlist', songIds: [J(1), J(2), J(3)] }] }) });
+  assert.equal(first.status, 200, JSON.stringify(first.json));
+  const r1 = (await call('GET', '/pockets/results', { profile: p })).json;
+  const old1 = r1.pockets.find((x) => x.members[0].eventId === pocket[0].id.toUpperCase());
+  assert.ok(old1, 'the old pocket');
+  assert.ok(!old1.membership.some((m) => m.collectionId === 'pls_new'));
+  // Today the user files those songs into a new playlist. The upload carries ONLY the snapshot.
+  const songs = [E(1), E(2), E(3), E(4), E(5), E(6)];
+  const up = await call('POST', '/pockets/events', { profile: p, body: batch([], { sentAtMs: NOW + 1, collections: [
+    { id: 'pls_jazz', kind: 'playlist', songIds: [J(1), J(2), J(3)] },
+    { id: 'pls_new', kind: 'playlist', songIds: songs, adds: songs.map((songId) => ({ songId, atMs: NOW })) },
+  ] }) });
+  assert.equal(up.status, 200);
+  assert.equal(up.json.dirty, true, 'a snapshot-only change marks the profile dirty…');
+  const r2 = (await call('GET', '/pockets/results', { profile: p })).json;
+  assert.equal(r2.stale, false, '…and kicks a compute (inline here; async self-invoke when deployed) that clears it');
+  assert.ok(r2.generatedAtMs >= r1.generatedAtMs);
+  const old2 = r2.pockets.find((x) => x.id === old1.id);
+  assert.equal(old2.membership[0].collectionId, 'pls_new', JSON.stringify(old2.membership));
+  assert.ok(old2.features.some((f) => f.dim === 'collection' && f.value === 'pls_new'), JSON.stringify(old2.features.map((f) => `${f.dim}:${f.value}`)));
 });
 
 test('collections: SOFT membership — a non-member that sounds like a collection expresses it', () => {
@@ -1398,12 +1435,12 @@ test('collections: SOFT membership — a non-member that sounds like a collectio
     { id: 'tiny', songIds: [J(1), J(2)] },
   ]) }, info);
   const cp = POCKET_PARAMS.collections;
-  const e6 = m.vectorOf(E(6), Date.UTC(2026, 9, 12));
+  const e6 = m.vectorOf(E(6));
   assert.ok(e6.get('house') >= cp.softMax * cp.softMin && e6.get('house') <= cp.softMax, `soft ${e6.get('house')}`);
   assert.equal(e6.has('rap'), false, 'not similar to the hip-hop crate');
   assert.equal(m.centroids.has('tiny'), false, '< 3 resolvable members: hard only');
-  assert.equal(m.vectorOf(J(3), 0).has('tiny'), false);
-  assert.equal(m.vectorOf(E(1), null).get('house'), cp.unknownAddWeight, 'a member is hard, never soft');
+  assert.equal(m.vectorOf(J(3)).has('tiny'), false);
+  assert.equal(m.vectorOf(E(1)).get('house'), cp.unknownAddWeight, 'a member is hard, never soft');
   assert.ok(m.simTo(info(H(1)), 'house') < cp.softMin);
   assert.ok(cosine(e6, new Map([['house', 1]])) > 0.99);
 });

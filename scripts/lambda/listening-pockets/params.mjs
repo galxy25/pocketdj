@@ -38,7 +38,8 @@ export const POCKET_PARAMS = Object.freeze({
   ]),
   patterns: Object.freeze({ minPockets: 2, minDistinctDays: 2, genreKeyMinShare: 0.5, maxTopSongs: 25 }),
   // ── Collections (docs/design/pockets-collections.md) ───────────────────────────────────────────
-  // m(s) = hard membership (1.0 × add-time recency) ∪ soft membership (softMax × sim(s, centroid(c))
+  // Membership is CURRENT and retroactive (a song added today re-labels older pockets).
+  // m(s) = hard membership (1.0 × add-time recency vs now) ∪ soft membership (softMax × sim(s, centroid(c))
   // when sim ≥ softMin, for collections s is NOT in). `sim` is the weighted mean of the terms both
   // sides can compute (genre share, BPM gaussian, Camelot neighbour fraction, timbre fit, mood
   // Jaccard), and is only trusted when the computable terms carry ≥ `simMinWeight` of the total.
@@ -47,7 +48,7 @@ export const POCKET_PARAMS = Object.freeze({
     simWeights: Object.freeze({ genre: 0.3, bpm: 0.2, camelot: 0.15, timbre: 0.2, mood: 0.15 }),
     simMinWeight: 0.5,
     bpmSigmaMin: 10,                 // folded-BPM gaussian width floor (the rec engine's 10)
-    addHalfLifeDays: 45,             // hard weight × (0.5 + 0.5·exp(−ageDays / this))
+    addHalfLifeDays: 45,             // hard weight × (0.5 + 0.5·exp(−ageDays / this)), ageDays = (now − add) ≥ 0
     unknownAddWeight: 0.75,          // hard weight when the add time is unknown
     addSessionGapMs: 30 * 60 * 1000, // adds within this of each other (same install) = one add session
     addSessionMaxSongs: 50,          // bigger sessions are bulk imports, not "these go together"

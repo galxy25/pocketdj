@@ -1,10 +1,13 @@
 // LISTENING POCKETS — COLLECTION MEMBERSHIP (docs/design/pockets-collections.md). Pure functions over
 // the stored collections snapshot + add history: no I/O, no clock.
 //
-//   m(s, t)  the membership vector of song s at play time t — collectionId → weight:
+//   m(s)     the membership vector of song s — collectionId → weight:
 //            · HARD   1.0 × add-time recency `0.5 + 0.5·exp(−ageDays/addHalfLifeDays)` for every
-//                     collection s is a (flattened) member of, as of t: a song added AFTER the play
-//                     was not a member at that play. Unknown add time → `unknownAddWeight`.
+//                     collection s is CURRENTLY a (flattened) member of, ageDays measured from the
+//                     ANALYSIS time (`nowMs`). Membership is current and RETROACTIVE (Levi,
+//                     2026-10-13): adding a song to a playlist today re-labels every older pocket it
+//                     played in on the next compute; a removal stops counting the same way.
+//                     Unknown add time → `unknownAddWeight`.
 //            · SOFT   `softMax × sim(s, centroid(c))` when sim ≥ softMin, for collections s is NOT
 //                     in — "a song similar to the songs in a playlist expresses that playlist".
 //   add sessions  adds within `addSessionGapMs` of each other on one install; co-added pairs are an
@@ -125,7 +128,7 @@ export function meanVector(vecs) {
  * neither. `songInfo(songId)` → `{ genre, bpm (folded), camelot, neighbors: Set, timbre, moods: [] }`
  * or null for a song the catalog does not know.
  */
-export function buildCollectionModel(eventsDoc, songInfo, params = POCKET_PARAMS) {
+export function buildCollectionModel(eventsDoc, songInfo, params = POCKET_PARAMS, nowMs = Date.now()) {
   const cp = params.collections;
   const list = Array.isArray(eventsDoc?.collections?.list) ? eventsDoc.collections.list : null;
   const addEvents = Array.isArray(eventsDoc?.addEvents) ? eventsDoc.addEvents : null;
@@ -160,11 +163,10 @@ export function buildCollectionModel(eventsDoc, songInfo, params = POCKET_PARAMS
     }
     return out;
   };
-  /// Was the song a member at `atMs`? (An add time after the play → not yet.)
-  const memberAt = (t, atMs) => t == null || atMs == null || t <= atMs;
-  const hardWeight = (t, atMs) => {
-    if (t == null || atMs == null) return cp.unknownAddWeight;
-    const ageDays = Math.max(0, (atMs - t) / DAY_MS);
+  /// Hard weight from the add time, relative to the ANALYSIS time (never the play time).
+  const hardWeight = (t) => {
+    if (t == null || !Number.isFinite(nowMs)) return cp.unknownAddWeight;
+    const ageDays = Math.max(0, (nowMs - t) / DAY_MS);
     return 0.5 + 0.5 * Math.exp(-ageDays / cp.addHalfLifeDays);
   };
 
@@ -257,24 +259,19 @@ export function buildCollectionModel(eventsDoc, songInfo, params = POCKET_PARAMS
     return out;
   };
 
-  /// m(s, atMs): hard (as of atMs) ∪ soft. A current member added AFTER atMs is scored softly
-  /// for that play, like any other non-member.
-  const vectorOf = (songId, atMs) => {
+  /// m(s): current hard memberships ∪ soft. The same for every play of s, old or new.
+  const vectorMemo = new Map();
+  const vectorOf = (songId) => {
+    const key = canonOf(songId);
+    if (vectorMemo.has(key)) return vectorMemo.get(key);
     const out = new Map(softOf(songId));
-    const info = songInfo(songId);
-    for (const [colId, t] of hardEntries(songId)) {
-      if (memberAt(t, atMs)) out.set(colId, hardWeight(t, atMs));
-      else if (info) { const w = softWeight(info, colId); if (w > 0) out.set(colId, w); }
-    }
+    for (const [colId, t] of hardEntries(songId)) out.set(colId, hardWeight(t));
+    vectorMemo.set(key, out);
     return out;
   };
 
-  /// The collections a song was a hard member of at `atMs` (sorted) — the `collection` dim.
-  const collectionsAt = (songId, atMs) => {
-    const out = [];
-    for (const [colId, t] of hardEntries(songId)) if (memberAt(t, atMs)) out.push(colId);
-    return out.sort();
-  };
+  /// The collections a song is CURRENTLY a hard member of (sorted) — the `collection` dim.
+  const collectionsOf = (songId) => [...hardEntries(songId).keys()].sort();
 
   // ── Add sessions → co-add affinity ──────────────────────────────────────────────────────────
   // Records: `add` events (per install) ∪ the snapshot's current-member add times (install
@@ -339,19 +336,19 @@ export function buildCollectionModel(eventsDoc, songInfo, params = POCKET_PARAMS
 
   return {
     seen: cols.length, list: cols, centroids, addSessions,
-    hardEntries, collectionsAt, vectorOf, softOf, simTo, coAdd, membersByRecency, canonOf, keysOf,
+    hardEntries, collectionsOf, vectorOf, softOf, simTo, coAdd, membersByRecency, canonOf, keysOf,
   };
 }
 
-/// Pocket membership vector M(P): mean of m(s, play time) over the pocket's (non-skipped) members.
+/// Pocket membership vector M(P): mean of m(s) over the pocket's (non-skipped) members.
 export function pocketMembership(model, members) {
-  return meanVector(members.map((a) => model.vectorOf(a.songId, a.atMs)));
+  return meanVector(members.map((a) => model.vectorOf(a.songId)));
 }
 
 /**
  * A pattern's `collectionCandidates` (pockets-collections.md): songs that are hard members of the
  * pattern's top collections, or co-added with its topSongs, NOT already in topSongs (under any id).
- * score = blend of cosine(m(song, now), pattern vector), add-session affinity with the topSongs
+ * score = blend of cosine(m(song), pattern vector), add-session affinity with the topSongs
  * (saturating at `coAddSaturation`), and the pattern's musical feature match (`matchOf(songId)` →
  * 0…1, or null when the pattern has no musical defining features — that term then drops and the
  * blend renormalises over the rest).
@@ -390,7 +387,7 @@ export function collectionCandidates(model, patternVec, topSongs, { nowMs, param
   const B = cp.candidateBlend;
   const out = [];
   for (const c of pool.values()) {
-    const mem = cosine(model.vectorOf(c.songId, nowMs), patternVec);
+    const mem = cosine(model.vectorOf(c.songId), patternVec);
     const aff = Math.min(1, c.coAdds / cp.coAddSaturation);
     const feat = matchOf(c.songId);
     let num = B.membership * mem + B.coAdd * aff; let den = B.membership + B.coAdd;

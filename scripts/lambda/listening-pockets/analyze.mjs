@@ -23,7 +23,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 const round = (x, dp) => { const m = 10 ** dp; return Math.round(x * m) / m; };
 
-// `collection` (multi-valued: the song's hard memberships AS OF the play) and `playContext` (the
+// `collection` (multi-valued: the song's CURRENT hard memberships — retroactive, so adding a song to
+// a playlist today re-labels its older pockets on the next compute) and `playContext` (the
 // collection the play started from) are pockets-collections.md's dims — empty for a profile that
 // never sent a collections snapshot / context ids, so its documents are unchanged by them.
 const MUSICAL_DIMS = ['artist', 'genre', 'mood', 'camelot', 'collection'];
@@ -119,7 +120,7 @@ const meanStd = (xs) => {
  * features row (any identity of the song id), with the event's own `artist` snapshot as the
  * fallback for songs the catalog does not know (Apple Music captures, deleted rows).
  */
-export function attributesOf(e, features, { params = POCKET_PARAMS, tzFallbackMin = 0, collectionsAt = null } = {}) {
+export function attributesOf(e, features, { params = POCKET_PARAMS, tzFallbackMin = 0, collectionsOf = null } = {}) {
   const row = resolveSong(features?.byId, features?.byAm, e.songId);
   const artistRaw = (typeof row?.a === 'string' && row.a.trim()) || (typeof e.artist === 'string' && e.artist.trim()) || null;
   const tz = Number.isFinite(e.tzOffsetMin) ? e.tzOffsetMin : tzFallbackMin;
@@ -145,7 +146,7 @@ export function attributesOf(e, features, { params = POCKET_PARAMS, tzFallbackMi
     place: ctx?.kind === 'place' && ctx.placeId ? ctx.placeId : null,
     trip: ctx?.kind === 'trip' && ctx.tripId ? ctx.tripId : null,
     ctx: ctx && ((ctx.kind === 'place' && ctx.placeId) || (ctx.kind === 'trip' && ctx.tripId)) ? ctx : null,
-    collections: collectionsAt ? collectionsAt(e.songId, e.atMs) : [],
+    collections: collectionsOf ? collectionsOf(e.songId) : [],
     playContext: typeof e.contextId === 'string' && e.contextId ? e.contextId : null,
   };
 }
@@ -559,10 +560,10 @@ export function computeResults(eventsDoc, features, { nowMs = Date.now(), params
   const tzFallbackMin = modalTz(normalized);
   // Collections (pockets-collections.md): null for a profile that never sent a snapshot / add history.
   const songInfo = makeSongInfo(feats, params);
-  const model = params.collections ? buildCollectionModel(eventsDoc, songInfo, params) : null;
-  const collectionsAt = model ? model.collectionsAt : null;
+  const model = params.collections ? buildCollectionModel(eventsDoc, songInfo, params, nowMs) : null;
+  const collectionsOf = model ? model.collectionsOf : null;
   const attrs = new Map();
-  for (const e of normalized) attrs.set(e.id, attributesOf(e, feats, { params, tzFallbackMin, collectionsAt }));
+  for (const e of normalized) attrs.set(e.id, attributesOf(e, feats, { params, tzFallbackMin, collectionsOf }));
 
   // Display label per artist key: the spelling seen most often (ties → first in order).
   const artistVotes = new Map();
