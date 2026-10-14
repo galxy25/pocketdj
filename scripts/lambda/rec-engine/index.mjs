@@ -175,6 +175,45 @@ const ERA_MIN_NEUTRAL_OBS = 25;
 //                     + coplay 1.25 + recency 0.5 + puzzle 0.5 + timbre 0.5     = 8.0
 const FORYOU_SIM_BUDGET = 7.75;
 const COLLECTIONS_SIM_BUDGET = 8.0;
+// ── ADD-HISTORY SIGNALS in `scoreCollections` (docs/design/pockets-collections.md, 2026-10-13) ──
+// The add history `state.activity` already stores (kind 'add', itemId = song, collectionId, atMs)
+// read at SONG level, not just as the collection-wide `lastActivity` the `recency` term uses:
+//   coadd      the target was ADDED (to anything) in the same add session — adds ≤ sessionGapMs
+//              apart, same install when both rows carry one — as songs that are members of C:
+//              "the user thought these went together". coAddWeight × min(1, n / coAddSaturation).
+//              Sessions over sessionMaxSongs distinct songs are bulk imports and say nothing.
+//   addrecency C's members that were RECENTLY added and SOUND LIKE the target (genre / BPM /
+//              Camelot / mood, ≥ addRecencyMinSim) — "this crate is growing in this direction right
+//              now". addRecencyWeight × max over such adds of sim × exp(−ageDays/addRecencyDecayDays).
+// Both are BONUS terms: earned only from history, absent (not neutral) without it, and deliberately
+// NOT in COLLECTIONS_SIM_BUDGET — adding them there would change the dead-term renormalization, and
+// with it every existing score, for profiles that have no add history at all.
+export const COLLECTION_ADD_PARAMS = Object.freeze({
+  sessionGapMs: 30 * 60 * 1000,
+  sessionMaxSongs: 50,
+  coAddWeight: 1.0,
+  coAddSaturation: 2,
+  addRecencyWeight: 0.5,
+  addRecencyDecayDays: 14,
+  addRecencyMinSim: 0.5,
+  bpmSigma: 10,
+});
+
+/// 0…1 song-to-song musical similarity over the facts both rows carry (genre equality, BPM
+/// gaussian, Camelot neighbour, mood Jaccard), or null with fewer than two comparable facts.
+export function addSongSim(x, S, sigma = COLLECTION_ADD_PARAMS.bpmSigma) {
+  if (!x || !S) return null;
+  const terms = [];
+  if (x.g && S.g) terms.push(x.g === S.g ? 1 : 0);
+  if (x.b != null && S.b != null) terms.push(Math.exp(-((x.b - S.b) ** 2) / (2 * sigma * sigma)));
+  if (x.c && S.c) terms.push(camelotNeighbors(S.c).has(x.c) ? 1 : 0);
+  if (x.s?.length && S.s?.length) {
+    const a = new Set(x.s);
+    const inter = S.s.reduce((n, k) => n + (a.has(k) ? 1 : 0), 0);
+    terms.push(inter / new Set([...x.s, ...S.s]).size);
+  }
+  return terms.length >= 2 ? terms.reduce((s, t) => s + t, 0) / terms.length : null;
+}
 // ── TIMBRE (audio-similarity v2 — the 14-axis sound of a crate / seed set) ──────────────────────
 // The corpus rides `rec-features.json` as `t` (build-rec-features.mjs attaches public/timbre.json,
 // aliases already resolved), so the Lambda pays NOTHING new for it — `loadFeatures` was already
@@ -828,6 +867,8 @@ function cleanActivity(e) {
     const v = str(e[k]);
     if (v) out[k] = v;
   }
+  // Optional: the originating install, so add sessions never chain two devices' adds together.
+  if (typeof e.installId === 'string' && /^[A-Za-z0-9-]{8,64}$/.test(e.installId)) out.installId = e.installId;
   return out;
 }
 function cleanPuzzle(e) {
@@ -1892,9 +1933,42 @@ export function scoreForYou(state, featuresById,
 // ── Collection suggestions (GET /recs/collections?songId=S) ─────────────────────────────────────
 
 /** Deterministic per-song collection suggestions over the profile state + features doc. Pure. */
-export function scoreCollections(state, featuresById, songId, { nowMs = Date.now(), threshold = 0.8 } = {}) {
+export function scoreCollections(state, featuresById, songId, { nowMs = Date.now(), threshold = 0.8,
+  addParams = COLLECTION_ADD_PARAMS } = {}) {
   const S = featuresById.get(songId);
   if (!S) return { v: 1, songId, suggestions: [] };
+
+  // ADD HISTORY at song level (see COLLECTION_ADD_PARAMS): the songs co-added with S, and each
+  // collection's song adds. One pass over the activity log.
+  const sKeys = identitySet([songId]);
+  const adds = (state.activity || []).filter((a) => a && a.kind === 'add' && a.itemId && a.collectionId
+    && Number.isFinite(a.atMs))
+    .sort((a, b) => ((a.installId || '') < (b.installId || '') ? -1 : (a.installId || '') > (b.installId || '') ? 1 : 0)
+      || a.atMs - b.atMs || (a.id < b.id ? -1 : 1));
+  const coAddedWithS = new Set();
+  {
+    // Sessions: same install (rows without one chain with each other only), gaps ≤ sessionGapMs.
+    let session = [];
+    const flush = () => {
+      const items = new Set(session.map((a) => a.itemId));
+      if (items.size >= 2 && items.size <= addParams.sessionMaxSongs
+          && session.some((a) => identityHas(sKeys, a.itemId))) {
+        for (const id of items) if (!identityHas(sKeys, id)) coAddedWithS.add(id);
+      }
+      session = [];
+    };
+    for (const a of adds) {
+      const prev = session[session.length - 1];
+      if (prev && ((prev.installId || '') !== (a.installId || '') || a.atMs - prev.atMs > addParams.sessionGapMs)) flush();
+      session.push(a);
+    }
+    flush();
+  }
+  const addsByCol = new Map();
+  for (const a of adds) {
+    if (!addsByCol.has(a.collectionId)) addsByCol.set(a.collectionId, []);
+    addsByCol.get(a.collectionId).push(a);
+  }
 
   const sNeighbors = camelotNeighbors(S.c);
   const playsOfS = state.plays.filter((p) => p.songId === songId).map((p) => p.atMs);
@@ -2003,7 +2077,9 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
     // NEVER OFFER A COLLECTION THE SONG IS ALREADY IN, under any of its ids — `includes` alone
     // misses the `_clean`/`_explicit` variant and the `amrec_<storeId>` capture of the same
     // recording, which is how this route came to suggest "add it to the crate it is already in".
-    if (!col.songIds?.length || identityHas(identitySet(col.songIds), songId)) continue;
+    if (!col.songIds?.length) continue;
+    const memberKeys = identitySet(col.songIds);
+    if (identityHas(memberKeys, songId)) continue;
     const sample = col.songIds.slice(0, 200);
     const rows = sample.map((id) => featuresById.get(id)).filter(Boolean);
     const terms = [];
@@ -2076,6 +2152,25 @@ export function scoreCollections(state, featuresById, songId, { nowMs = Date.now
     if (lastAct) {
       const days = Math.max(0, (nowMs - lastAct) / DAY_MS);
       terms.push(['recency', 0.5 * Math.exp(-days / 14), 'Recently updated']);
+    }
+    if (coAddedWithS.size) {
+      let n = 0;
+      for (const id of coAddedWithS) if (identityHas(memberKeys, id)) n += 1;
+      if (n > 0) {
+        terms.push(['coadd', addParams.coAddWeight * Math.min(1, n / addParams.coAddSaturation),
+                    'Added alongside songs in this collection']);
+      }
+    }
+    {
+      let best = 0;
+      for (const a of addsByCol.get(col.id) || []) {
+        if (!identityHas(memberKeys, a.itemId)) continue;   // since removed: not a member any more
+        const sim = addSongSim(featuresById.get(a.itemId), S, addParams.bpmSigma);
+        if (sim == null || sim < addParams.addRecencyMinSim) continue;
+        const days = Math.max(0, (nowMs - a.atMs) / DAY_MS);
+        best = Math.max(best, sim * Math.exp(-days / addParams.addRecencyDecayDays));
+      }
+      if (best > 0) terms.push(['addrecency', addParams.addRecencyWeight * best, 'Similar songs added here recently']);
     }
     if (puzzleGenreCols.has(col.id)) {
       // The game is SHOWN as "Gem Collector" (its persisted token stays `collectorsPuzzle`).

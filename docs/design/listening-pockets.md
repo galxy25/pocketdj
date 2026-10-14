@@ -9,6 +9,7 @@ Code: `scripts/lambda/listening-pockets/`. Every knob is in `params.mjs`.
 | `params.mjs` | `POCKET_PARAMS` (the algorithm, echoed as `algo.params`) and `POCKET_LIMITS` (storage/wire caps) |
 | `detect.mjs` | pure: `normalizeEvents` → `sessionize` → `detectPockets` |
 | `analyze.mjs` | pure: `buildBaseline`, `analyzeMembers`, `titleFor`, `clusterPatterns`, `computeResults` |
+| `collections.mjs` | pure: collection membership vectors (hard + soft + add-time recency), add sessions, pattern `collectionCandidates` — see `pockets-collections.md` |
 | `features.mjs` | `loadFeatures` (CDN, 15 min TTL, `POCKETS_FEATURES_FILE` seam), `indexFeatures`, `resolveSong` |
 | `store.mjs` | S3 / local-dir objects, ETag-conditional puts; the stored row (`cleanEvent`) and per-id merge (`mergeEvents`) |
 | `index.mjs` | HTTP routes, auth, async compute job, nightly job |
