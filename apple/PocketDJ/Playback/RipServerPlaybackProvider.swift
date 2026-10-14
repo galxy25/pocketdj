@@ -62,7 +62,7 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
         let ticket = tryPlayGeneration
         do {
             let now = try await rips.play((id: song.id, title: song.name, artist: song.artist),
-                                          startMs: nil, atMs: atMs)
+                                          startMs: nil, atMs: atMs, playback: true)
             guard ticket == tryPlayGeneration else {
                 DiagLog.shared.telemetry("ripreq", "tryPlay superseded song=\(song.id)")
                 return false
@@ -115,8 +115,21 @@ final class RipServerPlaybackProvider: TrackPlaybackProvider {
     /// song that's being streamed elsewhere (Apple Music) so a durable rip is ready
     /// shortly after. The rip POLICY lives with the rip provider (which already owns
     /// `rips`); `requestRipIfNeeded` is idempotent + never throws + never blocks playback.
+    ///
+    /// SAME-HOST DEFERRAL: this is only ever fired while Apple Music (MusicKit) is the backend
+    /// that just started streaming. When the rip server runs on THIS Mac, its live capture
+    /// plays the song in Music.app under the same Apple ID — which interrupts the stream we
+    /// just started (the 2026-10-13 cascade). So on the same host the passive rip is NOT sent
+    /// while we stream. It is dropped rather than queued for later: the server has no
+    /// "run when this client is idle" signal, and a client-side flush at stop would start a
+    /// capture the moment the listener pressed ▶ again — the same interruption, one step later.
+    /// A song heard on this Mac can still be ripped explicitly (collection Rip / Rip+Burn).
     func requestAsyncRip(_ songId: String) async {
-        await rips.requestRipIfNeeded(songId)
+        if await rips.serverIsThisHost() {
+            DiagLog.shared.log("rip", "passive rip deferred songId=\(songId) reason=same-host-capture")
+            return
+        }
+        await rips.requestRipIfNeeded(songId, playback: true)
     }
 
     func togglePlayPause() { player.toggle() }

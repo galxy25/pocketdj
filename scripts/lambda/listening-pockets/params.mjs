@@ -11,7 +11,9 @@
 // the same events (a different pocket boundary, a different defining rule) — the app may show it.
 
 export const POCKET_PARAMS = Object.freeze({
-  version: 1,
+  // v2 (2026-10-13): collection membership — the `collection` / `playContext` categorical dims,
+  // pocket/pattern membership vectors and pattern collection candidates (docs/design/pockets-collections.md).
+  version: 2,
   // ── Detection ────────────────────────────────────────────────────────────────────────────────
   sessionGapMs: 30 * 60 * 1000,      // start-to-start gap that splits sessions (strictly greater)
   minRun: 3,                         // consecutive non-skips that OPEN a pocket
@@ -35,6 +37,29 @@ export const POCKET_PARAMS = Object.freeze({
     Object.freeze(['afternoon', 14, 18]), Object.freeze(['evening', 18, 22]),
   ]),
   patterns: Object.freeze({ minPockets: 2, minDistinctDays: 2, genreKeyMinShare: 0.5, maxTopSongs: 25 }),
+  // ── Collections (docs/design/pockets-collections.md) ───────────────────────────────────────────
+  // Membership is CURRENT and retroactive (a song added today re-labels older pockets).
+  // m(s) = hard membership (1.0 × add-time recency vs now) ∪ soft membership (softMax × sim(s, centroid(c))
+  // when sim ≥ softMin, for collections s is NOT in). `sim` is the weighted mean of the terms both
+  // sides can compute (genre share, BPM gaussian, Camelot neighbour fraction, timbre fit, mood
+  // Jaccard), and is only trusted when the computable terms carry ≥ `simMinWeight` of the total.
+  collections: Object.freeze({
+    softMax: 0.6, softMin: 0.55, minCentroidMembers: 3, centroidSample: 200,
+    simWeights: Object.freeze({ genre: 0.3, bpm: 0.2, camelot: 0.15, timbre: 0.2, mood: 0.15 }),
+    simMinWeight: 0.5,
+    bpmSigmaMin: 10,                 // folded-BPM gaussian width floor (the rec engine's 10)
+    addHalfLifeDays: 45,             // hard weight × (0.5 + 0.5·exp(−ageDays / this)), ageDays = (now − add) ≥ 0
+    unknownAddWeight: 0.75,          // hard weight when the add time is unknown
+    addSessionGapMs: 30 * 60 * 1000, // adds within this of each other (same install) = one add session
+    addSessionMaxSongs: 50,          // bigger sessions are bulk imports, not "these go together"
+    membershipTopK: 12,
+    // Pattern collection candidates.
+    maxCandidates: 40,
+    candidateTopCollections: 6,      // hard members of the pattern's top-N collections are candidates…
+    candidatePerCollection: 300,     // …most recently added first, at most this many per collection
+    coAddSaturation: 3,              // co-adds with topSongs at which add affinity reaches 1
+    candidateBlend: Object.freeze({ membership: 0.55, coAdd: 0.25, features: 0.2 }),
+  }),
   // ── Jobs ─────────────────────────────────────────────────────────────────────────────────────
   nightlyRecomputeAfterMs: 20 * 60 * 60 * 1000,
 });
@@ -54,6 +79,13 @@ export const POCKET_LIMITS = Object.freeze({
   maxProfilesDefault: 10,            // enrollment cap when MAX_PROFILES is unset
   nightlyLowTimeMs: 25_000,          // chain a continuation when less than this remains
   nightlyMaxHops: 20,
+  // ── Collections snapshot + add history (POST /events, optional; mirrors rec-engine cleanSnapshot)
+  maxCollections: 500,               // collections kept per snapshot (truncated, never rejected)
+  maxCollectionSongs: 5000,          // song ids per collection
+  maxSnapshotSongs: 100_000,         // song ids across the whole snapshot
+  maxStoredAddEvents: 5000,          // song-level add/remove history, newest kept
+  addRetentionDays: 365,             // add events older than this are dropped
+  maxIdChars: 64,                    // collection / context ids: short opaque tokens, never names
   // ── "In the Pocket" rounds (POST /rounds) ─────────────────────────────────────────────────────
   maxBatchRounds: 50,                // rounds in one upload
   maxStoredRounds: 500,              // per profile, oldest-first eviction (same retentionDays)

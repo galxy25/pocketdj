@@ -23,7 +23,7 @@ import { resolve } from 'node:path';
 import { computeResults } from './analyze.mjs';
 import { detect } from './detect.mjs';
 import { indexFeatures } from './features.mjs';
-import { cleanEvent, cleanLabels, mergeEvents, freshEventsDoc } from './store.mjs';
+import { cleanEvent, cleanLabels, mergeEvents, freshEventsDoc, mergeCollectionsUpload } from './store.mjs';
 import { AWS_ENV } from '../../lib/aws-env.mjs';
 
 const DEFAULT_FEATURES_URL = `${AWS_ENV.cdn.prod}/rec-features.json`;
@@ -86,7 +86,8 @@ export function toUpload(input, { install } = {}) {
         places: null, trips: null, shape: 'history' };
     }
     return { installId: install || input.installId || 'LOCAL-RUNNER', events: input.events,
-      places: input.places ?? null, trips: input.trips ?? null, shape: 'upload' };
+      places: input.places ?? null, trips: input.trips ?? null, shape: 'upload',
+      collections: input.collections, addEvents: input.addEvents, sentAtMs: input.sentAtMs };
   }
   throw new Error('unrecognised --events input: expected an upload batch, an event array, or a play-history document');
 }
@@ -103,6 +104,7 @@ export function buildEventsDoc(upload, nowMs) {
   if (Array.isArray(upload.places) || Array.isArray(upload.trips)) {
     doc.labels = { ...cleanLabels(upload.places, upload.trips), atMs: nowMs };
   }
+  mergeCollectionsUpload(doc, upload, upload.installId, nowMs);
   return { doc, rejected, merged };
 }
 

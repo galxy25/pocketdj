@@ -22,6 +22,35 @@ struct ListeningPocketsUploadBatch: Encodable, Equatable {
     /// Only while location is ACTIVE (opted in + permitted); omitted otherwise.
     var places: [ListeningPocketsPlaceWire]?
     var trips: [ListeningPocketsTripWire]?
+    /// Collection membership snapshot (ids only — NEVER names), sent when its content hash moved
+    /// or ≥ 24 h since the last send. Rides its OWN batch (`events: []`). See
+    /// docs/design/pockets-collections.md.
+    var collections: [ListeningPocketsCollectionWire]? = nil
+    /// Song-level add/remove history (last 365 d, ≤ 5000, newest first) — with `collections`.
+    var addEvents: [ListeningPocketsAddEventWire]? = nil
+}
+
+/// One collection's flattened membership as uploaded.
+struct ListeningPocketsCollectionWire: Encodable, Equatable {
+    var id: String
+    /// pocket | playlist | source
+    var kind: String
+    var songIds: [String]
+    /// When each CURRENT member was last added (unknowns omitted).
+    var adds: [Add]
+    struct Add: Encodable, Equatable {
+        var songId: String
+        var atMs: Int64
+    }
+}
+
+/// One song-level add/remove.
+struct ListeningPocketsAddEventWire: Encodable, Equatable {
+    var songId: String
+    var collectionId: String
+    var atMs: Int64
+    /// add | remove
+    var kind: String
 }
 
 /// One play as uploaded. Nullable fields encode an explicit `null` (the §5.1 shape), so the
@@ -43,9 +72,14 @@ struct ListeningPocketsUploadEvent: Encodable, Equatable {
     var artist: String?
     var carPlay: Bool?
     var ctx: ListeningContextTag?
+    /// The opaque collection id the play started from (omitted when unknown) and its kind:
+    /// pocket | playlist | setlist | source. Never a name.
+    var contextId: String? = nil
+    var contextKind: String? = nil
 
     enum CodingKeys: String, CodingKey {
         case id, songId, atMs, ord, tzOffsetMin, source, outcome, fraction, originInstallId, artist, carPlay, ctx
+        case contextId, contextKind
     }
 
     func encode(to encoder: Encoder) throws {
@@ -71,6 +105,12 @@ struct ListeningPocketsUploadEvent: Encodable, Equatable {
             try n.encodeIfPresent(ctx.destination, forKey: .destination)
         } else {
             try c.encodeNil(forKey: .ctx)
+        }
+        // Additive (pockets × collections): absent rather than null, so an event without a
+        // collection context encodes byte-identically to before.
+        if let contextId, let contextKind {
+            try c.encode(contextId, forKey: .contextId)
+            try c.encode(contextKind, forKey: .contextKind)
         }
     }
 }
@@ -136,6 +176,8 @@ struct ListeningPocketsResults: Decodable, Equatable {
     /// "In the Pocket" round labels folded into per-context target multipliers (`rounds` on the
     /// wire, present only once the profile has played the game). See `learnFromRounds`.
     var roundLearning: ListeningPocketsRoundLearning? = nil
+    /// How many uploaded collections the compute saw (pockets × collections; nil from older servers).
+    var collectionsSeen: Int? = nil
 
     struct Baseline: Decodable, Equatable {
         var plays: Int?
@@ -180,6 +222,7 @@ struct ListeningPocketsResults: Decodable, Equatable {
         pockets = c.lpArray(ListeningPocket.self, "pockets")
         patterns = c.lpArray(ListeningPocketPattern.self, "patterns")
         roundLearning = (try? c.decodeIfPresent(ListeningPocketsRoundLearning.self, forKey: LPKey("rounds"))) ?? nil
+        collectionsSeen = c.lpInt("collectionsSeen")
     }
 
     /// Server-side label for a place/trip id (the uploaded snapshot), if it has one.
@@ -198,6 +241,9 @@ struct ListeningPocketsResults: Decodable, Equatable {
 /// doesn't know stays a raw string on the feature (`ListeningPocketFeature.dim`).
 enum ListeningPocketDim: String {
     case artist, genre, mood, camelot, source, timeBucket, dayType, dow, place, trip, carPlay
+    /// `value` = an opaque collection id (the server never knows names — re-labelled on device);
+    /// `playContext` = the kind of collection plays started from.
+    case collection, playContext
     /// The ones that describe the MUSIC (vs when/where/how it played).
     var isMusical: Bool { [.artist, .genre, .mood, .camelot].contains(self) }
 }
@@ -337,6 +383,8 @@ struct ListeningPocket: Decodable, Equatable, Hashable, Identifiable {
     var harmonic: ListeningPocketHarmonic?
     var title: String
     var patternId: String?
+    /// M(P): the pocket's collection-membership vector (top 12, desc). Empty from older servers.
+    var membership: [ListeningPocketMembershipWeight] = []
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: LPKey.self)
@@ -363,6 +411,7 @@ struct ListeningPocket: Decodable, Equatable, Hashable, Identifiable {
         harmonic = (try? c.decodeIfPresent(ListeningPocketHarmonic.self, forKey: LPKey("harmonic"))) ?? nil
         title = c.lpString("title") ?? "Listening pocket"
         patternId = c.lpString("patternId")
+        membership = c.lpArray(ListeningPocketMembershipWeight.self, "membership")
     }
 
     /// Member song ids in play order (Play / Save as playlist).
@@ -386,6 +435,11 @@ struct ListeningPocketPattern: Decodable, Equatable, Hashable, Identifiable {
     var numeric: [String: ListeningPocketNumeric]
     var harmonic: ListeningPocketHarmonic?
     var topSongs: [TopSong]
+    /// Mean of its pockets' membership vectors (top 12). Empty from older servers.
+    var membership: [ListeningPocketMembershipWeight] = []
+    /// Songs from the pattern's collections (or co-added with its top songs) that are NOT in
+    /// `topSongs` — "those collection songs or similar ones" (≤ 40).
+    var collectionCandidates: [ListeningPocketCollectionCandidate] = []
 
     struct TopSong: Decodable, Equatable, Hashable {
         var songId: String
@@ -420,9 +474,47 @@ struct ListeningPocketPattern: Decodable, Equatable, Hashable, Identifiable {
         numeric = c.lpNumericMap("numeric")
         harmonic = (try? c.decodeIfPresent(ListeningPocketHarmonic.self, forKey: LPKey("harmonic"))) ?? nil
         topSongs = c.lpArray(TopSong.self, "topSongs")
+        membership = c.lpArray(ListeningPocketMembershipWeight.self, "membership")
+        collectionCandidates = c.lpArray(ListeningPocketCollectionCandidate.self, "collectionCandidates")
     }
 
     var songIds: [String] { topSongs.map(\.songId) }
+}
+
+/// One entry of a membership vector: an opaque collection id and its weight.
+struct ListeningPocketMembershipWeight: Decodable, Equatable, Hashable {
+    var collectionId: String
+    var weight: Double
+
+    init(collectionId: String, weight: Double) { self.collectionId = collectionId; self.weight = weight }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: LPKey.self)
+        guard let id = c.lpString("collectionId"), let w = c.lpDouble("weight") else {
+            throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "membership without collectionId/weight"))
+        }
+        collectionId = id; weight = w
+    }
+}
+
+/// A pattern's collection candidate: a song the pattern's collections suggest.
+struct ListeningPocketCollectionCandidate: Decodable, Equatable, Hashable {
+    var songId: String
+    var score: Double
+    /// The collection ids that put it here.
+    var via: [String]
+
+    init(songId: String, score: Double, via: [String] = []) { self.songId = songId; self.score = score; self.via = via }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: LPKey.self)
+        guard let id = c.lpString("songId") else {
+            throw DecodingError.dataCorrupted(.init(codingPath: c.codingPath, debugDescription: "candidate without songId"))
+        }
+        songId = id
+        score = c.lpDouble("score") ?? 0
+        via = c.lpArray(String.self, "via")
+    }
 }
 
 /// The `rounds` section of results: how "In the Pocket" rounds have gone, and per context which

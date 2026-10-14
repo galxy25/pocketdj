@@ -17,13 +17,18 @@ import { createHash } from 'node:crypto';
 import { POCKET_PARAMS, ROUND_PARAMS } from './params.mjs';
 import { detect } from './detect.mjs';
 import { resolveSong } from './features.mjs';
+import { buildCollectionModel, pocketMembership, meanVector, topNormalized, collectionCandidates } from './collections.mjs';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const sha256 = (s) => createHash('sha256').update(s).digest('hex');
 const round = (x, dp) => { const m = 10 ** dp; return Math.round(x * m) / m; };
 
-const MUSICAL_DIMS = ['artist', 'genre', 'mood', 'camelot'];
-const CONTEXT_DIMS = ['timeBucket', 'dayType', 'dow', 'source', 'place', 'trip', 'carPlay'];
+// `collection` (multi-valued: the song's CURRENT hard memberships — retroactive, so adding a song to
+// a playlist today re-labels its older pockets on the next compute) and `playContext` (the
+// collection the play started from) are pockets-collections.md's dims — empty for a profile that
+// never sent a collections snapshot / context ids, so its documents are unchanged by them.
+const MUSICAL_DIMS = ['artist', 'genre', 'mood', 'camelot', 'collection'];
+const CONTEXT_DIMS = ['timeBucket', 'dayType', 'dow', 'source', 'place', 'trip', 'carPlay', 'playContext'];
 const CONTEXT_SET = new Set(CONTEXT_DIMS);
 const CATEGORICAL_DIMS = [...MUSICAL_DIMS, ...CONTEXT_DIMS];
 const NUMERIC_DIMS = ['bpm', 'energy', 'year'];
@@ -115,7 +120,7 @@ const meanStd = (xs) => {
  * features row (any identity of the song id), with the event's own `artist` snapshot as the
  * fallback for songs the catalog does not know (Apple Music captures, deleted rows).
  */
-export function attributesOf(e, features, { params = POCKET_PARAMS, tzFallbackMin = 0 } = {}) {
+export function attributesOf(e, features, { params = POCKET_PARAMS, tzFallbackMin = 0, collectionsOf = null } = {}) {
   const row = resolveSong(features?.byId, features?.byAm, e.songId);
   const artistRaw = (typeof row?.a === 'string' && row.a.trim()) || (typeof e.artist === 'string' && e.artist.trim()) || null;
   const tz = Number.isFinite(e.tzOffsetMin) ? e.tzOffsetMin : tzFallbackMin;
@@ -141,6 +146,8 @@ export function attributesOf(e, features, { params = POCKET_PARAMS, tzFallbackMi
     place: ctx?.kind === 'place' && ctx.placeId ? ctx.placeId : null,
     trip: ctx?.kind === 'trip' && ctx.tripId ? ctx.tripId : null,
     ctx: ctx && ((ctx.kind === 'place' && ctx.placeId) || (ctx.kind === 'trip' && ctx.tripId)) ? ctx : null,
+    collections: collectionsOf ? collectionsOf(e.songId) : [],
+    playContext: typeof e.contextId === 'string' && e.contextId ? e.contextId : null,
   };
 }
 
@@ -149,9 +156,51 @@ function valuesOf(a, dim) {
   switch (dim) {
     case 'artist': return a.artistKey ? [a.artistKey] : [];
     case 'mood': return a.moods;
+    case 'collection': return a.collections || [];
     case 'dow': return [String(a.dow)];
     default: return a[dim] != null ? [String(a[dim])] : [];
   }
+}
+
+/// The musical facts the collection model compares (memoized per song id): genre, folded BPM,
+/// Camelot + its neighbour set, timbre vector, moods — the same normalisation `attributesOf` applies.
+export function makeSongInfo(features, params = POCKET_PARAMS) {
+  const feats = features instanceof Map ? { byId: features, byAm: new Map() } : features;
+  const memo = new Map();
+  return (songId) => {
+    if (memo.has(songId)) return memo.get(songId);
+    const r = resolveSong(feats?.byId, feats?.byAm, songId);
+    const camelot = r ? normCamelot(r.c) : null;
+    const info = r ? {
+      genre: typeof r.g === 'string' && r.g.trim() ? r.g.trim().toLowerCase() : null,
+      bpm: foldBpm(r.b, params.numeric.bpmFold), camelot,
+      neighbors: camelotNeighbors(camelot), timbre: r.t && typeof r.t === 'object' ? r.t : null,
+      moods: Array.isArray(r.s) ? [...new Set(r.s.filter((m) => typeof m === 'string' && m.trim()).map((m) => m.trim().toLowerCase()))] : [],
+    } : null;
+    memo.set(songId, info);
+    return info;
+  };
+}
+
+/**
+ * 0…1: how many of a pattern's MUSICAL defining features a song carries — categorical artist /
+ * genre / mood / camelot values, plus every defining numeric range (bpm folded, energy, year).
+ * null when the pattern has no musical defining feature at all (the term is then not earnable).
+ */
+export function featureMatch(a, pattern) {
+  let total = 0; let hit = 0;
+  for (const f of pattern.features || []) {
+    if (!['artist', 'genre', 'mood', 'camelot'].includes(f.dim)) continue;
+    total += 1;
+    if (valuesOf(a, f.dim).includes(f.value)) hit += 1;
+  }
+  for (const dim of NUMERIC_DIMS) {
+    const n = pattern.numeric?.[dim];
+    if (!n?.defining) continue;
+    total += 1;
+    if (a[dim] != null && a[dim] >= n.lo - (dim === 'bpm' ? 0.5 : 0) && a[dim] <= n.hi + (dim === 'bpm' ? 0.5 : 0)) hit += 1;
+  }
+  return total ? hit / total : null;
 }
 
 // ── Baseline ────────────────────────────────────────────────────────────────────────────────────
@@ -484,7 +533,7 @@ export function emptyResults({ params = POCKET_PARAMS, stale = false, labels = n
     v: 1, generatedAtMs: null, stale, algo: algoOf(params),
     baseline: { plays: 0, windowDays: params.baselineDays, thin: true },
     labels: { places: labels?.places || [], trips: labels?.trips || [] },
-    pockets: [], patterns: [],
+    pockets: [], patterns: [], collectionsSeen: 0,
   };
 }
 
@@ -509,8 +558,12 @@ export function computeResults(eventsDoc, features, { nowMs = Date.now(), params
   const { normalized, pockets } = detect(eventsDoc?.events || [], { params });
 
   const tzFallbackMin = modalTz(normalized);
+  // Collections (pockets-collections.md): null for a profile that never sent a snapshot / add history.
+  const songInfo = makeSongInfo(feats, params);
+  const model = params.collections ? buildCollectionModel(eventsDoc, songInfo, params, nowMs) : null;
+  const collectionsOf = model ? model.collectionsOf : null;
   const attrs = new Map();
-  for (const e of normalized) attrs.set(e.id, attributesOf(e, feats, { params, tzFallbackMin }));
+  for (const e of normalized) attrs.set(e.id, attributesOf(e, feats, { params, tzFallbackMin, collectionsOf }));
 
   // Display label per artist key: the spelling seen most often (ties → first in order).
   const artistVotes = new Map();
@@ -554,16 +607,41 @@ export function computeResults(eventsDoc, features, { nowMs = Date.now(), params
       patternId: null,
       _members: members,
     });
+    if (model) {
+      const vec = pocketMembership(model, members);
+      internal[internal.length - 1]._membership = vec;
+      internal[internal.length - 1].membership = topNormalized(vec, params.collections.membershipTopK);
+    }
   }
   const patterns = clusterPatterns(internal, baseline, labels, params);
+  if (model) {
+    const byId = new Map(internal.map((p) => [p.id, p]));
+    const matchAttrs = new Map();
+    for (const pt of patterns) {
+      const vecs = pt.pocketIds.map((id) => byId.get(id)?.membership).filter(Boolean)
+        .map((m) => new Map(m.map((x) => [x.collectionId, x.weight])));
+      pt.membership = topNormalized(meanVector(vecs), params.collections.membershipTopK);
+      const patternVec = new Map(pt.membership.map((x) => [x.collectionId, x.weight]));
+      pt.collectionCandidates = collectionCandidates(model, patternVec, pt.topSongs, {
+        nowMs, params,
+        matchOf: (songId) => {
+          if (!matchAttrs.has(songId)) {
+            matchAttrs.set(songId, attributesOf({ id: null, songId, atMs: nowMs }, feats, { params, tzFallbackMin }));
+          }
+          return featureMatch(matchAttrs.get(songId), pt);
+        },
+      });
+    }
+  }
   internal.sort((a, b) => b.startMs - a.startMs || (a.id < b.id ? -1 : 1));
-  const out = internal.slice(0, params.maxPockets).map(({ _members, ...rest }) => rest);
+  const out = internal.slice(0, params.maxPockets).map(({ _members, _membership, ...rest }) => rest);
 
   const doc = {
     v: 1, generatedAtMs: nowMs, stale: false, algo: algoOf(params),
     baseline: { plays: baseline.N, windowDays: params.baselineDays, thin: baseline.thin },
     labels: { places: placesSnap, trips: tripsSnap },
     pockets: out, patterns,
+    collectionsSeen: model ? model.seen : 0,
   };
   // "In the Pocket" labels — only when the profile has played the game, so a profile that never
   // has computes exactly the document it always did.

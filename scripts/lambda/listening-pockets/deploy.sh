@@ -78,7 +78,7 @@ say "profile enrollment cap: $MAXP"
 
 # 4) package + create/update. @aws-sdk (S3, Lambda) is bundled in the nodejs20.x runtime.
 ZIP="$(mktemp -d)/fn.zip"
-( cd "$SELF" && zip -q "$ZIP" index.mjs params.mjs detect.mjs analyze.mjs features.mjs store.mjs )
+( cd "$SELF" && zip -q "$ZIP" index.mjs params.mjs detect.mjs analyze.mjs features.mjs store.mjs collections.mjs )
 ENVVARS="Variables={REC_BUCKET=$REC_BUCKET,FEATURES_URL=$FEATURES_URL,REC_ENROLL_SECRET=$ENROLL,MAX_PROFILES=$MAXP}"
 if aws lambda get-function --function-name "$FN" --region "$REGION" >/dev/null 2>&1; then
   say "updating function code"

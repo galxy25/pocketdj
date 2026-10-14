@@ -217,7 +217,130 @@ export function cleanEvent(e, uploaderInstallId, nowMs = Date.now()) {
     artist: str(e.artist),
     carPlay: typeof e.carPlay === 'boolean' ? e.carPlay : null,
     ctx: cleanCtx(e.ctx),
+    // Collections (pockets-collections.md): the collection the play started from. Only written
+    // when the client sent one, so an old client's rows keep their exact stored shape.
+    ...contextOf(e),
   };
+}
+
+// ── Collections: play context, membership snapshot, add history ─────────────────────────────────
+// Ids only, NEVER names: a collection id must be a short opaque token (printable ASCII, no
+// whitespace, ≤ `maxIdChars`) — a display name ("Sunday Jazz") fails the no-space rule, and one that
+// happens to pass is still truncated to an opaque-sized token, never echoed with a label.
+
+const CONTEXT_KINDS = new Set(['pocket', 'playlist', 'setlist', 'source']);
+const COLLECTION_KINDS = new Set(['pocket', 'playlist', 'source']);
+const ADD_KINDS = new Set(['add', 'remove']);
+
+/// A short opaque id, or null.
+export function opaqueId(v, max = POCKET_LIMITS.maxIdChars) {
+  return typeof v === 'string' && v.length <= max && /^[\x21-\x7E]+$/.test(v) ? v : null;
+}
+
+/// `{ contextId, contextKind }` from an upload event, or `{}`. A kind this build does not know
+/// drops BOTH (a newer client's context might be something an id rule cannot vouch for).
+function contextOf(e) {
+  const id = opaqueId(e.contextId);
+  if (!id) return {};
+  if (e.contextKind != null && !CONTEXT_KINDS.has(e.contextKind)) return {};
+  return { contextId: id, contextKind: CONTEXT_KINDS.has(e.contextKind) ? e.contextKind : null };
+}
+
+/**
+ * Upload `collections` → the stored snapshot `{ atMs, list: [{ id, kind, songIds, adds }] }`, or
+ * null when the upload carries none. Bounded by TRUNCATION exactly like the rec engine's
+ * `cleanSnapshot` (≤ maxCollections, ≤ maxCollectionSongs each, ≤ maxSnapshotSongs in total);
+ * duplicate collection ids keep the first; song ids deduplicated; `adds` keep only CURRENT
+ * members with a sane minute-floored time (`[songId, atMs]` pairs — compact on disk).
+ */
+export function cleanCollections(list, atMs, nowMs = Date.now()) {
+  if (!Array.isArray(list)) return null;
+  const out = []; const seenIds = new Set();
+  let budget = POCKET_LIMITS.maxSnapshotSongs;
+  for (const c of list) {
+    if (out.length >= POCKET_LIMITS.maxCollections) break;
+    if (!c || typeof c !== 'object' || !Array.isArray(c.songIds)) continue;
+    const id = opaqueId(c.id);
+    if (!id || seenIds.has(id)) continue;
+    seenIds.add(id);
+    const songIds = []; const members = new Set();
+    for (const x of c.songIds) {
+      if (songIds.length >= POCKET_LIMITS.maxCollectionSongs || budget <= 0) break;
+      const v = str(x);
+      if (!v || members.has(v)) continue;
+      members.add(v); songIds.push(v); budget -= 1;
+    }
+    const addAt = new Map();
+    for (const a of Array.isArray(c.adds) ? c.adds : []) {
+      if (!a || typeof a !== 'object' || !Number.isFinite(a.atMs) || a.atMs <= 0) continue;
+      const songId = str(a.songId);
+      if (!songId || !members.has(songId)) continue;
+      const t = minuteFloor(a.atMs);
+      if (t > nowMs + POCKET_LIMITS.futureSkewMs) continue;
+      if (!addAt.has(songId) || t > addAt.get(songId)) addAt.set(songId, t);   // latest add wins
+    }
+    out.push({ id, kind: COLLECTION_KINDS.has(c.kind) ? c.kind : null, songIds,
+      adds: songIds.filter((s) => addAt.has(s)).map((s) => [s, addAt.get(s)]) });
+  }
+  return { atMs, list: out };
+}
+
+/// Upload `addEvents` → stored rows `{ songId, collectionId, atMs, kind, installId }` (bad rows
+/// dropped). `installId` is the uploader's: the add history is per device.
+export function cleanAddEvents(list, uploaderInstallId, nowMs = Date.now()) {
+  if (!Array.isArray(list)) return null;
+  const out = [];
+  const from = nowMs - POCKET_LIMITS.addRetentionDays * DAY_MS;
+  for (const a of list.slice(0, POCKET_LIMITS.maxStoredAddEvents)) {
+    if (!a || typeof a !== 'object' || !ADD_KINDS.has(a.kind) || !Number.isFinite(a.atMs)) continue;
+    const songId = str(a.songId); const collectionId = opaqueId(a.collectionId);
+    if (!songId || !collectionId) continue;
+    const atMs = minuteFloor(a.atMs);
+    if (atMs < from || atMs > nowMs + POCKET_LIMITS.futureSkewMs) continue;
+    out.push({ songId, collectionId, atMs, kind: a.kind, installId: uploaderInstallId });
+  }
+  return out;
+}
+
+const addKey = (a) => `${a.songId}\u0000${a.collectionId}\u0000${a.atMs}\u0000${a.kind}`;
+
+/**
+ * Fold an upload's collection data into the events document. The snapshot is replaced WHOLESALE
+ * (keep the latest: a snapshot stamped OLDER than the stored one — two devices uploading out of
+ * order — is ignored); add events are UNION-merged by (songId, collectionId, atMs, kind), retention
+ * `addRetentionDays`, newest `maxStoredAddEvents` kept. Neither key is created on a document whose
+ * upload carries neither field, so an old client's document keeps its exact shape.
+ * Returns `{ changed, collections, addEvents }` (the stored counts).
+ */
+export function mergeCollectionsUpload(doc, body, uploaderInstallId, nowMs = Date.now()) {
+  let changed = false;
+  if (Array.isArray(body?.collections)) {
+    const sent = Number.isFinite(body.sentAtMs) && body.sentAtMs > 0 && body.sentAtMs <= nowMs + POCKET_LIMITS.futureSkewMs
+      ? body.sentAtMs : nowMs;
+    const snap = cleanCollections(body.collections, sent, nowMs);
+    const cur = doc.collections;
+    if (!cur || !(cur.atMs > snap.atMs)) {
+      if (!cur || JSON.stringify(cur.list) !== JSON.stringify(snap.list)) changed = true;
+      doc.collections = snap;
+    }
+  }
+  if (Array.isArray(body?.addEvents)) {
+    const rows = cleanAddEvents(body.addEvents, uploaderInstallId, nowMs);
+    if (!Array.isArray(doc.addEvents)) doc.addEvents = [];
+    const keys = new Set(doc.addEvents.map(addKey));
+    for (const r of rows) {
+      const k = addKey(r);
+      if (keys.has(k)) continue;
+      keys.add(k); doc.addEvents.push(r); changed = true;
+    }
+    const before = doc.addEvents.length;
+    const from = nowMs - POCKET_LIMITS.addRetentionDays * DAY_MS;
+    doc.addEvents = doc.addEvents.filter((a) => a.atMs >= from)
+      .sort((a, b) => b.atMs - a.atMs || (addKey(a) < addKey(b) ? -1 : 1))
+      .slice(0, POCKET_LIMITS.maxStoredAddEvents);
+    if (doc.addEvents.length !== before) changed = true;
+  }
+  return { changed, collections: doc.collections?.list?.length ?? 0, addEvents: doc.addEvents?.length ?? 0 };
 }
 
 /// Upload label snapshots → stored ones (bad rows dropped, counts capped).
@@ -272,7 +395,7 @@ export function mergeEvents(doc, rows, nowMs = Date.now()) {
     if ((OUTCOME_RANK[r.outcome] ?? 0) > (OUTCOME_RANK[cur.outcome] ?? 0)) set('outcome', r.outcome);
     if (r.fraction != null && (cur.fraction == null || r.fraction > cur.fraction)) set('fraction', r.fraction);
     if (cur.ctx == null && r.ctx != null) { cur.ctx = r.ctx; changed = true; }
-    for (const k of ['tzOffsetMin', 'artist', 'carPlay', 'source']) if (cur[k] == null && r[k] != null) set(k, r[k]);
+    for (const k of ['tzOffsetMin', 'artist', 'carPlay', 'source', 'contextId', 'contextKind']) if (cur[k] == null && r[k] != null) set(k, r[k]);
     if (changed) updated += 1; else unchanged += 1;
   }
   const evicted = applyRetention(doc, nowMs);
@@ -308,7 +431,7 @@ const SONG_OUTCOMES = new Set(['completed', 'skipped', 'partial', 'unknown', 'no
 const ROUND_MODES = new Set(['cloud', 'history', 'cold']);
 const DAY_TYPES = new Set(['weekday', 'weekend']);
 const TARGET_DIMS = new Set(['artist', 'genre', 'mood', 'camelot', 'bpm', 'energy', 'year',
-  'timeBucket', 'dayType', 'dow', 'source', 'place', 'trip', 'carPlay', 'song']);
+  'timeBucket', 'dayType', 'dow', 'source', 'place', 'trip', 'carPlay', 'song', 'collection']);
 
 /// Free text, capped in UTF-16 code units (never splitting a surrogate pair), control characters
 /// other than newline/tab stripped. Empty after trimming → null.

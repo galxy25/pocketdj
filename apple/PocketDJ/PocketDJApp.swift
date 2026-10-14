@@ -911,9 +911,15 @@ struct PocketDJApp: App {
             // playNow mid-navigation can't retag it. Anything else is a standalone Browser play.
             if let sp = setlistPlayer, sp.inRunningQueue(songId) {
                 let origin = sp.capturedHistoryContext
+                // The collection the run started from (a pocket played via Now Playing has
+                // contextId `set_now_playing`) — rides the pockets upload as `contextId`.
+                let originCollection = sp.capturedOrigin.flatMap { o -> String? in
+                    [.pocket, .playlist, .setlist].contains(o.kind) ? o.id : nil
+                }
                 context = PlayHistoryStore.PlayContext(source: origin?.source ?? .setlist,
                                                        contextId: sp.sourceSetlistId,
-                                                       contextName: origin?.name)
+                                                       contextName: origin?.name,
+                                                       originCollectionId: originCollection)
             } else {
                 context = .browser
             }
@@ -1493,6 +1499,26 @@ struct PocketDJApp: App {
             recFeedback?.recFeedbackEvents(sinceMs: sinceMs) ?? []
         }
         recEngine.lastPlayedProvider = { [weak playCounts] in playCounts?.lastPlayedSnapshot() ?? [:] }
+        // Album nodes in collections expand to their tracklists (CollectionFlattener) — shared by
+        // the rec snapshot, the listening-pockets membership upload and In the Pocket.
+        let albumTracks: (Set<String>) -> [String: [String]] = { [weak app] ids in
+            guard let app else { return [:] }
+            var out: [String: [String]] = [:]
+            for id in ids { if let a = app.albumsById[id] { out[id] = a.trackList } }
+            return out
+        }
+        recEngine.albumTracksProvider = albumTracks
+        let collectionsInput: () -> ListeningPocketsCollections.Input = {
+            [weak collections, weak collectionActivity, weak app] in
+            guard let collections else { return .init() }
+            let activity = collectionActivity?.events ?? []
+            let albums = ListeningPocketsCollections.referencedAlbumCandidates(
+                pockets: collections.pockets, playlists: collections.playlists, activity: activity)
+            let sources = (app?.indexPlaylists ?? []).map { (id: $0.id, name: $0.name, songIds: $0.songIds) }
+            return .init(source: .init(pockets: collections.pockets, playlists: collections.playlists,
+                                       sourcePlaylists: sources, albumTracks: albumTracks(albums)),
+                         activity: activity)
+        }
         // The CLOUD half of Gem Collector's similarity. It is a BOOSTER only: with the engine
         // off (the default) — or the route not deployed yet — this returns [] and the round
         // ranks entirely on device. Weak, like every other seam here.
@@ -1523,6 +1549,9 @@ struct PocketDJApp: App {
         // `ctx` rides only while the places & trips TOGGLE is on — not merely while permission
         // happens to be granted (a revoked permission must not strip already-settled contexts).
         listeningPockets.locationOptedIn = { [weak listeningLocation] in listeningLocation?.isEnabled ?? false }
+        // Pockets × collections: the flattened membership snapshot + add history (ids only),
+        // under the same opt-in as everything else this service sends.
+        listeningPockets.collectionsProvider = collectionsInput
         // Places & trips exist only to feed pockets: when pockets (or the engine) turn off, so does
         // location — stop + erase, never collecting with nothing to feed. The launch check covers a
         // gate that closed without the Settings toggles (a settings reset, an older build).
@@ -1549,6 +1578,7 @@ struct PocketDJApp: App {
                 canStreamAppleMusic: coordinator?.canStreamAppleMusic ?? false)
         }
         inThePocket.results = { [weak listeningPockets] in listeningPockets?.results }
+        inThePocket.collectionsInput = collectionsInput
         inThePocket.contextGuess = { [weak listeningLocation] in
             // Only while places & trips is ON (the same toggle that lets `ctx` upload at all).
             guard let loc = listeningLocation, loc.isEnabled, let tag = loc.currentContextGuess() else { return (nil, nil) }
