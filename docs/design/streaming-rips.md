@@ -401,6 +401,44 @@ natively on iOS, so the live path moved to **live HLS**:
 
 The 5a progressive `/stream` endpoint is kept (harmless) but the client uses HLS.
 
+## Capture length guard + repair (2026-10-14)
+
+A capture ends when Music.app stops playing. After a macOS playback cascade, captures were cut
+short and accepted as `ok` (sng_62bf34d1ac4d: 54.3 s of 221.0 s), and every derived artifact was
+computed from the fragment. `scripts/lib/rip-length-guard.mjs` holds the rule; `rip-one.mjs`
+applies it after the transcode and **before** the upload, so a rejected capture never reaches S3,
+the manifest or the offloads.
+
+- **Expected length:** catalog `length` → ad-hoc `lengthMs` → Music.app's own duration. Analog
+  catalog songs captured from Apple Music trust only Music.app's duration (the vinyl length is a
+  different edition). No expected length → accepted and logged.
+- **Short:** more than max(5 %, 5 s) short → `short-capture`, retried through the backoff ladder.
+- **Long:** more than 20 s long after trimming → `long-capture`, retried.
+- **Trim:** a silent tail past the expected length (−60 dB, ≥0.5 s, reaching EOF) is cut with
+  0.25 s padding. Music is never trimmed.
+- **Baseline (5,777 analysed captures):** overrun p50 +1.8 s, p95 +2.3 s, p99 +8.6 s. The +10–14 s
+  cluster is full-level music to expected+7–10 s, then 2–4 s of digital silence. That means Apple
+  Music plays a slightly longer edition, plus some stop slack, which is why the over-allowance is
+  20 s and only the silent tail is trimmed.
+- Knobs: `RIP_LENGTH_GUARD=0`, `RIP_LENGTH_UNDER_RATIO`, `RIP_LENGTH_UNDER_SLACK_MS`,
+  `RIP_LENGTH_OVER_SLACK_MS`, `RIP_LENGTH_SILENCE_DB`, `RIP_LENGTH_SILENCE_MIN_MS`,
+  `RIP_LENGTH_TRIM_PAD_MS`. `/health` reports them as `lengthGuard`.
+
+**Repair:** `POST /rip-repair` (admin token). The default is a dry-run audit of the manifest's
+measured `durationMs` against the catalog length, using the same rule. Analog album entries,
+analog-catalog cloud captures and ids with no catalog row are skipped and counted.
+`{apply:true, songIds:[…]}` (or `all:true`) refuses any id that has a rip or stem in flight, is
+already mid-repair, or passes the rule (unless `force:true`). For every other id it:
+
+1. drops the manifest entries in one save;
+2. deletes `rips/<id>.mp3`, `rips/stems/<id>/*`, `rips/analysis/<id>.json`, `rips/lyrics/<id>.json`,
+   `rips/timbre/v*/<id>.json` and `rips/waveforms/<id>.png`;
+3. re-enqueues the rip via `acceptRip`.
+
+A durable `<tmp>/repaired.json` makes the re-rip's stems, lyrics and timbre offloads send
+`dedup:false`. It also drops pre-repair rows from the local timbre result corpus, so reconcile
+can't re-stamp the deleted audio's vector.
+
 ## Phase plan
 
 - **Phase 5a — progressive live stream.** ✅ DONE (desktop). `/stream` tail‑endpoint +

@@ -26,6 +26,13 @@ for (let i = 0; i < argv.length; i++) {
   args.push(argv[i]);
 }
 
+// CALL LOG (opt-in via FAKE_AWS_LOG): one JSON argv array per invocation, so a test can assert
+// exactly which S3 objects a code path deleted (e.g. POST /rip-repair) — and that it touched
+// nothing else.
+if (process.env.FAKE_AWS_LOG) {
+  try { appendFileSync(process.env.FAKE_AWS_LOG, JSON.stringify(args) + '\n'); } catch { /* best effort */ }
+}
+
 // ---- SQS spool ----
 const SQS_DIR = process.env.FAKE_AWS_SQS_DIR || null;
 const qname = (url) => String(url || '').split('/').pop() || 'unknown';

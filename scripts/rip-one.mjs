@@ -5,7 +5,8 @@
 // uploads. Writes phase updates to a status file the rip server polls.
 //
 //   node scripts/rip-one.mjs --song-id sng_… --artist "…" --title "…" \
-//     --length-ms 225000 --album "…" --status <jobfile.json> \
+//     --length-ms 225000 [--length-source catalog|adhoc] [--source-type digital|analog] \
+//     --album "…" --status <jobfile.json> \
 //     [--library-xml ~/Downloads/Library.xml] [--bucket …] [--region …] [--profile levi]
 //
 // Prints a final line: RESULT {"ok":true,"key":"rips/sng_….mp3","bytes":…}
@@ -15,12 +16,18 @@ import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { AWS_ENV } from './lib/aws-env.mjs';
+import { lengthGuardConfig, resolveExpectedLength, guardCaptureFile, describeVerdict } from './lib/rip-length-guard.mjs';
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const a = {};
 for (let i = 2; i < process.argv.length; i++) { const k = process.argv[i]; if (k.startsWith('--')) a[k.slice(2)] = process.argv[++i]; }
 const SONG = a['song-id'], ARTIST = a.artist || '', TITLE = a.title || '', ALBUM = a.album || '';
 const LENGTH_MS = parseInt(a['length-ms'] || '0', 10) || null;
+// Where LENGTH_MS came from (the rip server passes it): 'catalog' | 'adhoc'. And the catalog
+// row's source type — an ANALOG song captured from Apple Music has only a vinyl length, which
+// the length guard must not hold an Apple Music edition to (see lib/rip-length-guard.mjs).
+const LENGTH_SOURCE = a['length-source'] === 'adhoc' ? 'adhoc' : 'catalog';
+const SOURCE_TYPE = a['source-type'] === 'analog' ? 'analog' : 'digital';
 // Variant rip: require a specific EDITION ('clean' | 'explicit'). Threaded through to the
 // rip skill as --require-explicitness, which disables its live-search fallback for the
 // track — a variant key must never hold wrong-edition audio.
@@ -188,13 +195,35 @@ async function main() {
   try {
     execFileSync('ffmpeg', ['-y', '-i', ripped, '-map', '0:a:0', '-codec:a', 'libmp3lame', '-b:a', '256k', mp3], { stdio: 'ignore' });
   } catch (e) { fail('ffmpeg transcode failed: ' + e.message, 'system'); }
+  // LENGTH GUARD — before the upload, so a partial capture never reaches S3, the manifest, or
+  // the stem/analysis/lyrics/timbre offloads. A capture ends when Music.app stops playing, and
+  // a playback cascade stops it EARLY: 54 s of a 221 s song used to be accepted as ok. Short /
+  // grossly long ⇒ fail with a reason the rip server retries through its backoff ladder; a
+  // small overrun whose tail is silent is trimmed (never music). See lib/rip-length-guard.mjs.
+  const exp = resolveExpectedLength({
+    catalogMs: LENGTH_SOURCE === 'catalog' ? LENGTH_MS : null,
+    adhocMs: LENGTH_SOURCE === 'adhoc' ? LENGTH_MS : null,
+    musicMs: ripTrack?.durationSec ? ripTrack.durationSec * 1000 : null,
+    sourceType: SOURCE_TYPE,
+  });
+  const verdict = guardCaptureFile(mp3, { expectedMs: exp.expectedMs, analog: exp.analog, cfg: lengthGuardConfig(),
+    log: (m) => console.error(`${m} (${SONG})`) });
+  console.error(describeVerdict(SONG, verdict, exp.source) + (ripTrack?.durationSec ? ` [Music.app duration ${ripTrack.durationSec}s]` : ''));
+  if (verdict.verdict === 'short' || verdict.verdict === 'long') {
+    try { rmSync(mp3, { force: true }); } catch { /* best effort */ }
+    fail(`${verdict.reason}: measured ${verdict.measuredMs} ms vs expected ${verdict.expectedMs} ms (${exp.source})`, verdict.reason);
+  }
+  const lengthInfo = { measuredMs: verdict.measuredMs ?? null, expectedMs: exp.expectedMs, expectedSource: exp.source,
+    lengthVerdict: verdict.verdict === 'skip' ? `skip:${verdict.reason}` : verdict.verdict,
+    ...(verdict.trimmedFromMs ? { trimmedFromMs: verdict.trimmedFromMs } : {}) };
+
   const key = `rips/${SONG}.mp3`;
   try {
     execFileSync('aws', ['s3', 'cp', mp3, `s3://${BUCKET}/${key}`, '--content-type', 'audio/mpeg', '--profile', PROFILE, '--region', REGION], { stdio: 'ignore' });
   } catch (e) { fail('s3 upload failed: ' + e.message, 'system'); }
   const bytes = statSync(mp3).size;
 
-  status('uploaded', { message: 'done', key, bytes });
-  console.log('RESULT ' + JSON.stringify({ ok: true, key, bytes, durationMs: LENGTH_MS }));
+  status('uploaded', { message: 'done', key, bytes, ...lengthInfo });
+  console.log('RESULT ' + JSON.stringify({ ok: true, key, bytes, durationMs: lengthInfo.measuredMs ?? LENGTH_MS, ...lengthInfo }));
 }
 main().catch((e) => fail(e.message, 'system'));
