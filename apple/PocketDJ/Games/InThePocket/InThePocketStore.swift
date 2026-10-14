@@ -47,6 +47,9 @@ final class InThePocketStore {
     @ObservationIgnored var catalogSnapshot: () -> (songs: [String: IndexSong], albums: [String: IndexAlbum]) = { ([:], [:]) }
     /// What can make sound right now (Gem Collector's seam, reused verbatim).
     @ObservationIgnored var audioAvailability: () -> CollectorsPuzzleEngine.AudioAvailability = { .init() }
+    /// This device's collections + add log (pockets × collections). Empty by default ⇒ the
+    /// scorer behaves exactly as without collections. Flattened OFF the main actor in `makeInput`.
+    @ObservationIgnored var collectionsInput: () -> ListeningPocketsCollections.Input = { .init() }
     /// The latest cloud results (`ListeningPocketsService.results`).
     @ObservationIgnored var results: () -> ListeningPocketsResults? = { nil }
     /// Current place / trip GUESS + its display label (nil off iOS / location off).
@@ -137,13 +140,14 @@ final class InThePocketStore {
         let events = history.events
         let results = results()
         let past = rounds.filter(\.isFinished)
+        let collections = collectionsInput()
         let seed = seed ?? UInt64.random(in: 1...UInt64.max)
 
         let outcome = await Task.detached(priority: .userInitiated) {
             let input = Self.makeInput(context: context, contextLabel: label, results: results,
                                        songs: snapshot.songs, albums: snapshot.albums,
                                        availability: availability, events: events, pastRounds: past,
-                                       nowMs: nowMs, seed: seed)
+                                       nowMs: nowMs, seed: seed, collections: collections)
             return InThePocketScorer.build(input)
         }.value
 
@@ -196,7 +200,8 @@ final class InThePocketStore {
                                       songs: [String: IndexSong], albums: [String: IndexAlbum],
                                       availability: CollectorsPuzzleEngine.AudioAvailability,
                                       events: [PlayHistoryStore.PlayEvent], pastRounds: [InThePocketRound],
-                                      nowMs: Double, seed: UInt64) -> InThePocketScorer.Input {
+                                      nowMs: Double, seed: UInt64,
+                                      collections: ListeningPocketsCollections.Input = .init()) -> InThePocketScorer.Input {
         var playable = Set(availability.ripManifest.keys).union(availability.burnedIds)
         if availability.canStreamAppleMusic {
             for s in songs.values where s.appleMusicId != nil { playable.insert(s.id) }
@@ -204,6 +209,18 @@ final class InThePocketStore {
         playable = playable.filter { songs[$0] != nil }
         var wanted = playable
         for e in events { wanted.insert(SongVariant.baseId(e.songId)) }
+        // Collections: the same flattening (and caps) the upload sends, plus each member's add
+        // time. Members join the converted catalog so a collection's centroid can resolve.
+        let flat = ListeningPocketsCollections.flattened(collections.source)
+        let adds = CollectionFlattener.addTimes(collections: flat, activity: collections.activity,
+                                                pockets: collections.source.pockets,
+                                                albumTracks: collections.source.albumTracks)
+        let infos = flat.compactMap { c -> InThePocketScorer.CollectionInfo? in
+            guard !c.songIds.isEmpty else { return nil }
+            return InThePocketScorer.CollectionInfo(id: c.id, name: c.name.isEmpty ? nil : c.name,
+                                                    songIds: Set(c.songIds), addedAtMs: adds[c.id] ?? [:])
+        }
+        for c in infos { wanted.formUnion(c.songIds) }
         var genreByAlbum: [String: String?] = [:]
         var catalog: [String: InThePocketScorer.Song] = [:]
         catalog.reserveCapacity(wanted.count)
@@ -228,7 +245,8 @@ final class InThePocketStore {
         }
         return InThePocketScorer.Input(context: context, contextLabel: contextLabel, results: results,
                                        catalog: catalog, playableIds: playable, plays: plays,
-                                       pastRounds: pastRounds, nowMs: nowMs, seed: seed)
+                                       pastRounds: pastRounds, nowMs: nowMs, seed: seed,
+                                       collections: infos)
     }
 
     // MARK: - Play + track

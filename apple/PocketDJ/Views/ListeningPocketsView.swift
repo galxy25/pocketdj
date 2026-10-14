@@ -15,6 +15,8 @@ import SwiftUI
 struct ListeningPocketsView: View {
     @Environment(ListeningPocketsService.self) private var pockets: ListeningPocketsService?
     @Environment(ListeningLocationStore.self) private var location: ListeningLocationStore?
+    @Environment(CollectionsStore.self) private var collections: CollectionsStore?
+    @Environment(AppModel.self) private var app: AppModel?
     @Environment(SettingsStore.self) private var settings
     @Binding var path: NavigationPath
 
@@ -43,7 +45,12 @@ struct ListeningPocketsView: View {
             emptyState(detail: pockets.serviceAvailable ? nil : "Pockets aren't available yet.")
                 .refreshable { await pockets.refreshNow() }
         } else {
-            let labeler = ListeningPocketLabeler(results: results, location: location)
+            let labeler = ListeningPocketLabeler(
+                results: results, location: location,
+                collectionNames: collections.map {
+                    ListeningPocketLabeler.collectionNames(for: results, collections: $0,
+                                                           sources: app?.indexPlaylists ?? [])
+                } ?? [:])
             List {
                 Section {
                     if results?.stale == true {
@@ -168,6 +175,23 @@ struct ListeningPocketsOptInView: View {
 struct ListeningPocketLabeler {
     let results: ListeningPocketsResults?
     let location: ListeningLocationStore?
+    /// Collection id → LOCAL name, for `collection` features (the server only knows ids).
+    var collectionNames: [String: String] = [:]
+
+    /// Names for just the collection ids `results` mentions — empty (and free) when it mentions none.
+    static func collectionNames(for results: ListeningPocketsResults?, collections: CollectionsStore,
+                                sources: [SourcePlaylist]) -> [String: String] {
+        guard let results else { return [:] }
+        var wanted = Set<String>()
+        for p in results.pockets { for f in p.features where f.kind == .collection { wanted.insert(f.value) } }
+        for p in results.patterns { for f in p.features where f.kind == .collection { wanted.insert(f.value) } }
+        guard !wanted.isEmpty else { return [:] }
+        var out: [String: String] = [:]
+        for p in collections.pockets where wanted.contains(p.id) { out[p.id] = p.name }
+        for p in collections.playlists where wanted.contains(p.id) { out[p.id] = p.name }
+        for s in sources where wanted.contains(s.id) && out[s.id] == nil { out[s.id] = s.name }
+        return out
+    }
 
     /// Today's label for a place/trip id. See the type doc of `ListeningPocketsView`. With places
     /// & trips ON, this device's engine is the authority (an id it pruned reads "Earlier place");
@@ -181,6 +205,9 @@ struct ListeningPocketLabeler {
 
     func label(for f: ListeningPocketFeature) -> String {
         if let tag = f.contextTag { return contextLabel(tag, fallback: f.label) }
+        // A collection id re-labelled on device; one this device no longer has reads like a
+        // pruned place does.
+        if f.kind == .collection { return collectionNames[f.value] ?? "Earlier collection" }
         return f.label
     }
 

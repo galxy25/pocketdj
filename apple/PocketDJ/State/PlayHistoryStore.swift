@@ -107,6 +107,11 @@ final class PlayHistoryStore {
         var listeningContext: ListeningContextTag? = nil
         /// True when a CarPlay scene was connected at record time (iOS); nil elsewhere / unknown.
         var carPlay: Bool? = nil
+        /// The pocket / playlist / setlist the run STARTED FROM, when `contextId` is only the
+        /// reserved Now Playing queue (`set_now_playing`) — the sequencer's captured origin.
+        /// ADDITIVE-OPTIONAL like `carPlay` (older/peer events decode to nil). Feeds the pockets
+        /// upload's `contextId` (pockets × collections); History keeps grouping by `contextId`.
+        var originCollectionId: String? = nil
 
         /// What happened to this playback, DERIVED (never stored) so a future outcome token can
         /// never make an event fail to decode: the skip flag wins, then the played fraction.
@@ -120,6 +125,7 @@ final class PlayHistoryStore {
         enum CodingKeys: String, CodingKey {
             case id, songId, playedAt, source, contextId, contextName, title, artist
             case originInstallId, wasSkipped, listenedFraction, tzOffsetMin, listeningContext, carPlay
+            case originCollectionId
         }
     }
 
@@ -238,6 +244,8 @@ final class PlayHistoryStore {
         var source: PlaySource
         var contextId: String?
         var contextName: String?
+        /// The collection the run started from (see `PlayEvent.originCollectionId`).
+        var originCollectionId: String? = nil
 
         static let browser = PlayContext(source: .browser, contextId: nil, contextName: nil)
     }
@@ -271,7 +279,8 @@ final class PlayHistoryStore {
                               contextName: context.contextName, title: title, artist: artist,
                               originInstallId: installId,
                               tzOffsetMin: TimeZone.current.secondsFromGMT(for: playedAtDate) / 60,
-                              carPlay: carPlayProbe?())
+                              carPlay: carPlayProbe?(),
+                              originCollectionId: context.originCollectionId)
         events.append(event)
         lastPlayedIndex[songId] = max(lastPlayedIndex[songId] ?? 0, nowMs)
         countIndex[songId, default: 0] += 1
@@ -608,6 +617,7 @@ extension PlayHistoryStore.PlayEvent {
         tzOffsetMin = (try? c.decodeIfPresent(Int.self, forKey: .tzOffsetMin)) ?? nil
         listeningContext = (try? c.decodeIfPresent(ListeningContextTag.self, forKey: .listeningContext)) ?? nil
         carPlay = (try? c.decodeIfPresent(Bool.self, forKey: .carPlay)) ?? nil
+        originCollectionId = (try? c.decodeIfPresent(String.self, forKey: .originCollectionId)) ?? nil
     }
 }
 

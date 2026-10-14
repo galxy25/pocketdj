@@ -24,7 +24,11 @@ import Foundation
 /// + 0.6 · bpm fit                        (1 inside the band, e^(−distance/8) outside)
 /// + 0.8 · seed-song strength             (normalised)
 /// + familiarity                          (0.6 · (playThroughRate − ½) + 0.3 · min(plays, 5)/5)
-/// A candidate that matches nothing of the profile (no target, no band, not a seed) is dropped.
+/// + 0.9 · cosine(m(song), profile membership)   (collections — see InThePocketMembership.swift)
+/// + 0.5 · cloud collection-candidate strength    (normalised)
+/// A candidate that matches nothing of the profile (no target, no band, not a seed, no
+/// membership pull ≥ 0.2, not a collection candidate) is dropped. Coherence also adds
+/// 0.3 · mean Jaccard of shared collection membership with the songs already picked.
 ///
 /// ── THE PICK ─────────────────────────────────────────────────────────────────────────────────
 /// Top 40 by score (ties → id). Song 1 is a seeded weighted draw (score²) from the top 8; each
@@ -78,6 +82,19 @@ enum InThePocketScorer {
         var seed: UInt64
         /// Songs played (anywhere) within this window are not picked.
         var recentExclusionMs: Double = 48 * 3_600_000
+        /// This device's collections, flattened (pockets × collections). Empty ⇒ the scorer
+        /// behaves exactly as it did without them.
+        var collections: [CollectionInfo] = []
+    }
+
+    /// One collection as the scorer sees it: effective members + when each was last added.
+    struct CollectionInfo: Sendable, Equatable {
+        var id: String
+        /// LOCAL display name (round target labels / "why" chips). Never uploaded.
+        var name: String?
+        var songIds: Set<String>
+        /// songId → epoch ms it was last added (absent ⇒ unknown).
+        var addedAtMs: [String: Double] = [:]
     }
 
     struct Pick: Sendable, Equatable {
@@ -113,13 +130,82 @@ enum InThePocketScorer {
     static let minContextPlays = 5
     static let learningAddMin = 1.25
 
+    // Pockets × collections (docs/design/pockets-collections.md).
+    /// w in `score += w · cosine(m(song), profile membership)`.
+    static let membershipWeight = 0.9
+    /// A cosine at least this high makes a candidate RELATED on its own ("Like <collection>").
+    static let membershipRelatedMin = 0.2
+    /// Soft membership of a NON-member: SOFT_MAX · sim(song, centroid) when sim ≥ SOFT_MIN.
+    static let softMax = 0.6
+    static let softMin = 0.55
+    /// sim blend weights (renormalised over the dims both sides have; < `simMinCoverage` ⇒ 0).
+    static let simGenreWeight = 0.35
+    static let simBpmWeight = 0.25
+    static let simCamelotWeight = 0.2
+    static let simMoodWeight = 0.2
+    static let simMinCoverage = 0.45
+    /// σ of the BPM gaussian (folded BPM vs the collection's median).
+    static let simBpmSigma = 8.0
+    /// Collections with fewer resolvable members get no centroid (hard membership only).
+    static let minCentroidMembers = 3
+    /// Hard weight × (0.5 + 0.5·e^(−ageDays/45)); unknown add time ⇒ 0.75.
+    static let addHalfLifeDays = 45.0
+    static let unknownAddScale = 0.75
+    /// Profile membership vector: L1-normalised, top 12 kept.
+    static let membershipTop = 12
+    /// Live session pull: the membership of what played in the last hour nudges the profile.
+    static let liveWindowMs = 60 * 60_000.0
+    static let liveWeight = 0.5
+    /// Soft membership of played songs (local profile) is computed for this many distinct songs.
+    static let softBasisSongs = 50
+    /// The cloud's `pattern.collectionCandidates` (normalised) add this much and make a song related.
+    static let collectionCandidateWeight = 0.5
+    /// Coherence: + this · mean Jaccard of hard membership with the songs already picked.
+    static let coherenceMembershipWeight = 0.3
+    /// How many `collection` targets a round records (so rounds can learn them).
+    static let maxCollectionTargets = 3
+
     // MARK: - Build
 
     static func build(_ input: Input) -> Result<Output, Failure> {
         let candidatesAll = input.playableIds.compactMap { input.catalog[$0] }
         guard !candidatesAll.isEmpty else { return .failure(.nothingPlayable) }
+        var (profile, membership, scored) = scoreCandidates(input, candidates: candidatesAll)
+        let count = profile.mode == .cloud ? 4 : 3
+        guard scored.count >= 3 else { return .failure(.notEnoughCandidates) }
+        scored.sort { $0.score != $1.score ? $0.score > $1.score : $0.song.id < $1.song.id }
+        var pool = Array(scored.prefix(topK))
+        var rng = SplitMix64(seed: input.seed)
+        var picks: [Pick] = []
+        while picks.count < min(count, scored.count), !pool.isEmpty {
+            let ranked: [(Int, Double)]
+            if picks.isEmpty {
+                ranked = pool.indices.map { ($0, pool[$0].score) }
+            } else {
+                ranked = pool.indices.map { i in
+                    (i, pool[i].score + coherence(pool[i].song, with: picks, memberOf: membership.collections(of:)))
+                }
+                    .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : pool[$0.0].song.id < pool[$1.0].song.id }
+            }
+            let window = Array(ranked.prefix(picks.isEmpty ? firstDrawFrom : nextDrawFrom))
+            let chosen = weightedDraw(window, rng: &rng)
+            picks.append(pool[chosen])
+            pool.remove(at: chosen)
+        }
+        guard picks.count >= 3 else { return .failure(.notEnoughCandidates) }
+        profile.targets += collectionTargets(profile.membership, index: membership)
+        return .success(Output(mode: profile.mode, targets: profile.targets,
+                               bpmBand: profile.bpmBand, picks: picks, chips: chips(input: input, profile: profile)))
+    }
 
+    /// The profile (with membership + learning applied) and every RELATED, non-excluded
+    /// candidate with its score — `build`'s first half, exposed for tests.
+    static func scoreCandidates(_ input: Input, candidates: [Song]? = nil)
+        -> (profile: Profile, membership: MembershipIndex, scored: [Pick]) {
+        let candidatesAll = candidates ?? input.playableIds.compactMap { input.catalog[$0] }
         var profile = cloudProfile(input) ?? historyProfile(input)
+        let membership = MembershipIndex(input)
+        applyMembership(&profile, input: input, index: membership)
         applyLearning(&profile, input: input)
 
         // Exclusions: anything played recently, and the songs of the last three rounds.
@@ -130,6 +216,8 @@ enum InThePocketScorer {
         }
         let familiarity = Self.familiarity(input.plays)
         let maxSeed = profile.seedSongs.values.max() ?? 0
+        let maxBoost = profile.candidateBoost.values.max() ?? 0
+        let pull = MembershipPull(profile: profile.membership, index: membership, input: input)
 
         var scored: [Pick] = []
         for c in candidatesAll where !excluded.contains(c.id) {
@@ -148,32 +236,23 @@ enum InThePocketScorer {
             if maxSeed > 0, let w = profile.seedSongs[c.id] {
                 s += seedWeight * (w / maxSeed); why.append("From your pockets"); related = true
             }
+            if let p = pull, let r = p.cosine(c, nowMs: input.nowMs), r.0 > 0 {
+                s += membershipWeight * r.0
+                if r.0 >= membershipRelatedMin {
+                    why.append(membership.name(r.1).map { "Like \($0)" } ?? "Like your collections")
+                    related = true
+                }
+            }
+            if maxBoost > 0, let b = profile.candidateBoost[c.id], b > 0 {
+                s += collectionCandidateWeight * (b / maxBoost)
+                if !why.contains(where: { $0.hasPrefix("Like ") }) { why.append("From your collections") }
+                related = true
+            }
             guard related else { continue }
             s += familiarity[c.id] ?? 0
             scored.append(Pick(song: c, score: s, why: why))
         }
-        let count = profile.mode == .cloud ? 4 : 3
-        guard scored.count >= 3 else { return .failure(.notEnoughCandidates) }
-        scored.sort { $0.score != $1.score ? $0.score > $1.score : $0.song.id < $1.song.id }
-        var pool = Array(scored.prefix(topK))
-        var rng = SplitMix64(seed: input.seed)
-        var picks: [Pick] = []
-        while picks.count < min(count, scored.count), !pool.isEmpty {
-            let ranked: [(Int, Double)]
-            if picks.isEmpty {
-                ranked = pool.indices.map { ($0, pool[$0].score) }
-            } else {
-                ranked = pool.indices.map { i in (i, pool[i].score + coherence(pool[i].song, with: picks)) }
-                    .sorted { $0.1 != $1.1 ? $0.1 > $1.1 : pool[$0.0].song.id < pool[$1.0].song.id }
-            }
-            let window = Array(ranked.prefix(picks.isEmpty ? firstDrawFrom : nextDrawFrom))
-            let chosen = weightedDraw(window, rng: &rng)
-            picks.append(pool[chosen])
-            pool.remove(at: chosen)
-        }
-        guard picks.count >= 3 else { return .failure(.notEnoughCandidates) }
-        return .success(Output(mode: profile.mode, targets: profile.targets, bpmBand: profile.bpmBand,
-                               picks: picks, chips: chips(input: input, profile: profile)))
+        return (profile, membership, scored)
     }
 
     // MARK: - Profiles
@@ -183,6 +262,11 @@ enum InThePocketScorer {
         var targets: [InThePocketTarget]
         var bpmBand: ClosedRange<Double>?
         var seedSongs: [String: Double]
+        /// Collection id → weight: what collections "a pocket here, now" expresses (L1-normalised,
+        /// top 12). Empty ⇒ no membership pull (no collections, or nothing matched).
+        var membership: [String: Double] = [:]
+        /// Song id → strength from the cloud's `pattern.collectionCandidates`.
+        var candidateBoost: [String: Double] = [:]
     }
 
     static let musicalDims: Set<String> = ["genre", "artist", "mood", "camelot"]
@@ -206,10 +290,15 @@ enum InThePocketScorer {
         var acc: [String: (target: InThePocketTarget, w: Double)] = [:]
         var seeds: [String: Double] = [:]
         var bandLo = 0.0, bandHi = 0.0, bandW = 0.0
+        var memb: [String: Double] = [:]
+        var boost: [String: Double] = [:]
         var any = false
         func absorb(features: [ListeningPocketFeature], numeric: [String: ListeningPocketNumeric],
-                    songIds: [(String, Double)], weight w: Double) {
+                    songIds: [(String, Double)], membership: [ListeningPocketMembershipWeight],
+                    candidates: [ListeningPocketCollectionCandidate] = [], weight w: Double) {
             any = true
+            for m in membership where m.weight > 0 { memb[m.collectionId, default: 0] += w * m.weight }
+            for c in candidates where c.score > 0 { boost[c.songId, default: 0] += w * c.score }
             for f in features where musicalDims.contains(f.dim) && f.score > 0 {
                 let key = f.dim + "\u{0}" + f.value
                 var cur = acc[key] ?? (InThePocketTarget(dim: f.dim, value: f.value, label: f.label, weight: 0), 0)
@@ -226,21 +315,26 @@ enum InThePocketScorer {
             guard m > 0 else { continue }
             let w = m * (1 + log(Double(max(1, p.occurrences))))
             absorb(features: p.features, numeric: p.numeric,
-                   songIds: p.topSongs.map { ($0.songId, Double(max(1, $0.plays))) }, weight: w)
+                   songIds: p.topSongs.map { ($0.songId, Double(max(1, $0.plays))) },
+                   membership: p.membership, candidates: p.collectionCandidates, weight: w)
         }
         for p in results.pockets {
             let m = contextMatch(timeBucket: p.timeBucket, dayType: p.dayType, ctx: p.ctx, to: input.context)
             guard m > 0 else { continue }
-            absorb(features: p.features, numeric: p.numeric, songIds: p.songIds.map { ($0, 1) }, weight: 0.5 * m)
+            absorb(features: p.features, numeric: p.numeric, songIds: p.songIds.map { ($0, 1) },
+                   membership: p.membership, weight: 0.5 * m)
         }
         guard any else { return nil }
         let band: ClosedRange<Double>? = bandW > 0 ? normalizedBand(bandLo / bandW, bandHi / bandW) : nil
         guard !acc.isEmpty || band != nil || !seeds.isEmpty else { return nil }
         return Profile(mode: .cloud, targets: normalize(acc.values.map { var t = $0.target; t.weight = $0.w; return t }),
-                       bpmBand: band, seedSongs: seeds)
+                       bpmBand: band, seedSongs: seeds, membership: normalizeMembership(memb),
+                       candidateBoost: boost)
     }
 
-    static func historyProfile(_ input: Input) -> Profile {
+    /// The plays that describe "here, now": same time bucket + day type (narrowed to this place /
+    /// trip when it has enough), else same bucket — `.history`; too few ⇒ every play, `.cold`.
+    static func contextBasis(_ input: Input) -> (mode: InThePocketMode, plays: [Play]) {
         let ctx = input.context
         let withCtx = input.plays.map { p in (p, InThePocketContext.make(atMs: p.atMs, tzOffsetMin: p.tzOffsetMin, ctx: nil)) }
         var inContext = withCtx.filter { $0.1.timeBucket == ctx.timeBucket && $0.1.dayType == ctx.dayType }.map(\.0)
@@ -254,7 +348,11 @@ enum InThePocketScorer {
             inContext = withCtx.filter { $0.1.timeBucket == ctx.timeBucket }.map(\.0)
         }
         let mode: InThePocketMode = inContext.count >= minContextPlays ? .history : .cold
-        let basis = mode == .history ? inContext : input.plays
+        return (mode, mode == .history ? inContext : input.plays)
+    }
+
+    static func historyProfile(_ input: Input) -> Profile {
+        let (mode, basis) = contextBasis(input)
         let kept = basis.filter { !$0.isSkip }
         let allKept = input.plays.filter { !$0.isSkip }
 
@@ -335,6 +433,24 @@ enum InThePocketScorer {
     static func applyLearning(_ profile: inout Profile, input: Input) {
         let learned = learning(for: input)
         guard !learned.isEmpty else { return }
+        // `collection` targets re-weight the membership vector: a collection that keeps
+        // predicting well here pulls harder (and joins the vector once it has ≥ 2 good rounds —
+        // only for a collection this device still has), one that keeps breaking pulls less.
+        if !profile.membership.isEmpty || !input.collections.isEmpty {
+            let known = Set(input.collections.map(\.id))
+            let top = profile.membership.values.max() ?? 1
+            var m = profile.membership
+            for (key, l) in learned.sorted(by: { $0.key < $1.key }) {
+                let parts = key.split(separator: "\u{0}", maxSplits: 1).map(String.init)
+                guard parts.count == 2, parts[0] == "collection" else { continue }
+                if let w = m[parts[1]] {
+                    m[parts[1]] = w * l.multiplier
+                } else if l.multiplier >= learningAddMin, l.pos >= 2, known.contains(parts[1]) {
+                    m[parts[1]] = 0.3 * l.multiplier * top
+                }
+            }
+            if m != profile.membership { profile.membership = normalizeMembership(m) }
+        }
         var present = Set<String>()
         for i in profile.targets.indices {
             let key = profile.targets[i].dim + "\u{0}" + profile.targets[i].value
@@ -364,8 +480,20 @@ enum InThePocketScorer {
         }
     }
 
-    static func coherence(_ s: Song, with picked: [Pick]) -> Double {
+    /// `memberOf` = a song's hard collection memberships (none ⇒ the pre-collections coherence).
+    static func coherence(_ s: Song, with picked: [Pick],
+                          memberOf: (String) -> Set<String> = { _ in [] }) -> Double {
         var c = 0.0
+        let mine = memberOf(s.id)
+        if !mine.isEmpty, !picked.isEmpty {
+            var j = 0.0
+            for p in picked {
+                let theirs = memberOf(p.song.id)
+                guard !theirs.isEmpty else { continue }
+                j += Double(mine.intersection(theirs).count) / Double(mine.union(theirs).count)
+            }
+            c += coherenceMembershipWeight * j / Double(picked.count)
+        }
         if let g = s.genre, picked.contains(where: { $0.song.genre == g }) { c += 0.3 }
         let bpms = picked.compactMap { foldBpm($0.song.bpm) }
         if let b = foldBpm(s.bpm), !bpms.isEmpty {
