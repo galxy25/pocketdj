@@ -171,6 +171,16 @@ describe('capture length guard — server wiring', () => {
   });
 
   it('a short-capture is retried through the backoff ladder and NEVER registered', async () => {
+    // Watch the durable queue record: during the backoff the retry must be on DISK with the
+    // bumped attempt, or a restart in that window drops it (the queue file is keyed by songId).
+    const qf = join(work, 'home', '.pocketdj', 'rips', 'queue', `${SHORT}.json`);
+    let sawDurableRetry = false, watching = true;
+    const watch = (async () => {
+      while (watching && !sawDurableRetry) {
+        try { sawDurableRetry = JSON.parse(readFileSync(qf, 'utf8')).attempt === 2; } catch { /* absent */ }
+        await sleep(5);
+      }
+    })();
     const r = await (await post('/rip', { songId: SHORT }, USER_TOKEN)).json();
     expect(r.jobId).toBeTruthy();
     const gaveUp = await until(() => serverLog.includes(`gave-up ${SHORT}`));
@@ -178,6 +188,9 @@ describe('capture length guard — server wiring', () => {
     expect(serverLog).toContain(`✗ short-capture ${SHORT} attempt 1/2`);
     expect(serverLog).toContain(`retry-scheduled ${SHORT} attempt 2/2`);
     expect(serverLog).toContain(`✗ short-capture ${SHORT} attempt 2/2`);
+    watching = false; await watch;
+    expect(sawDurableRetry, 'retry record persisted to the durable queue during backoff').toBe(true);
+    expect(existsSync(qf)).toBe(false); // terminal give-up drops it
     expect(disk()[SHORT]).toBeUndefined();
     // nothing downstream was fed the fragment
     expect(spool('pocketdj-stem-jobs').some((j) => j.songId === SHORT)).toBe(false);

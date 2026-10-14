@@ -912,8 +912,11 @@ async function pump() {
     const retryable = job.phase === 'error' && !job.canceled
       && isTransient(job, errMsg) && (job.attempt || 1) < SELFHEAL.maxAttempts;
     if (retryable) {
-      scheduleRetry(job, errMsg); // re-holds inflight for this resource (single-flight preserved)
-      clearQueue(job.songId);     // the retry job re-persisted its own durable record
+      // Clear BEFORE scheduling: the queue file is keyed by songId, so the retry's durable
+      // record shares this path. Clearing after it deleted the retry's record, leaving retries
+      // in memory only, and a server restart silently dropped every pending one.
+      clearQueue(job.songId);
+      scheduleRetry(job, errMsg); // re-holds inflight + re-persists the durable record (attempt+1)
     } else {
       if (job.phase === 'error' && !job.canceled && isTransient(job, errMsg)) {
         console.error(`  gave-up ${job.songId} after ${job.attempt || 1}/${SELFHEAL.maxAttempts} attempts (${errMsg})`);
