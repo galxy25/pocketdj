@@ -1,10 +1,10 @@
 {
  "v": 1,
- "generatedAt": "2026-10-13T11:01:20.287Z",
+ "generatedAt": "2026-10-14T11:02:03.299Z",
  "counts": {
-  "audioBearing": 16321,
-  "candidates": 94270,
-  "aliases": 3668,
+  "audioBearing": 16335,
+  "candidates": 94298,
+  "aliases": 3667,
   "rejectedLane1": 0
  },
  "rejectedLane1": [],
@@ -6831,10 +6831,6 @@
    "to": "sng_a4882efb0720",
    "dLenMs": 1
   },
-  "sng_75219d713df3": {
-   "to": "sng_e85920af8d5e",
-   "dLenMs": 3106
-  },
   "sng_7522633cbb0b": {
    "to": "sng_0888ea12cdcd",
    "dLenMs": 0
@@ -12421,7 +12417,10 @@
   },
   "sng_d2862cff2178": {
    "to": "sng_e85920af8d5e",
-   "dLenMs": 0
+   "dLenMs": 0,
+   "alternatives": [
+    "sng_75219d713df3"
+   ]
   },
   "sng_d2948a84dc47": {
    "to": "sng_5a87c4d2e310",
