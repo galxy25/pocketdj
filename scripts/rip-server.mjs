@@ -12,6 +12,22 @@
 // phases queued→searching→ripping→uploading→ready (or error). Single-flight per
 // album/song, concurrency 1.
 //
+// CAPTURE LENGTH GUARD (scripts/lib/rip-length-guard.mjs). A real-time capture ends when Music.app
+// stops playing, so a playback cascade used to upload a 54 s fragment of a 221 s song as `ok` and
+// derive stems/analysis/lyrics/timbre from it. The worker (rip-one.mjs, which owns the upload)
+// ffprobes the transcoded file BEFORE upload and holds it to the catalog length (else the ad-hoc
+// lengthMs, else Music.app's own duration; analog catalog songs trust only Music.app's):
+//   short  measured < expected − max(5 %, 5 s)          → fail `short-capture`, backoff retry
+//   long   measured > expected + 20 s (after trimming)  → fail `long-capture`, backoff retry
+//   ok     a smaller overrun keeps its music; only a SILENT tail past expected is trimmed
+//   skip   no expected length / analog without a trusted one → accepted, logged
+// Knobs: RIP_LENGTH_GUARD=0, RIP_LENGTH_UNDER_RATIO, RIP_LENGTH_UNDER_SLACK_MS,
+// RIP_LENGTH_OVER_SLACK_MS, RIP_LENGTH_SILENCE_DB, RIP_LENGTH_SILENCE_MIN_MS, RIP_LENGTH_TRIM_PAD_MS.
+// The manifest's durationMs is now the MEASURED length. Repair existing bad captures with the
+// ADMIN endpoint POST /rip-repair {songIds?, apply?, all?, force?}: a dry-run audit by default;
+// apply drops the entries, deletes rips/<id>.mp3 + stems/analysis/lyrics/timbre/waveform, and
+// re-rips with the derived offloads' dedup OFF (state: <tmp>/repaired.json).
+//
 // Dependency-free: node:http + shells to `ffmpeg` and `aws` (profile levi).
 //
 //   POCKETDJ_ANALOG_BASE=~/Downloads RIP_TOKEN=secret node scripts/rip-server.mjs
@@ -31,6 +47,7 @@ import { findInLibrary, loadLibraryXML, loadLibraryTSV, indexLibrary } from './l
 import { runOsascriptAsync } from './lib/am-music.mjs';
 import { captureWithHeal, createHealGate, healMusic, WEDGED_REASON } from './lib/music-health.mjs';
 import { foldCloudReindex } from './lib/cloud-reindex-fold.mjs';
+import { lengthGuardConfig, auditManifestLengths, repairTargetsFor, dropPreRepairRows } from './lib/rip-length-guard.mjs';
 import { AWS_ENV } from './lib/aws-env.mjs';
 import { artifactRoot as amArtifactRoot, snapshotDir as amSnapshotDir,
          ensureDirs as ensureArtifactDirs, pruneArtifacts } from './lib/am-artifacts.mjs';
@@ -191,6 +208,10 @@ if (CFG.rateLimit && (!CFG.token || !CFG.adminToken || CFG.token === CFG.adminTo
   console.warn('⚠ RIP_RATE_LIMIT=1 needs BOTH tokens set and distinct to bite — in this config the admin-tier exemption covers ' +
     (CFG.token || CFG.adminToken ? 'every token holder' : 'everyone') + ', so the limiter is inert.');
 }
+// Capture length guard (lib/rip-length-guard.mjs). The CAPTURE-time check runs in the worker
+// (rip-one.mjs owns the upload) with the same env knobs, which it inherits from this process;
+// this copy drives the /rip-repair audit so both apply one rule.
+const LENGTH_GUARD = lengthGuardConfig();
 const PUBLIC_BASE = `https://${CFG.bucket}.s3.${CFG.region}.amazonaws.com`;
 const publicUrl = (key) => `${PUBLIC_BASE}/${key}`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -703,6 +724,9 @@ function acceptRip(songId, ripFromCloud = false, adhoc = null) {
     songById.set(songId, song);
   }
   if (!song) return { job: null, status: 'unknown', url: null };
+  // POST /rip-repair is deleting this song's old capture right now; a rip started inside that
+  // window would race the S3 deletes. The repair re-enqueues it itself a moment later.
+  if (repairing.has(songId)) return { job: null, status: 'repairing', url: null };
   if (manifest[songId]) return { job: null, status: 'ready', url: publicUrl(manifest[songId].key) };
   // Probe the library ONCE, here. wantCloud is the RESOLVED preference (post-probe), not
   // the raw request flag — it is what we persist + route on so persist/resume can never
@@ -796,6 +820,28 @@ function persistQueue(job) {
 function clearQueue(songId) { try { rmSync(queueFile(songId)); } catch { /* not present */ } }
 
 function enqueue(job) { queue.push(job); pump(); }
+
+// ---- capture REPAIR state (POST /rip-repair) ----
+// A repaired song's derived artifacts must be RE-COMPUTED from the fresh capture, and three dedup
+// layers would otherwise hand back the partial's results: the stem worker's and the lyrics
+// worker's skip-if-on-S3, the timbre worker's S3 skip, and the timbre reconcile, which re-stamps
+// any song present in the durable local result corpus (~/.pocketdj/timbre-batch/results) — a
+// corpus a repair cannot and should not rewrite. So a repair records, durably:
+//   { at, rip, stems, lyrics, timbre }  — `at` filters pre-repair timbre rows forever; each lane
+//   flag forces dedup:false on that lane's next offload and clears when its fresh result folds.
+const repairing = new Set();                       // ids mid-repair (deletes in progress)
+const REPAIRED_FILE = join(CFG.tmp, 'repaired.json');
+let repaired = {};
+try { repaired = JSON.parse(readFileSync(REPAIRED_FILE, 'utf8')) || {}; } catch { repaired = {}; }
+function saveRepaired() {
+  try { writeFileSync(REPAIRED_FILE, JSON.stringify(repaired)); } catch (e) { console.error('  repaired.json save failed:', e.message); }
+}
+const repairFlag = (id, lane) => !!(repaired[id] && repaired[id][lane]);
+function clearRepairFlag(id, lane) {
+  if (!repairFlag(id, lane)) return;
+  repaired[id][lane] = false;
+  saveRepaired();
+}
 
 // Group-kill the in-flight capture child — the SAME kill /rip-cancel uses (reaps the
 // worker's grandchildren: rip skill, tail, HLS ffmpeg). Best-effort.
@@ -1211,6 +1257,10 @@ async function runDigitalJob(job, song) {
   const args = [
     '--song-id', song.id, '--artist', song.artist || '', '--title', song.name || '',
     '--album', album?.name || '', '--length-ms', String(song.length || 0),
+    // LENGTH GUARD inputs (lib/rip-length-guard.mjs): where --length-ms came from, and whether the
+    // CATALOG row is analog (a vinyl length the Apple Music edition must not be held to).
+    '--length-source', job.adhoc ? 'adhoc' : 'catalog',
+    '--source-type', catalogSourceType(song),
     '--status', sf, '--library-xml', CFG.libraryXml,
     '--bucket', CFG.bucket, '--region', CFG.region, '--profile', CFG.profile, '--tmp', CFG.tmp,
     '--ah-recordings-dir', CFG.ahRecDir,
@@ -1290,13 +1340,19 @@ async function runDigitalJob(job, song) {
   if (ok) {
     manifest[song.id] = {
       key: st.key, ext: 'mp3', bytes: st.bytes || 0, source: 'digital',
-      albumId: song.albumId, startMs: null, durationMs: song.length ?? null, rippedAt: Date.now(),
+      // MEASURED by the worker's length guard (ffprobe of the uploaded file) when it reports one;
+      // the catalog length only as a fallback for an older worker.
+      albumId: song.albumId, startMs: null, durationMs: st.measuredMs ?? song.length ?? null, rippedAt: Date.now(),
+      ...(st.trimmedFromMs ? { trimmedFromMs: st.trimmedFromMs } : {}),
     };
     await saveManifest();
     job.url = publicUrl(st.key);
     setPhase(job, 'ready', { message: `${song.name} ready` });
+    if (repairFlag(song.id, 'rip')) { clearRepairFlag(song.id, 'rip'); console.error(`  REPAIR re-ripped ${song.id} (${st.measuredMs ?? '?'} ms) — derived artifacts re-offload with dedup off`); }
     enqueueAnalysis(song.id); // background: bpm/key/camelot + waveform for this song
-    offloadTimbre(song.id);   // ON-CAPTURE: freshly ripped audio gets its rec vector, no human in the loop
+    // ON-CAPTURE: freshly ripped audio gets its rec vector, no human in the loop. A REPAIRED song
+    // forces (dedup:false) so the worker's skip-if-on-S3 can never resurrect the partial's vector.
+    offloadTimbre(song.id, { force: repairFlag(song.id, 'timbre') });
     kickWantedStem(song.id);  // rip→stem chain: a waiting stem can now separate this mp3
     if (CFG.autoStemOnRip) acceptStem(song.id);  // AUTO PIPELINE: stems (→ lyrics) unprompted
     inflight.delete(job.resourceKey);
@@ -1307,8 +1363,22 @@ async function runDigitalJob(job, song) {
     if (st.reason === 'system') console.error(`  WARN cloud capture system failure for ${song.id} (${st.error}); falling back to analog`);
     return runAnalogJob(job, song); // runAnalogJob owns inflight.delete — do NOT touch it here
   } else {
+    // LENGTH GUARD rejection (short-capture / long-capture): nothing was uploaded. One clear line,
+    // then the ordinary transient path in pump() retries it with backoff.
+    if (st.reason === 'short-capture' || st.reason === 'long-capture') {
+      job.reason = st.reason;
+      console.error(`  ✗ ${st.reason} ${song.id} attempt ${job.attempt || 1}/${SELFHEAL.maxAttempts}: ${st.error}`);
+    }
     fail(job, st.error || 'rip failed'); // fail() deletes inflight
   }
+}
+
+// The CATALOG row's source type. A variant row is synthesized as 'digital', but its length is
+// the BASE row's — a vinyl length when the base is analog — so ask the base.
+function catalogSourceType(song) {
+  const m = song && song.variant ? VARIANT_ID.exec(String(song.id || '')) : null;
+  const base = m ? songById.get(m[1]) : song;
+  return base && base.sourceType === 'analog' ? 'analog' : 'digital';
 }
 
 // ---------------- background audio analysis (bpm/key + waveform) ----------------
@@ -1430,6 +1500,9 @@ async function reconcileTimbre() {
   if (!CFG.timbreOffload) return { stamped: 0, failed: 0 };
   try {
     timbreDone = readResultRows(CFG.timbreResultsDir);
+    // A row measured before a /rip-repair describes deleted audio — never a stamp for the re-rip.
+    const dropped = dropPreRepairRows(timbreDone, repaired);
+    if (dropped) console.error(`  timbre: ignoring ${dropped} pre-repair result row(s)`);
     if (!timbreDone.size) {
       console.error(`  ⚠ timbre: no result corpus at ${CFG.timbreResultsDir} — sweeping on manifest stamps alone`);
       return { stamped: 0, failed: 0 };
@@ -1495,6 +1568,7 @@ async function pumpTimbreResults() {
           // anyway, and the manifest must not claim a swap the corpus refused.
           const kind = cloudKindFor(e);
           if (timbreSrcRank(kind) >= timbreSrcRank(e.timbreSrc)) e.timbreSrc = kind;
+          clearRepairFlag(song.id, 'timbre');
           changed = true; ok += 1;
         }
         // A result whose songs are ALL unknown to this manifest must not be deleted with nothing
@@ -1544,6 +1618,7 @@ async function offloadLyrics(songId, { force = false } = {}) {
   const e = manifest[songId];
   if (!e || !e.key) return;
   const stale = !!e.lyrics && (e.lyricsVersion ?? 0) < LYRICS_VERSION;
+  if (repairFlag(songId, 'lyrics')) force = true;   // repaired: never reuse the partial's sidecar
   const body = { songId, srcKey: e.key, tasks: ['lyrics'] };
   if (force || stale) body.dedup = false;
   if (await dispatchSend(JSON.stringify(body)))
@@ -1804,7 +1879,10 @@ async function offloadStem(songId) {
   // stems of a STALE model/version — else the worker would re-stamp the new model name onto the OLD
   // model's audio. A fresh song has no stems, so dedup:true is harmless there.
   const stale = !!(e.stems && ((e.stemVersion ?? 0) < STEMS_VERSION || e.stemModel !== CFG.demucsModel));
-  if (await dispatchSend(JSON.stringify({ songId, srcKey, tasks: ['stems'], dedup: !stale }))) {
+  // A REPAIRED song (POST /rip-repair) also forces: its old stems were computed from a partial
+  // capture, and a straggler upload must never be "deduped" back onto the fresh rip.
+  const force = stale || repairFlag(songId, 'stems');
+  if (await dispatchSend(JSON.stringify({ songId, srcKey, tasks: ['stems'], dedup: !force }))) {
     if (job) { job.offloadedAt = Date.now(); if (job.phase !== 'error') setPhase(job, 'stemming', { message: 'separating stems (cloud)' }); }
     console.error(`  → offloaded stem ${songId} (${srcKey}) to SQS`);
   } else if (job && job.phase !== 'error') {
@@ -2122,6 +2200,9 @@ async function pumpStemResults() {
         }
         if (r.stems && r.songId) stemCanceled.delete(r.songId);   // a STEM result clears its OWN cancel tombstone (analysis results don't)
         if (stemsOk) { stemAttempts.delete(r.songId); clearStemWant(r.songId); finishStem(r.songId); stemInflight.delete(r.songId); }
+        // A repaired song's lane is satisfied once a FRESH (non-dedup) result folds.
+        if (stemsOk && !r.deduped) clearRepairFlag(r.songId, 'stems');
+        if (ok && r.lyrics && r.lyrics.lyrics && !r.lyrics.deduped) clearRepairFlag(r.songId, 'lyrics');
         await aws(['sqs', 'delete-message', '--queue-url', CFG.stemResultsQueue, '--receipt-handle', m.ReceiptHandle]);
       } catch (err) { console.error('  stem-result fold error:', err.message); }
     }
@@ -2351,7 +2432,7 @@ function rateLimited(req) {
 // Endpoints behind the ADMIN tier. Everything else (rip/rip-collection/stemify/cancel/
 // status/jobs/hls) is a first-class app feature beta users are meant to reach. GET
 // /am-sync/<id> stays user-tier (read-only poll; ids are unguessable job handles).
-const ADMIN_PATHS = new Set(['/backfill-cuts', '/retag-cuts', '/backfill-beatgrids',
+const ADMIN_PATHS = new Set(['/backfill-cuts', '/retag-cuts', '/backfill-beatgrids', '/rip-repair',
   // NOTE: /lyricsify is deliberately NOT here — it's user-tier like /stemify (the app/public can
   // trigger a single song's lyrics tokenlessly); only the batch backfills stay admin.
   '/stemify-collection', '/backfill-stems', '/backfill-analysis', '/backfill-lyrics', '/backfill-timbre',
@@ -2412,6 +2493,7 @@ const server = http.createServer(async (req, res) => {
 
   if (path === '/health') {
     return send(res, 200, { ok: true, host: hostname(), version: RIP_PROTOCOL, hls: true, stems: true, analogBase: CFG.analogBase, bucket: CFG.bucket,
+      lengthGuard: LENGTH_GUARD,
       catalog: { songs: songById.size, albums: albumById.size }, cached: Object.keys(manifest).length, auth: !!CFG.token, public: CFG.public, rateLimit: CFG.rateLimit,
       // The FREEZE SIGNAL: a corpus that stops growing is invisible without a number that says so.
       timbre: { ...timbreHealth(manifest), offload: CFG.timbreOffload } });
@@ -2629,6 +2711,8 @@ const server = http.createServer(async (req, res) => {
     console.log(`  POST /rip ${songId} → ${r.status}${r.job ? ` job=${r.job.jobId.slice(0, 8)}` : ''}`);
     if (r.status === 'unknown') return send(res, 404, { error: 'unknown songId' });
     if (r.status === 'ready') return send(res, 200, { jobId: null, songId, phase: 'ready', url: r.url });
+    // Mid-/rip-repair (a few seconds): the repair enqueues the re-rip itself.
+    if (r.status === 'repairing') return send(res, 200, { jobId: null, songId, phase: 'queued', message: 'repair in progress', url: null, error: null });
     return send(res, 200, jobView(r.job));
   }
   // POST /rip-collection {songIds:[...]} — Feature 2 RIP. Batch-enqueue every song in
@@ -2871,6 +2955,82 @@ const server = http.createServer(async (req, res) => {
     const counts = results.reduce((c, r) => { c[r.status] = (c[r.status] || 0) + 1; c.total++; return c; },
       { canceled: 0, notFound: 0, alreadyDone: 0, total: 0 });
     return send(res, 200, { results, counts });
+  }
+  // POST /rip-repair {songIds?, apply?:false, all?:false, force?:false} — ADMIN. Repair captures
+  // that were under/over-ripped (the length guard's rule applied to the manifest's MEASURED
+  // durationMs vs the catalog length; see lib/rip-length-guard.mjs).
+  //   audit (default, dry run): list the violating per-song captures (optionally only songIds).
+  //   apply: for each target, drop the manifest entry (one save), delete the rip object and every
+  //     derived artifact (stems/<id>/*, analysis + lyrics + timbre sidecars, waveform), then
+  //     re-enqueue the rip via acceptRip. Targets = songIds that violate the rule (force:true
+  //     takes songIds as-is), or — only with all:true — every audited violation.
+  // Refuses ids with a rip/stem in flight or already mid-repair, analog/album entries, and ids
+  // with no manifest entry. The re-rip's stems/lyrics/timbre offloads run with dedup OFF (see
+  // the `repaired` state). Every action is logged.
+  if (path === '/rip-repair' && req.method === 'POST') {
+    const body = await readJson(req).catch(() => ({}));
+    const songIds = Array.isArray(body.songIds) ? [...new Set(body.songIds.map(String))] : null;
+    const audit = auditManifestLengths(manifest, (id) => findSongOrVariant(id), { cfg: LENGTH_GUARD, songIds });
+    console.error(`  rip-repair audit: scanned ${audit.scanned}, ${audit.violations.length} violation(s) `
+      + `${JSON.stringify(audit.skipped)}${songIds ? ` (ids: ${songIds.join(',')})` : ''}`);
+    if (!body.apply) return send(res, 200, { ok: true, mode: 'audit', ...audit, guard: LENGTH_GUARD });
+
+    if (!songIds && !body.all) return send(res, 400, { error: 'apply needs songIds (or all:true to repair every audited violation)' });
+    const violating = new Set(audit.violations.map((v) => v.songId));
+    const candidates = songIds || [...violating];
+    const results = [];
+    const targets = [];
+    for (const id of candidates) {
+      const e = manifest[id];
+      let refused = null;
+      if (!e) refused = 'not-in-manifest';
+      else if (e.source === 'analog' || e.key !== `rips/${id}.mp3`) refused = 'not-a-per-song-capture';
+      else if (repairing.has(id)) refused = 'repair-in-flight';
+      else if (inflight.has(id) || stemInflight.has(id)) refused = 'in-flight';
+      else if (!violating.has(id) && !body.force) refused = 'passes-length-guard';
+      if (refused) { results.push({ songId: id, status: 'refused', reason: refused }); console.error(`  rip-repair refused ${id}: ${refused}`); continue; }
+      targets.push(id);
+    }
+    if (!targets.length) return send(res, 200, { ok: true, mode: 'apply', results, audit: audit.violations });
+
+    // 1. Drop the entries in ONE manifest save, so nothing points at the objects we delete next.
+    const saved = {};
+    const now = Date.now();
+    for (const id of targets) {
+      repairing.add(id);
+      saved[id] = manifest[id];
+      delete manifest[id];
+      repaired[id] = { at: now, rip: true, stems: true, lyrics: true, timbre: true };
+      timbreDone.delete(id);   // the in-memory corpus row describes the deleted audio too
+      console.error(`  rip-repair ${id}: dropping manifest entry (durationMs ${saved[id].durationMs ?? '?'})`);
+    }
+    saveRepaired();
+    if (!(await saveManifest())) {
+      for (const id of targets) { manifest[id] = saved[id]; delete repaired[id]; repairing.delete(id); }
+      saveRepaired();
+      console.error('  rip-repair: manifest save FAILED — entries restored, nothing deleted');
+      return send(res, 502, { error: 'manifest save failed; nothing changed' });
+    }
+    // 2. Delete the capture + every derived artifact; 3. re-enqueue the rip.
+    for (const id of targets) {
+      const { objects, prefixes } = repairTargetsFor(id, saved[id], { timbreVersions: [...new Set([1, TIMBRE_VERSION])] });
+      const errors = [];
+      await Promise.all([
+        ...objects.map((k) => aws(['s3', 'rm', `s3://${CFG.bucket}/${k}`, '--only-show-errors'])
+          .then(() => console.error(`  rip-repair ${id}: deleted s3://${CFG.bucket}/${k}`))
+          .catch((err) => errors.push(`${k}: ${String(err.message).trim().slice(0, 200)}`))),
+        ...prefixes.map((p) => aws(['s3', 'rm', `s3://${CFG.bucket}/${p}`, '--recursive', '--only-show-errors'])
+          .then(() => console.error(`  rip-repair ${id}: deleted s3://${CFG.bucket}/${p}*`))
+          .catch((err) => errors.push(`${p}*: ${String(err.message).trim().slice(0, 200)}`))),
+      ]);
+      for (const er of errors) console.error(`  ⚠ rip-repair ${id}: delete failed ${er}`);
+      repairing.delete(id);
+      const r = acceptRip(id);
+      console.error(`  rip-repair ${id}: re-rip ${r.status}${r.job ? ` job=${r.job.jobId.slice(0, 8)}` : ''}`);
+      results.push({ songId: id, status: 'repaired', rip: r.status, jobId: r.job ? r.job.jobId : null,
+        deleted: [...objects, ...prefixes.map((p) => `${p}*`)], errors });
+    }
+    return send(res, 200, { ok: true, mode: 'apply', results, audit: audit.violations });
   }
   // POST /analysis {songId, key?, bpm, musicalKey, camelot, waveform, durationMs?, beatgrid?, beatgridKey?}
   // External analysis submission (the batch tool, for skill-ripped songs). Merges into
