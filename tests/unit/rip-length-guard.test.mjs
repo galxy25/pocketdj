@@ -92,6 +92,59 @@ describe('judgeCaptureLength — the decision', () => {
   });
 });
 
+describe('judgeCaptureLength — Apple Music editions (Music.app duration)', () => {
+  it('ACCEPTS a complete capture of a shorter edition: Music.app agrees with the capture', () => {
+    // Real repair-queue cases: catalog 266.0 s, Music.app 227.2 s, captured 229.4 s (and two more).
+    for (const [m, e, music] of [[229_376, 266_000, 227_227], [128_672, 142_560, 126_520], [197_621, 217_600, 196_075]]) {
+      const v = judgeCaptureLength({ measuredMs: m, expectedMs: e, musicMs: music });
+      expect(v.verdict).toBe('ok');
+      expect(v.reason).toBe('shorter-edition');
+      expect(v.editionMs).toBe(music);
+      expect(v.expectedMs).toBe(e);
+    }
+  });
+
+  it('STILL REJECTS a partial: 54 s captured while Music.app reports the full 221 s', () => {
+    const v = judgeCaptureLength({ measuredMs: 54_300, expectedMs: 221_043, musicMs: 221_043 });
+    expect(v.verdict).toBe('short');
+    expect(v.reason).toBe('short-capture');
+    // and a partial of a shorter edition is short against the edition too
+    expect(judgeCaptureLength({ measuredMs: 60_000, expectedMs: 266_000, musicMs: 227_227 }).verdict).toBe('short');
+  });
+
+  it('no Music.app duration → the catalog rule alone (old behaviour)', () => {
+    for (const musicMs of [null, undefined, 0, NaN]) {
+      const v = judgeCaptureLength({ measuredMs: 229_376, expectedMs: 266_000, musicMs });
+      expect(v.verdict).toBe('short');
+      expect(v.reason).toBe('short-capture');
+      expect(v.editionMs).toBeUndefined();
+    }
+  });
+
+  it('a Music.app duration LONGER than catalog never rescues a short capture (and vice versa)', () => {
+    expect(judgeCaptureLength({ measuredMs: 229_376, expectedMs: 266_000, musicMs: 280_000 }).verdict).toBe('short');
+    expect(judgeCaptureLength({ measuredMs: 120_000, expectedMs: 90_000, musicMs: 80_000 }).verdict).toBe('long');
+  });
+
+  it('ACCEPTS a complete capture of a longer edition', () => {
+    const v = judgeCaptureLength({ measuredMs: 140_000, expectedMs: 100_000, musicMs: 138_000 });
+    expect(v).toMatchObject({ verdict: 'ok', reason: 'longer-edition', editionMs: 138_000 });
+  });
+
+  it('describeVerdict names both lengths and says accepted', () => {
+    const v = judgeCaptureLength({ measuredMs: 229_376, expectedMs: 266_000, musicMs: 227_227 });
+    expect(describeVerdict('sng_cb4c627fcae5', v, 'catalog'))
+      .toBe('LENGTH-GUARD sng_cb4c627fcae5 shorter-edition: measured 229.4s ≈ Music.app 227.2s vs catalog 266.0s — accepted');
+  });
+
+  it('audit honours a recorded editionMs (no re-flag of an accepted edition)', () => {
+    const manifest = { sng_ed: { source: 'digital', key: 'rips/sng_ed.mp3', durationMs: 229_376, editionMs: 227_227 } };
+    const a = auditManifestLengths(manifest, () => ({ length: 266_000, sourceType: 'digital' }));
+    expect(a.violations).toEqual([]);
+    expect(a.ok).toBe(1);
+  });
+});
+
 describe('trailing-silence trim decision', () => {
   it('trims only a silent run that reaches the end, never below expected', () => {
     // sng_f2369436e930: expected 248.1 s, file 261.5 s, silence 249.5 → end

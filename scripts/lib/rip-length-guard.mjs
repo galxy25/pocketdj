@@ -75,7 +75,27 @@ export function resolveExpectedLength({ catalogMs = null, adhocMs = null, musicM
 ///   verdict 'short' — reason 'short-capture'
 ///   verdict 'long'  — reason 'long-capture'
 ///   verdict 'ok'    — within tolerance; `overrunMs` > 0 means a trailing-silence trim may apply
-export function judgeCaptureLength({ measuredMs, expectedMs, analog = false, cfg = LENGTH_GUARD_DEFAULTS } = {}) {
+///
+/// EDITIONS: Apple Music sometimes serves a shorter (or longer) edition than the catalog row —
+/// Music.app itself reports e.g. 227 s for a 266 s catalog song, and every retry captures 227 s.
+/// When `musicMs` (Music.app's own duration for the track it played) is given and the capture
+/// matches IT within the same tolerances, the capture is complete: verdict 'ok' with reason
+/// 'shorter-edition' / 'longer-edition' and `editionMs`. A capture that is short against
+/// Music.app's duration too (54 s captured, Music.app 221 s) is still a short-capture.
+export function judgeCaptureLength({ measuredMs, expectedMs, musicMs = null, analog = false, cfg = LENGTH_GUARD_DEFAULTS } = {}) {
+  const v = judgeAgainst({ measuredMs, expectedMs, analog, cfg });
+  const m = Number(musicMs) > 0 ? Math.round(Number(musicMs)) : null;
+  if (!m || m === Math.round(expectedMs) || (v.verdict !== 'short' && v.verdict !== 'long')) return v;
+  if (v.verdict === 'short' && !(m < expectedMs)) return v;
+  if (v.verdict === 'long' && !(m > expectedMs)) return v;
+  const e = judgeAgainst({ measuredMs, expectedMs: m, analog, cfg });
+  if (e.verdict !== 'ok') return v;
+  const { toleranceMs: _catalogTolerance, ...rest } = v;
+  return { ...rest, verdict: 'ok', reason: v.verdict === 'short' ? 'shorter-edition' : 'longer-edition',
+    editionMs: m, overrunMs: e.overrunMs };
+}
+
+function judgeAgainst({ measuredMs, expectedMs, analog, cfg }) {
   const base = { measuredMs: measuredMs ?? null, expectedMs: expectedMs ?? null };
   if (!cfg.enabled) return { ...base, verdict: 'skip', reason: 'disabled' };
   if (!(Number(measuredMs) > 0)) return { ...base, verdict: 'skip', reason: 'no-measurement' };
@@ -91,6 +111,10 @@ export function judgeCaptureLength({ measuredMs, expectedMs, analog = false, cfg
 export function describeVerdict(songId, v, source) {
   const s = (ms) => (ms == null ? '?' : `${(ms / 1000).toFixed(1)}s`);
   const tag = v.verdict === 'skip' ? `skipped (${v.reason})` : v.reason || 'ok';
+  if (v.editionMs) {
+    return `LENGTH-GUARD ${songId} ${v.reason}: measured ${s(v.measuredMs)} ≈ Music.app ${s(v.editionMs)}`
+      + ` vs ${source || 'expected'} ${s(v.expectedMs)} — accepted`;
+  }
   return `LENGTH-GUARD ${songId} ${tag}: measured ${s(v.measuredMs)} vs expected ${s(v.expectedMs)}`
     + `${source ? ` (${source})` : ''}${v.deltaMs != null ? ` Δ${v.deltaMs >= 0 ? '+' : ''}${s(v.deltaMs)}` : ''}`;
 }
@@ -137,7 +161,7 @@ export function auditManifestLengths(manifest, lookupSong, { cfg = LENGTH_GUARD_
     if (e.source === 'analog' || e.key !== `rips/${id}.mp3`) { skipped.notPerSong++; continue; }
     const song = lookupSong ? lookupSong(id) : null;
     const exp = resolveExpectedLength({ catalogMs: song?.length, sourceType: song?.sourceType || 'digital' });
-    const v = judgeCaptureLength({ measuredMs: e.durationMs, expectedMs: exp.expectedMs, analog: exp.analog, cfg });
+    const v = judgeCaptureLength({ measuredMs: e.durationMs, expectedMs: exp.expectedMs, musicMs: e.editionMs, analog: exp.analog, cfg });
     if (v.verdict === 'skip') {
       if (v.reason === 'analog-exempt') skipped.analogExempt++;
       else if (v.reason === 'no-measurement') skipped.noMeasurement++;
@@ -199,7 +223,7 @@ export function probeDurationMs(file, { ffprobe = 'ffprobe' } = {}) {
 
 /// Measure → (trim a silent tail past expected) → judge. Mutates `file` in place when it trims.
 /// Returns {verdict…, trimmedFromMs?} — the caller decides what a short/long verdict means.
-export function guardCaptureFile(file, { expectedMs, analog = false, cfg = LENGTH_GUARD_DEFAULTS, ffmpeg = 'ffmpeg', ffprobe = 'ffprobe', log = () => {} } = {}) {
+export function guardCaptureFile(file, { expectedMs, musicMs = null, analog = false, cfg = LENGTH_GUARD_DEFAULTS, ffmpeg = 'ffmpeg', ffprobe = 'ffprobe', log = () => {} } = {}) {
   let measuredMs = probeDurationMs(file, { ffprobe });
   let trimmedFromMs = null;
   if (cfg.enabled && measuredMs && expectedMs > 0 && measuredMs > expectedMs) {
@@ -218,6 +242,6 @@ export function guardCaptureFile(file, { expectedMs, analog = false, cfg = LENGT
       } else { try { rmSync(tmp, { force: true }); } catch { /* best effort */ } }
     }
   }
-  const v = judgeCaptureLength({ measuredMs, expectedMs, analog, cfg });
+  const v = judgeCaptureLength({ measuredMs, expectedMs, musicMs, analog, cfg });
   return trimmedFromMs ? { ...v, trimmedFromMs } : v;
 }
