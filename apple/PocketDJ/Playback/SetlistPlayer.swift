@@ -86,6 +86,7 @@ final class SetlistPlayer {
         didSet {
             sessionRowsMemo = nil; queueIdsMemo = nil; queueGeneration &+= 1
             scheduleStemLockReplan()           // a live-queue edit can change the upcoming tracks
+            scheduleRipWindowReconcile()       // …and which rows are inside the rip-ahead window
         }
     }
     /// Monotonic queue identity for the off-main session-row projection (see above).
@@ -198,6 +199,29 @@ final class SetlistPlayer {
     /// "Next" control so the set never silently freezes on it.
     private(set) var waitingForLive = false
 
+    // MARK: Rip-ahead window + auto-advance cascade breaker (2026-10-13 "Potential" cascade)
+
+    /// The playback rips THIS session got queued (see `PlaybackRipWindow`).
+    @ObservationIgnored private(set) var ripWindow = PlaybackRipWindow()
+    @ObservationIgnored private var ripWindowReconcileQueued = false
+    /// Sends `POST /rip-cancel` for ids that left the window. Defaults to
+    /// `RipsStore.cancelCollection`; tests capture the ids instead.
+    @ObservationIgnored var cancelPlaybackRips: (([String]) -> Void)?
+    /// Consecutive quick auto-advances (see `AutoAdvanceCascadeBreaker`).
+    @ObservationIgnored private var cascade = AutoAdvanceCascadeBreaker()
+    /// Audible seconds the CURRENT track has produced (sampled by the session ticker; reset on
+    /// every start). Feeds the cascade breaker and the rip window's "heard" exemption.
+    @ObservationIgnored private(set) var trackAudibleSeconds: Double = 0
+    @ObservationIgnored private var lastAudibleSample: Date?
+    /// The cascade breaker stopped auto-advance: the deck holds the current row paused until
+    /// the listener acts (▶ retries this row; ⏭/⏮/jump move on).
+    private(set) var pausedByCascade = false
+    /// A short status for the deck ("Playback paused — Apple Music was interrupted"); nil when
+    /// there is nothing to say. Cleared by any transport action or once audio flows again.
+    private(set) var playbackNotice: String?
+    static let appleMusicInterruptedNotice = "Playback paused — Apple Music was interrupted"
+    static let cascadeGenericNotice = "Playback paused — the last few tracks didn’t play"
+
     /// F4 — true while the Now Playing mix mini-panel has swapped the current track's audio off the
     /// `AVPlayer` into `NowPlayingDSP` (the DSP owns the audio; the AVPlayer is idle, and the system
     /// Now Playing card is published on the DSP's behalf via `PlayerEngine.beginExternalNowPlaying`,
@@ -304,6 +328,10 @@ final class SetlistPlayer {
         // ticker alone would leave the paused position up to a tick stale). Same one-shot
         // self-re-arming pattern as observeNowPlaying.
         observePlayStateForSession()
+        // Rip-ahead window: playback rips are gated to the playing row + the next N, and every
+        // one the server queues for this session is tracked so it can be cancelled later.
+        rips.playbackRipGate = { [weak self] id in self?.playbackRipAllowed(id) ?? true }
+        rips.onPlaybackRipQueued = { [weak self] id in self?.notePlaybackRipQueued(id) }
     }
 
     /// Observe the play/pause state of BOTH backends; on any flip, write the session
@@ -343,6 +371,10 @@ final class SetlistPlayer {
         // current set from its collection to hear this song from the top is a restart, not a
         // skip of the song the user actively chose again).
         if isRunning, let first = items.first, !isRestartOfCurrent(first.id) { noteAdvanceAway() }
+        // The previous session's playback rips (minus the row that was sounding and anything
+        // heard) are cancelled — a fresh run has its own window.
+        if isRunning { endRipWindowSession(reason: "new-session") }
+        noteUserTransport()
         self.sourceSetlistId = sourceSetlistId
         // Snapshot THIS run's history origin now (before any later playNow can mutate the shared
         // now-playing source), so every play in this run is attributed to the right set.
@@ -503,7 +535,7 @@ final class SetlistPlayer {
         if decision.catalogId == nil {
             decision.catalogId = coordinator.variantAppleMusicIdOfSong(it.id, want)
         }
-        Task { await rips.requestEditionRipIfNeeded(base: it.id, decision: decision) }
+        Task { await rips.requestEditionRipIfNeeded(base: it.id, decision: decision, playback: true) }
     }
 
     /// Is there a burned file this row could play on device, honouring its edition decision?
@@ -539,10 +571,15 @@ final class SetlistPlayer {
         // The system remote ⏮ during a stream also lands in MusicKit (it rewinds its one-song
         // queue to 0:00); the provider detects the rewind and fires this so ⏮ steps the SET back.
         coordinator.appleMusic.onTrackRestarted = { [weak self] in self?.handleAppleMusicRestarted() }
+        // An EXTERNAL interruption of the stream (Music.app taking over — e.g. a same-Mac rip
+        // capture) is not the end of the track: the row holds, paused; ▶ resumes it.
+        coordinator.appleMusic.onInterrupted = { [weak self] in self?.handleAppleMusicInterrupted() }
     }
 
     /// Stop the sequence + clear now-playing; resets so the toolbar flips back to Play.
     func stop() {
+        if isRunning { endRipWindowSession(reason: "stop") }
+        cascade.reset(); pausedByCascade = false; playbackNotice = nil
         playTask?.cancel(); playTask = nil // a resolve still in flight must not load into a stopped deck
         playGeneration &+= 1               // …and its post-await bookkeeping must stand down
         endMixEngagement()                 // F4: drop any DSP hand-off before tearing the run down
@@ -560,6 +597,7 @@ final class SetlistPlayer {
         player.setRepeatShuffleCommandsEnabled(false)
         coordinator.appleMusic.onTrackEnded = nil
         coordinator.appleMusic.onTrackRestarted = nil
+        coordinator.appleMusic.onInterrupted = nil
         player.stop()
         coordinator.stop()
         rips.setNowPlaying(nil)
@@ -589,7 +627,7 @@ final class SetlistPlayer {
         DiagLog.shared.telemetry("action", "skip next from=\(queue.indices.contains(index) ? queue[index].title : "?")")
         noteAdvanceAway()
         exitHoldIfNeeded()
-        advanceToNext()
+        advanceToNext(.user)
     }
 
     /// Manually go back one track (lock-screen PREVIOUS). No-op past the top of the set; never
@@ -597,6 +635,7 @@ final class SetlistPlayer {
     func skipPrevious() {
         guard isRunning else { return }
         DiagLog.shared.telemetry("action", "skip previous")
+        noteUserTransport()
         exitHoldIfNeeded()
         waitingForLive = false
         if index == 0 {
@@ -818,6 +857,7 @@ final class SetlistPlayer {
         DiagLog.shared.telemetry("action", "jump to upcoming \(queue[pos].title)")
         // Jumping onto ANOTHER OCCURRENCE of the same song is a restart, not a skip of it.
         if !isRestartOfCurrent(queue[pos].id) { noteAdvanceAway() }
+        noteUserTransport()
         exitHoldIfNeeded()
         waitingForLive = false
         index = pos
@@ -842,6 +882,7 @@ final class SetlistPlayer {
         // Play-now of the SONG ALREADY PLAYING = "hear it from the top" — a restart the user
         // actively chose, never a skip verdict against the exact song they asked for again.
         if !isRestartOfCurrent(item.id) { noteAdvanceAway() }
+        noteUserTransport()
         exitHoldIfNeeded()
         waitingForLive = false
         let at = min(index + 1, queue.count)
@@ -871,6 +912,7 @@ final class SetlistPlayer {
               let pos = queue[..<min(index, queue.count)].firstIndex(where: { $0.uid == uid }) else { return }
         // Rewinding onto an EARLIER OCCURRENCE of the same song is a restart, not a skip of it.
         if !isRestartOfCurrent(queue[pos].id) { noteAdvanceAway() }
+        noteUserTransport()
         exitHoldIfNeeded()
         waitingForLive = false
         index = pos
@@ -1278,6 +1320,8 @@ final class SetlistPlayer {
         endMixEngagement()
         guard let pos = nearestOccurrence(of: npId, to: index) else { return }   // not in set
         NPLog.trace("setlist ADOPT jump → index \(pos) id=\(npId) via \(am ? "appleMusic" : "rip")")
+        noteUserTransport()          // a manual member play is the listener acting
+        resetTrackAudible()
         // A manual member play makes a RESTORED (held) deck live: real audio is sounding, so
         // arm the end hooks + position sampler exactly as a resume would.
         exitHoldIfNeeded()
@@ -1287,6 +1331,7 @@ final class SetlistPlayer {
         // Jumped onto a new track (a manual member play) — arm ITS repeat count, not the
         // previous track's leftover, so it loops the right number of times on natural end.
         currentPlaysRemaining = CollectionMembership.normalizedRepeat(queue[pos].repeatCount)
+        reconcileRipWindow()
         if am {
             // The row ▶ started the stream but knows nothing about cards — run the same
             // handoff `playCurrent`'s AM branch does (macOS: abdicate; iOS: impersonate).
@@ -1386,7 +1431,7 @@ final class SetlistPlayer {
             NPLog.trace("setlist AM system-skip → advance from index \(index)")
             noteAdvanceAway()   // the live AM position reads ~0 here (the detection tick clobbers
                                 // the clock) — SkipTracker's high-water samples carry the truth.
-            advanceToNext()
+            advanceToNext(.user)   // the listener's ⏭ (car / lock screen) — never a cascade
             return
         }
         // Repeat-ONE (whole-session mode): replay the current AM track from the top.
@@ -1416,8 +1461,28 @@ final class SetlistPlayer {
 
     /// Move to the next track (or end the set) — the NON-repeating advance. Used by an explicit
     /// skip, a dead/unresolvable source, and the end of a track's repeats.
-    private func advanceToNext() {
+    /// WHY the set is advancing — the cascade breaker's input. `.user`: a transport the listener
+    /// pressed (resets the breaker). `.auto`: the sequencer moved on by itself after a start
+    /// attempt (end of track, dead source, a stream that never started) — counted. A row this
+    /// device can't play at all (device mode with no burn, an unresolvable studio/profile row)
+    /// is `.unplayableHere`: an instant, deliberate skip, neither counted nor resetting.
+    enum AdvanceCause { case user, auto, unplayableHere }
+
+    private func advanceToNext(_ cause: AdvanceCause = .auto) {
         guard isRunning else { return }
+        switch cause {
+        case .user:
+            noteUserTransport()
+        case .unplayableHere:
+            break
+        case .auto:
+            // Halted: nothing advances by itself until the listener acts.
+            if pausedByCascade { return }
+            if cascade.shouldHalt(afterAudibleSeconds: trackAudibleSeconds) {
+                haltCascade()
+                return
+            }
+        }
         // The auto-advance = the "completed a track" ML signal (vs the explicit-skip lines above).
         DiagLog.shared.log("playback", "advance from=\(queue.indices.contains(index) ? queue[index].id : "?") index=\(index)/\(queue.count)")
         waitingForLive = false
@@ -1555,6 +1620,8 @@ final class SetlistPlayer {
         // paths that record nothing — repeat-one / per-track repeat / duplicate row /
         // same-song play-now — it is the ONLY reset the high-water mark gets.
         if resumeAtMs == nil, isRunning, index < queue.count { onTrackRestart?(queue[index].id) }
+        resetTrackAudible()
+        reconcileRipWindow()     // the playhead (may have) moved: rips outside the window go
         playTask?.cancel()
         playTask = Task { await playCurrent(fresh: fresh, resumeAtMs: resumeAtMs) }
     }
@@ -1604,7 +1671,7 @@ final class SetlistPlayer {
         // end. Unresolvable ⇒ skip forward like any dead source.
         if StudioFactory.isStudioId(it.id) {
             guard let res = studioResolve?(it.id) else {
-                advanceToNext()
+                advanceToNext(.unplayableHere)
                 return
             }
             // A playable studio row IS on-device audio: count it so a device-mode set
@@ -1624,7 +1691,7 @@ final class SetlistPlayer {
         // studio arm; unresolvable (absent asset) ⇒ skip forward.
         if ProfileSourceStore.isProfileSongId(it.id) {
             guard let res = profileResolve?(it.id) else {
-                advanceToNext()
+                advanceToNext(.unplayableHere)
                 return
             }
             loadedAnyDeviceTrack = true
@@ -1672,7 +1739,7 @@ final class SetlistPlayer {
                 // Nothing on device for this edition. Device mode can't stream, so the row is
                 // skipped — but ask for the wanted edition so the NEXT pass has it.
                 lazyRipWantedEdition(it)
-                advanceToNext()   // no on-device file for this track → skip it
+                advanceToNext(.unplayableHere)   // no on-device file for this track → skip it
             }
             return
         }
@@ -1881,6 +1948,7 @@ final class SetlistPlayer {
     func resumeFromHold() {
         guard isRunning, isHeldForResume else { return }
         DiagLog.shared.telemetry("action", "resume held session")
+        noteUserTransport()
         isHeldForResume = false
         armEngineHooks()
         startPositionTicker()
@@ -1906,6 +1974,7 @@ final class SetlistPlayer {
     @discardableResult
     func startCurrent() -> Bool {
         guard isRunning, index < queue.count, !isHeldForResume else { return false }
+        noteUserTransport()
         startPlayCurrent(fresh: false)
         return true
     }
@@ -2093,6 +2162,7 @@ final class SetlistPlayer {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
                 guard !Task.isCancelled, let self else { return }
                 guard self.isRunning, !self.isHeldForResume else { continue }
+                self.sampleAudible()
                 self.sessionStore?.updatePosition(ms: self.sessionPositionMs(),
                                                   isPlaying: self.sessionIsPlaying())
                 if self.index < self.queue.count {
@@ -2101,5 +2171,155 @@ final class SetlistPlayer {
                 }
             }
         }
+    }
+}
+
+// MARK: - Rip-ahead window + cascade breaker
+
+extension SetlistPlayer {
+    /// The playing row + the next `PlaybackRipWindow.ahead` rows, as rip ids (base + resolve).
+    func currentRipWindowIds() -> Set<String> {
+        guard isRunning, index < queue.count else { return [] }
+        let end = min(queue.count, index + 1 + PlaybackRipWindow.ahead)
+        return PlaybackRipWindow.windowIds(rows: queue[index..<end].map { ($0.id, $0.resolveId) }, index: 0)
+    }
+
+    /// `RipsStore.playbackRipGate`: may a playback rip for `id` be requested right now? A song
+    /// that isn't in the running set (no set, or a Browse single) is not this session's call.
+    func playbackRipAllowed(_ id: String) -> Bool {
+        guard isRunning, !isHeldForResume, inRunningQueue(SongVariant.baseId(id)) else { return true }
+        return currentRipWindowIds().contains(id)
+    }
+
+    /// `RipsStore.onPlaybackRipQueued`: the server queued a playback rip. Track it when it is
+    /// this session's (a member row inside the window); one that landed after the playhead
+    /// already left the window (a slow POST under a skip storm) is cancelled at once.
+    func notePlaybackRipQueued(_ id: String) {
+        guard isRunning, inRunningQueue(SongVariant.baseId(id)), !rips.isUserRequestedRip(id) else { return }
+        if currentRipWindowIds().contains(id) {
+            ripWindow.record(id)
+        } else {
+            cancelRipIds([id], reason: "late-outside-window")
+        }
+    }
+
+    /// Cancel every tracked rip that is no longer inside the window.
+    func reconcileRipWindow() {
+        guard isRunning, !ripWindow.requested.isEmpty else { return }
+        cancelRipIds(ripWindow.evict(keeping: currentRipWindowIds()), reason: "outside-window")
+    }
+
+    /// Coalesce queue-edit reconciles (a reshuffle and a track start in one turn reconcile once).
+    func scheduleRipWindowReconcile() {
+        guard !ripWindow.requested.isEmpty, !ripWindowReconcileQueued else { return }
+        ripWindowReconcileQueued = true
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.ripWindowReconcileQueued = false
+            self.reconcileRipWindow()
+        }
+    }
+
+    /// The session is ending (stop / replaced by a fresh `play`): cancel everything it queued
+    /// except the row that was sounding.
+    func endRipWindowSession(reason: String) {
+        let playing: Set<String> = index < queue.count ? [queue[index].id, queue[index].resolveId] : []
+        cancelRipIds(ripWindow.endSession(playing: playing), reason: reason)
+    }
+
+    private func cancelRipIds(_ ids: [String], reason: String) {
+        // Belt and braces: a user surface may have asked for the same song since we tracked it.
+        let ids = ids.filter { !rips.isUserRequestedRip($0) }
+        guard !ids.isEmpty else { return }
+        DiagLog.shared.log("rip", "rip window cancel n=\(ids.count) reason=\(reason) ids=\(ids.joined(separator: ","))")
+        if let cancelPlaybackRips {
+            cancelPlaybackRips(ids)
+        } else {
+            let rips = self.rips
+            Task { await rips.cancelCollection(ids) }
+        }
+    }
+
+    // MARK: Audible time
+
+    func resetTrackAudible() {
+        trackAudibleSeconds = 0
+        lastAudibleSample = Date()
+    }
+
+    /// Whether the CURRENT track is producing audio right now (by whichever backend owns it).
+    /// Apple Music counts only once MusicKit has REPORTED playing — its `isPlaying` is set the
+    /// moment `play()` is accepted, which a stream that never starts would otherwise count.
+    private func currentTrackAudible() -> Bool {
+        guard !isHeldForResume else { return false }
+        if mixEngaged, let dsp { return dsp.isPlaying }
+        if coordinator.activeBackend == .appleMusic {
+            return coordinator.appleMusic.isPlaying && coordinator.appleMusic.audioConfirmed
+        }
+        return player.isPlaying && player.hasLoadedItem
+    }
+
+    /// One session-ticker sample: accumulate audible time; once the track has really played,
+    /// the run is not a cascade (reset + clear any stale notice) and, past `heardSeconds`, its
+    /// rip is exempt from window cancellation (it is a song the listener heard).
+    func sampleAudible() {
+        let now = Date()
+        let dt = lastAudibleSample.map { now.timeIntervalSince($0) } ?? 0
+        lastAudibleSample = now
+        guard currentTrackAudible() else { return }
+        addAudibleSeconds(min(max(0, dt), 5))
+    }
+
+    /// Test seam + the ticker's sink.
+    func addAudibleSeconds(_ seconds: Double) {
+        let before = trackAudibleSeconds
+        trackAudibleSeconds += seconds
+        if before < AutoAdvanceCascadeBreaker.minAudibleSeconds,
+           trackAudibleSeconds >= AutoAdvanceCascadeBreaker.minAudibleSeconds {
+            cascade.reset()
+            if !pausedByCascade { playbackNotice = nil }
+        }
+        if before < PlaybackRipWindow.heardSeconds, trackAudibleSeconds >= PlaybackRipWindow.heardSeconds,
+           isRunning, index < queue.count {
+            ripWindow.keep([queue[index].id, queue[index].resolveId])
+        }
+    }
+
+    // MARK: Cascade breaker
+
+    /// The listener acted: whatever happened before is not a cascade any more.
+    func noteUserTransport() {
+        cascade.reset()
+        pausedByCascade = false
+        playbackNotice = nil
+    }
+
+    /// Stop auto-advancing: hold the CURRENT row (the queue position is kept), silence it, and
+    /// say why. ▶ retries this row (`startCurrent`); ⏭/⏮/jump move on as usual.
+    func haltCascade() {
+        let row = index < queue.count ? queue[index].id : "?"
+        let backend = coordinator.activeBackend.map { "\($0)" } ?? "-"
+        DiagLog.shared.log("playback", "cascade-stop song=\(row) index=\(index)/\(queue.count) quickAdvances=\(AutoAdvanceCascadeBreaker.limit) backend=\(backend) audible=\(Int(trackAudibleSeconds))s")
+        playTask?.cancel(); playTask = nil
+        playGeneration &+= 1                  // a resolve still in flight must not start audio now
+        resolveStallTask?.cancel(); resolveStallTask = nil
+        liveBackstopTask?.cancel(); liveBackstopTask = nil
+        waitingForLive = false
+        if coordinator.activeBackend == .appleMusic { coordinator.appleMusic.pausePlayback() }
+        player.pause()
+        pausedByCascade = true
+        playbackNotice = coordinator.appleMusic.isReady ? Self.appleMusicInterruptedNotice
+                                                         : Self.cascadeGenericNotice
+        persistSession()
+    }
+
+    /// The Apple Music stream was interrupted from outside (not ended): the row holds, paused at
+    /// the interruption point; ▶ resumes it (the provider re-queues + seeks). Tell the listener.
+    func handleAppleMusicInterrupted() {
+        guard isRunning, index < queue.count, coordinator.activeBackend == .appleMusic,
+              let npId = coordinator.appleMusic.nowPlaying?.songId, queue[index].matches(npId) else { return }
+        DiagLog.shared.log("playback", "hold: AM interrupted song=\(queue[index].id) index=\(index) — not advancing")
+        playbackNotice = Self.appleMusicInterruptedNotice
+        persistSession()
     }
 }

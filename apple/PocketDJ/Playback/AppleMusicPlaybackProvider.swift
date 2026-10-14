@@ -66,6 +66,28 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// `SetlistPlayer` alongside `onTrackEnded`; nil ⇒ no consumer.
     var onTrackRestarted: (() -> Void)?
 
+    /// Fired when the stream was INTERRUPTED from outside — MusicKit's player went `.stopped`
+    /// well before the track's length (another player on this Mac / Apple ID took over: the rip
+    /// server's live capture driving Music.app, the 2026-10-13 cascade). This is NOT an end of
+    /// track: the set stays on the row, paused at the interruption point, and ▶ resumes there.
+    /// Owned by `SetlistPlayer` alongside `onTrackEnded`; nil ⇒ no consumer.
+    var onInterrupted: (() -> Void)?
+
+    /// Song-relative seconds where an external interruption stopped the stream; non-nil ⇔ the
+    /// current track is interrupted (cleared by a resume, a new `tryPlay`, or `stop`).
+    @ObservationIgnored private(set) var interruptedAtSeconds: Double?
+    /// True once MusicKit has REPORTED `.playing` for the current track — audio really started
+    /// (vs. `isPlaying`, which is set optimistically when `play()` is accepted). Read by the
+    /// sequencer's cascade breaker to count audible time honestly.
+    @ObservationIgnored private(set) var audioConfirmed = false
+    /// The current track's catalog item, kept so a resume after an interruption can re-queue it
+    /// (a `.stopped` player may no longer hold it).
+    @ObservationIgnored private var currentQueueItem: Any?
+    /// When a resume-after-interruption was requested: until MusicKit reports `.playing` again
+    /// (bounded by `startTimeoutSeconds`) the still-`.stopped` status must not be re-read as a
+    /// fresh interruption — or, worse, as the end of the track.
+    @ObservationIgnored private var resumeRequestedAt: (at: Date, position: Double)?
+
     /// The highest `playbackTime` the end-monitor has observed for the CURRENT track — the
     /// baseline for the backward-jump (system ⏮) detection. Reset by `tryPlay`, re-based by
     /// our own `seek(to:)` so an in-app scrub can never read as a restart.
@@ -194,6 +216,22 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
         playbackTime < 2.0 && maxObserved > 10.0
     }
 
+    /// A `.stopped` that lands this far (seconds) short of the track's length is an
+    /// interruption, not the natural end of the one-song queue.
+    nonisolated(unsafe) static var interruptionGraceSeconds: Double = 10
+
+    /// Whether a `.stopped` poll is an EXTERNAL INTERRUPTION rather than the end of the track.
+    /// MusicKit reports both as `.stopped` (and resets `playbackTime`, so the position MusicKit
+    /// reports can't tell them apart) — `playedSeconds` is OUR clock instead: the wall-clock
+    /// play time (frozen across pauses, re-anchored on seeks) maxed with the highest observed
+    /// `playbackTime`. A one-song queue that finished has played ~its whole length; a stream
+    /// another player took over (Music.app driven by a same-Mac rip capture) has not. Unknown
+    /// length ⇒ never an interruption (the old `.stopped` ⇒ ended rule stands).
+    nonisolated static func stoppedByInterruption(stopped: Bool, expectedDuration: Double,
+                                                  playedSeconds: Double) -> Bool {
+        stopped && expectedDuration > 0 && playedSeconds < expectedDuration - interruptionGraceSeconds
+    }
+
     /// Below this much movement (seconds) across one ~400 ms poll, a `playbackTime` re-read
     /// is noise — the SAME underlying value re-observed. At/above it, real audio has
     /// unambiguously kept advancing: a poll interval's worth of genuine playback is ~0.4 s,
@@ -314,6 +352,9 @@ extension AppleMusicPlaybackProvider {
         // (debug capture 2026-08-20 12:13:42: "external PAUSE at 0s" mid-tryPlay).
         stateMonitor?.cancel(); stateMonitor = nil
         pauseWasIntentional = false
+        interruptedAtSeconds = nil
+        resumeRequestedAt = nil
+        audioConfirmed = false
         // 1) Resolve the song to a catalog track (namespaced `am:<id>` → direct fetch,
         //    else a title/artist search). A miss → false → the engine falls back to rips.
         guard let track = await provider.resolve(song) else { return false }
@@ -354,6 +395,7 @@ extension AppleMusicPlaybackProvider {
             monitorMaxPlaybackTime = atMs.map { Double($0) / 1000 } ?? 0
             lastPollPlaybackTime = monitorMaxPlaybackTime
             durationSeconds = catalogSong.duration ?? 0
+            currentQueueItem = catalogSong
             // Capture the catalog artwork URL — the app's own now-playing surfaces (home deck +
             // widget) can't get a cover from our art-less AM-Local catalog, so this is it.
             let artURL = catalogSong.artwork?.url(width: 600, height: 600)
@@ -382,16 +424,39 @@ extension AppleMusicPlaybackProvider {
             freezePositionClock()
         } else {
             pauseWasIntentional = false
+            if resumeAfterInterruption() { return }
             isPlaying = true
             startPositionClock(from: positionSeconds)
             Task { try? await player.play() }
         }
     }
 
+    /// ▶ on an INTERRUPTED stream: re-queue the track if the stopped player dropped it, play,
+    /// and seek back to where the interruption landed. Returns false when not interrupted.
+    private func resumeAfterInterruption() -> Bool {
+        guard let at = interruptedAtSeconds else { return false }
+        interruptedAtSeconds = nil
+        resumeRequestedAt = (Date(), at)
+        isPlaying = true
+        startPositionClock(from: at)
+        monitorMaxPlaybackTime = 0          // re-based from MusicKit's reads once it is back on air
+        lastPollPlaybackTime = 0
+        DiagLog.shared.log("playback", "am resume after interruption song=\(nowPlaying?.songId ?? "?") at=\(Int(at))s")
+        let item = currentQueueItem as? MusicKit.Song
+        Task {
+            let player = ApplicationMusicPlayer.shared
+            if player.state.playbackStatus == .stopped, let item { player.queue = [item] }
+            try? await player.play()
+            if at > 1 { player.playbackTime = at }
+        }
+        return true
+    }
+
     /// Explicit resume/pause — used by the lock-screen / CarPlay remote play/pause commands,
     /// which must land in a KNOWN state (not toggle blindly off a possibly-stale status).
     func resume() {
         pauseWasIntentional = false
+        if resumeAfterInterruption() { return }
         isPlaying = true
         startPositionClock(from: positionSeconds)
         Task { try? await ApplicationMusicPlayer.shared.play() }
@@ -420,6 +485,10 @@ extension AppleMusicPlaybackProvider {
     func stop() {
         stateMonitor?.cancel(); stateMonitor = nil
         pauseWasIntentional = false
+        interruptedAtSeconds = nil
+        resumeRequestedAt = nil
+        audioConfirmed = false
+        currentQueueItem = nil
         ApplicationMusicPlayer.shared.stop()
         isPlaying = false
         positionBase = 0; positionStartWall = nil
@@ -454,7 +523,10 @@ extension AppleMusicPlaybackProvider {
                 let status = player.state.playbackStatus
                 let t = player.playbackTime
                 let reportedPlaying = status == .playing
-                if reportedPlaying { everPlayed = true }
+                if reportedPlaying { everPlayed = true; self.audioConfirmed = true }
+                // OUR clock, read BEFORE the reconciliation below re-anchors it to MusicKit's
+                // (reset-on-stop) `playbackTime` — the interruption verdict needs the real one.
+                let wallPlayed = self.positionSeconds
                 // `reallyPlaying` mirrors what `isPlaying` should be after this poll — either
                 // the ordinary reported status, or (once we've genuinely played at least once)
                 // the self-heal override when `playbackTime` keeps moving despite a reported
@@ -508,6 +580,55 @@ extension AppleMusicPlaybackProvider {
                     return
                 }
                 guard everPlayed else { continue }   // ignore the pre-roll before audio starts
+                // INTERRUPTED, not ended: stopped far short of the track's length — another
+                // player took over (on macOS, Music.app driven by a same-Mac rip capture). Hold
+                // the row paused at the interruption point and keep watching; ▶ resumes there
+                // (`resumeAfterInterruption`). Reading this as the end advanced the set, whose
+                // next start queued another capture — the 2026-10-13 cascade.
+                if let asked = self.resumeRequestedAt {
+                    if reportedPlaying {
+                        // Back on air. The reconciliation above anchored our clock to MusicKit's
+                        // `playbackTime`, which can still read the re-queued item's 0:00 before
+                        // the resume seek lands — keep it at the interruption point instead, or
+                        // the natural end would later read as another interruption.
+                        self.resumeRequestedAt = nil
+                        let pos = max(t, asked.position)
+                        self.startPositionClock(from: pos)
+                        // ⏮-restart baseline restarts from what MusicKit actually reports, so a
+                        // pre-seek 0:00 read can never look like a system ⏮ rewind.
+                        self.monitorMaxPlaybackTime = t
+                    } else if Date().timeIntervalSince(asked.at) < Self.startTimeoutSeconds {
+                        continue                         // the resume is still spinning up
+                    } else {                             // it never came back: interrupted again
+                        self.resumeRequestedAt = nil
+                        let at = asked.position
+                        DiagLog.shared.log("playback", "am resume did not start song=\(self.nowPlaying?.songId ?? "?") → interrupted at=\(Int(at))s")
+                        self.interruptedAtSeconds = at
+                        self.isPlaying = false
+                        self.positionBase = at; self.positionStartWall = nil
+                        self.onInterrupted?()
+                        continue
+                    }
+                }
+                if let at = self.interruptedAtSeconds {
+                    if reportedPlaying {                 // playing again (resumed from outside)
+                        self.interruptedAtSeconds = nil
+                    } else {
+                        self.positionBase = at; self.positionStartWall = nil
+                        continue
+                    }
+                } else if Self.stoppedByInterruption(stopped: status == .stopped && !reallyPlaying,
+                                                     expectedDuration: expected,
+                                                     playedSeconds: max(wallPlayed, self.monitorMaxPlaybackTime)) {
+                    let at = max(wallPlayed, self.monitorMaxPlaybackTime)
+                    NPLog.trace("AM monitor: INTERRUPTED at \(Int(at))s of \(Int(expected))s (status=\(status)) → hold, not end")
+                    DiagLog.shared.log("playback", "am interrupted song=\(self.nowPlaying?.songId ?? "?") at=\(Int(at))s of \(Int(expected))s")
+                    self.interruptedAtSeconds = at
+                    self.isPlaying = false
+                    self.positionBase = at; self.positionStartWall = nil
+                    self.onInterrupted?()
+                    continue
+                }
                 if t > self.monitorMaxPlaybackTime { self.monitorMaxPlaybackTime = t }
                 // System remote ⏮ also lands in MusicKit (never our handler): it rewinds its
                 // one-song queue to 0:00 while STAYING .playing — no state change to observe,

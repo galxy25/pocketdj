@@ -242,6 +242,9 @@ struct NowPlayingPanel: View {
         // A RESTORED (held) deck has no audio loaded yet — the first ▶ resumes real playback
         // at the saved position (blindly toggling would hit the idle engine and be refused).
         if sequencer.isHeldForResume { sequencer.resumeFromHold(); return }
+        // The cascade breaker halted the set on this row: ▶ RETRIES the row (a fresh resolve),
+        // not a blind resume of whatever backend last held it.
+        if sequencer.pausedByCascade, sequencer.startCurrent() { return }
         if coordinator.activeBackend == .appleMusic { coordinator.togglePlayPause(); return }
         // The deck's current row never started sounding (its cloud resolve produced no audio
         // — a rip still queued, a stream that missed), so the engine holds NOTHING and
@@ -631,6 +634,15 @@ struct NowPlayingDeckCluster: View {
                     }
             }
             transport
+            if let notice = sequencer.playbackNotice {
+                // Why the deck stopped by itself (an interrupted Apple Music stream, or the
+                // cascade breaker) — so a silent deck never looks like a frozen app.
+                Text(notice)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .accessibilityIdentifier("np-playback-notice")
+            }
             shuffleRepeatRow
             feedbackRow
             // F4 — the collapsible Mix mini-panel. Self-gates on `SetlistPlayer.mixAvailable`

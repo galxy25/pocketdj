@@ -207,6 +207,19 @@ final class RipsStore {
     /// finishes by itself, without them coming back to tap anything.
     @ObservationIgnored var onRipReady: ((String) -> Void)?
 
+    /// RIP-AHEAD WINDOW gate (`PlaybackRipWindow`, wired by `SetlistPlayer`): consulted before a
+    /// PLAYBACK-originated fire-and-forget rip POSTs; false ⇒ the request is dropped (logged).
+    /// nil ⇒ allow (tests, no running set).
+    @ObservationIgnored var playbackRipGate: ((String) -> Bool)?
+    /// A PLAYBACK-originated `POST /rip` came back as a server job (queued / joined) — the
+    /// session records the id so it can cancel it once it leaves the window. Not fired for
+    /// user-initiated requests (`requestRip`, `ripCollection`).
+    @ObservationIgnored var onPlaybackRipQueued: ((String) -> Void)?
+    /// Song ids a USER surface asked to rip (collection Rip / Rip+Burn / recognizer add). The
+    /// playback rip window NEVER cancels these, even if playback also requested them.
+    @ObservationIgnored private(set) var userRequestedRipIds: Set<String> = []
+    func isUserRequestedRip(_ songId: String) -> Bool { userRequestedRipIds.contains(songId) }
+
     /// Synchronous in-flight guard for the fire-and-forget async rip (Feature 1).
     /// Held from BEFORE the `await` until the POST resolves so back-to-back calls for
     /// the same song (popular-song spam, rapid double-taps) fire at most one POST per
@@ -612,7 +625,7 @@ final class RipsStore {
 
     @discardableResult
     func ensureURL(_ songId: String, allowLive: Bool,
-                   maxWaitSeconds: Int = 1800) async throws -> URL {
+                   maxWaitSeconds: Int = 1800, playback: Bool = false) async throws -> URL {
         // MUST-1: the rips bucket is private now, so a cached manifest entry alone isn't
         // enough to build a playable URL (the old `ripsBase.appendingPathComponent(key)`
         // would 403) — ask the gated endpoint for a short-TTL presigned one instead.
@@ -676,6 +689,8 @@ final class RipsStore {
 
         var view = try JSONDecoder().decode(Job.self, from: data)
         jobs[songId] = view
+        // Stream-through rip of the PLAYING row: the session tracks it for the rip window.
+        if playback, view.jobId != nil, view.phase != .ready { onPlaybackRipQueued?(songId) }
         if view.phase == .ready, let u = view.url, let url = URL(string: u) {
             await refreshManifest(); return url
         }
@@ -766,11 +781,12 @@ final class RipsStore {
     /// cue via `live == true` (the coordinator's rip provider records `lastCueDropped`).
     @discardableResult
     func play(_ song: (id: String, title: String, artist: String), startMs: Int? = nil,
-              atMs: Int? = nil) async throws -> NowPlaying {
+              atMs: Int? = nil, playback: Bool = false) async throws -> NowPlaying {
         // BOUNDED: this is the interactive ▶ path. A queued rip must fail fast so the caller
         // can stream instead / advance honestly, never park mid-await (see the constant).
         let url = try await ensureURL(song.id, allowLive: true,
-                                      maxWaitSeconds: Self.interactivePlayWaitSeconds)
+                                      maxWaitSeconds: Self.interactivePlayWaitSeconds,
+                                      playback: playback)
         let live = url.absoluteString.contains("/hls/")
         let entry = manifest[song.id]
         let resolvedStart = live ? nil : (startMs ?? entry?.startMs)
@@ -911,11 +927,12 @@ final class RipsStore {
     /// substitution, the edition is already stored, or — importantly — that edition's CATALOG
     /// ID IS UNKNOWN (`EditionPolicy.lazyRipId`'s hard gate).
     @discardableResult
-    func requestEditionRipIfNeeded(base: String, decision: EditionPolicy.Decision) async -> String? {
+    func requestEditionRipIfNeeded(base: String, decision: EditionPolicy.Decision,
+                                   playback: Bool = false) async -> String? {
         guard let variantId = EditionPolicy.lazyRipId(base: base, decision: decision,
                                                       isStored: { self.cachedURL($0) != nil })
         else { return nil }
-        await requestRipIfNeeded(variantId)
+        await requestRipIfNeeded(variantId, playback: playback)
         return variantId
     }
 
@@ -948,7 +965,10 @@ final class RipsStore {
         } catch { return false }
     }
 
-    func requestRipIfNeeded(_ songId: String) async {
+    /// `playback: true` marks a PLAYBACK-originated request (passive rip, edition lazy-rip):
+    /// it must pass the session's rip-ahead window (`playbackRipGate`) and, once the server
+    /// queues it, is reported through `onPlaybackRipQueued` so the session can cancel it later.
+    func requestRipIfNeeded(_ songId: String, playback: Bool = false) async {
         // (0) spec §8 — a studio id NEVER rips (fire-and-forget path: silent guard-return).
         if fencedStudioId(songId, path: "requestRipIfNeeded") { return }
         // (1) cheap guard — cut popular-song spam at the cheapest point, before any network.
@@ -956,6 +976,12 @@ final class RipsStore {
         if let phase = jobs[songId]?.phase, Self.inFlightPhases.contains(phase) { return }
         if requesting.contains(songId) { return }
         guard hasServer else { return }
+        // (1b) the rip-ahead window: a playback rip for a row the playhead already left (a
+        // skip storm outran this fire-and-forget Task) or beyond the next N is not requested.
+        if playback, let gate = playbackRipGate, !gate(songId) {
+            DiagLog.shared.log("rip", "playback rip suppressed songId=\(songId) reason=outside-window")
+            return
+        }
 
         // (2) reserve synchronously BEFORE the first suspension so the guard is single-flight.
         requesting.insert(songId)
@@ -980,6 +1006,7 @@ final class RipsStore {
                 DiagLog.shared.log("rip", "passive rip not queued songId=\(songId) phase=\(view.phase.rawValue) error=\(view.error ?? "-")")
             }
             jobs[songId] = view
+            if playback, view.jobId != nil, view.phase != .ready { onPlaybackRipQueued?(songId) }
             // Unlike the interactive ▶ path (`ensureURL`), this fire-and-forget request has
             // no caller waiting on the result — without a background poll the row's phase
             // freezes at whatever this one POST returned (searching/queued) forever, even
@@ -1026,6 +1053,7 @@ final class RipsStore {
         if fencedStudioId(songId, path: "requestRip") { return .unknown }
         if cachedURL(songId) != nil { return .ready }
         guard hasServer else { return .noServer }
+        userRequestedRipIds.insert(songId)   // a user surface asked — the playback window never cancels it
         let base = serverUrl, tok = token
         do {
             var post = URLRequest(url: URL(string: "\(base)/rip")!)
@@ -1775,6 +1803,7 @@ final class RipsStore {
         }
         let ids = orderedUnique(kept)
         guard !ids.isEmpty else { return BatchRipResult() }
+        userRequestedRipIds.formUnion(ids)   // user-initiated — never cancelled by the playback window
         guard hasServer else { return await ripCollectionFallback(ids) }
 
         let base = serverUrl, tok = token
@@ -1885,6 +1914,69 @@ final class RipsStore {
         // Couldn't decode but the server accepted it — best-effort reset of the requested ids.
         for id in ids { jobs[id] = nil }
         return ids.map { CancelItem(songId: $0, status: "canceled") }
+    }
+
+    // MARK: Same-host detection (live capture vs this app's own Apple Music stream)
+
+    @ObservationIgnored private var sameHostCache: (base: String, value: Bool, at: Date)?
+    /// How long a same-host verdict is trusted before `/health` is asked again (seconds).
+    static var sameHostCacheSeconds: TimeInterval = 600
+    /// Test seam: stands in for this machine's host name.
+    nonisolated(unsafe) static var localHostNameOverride: String?
+
+    /// True when the configured rip server runs on THIS machine. Its live capture drives
+    /// Music.app on that machine with the same Apple ID, which interrupts this app's own
+    /// `ApplicationMusicPlayer` stream — so a passive rip fired while we stream would stop the
+    /// very song it was asked for (the 2026-10-13 "Potential" cascade). Loopback URLs answer
+    /// immediately; anything else (a Tailscale name) is settled by `/health`'s `host`
+    /// (`os.hostname()`, the same `gethostname(3)` this compares against). Cached per server
+    /// URL; a failed probe is NOT cached (and answers false — never blocks a rip on a guess).
+    /// macOS only: an iPhone / iPad / TV can't be the rip-server host.
+    func serverIsThisHost() async -> Bool {
+        #if os(macOS)
+        let base = serverUrl
+        guard !base.isEmpty, let url = URL(string: base) else { return false }
+        if let c = sameHostCache, c.base == base,
+           Date().timeIntervalSince(c.at) < Self.sameHostCacheSeconds { return c.value }
+        let value: Bool
+        if let host = url.host, Self.isLoopbackHost(host) {
+            value = true
+        } else {
+            guard let probe = URL(string: "\(base)/health") else { return false }
+            var req = URLRequest(url: probe)
+            req.timeoutInterval = 5
+            guard let (data, resp) = try? await session.data(for: req),
+                  (resp as? HTTPURLResponse)?.statusCode == 200,
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let remote = obj["host"] as? String else { return false }
+            value = Self.sameHostName(remote, Self.localHostName())
+        }
+        sameHostCache = (base, value, Date())
+        return value
+        #else
+        return false
+        #endif
+    }
+
+    nonisolated static func isLoopbackHost(_ host: String) -> Bool {
+        ["localhost", "127.0.0.1", "::1", "[::1]"].contains(host.lowercased())
+    }
+
+    /// Host-name equality on the first DNS label, case-insensitive ("Levis-iMac.local" ==
+    /// "levis-imac"). Empty names never match.
+    nonisolated static func sameHostName(_ a: String, _ b: String) -> Bool {
+        func label(_ s: String) -> String {
+            s.lowercased().split(separator: ".").first.map(String.init) ?? ""
+        }
+        let la = label(a), lb = label(b)
+        return !la.isEmpty && la == lb
+    }
+
+    nonisolated static func localHostName() -> String {
+        if let o = localHostNameOverride { return o }
+        var buf = [CChar](repeating: 0, count: 256)
+        guard gethostname(&buf, buf.count) == 0 else { return "" }
+        return String(cString: buf)
     }
 
     /// Map an observed per-song job phase to the batch endpoint's status vocabulary
