@@ -219,6 +219,10 @@ final class RecommendationService {
     /// be a lie about what leaves the device.
     @ObservationIgnored var lastPlayedProvider: (() -> [String: Double])?
 
+    /// album id → its ordered track ids, for the album ids asked about — lets the membership
+    /// snapshot expand album nodes (`CollectionFlattener`). nil ⇒ albums contribute nothing.
+    @ObservationIgnored var albumTracksProvider: ((Set<String>) -> [String: [String]])?
+
     @ObservationIgnored private let keyFileURL: URL
     @ObservationIgnored private let stateFileURL: URL
     /// Sibling of the key doc — `…-rec-pending-delete.json` next to it.
@@ -775,41 +779,25 @@ final class RecommendationService {
         return kept
     }
 
-    /// The current collections membership as the snapshot wire: pockets carry `songIds`
-    /// directly; playlists flatten their `.song` node leaves recursively (membership, not
-    /// resolution — albums/pockets are NOT expanded, mirroring `playlist(_:contains:)`).
-    /// Trimmed to the server's own snapshot caps so the membership hash describes what the
-    /// server actually stores.
+    /// The current collections membership as the snapshot wire — EFFECTIVE membership via the
+    /// shared `CollectionFlattener` (album nodes expanded, child pockets flattened, deduped; the
+    /// same flattening the listening-pockets upload sends). Trimmed to the server's own snapshot
+    /// caps so the membership hash describes what the server actually stores. Total-songIds
+    /// budget across ALL entries mirrors the server's MAX_SNAPSHOT_SONGIDS: without it, 500
+    /// collections × 5000 ids each is a legal 2.5M-id snapshot — 25× what the server keeps.
     private func collectionsSnapshotWire() -> RecCollectionsSnapshotWire {
-        var entries: [RecCollectionsSnapshotWire.Entry] = []
-        // Total-songIds budget across ALL entries (mirrors the server's MAX_SNAPSHOT_SONGIDS):
-        // without it, 500 collections × 5000 ids each is a legal 2.5M-id snapshot — 25× what
-        // the server will keep and (encoded) far past its request-body ceiling.
-        var budget = Self.snapshotTotalSongIdCap
-        func capped(_ ids: [String]) -> [String] {
-            let take = min(ids.count, Self.snapshotSongIdCap, max(0, budget))
-            budget -= take
-            return Array(ids.prefix(take))
-        }
-        for p in collections.pockets where entries.count < Self.snapshotCollectionCap {
-            entries.append(.init(id: p.id, kind: "pocket", name: p.name,
-                                 songIds: capped(p.songIds)))
-        }
-        for pl in collections.playlists where entries.count < Self.snapshotCollectionCap {
-            var ids: [String] = []
-            var seen = Set<String>()
-            func walk(_ nodes: [PlaylistNode]) {
-                for n in nodes {
-                    if n.kind == .song, let id = n.songId, seen.insert(id).inserted { ids.append(id) }
-                    if let kids = n.children { walk(kids) }
-                }
-            }
-            walk(pl.sequences)
-            entries.append(.init(id: pl.id, kind: "playlist", name: pl.name,
-                                 songIds: capped(ids)))
-        }
-        return RecCollectionsSnapshotWire(atMs: Date().timeIntervalSince1970 * 1000,
-                                          collections: entries)
+        let albums = ListeningPocketsCollections.referencedAlbumCandidates(
+            pockets: collections.pockets, playlists: collections.playlists, activity: [])
+        let source = CollectionFlattener.Source(
+            pockets: collections.pockets, playlists: collections.playlists,
+            albumTracks: albums.isEmpty ? [:] : (albumTracksProvider?(albums) ?? [:]))
+        let flat = CollectionFlattener.capped(CollectionFlattener.flatten(source),
+                                              collectionCap: Self.snapshotCollectionCap,
+                                              songCap: Self.snapshotSongIdCap,
+                                              totalCap: Self.snapshotTotalSongIdCap)
+        return RecCollectionsSnapshotWire(
+            atMs: Date().timeIntervalSince1970 * 1000,
+            collections: flat.map { .init(id: $0.id, kind: $0.kind, name: $0.name, songIds: $0.songIds) })
     }
 
     /// The lifetime play counts as the snapshot wire, trimmed to the server's own cap — highest

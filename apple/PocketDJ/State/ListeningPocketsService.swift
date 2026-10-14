@@ -67,6 +67,10 @@ final class ListeningPocketsService {
     /// False once `POST /pockets/rounds` answered 404 (a backend without the route). Rounds stay
     /// QUEUED — unacknowledged — and every later flush tries again. Silent, like `serviceAvailable`.
     private(set) var roundsServiceAvailable = true
+    /// The collections (pockets / playlists / source playlists + the add log) for the membership
+    /// snapshot (docs/design/pockets-collections.md). nil ⇒ none wired (tests, older call sites):
+    /// the flush never sends `collections` / `addEvents`, exactly as before.
+    @ObservationIgnored var collectionsProvider: (() -> ListeningPocketsCollections.Input)?
 
     @ObservationIgnored private let syncFileURL: URL
     @ObservationIgnored private let cacheFileURL: URL
@@ -117,6 +121,10 @@ final class ListeningPocketsService {
         /// Round UUID string → the round fingerprint the server acknowledged (the events idea:
         /// a round whose feedback / rating changed after its first upload re-sends).
         var sentRounds: [String: String] = [:]
+        /// Content hash + send time of the last ACKNOWLEDGED collections snapshot (the 24 h /
+        /// changed-content gate).
+        var collectionsHash: String?
+        var collectionsSentAtMs: Double?
 
         init() {}
         init(from decoder: Decoder) throws {
@@ -127,6 +135,8 @@ final class ListeningPocketsService {
             lastResultsGeneratedAtMs = (try? c.decodeIfPresent(Double.self, forKey: .lastResultsGeneratedAtMs)) ?? nil
             uploadFloorMs = (try? c.decodeIfPresent(Double.self, forKey: .uploadFloorMs)) ?? nil
             sentRounds = (try? c.decode([String: String].self, forKey: .sentRounds)) ?? [:]
+            collectionsHash = (try? c.decodeIfPresent(String.self, forKey: .collectionsHash)) ?? nil
+            collectionsSentAtMs = (try? c.decodeIfPresent(Double.self, forKey: .collectionsSentAtMs)) ?? nil
         }
     }
 
@@ -190,8 +200,9 @@ final class ListeningPocketsService {
     /// one-time offer in History ▸ Pockets), so the switch is never flipped blind.
     static let consentText = "Turning this on sends, for each play in the last 90 days and from now on: the song and its artist, "
         + "when it started (to the minute) and your time-zone offset, whether you finished or skipped it, "
-        + "where in the app you played it, and whether CarPlay was connected. PocketDJ uses it to find the "
-        + "stretches where you were in a groove."
+        + "where in the app you played it (which collection, by id), and whether CarPlay was connected. "
+        + "It also sends which songs are in each of your pockets and playlists and when you added them "
+        + "(ids only, never their names). PocketDJ uses it to find the stretches where you were in a groove."
 
     /// UI-test seam: canned results, zero network. Requires BOTH env vars (the rec fixture rule).
     nonisolated static let fixtureOnEnv: Bool = {
@@ -313,8 +324,14 @@ final class ListeningPocketsService {
             let fp = Self.fingerprint(wire)
             if sync.sent[wire.id] != fp { pending.append((wire, fp)) }
         }
-        // Rounds ride the same flush, AFTER the plays (a round's songs are plays too).
-        guard !pending.isEmpty else { return await uploadRounds(creds: creds, epoch: epoch) }
+        // Collections + rounds ride the same flush, AFTER the plays (a round's songs are plays
+        // too; a membership snapshot is about the songs the plays name).
+        guard !pending.isEmpty else {
+            let collectionsSent = await uploadCollections(creds: creds, epoch: epoch)
+            guard epoch == flushEpoch else { return collectionsSent }
+            let roundsSent = await uploadRounds(creds: creds, epoch: epoch)
+            return collectionsSent || roundsSent
+        }
 
         let places: [ListeningPocketsPlaceWire]?
         let trips: [ListeningPocketsTripWire]?
@@ -366,8 +383,52 @@ final class ListeningPocketsService {
             syncError = nil
             lastSentAtMs = nowMs
         }
+        let collectionsSent = await uploadCollections(creds: creds, epoch: epoch)
+        guard epoch == flushEpoch else { return sentAny || collectionsSent }
         let roundsSent = await uploadRounds(creds: creds, epoch: epoch)
-        return sentAny || roundsSent
+        return sentAny || collectionsSent || roundsSent
+    }
+
+    /// The membership snapshot + add history, in ONE batch of their own (`events: []` — the
+    /// server accepts it) so they never push an events batch past the 4 MB body ceiling. Sent
+    /// when the content hash moved or >= 24 h since the last ACKNOWLEDGED send; acknowledged only
+    /// on 2xx. Oversized => the add history is dropped first, then (still oversized) the whole
+    /// snapshot is skipped with the hash un-advanced. Failures are silent — the events path owns
+    /// the user-visible error.
+    private func uploadCollections(creds: (key: String, profileId: String), epoch: Int) async -> Bool {
+        guard let payload = collectionsPayloadIfDue() else { return false }
+        var batch = ListeningPocketsUploadBatch(
+            deviceId: deviceIdProvider(), installId: history.installId, sentAtMs: Int64(nowMs),
+            events: [], places: nil, trips: nil,
+            collections: payload.collections, addEvents: payload.addEvents.isEmpty ? nil : payload.addEvents)
+        if let data = try? JSONEncoder().encode(batch), data.count > ListeningPocketsCollections.byteCap {
+            batch.addEvents = nil
+            if let slim = try? JSONEncoder().encode(batch), slim.count > ListeningPocketsCollections.byteCap {
+                return false
+            }
+        }
+        do {
+            _ = try await client.postEvents(batch, key: creds.key, profileId: creds.profileId)
+        } catch {
+            return false
+        }
+        guard epoch == flushEpoch else { return false }
+        sync.collectionsHash = payload.hash
+        sync.collectionsSentAtMs = nowMs
+        persistSync()
+        return true
+    }
+
+    /// The current payload when it is due (changed, or >= 24 h since the last ack), else nil.
+    /// Nothing at all to say (no collections, no adds) is never due.
+    func collectionsPayloadIfDue() -> ListeningPocketsCollections.Payload? {
+        guard let input = collectionsProvider?() else { return nil }
+        let payload = ListeningPocketsCollections.build(input, nowMs: nowMs, floorMs: sync.uploadFloorMs ?? 0)
+        guard !payload.isEmpty,
+              ListeningPocketsCollections.isDue(hash: payload.hash, lastHash: sync.collectionsHash,
+                                                lastSentAtMs: sync.collectionsSentAtMs, nowMs: nowMs)
+        else { return nil }
+        return payload
     }
 
     /// Upload every finished "In the Pocket" round whose fingerprint moved, in ≤ 50 batches.
@@ -431,11 +492,16 @@ final class ListeningPocketsService {
             ?? TimeZone.current.secondsFromGMT(for: Date(timeIntervalSince1970: e.playedAt / 1000)) / 60
         // Context rides only on THIS device's plays, and only while places & trips is on.
         let ctx = (locationOn && !history.isFromAnotherDevice(e)) ? e.listeningContext : nil
+        // The collection the play started from — ids only; the reserved Now Playing queue id
+        // is replaced by the run's captured origin when it has one.
+        let collection = ListeningPocketsCollections.context(contextId: e.originCollectionId ?? e.contextId,
+                                                             source: e.source)
         return ListeningPocketsUploadEvent(
             id: e.id.uuidString, songId: e.songId, atMs: Self.flooredMinute(e.playedAt), ord: 0,
             tzOffsetMin: tz, source: e.source.rawValue, outcome: e.outcome.rawValue,
             fraction: e.listenedFraction.map { ($0 * 1000).rounded() / 1000 },
-            originInstallId: e.originInstallId, artist: e.artist, carPlay: e.carPlay, ctx: ctx)
+            originInstallId: e.originInstallId, artist: e.artist, carPlay: e.carPlay, ctx: ctx,
+            contextId: collection?.id, contextKind: collection?.kind)
     }
 
     /// Coarse time on the wire: play start floored to the minute.
@@ -470,7 +536,11 @@ final class ListeningPocketsService {
     static func fingerprint(_ e: ListeningPocketsUploadEvent) -> String {
         let pct = e.fraction.map { String(Int(($0 * 100).rounded())) } ?? "-"
         let ctx = e.ctx.map { "\($0.kind)/\($0.placeId ?? "")/\($0.tripId ?? "")/\($0.destination ?? "")" } ?? "-"
-        return "\(e.outcome)|\(pct)|\(ctx)|\(e.tzOffsetMin ?? 0)"
+        let base = "\(e.outcome)|\(pct)|\(ctx)|\(e.tzOffsetMin ?? 0)"
+        // Appended only when present, so every pre-collections fingerprint stays identical (no
+        // mass re-send of 90 days on update); a play that carries a context re-sends once.
+        guard let cid = e.contextId else { return base }
+        return base + "|\(e.contextKind ?? "")/\(cid)"
     }
 
     private static func message(for e: ListeningPocketsClient.ClientError) -> String {
