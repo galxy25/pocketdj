@@ -1015,17 +1015,24 @@ final class SetlistPlayerTests: XCTestCase {
         seq.setRepeatMode(.all)
         XCTAssertEqual(seq.repeatMode, .all)
 
+        // Each synthetic end below stands for a track that PLAYED (the stub files are silent):
+        // report real audible time first, or four ends in a row with no audio would — rightly —
+        // trip the auto-advance cascade breaker (`AutoAdvanceCascadeBreaker`).
+        seq.addAudibleSeconds(30)
         player.onTrackEnded?()   // end track 0 → advance to 1
         await waitUntil("advanced to track 1") { rips.nowPlaying?.songId == "ra_2" && seq.index == 1 }
 
+        seq.addAudibleSeconds(30)
         player.onTrackEnded?()   // end LAST track → repeat-all WRAPS to 0 (does NOT stop)
         await waitUntil("wrapped to the top") { rips.nowPlaying?.songId == "ra_1" && seq.index == 0 }
         XCTAssertTrue(seq.isRunning, "repeat-all keeps the set running past the end")
 
         // OFF again → the next end walks to the last track, then stops at the boundary.
         seq.setRepeatMode(.off)
+        seq.addAudibleSeconds(30)
         player.onTrackEnded?()
         await waitUntil("advanced to last track") { rips.nowPlaying?.songId == "ra_2" && seq.index == 1 }
+        seq.addAudibleSeconds(30)
         player.onTrackEnded?()
         await waitUntil("stops at end with repeat off") { !seq.isRunning }
         cleanBurnedFiles(["ra_1.mp3","ra_1.txt","ra_2.mp3","ra_2.txt"])
