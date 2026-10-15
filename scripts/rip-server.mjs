@@ -257,8 +257,12 @@ function jobDeadlineMs(job, song) {
 // Everything else (transient): drive/source missing, aws/s3/network, watchdog timeout,
 // generic capture/ffmpeg spawn/exit errors → retry with backoff.
 const TIMEOUT_MARK = 'watchdog timeout';
+// Capture outcomes a retry can't change: Music.app plays a different track for this row, or the
+// row has no playable asset. The library has to change first (re-add, rename), not the clock.
+const TERMINAL_CAPTURE_REASONS = new Set(['wrong-track', 'unplayable-row']);
 function isTransient(job, msg) {
   if (job.canceled || msg === 'canceled') return false;
+  if (TERMINAL_CAPTURE_REASONS.has(job.reason)) return false;
   const m = String(msg || '');
   if (/unknown songId/.test(m)) return false;
   if (/no analog file reference/.test(m)) return false;
@@ -1374,6 +1378,12 @@ async function runDigitalJob(job, song) {
     if (st.reason === 'short-capture' || st.reason === 'long-capture') {
       job.reason = st.reason;
       console.error(`  ✗ ${st.reason} ${song.id} attempt ${job.attempt || 1}/${SELFHEAL.maxAttempts}: ${st.error}`);
+    }
+    // TERMINAL refusals (wrong-track / unplayable-row): a retry replays the same library row and
+    // gets the same answer, so isTransient() ends the job here instead of 6 real-time replays.
+    if (TERMINAL_CAPTURE_REASONS.has(st.reason)) {
+      job.reason = st.reason;
+      console.error(`  ✗ ${st.reason} ${song.id} (terminal, not retried): ${st.error}`);
     }
     fail(job, st.error || 'rip failed'); // fail() deletes inflight
   }

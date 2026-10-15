@@ -38,6 +38,14 @@ if (plan.outcome === 'short' || plan.outcome === 'long') {
   console.log('RESULT ' + JSON.stringify({ ok: false, error, reason }));
   process.exit(1);
 }
+// "refuse": a capture refusal the real worker reports with its own reason (wrong-track /
+// unplayable-row), e.g. {"outcome":"refuse","reason":"wrong-track"}.
+if (plan.outcome === 'refuse') {
+  const error = `${plan.reason}: refused by the rip skill`;
+  status('error', { error, reason: plan.reason });
+  console.log('RESULT ' + JSON.stringify({ ok: false, error, reason: plan.reason }));
+  process.exit(1);
+}
 const key = `rips/${SONG}.mp3`;
 status('uploaded', { message: 'done', key, bytes: 1234, measuredMs, expectedMs: expected, expectedSource: 'catalog', lengthVerdict: 'ok' });
 console.log('RESULT ' + JSON.stringify({ ok: true, key, bytes: 1234, durationMs: measuredMs }));

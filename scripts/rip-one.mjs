@@ -184,6 +184,14 @@ async function main() {
     // 38 hours. 'ah-not-recording' is the opposite cause with the identical symptom.
     if (ripTrack?.status === 'play-not-started') fail(ripTrack.err || 'Music never started playing', 'play-not-started');
     if (ripTrack?.status === 'ah-not-recording') fail(ripTrack.err || 'Audio Hijack recorded nothing', 'ah-not-recording');
+    // Refusals that a retry minutes later cannot change: Music.app played a DIFFERENT track
+    // (wrong-track), or the library row exists but has nothing playable (a greyed-out / pulled
+    // row → 'unplayable-row'). Report them as themselves, never the generic 'no-match', so the
+    // rip server treats them as terminal instead of re-playing the song 6 times in real time.
+    // Any OTHER play-failed (e.g. the track isn't in the library yet: iCloud sync lag) stays
+    // 'no-match' and keeps its retries.
+    if (ripTrack?.status === 'wrong-track') fail(ripTrack.err || 'Music played a different track', 'wrong-track');
+    if (ripTrack?.status === 'play-failed' && /no playable asset/.test(ripTrack.err || '')) fail(ripTrack.err, 'unplayable-row');
     // Skill died before it could judge anything (crash/spawn failure) → a rig problem.
     if (ripExit !== 0 && !ripTrack) fail('rip skill failed: ' + (ripErr.slice(-300) || `exit ${ripExit}`), 'system');
     fail('no audio captured — is the track in the library and audio routed to system output?', 'no-match');

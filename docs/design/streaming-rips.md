@@ -418,6 +418,11 @@ the manifest or the offloads.
   `longer-edition` and the manifest records `editionMs` (the `/rip-repair` audit judges against it). A capture short
   against Music.app's duration too (54 s captured, Music.app 221 s) is still `short-capture`.
 - **Long:** more than 20 s long after trimming → `long-capture`, retried.
+- **Refusals are terminal:** `wrong-track` (Music.app is on a different track than asked; titles compare
+  punctuation-blind via `playerOnTrack`, so "Hip Hop" ≡ "Hip-Hop" but "Bromali (feat. A)" ≠ "(feat. B)") and
+  `unplayable-row` (greyed-out row with no playable asset; a track simply absent from the library stays `no-match`
+  and keeps its retries, since it may still be syncing) end the job after one attempt. A retry minutes later replays the
+  same library row; the library has to change first.
 - **Trim:** a silent tail past the expected length (−60 dB, ≥0.5 s, reaching EOF) is cut with
   0.25 s padding. Music is never trimmed.
 - **Baseline (5,777 analysed captures):** overrun p50 +1.8 s, p95 +2.3 s, p99 +8.6 s. The +10–14 s

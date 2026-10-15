@@ -30,6 +30,21 @@ export function normTitle(s) {
   return t.replace(/[^a-z0-9]+/g, ' ').trim().replace(/\s+/g, ' ');
 }
 
+// ---- player identity check (rip skill: "is Music on the track we asked for?") ----
+// Punctuation-blind but otherwise as strict as the old raw comparison: hyphens, dashes,
+// apostrophes, dots and "&" vs "and" never decide identity ("Hip Hop" ≡ "Hip-Hop"), while every
+// WORD still counts, credits and version markers included, so "Bromali (feat. A)" ≠
+// "Bromali (feat. B)". A prefix of either title (first 24 normalized chars) must appear in the
+// other, which tolerates a truncated or suffixed display name.
+const identityChunk = (s) => stripD(String(s || '').toLowerCase())
+  .replace(/['’`]/g, '').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').trim();
+export function playerOnTrack(wantTitle, gotTitle) {
+  const want = identityChunk(wantTitle), got = identityChunk(gotTitle);
+  if (!want || !got) return true; // nothing to compare: don't refuse on missing data
+  return got.includes(want.slice(0, Math.min(24, want.length)))
+    || want.includes(got.slice(0, Math.min(24, got.length)));
+}
+
 // ---- comparable title (recording-altering vs cosmetic version markers) ----
 //
 // normTitle strips ALL parentheticals, so a recording variant (a remix/live/edit/
