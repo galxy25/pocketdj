@@ -1,8 +1,12 @@
 # PocketDJ AWS cutover: blue (011183829623) → green (623170744161)
 
-Status 2026-10-12: green is provisioned, populated and smoke-tested on its raw endpoints. **Nothing
-in blue has changed** (the blue side was only read: config snapshot, secret values piped to green,
-S3 copy source). Blue still serves all traffic; `pocket-dj.com` still delegates to blue's zone.
+**CUTOVER COMPLETE 2026-10-15 (Levi: "do it - I approve").** Green (623170744161, profile `llc`) is the
+only PocketDJ stack and the default `POCKETDJ_ENV`. Blue's PocketDJ resources were deleted the same day
+because the nonprofit's TechSoup credit must not pay for PocketDJ; see "2026-10-15 cutover log" at the end.
+App Store 1.0.2 and every TestFlight build since 10-12 23:00 read `app.pocket-dj.com/config/endpoints.json`
+(green). 1.0.0/1.0.1 installs hardcode blue and stop working until updated.
+
+Original status 2026-10-12 (kept for history): green was provisioned, populated and smoke-tested on its raw endpoints.
 
 Background and the hardcoded-endpoint problem: [aws-migration-plan.md](aws-migration-plan.md).
 
@@ -227,3 +231,24 @@ API, the `pocketdj-inbound` rule set itself — it carries the nonprofit's rules
 - [ ] IAM users djpocketsearch, pocketdj-diag-writer (delete keys first).
 - [ ] S3: empty + delete the 9 `pocketdj-*-011183829623` buckets (rips last; old clients stream from it).
 - [ ] Route 53 zone Z03022171BNC2FYFN00JW (only after Hover points at green and TTLs expired).
+
+## 2026-10-15 cutover log
+
+- 17:58Z Mac launchd writers stopped (rip server, autoscalers, nightlies); blue queues empty.
+- Final copy without delete (the temporary grant has no DeleteObject, so `SYNC_DELETE=1` cannot work;
+  stale green keys were diffed and removed as `llc` instead). Key+size diff per bucket: **blue-only = 0
+  everywhere**. Rips 54,343 objects / 229,974,288,495 bytes in both after removing the 53 files of the 6
+  rips the 10-15 repair deleted in blue. Green-only by design: `config/endpoints.json` in prod/dev-web,
+  green mail since the SES cutover, green access logs, www (site lives in green since 10-13).
+- Hostname moves (remove alias in blue, then alias + cert in green, then A/AAAA in green zone):
+  jukebox 17:59Z, legal 17:59Z, dev.app 18:04Z, app 18:04Z.
+- 18:05Z Mac jobs restarted with `POCKETDJ_ENV=green AWS_PROFILE=llc`; the stem autoscaler fans out
+  over green's measured subnets. Search reindexed in green (95,595 docs). smoke.sh 23/24 (the SQS
+  probe's message is consumed by the live autoscaler).
+- 18:09Z onward blue teardown; per-resource timestamps went to the nonprofit session for the credit
+  reconciliation. Kept in blue: rule set `pocketdj-inbound` (holds the nonprofit's rules) and identity
+  levismschoen@gmail.com (the africanintellect forwarders use it).
+- Device steps: Online-search key (Secrets Manager `pocketdj/green/djpocketsearch`) entered once in
+  Settings ▸ Online search; diag key via `scripts/green/export-diag-key.sh` → double-click. Both sync via iCloud.
+- Follow-up: `RemoteEndpoints.compiledIn` still holds blue values (first-launch fallback before the
+  remote config is fetched); move it to green in the next client release.
