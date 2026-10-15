@@ -34,9 +34,9 @@
   <key>EnvironmentVariables</key>
   <dict>
     <key>POCKETDJ_ENV</key>
-    <string>blue</string>
+    <string>green</string>
     <key>AWS_PROFILE</key>
-    <string>levi</string>
+    <string>llc</string>
     <!-- launchd has a minimal PATH; include node, npm, aws, git, ffmpeg, docker locations. -->
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>

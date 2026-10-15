@@ -38,9 +38,9 @@
     <key>POCKETDJ_AGENT_REPO</key>
     <string>/Users/REPLACE_ME/pocketdj</string>
     <key>POCKETDJ_ENV</key>
-    <string>blue</string>
+    <string>green</string>
     <key>AWS_PROFILE</key>
-    <string>levi</string>
+    <string>llc</string>
     <!-- launchd has a minimal PATH; include node, aws, claude, jq, git locations. -->
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>

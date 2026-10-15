@@ -29,7 +29,9 @@
 // next-AZ set nor the on-demand fallback set, so nothing recovers it. That is a full pipeline
 // outage, not a degradation. The fail-safe direction is the OLD behaviour: one pinned AZ, which
 // merely costs the fan-out.
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+// Fixtures below are blue's measured subnets; select blue before the module computes SUBNETS.
+vi.hoisted(() => { process.env.POCKETDJ_ENV = 'blue'; delete process.env.POCKETDJ_STEM_SUBNETS; });
 import {
   SUBNETS, azOrder, shouldTryNextAz, templateNetMode, runInstancesArgs, shouldFallbackToOnDemand,
 } from '../../scripts/stem-autoscaler.mjs';

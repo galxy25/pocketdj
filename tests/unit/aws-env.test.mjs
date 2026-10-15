@@ -1,7 +1,7 @@
 // scripts/lib/aws-env.mjs is the single source of truth for PocketDJ's AWS coordinates. These tests
-// pin the property the blue/green parameterisation promised: with POCKETDJ_ENV unset, every value is
-// the exact literal the scripts hardcoded before (so blue behaviour is byte-identical), and the shell
-// copy (aws-env.sh, generated) never drifts from the module.
+// pin the property the blue/green parameterisation promised: blue keeps the exact literals the scripts
+// hardcoded before, POCKETDJ_ENV unset selects green (the default since the 2026-10-15 cutover), and
+// the shell copy (aws-env.sh, generated) never drifts from the module.
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -35,10 +35,11 @@ describe('aws-env.sh is generated from aws-env.mjs', () => {
   });
 });
 
-describe('blue defaults are the legacy literals', () => {
-  const blue = awsEnv({});
-  it('selects blue when POCKETDJ_ENV is unset', () => {
-    expect(envName({})).toBe('blue');
+describe('blue (retired) keeps the legacy literals', () => {
+  const blue = awsEnv({ POCKETDJ_ENV: 'blue' });
+  it('selects green when POCKETDJ_ENV is unset', () => {
+    expect(envName({})).toBe('green');
+    expect(awsEnv({}).account).toBe('623170744161');
     expect(blue.name).toBe('blue');
   });
   it('account, region, profile, admin', () => {
