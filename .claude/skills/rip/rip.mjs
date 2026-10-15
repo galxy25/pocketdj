@@ -34,7 +34,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { loadLibraryXML, loadLibraryTSV, indexLibrary, findInLibrary } from '../../../scripts/lib/am-match.mjs';
+import { loadLibraryXML, loadLibraryTSV, indexLibrary, findInLibrary, playerOnTrack } from '../../../scripts/lib/am-match.mjs';
 import { waitUntilPlaying, parsePlayerProbe, PROBE_SCRIPT } from '../../../scripts/lib/music-health.mjs';
 
 // ---------------- args ----------------
@@ -362,11 +362,9 @@ async function ripOne(p) {
   // record the wrong song under this song's name. Prove the player is on the track we asked
   // for before a single byte is attributed to it.
   {
-    const want = (p.title || '').toLowerCase();
     const cur = osa('tell application "Music" to return name of current track', 15000);
-    const got = (cur.ok ? String(cur.out || '') : '').toLowerCase();
-    if (want && got && !got.includes(want.slice(0, Math.min(24, want.length)))
-        && !want.includes(got.slice(0, Math.min(24, got.length)))) {
+    const got = cur.ok ? String(cur.out || '') : '';
+    if (!playerOnTrack(p.title, got)) {
       AH.stop();
       pauseMusic();
       return { ...p, status: 'wrong-track', durationSec: pr.durationSec,
