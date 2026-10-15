@@ -121,7 +121,7 @@ const LANE = laneArgIdx >= 0 ? process.argv[laneArgIdx + 1] : 'stem';
 
 /// Every AZ in the default VPC, one subnet each.
 ///
-/// MEASURED 2026-09-06 (us-west-2, account 011183829623). vpc-003b55e5582595910 is the default VPC
+/// BLUE MEASURED 2026-09-06 (us-west-2, account 011183829623). vpc-003b55e5582595910 is the default VPC
 /// and the only one. All four subnets are public (MapPublicIpOnLaunch=true) and share the one main
 /// route table rtb-06c8f8ef5811a718f — internet-gateway default route, plus S3 gateway endpoint
 /// vpce-0341241602a451680, so S3 is private and free from every AZ while the public path (SQS, pip,
@@ -133,12 +133,23 @@ const LANE = laneArgIdx >= 0 ? process.argv[laneArgIdx + 1] : 'stem';
 /// "subnet-0c62…" instead of "us-west-2c") bought for nothing. A wrong-but-well-formed id here is
 /// the nasty case — only the launches that pick that AZ fail, so it reads as flaky spot capacity for
 /// weeks rather than as a typo.
-const DEFAULT_VPC_SUBNETS = [
-  { az: 'us-west-2a', subnetId: 'subnet-00a23032877bbe190' },   // the AZ the template pins today
-  { az: 'us-west-2b', subnetId: 'subnet-00f9be279c616ff01' },
-  { az: 'us-west-2c', subnetId: 'subnet-0c623f93e8a27ea34' },
-  { az: 'us-west-2d', subnetId: 'subnet-055bd6cc3fb64e8b7' },
-];
+const VPC_SUBNETS_BY_ENV = {
+  blue: [
+    { az: 'us-west-2a', subnetId: 'subnet-00a23032877bbe190' },   // the AZ the template pins today
+    { az: 'us-west-2b', subnetId: 'subnet-00f9be279c616ff01' },
+    { az: 'us-west-2c', subnetId: 'subnet-0c623f93e8a27ea34' },
+    { az: 'us-west-2d', subnetId: 'subnet-055bd6cc3fb64e8b7' },
+  ],
+  // MEASURED 2026-10-15 (account 623170744161): default VPC, all four public. Green's launch template
+  // has no NetworkInterfaces block, so `--subnet-id` is legal on every launch.
+  green: [
+    { az: 'us-west-2a', subnetId: 'subnet-002595df25a7df7fc' },
+    { az: 'us-west-2b', subnetId: 'subnet-063027716ddbc737d' },
+    { az: 'us-west-2c', subnetId: 'subnet-075eb6fa901b2daaa' },
+    { az: 'us-west-2d', subnetId: 'subnet-01389d9c90f3c456c' },
+  ],
+};
+const DEFAULT_VPC_SUBNETS = VPC_SUBNETS_BY_ENV[AWS_ENV.name] || [];
 /// `POCKETDJ_STEM_SUBNETS` takes bare subnet ids (`subnet-a,subnet-b`) or `az:subnet` pairs. A bare
 /// id keeps its real AZ label when we know it, so pinning the walk to one zone to reproduce a
 /// capacity report still logs a zone name rather than an id.
@@ -153,10 +164,10 @@ function parseSubnets(spec) {
 }
 /// The subnets THIS lane may launch into. Exported because the AZ walk is the part most likely to be
 /// got wrong silently, and a test that cannot see the list cannot check it covers the region.
-/// DEFAULT_VPC_SUBNETS are BLUE's subnets: any other POCKETDJ_ENV launches from the template's own
-/// subnet (empty list) unless POCKETDJ_<LANE>_SUBNETS names that account's subnets.
+/// DEFAULT_VPC_SUBNETS are the selected env's subnets (an env without a table launches from the
+/// template's own subnet) unless POCKETDJ_<LANE>_SUBNETS names others.
 export const SUBNETS = parseSubnets(process.env[`POCKETDJ_${LANE.toUpperCase()}_SUBNETS`])
-  || (LANE === 'stem' && AWS_ENV.name === 'blue' ? DEFAULT_VPC_SUBNETS : []);
+  || (LANE === 'stem' ? DEFAULT_VPC_SUBNETS : []);
 
 const bool = (s) => /^(1|true|yes|on)$/i.test(String(s || ''));
 const LANES = {

@@ -79,6 +79,7 @@ function pass(home, args = []) {
       ...process.env,
       PATH: `${join(DIR, 'bin')}:${process.env.PATH}`,
       AWS_PROFILE: '',
+      POCKETDJ_ENV: 'blue',   // fixtures are blue's measured subnets
       AWS_REGION: 'us-west-2',
       AWSLOG: awsLog,
       POCKETDJ_AUTOSCALER_STATE_DIR: stateDir,
