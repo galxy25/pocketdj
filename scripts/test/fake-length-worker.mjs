@@ -39,7 +39,7 @@ if (plan.outcome === 'short' || plan.outcome === 'long') {
   process.exit(1);
 }
 // "refuse": a capture refusal the real worker reports with its own reason (wrong-track /
-// play-failed), e.g. {"outcome":"refuse","reason":"wrong-track"}.
+// unplayable-row), e.g. {"outcome":"refuse","reason":"wrong-track"}.
 if (plan.outcome === 'refuse') {
   const error = `${plan.reason}: refused by the rip skill`;
   status('error', { error, reason: plan.reason });

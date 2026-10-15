@@ -32,7 +32,7 @@ const HEALTHY = 'sng_eeeeeeeeeeee'; // +13 s overrun → fine
 const VINYL = 'sng_ffffffffffff';   // analog catalog song, cloud-captured → exempt
 const BUSY = 'sng_999999999999';    // partial, but a stem job is in flight → refused
 const WRONG = 'sng_777777777777';   // Music.app plays a different track → terminal, no retry
-const DEAD = 'sng_888888888888';    // greyed-out library row (play-failed) → terminal, no retry
+const DEAD = 'sng_888888888888';    // greyed-out library row (unplayable-row) → terminal, no retry
 
 const CATALOG = {
   manifest: { sourceType: 'digital', sourceName: 'T' },
@@ -140,7 +140,7 @@ beforeAll(async () => {
       [GOOD]: { outcome: 'ok', measuredMs: 223_000 },
       [PARTIAL]: { outcome: 'ok', measuredMs: 220_500 },
       [WRONG]: { outcome: 'refuse', reason: 'wrong-track' },
-      [DEAD]: { outcome: 'refuse', reason: 'play-failed' },
+      [DEAD]: { outcome: 'refuse', reason: 'unplayable-row' },
     }),
   };
   for (let attempt = 1; ; attempt++) {
@@ -202,7 +202,7 @@ describe('capture length guard — server wiring', () => {
     expect(spool('pocketdj-stem-jobs').some((j) => j.songId === SHORT)).toBe(false);
   }, 30_000);
 
-  it.each([['wrong-track', WRONG], ['play-failed', DEAD]])('a %s refusal is terminal: one attempt, no retry', async (reason, id) => {
+  it.each([['wrong-track', WRONG], ['unplayable-row', DEAD]])('a %s refusal is terminal: one attempt, no retry', async (reason, id) => {
     await post('/rip', { songId: id }, USER_TOKEN);
     const done = await until(() => serverLog.includes(`✗ ${reason} ${id} (terminal, not retried)`));
     expect(done, serverLog).toBe(true);

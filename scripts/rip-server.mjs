@@ -259,7 +259,7 @@ function jobDeadlineMs(job, song) {
 const TIMEOUT_MARK = 'watchdog timeout';
 // Capture outcomes a retry can't change: Music.app plays a different track for this row, or the
 // row has no playable asset. The library has to change first (re-add, rename), not the clock.
-const TERMINAL_CAPTURE_REASONS = new Set(['wrong-track', 'play-failed']);
+const TERMINAL_CAPTURE_REASONS = new Set(['wrong-track', 'unplayable-row']);
 function isTransient(job, msg) {
   if (job.canceled || msg === 'canceled') return false;
   if (TERMINAL_CAPTURE_REASONS.has(job.reason)) return false;
@@ -1379,7 +1379,7 @@ async function runDigitalJob(job, song) {
       job.reason = st.reason;
       console.error(`  ✗ ${st.reason} ${song.id} attempt ${job.attempt || 1}/${SELFHEAL.maxAttempts}: ${st.error}`);
     }
-    // TERMINAL refusals (wrong-track / play-failed): a retry replays the same library row and
+    // TERMINAL refusals (wrong-track / unplayable-row): a retry replays the same library row and
     // gets the same answer, so isTransient() ends the job here instead of 6 real-time replays.
     if (TERMINAL_CAPTURE_REASONS.has(st.reason)) {
       job.reason = st.reason;

@@ -420,7 +420,8 @@ the manifest or the offloads.
 - **Long:** more than 20 s long after trimming → `long-capture`, retried.
 - **Refusals are terminal:** `wrong-track` (Music.app is on a different track than asked; titles compare
   punctuation-blind via `playerOnTrack`, so "Hip Hop" ≡ "Hip-Hop" but "Bromali (feat. A)" ≠ "(feat. B)") and
-  `play-failed` (greyed-out row, nothing playable) end the job after one attempt. A retry minutes later replays the
+  `unplayable-row` (greyed-out row with no playable asset; a track simply absent from the library stays `no-match`
+  and keeps its retries, since it may still be syncing) end the job after one attempt. A retry minutes later replays the
   same library row; the library has to change first.
 - **Trim:** a silent tail past the expected length (−60 dB, ≥0.5 s, reaching EOF) is cut with
   0.25 s padding. Music is never trimmed.
