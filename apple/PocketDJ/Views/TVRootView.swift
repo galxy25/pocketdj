@@ -727,6 +727,7 @@ struct TVMixNowPlayingCard: View {
                                 engine.autoQueueRemoveUpcoming(offset: i)
                             }
                         }
+                        AddToPlaylistMenu(item: .song(l.songId))
                     }
                 }
                 if rows.count > 50 {
@@ -1231,6 +1232,7 @@ struct TVBrowseView: View {
                                 CollectionPlayback.start([song.id], title: song.name,
                                                          shuffle: false, intents: intents)
                             } label: { Label("Play", systemImage: "play.fill") }
+                            AddToPlaylistMenu(item: .song(song.id))
                         }
                     }
                 }

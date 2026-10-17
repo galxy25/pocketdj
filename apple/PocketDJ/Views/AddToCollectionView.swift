@@ -29,6 +29,10 @@ struct AddToCollectionView: View {
     @Environment(RowSelection.self) private var rowSelection: RowSelection?
     @Environment(\.dismiss) private var dismiss
     let item: Item
+    /// Opened from a context menu's "Add to Playlist › More…" (`AddToPlaylistMenu`): the user is
+    /// there to SEARCH, so the filter field rides the BOTTOM edge (where the menu's More… row
+    /// was) and is focused on open. Default false keeps every other presenter's sheet unchanged.
+    var searchFirst: Bool = false
     /// Fired AFTER a successful ADD — never on a REMOVE (a checkmarked row toggles OFF), never
     /// on a `.songs` batch that landed nothing, and never on a source-playlist add (that path
     /// runs a two-way Apple Music write behind its own result alert; dismissing out from under
@@ -66,9 +70,10 @@ struct AddToCollectionView: View {
     /// The Recent quick-add targets: the store's MRU, filtered to those that STILL RESOLVE
     /// (`lastTargetLabel != nil` ⇒ the pocket/playlist still exists), capped at the top 3. The
     /// store keeps a deeper buffer so a deleted collection dropping out still fills the row.
-    private var recentTargets: [AddTarget] {
-        Array(collections.recentAddTargets.filter { collections.lastTargetLabel($0) != nil }.prefix(3))
-    }
+    private var recentTargets: [AddTarget] { actions.recentTargets(limit: 3) }
+
+    /// The add/remove/membership logic this sheet shares with the context-menu submenu.
+    private var actions: AddToActions { AddToActions(item: item, collections: collections) }
 
     /// The song id being added, or nil for albums / studio items. Source-playlist adds are
     /// song-only: an album has no single Apple Music track to write back, and a studio
@@ -157,7 +162,7 @@ struct AddToCollectionView: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .background(Theme.bgRaised)
-        .overlay(alignment: .bottom) { Divider().overlay(Theme.border) }
+        .overlay(alignment: searchFirst ? .top : .bottom) { Divider().overlay(Theme.border) }
         // ⌘A belongs to the FIELD while it has focus. The app-wide select-all shadow
         // (RootView) is present whenever a selectable song list is registered — which it is,
         // because this sheet is presented FROM one — so without parking it here, ⌘A in this
@@ -329,7 +334,7 @@ struct AddToCollectionView: View {
             }
             // The filter field rides the top edge of the list on every platform (iPhone,
             // iPad, Mac, Vision Pro) — pinned, so it stays put while the list scrolls.
-            .safeAreaInset(edge: .top, spacing: 0) { searchField }
+            .safeAreaInset(edge: searchFirst ? .bottom : .top, spacing: 0) { searchField }
             .navigationTitle("Add to…")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -352,6 +357,7 @@ struct AddToCollectionView: View {
                 Text(batchNotice ?? "")
             }
             .task {
+                if searchFirst { searchFocused = true }
                 if let songId, let rec = recEngine, rec.isEnabled {
                     suggestedWire = await rec.rawCollectionSuggestions(for: songId)
                 }
@@ -362,9 +368,7 @@ struct AddToCollectionView: View {
     /// The engine's suggestions resolved to live AddTargets: unresolvable ids dropped, deduped
     /// against the Recent row by (kind,id), capped at 3.
     private var suggestedTargets: [AddTarget] {
-        RecSuggestionFilter.resolveTargets(suggestedWire, pockets: collections.pockets,
-                                           playlists: collections.playlists,
-                                           excluding: recentTargets, limit: 3)
+        actions.suggestedTargets(suggestedWire, excluding: recentTargets, limit: 3)
     }
 
     // MARK: - Source ("From your sources") playlists — the two-way add
@@ -529,108 +533,33 @@ struct AddToCollectionView: View {
     /// lands in the chosen one — parity with the single-song `addSong`, which never dedups).
     private func addTo(_ target: AddTarget,
                        dedupe: CollectionsStore.BatchDedupe = .wholeCollection) {
-        switch item {
-        case .song(let s): collections.addSong(s, to: target); onAdded?(target)
-        // The batch choke point: ONE document write, deduped against current membership.
         // A batch that adds NOTHING (every id already present) must not look identical to a
         // successful one — say so (the sheet deliberately never dismisses on add).
-        case .songs(let ids):
-            if collections.addSongs(ids, to: target, dedupe: dedupe) == 0 {
-                batchNotice = "All \(ids.count) selected songs are already in this list."
-            } else {
-                onAdded?(target)
-            }
-        case .album(let a): collections.addAlbum(a, to: target); onAdded?(target)
-        // Studio ids ride the SAME string-id plumbing as songs (spec §8's namespaced-id
-        // mechanism): pockets keep them in `songIds`, playlists as `.song` nodes; every
-        // consumer routes on the id prefix at resolve time.
-        case .studio(let id, _):
-            collections.addSong(id, to: target, repeatCount: repeatCount); onAdded?(target)
+        if actions.add(target, dedupe: dedupe, repeatCount: repeatCount) {
+            onAdded?(target)
+        } else if case .songs(let ids) = item {
+            batchNotice = "All \(ids.count) selected songs are already in this list."
         }
     }
 
-    private func inPocket(_ p: Pocket) -> Bool {
-        switch item {
-        case .song(let s): return p.songIds.contains(s)
-        case .songs(let ids):
-            // Membership as ONE set: `ids.allSatisfy { songIds.contains }` is
-            // O(selection × members) linear scans per row per body render — a select-all
-            // batch froze the sheet. One O(members) Set build, then N O(1) lookups.
-            guard !ids.isEmpty else { return false }
-            let members = Set(p.songIds)
-            return ids.allSatisfy { members.contains($0) }
-        case .album(let a): return p.albumIds.contains(a)
-        case .studio(let id, _): return p.songIds.contains(id)   // rides songIds (see addTo)
-        }
-    }
-
-    // MARK: - Multi-select toggle (add ⇄ remove across many collections, without dismissing)
-
-    /// The song/studio id being toggled (studio ids ride the song plumbing — see `addTo`); nil
-    /// for an album / multi-song item.
-    private var toggleSongId: String? {
-        switch item {
-        case .song(let s): return s
-        case .studio(let id, _): return id
-        case .album, .songs: return nil
-        }
-    }
-    private var toggleAlbumId: String? { if case .album(let a) = item { return a }; return nil }
-    /// The multi-select batch's ids; nil for every other item kind.
-    private var multiSongIds: [String]? { if case .songs(let ids) = item { return ids }; return nil }
-
-    /// Whole-playlist membership of the current item (present in ANY chapter). A multi-song
-    /// batch is a member only when EVERY id is (mirrors `inPocket`).
-    private func inPlaylist(_ pl: Playlist) -> Bool {
-        if let ids = multiSongIds {
-            // Per-id `playlist(_:contains:)` walks the playlist's WHOLE node tree per call
-            // — for a batch that's O(selection) tree walks per row per body render. One
-            // walk (`playlistSongIdSet`), then N O(1) lookups.
-            guard !ids.isEmpty else { return false }
-            let members = collections.playlistSongIdSet(pl.id)
-            return ids.allSatisfy { members.contains($0) }
-        }
-        if let s = toggleSongId { return collections.playlist(pl.id, contains: s) }
-        if let a = toggleAlbumId { return collections.playlist(pl.id, containsAlbum: a) }
-        return false
-    }
+    private func inPocket(_ p: Pocket) -> Bool { actions.inPocket(p) }
+    private func inPlaylist(_ pl: Playlist) -> Bool { actions.inPlaylist(pl) }
+    private func isMember(_ target: AddTarget) -> Bool { actions.isMember(target) }
 
     /// Tap a POCKET: add if absent, remove if present. Never dismisses (multi-select).
     private func togglePocket(_ p: Pocket) {
-        if inPocket(p) { removeFromPocket(p.id) } else { addTo(AddTarget(kind: .pocket, id: p.id)) }
+        if inPocket(p) { actions.remove(AddTarget(kind: .pocket, id: p.id)) }
+        else { addTo(AddTarget(kind: .pocket, id: p.id)) }
     }
     /// Tap a PLAYLIST: toggle whole-playlist membership — add lands in the default chapter, remove
     /// clears the item from EVERY chapter. Never dismisses.
     private func togglePlaylist(_ pl: Playlist) {
-        if inPlaylist(pl) { removeFromPlaylist(pl.id) }
+        if inPlaylist(pl) { actions.remove(AddTarget(kind: .playlist, id: pl.id)) }
         else { addTo(AddTarget(kind: .playlist, id: pl.id, sequenceId: pl.sequences.first?.nodeId)) }
     }
-    private func removeFromPocket(_ id: String) {
-        // Batch removes go through the batch choke point: ONE document write (a per-id loop
-        // re-encodes the whole multi-MB collections document N times on the main actor).
-        if let ids = multiSongIds { collections.removeSongs(ids, fromPocket: id) }
-        else if let s = toggleSongId { collections.removeSong(s, fromPocket: id) }
-        else if let a = toggleAlbumId { collections.removeAlbum(a, fromPocket: id) }
-    }
-    private func removeFromPlaylist(_ id: String) {
-        if let ids = multiSongIds { collections.removeSongs(ids, fromPlaylist: id) }
-        else if let s = toggleSongId { collections.removeSong(s, fromPlaylist: id) }
-        else if let a = toggleAlbumId { collections.removeAlbum(a, fromPlaylist: id) }
-    }
-
-    /// A Recent quick-target's current membership + its toggle (kind-dispatched).
-    private func isMember(_ target: AddTarget) -> Bool {
-        switch target.kind {
-        case .pocket: return collections.pocket(target.id).map(inPocket) ?? false
-        case .playlist: return collections.playlist(target.id).map(inPlaylist) ?? false
-        }
-    }
+    /// A Recent/Suggested quick-target's toggle (kind-dispatched).
     private func toggleTarget(_ target: AddTarget) {
-        guard isMember(target) else { addTo(target); return }
-        switch target.kind {
-        case .pocket: removeFromPocket(target.id)
-        case .playlist: removeFromPlaylist(target.id)
-        }
+        if isMember(target) { actions.remove(target) } else { addTo(target) }
     }
 
     /// "Sample" / "Loop" / "Sequence" from the studio id's prefix — the id namespace IS
@@ -684,5 +613,127 @@ extension View {
         sheet(item: ref) { r in
             AddToCollectionView(item: .studio(id: r.id, title: r.title))
         }
+    }
+}
+
+/// The add / remove / membership / quick-target logic behind "Add to…", shared by the
+/// `AddToCollectionView` sheet and the context-menu `AddToPlaylistMenu` so the two surfaces can
+/// never disagree about what's checked, what a tap does, or which targets are suggested.
+@MainActor
+struct AddToActions {
+    let item: AddToCollectionView.Item
+    let collections: CollectionsStore
+
+    // MARK: Quick targets (Suggested + Recent)
+
+    /// The store's Recent MRU, filtered to targets that STILL RESOLVE (`lastTargetLabel != nil` ⇒
+    /// the pocket/playlist still exists). The store keeps a deeper buffer so a deleted collection
+    /// dropping out still fills the row.
+    func recentTargets(limit: Int) -> [AddTarget] {
+        Array(collections.recentAddTargets.filter { collections.lastTargetLabel($0) != nil }.prefix(limit))
+    }
+
+    /// The rec engine's suggestions resolved to live AddTargets: unresolvable ids dropped, deduped
+    /// against `excluding` (the Recent row) by (kind,id), capped.
+    func suggestedTargets(_ wire: [RecCollectionSuggestionWire], excluding: [AddTarget],
+                          limit: Int) -> [AddTarget] {
+        RecSuggestionFilter.resolveTargets(wire, pockets: collections.pockets,
+                                           playlists: collections.playlists,
+                                           excluding: excluding, limit: limit)
+    }
+
+    // MARK: Membership
+
+    /// The song/studio id being toggled (studio ids ride the song plumbing — see `add`); nil
+    /// for an album / multi-song item.
+    private var toggleSongId: String? {
+        switch item {
+        case .song(let s): return s
+        case .studio(let id, _): return id
+        case .album, .songs: return nil
+        }
+    }
+    private var toggleAlbumId: String? { if case .album(let a) = item { return a }; return nil }
+    /// The multi-select batch's ids; nil for every other item kind.
+    private var multiSongIds: [String]? { if case .songs(let ids) = item { return ids }; return nil }
+
+    func inPocket(_ p: Pocket) -> Bool {
+        switch item {
+        case .song(let s): return p.songIds.contains(s)
+        case .songs(let ids):
+            // Membership as ONE set: `ids.allSatisfy { songIds.contains }` is
+            // O(selection × members) linear scans per row per body render — a select-all
+            // batch froze the sheet. One O(members) Set build, then N O(1) lookups.
+            guard !ids.isEmpty else { return false }
+            let members = Set(p.songIds)
+            return ids.allSatisfy { members.contains($0) }
+        case .album(let a): return p.albumIds.contains(a)
+        case .studio(let id, _): return p.songIds.contains(id)   // rides songIds (see add)
+        }
+    }
+
+    /// Whole-playlist membership of the current item (present in ANY chapter). A multi-song
+    /// batch is a member only when EVERY id is (mirrors `inPocket`).
+    func inPlaylist(_ pl: Playlist) -> Bool {
+        if let ids = multiSongIds {
+            // Per-id `playlist(_:contains:)` walks the playlist's WHOLE node tree per call
+            // — for a batch that's O(selection) tree walks per row per body render. One
+            // walk (`playlistSongIdSet`), then N O(1) lookups.
+            guard !ids.isEmpty else { return false }
+            let members = collections.playlistSongIdSet(pl.id)
+            return ids.allSatisfy { members.contains($0) }
+        }
+        if let s = toggleSongId { return collections.playlist(pl.id, contains: s) }
+        if let a = toggleAlbumId { return collections.playlist(pl.id, containsAlbum: a) }
+        return false
+    }
+
+    func isMember(_ target: AddTarget) -> Bool {
+        switch target.kind {
+        case .pocket: return collections.pocket(target.id).map(inPocket) ?? false
+        case .playlist: return collections.playlist(target.id).map(inPlaylist) ?? false
+        }
+    }
+
+    // MARK: Mutations
+
+    /// Adds the item (recording the target, incl. chapter, as "last used"). Returns false only
+    /// for a `.songs` batch that landed nothing (every id already present). `dedupe` matters only
+    /// to that batch: the sheet's explicit per-chapter rows pass `.targetChapter`.
+    @discardableResult
+    func add(_ target: AddTarget, dedupe: CollectionsStore.BatchDedupe = .wholeCollection,
+             repeatCount: Int = 1) -> Bool {
+        switch item {
+        case .song(let s): collections.addSong(s, to: target)
+        // The batch choke point: ONE document write, deduped against current membership.
+        case .songs(let ids): return collections.addSongs(ids, to: target, dedupe: dedupe) > 0
+        case .album(let a): collections.addAlbum(a, to: target)
+        // Studio ids ride the SAME string-id plumbing as songs (spec §8's namespaced-id
+        // mechanism): pockets keep them in `songIds`, playlists as `.song` nodes; every
+        // consumer routes on the id prefix at resolve time.
+        case .studio(let id, _): collections.addSong(id, to: target, repeatCount: repeatCount)
+        }
+        return true
+    }
+
+    /// Toggle-OFF: pocket ⇒ its membership; playlist ⇒ EVERY chapter.
+    func remove(_ target: AddTarget) {
+        switch target.kind {
+        case .pocket:
+            // Batch removes go through the batch choke point: ONE document write (a per-id loop
+            // re-encodes the whole multi-MB collections document N times on the main actor).
+            if let ids = multiSongIds { collections.removeSongs(ids, fromPocket: target.id) }
+            else if let s = toggleSongId { collections.removeSong(s, fromPocket: target.id) }
+            else if let a = toggleAlbumId { collections.removeAlbum(a, fromPocket: target.id) }
+        case .playlist:
+            if let ids = multiSongIds { collections.removeSongs(ids, fromPlaylist: target.id) }
+            else if let s = toggleSongId { collections.removeSong(s, fromPlaylist: target.id) }
+            else if let a = toggleAlbumId { collections.removeAlbum(a, fromPlaylist: target.id) }
+        }
+    }
+
+    /// Add if absent, remove if present — what a checkmarked row does on tap.
+    func toggle(_ target: AddTarget) {
+        if isMember(target) { remove(target) } else { add(target) }
     }
 }

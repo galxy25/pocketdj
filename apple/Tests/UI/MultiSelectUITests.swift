@@ -244,21 +244,33 @@ final class MultiSelectUITests: XCTestCase {
         XCTAssertTrue(app.any("selection-bar").waitForNonExistence(timeout: 5))
     }
 
-    /// WS-C: the Browse song row's context menu offers "Add to Playlist…" → the shared
-    /// AddToCollectionView sheet; adding to the seeded playlist from it works.
-    func testBrowseRowAddToPlaylistSheet() {
+    /// Browse row menu → "Add to Playlist" → More… opens the shared Add-to sheet (search field
+    /// focused); adding there puts the playlist in Recent, so the SAME row's submenu now lists it
+    /// CHECKED (the sheet's ✓) — and tapping the checked row removes the song again.
+    func testBrowseRowAddToPlaylistMoreThenCheckedQuickTarget() {
         let app = launch(seedCollections: true)
         showSongs(app)
-        tapCenter(app, of: rowMenuButton(app, rowId: "song-sng_2", buttonId: "add-to-song-sng_2"))
-        // The shared sheet: toggle the seeded playlist row, then Done.
+        tapCenter(app, of: rowMenuButton(app, rowId: "song-sng_2", buttonId: "ctx-add-to-playlist"))
+        let more = app.buttons["ctx-add-playlist-more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        tapCenter(app, of: more)
+        XCTAssertTrue(app.textFields["add-search-field"].waitForExistence(timeout: 5))
         let target = app.buttons.matching(
             NSPredicate(format: "identifier BEGINSWITH 'add-playlist-pls_'")).firstMatch
         XCTAssertTrue(target.waitForExistence(timeout: 5))
         target.tap()
-        app.buttons["Done"].tap()
+        // The focused search field puts the keyboard's own "Done" up too — tap the SHEET's.
+        app.navigationBars.buttons["Done"].tap()
+
+        tapCenter(app, of: rowMenuButton(app, rowId: "song-sng_2", buttonId: "ctx-add-to-playlist"))
+        let quick = app.descendants(matching: .any)["ctx-add-target-0"]
+        XCTAssertTrue(quick.waitForExistence(timeout: 5))
+        // A menu Toggle surfaces its ✓ as the item's SELECTED state (UIAction .on), not a value.
+        XCTAssertTrue(quick.isSelected, "a member target shows the checkmark")
+        tapCenter(app, of: quick)
         gotoCollections(app)
         openSeededSet(app)
-        assertStats(app, prefix: "2 songs")
+        assertStats(app, prefix: "1 song")
     }
 
     #endif

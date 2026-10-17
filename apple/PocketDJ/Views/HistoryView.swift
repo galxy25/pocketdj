@@ -543,6 +543,7 @@ struct HistoryView: View {
     /// `PlayRef.eventId` is the very id `rewindSlice` keys on.
     @ViewBuilder private func rowMenu(_ song: IndexSong, eventId: UUID) -> some View {
         rewindMenuItem(eventId: eventId)
+        AddToPlaylistMenu(item: addToItem(for: song))
         Button {
             rowSelection.enterSelectMode(scope: Self.selectionScope, initial: song.id)
         } label: { Label("Select", systemImage: "checklist") }
@@ -556,6 +557,13 @@ struct HistoryView: View {
         ShareLink(item: ShareText.forSong(song)) {
             Label("Share", systemImage: "square.and.arrow.up")
         }
+    }
+
+    /// A row that's part of a multi-row selection files the WHOLE selection (Browse's rule).
+    private func addToItem(for song: IndexSong) -> AddToCollectionView.Item {
+        guard rowSelection.isSelected(song.id, scope: Self.selectionScope) else { return .song(song.id) }
+        let ids = rowSelection.orderedSelection(in: displayedSongIds)
+        return ids.count > 1 ? .songs(ids) : .song(song.id)
     }
 
     /// The last RENDERED row scrolled into view → grow the render budget toward the full result

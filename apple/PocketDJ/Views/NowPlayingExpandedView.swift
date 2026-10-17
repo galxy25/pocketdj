@@ -80,6 +80,7 @@ struct NowPlayingExpandedView: View {
                 .accessibilityLabel("Close")
                 .accessibilityIdentifier("np-x-detail-close")
             }
+            .addToPlaylistHost()
             .preferredColorScheme(.dark)
             .tint(Theme.accent)
         }
@@ -228,6 +229,7 @@ struct NowPlayingExpandedView: View {
                         Button { openSongDetail(for: item) } label: {
                             Label("Song details", systemImage: "info.circle")
                         }
+                        AddToPlaylistMenu(item: .song(item.id))
                         Divider()
                         Button(role: .destructive) {
                             sequencer.removeUpcoming(uids: [item.uid])

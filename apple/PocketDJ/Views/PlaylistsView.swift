@@ -920,6 +920,7 @@ struct IndexPlaylistDetailView: View {
                                     Label("Copy", systemImage: "doc.on.doc")
                                 }
                                 .accessibilityIdentifier("copy-source-song-\(song.id)")
+                                AddToPlaylistMenu(item: .song(song.id))
                             }
                         InlinePlayerSlot(songId: song.id)
                     }
@@ -1668,6 +1669,10 @@ struct PlaylistDetailView: View {
                 Label("Copy", systemImage: "doc.on.doc")
             }
             .accessibilityIdentifier("copy-node-\(node.nodeId)")
+            AddToPlaylistMenu(item: .song(song.id))
+            Divider()
+        } else if node.kind == .album, let aid = node.albumId {
+            AddToPlaylistMenu(item: .album(aid))
             Divider()
         }
         Button { collections.moveNodeUp(node.nodeId, inPlaylist: playlistId) } label: { Label("Move up", systemImage: "arrow.up") }

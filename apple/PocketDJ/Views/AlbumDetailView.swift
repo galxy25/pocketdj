@@ -137,14 +137,15 @@ struct AlbumDetailView: View {
                     .foregroundStyle(Theme.fgDim)
                 // Whole-album queueing sits beside the track count, not in the toolbar — that
                 // already carries five primaryAction items and overflows on iPhone.
-                if sequencer.isRunning {
-                    Menu {
-                        QueueMenuItems(songs: tracks, noun: "Album")
-                    } label: {
-                        Image(systemName: "text.append").font(.caption)
-                    }
-                    .accessibilityIdentifier("album-queue-menu")
+                // Always present now: Add to Playlist works with no set running; the queue
+                // items inside still hide themselves when there's nothing to queue into.
+                Menu {
+                    QueueMenuItems(songs: tracks, noun: "Album")
+                    AddToPlaylistMenu(item: .album(current.id))
+                } label: {
+                    Image(systemName: sequencer.isRunning ? "text.append" : "ellipsis.circle").font(.caption)
                 }
+                .accessibilityIdentifier("album-queue-menu")
                 Spacer(minLength: 0)
             }
             Spacer(minLength: 0)
@@ -232,7 +233,10 @@ struct AlbumDetailView: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier("track-\(song.id)")
-                        .contextMenu { QueueMenuItems(songs: [song]) }
+                        .contextMenu {
+                            QueueMenuItems(songs: [song])
+                            AddToPlaylistMenu(item: .song(song.id))
+                        }
 
                         FavoriteToggle(songId: song.id, appleMusicId: song.appleMusicId)
                         RowTransport(song: (id: song.id, title: song.name, artist: song.artist),

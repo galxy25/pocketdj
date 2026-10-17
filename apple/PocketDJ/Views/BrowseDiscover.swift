@@ -337,6 +337,8 @@ private struct DiscoverRow: View {
                 Label("Add to Catalog", systemImage: "plus.rectangle.on.folder")
             }
         }
+        // Self-hides until the hit is in the catalog (a playlist row must resolve).
+        AddToPlaylistMenu(item: .song(hit.songId))
     }
 
     /// Queue into the live session — the catalog entry lands first so the queue row

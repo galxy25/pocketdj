@@ -256,6 +256,11 @@ final class RecommendationService {
     /// cap 20, TTL 15 min.
     @ObservationIgnored private var suggestionCache: [String: (atMs: Double, wire: [RecCollectionSuggestionWire])] = [:]
     @ObservationIgnored private var suggestionCacheOrder: [String] = []
+    /// Bumped whenever a `cachedCollectionSuggestions` miss finishes fetching (observed).
+    private(set) var collectionSuggestionsRevision = 0
+    @ObservationIgnored private var suggestionsAttemptedAtMs: [String: Double] = [:]
+    /// Fixture mode never caches (its rows are computed live), so the sync read keeps its own.
+    @ObservationIgnored private var fixtureSuggestions: [String: [RecCollectionSuggestionWire]] = [:]
     /// Gem Collector's collection-similarity cache: sorted-id-list key → song ids. LRU 8,
     /// same 15-minute TTL as the suggestion cache.
     @ObservationIgnored private var similarCache: [String: (atMs: Double, songIds: [String])] = [:]
@@ -1041,6 +1046,36 @@ final class RecommendationService {
         }
     }
 
+    /// The SAME suggestions `rawCollectionSuggestions` serves the Add sheet, read synchronously
+    /// for the context-menu "Add to Playlist" submenu (a menu body can't await). A cache miss
+    /// returns [] and starts the fetch; `collectionSuggestionsRevision` bumps when it lands, so a
+    /// menu that read it re-renders with the engine's rows.
+    func cachedCollectionSuggestions(for songId: String) -> [RecCollectionSuggestionWire] {
+        _ = collectionSuggestionsRevision   // observe: re-render when a fetch lands
+        guard isEnabled else { return [] }
+        if !fixtureOn {
+            let now = Date().timeIntervalSince1970 * 1000
+            if let hit = suggestionCache[songId], now - hit.atMs < Self.cacheTTLMs {
+                return dropRecsOff(hit.wire)
+            }
+        }
+        // One attempt per song per TTL — in flight OR finished. A failed fetch isn't cached, so
+        // without this the revision bump would re-render, miss, and refetch in a loop.
+        let nowMs = Date().timeIntervalSince1970 * 1000
+        if let at = suggestionsAttemptedAtMs[songId], nowMs - at < Self.cacheTTLMs {
+            return fixtureOn ? (fixtureSuggestions[songId] ?? []) : []
+        }
+        suggestionsAttemptedAtMs[songId] = nowMs
+        if suggestionsAttemptedAtMs.count > 200 { suggestionsAttemptedAtMs = [songId: nowMs] }
+        Task { [weak self] in
+            guard let self else { return }
+            let wire = await self.rawCollectionSuggestions(for: songId)
+            if self.fixtureOn { self.fixtureSuggestions[songId] = wire }
+            self.collectionSuggestionsRevision &+= 1
+        }
+        return fixtureOn ? (fixtureSuggestions[songId] ?? []) : []
+    }
+
     /// **THE PER-COLLECTION OPT-OUT, APPLIED TO THE MIRROR SURFACE.**
     ///
     /// A For You tile asks "what should go INTO Comfort Zone"; SongDetail and the Add sheet ask
@@ -1123,6 +1158,8 @@ final class RecommendationService {
             forYouFetchedAtMs = nil
             suggestionCache = [:]
             suggestionCacheOrder = []
+            suggestionsAttemptedAtMs = [:]
+            fixtureSuggestions = [:]
             syncError = nil
         }
     }
