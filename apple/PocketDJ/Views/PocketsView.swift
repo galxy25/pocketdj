@@ -86,6 +86,7 @@ struct PocketDetailView: View {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
                     .accessibilityIdentifier("copy-pocket-song-\(song.id)")
+                    AddToPlaylistMenu(item: .song(song.id))
                 }
             InlinePlayerSlot(songId: song.id)
         }

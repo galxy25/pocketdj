@@ -57,9 +57,6 @@ struct BrowseView: View {
     /// server-paged (OnlineSearchModel) and ignores this.
     @State private var visibleCount = BrowsePaging.pageSize
     @State private var visibleKey = ""
-    /// The Add-to sheet payload (WS-C): a single song/album from a row context menu, or the
-    /// whole multi-selection when the menu was invoked on a selected row.
-    @State private var addToItem: BrowseAddToItem?
 
     private var gridColumns: [GridItem] { [GridItem(.adaptive(minimum: 150, maximum: 220), spacing: 16)] }
 
@@ -117,7 +114,6 @@ struct BrowseView: View {
             .toolbar { toolbarItems }
             .sheet(isPresented: $showFilter) { FilterSheet(browse: browse, app: app, collections: collections) }
             .sheet(isPresented: $showSort) { SortSheet(browse: browse) }
-            .sheet(item: $addToItem) { AddToCollectionView(item: $0.item) }
         return chrome
         .onChange(of: browse.kind) {
             browse.persist(); if browse.searchOnline { triggerOnline() }
@@ -688,14 +684,15 @@ struct BrowseView: View {
         .background(Theme.bg)
     }
 
-    /// WS-C: "Add to Playlist…" on Browse ALBUM rows — the same AddToCollectionView sheet
-    /// AlbumDetailView presents. Single-album only (album multi-select is out of v1 scope).
-    /// The album rows had no context menu before, so no fold conflict.
+    /// WS-C: "Add to Playlist" on Browse ALBUM rows — the shared top-five + More… submenu.
+    /// Single-album only (album multi-select is out of v1 scope).
     @ViewBuilder private func albumAddToMenuItems(_ album: IndexAlbum) -> some View {
-        Button { addToItem = BrowseAddToItem(item: .album(album.id)) } label: {
-            Label("Add to Playlist…", systemImage: "music.note.list.badge.plus")
+        QueueMenuItems(songs: app.tracks(for: album), noun: "Album")
+        AddToPlaylistMenu(item: .album(album.id))
+        ShareLink(item: ShareText.forAlbum(album),
+                  subject: Text("\(album.name) — \(album.artist)")) {
+            Label("Share", systemImage: "square.and.arrow.up")
         }
-        .accessibilityIdentifier("add-to-album-\(album.id)")
     }
 
     /// The last RENDERED row scrolled into view — page in more. Online: pull the next
@@ -763,7 +760,7 @@ struct BrowseView: View {
                         // and the transport buttons sit on top and intercept their own
                         // taps first — only taps OUTSIDE them fall through and navigate.
                         SongRow(song: song, albumName: albumName,
-                                onAddTo: { presentAddTo(song) })
+                                addToItem: { addToItem(for: song) })
                             .selectableSongRow(id: song.id, scope: Self.songSelectionScope,
                                                orderedIds: { renderedSongIds(items) },
                                                payload: { dragPayload(for: song) },
@@ -832,13 +829,13 @@ struct BrowseView: View {
                                         allIds: { selectionAllIds() },
                                         payload: { selectionPayload() })
     }
-    /// WS-C: present the shared Add-to sheet for a row's context menu. Invoked on a row
-    /// that is part of the active selection ⇒ the add applies to the WHOLE selection.
-    private func presentAddTo(_ song: IndexSong) {
+    /// WS-C: what a row's "Add to Playlist" files. Invoked on a row that is part of the
+    /// active selection ⇒ the add applies to the WHOLE selection.
+    private func addToItem(for song: IndexSong) -> AddToCollectionView.Item {
         let selected = rowSelection.isSelected(song.id, scope: Self.songSelectionScope)
             ? rowSelection.orderedSelection(in: selectionAllIds()) : []
         let ids = selected.count > 1 ? selected : [song.id]
-        addToItem = BrowseAddToItem(item: ids.count == 1 ? .song(ids[0]) : .songs(ids))
+        return ids.count == 1 ? .song(ids[0]) : .songs(ids)
     }
 
     private var loadingView: some View {
@@ -923,14 +920,6 @@ struct AlbumRow: View {
     }
 }
 
-/// Identifiable wrapper so a Browse row's context menu can present the shared
-/// `AddToCollectionView` via `.sheet(item:)` (WS-C) — one sheet on the Browse chrome,
-/// driven by whichever row's menu fired.
-struct BrowseAddToItem: Identifiable {
-    let id = UUID()
-    let item: AddToCollectionView.Item
-}
-
 /// Browser song row — the SHARED `SongRowView`, so it reads identically to the
 /// collection + setlist rows (now gaining a thumbnail, explicit badge, year, genre,
 /// BPM tiers, and the transport slot it previously lacked). No delete/reorder/notes here.
@@ -941,9 +930,9 @@ struct SongRow: View {
     /// Accepted for source compatibility with the browser pipeline; the shared row
     /// resolves the album (and thus year/genre/art) from the catalog itself.
     var albumName: String = ""
-    /// Presents the shared Add-to sheet (WS-C). nil hides the menu item (hosts without
-    /// the sheet plumbing).
-    var onAddTo: (() -> Void)? = nil
+    /// What the row menu's "Add to Playlist" files — the row, or the whole selection it's part
+    /// of. nil ⇒ just this song.
+    var addToItem: (() -> AddToCollectionView.Item)? = nil
 
     private var album: IndexAlbum? { song.albumId.flatMap { app.albumsById[$0] } }
 
@@ -955,12 +944,7 @@ struct SongRow: View {
                 // owns a `.contextMenu` and then adds another loses one of them.
                 QueueMenuItems(songs: [song])
                 Divider()
-                if let onAddTo {
-                    Button { onAddTo() } label: {
-                        Label("Add to Playlist…", systemImage: "music.note.list.badge.plus")
-                    }
-                    .accessibilityIdentifier("add-to-song-\(song.id)")
-                }
+                AddToPlaylistMenu(item: addToItem?() ?? .song(song.id))
                 Button {
                     rowSelection.enterSelectMode(scope: BrowseView.songSelectionScope, initial: song.id)
                 } label: { Label("Select", systemImage: "checklist") }

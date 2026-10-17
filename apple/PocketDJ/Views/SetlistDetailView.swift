@@ -161,6 +161,8 @@ struct SetlistDetailView: View {
                         ForEach(Array(setlist.tracks.prefix(shown).enumerated()), id: \.offset) { idx, track in
                             trackRow(track, index: idx)
                                 .contextMenu {   // right-click on macOS, tap-and-hold on iOS
+                                    AddToPlaylistMenu(item: .song(track.songId))
+                                    Divider()
                                     Button(role: .destructive) {
                                         collections.removeSetlistTrack(setlistId: setlistId, at: idx)
                                     } label: { Label("Delete from set list", systemImage: "trash") }

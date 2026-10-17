@@ -193,6 +193,7 @@ struct NowPlayingPanel: View {
                     .accessibilityIdentifier("np-detail-close")
                 }
             }
+            .addToPlaylistHost()
             .preferredColorScheme(.dark)
             .tint(Theme.accent)
         }
@@ -362,6 +363,7 @@ struct NowPlayingPanel: View {
                     Button { openSongDetail(for: item) } label: {
                         Label("Song details", systemImage: "info.circle")
                     }
+                    AddToPlaylistMenu(item: .song(item.id))
                 }
                 .listRowBackground(Theme.bg)
                 .accessibilityElement(children: .contain)
@@ -418,6 +420,7 @@ struct NowPlayingPanel: View {
                     Button { openSongDetail(for: item) } label: {
                         Label("Song details", systemImage: "info.circle")
                     }
+                    AddToPlaylistMenu(item: .song(item.id))
                     Divider()
                     Button(role: .destructive) {
                         sequencer.removeUpcoming(uids: [item.uid])
@@ -514,6 +517,7 @@ struct NowPlayingPanel: View {
                         Button { add(album: album) } label: {
                             Label("Add to end", systemImage: "text.append")
                         }
+                        AddToPlaylistMenu(item: .album(album.id))
                     }
                     .listRowBackground(Theme.bg)
                 }
@@ -545,6 +549,7 @@ struct NowPlayingPanel: View {
                         Button { add(songs: [song]) } label: {
                             Label("Add to end", systemImage: "text.append")
                         }
+                        AddToPlaylistMenu(item: .song(song.id))
                     }
                     .listRowBackground(Theme.bg)
                 }
@@ -628,6 +633,7 @@ struct NowPlayingDeckCluster: View {
                         Button { if let item = currentItem { openDetail(item) } } label: {
                             Label("Song details", systemImage: "info.circle")
                         }
+                        if let item = currentItem { AddToPlaylistMenu(item: .song(item.id)) }
                         if let share = currentShareText {
                             ShareLink(item: share) { Label("Share", systemImage: "square.and.arrow.up") }
                         }

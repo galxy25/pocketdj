@@ -149,8 +149,12 @@ struct RootView: View {
         // profile + credentials arrive via iCloud sync instead).
         TVRootView()
             .task { await launchActions() }
+            .addToPlaylistHost()
         #else
         regularBody
+            // Every item context menu's "Add to Playlist › More…" presents from here (sheets
+            // and the expanded overlay inside carry their own host where they show item menus).
+            .addToPlaylistHost()
         #endif
     }
 
@@ -170,7 +174,7 @@ struct RootView: View {
         // The queue-builder sheet (req 2) — ONE owner for every entry point (the panel's
         // ＋, the idle sidebar row, the expanded overlay's ＋), so it presents at any
         // panel size and over the expanded overlay.
-        .sheet(isPresented: $builderPresented) { QueueBuilderView(builder: builder) }
+        .sheet(isPresented: $builderPresented) { QueueBuilderView(builder: builder).addToPlaylistHost() }
         // Req 6 — the persisted Bool is the truth; the visibility enum is seeded from it
         // and mirrored back (the enum is not RawRepresentable).
         .onAppear { columnVisibility = sidebarCollapsed ? .detailOnly : .all }
