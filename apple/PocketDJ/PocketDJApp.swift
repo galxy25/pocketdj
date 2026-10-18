@@ -610,6 +610,11 @@ struct PocketDJApp: App {
             guard let mix else { return false }
             return mix.isRunning || mix.autoMixing
         }
+        // P0-3: the launch task never materializes a parked mix behind a live set list (held or
+        // sounding) — read-only view of the sequencer + coordinator.
+        mix.setlistIsLive = { [weak setlistPlayer, weak coordinator] in
+            (setlistPlayer?.isRunning ?? false) || coordinator?.activeBackend != nil
+        }
         _mix = State(initialValue: mix)
         _mixSessions = State(initialValue: mixSessions)
         // Durable mix-deck session — the engine writes every structural deck / auto-queue change

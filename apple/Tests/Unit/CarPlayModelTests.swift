@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 @testable import PocketDJ
 
 /// CarPlayModel — the template-agnostic heart of the CarPlay app (browse lists → songs,
@@ -398,5 +399,69 @@ final class CarPlayModelTests: XCTestCase {
 
         model.toggleStemMute("vocals")
         XCTAssertFalse(model.isStemMuted("vocals"))
+    }
+
+    // MARK: Parked mix restore (playback-bulletproof P0-3)
+
+    /// Connecting to the car must NOT materialize a parked mix (it built the graph + activated a
+    /// non-mixable session under the set list's Apple Music player). The Mix tab renders from the
+    /// parked snapshot's summary, and the first Mix-tab gesture materializes it.
+    func testParkedMixRendersFromItsSummaryAndResumeMaterializesFirst() async throws {
+        let probe = MixEngine(burns: BurnStore(rips: RipsStore(ripsBase: URL(string: "https://rips.test")!,
+                                                               session: URLSession(configuration: .ephemeral)),
+                                               fileURL: FileManager.default.temporaryDirectory
+                                                   .appendingPathComponent("pdj-cp-probe-\(UUID().uuidString).json")))
+        probe.ensureEngine()
+        try XCTSkipUnless(probe.isReady, "no audio device on this test host")
+
+        let (model, services, _) = await makeModel()
+        let mix = services.mix
+        let storeURL = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-cp-mix-\(UUID().uuidString).json")
+        addTeardownBlock { try? FileManager.default.removeItem(at: storeURL) }
+        let store = MixDeckSessionStore(fileURL: storeURL)
+        mix.sessionStore = store
+        let wav = FileManager.default.temporaryDirectory.appendingPathComponent("pdj-cp-mix-\(UUID().uuidString).wav")
+        addTeardownBlock { try? FileManager.default.removeItem(at: wav) }
+        do {   // scoped: the AVAudioFile must close (finalize its header) before the deck reads it
+            let fmt = AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 2)!
+            let file = try AVAudioFile(forWriting: wav, settings: fmt.settings)
+            let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 88_200)!
+            buf.frameLength = 88_200
+            for ch in 0..<2 { for i in 0..<88_200 { buf.floatChannelData![ch][i] = sinf(Float(i) * 0.06) * 0.4 } }
+            try file.write(from: buf)
+        }
+        mix.studioResolve = { id in id.hasPrefix("smp_") ? (url: wav, release: nil, title: id, lengthMs: 2_000) : nil }
+        func t(_ id: String) -> MixDeckSessionStore.TrackRef {
+            .init(songId: id, title: "Title \(id)", artist: "Artist", bpm: 120, camelot: nil, key: nil,
+                  albumId: nil, lengthMs: 2_000)
+        }
+        let a = MixDeckSessionStore.DeckSnapshot(
+            track: t("smp_1"), positionMs: 500, volume: 1, rate: 1, pitch: 0,
+            compressor: false, reverb: false, flanger: false, filter: false,
+            compStrength: 0.5, reverbStrength: 0.5, flangerStrength: 0.5, filterStrength: 0.5,
+            stemMode: false, stemMuted: [], stemVol: [:])
+        store.save(.init(deckA: a, deckB: nil, crossfader: 0, leadDeck: "A",
+                         auto: .init(queue: [.init(track: t("smp_1"), durationMs: 2_000),
+                                             .init(track: t("smp_2"), durationMs: 2_000)],
+                                     livePos: 0, nextToLoad: 1, liveDeck: "A", sourceLabel: "Roadtrip",
+                                     leadSeconds: 12, fadeSeconds: 4, fxGlide: false, mixGlide: false),
+                         wasRunning: true, updatedAt: 0))
+        store.flush()
+        mix.restorePersistedMixIfIdle()
+
+        XCTAssertNil(mix.loaded(.a), "parked — the car connecting never materializes it")
+        XCTAssertTrue(model.autoMixRunning(), "the Mix tab shows the live (suspended) session rows")
+        XCTAssertTrue(model.autoMixPaused())
+        XCTAssertEqual(model.autoMixLabel(), "Roadtrip")
+        XCTAssertEqual(model.mixNowPlaying()?.title, "Title smp_1")
+
+        model.resumeMix()                          // "▶ Resume Mix" on the car's Mix tab
+
+        XCTAssertFalse(mix.hasParkedRestore, "the gesture materialized first")
+        XCTAssertEqual(mix.loaded(.a)?.songId, "smp_1")
+        XCTAssertTrue(mix.isRunning, "…then resumed")
+        XCTAssertFalse(mix.autoPaused)
+        mix.stopAutoMix()
+        mix.pause(.a)
     }
 }

@@ -6,6 +6,15 @@ changes sounds by flipping node bypass flags, never by reconnecting (see
 `mix-sessions-and-controls-spec.md` §1a). A slick SVG rendering of this diagram lives beside this
 file (`mix-audio-graph.svg`).
 
+**Build vs start (playback-bulletproof P0-3).** `ensureEngine(startNow:)` builds the graph below
+(attach, connect, `prepare()`, taps, observers, remote targets). `startNow: false` — used by a
+restore's `materializeNow` and by the Mix tab's `prepare()` warm-up — is INERT: no
+`AVAudioSession` category/activation and no `engine.start()`, so a parked mix never grabs a
+non-mixable session under an out-of-process Apple Music player. The first real transport goes
+through `startEngineIfNeeded(by:)`, which sets the `.playback` category on first use, activates the
+session and starts the engine (`[session] activate by=mix.start|mix.recover` in the diag log).
+Topology is identical either way.
+
 ```
                                 DECK A (identical for DECK B)
 ┌──────────────────────────────────────────────────────────────────────────────────┐

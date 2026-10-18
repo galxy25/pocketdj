@@ -299,19 +299,30 @@ final class CarPlayModel {
         }
     }
 
-    // Live mix state the template renders from.
-    func autoMixRunning() -> Bool { services.mix.autoMixing }
-    func autoMixPaused() -> Bool { services.mix.autoPaused }
-    func autoMixLabel() -> String? { services.mix.autoSourceLabel }
+    // Live mix state the template renders from. A durable mix session restored at launch stays
+    // PARKED (not materialized) while the car is connected — connecting must not build the graph,
+    // touch deck files or grab the audio session under a sounding set (P0-3) — so these fall back
+    // to the parked snapshot's summary, and the rows render exactly as a materialized-but-
+    // suspended mix would ("Paused", its title). The first Mix-tab GESTURE materializes it.
+    func autoMixRunning() -> Bool { services.mix.autoMixing || services.mix.parkedRestoreSummary?.hasAuto == true }
+    func autoMixPaused() -> Bool { services.mix.autoPaused || services.mix.parkedRestoreSummary != nil }
+    func autoMixLabel() -> String? { services.mix.autoSourceLabel ?? services.mix.parkedRestoreSummary?.autoLabel }
     func mixNowPlaying() -> (title: String, artist: String)? {
-        services.mix.onAirTrack.map { ($0.title, $0.artist) }
+        if let t = services.mix.onAirTrack { return (t.title, t.artist) }
+        guard let p = services.mix.parkedRestoreSummary, let title = p.title else { return nil }
+        return (title, p.artist ?? "")
+    }
+    /// A Mix-tab gesture on a parked restore: build it (inert — cued + suspended) before acting.
+    private func materializeForGesture() {
+        guard services.mix.hasParkedRestore else { return }
+        services.mix.materializePendingRestoreIfNeeded(trigger: "carRow")
     }
     /// STREAMING: the on-air track is waiting for downloaded audio (the live row says so).
     func mixBuffering() -> Bool { services.mix.onAirBuffering }
     func fxGlideOn() -> Bool { services.mix.fxGlideEnabled }
     func audioGlideOn() -> Bool { services.mix.mixGlideEnabled }
-    func setFXGlide(_ on: Bool) { services.mix.setFXGlide(on) }
-    func setAudioGlide(_ on: Bool) { services.mix.setMixGlide(on) }
+    func setFXGlide(_ on: Bool) { materializeForGesture(); services.mix.setFXGlide(on) }
+    func setAudioGlide(_ on: Bool) { materializeForGesture(); services.mix.setMixGlide(on) }
 
     // MARK: - Mix FX / tempo / pitch / stems (CarPlay parity with tvOS's `TVMixControlsRow`)
     //
@@ -334,6 +345,7 @@ final class CarPlayModel {
 
     func isEnabled(_ fx: MixEngine.Effect) -> Bool { services.mix.isEnabled(fx, on: mixLeadDeck) }
     func setEffect(_ fx: MixEngine.Effect, enabled: Bool) {
+        materializeForGesture()
         services.mix.setEffect(fx, enabled: enabled, on: mixLeadDeck)
     }
 
@@ -345,25 +357,27 @@ final class CarPlayModel {
 
     func mixSlots() -> [FXSlot] { services.mix.slots(mixLeadDeck) }
     func setMixSlot(_ i: Int, enabled: Bool) {
+        materializeForGesture()
         services.mix.setSlot(i, enabled: enabled, on: mixLeadDeck)
     }
 
     /// Tempo multiplier (1.0 = normal speed), stepped by 0.01 — same step TV's trio uses.
     func mixRate() -> Double { services.mix.rate(mixLeadDeck) }
-    func setMixRate(_ rate: Double) { services.mix.setRate(rate, on: mixLeadDeck) }
+    func setMixRate(_ rate: Double) { materializeForGesture(); services.mix.setRate(rate, on: mixLeadDeck) }
 
     /// Pitch shift in semitones, stepped by 1 — same step TV's trio uses.
     func mixPitch() -> Double { services.mix.pitch(mixLeadDeck) }
-    func setMixPitch(_ pitch: Double) { services.mix.setPitch(pitch, on: mixLeadDeck) }
+    func setMixPitch(_ pitch: Double) { materializeForGesture(); services.mix.setPitch(pitch, on: mixLeadDeck) }
 
     func stemModeOn() -> Bool { services.mix.stemModeOn(mixLeadDeck) }
-    func setStemMode(_ on: Bool) { services.mix.setStemMode(on, on: mixLeadDeck) }
+    func setStemMode(_ on: Bool) { materializeForGesture(); services.mix.setStemMode(on, on: mixLeadDeck) }
     /// A stem handover is waiting for its incoming voice (stems loading — the full mix plays on).
     func stemsLoading() -> Bool { services.mix.stemHandover(mixLeadDeck) != nil }
     func isStemMuted(_ name: String) -> Bool { services.mix.isStemMuted(name, on: mixLeadDeck) }
     /// Tapping a mute while stems mode is off turns stems mode on first — the exact one-tap
     /// behavior TV's row gives (`if !stemsOn { engine.setStemMode(true, on: deck) }`).
     func toggleStemMute(_ name: String) {
+        materializeForGesture()
         if !stemModeOn() { setStemMode(true) }
         services.mix.toggleStemMute(name, on: mixLeadDeck)
     }
@@ -404,8 +418,14 @@ final class CarPlayModel {
     /// Whole-mix transport — exclusively the lock-screen seam: `remotePause` is the ONE pause
     /// that silences both decks AND freezes the transition wall clock (in-app `pauseBoth` would
     /// END a running Auto-DJ), and `remoteSkip` un-suspends a paused machine before sweeping.
-    func pauseMix() { services.mix.remotePause() }
+    func pauseMix() {
+        DiagLog.shared.telemetry("car", "mix pause tapped (autoPaused=\(autoMixPaused() ? 1 : 0) parked=\(services.mix.hasParkedRestore ? 1 : 0))")
+        materializeForGesture()
+        services.mix.remotePause()
+    }
     func resumeMix() {
+        DiagLog.shared.telemetry("car", "mix resume tapped (autoPaused=\(autoMixPaused() ? 1 : 0) parked=\(services.mix.hasParkedRestore ? 1 : 0))")
+        materializeForGesture()
         let m = services.mix
         m.remotePlay()
         // The lock-screen ▶ deliberately never resumes an IN-APP (hand-mixing) pause — its play
@@ -416,17 +436,22 @@ final class CarPlayModel {
         if m.autoMixing, m.autoPaused { m.resumeAuto() }
     }
     /// FAST skip: the 5 s sweep (the lock-screen ⏭ precedent).
-    func skipMixFast() { services.mix.remoteSkip(fadeSeconds: 5) }
+    func skipMixFast() {
+        DiagLog.shared.telemetry("car", "mix skip-fast tapped (autoPaused=\(autoMixPaused() ? 1 : 0) parked=\(services.mix.hasParkedRestore ? 1 : 0))")
+        materializeForGesture()
+        services.mix.remoteSkip(fadeSeconds: 5)
+    }
     /// SLOW skip: the long blend (`skipFadeSeconds`, default 15 s — the lock-screen ⏮ mapping).
-    func skipMixSlow() { services.mix.remoteSkip(fadeSeconds: services.settings.skipFadeSeconds) }
+    func skipMixSlow() {
+        DiagLog.shared.telemetry("car", "mix skip-slow tapped (autoPaused=\(autoMixPaused() ? 1 : 0) parked=\(services.mix.hasParkedRestore ? 1 : 0))")
+        materializeForGesture()
+        services.mix.remoteSkip(fadeSeconds: services.settings.skipFadeSeconds)
+    }
     /// The slow skip's length, for the row's detail text.
     func slowSkipSeconds() -> Double { services.settings.skipFadeSeconds }
-    func stopMix() { services.mix.stopAutoMix() }
-
-    /// Surface-open hook: a durable mix session restored at launch stays PARKED until a Mix
-    /// surface materializes it (cued + suspended, never self-playing). The car is such a
-    /// surface — same contract as MixView's `.task`.
-    func materializeMixRestoreIfNeeded() { services.mix.materializePendingRestoreIfNeeded() }
+    /// Stop / New Mix on a parked restore materializes it first, so the result is exactly what it
+    /// was before the lazy materialize: the decks stay loaded (inert), the Auto-DJ ends.
+    func stopMix() { materializeForGesture(); services.mix.stopAutoMix() }
 
     // MARK: - Jukebox (session list → QR, the CarPlay share-to-join surface)
 

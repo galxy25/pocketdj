@@ -12,6 +12,19 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
     func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene,
                                   didConnect interfaceController: CPInterfaceController) {
+        let appState: String
+        switch UIApplication.shared.applicationState {
+        case .active: appState = "fg"
+        case .inactive: appState = "inactive"
+        case .background: appState = "bg"
+        @unknown default: appState = "?"
+        }
+        let services = IntentServices.shared
+        DiagLog.shared.telemetry("car", "connect sceneState=\(appState) "
+            + "held=\(services?.setlistPlayer.isHeldForResume == true ? 1 : 0) "
+            + "setlistRunning=\(services?.setlistPlayer.isRunning == true ? 1 : 0) "
+            + "mixParked=\(services?.mix.hasParkedRestore == true ? 1 : 0) "
+            + "mixSounded=\(services?.mix.hasSoundedThisProcess == true ? 1 : 0)")
         let controller = CarPlayController(interfaceController: interfaceController)
         self.controller = controller
         controller.start()
@@ -19,6 +32,7 @@ final class CarPlaySceneDelegate: UIResponder, CPTemplateApplicationSceneDelegat
 
     func templateApplicationScene(_ templateApplicationScene: CPTemplateApplicationScene,
                                   didDisconnectInterfaceController interfaceController: CPInterfaceController) {
+        DiagLog.shared.telemetry("car", "disconnect")
         controller = nil
     }
 }
@@ -114,9 +128,10 @@ final class CarPlayController {
         let tabBar = CPTabBarTemplate(templates: [playlists, pockets, forYou, mixTab])
         interfaceController.setRootTemplate(tabBar, animated: true, completion: nil)
         configureNowPlaying()
-        // A durable mix session restored at launch stays parked until a Mix surface shows up;
-        // the car connecting IS one showing up. Cued + suspended — never self-playing audio.
-        model.materializeMixRestoreIfNeeded()
+        // A durable mix session restored at launch stays PARKED through the connect: materializing
+        // here built the graph + activated a non-mixable session under the set list's Apple Music
+        // player (MusicKit `.interrupted` → "external PAUSE", 3/3 field instances). The Mix tab
+        // renders the parked snapshot's summary; its first gesture materializes (CarPlayModel).
         refreshMixTab()
         armMixObservation()
     }

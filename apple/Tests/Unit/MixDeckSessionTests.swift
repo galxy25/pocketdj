@@ -529,8 +529,12 @@ final class MixEngineSessionTests: XCTestCase {
         XCTAssertEqual(e.loaded(.a)?.songId, "smp_r1", "the loadable deck restores")
         XCTAssertNil(e.loaded(.b), "the vanished file's deck is simply empty — no crash, no error")
         XCTAssertFalse(e.isRunning)
-        // The post-materialize re-sync drops the unloadable deck from the file too.
-        await waitSnapshot(store, "re-synced snapshot dropped the dead deck") {
+        // A restore is not a write (playback-bulletproof P0-3): the file is untouched by the
+        // materialize itself — the unloadable deck falls out on the next REAL persist.
+        try await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(store.load()?.deckB?.track.songId, "sng_gone", "materialize wrote nothing")
+        e.setEffect(.reverb, enabled: true, on: .a)    // any structural change re-syncs the file
+        await waitSnapshot(store, "the next real persist dropped the dead deck") {
             $0.deckA != nil && $0.deckB == nil
         }
     }
