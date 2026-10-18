@@ -111,6 +111,55 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// skipped — the park heuristic read every such pause as another skip and advanced the
     /// set ("pausing skips to a random song", Levi 2026-08-20). Cleared on resume/tryPlay/stop.
     @ObservationIgnored private var pauseWasIntentional = false
+    /// Read-only view of `pauseWasIntentional` for the engine's interruption `.ended` verdict and
+    /// the supervisor (injected as closures — neither may ever WRITE the flag).
+    var pauseIsIntentional: Bool { pauseWasIntentional }
+    #if DEBUG
+    func setPauseWasIntentionalForTests(_ on: Bool) { pauseWasIntentional = on }
+    #endif
+
+    /// Fired ONCE per `tryPlay` when MusicKit first REPORTS `.playing` (audio really started) —
+    /// the sequencer closes its start window (background runway) on it.
+    @ObservationIgnored var onFirstAudio: (() -> Void)?
+    /// True while OUR audio session has an open interruption (a call / Siri) — injected from
+    /// `PlayerEngine`. The bounded `.interrupted` auto-resume never fires inside one.
+    @ObservationIgnored var sessionInterruptionOpen: (() -> Bool)?
+    /// P1-8 — the bounded auto-resume for a stream interrupted by a session fight (see the gate).
+    @ObservationIgnored var interruptedResume = InterruptedResumeGate()
+
+    /// P1-8 — MusicKit went `.interrupted` (distinct from `.paused`, which is a user/system pause)
+    /// without a listener pause: usually OUR OWN session activation (a materialized Mix, a
+    /// re-armed `.playback` session) knocked it off the air and nothing resumed it. This gate
+    /// arms a ONE-SHOT resume ladder — first at `delays[0]` s, then `delays[1]` s — that fires only
+    /// while the status is STILL `.interrupted`, no listener pause arrived, and our session has no
+    /// open interruption (a phone call). Bounded per episode AND per track (`maxPerTrack`) so a
+    /// session fight can never ping-pong forever. Pure + clock-injected → unit-testable.
+    struct InterruptedResumeGate: Equatable {
+        static var delays: [Double] = [2, 6]
+        static var maxPerTrack = 4
+        private(set) var interruptedSince: Date?
+        private(set) var attemptsThisEpisode = 0
+        private(set) var attemptsThisTrack = 0
+
+        /// Feed one monitor poll; returns true when `play()` should be called NOW.
+        mutating func observe(interrupted: Bool, intentionalPause: Bool, sessionInterrupted: Bool,
+                              now: Date) -> Bool {
+            guard interrupted, !intentionalPause else {
+                interruptedSince = nil; attemptsThisEpisode = 0
+                return false
+            }
+            if interruptedSince == nil { interruptedSince = now; attemptsThisEpisode = 0 }
+            guard !sessionInterrupted else { return false }       // a call is in progress — wait it out
+            guard attemptsThisEpisode < Self.delays.count, attemptsThisTrack < Self.maxPerTrack else { return false }
+            guard now.timeIntervalSince(interruptedSince!) >= Self.delays[attemptsThisEpisode] else { return false }
+            attemptsThisEpisode += 1
+            attemptsThisTrack += 1
+            return true
+        }
+
+        /// A new track (tryPlay) / stop: forget everything.
+        mutating func resetForTrack() { self = InterruptedResumeGate() }
+    }
 
     /// The polling task that watches `ApplicationMusicPlayer` for end-of-track. Cancelled on
     /// stop / superseded on each new `tryPlay`.
@@ -355,6 +404,7 @@ extension AppleMusicPlaybackProvider {
         interruptedAtSeconds = nil
         resumeRequestedAt = nil
         audioConfirmed = false
+        interruptedResume.resetForTrack()
         // 1) Resolve the song to a catalog track (namespaced `am:<id>` → direct fetch,
         //    else a title/artist search). A miss → false → the engine falls back to rips.
         guard let track = await provider.resolve(song) else { return false }
@@ -488,6 +538,7 @@ extension AppleMusicPlaybackProvider {
         interruptedAtSeconds = nil
         resumeRequestedAt = nil
         audioConfirmed = false
+        interruptedResume.resetForTrack()
         currentQueueItem = nil
         ApplicationMusicPlayer.shared.stop()
         isPlaying = false
@@ -517,13 +568,31 @@ extension AppleMusicPlaybackProvider {
             var everPlayed = false
             let armedAt = Date()
             var polls = 0
+            var lastStatus: MusicPlayer.PlaybackStatus?
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 400_000_000)
                 guard let self, !Task.isCancelled else { return }
                 let status = player.state.playbackStatus
                 let t = player.playbackTime
                 let reportedPlaying = status == .playing
-                if reportedPlaying { everPlayed = true; self.audioConfirmed = true }
+                // Every STATUS TRANSITION (not only the 25-poll heartbeat): the drive logs could
+                // not tell a user pause from a session interruption from a stall.
+                if status != lastStatus {
+                    DiagLog.shared.log("playback", "am status \(status) t=\(Int(t)) intentional=\(self.pauseWasIntentional ? 1 : 0) song=\(self.nowPlaying?.songId ?? "?")")
+                    lastStatus = status
+                }
+                if reportedPlaying {
+                    everPlayed = true
+                    if !self.audioConfirmed { self.audioConfirmed = true; self.onFirstAudio?() }
+                }
+                // P1-8: interrupted (by a session fight), not paused — bounded auto-resume.
+                if self.interruptedResume.observe(interrupted: status == .interrupted,
+                                                  intentionalPause: self.pauseWasIntentional,
+                                                  sessionInterrupted: self.sessionInterruptionOpen?() ?? false,
+                                                  now: Date()) {
+                    DiagLog.shared.log("playback", "am interrupted-by-session t=\(Int(t)) → auto-resume attempt=\(self.interruptedResume.attemptsThisEpisode) song=\(self.nowPlaying?.songId ?? "?")")
+                    Task { try? await player.play() }
+                }
                 // OUR clock, read BEFORE the reconciliation below re-anchors it to MusicKit's
                 // (reset-on-stop) `playbackTime` — the interruption verdict needs the real one.
                 let wallPlayed = self.positionSeconds

@@ -28,6 +28,14 @@ enum NPLog {
     static func trace(_ message: @autoclosure () -> String) {
         let line = "[\(processTag)] \(message())"
         log.info("\(line, privacy: .public)")
-        Task { @MainActor in mirror?("np \(line)") }
+        // Mirror SYNCHRONOUSLY when already on the main thread, so a `[np]` line lands in the
+        // capture buffer in the same order as same-turn `DiagLog` lines (which are synchronous).
+        // The async hop used to push every `[np]` line after them — the "mix resume before
+        // materialized" ordering artifact. Off-main callers keep the hop.
+        if Thread.isMainThread {
+            MainActor.assumeIsolated { mirror?("np \(line)") }
+        } else {
+            Task { @MainActor in mirror?("np \(line)") }
+        }
     }
 }

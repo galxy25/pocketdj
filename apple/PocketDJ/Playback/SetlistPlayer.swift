@@ -1,5 +1,9 @@
 import Foundation
 import Observation
+import AVFoundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Feature 3 — Setlist PLAY ALL. A thin sequencer that plays a setlist's tracks IN ORDER,
 /// one at a time, auto-advancing when each finishes. For each track it chooses the SOURCE:
@@ -332,7 +336,172 @@ final class SetlistPlayer {
         // one the server queues for this session is tracked so it can be cancelled later.
         rips.playbackRipGate = { [weak self] id in self?.playbackRipAllowed(id) ?? true }
         rips.onPlaybackRipQueued = { [weak self] id in self?.notePlaybackRipQueued(id) }
+        // P0-1 — a ▶ that reaches the IDLE engine (remote command, interruption `.ended`, widget,
+        // intent) is routed through the SAME ladder the in-app panel uses
+        // (`NowPlayingPanel.togglePlayPause`). Wired HERE, not in `armEngineHooks`, because it
+        // must be live while the deck is HELD (a restore arms no hooks): the head unit's
+        // play-on-connect used to hit `engine.play REFUSED (idle)` and nothing else.
+        // Apple Music is left alone (macOS idles the engine while MusicKit owns the audio — a
+        // restart there would replay the row from 0:00), and a start already in flight is not
+        // restarted (the resolve / start watchdog own it).
+        player.onIdlePlay = { [weak self] in
+            guard let self, self.isRunning else { return nil }
+            if self.isHeldForResume { self.resumeFromHold(); return "resumeHeld" }
+            if self.coordinator.activeBackend == .appleMusic { return nil }
+            if self.isStartPending { return "startInFlight" }
+            if self.pausedByCascade || !self.player.hasLoadedItem {
+                return self.startCurrent() ? "startCurrent" : nil
+            }
+            return nil
+        }
+        // P1-7 — the start window (runway + start watchdog) closes on the FIRST real audio of
+        // either lane: the AVPlayer rendering, or MusicKit reporting `.playing`.
+        player.onFirstAudio = { [weak self] in self?.handleFirstAudio(source: "player") }
+        coordinator.appleMusic.onFirstAudio = { [weak self] in self?.handleFirstAudio(source: "appleMusic") }
+        // P0-4 — the engine's interruption `.ended` reads (never writes) the provider's
+        // "the listener paused this stream" flag; the provider's `.interrupted` auto-resume
+        // stands down while our session has an open interruption (a call).
+        player.appleMusicPauseWasIntentional = { [weak coordinator] in coordinator?.appleMusic.pauseIsIntentional ?? false }
+        coordinator.appleMusic.sessionInterruptionOpen = { [weak player] in player?.interruptionOpen ?? false }
     }
+
+    // MARK: Start window — runway until first audio + the start watchdog (plan P1-7)
+
+    /// Background runway cap for one track start (inside the ~30 s background budget).
+    static var startRunwayCapSeconds: Double = 25
+    /// Start watchdog: re-kick a local-lane start still not playing after this long…
+    static var startStallRekickSeconds: Double = 8
+    /// …and escalate (hop to an on-device row, else advance through the cascade breaker) here.
+    static var startStallEscalateSeconds: Double = 20
+    /// A remote ▶ refused before the restore ran is honoured by a restore this soon after it.
+    static var pendingRemotePlayMaxAge: TimeInterval = 15
+
+    @ObservationIgnored private var startWindow: (gen: Int, songId: String, runway: PlaybackRunway)?
+    @ObservationIgnored private var startWindowCapTask: Task<Void, Never>?
+    @ObservationIgnored private var startStallTask: Task<Void, Never>?
+    /// A track start is in flight (from `playCurrent` until first audio / the cap / stop).
+    var isStartPending: Bool { startWindow != nil }
+
+    /// Open the start window for generation `gen`: a background runway held until the track
+    /// actually renders (BOTH lanes — the local-file branch used to have none, so a locked
+    /// phone with nothing rendering was suspended mid-start: "Fever" 17:07:29), capped.
+    private func beginStartWindow(_ it: Item, gen: Int) {
+        endStartWindow(reason: "superseded")
+        let runway = PlaybackRunway("pocketdj-start-\(it.id)")
+        startWindow = (gen, it.id, runway)
+        let cap = Self.startRunwayCapSeconds
+        startWindowCapTask = Task { [weak self, runway] in
+            // Short sleeps so a deallocated sequencer releases its runway promptly.
+            let deadline = Date().addingTimeInterval(cap)
+            while Date() < deadline {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                if Task.isCancelled { return }
+                if self == nil { runway.end(reason: "owner-gone"); return }
+            }
+            guard let self else { runway.end(reason: "owner-gone"); return }
+            if self.startWindow?.gen == gen { self.endStartWindow(reason: "cap") }
+        }
+    }
+
+    private func endStartWindow(reason: String) {
+        guard let w = startWindow else { return }
+        startWindow = nil
+        startWindowCapTask?.cancel(); startWindowCapTask = nil
+        w.runway.end(reason: reason)
+    }
+
+    private func handleFirstAudio(source: String) {
+        startStallTask?.cancel(); startStallTask = nil
+        endStartWindow(reason: "firstAudio.\(source)")
+    }
+
+    #if DEBUG
+    /// Tests: is this sequencer's start runway held right now?
+    var startRunwayHeldForTesting: Bool { startWindow != nil }
+    var startStallArmedForTesting: Bool { startStallTask != nil }
+    #endif
+
+    private func logTrackStart(_ it: Item, backend: String, resumeAtMs: Int?) {
+        DiagLog.shared.log("playback", "track start song=\(it.id) index=\(index)/\(queue.count) backend=\(backend) resumeAtMs=\(resumeAtMs ?? 0)")
+    }
+
+    /// Arm the START WATCHDOG after a local-lane load (burned / studio / profile / stem cut /
+    /// presigned / HLS): at `startStallRekickSeconds` with no audio (and no listener pause) log
+    /// `start-stall` and re-kick in place; at `startStallEscalateSeconds` escalate through the
+    /// resolve-stall hop, else `advanceToNext(.auto)` — counted by the cascade breaker, so a
+    /// dead zone still halts after a few quick advances instead of skipping the whole set.
+    /// Cancelled by first audio, a skip (new generation), a pause, and stop.
+    private func armStartStall(gen: Int, songId: String) {
+        startStallTask?.cancel()
+        let rekickAt = Self.startStallRekickSeconds
+        let escalateAt = max(rekickAt, Self.startStallEscalateSeconds)
+        startStallTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(max(0.01, rekickAt) * 1_000_000_000))
+            guard !Task.isCancelled, let self, self.startStallStillOwed(gen) else { return }
+            self.logStartStall(songId, waited: rekickAt)
+            self.player.rekick(by: "player.startStall")
+            try? await Task.sleep(nanoseconds: UInt64(max(0.01, escalateAt - rekickAt) * 1_000_000_000))
+            guard !Task.isCancelled, self.startStallStillOwed(gen) else { return }
+            self.logStartStall(songId, waited: escalateAt)
+            self.startStallTask = nil
+            self.escalateStalledStart(reason: "start-stall \(Int(escalateAt))s")
+        }
+    }
+
+    private func startStallStillOwed(_ gen: Int) -> Bool {
+        isRunning && playGeneration == gen && !isHeldForResume && !pausedByCascade && !mixEngaged
+            && coordinator.activeBackend != .appleMusic
+            && player.hasLoadedItem && player.timeControlStatus != .playing
+            && !player.pausedByListener && !player.interruptionOpen && !player.trackEndAlreadySignaled
+    }
+
+    private func logStartStall(_ songId: String, waited: Double) {
+        let status: String
+        switch player.timeControlStatus {
+        case .paused: status = "paused"
+        case .waitingToPlayAtSpecifiedRate: status = "waiting"
+        case .playing: status = "playing"
+        @unknown default: status = "?"
+        }
+        #if canImport(UIKit) && !os(macOS)
+        let appState: String = {
+            switch UIApplication.shared.applicationState {
+            case .active: return "fg"
+            case .inactive: return "inactive"
+            case .background: return "bg"
+            @unknown default: return "?"
+            }
+        }()
+        #else
+        let appState = "fg"
+        #endif
+        DiagLog.shared.log("playback", "start-stall song=\(songId) waited=\(Int(waited)) status=\(status) "
+                           + "reason=\(player.reasonForWaitingToPlay) itemStatus=\(player.itemStatusDescription) "
+                           + "err=\(player.itemErrorDescription) appState=\(appState) runway=\(startWindow != nil ? 1 : 0)")
+    }
+
+    /// The current row could not get to audio: hop to the next ON-DEVICE row (deferring this
+    /// one right behind it), else advance — through the cascade breaker (`.auto`).
+    func escalateStalledStart(reason: String) {
+        guard isRunning, index < queue.count, !isHeldForResume, !pausedByCascade else { return }
+        if hopToOnDeviceRow(reason: reason) { return }
+        DiagLog.shared.log("playback", "advance: \(reason) song=\(queue[index].id) — no on-device row to hop to")
+        advanceToNext(.auto)
+    }
+
+    // MARK: Supervisor hooks (§3 — the supervisor only ever calls these while intent == playing)
+
+    /// L2: re-resolve + restart the CURRENT row at its current position (a fresh presign /
+    /// another provider). NOT a user transport — the cascade breaker is not reset.
+    func supervisorRetryInPlace() {
+        guard isRunning, index < queue.count, !isHeldForResume, !pausedByCascade else { return }
+        let at = sessionPositionMs()
+        DiagLog.shared.log("supervisor", "retry in place song=\(queue[index].id) atMs=\(at)")
+        startPlayCurrent(fresh: false, resumeAtMs: at > 1000 ? at : nil)
+    }
+
+    /// L3: hop / advance through the cascade breaker.
+    func supervisorEscalate() { escalateStalledStart(reason: "supervisor L3") }
 
     /// Observe the play/pause state of BOTH backends; on any flip, write the session
     /// position immediately (the store passes transitions through un-throttled). Armed once
@@ -375,6 +544,7 @@ final class SetlistPlayer {
         // heard) are cancelled — a fresh run has its own window.
         if isRunning { endRipWindowSession(reason: "new-session") }
         noteUserTransport()
+        _ = player.consumePendingRemotePlay(maxAge: 0)   // a fresh play answers any latched ▶
         self.sourceSetlistId = sourceSetlistId
         // Snapshot THIS run's history origin now (before any later playNow can mutate the shared
         // now-playing source), so every play in this run is attributed to the right set.
@@ -556,6 +726,9 @@ final class SetlistPlayer {
         player.onNext = { [weak self] in self?.skipNext() }
         player.onPrevious = { [weak self] in self?.skipPrevious() }
         player.setNextPreviousEnabled(true)
+        // P0-6: keep the card/remote ownership across the gap between two tracks while the set
+        // runs (cleared in stop()).
+        player.holdsOwnershipAcrossTracks = true
         // Lock-screen / Control Center / CarPlay repeat + shuffle (the system Now Playing card's
         // changeRepeatMode / changeShuffleMode commands) drive the SET's modes while it runs. Only
         // enabled while a set is running, so a single-song play shows no repeat/shuffle glyphs.
@@ -585,6 +758,13 @@ final class SetlistPlayer {
         endMixEngagement()                 // F4: drop any DSP hand-off before tearing the run down
         isRunning = false
         waitingForLive = false
+        startStallTask?.cancel(); startStallTask = nil
+        endStartWindow(reason: "stop")
+        // P0-6: release the across-tracks hold FIRST so `player.stop()` below resigns the card;
+        // P0-2: and a held set that resigned is no longer the preferred remote target.
+        player.holdsOwnershipAcrossTracks = false
+        if NowPlayingArbiter.shared.preferred === player { NowPlayingArbiter.shared.prefer(nil) }
+        player.noteListenerIntent(false)
         player.onTrackEnded = nil          // release ownership of the shared hook
         player.onTrackFailed = nil
         resolveStallTask?.cancel(); resolveStallTask = nil
@@ -1573,19 +1753,28 @@ final class SetlistPlayer {
             guard !Task.isCancelled, let self, self.isRunning,
                   self.resolvingGeneration == gen, self.playGeneration == gen,
                   self.index < self.queue.count else { return }
-            let stalled = self.queue[self.index]
-            let end = min(self.queue.count, self.index + 1 + Self.hopLookahead)
-            guard self.index + 1 < end,
-                  let j = ((self.index + 1)..<end).first(where: { self.rowOnDevice(self.queue[$0]) }) else {
-                DiagLog.shared.log("playback", "resolve stalled \(Int(wait))s song=\(stalled.id) — no on-device row to hop to; waiting")
-                return
+            if !self.hopToOnDeviceRow(reason: "resolve stalled \(Int(wait))s") {
+                DiagLog.shared.log("playback", "resolve stalled \(Int(wait))s song=\(self.queue[self.index].id) — no on-device row to hop to; waiting")
             }
-            let row = self.queue.remove(at: j)
-            self.queue.insert(row, at: self.index)
-            DiagLog.shared.log("playback", "resolve stalled \(Int(wait))s song=\(stalled.id) → hop to on-device \(row.id) (deferred stalled row)")
-            self.persistSession(positionMs: 0)
-            self.startPlayCurrent(fresh: true)
         }
+    }
+
+    /// Play the next ON-DEVICE row now and DEFER the current (stalled) row right behind it —
+    /// reordered, never dropped. Shared by the resolve stall, the start watchdog, and the
+    /// supervisor's L3. Returns false when no on-device row is within `hopLookahead`.
+    @discardableResult
+    private func hopToOnDeviceRow(reason: String) -> Bool {
+        guard index < queue.count else { return false }
+        let stalled = queue[index]
+        let end = min(queue.count, index + 1 + Self.hopLookahead)
+        guard index + 1 < end,
+              let j = ((index + 1)..<end).first(where: { rowOnDevice(queue[$0]) }) else { return false }
+        let row = queue.remove(at: j)
+        queue.insert(row, at: index)
+        DiagLog.shared.log("playback", "\(reason) song=\(stalled.id) → hop to on-device \(row.id) (deferred stalled row)")
+        persistSession(positionMs: 0)
+        startPlayCurrent(fresh: true)
+        return true
     }
 
     /// A LIVE capture (stream-through-rip) has no length boundary and ends only on the server's
@@ -1660,8 +1849,17 @@ final class SetlistPlayer {
         let it = queue[index]
         resolveStallTask?.cancel(); resolveStallTask = nil
         liveBackstopTask?.cancel(); liveBackstopTask = nil
+        startStallTask?.cancel(); startStallTask = nil   // the previous start's watchdog is moot
+        endStartWindow(reason: "superseded")              // …and so is its runway
         resolvingGeneration = nil
         prefetchUpcoming()   // the NEXT songs' URLs resolve while this one plays
+        // P1-7: every branch that actually STARTS audio opens a start window (runway until first
+        // audio) just before it loads; local-lane loads also arm the start watchdog right after.
+        // (An unplayable row skips without one — a device-mode skip storm must not churn runways.)
+        func startedLocal(_ backend: String) {
+            logTrackStart(it, backend: backend, resumeAtMs: resumeAtMs)
+            armStartStall(gen: playGen, songId: it.id)
+        }
 
         // STUDIO rows (sample/loop/pattern — spec §8): resolved via the StudioStore seam
         // BEFORE burns/coordinator, and ABOVE the device/cloud split — a studio item is a
@@ -1678,10 +1876,12 @@ final class SetlistPlayer {
             // made of loops never raises the "no burned files" banner (CRITIC-D).
             loadedAnyDeviceTrack = true
             coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
+            beginStartWindow(it, gen: playGen)
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: nil, rips: rips, player: player,
                           endBoundaryMs: nil, atMs: resumeAtMs, release: res.release)
             applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
+            startedLocal("studio")
             return
         }
 
@@ -1696,10 +1896,12 @@ final class SetlistPlayer {
             }
             loadedAnyDeviceTrack = true
             coordinator.stopAppleMusicIfActive()
+            beginStartWindow(it, gen: playGen)
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: nil, rips: rips, player: player,
                           endBoundaryMs: nil, atMs: resumeAtMs, release: res.release)
             applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
+            startedLocal("profile")
             return
         }
 
@@ -1729,11 +1931,13 @@ final class SetlistPlayer {
                 // consistent with the single-row burned path. `res.release` keeps a user-folder
                 // file's security scope open through playback.
                 let start = burns.startMs(forSong: res.id)
+                beginStartWindow(it, gen: playGen)
                 playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                               startMs: start, rips: rips, player: player,
                               endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: start),
                               atMs: resumeAtMs, release: res.release)
                 applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
+                startedLocal("burned")
                 // Finite local file → the end notification (or length boundary) advances us.
             } else {
                 // Nothing on device for this edition. Device mode can't stream, so the row is
@@ -1753,20 +1957,24 @@ final class SetlistPlayer {
             coordinator.stopAppleMusicIfActive()   // advancing off a stream → silence it
             if !res.isWanted { lazyRipWantedEdition(it) }
             let start = burns.startMs(forSong: res.id)
+            beginStartWindow(it, gen: playGen)
             playLocalFile(res.url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: start, rips: rips, player: player,
                           endBoundaryMs: sharedFileEndBoundaryMs(it, startMs: start),
                           atMs: resumeAtMs, release: res.release)
             applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
+            startedLocal("burned")
         } else if stemLock.wantsStems, let url = stemLockStreamedFile?(it.resolveId) {
             // STEM LOCK: the prefetch finished this song as a per-song CUT stream (an analog cut
             // isn't adopted into the burn ledger) — play that local file, so the carried stems
             // can take it over, instead of streaming the same bytes again.
             coordinator.stopAppleMusicIfActive()
+            beginStartWindow(it, gen: playGen)
             playLocalFile(url, songId: it.id, title: it.title, artist: it.artist,
                           startMs: nil, rips: rips, player: player,
                           endBoundaryMs: nil, atMs: resumeAtMs)
             applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)
+            startedLocal("stemcut")
         } else {
             // SILENCE THE OUTGOING TRACK FIRST. Resolving a cloud row is an async round-trip
             // (an Apple Music lookup, or a rip that may still be queued), and until it lands
@@ -1792,14 +2000,14 @@ final class SetlistPlayer {
             // boundaries for, nor hand the card to, a track the listener already skipped past
             // (the stems-toggle generation discipline: commit only at your own generation).
             // ZERO DEAD AIR in the gap: hold a background runway (a locked phone / CarPlay is
-            // otherwise suspended here — nothing renders audio) and arm the stall hop.
-            let runway = PlaybackRunway("pocketdj-resolve-\(it.id)")
+            // otherwise suspended here — nothing renders audio) and arm the stall hop. The runway
+            // is the START WINDOW's: held across the resolve AND until first audio (P1-7).
+            beginStartWindow(it, gen: playGen)
             resolvingGeneration = playGen
             armResolveStall(gen: playGen)
             let t0 = Date()
             await coordinator.play(id: it.id, title: it.title, artist: it.artist,
                                    atMs: resumeAtMs, variant: it.variant)
-            runway.end()
             if resolvingGeneration == playGen { resolvingGeneration = nil }
             if playGen == playGeneration { resolveStallTask?.cancel(); resolveStallTask = nil }
             let ms = Int(Date().timeIntervalSince(t0) * 1000)
@@ -1823,9 +2031,14 @@ final class SetlistPlayer {
             if coordinator.activeBackend == .appleMusic {
                 handOffCardToAppleMusic(for: it)
                 applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)   // (unavailable: not a local file)
+                // The start window stays open until MusicKit REPORTS playing (`onFirstAudio`) or
+                // its cap; the provider's never-started verdict owns a dead AM start.
+                if coordinator.appleMusic.audioConfirmed { endStartWindow(reason: "firstAudio.appleMusic") }
+                logTrackStart(it, backend: "appleMusic", resumeAtMs: resumeAtMs)
                 return
             }
             applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)       // a stream: full mix, lock kept
+            startedLocal(player.isLive ? "hls" : "presigned")
             // A live HLS capture has no natural end → don't rely on the hook; offer "Next".
             if player.isLive {
                 waitingForLive = true
@@ -1939,6 +2152,16 @@ final class SetlistPlayer {
         // The mtime therefore now means "last actually played here", which is exactly the
         // liveness ordering the sync needs — no extra timestamp field required.
         NPLog.trace("setlist RESTORE held session=\(sessionId) index=\(index)/\(queue.count) resumeMs=\(pendingResumeMs ?? 0)")
+        // P0-2: while nobody owns the card, the HELD set is the remote target — a parked Mix
+        // snapshot must not answer the head unit's ▶ (the card itself stays untouched: the
+        // engine's card writes are still idle-guarded).
+        NowPlayingArbiter.shared.prefer(player)
+        // P0-1: the head unit's play-on-connect often lands BEFORE this restore ran (refused and
+        // latched by the idle engine) — honour it now, once, if it is recent.
+        if let t = player.consumePendingRemotePlay(maxAge: Self.pendingRemotePlayMaxAge) {
+            DiagLog.shared.telemetry("action", "remote play (pre-restore, \(Int(-t.timeIntervalSinceNow))s ago) → resume held session")
+            resumeFromHold()
+        }
     }
 
     /// The first ▶ after a restore: arm the engine hooks, then start REAL playback of the
@@ -2304,9 +2527,12 @@ extension SetlistPlayer {
         playGeneration &+= 1                  // a resolve still in flight must not start audio now
         resolveStallTask?.cancel(); resolveStallTask = nil
         liveBackstopTask?.cancel(); liveBackstopTask = nil
+        startStallTask?.cancel(); startStallTask = nil
+        endStartWindow(reason: "cascade-halt")
         waitingForLive = false
         if coordinator.activeBackend == .appleMusic { coordinator.appleMusic.pausePlayback() }
         player.pause()
+        player.noteListenerIntent(false)      // halted: nothing may "keep playing" it until ▶
         pausedByCascade = true
         playbackNotice = coordinator.appleMusic.isReady ? Self.appleMusicInterruptedNotice
                                                          : Self.cascadeGenericNotice

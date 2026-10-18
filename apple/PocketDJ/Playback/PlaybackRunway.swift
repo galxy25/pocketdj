@@ -16,26 +16,33 @@ final class PlaybackRunway {
     /// Runways currently held (test seam + diagnostics).
     private(set) static var activeCount = 0
     private var ended = false
+    let name: String
+    let began = Date()
     #if canImport(UIKit) && !os(macOS)
     private var id: UIBackgroundTaskIdentifier = .invalid
     #endif
 
     init(_ name: String) {
+        self.name = name
         Self.activeCount += 1
+        DiagLog.shared.log("runway", "begin name=\(name)")
         #if canImport(UIKit) && !os(macOS)
         id = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
             MainActor.assumeIsolated {
                 NPLog.trace("runway EXPIRED (\(name))")
-                self?.end()
+                self?.end(reason: "EXPIRED")
             }
         }
         #endif
     }
 
-    func end() {
+    /// End the runway (idempotent). `reason` rides the `[runway] end` telemetry row.
+    func end(reason: String = "done") {
         guard !ended else { return }
         ended = true
         Self.activeCount -= 1
+        DiagLog.shared.log("runway", "\(reason == "EXPIRED" ? "EXPIRED" : "end") name=\(name) "
+                           + "held=\(String(format: "%.1f", Date().timeIntervalSince(began)))s reason=\(reason)")
         #if canImport(UIKit) && !os(macOS)
         if id != .invalid { UIApplication.shared.endBackgroundTask(id); id = .invalid }
         #endif
