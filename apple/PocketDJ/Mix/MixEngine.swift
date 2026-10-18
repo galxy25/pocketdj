@@ -889,7 +889,36 @@ final class MixEngine {
     /// pause-flips-the-card bug the sticky memory exists to prevent.
     @ObservationIgnored private var suppressStickyUpdates = false
 
-    init(burns: BurnStore) { self.burns = burns }
+    init(burns: BurnStore) {
+        self.burns = burns
+        // P0-4: when another engine takes the card, drop every latch that would let THIS engine
+        // steal it back later (an interruption `.ended`, a stale lock-screen pause memory, a
+        // remote-restore Auto-DJ intent) and stop a silent graph from holding a non-mixable session
+        // under the new owner (the AM ping-pong: MusicKit `.interrupted` by our idle engine).
+        NowPlayingArbiter.shared.onOwnerChanged.append { [weak self] new, old in
+            guard let self, new !== self else { return }
+            self.arbiterDisplaced(by: new, old: old)
+        }
+    }
+
+    /// Another engine claimed the Now Playing card (see the arbiter subscription in `init`).
+    private func arbiterDisplaced(by new: AnyObject, old: AnyObject?) {
+        var cleared: [String] = []
+        #if os(iOS)
+        if interruptionParked { interruptionParked = false; cleared.append("interruptionParked") }
+        #endif
+        if !masterPausedDecks.isEmpty { masterPausedDecks = []; cleared.append("masterPausedDecks") }
+        if resumeAutoOnRemotePlay { resumeAutoOnRemotePlay = false; cleared.append("resumeAutoOnRemotePlay") }
+        var paused = false
+        if built, engine.isRunning, !mixWantsAudio, !isRecording {   // an open take keeps its tap alive
+            engine.pause()                   // a silent graph must not hold the session; the next
+            paused = true                    // real play restarts it via startEngineIfNeeded
+        }
+        guard !cleared.isEmpty || paused || old === self else { return }
+        NPLog.trace("arbiter displaced MixEngine → \(NowPlayingArbiter.name(new)) cleared=[\(cleared.joined(separator: ","))] enginePaused=\(paused ? 1 : 0)")
+        DiagLog.shared.log("mix", "arbiter displaced MixEngine → \(NowPlayingArbiter.name(new)) "
+            + "cleared=[\(cleared.joined(separator: ","))] enginePaused=\(paused ? 1 : 0)")
+    }
 
     // MARK: - Session recording
 
@@ -933,6 +962,8 @@ final class MixEngine {
 
     /// A fresh load cycle on `deck`: its next play is a new play, its next end a new end.
     private func resetLoadCycle(_ deck: Deck) {
+        deckExhaustedFromRestore.remove(deck)   // a fresh load is never the restore's finished track
+        trustedPositionMs[deck] = nil           // a new track's playhead starts trusted from its cue
         playNotedThisLoad.remove(deck)
         endReportedThisLoad.remove(deck)
         positionHighWater[deck] = nil
@@ -957,6 +988,38 @@ final class MixEngine {
     /// re-entry, and system Now Playing card writes (the one-audio-owner rule — a restore
     /// claims no card; the card belongs to whoever is actually sounding, and nobody is).
     @ObservationIgnored private var isRestoringMixSession = false
+    /// A real transport gesture (deck ▶, master ▶, Auto-DJ start/resume) has started Mix audio in
+    /// THIS process. A restored-but-never-played mix must never answer the shared lock-screen /
+    /// steering-wheel commands: one head-unit ▶ used to fan out to both engines and wake the parked
+    /// Mix as a silent end-of-file owner (playback-bulletproof plan P0-2). Set only outside a
+    /// restore; never cleared (the process lifetime is the scope).
+    @ObservationIgnored private(set) var hasSoundedThisProcess = false
+    /// Decks a restore found parked at end-of-file and re-cued to 0:00. The lock-screen ▶ fallback
+    /// and `resumeAuto` skip such a deck (P0-5) — resuming it would replay the finished song (or,
+    /// before the re-cue, run "playing" over silence at 358/358). Cleared by the deck's next load
+    /// or explicit in-app play.
+    @ObservationIgnored private var deckExhaustedFromRestore: Set<Deck> = []
+    /// Whether a set list is live (held or sounding) — injected at app composition
+    /// (`SetlistPlayer.isRunning || coordinator.activeBackend != nil`). While it is, the launch
+    /// task never materializes a parked mix behind it; the next Mix-surface gesture does. nil ⇒ false.
+    @ObservationIgnored var setlistIsLive: (() -> Bool)?
+    /// Test seams (P0-3 / P0-5): every audio-session activation this engine attempted, and every
+    /// `engine.start()` attempt from the transport/recovery funnel.
+    @ObservationIgnored private(set) var audioSessionActivationsForTesting = 0
+    @ObservationIgnored private(set) var engineStartAttemptsForTesting = 0
+    /// The `.playback` category has been set by this engine at least once (an inert materialize
+    /// defers it to the first real start — see `startEngineIfNeeded`).
+    @ObservationIgnored private var sessionCategoryConfigured = false
+    /// SILENT-PLAYING detector state (plan §3): consecutive 1 Hz checks that found a playing,
+    /// expected-audible mix rendering no signal; and when the mix last became running.
+    @ObservationIgnored private var silentPlayingStrikes = 0
+    @ObservationIgnored private var lastSilentCheckAt: Date?
+    @ObservationIgnored private var runningSince: Date?
+    @ObservationIgnored private var lastShippedHeartbeatAt: Date?
+    /// P1-9 snapshot hygiene: a silent run was detected and real signal hasn't returned yet — every
+    /// playhead write carries `trustedPositionMs` (the last playhead persisted while audible).
+    @ObservationIgnored private var silentRunTaint = false
+    @ObservationIgnored private var trustedPositionMs: [Deck: Int] = [:]
 
     /// Emit one session event for a deck (or global) action, stamping the deck's loaded song + its
     /// current playhead. The store owns the timeline (t0/tMs), coalescing, and persistence.
@@ -1037,6 +1100,7 @@ final class MixEngine {
     @discardableResult
     func startRecording(to url: URL, release: (() -> Void)?) -> Bool {
         ensureEngine()
+        startEngineIfNeeded()   // an inert-built graph (prepare / restore) still records live from here
         guard built, !isRecording, let node = houseSum else { release?(); return false }
         let format = node.outputFormat(forBus: 0)                 // canonical 44.1 kHz stereo float
         guard recordingSink.begin(url: url, sampleRate: format.sampleRate,
@@ -1065,7 +1129,14 @@ final class MixEngine {
     // MARK: - Lifecycle
 
     /// Build the two-deck graph ON FIRST USE and start the engine. Idempotent.
-    func ensureEngine() {
+    ///
+    /// `startNow: false` is the INERT build (a restore materializing, P0-3): the graph is attached,
+    /// connected, prepared, tapped and its observers/remote targets registered, but the audio
+    /// session is NOT activated and `engine.start()` is NOT called — a parked mix must never grab a
+    /// non-mixable `.playback` session (or run a silent engine) under an out-of-process Apple Music
+    /// player. The first real transport goes through `startEngineIfNeeded`, which configures the
+    /// session and starts the engine exactly once.
+    func ensureEngine(startNow: Bool = true) {
         guard !built else { return }
         // Session activation includes tvOS (mirroring PlayerEngine's fence): without an active
         // .playback session the TV suspends MIX audio the moment the app backgrounds — the
@@ -1074,7 +1145,7 @@ final class MixEngine {
         // recovery choreography is tuned to iOS session semantics, and widening them is not
         // tonight's bug.
         #if canImport(UIKit) && !os(macOS)
-        activateAudioSession()
+        if startNow { activateAudioSession(by: "mix.build") }
         #endif
         #if os(iOS)
         registerInterruptionHandling()
@@ -1148,8 +1219,12 @@ final class MixEngine {
         masterLimiter = limiter
         engine.prepare()
         // Soft-fail: no audio device (e.g. a headless CI / unit-test host) leaves the graph unbuilt
-        // and `isReady` false — the app degrades to a silent Mix tab rather than crashing.
-        do { try engine.start() } catch { return }
+        // and `isReady` false — the app degrades to a silent Mix tab rather than crashing. The
+        // inert build skips the start; a failing device then soft-fails at the first real start
+        // (`startEngineIfNeeded` returns false → the deck stays parked).
+        if startNow {
+            do { try engine.start() } catch { return }
+        }
         built = true
         registerConfigChangeHandling()  // per-instance: the system stops the engine on a route-format change
         configureMixRemoteCommands()    // wire lock-screen transport once the graph is live
@@ -1240,12 +1315,20 @@ final class MixEngine {
         }
     }
 
-    func prepare() { ensureEngine() }
+    /// Mix-tab warm-up: build the graph INERT (P0-3) — opening the tab (or relaunching onto it)
+    /// must not grab a non-mixable `.playback` session under a sounding Apple Music set. The first
+    /// real play/record starts the engine + session through `startEngineIfNeeded`.
+    func prepare() { ensureEngine(startNow: false) }
 
     // TEST SEAMS — dead-engine transport tests (route-change hardening). The system stops the
     // engine out from under the app on a route/config change; tests reproduce that state here
     // (the graph stays built, exactly like the real event).
     func stopEngineForTesting() { engine.stop() }
+    /// Drive one ~10 Hz tick synchronously (watchdog / EOF-retire / persist-guard tests).
+    @discardableResult func tickFireForTesting() -> Bool { tickFire() }
+    /// Backdate when the mix became running (silent-run / SILENT-PLAYING tests).
+    func backdateRunningSinceForTesting(seconds: Double) { runningSince = runningSince?.addingTimeInterval(-seconds) }
+    func deckExhaustedFromRestoreForTesting(_ deck: Deck) -> Bool { deckExhaustedFromRestore.contains(deck) }
     var engineIsRunningForTesting: Bool { engine.isRunning }
     /// Drive the route/config-change observer path directly (the real observers are wired to the
     /// shared session / the private engine instance, which tests can't post as).
@@ -1931,14 +2014,36 @@ final class MixEngine {
     /// headphones→speaker route-change crash. A failed start means "stay parked": the tick
     /// watchdog + route/config observers keep retrying and `resumePlayingDecks()` brings the
     /// audio back the moment the engine can run again.
+    ///
+    /// `by` names the caller for the `[session] activate` telemetry (`mix.start` = a transport
+    /// gesture, `mix.recover` = the watchdog / route / config recovery lane).
     @discardableResult
-    private func startEngineIfNeeded() -> Bool {
+    private func startEngineIfNeeded(by: String = "mix.start") -> Bool {
         guard built else { return false }
         if engine.isRunning { return true }
-        #if os(iOS)
-        try? AVAudioSession.sharedInstance().setActive(true)
+        engineStartAttemptsForTesting += 1
+        #if canImport(UIKit) && !os(macOS)
+        if !sessionCategoryConfigured {
+            // The graph was built INERT (a restore materialized it): the `.playback` category was
+            // never set by this engine, so do the full category + activation now — the first real
+            // start (tvOS included: its Resume lands here).
+            activateAudioSession(by: by)
+        } else {
+            #if os(iOS)
+            activateSessionOnly(by: by)
+            #endif
+        }
         #endif
-        do { try engine.start() } catch { return false }
+        do { try engine.start() } catch {
+            let ns = error as NSError
+            #if canImport(UIKit) && !os(macOS)
+            let other = AVAudioSession.sharedInstance().isOtherAudioPlaying ? 1 : 0
+            #else
+            let other = 0
+            #endif
+            DiagLog.shared.log("mix", "engine.start FAILED by=\(by) err=\(ns.domain)#\(ns.code) otherAudio=\(other)")
+            return false
+        }
         return engine.isRunning
     }
 
@@ -2038,6 +2143,8 @@ final class MixEngine {
         deckGestureGeneration &+= 1
         autoEndedExhausted = false   // a manual start disarms the exhausted pickup (see `load`)
         masterPausedDecks = []   // any manual start invalidates the lock-screen pause memory
+        if !isRestoringMixSession { hasSoundedThisProcess = true }
+        deckExhaustedFromRestore.remove(deck)   // an explicit start plays the re-cued track from 0:00
         ensureEngine()
         // Even when the engine can't run RIGHT NOW (mid route change / session in transition) the
         // deck is still marked playing — that's the INTENT the watchdog restores; only the
@@ -2075,6 +2182,7 @@ final class MixEngine {
         deckGestureGeneration &+= 1
         autoEndedExhausted = false   // a manual start disarms the exhausted pickup (see `load`)
         masterPausedDecks = []   // any manual start invalidates the lock-screen pause memory
+        if !isRestoringMixSession { hasSoundedThisProcess = true }
         unfreezeAutoClock()      // master play un-silences everything — unpark any remote-frozen fade
         ensureEngine()
         let engineUp = startEngineIfNeeded()   // dead engine → decks still marked playing; watchdog resumes
@@ -2107,10 +2215,35 @@ final class MixEngine {
     /// paused) falls back to the card's now-playing deck — play the track the card is showing.
     /// The in-app master transport deliberately keeps `playBoth()`; this never replaces it.
     func resumeMasterPaused() {
-        let remembered = masterPausedDecks.filter { state($0).loaded != nil }
+        // Only a deck with audio LEFT is resumable: one parked at end-of-file schedules nothing
+        // (`rescheduleFile`'s count guard) yet `play` would still mark it playing and claim the
+        // card — the field's silent "Hold On Me rate=1.00 el=358.0" owner. A restore's re-cued
+        // finished deck is skipped too (it would replay the finished song).
+        func resumable(_ d: Deck) -> Bool {
+            state(d).loaded != nil && position(d) < duration(d) - 0.5 && !deckExhaustedFromRestore.contains(d)
+        }
+        let remembered = masterPausedDecks.filter(resumable)
         masterPausedDecks = []
         guard !remembered.isEmpty else {
-            if let d = nowPlayingDeck {
+            guard let d = nowPlayingDeck, resumable(d) else {
+                if autoMixing && autoPaused {
+                    DiagLog.shared.log("mix", "remotePlay path=resumeAuto deck=\(nowPlayingDeck?.rawValue ?? "-") "
+                        + "pos=\(String(format: "%.1f", nowPlayingDeck.map(position) ?? 0)) "
+                        + "dur=\(String(format: "%.1f", nowPlayingDeck.map(duration) ?? 0)) "
+                        + "autoPaused=1 fromRestore=\(autoResumeFromRestore ? 1 : 0)")
+                    resumeAuto()     // advance to the next queue item instead of starting silence
+                } else {
+                    DiagLog.shared.log("mix", "remotePlay path=refused deck=\(nowPlayingDeck?.rawValue ?? "-") "
+                        + "pos=\(String(format: "%.1f", nowPlayingDeck.map(position) ?? 0)) "
+                        + "dur=\(String(format: "%.1f", nowPlayingDeck.map(duration) ?? 0)) "
+                        + "autoPaused=\(autoPaused ? 1 : 0) fromRestore=\(autoResumeFromRestore ? 1 : 0)")
+                }
+                return
+            }
+            DiagLog.shared.log("mix", "remotePlay path=fallback deck=\(d.rawValue) "
+                + "pos=\(String(format: "%.1f", position(d))) dur=\(String(format: "%.1f", duration(d))) "
+                + "autoPaused=\(autoPaused ? 1 : 0) fromRestore=\(autoResumeFromRestore ? 1 : 0)")
+            do {
                 // Field report (Levi, CarPlay, 2026-09-04): a cold-launch session parked over an
                 // hour (engine never touched) resumed via THIS exact fallback — the card showed
                 // playing=true with the playhead advancing, but no audible output. `play(d)` below
@@ -2123,6 +2256,10 @@ final class MixEngine {
             }
             return
         }
+        DiagLog.shared.log("mix", "remotePlay path=remembered deck=\(remembered.map(\.rawValue).sorted().joined()) "
+            + "pos=\(remembered.map { String(format: "%.1f", position($0)) }.joined(separator: ",")) "
+            + "dur=\(remembered.map { String(format: "%.1f", duration($0)) }.joined(separator: ",")) "
+            + "autoPaused=\(autoPaused ? 1 : 0) fromRestore=\(autoResumeFromRestore ? 1 : 0)")
         suppressStickyUpdates = true; defer { suppressStickyUpdates = false }   // batch — see the flag
         for d in Deck.allCases where remembered.contains(d) { play(d) }
     }
@@ -2167,8 +2304,12 @@ final class MixEngine {
     /// kicks the mix back to manual mode. IDEMPOTENT: Bluetooth/AVRCP heads re-send discrete PAUSE —
     /// a duplicate while already paused must not clobber the pause memory or the resume intent.
     func remotePause() {
-        guard isRunning || (remotePausedAt == nil && masterPausedDecks.isEmpty) else { return }
+        guard isRunning || (remotePausedAt == nil && masterPausedDecks.isEmpty) else {
+            DiagLog.shared.log("mix", "remotePause guard=dup")
+            return
+        }
         DiagLog.shared.telemetry("action", "mix pause (remote seam)")
+        DiagLog.shared.log("mix", "remotePause guard=pass running=\(isRunning ? 1 : 0) auto=\(autoMixing ? 1 : 0)/\(autoPaused ? 1 : 0)")
         let autoWasRunning = autoMixing && !autoPaused
         if autoWasRunning {
             pauseAuto()                      // BEFORE pauseBoth — a running auto-loop would be ended by it
@@ -2192,6 +2333,9 @@ final class MixEngine {
         unfreezeAutoClock()
         resumeMasterPaused()
         if resumeAutoOnRemotePlay, autoMixing, autoPaused { resumeAuto() }
+        // A RESTORED suspended mix resumed from the lock screen / car must actually run the
+        // machine — restarting the deck alone left it riding one track and stalling at its end.
+        if autoResumeFromRestore, autoMixing, autoPaused { resumeAuto() }
         resumeAutoOnRemotePlay = false
     }
 
@@ -3060,6 +3204,7 @@ final class MixEngine {
                       label: String? = nil) {
         guard !items.isEmpty else { return }
         DiagLog.shared.telemetry("action", "auto-mix start '\(label ?? "?")' items=\(items.count) shuffled=\(shuffled)")
+        if !isRestoringMixSession { hasSoundedThisProcess = true }
         ensureEngine()
         endAutoLoop()
 
@@ -3165,7 +3310,8 @@ final class MixEngine {
     /// Recorded as one `.autoResume` marker. No-op unless a mix is paused.
     func resumeAuto() {
         guard autoMixing, autoPaused else { return }
-        let fromRestore = autoResumeFromRestore
+        if !isRestoringMixSession { hasSoundedThisProcess = true }
+        var fromRestore = autoResumeFromRestore
         autoResumeFromRestore = false    // consume-once: only the FIRST resume after a restore
         unfreezeAutoClock()              // an IN-APP Resume after a lock-screen ⏸ must also unpark the
                                          // machine's frozen wall clock, or autoFire stays gated forever
@@ -3196,7 +3342,21 @@ final class MixEngine {
         }
 
         // One (or zero) deck playing → establish a single live deck + preload the next unplayed track.
-        let live: Deck = aOn ? .a : (bOn ? .b : autoLiveDeck)
+        var live: Deck = aOn ? .a : (bOn ? .b : autoLiveDeck)
+        if !aOn && !bOn, deckExhaustedFromRestore.contains(live) {
+            // The restored live deck had already FINISHED its track (persisted at end-of-file):
+            // advance instead of replaying it. Prefer the standby's restored cue (the snapshot's
+            // on-deck next); else load the next unplayed item over the finished one.
+            let standby = other(live)
+            if state(standby).loaded != nil, !deckExhaustedFromRestore.contains(standby) {
+                DiagLog.shared.log("mix", "resumeAuto: live deck \(live.rawValue) exhausted — advancing to cued \(standby.rawValue)")
+                live = standby
+                fromRestore = false          // the old live deck becomes the free deck → fresh preload
+            } else {
+                DiagLog.shared.log("mix", "resumeAuto: live deck \(live.rawValue) exhausted — loading next unplayed")
+                loadNextUnplayed(onto: live, excludingDeck: standby)
+            }
+        }
         if !aOn && !bOn {                                          // nothing playing — get the live deck going again
             if state(live).loaded == nil { loadNextUnplayed(onto: live) }
             if state(live).loaded != nil { play(live) }
@@ -5083,16 +5243,46 @@ final class MixEngine {
         guard let snap = sessionStore.load() else { return }
         pendingMixRestore = snap
         NPLog.trace("mix RESTORE parked decks=\(snap.deckA != nil ? "A" : "")\(snap.deckB != nil ? "B" : "") auto=\(snap.auto?.queue.count ?? 0)")
-        if materializeWanted { materializeNow() }
+        guard materializeWanted else { return }
+        // A live set list (held or sounding) owns the user's attention: never build the parked mix
+        // behind it from the launch task. `materializeWanted` stays set, so the next Mix-surface
+        // request (tab re-appearance, a CarPlay Mix-tab gesture) finishes the job.
+        if setlistIsLive?() == true {
+            DiagLog.shared.log("mix", "materialize trigger=launchTask skipped setlistLive=1")
+            return
+        }
+        materializeNow(trigger: "launchTask")
     }
 
-    /// Mix-tab entry point (MixView's `.task`, after `prepare()`): actually re-load the parked
-    /// snapshot onto the decks. Lazy on purpose — deck files + the AVAudioEngine graph are only
-    /// touched when the Mix surface first appears, never at launch. Idempotent; remembers the
-    /// request so a launch-task restore that lands later can finish the job.
-    func materializePendingRestoreIfNeeded() {
+    /// Mix-surface entry point (MixView's / TVRootView's `.task`, a CarPlay Mix-tab gesture):
+    /// actually re-load the parked snapshot onto the decks. Lazy on purpose — deck files + the
+    /// AVAudioEngine graph are only touched when a Mix surface asks, never at launch. Inert: no
+    /// session activation, no engine start, no card, no write. Idempotent; remembers the request
+    /// so a launch-task restore that lands later can finish the job.
+    func materializePendingRestoreIfNeeded(trigger: String = "mixTab") {
         materializeWanted = true
-        materializeNow()
+        materializeNow(trigger: trigger)
+    }
+
+    /// True while a launch-read snapshot is parked and not yet materialized.
+    var hasParkedRestore: Bool { pendingMixRestore != nil }
+
+    /// What a parked (not yet materialized) restore WOULD show — lets a remote surface (the CarPlay
+    /// Mix tab) render the session's rows from the snapshot alone, without building the graph or
+    /// touching deck files. nil when nothing is parked.
+    struct ParkedRestoreSummary: Equatable {
+        var title: String?
+        var artist: String?
+        var autoLabel: String?
+        var hasAuto: Bool
+    }
+    var parkedRestoreSummary: ParkedRestoreSummary? {
+        guard let snap = pendingMixRestore else { return nil }
+        let liveRaw = snap.auto?.liveDeck ?? snap.leadDeck ?? (snap.deckA != nil ? "A" : "B")
+        let live = liveRaw == "B" ? (snap.deckB ?? snap.deckA) : (snap.deckA ?? snap.deckB)
+        return ParkedRestoreSummary(title: live?.track.title, artist: live?.track.artist,
+                                    autoLabel: snap.auto?.sourceLabel,
+                                    hasAuto: !(snap.auto?.queue.isEmpty ?? true))
     }
 
     /// Rebuild the mix from the parked snapshot: decks re-loaded and CUED at their saved
@@ -5102,7 +5292,7 @@ final class MixEngine {
     /// (`isRestoringMixSession`) so no card is claimed. A track whose file vanished since
     /// (purged burn, deleted stem source) simply leaves that deck empty — restore what's
     /// loadable, drop what isn't, never block. No-op when the engine is already in use.
-    private func materializeNow() {
+    private func materializeNow(trigger: String) {
         guard let snap = pendingMixRestore else { return }
         pendingMixRestore = nil
         guard !isRunning, !autoMixing, loaded(.a) == nil, loaded(.b) == nil else { return }
@@ -5112,9 +5302,14 @@ final class MixEngine {
         defer {
             recorder = savedRecorder
             isRestoringMixSession = false
-            persistMixDeckSession()         // re-sync: dropped (unloadable) decks fall out of the file
+            // NO persist here: a restore is not a write (the rule `SetlistPlayer.restore`
+            // documents). The old re-sync made every materialize — and every silent run after
+            // it — rewrite the snapshot, which is how a stale end-of-file deck became immortal.
+            // Dropped (unloadable) decks fall out of the file on the next REAL persist.
         }
-        ensureEngine()                      // the Mix tab is up — same warm-up its `.task` already does
+        // INERT build: graph + taps + observers + remote targets, but no session activation and
+        // no engine start — the first real transport (`startEngineIfNeeded`) does both.
+        ensureEngine(startNow: false)
         if let a = snap.deckA { restoreDeck(.a, from: a) }
         if let b = snap.deckB { restoreDeck(.b, from: b) }
         applyCrossfader(snap.crossfader)    // non-recording apply (machine move, not a gesture)
@@ -5122,6 +5317,15 @@ final class MixEngine {
             leadDeck = lead                 // after the loads — a load clears its deck's lead role
         }
         if let auto = snap.auto { restoreAutoSuspended(auto) }
+        #if canImport(UIKit) && !os(macOS)
+        let otherAudio = AVAudioSession.sharedInstance().isOtherAudioPlaying ? 1 : 0
+        #else
+        let otherAudio = 0
+        #endif
+        DiagLog.shared.log("mix", "materialize trigger=\(trigger) setlistLive=\(setlistIsLive?() == true ? 1 : 0) "
+            + "otherAudio=\(otherAudio) session=untouched engineRunning=\(engine.isRunning ? 1 : 0) "
+            + "xfader=\(String(format: "%.2f", snap.crossfader)) lead=\(snap.leadDeck ?? "-") "
+            + "exhausted=\(deckExhaustedFromRestore.map(\.rawValue).sorted().joined())")
         NPLog.trace("mix RESTORE materialized A=\(loaded(.a)?.songId ?? "-") B=\(loaded(.b)?.songId ?? "-") auto=\(autoMixing ? 1 : 0)")
     }
 
@@ -5161,7 +5365,20 @@ final class MixEngine {
                 for (name, v) in ds.stemVol { setStemVolume(name, v, on: deck) }
             }
         }
-        if ds.positionMs > 0 { seek(deck, toSeconds: Double(ds.positionMs) / 1000) }   // cue, not play
+        // A deck persisted AT its end (the field's "Hold On Me" 358.0/358.0) has nothing left to
+        // schedule: resuming it ran "playing" over silence forever. Re-cue it to 0:00 and mark it
+        // exhausted so the lock-screen ▶ fallback / `resumeAuto` advance past it instead (P0-5).
+        let lenMs = t.lengthMs ?? (duration(deck) > 0 ? Int(duration(deck) * 1000) : nil)
+        let atEnd = lenMs.map { $0 > 0 && ds.positionMs >= $0 - 500 } ?? false
+        if atEnd {
+            deckExhaustedFromRestore.insert(deck)
+        } else if ds.positionMs > 0 {
+            seek(deck, toSeconds: Double(ds.positionMs) / 1000)   // cue, not play
+        }
+        let stem = ds.stemMode ? (stemModeOn(deck) ? 1 : 0) : 0
+        DiagLog.shared.log("mix", "restore: deck \(deck.rawValue) pos=\(ds.positionMs) len=\(lenMs.map(String.init) ?? "-") "
+            + "vol=\(String(format: "%.2f", ds.volume)) rate=\(String(format: "%.2f", ds.rate)) "
+            + "stem=\(stem) recued=\(atEnd ? 1 : 0)")
         // LOOP last: the window is derived from the restored position, so it must be armed AFTER
         // the seek above (and after stem mode, so it arms on the voices that will actually play).
         if ds.loopOn == true {
@@ -5282,7 +5499,7 @@ final class MixEngine {
             track: MixDeckSessionStore.TrackRef(songId: l.songId, title: l.title, artist: l.artist,
                                                 bpm: l.bpm, camelot: l.camelot, key: l.key,
                                                 albumId: l.albumId, lengthMs: lengthMs),
-            positionMs: max(0, Int(position(deck) * 1000)),
+            positionMs: persistablePositionMs(deck),   // never a silent run's playhead (P1-9)
             volume: s.volume, rate: s.rate, pitch: s.pitch,
             // The flat per-effect fields are written through the FIRST-MATCH shims. They're the
             // rollback contract: an older build (which knows nothing about slots) still restores a
@@ -5319,8 +5536,35 @@ final class MixEngine {
     /// transition, ~5 s otherwise). Fed by the ~10 Hz tick and every `setPlaying` transition.
     private func persistMixPositions() {
         guard !isRestoringMixSession, pendingMixRestore == nil else { return }
-        sessionStore?.updatePosition(aMs: Int(positionA * 1000), bMs: Int(positionB * 1000),
+        sessionStore?.updatePosition(aMs: persistablePositionMs(.a), bMs: persistablePositionMs(.b),
                                      isRunning: deckA.isPlaying || deckB.isPlaying)
+    }
+
+    /// The mix is "running" but has rendered no signal for > 3 s (and has run > 3 s — a fresh
+    /// start isn't judged before the tap can have fired).
+    private func isSilentRun(now: Date) -> Bool {
+        guard isRunning, let since = runningSince, now.timeIntervalSince(since) > 3 else { return false }
+        let lastSig = tapPulse.lastAudibleAt
+        if lastSig == 0 { return true }
+        return now.timeIntervalSinceReferenceDate - lastSig > 3
+    }
+
+    /// P1-9: a playhead advanced over SILENCE is not a listening position — persisting it is how a
+    /// never-audible restore crept to end-of-file across launches (259 → 339.8 → 358). Once a run
+    /// is found silent it TAINTS every later playhead write (the pause that ends it included) until
+    /// real signal returns while running; tainted writes carry the last TRUSTED playhead instead.
+    private func persistablePositionMs(_ deck: Deck) -> Int {
+        let now = Date()
+        if isSilentRun(now: now) {
+            silentRunTaint = true
+        } else if silentRunTaint, isRunning, tapPulse.lastAudibleAt > 0,
+                  now.timeIntervalSinceReferenceDate - tapPulse.lastAudibleAt < 1.5 {
+            silentRunTaint = false        // audible again — positions are real from here on
+        }
+        let live = max(0, Int(position(deck) * 1000))
+        if silentRunTaint { return trustedPositionMs[deck] ?? live }
+        trustedPositionMs[deck] = live
+        return live
     }
 
     // MARK: - Readers (for the UI)
@@ -5429,7 +5673,10 @@ final class MixEngine {
         // arbiter is unowned, so without this gate the restore's deck loads/seeks would write a
         // paused card for audio nobody started. The first real play claims + writes as usual.
         guard !isRestoringMixSession else { return }
-        guard NowPlayingArbiter.shared.isActive(self) else { return }
+        // REAL ownership only (P0-6): a nil owner is NOT "anyone" for the Mix card. `setPlaying`
+        // claims before it writes, so a cold in-app start still publishes; but a parked/paused
+        // mix no longer flashes its card ("Hold On Me") into the gap between two set-list tracks.
+        guard NowPlayingArbiter.shared.owner === self else { return }
         guard let deck = nowPlayingDeck, let track = loaded(deck) else { return }
         // Re-assert ⏭/⏮ enablement on EVERY card write, not just at startAutoMix: a standalone-player
         // interlude (song audition / setlist) flips the same shared commands off via its own lifecycle,
@@ -5492,30 +5739,48 @@ final class MixEngine {
         let center = MPRemoteCommandCenter.shared()
         // ⏸/▶ are the REMOTE pair: pause suspends a running Auto-DJ (never ends it — no silent drop
         // to manual mode), play resumes ONLY what the pause silenced and un-suspends the Auto-DJ.
-        center.playCommand.addTarget { [weak self] _ in
-            guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
-            self.remotePlay(); return .success
-        }
-        center.pauseCommand.addTarget { [weak self] _ in
-            guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
-            self.remotePause(); return .success
-        }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
-            if self.isRunning { self.remotePause() } else { self.remotePlay() }
-            return .success
-        }
+        center.playCommand.addTarget { [weak self] _ in self?.handleRemoteCommand(.play) ?? .commandFailed }
+        center.pauseCommand.addTarget { [weak self] _ in self?.handleRemoteCommand(.pause) ?? .commandFailed }
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in self?.handleRemoteCommand(.toggle) ?? .commandFailed }
         // Auto-mix only: ⏭ = the FAST switch (5 s sweep — in-app double-tap Skip); ⏮ = the SLOW
         // switch (the Settings ▸ Mix skip-fade — in-app single-tap Skip). Both advance the queue;
         // there is no "previous track" in a live mix, so ⏮ maps to the gentler transition instead.
-        center.nextTrackCommand.addTarget { [weak self] _ in
-            guard let self, NowPlayingArbiter.shared.isActive(self), self.autoMixing else { return .commandFailed }
-            self.remoteSkip(fadeSeconds: 5); return .success
+        center.nextTrackCommand.addTarget { [weak self] _ in self?.handleRemoteCommand(.next) ?? .commandFailed }
+        center.previousTrackCommand.addTarget { [weak self] _ in self?.handleRemoteCommand(.prev) ?? .commandFailed }
+    }
+
+    enum RemoteCommand: String { case play, pause, toggle, next, prev }
+
+    /// The body of every Mix `MPRemoteCommandCenter` target (one `[transport]` line per
+    /// invocation, so a fan-out to both engines shows as two lines). Gates, in order:
+    ///  1. the arbiter — only the owner (or the preferred engine / anyone, while nobody owns) acts;
+    ///  2. P0-2: a mix that was RESTORED but has never sounded this process is not a remote target
+    ///     — the head unit's play-on-connect belongs to the held set list, not a parked snapshot.
+    ///     (`remotePlay()` itself is NOT gated: TV Resume, CarPlay's Mix-tab row and the Siri
+    ///     intent call it directly as explicit gestures.)
+    ///  3. ⏭/⏮ only drive a running auto-mix.
+    func handleRemoteCommand(_ cmd: RemoteCommand) -> MPRemoteCommandHandlerStatus {
+        let arbiter = NowPlayingArbiter.shared
+        func trace(_ verdict: String) {
+            DiagLog.shared.log("transport", "rc cmd=\(cmd.rawValue) engine=MixEngine "
+                + "owner=\(NowPlayingArbiter.name(arbiter.owner)) preferred=\(NowPlayingArbiter.name(arbiter.preferred)) "
+                + "verdict=\(verdict)")
         }
-        center.previousTrackCommand.addTarget { [weak self] _ in
-            guard let self, NowPlayingArbiter.shared.isActive(self), self.autoMixing else { return .commandFailed }
-            self.remoteSkip(fadeSeconds: self.skipFadeSeconds); return .success
+        guard arbiter.isActive(self) else { trace("not-owner"); return .commandFailed }
+        guard hasSoundedThisProcess || isRunning || remotePausedAt != nil else {
+            trace("restored-never-played")
+            return .commandFailed
         }
+        switch cmd {
+        case .play: remotePlay()
+        case .pause: remotePause()
+        case .toggle: if isRunning { remotePause() } else { remotePlay() }
+        case .next, .prev:
+            guard autoMixing else { trace("refused-not-auto"); return .commandFailed }
+            remoteSkip(fadeSeconds: cmd == .next ? 5 : skipFadeSeconds)
+        }
+        trace("handled")
+        return .success
     }
 
     /// Enable/disable the shared lock-screen ⏭/⏮ with the Auto-DJ's lifecycle — they only advance the
@@ -5552,8 +5817,19 @@ final class MixEngine {
 
     private func other(_ d: Deck) -> Deck { d == .a ? .b : .a }
 
+    /// The mix genuinely wants to be audible: a deck has play intent, or a RUNNING (not suspended)
+    /// Auto-DJ is between decks. A restored/suspended machine with silent decks wants nothing — the
+    /// tick watchdog, `recoverFromEngineStop` and the route observer must not restart the engine
+    /// (and re-grab the session) for it on every CarPlay/Bluetooth route change (P0-5).
+    var mixWantsAudio: Bool { deckA.isPlaying || deckB.isPlaying || (autoMixing && !autoPaused) }
+
     private func refreshTransport() {
+        let wasRunning = isRunning
         isRunning = deckA.isPlaying || deckB.isPlaying
+        if isRunning != wasRunning {
+            runningSince = isRunning ? Date() : nil
+            silentPlayingStrikes = 0
+        }
         #if os(iOS)
         // ANY resume (in-app deck ▶, master play, lock-screen ▶/⏭) supersedes an interruption's
         // park — a later stray .ended must not auto-resume over a subsequent deliberate pause.
@@ -5963,6 +6239,8 @@ final class MixEngine {
             lastRenderingDiag = rendering
         }
         diagHeartbeat(rendering: rendering)
+        shippedHeartbeat(rendering: rendering, now: now)
+        if rendering { silentPlayingCheck(now: now) }
         if rendering {
             unparkEngineStall()      // engine came back via any path → shift the parked clocks
             if engineDownWhileLive { // …and re-prime: zombie nodes survive a bare play()
@@ -6014,14 +6292,23 @@ final class MixEngine {
                     continue
                 }
                 setPosition(d, pos)
-                if pos >= dur, !autoMixing { setPlaying(d, false); stopActiveNodes(d) }
+                if pos >= dur, !autoMixing || autoPaused {
+                    // A SUSPENDED machine never transitions, so a deck reaching its end under it
+                    // must retire like a manual deck — otherwise it "plays" at dur forever (the
+                    // field's restored 358/358 owner). Not `endAutoLoop`: the machine stays parked.
+                    if autoMixing {
+                        DiagLog.shared.log("mix", "mix deck \(d.rawValue) reached end under paused auto — retired")
+                    }
+                    setPlaying(d, false); stopActiveNodes(d)
+                }
             }
             // The stall clock only runs for a deck that is PLAYING and HOLDING right now.
             for d in Deck.allCases where streamHeldSince[d] != nil && !(state(d).isPlaying && streamHeld(d)) {
                 streamHeldSince[d] = nil
             }
-        } else if deckA.isPlaying || deckB.isPlaying || autoMixing {
-            // WATCHDOG: the system stopped the engine (route change / missed interruption-.ended /
+        } else if mixWantsAudio {
+            // WATCHDOG (only while the mix WANTS audio — a suspended/restored machine with silent
+            // decks used to restart the engine and re-grab the session ~1/s, P0-5): the system stopped the engine (route change / missed interruption-.ended /
             // config change) while the mix thinks it's live — park the clocks and bring it back
             // (~1 try/s). Positions deliberately do NOT advance: nothing is rendering, and a
             // recording's content clock is frozen with the tap. The parked-state policy (a
@@ -6078,6 +6365,65 @@ final class MixEngine {
              + " stall=\(engineStallAt != nil ? 1 : 0) rp=\(remotePausedAt != nil ? 1 : 0) auto=\(autoMixing ? 1 : 0)/\(autoPaused ? 1 : 0)")
     }
 
+    /// Shipped (`DiagLog`, S3) mix heartbeat: every 15 s while any deck has play intent — the
+    /// `dlog` heartbeat above is local-only and the field logs could not see a silent owner.
+    private func shippedHeartbeat(rendering: Bool, now: Date) {
+        guard deckA.isPlaying || deckB.isPlaying else { lastShippedHeartbeatAt = nil; return }
+        guard lastShippedHeartbeatAt.map({ now.timeIntervalSince($0) >= 15 }) ?? true else { return }
+        lastShippedHeartbeatAt = now
+        let t = now.timeIntervalSinceReferenceDate
+        let tapAge = tapPulse.lastTapAt == 0 ? -1 : t - tapPulse.lastTapAt
+        let sigAge = tapPulse.lastAudibleAt == 0 ? -1 : t - tapPulse.lastAudibleAt
+        func deck(_ d: Deck) -> String {
+            "(\(state(d).isPlaying ? 1 : 0),\((players[d]?.isPlaying ?? false) ? 1 : 0),"
+                + "\(String(format: "%.1f", position(d))),\(fileScheduled[d] == true ? 1 : 0))"
+        }
+        DiagLog.shared.log("mix", "hb render=\(rendering ? 1 : 0) run=\(engine.isRunning ? 1 : 0) A=\(deck(.a)) B=\(deck(.b)) "
+            + "tapAge=\(String(format: "%.2f", tapAge)) sigAge=\(String(format: "%.2f", sigAge)) "
+            + "rp=\(remotePausedAt != nil ? 1 : 0) auto=\(autoMixing ? 1 : 0)/\(autoPaused ? 1 : 0)")
+    }
+
+    /// SILENT-PLAYING detector (plan §3 — detector only, no recovery ladder): at most once a
+    /// second, while the engine renders and a deck that SHOULD be audible (volume up, its side of
+    /// the crossfader open, not holding for stream bytes, not looping) has play intent, check the
+    /// house-sum tap's signal age. Three consecutive checks with no signal for > 3 s (and the mix
+    /// running > 3 s, so a fresh start isn't judged) → stop claiming "playing" for silence: retire
+    /// the deck(s), which publishes the honest paused card, and ship one line with the restore
+    /// suspects. A take being recorded is never auto-paused (a hidden-track gap is legitimate
+    /// silence) — it only logs.
+    func silentPlayingCheck(now: Date) {
+        guard lastSilentCheckAt.map({ now.timeIntervalSince($0) >= 1 }) ?? true else { return }
+        lastSilentCheckAt = now
+        let suspects = Deck.allCases.filter { d in
+            state(d).isPlaying && !streamHeld(d) && loopWindow(d) == nil
+                && userGain(d) > 0.01 && crossfadeFactor(d) > 0.01
+                && !(stemActive(d) && state(d).stemMuted.count >= Self.stemNames.count)
+        }
+        guard !suspects.isEmpty, let since = runningSince, now.timeIntervalSince(since) > 3 else {
+            silentPlayingStrikes = 0
+            return
+        }
+        let t = now.timeIntervalSinceReferenceDate
+        let lastSig = tapPulse.lastAudibleAt
+        let silentFor = lastSig == 0 ? now.timeIntervalSince(since) : t - lastSig
+        guard silentFor > 3 else { silentPlayingStrikes = 0; return }
+        silentPlayingStrikes += 1
+        guard silentPlayingStrikes >= 3 else { return }
+        silentPlayingStrikes = 0
+        for d in suspects {
+            let s = state(d)
+            DiagLog.shared.log("mix", "SILENT-PLAYING deck=\(d.rawValue) for=\(String(format: "%.1f", silentFor)) "
+                + "pos=\(String(format: "%.1f", position(d))) dur=\(String(format: "%.1f", duration(d))) "
+                + "xfader=\(String(format: "%.2f", crossfader)) vol=\(String(format: "%.2f", s.volume)) "
+                + "stem=\(stemActive(d) ? 1 : 0) node=\((players[d]?.isPlaying ?? false) ? 1 : 0) "
+                + "sched=\(fileScheduled[d] == true ? 1 : 0) exhausted=\(deckExhaustedFromRestore.contains(d) ? 1 : 0) "
+                + "auto=\(autoMixing ? 1 : 0)/\(autoPaused ? 1 : 0) rec=\(isRecording ? 1 : 0)")
+        }
+        guard !isRecording else { return }
+        for d in suspects { pauseActiveNodes(d); setPlaying(d, false) }
+        refreshTransport()
+    }
+
     /// Bring a system-stopped engine back and resume the decks that were playing. Called from the
     /// route/config-change observers and the tick watchdog; safe to call any time (no-ops when the
     /// engine is running or nothing wants audio). A failed start stays parked — `engineStallAt`
@@ -6113,7 +6459,7 @@ final class MixEngine {
                 + "B=\(deckB.isPlaying ? 1 : 0) rearmed=\(deckRescheduleCountForTesting > rearmedBefore ? 1 : 0)")
             return
         }
-        guard anyDeckPlaying || autoMixing else { return }
+        guard mixWantsAudio else { return }   // a suspended machine with silent decks wants nothing
         // While remote-frozen the auto clocks are ALREADY parked — a stall park stacked on top
         // would shift them twice on resume. Recover the audio without the stall bookkeeping.
         if remotePausedAt == nil, engineStallAt == nil {
@@ -6122,7 +6468,7 @@ final class MixEngine {
         }
         if let last = lastEngineRecoveryAttempt, Date().timeIntervalSince(last) < 0.9 { return }
         lastEngineRecoveryAttempt = Date()
-        let ok = startEngineIfNeeded()
+        let ok = startEngineIfNeeded(by: "mix.recover")
         dlog("recover: engine.start → \(ok ? "OK" : "FAILED")")
         guard ok else {
             DiagLog.shared.log("mix", "recover: engine restart FAILED")
@@ -6172,15 +6518,37 @@ final class MixEngine {
         componentFlags: 0, componentFlagsMask: 0)
 
     #if canImport(UIKit) && !os(macOS)
-    private func activateAudioSession() {
+    private func activateAudioSession(by: String) {
         // Studio mic capture holds the shared session at .playAndRecord — re-arming .playback
         // here would tear the live input tap's route out from under the recorder mid-take
         // (spec §4 coexistence rule); playback works fine under .playAndRecord, so skip.
-        guard !AudioSessionPolicy.micCaptureActive else { return }
+        guard !AudioSessionPolicy.micCaptureActive else { sessionCategoryConfigured = true; return }
+        audioSessionActivationsForTesting += 1
+        let session = AVAudioSession.sharedInstance()
+        let other = session.isOtherAudioPlaying ? 1 : 0
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch { /* non-fatal */ }
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+            sessionCategoryConfigured = true
+            DiagLog.shared.log("session", "activate by=\(by) otherAudio=\(other) result=ok")
+        } catch {
+            let ns = error as NSError
+            DiagLog.shared.log("session", "activate by=\(by) otherAudio=\(other) result=err \(ns.domain)#\(ns.code)")
+        }
+    }
+
+    /// Re-activate a session whose category this engine already set (every later start).
+    private func activateSessionOnly(by: String) {
+        audioSessionActivationsForTesting += 1
+        let session = AVAudioSession.sharedInstance()
+        let other = session.isOtherAudioPlaying ? 1 : 0
+        do {
+            try session.setActive(true)
+            DiagLog.shared.log("session", "activate by=\(by) otherAudio=\(other) result=ok")
+        } catch {
+            let ns = error as NSError
+            DiagLog.shared.log("session", "activate by=\(by) otherAudio=\(other) result=err \(ns.domain)#\(ns.code)")
+        }
     }
     #endif
 
@@ -6208,26 +6576,57 @@ final class MixEngine {
                       let info = note.userInfo,
                       let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
                       let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-                switch type {
-                case .began:
-                    // LATCH (never assign): a duplicate .began delivered over the already-parked
-                    // mix (Bluetooth/CarPlay re-sends) must not erase the pairing record.
-                    if self.isRunning { self.interruptionParked = true }
-                    self.remotePause()
-                case .ended:
-                    let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
-                        .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? true
-                    guard shouldResume else { return }   // stay parked — no silence into an open take
-                    // Resume ONLY what .began itself silenced, and only while it is still parked:
-                    // an unconditional remotePlay would replay a stale in-app pause memory or start
-                    // a loaded-but-never-played deck via the now-playing fallback.
-                    guard self.interruptionParked, !self.isRunning else { return }
-                    self.interruptionParked = false
-                    self.remotePlay()
-                @unknown default:
-                    break
-                }
+                self.handleInterruption(type, info: info)
             }
+        }
+    }
+
+    /// The interruption observer's body (internal so tests can drive it directly).
+    ///
+    /// `.began` LATCHES `interruptionParked` only for a mix that is genuinely AUDIBLE (a playing
+    /// deck with audio left) — a silent end-of-file "playing" deck latched it on every Apple Music
+    /// start and `.ended` then resumed it over the set list (the field's AM ping-pong, P0-4).
+    /// `.ended` resumes only when the Mix is STILL the card owner — evaluated now, not at `.began`.
+    func handleInterruption(_ type: AVAudioSession.InterruptionType, info: [AnyHashable: Any]) {
+        let ownerName = NowPlayingArbiter.name(NowPlayingArbiter.shared.owner)
+        switch type {
+        case .began:
+            let audible = Deck.allCases.contains { state($0).isPlaying && position($0) < duration($0) - 0.25 }
+            // LATCH (never assign): a duplicate .began delivered over the already-parked
+            // mix (Bluetooth/CarPlay re-sends) must not erase the pairing record.
+            let latch = isRunning && audible
+            if latch { interruptionParked = true }
+            DiagLog.shared.log("session", "interruption began engine=mix running=\(isRunning ? 1 : 0) "
+                + "audible=\(audible ? 1 : 0) owner=\(ownerName) latched=\(latch ? 1 : 0)")
+            // Park only a mix that is actually live — remotePause on an idle/restored mix only
+            // froze clocks nobody armed and logged a phantom "mix pause" after every AM start.
+            if isRunning || (autoMixing && !autoPaused) { remotePause() }
+        case .ended:
+            let raw = info[AVAudioSessionInterruptionOptionKey] as? UInt
+            let shouldResume = raw.map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? true
+            let sr = raw == nil ? "missing" : (shouldResume ? "1" : "0")
+            func trace(_ action: String) {
+                DiagLog.shared.log("session", "interruption ended shouldResume=\(sr) engine=mix "
+                    + "parked=\(interruptionParked ? 1 : 0) owner=\(ownerName) action=\(action)")
+            }
+            guard shouldResume else { trace("hold"); return }   // stay parked — no silence into an open take
+            // Resume ONLY what .began itself silenced, and only while it is still parked:
+            // an unconditional remotePlay would replay a stale in-app pause memory or start
+            // a loaded-but-never-played deck via the now-playing fallback.
+            guard interruptionParked, !isRunning else { trace("hold"); return }
+            // …and only while the Mix STILL owns the card, evaluated NOW. In the field the mix
+            // owned it at `.began` and the set list claimed in between — a "recorded at began"
+            // check would still have resumed it over the set list.
+            guard NowPlayingArbiter.shared.owner === self else {
+                interruptionParked = false
+                trace("not-owner")
+                return
+            }
+            interruptionParked = false
+            trace("resume")
+            remotePlay()
+        @unknown default:
+            break
         }
     }
 
@@ -6239,9 +6638,23 @@ final class MixEngine {
         guard routeChangeObserver == nil else { return }
         routeChangeObserver = NotificationCenter.default.addObserver(
             forName: AVAudioSession.routeChangeNotification,
-            object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.recoverFromEngineStop() }
+            object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] note in
+            let info = note.userInfo
+            MainActor.assumeIsolated { self?.handleRouteChange(info) }
         }
+    }
+
+    /// Route-change body (internal for tests). A suspended/restored mix with silent decks wants no
+    /// audio — recovering it re-activated the session under Apple Music on every CarPlay/BT hop.
+    func handleRouteChange(_ info: [AnyHashable: Any]?) {
+        let reason = (info?[AVAudioSessionRouteChangeReasonKey] as? UInt).map(String.init) ?? "-"
+        let to = AVAudioSession.sharedInstance().currentRoute.outputs.first?.portType.rawValue ?? "-"
+        let wants = mixWantsAudio
+        let running = built && engine.isRunning
+        DiagLog.shared.log("session", "route change reason=\(reason) to=\(to) engine=mix engineRunning=\(running ? 1 : 0) "
+            + "mixWantsAudio=\(wants ? 1 : 0) action=\(wants ? "recover" : "ignored")")
+        guard wants else { return }
+        recoverFromEngineStop()
     }
 
     /// mediaserverd crashed: every engine/node/tap in this process is orphaned and must be
