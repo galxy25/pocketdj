@@ -214,6 +214,27 @@ final class MixDeckSessionStore {
 
         /// A snapshot with nothing to restore (no deck, no auto queue) is meaningless.
         var isEmpty: Bool { deckA == nil && deckB == nil && (auto?.queue.isEmpty ?? true) }
+
+        /// A FINISHED mix (plan P1-9): its live deck sits at end-of-file AND nothing can follow —
+        /// the other deck holds nothing playable and the Auto-DJ cursor can't advance. Restoring it
+        /// only parks a silent end-of-file deck (the field's 358/358 "Hold On Me", re-parked every
+        /// launch for days). No wall-clock expiry: a parked mix may legitimately be days old.
+        var isExhausted: Bool {
+            func atEnd(_ d: DeckSnapshot?) -> Bool {
+                guard let d, let len = d.track.lengthMs, len > 0 else { return false }
+                return d.positionMs >= len - 500
+            }
+            let liveRaw = auto?.liveDeck ?? leadDeck ?? (deckA != nil ? "A" : "B")
+            let live = liveRaw == "B" ? deckB : deckA
+            let other = liveRaw == "B" ? deckA : deckB
+            guard let live, atEnd(live) else { return false }
+            if let other, !atEnd(other) { return false }       // the standby still has audio
+            if let auto, !auto.queue.isEmpty,
+               auto.nextToLoad < auto.queue.count || (auto.repeatMode != nil && auto.repeatMode != "off") {
+                return false                                    // the Auto-DJ can still advance
+            }
+            return true
+        }
     }
 
     /// Min seconds between position-only writes while running (injectable for tests).
@@ -328,7 +349,8 @@ final class MixDeckSessionStore {
         guard let data = try? Data(contentsOf: fileURL),
               let snap = try? JSONDecoder().decode(Snapshot.self, from: data),
               snap.schemaVersion == mixDeckSessionSchemaVersion,
-              !snap.isEmpty
+              !snap.isEmpty,
+              !snap.isExhausted
         else { return nil }
         return snap
     }

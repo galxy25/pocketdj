@@ -228,7 +228,7 @@ struct TVMixView: View {
             // A durable mix session restored at launch stays PARKED until a Mix surface
             // materializes it — same contract as MixView's `.task` on the phone/Mac, honored
             // here so a force-quit TV mix comes back cued + suspended instead of never.
-            .task { engine.materializePendingRestoreIfNeeded() }
+            .task { engine.materializePendingRestoreIfNeeded(trigger: "tv") }
         }
     }
 

@@ -56,9 +56,13 @@ final class NowPlayingCardPublisher {
     /// stalled/held); `rate` is the speed it moves at (a DJ tempo), forced to 0 when not
     /// advancing and to ≥ a sane floor when it is. `updatesPlaybackState: false` leaves the
     /// explicit `playbackState` alone (the "cueing up" announce card between tracks).
+    /// `intentPlaying` (the HONEST card): the writer WANTS to play but audio isn't moving yet
+    /// (buffering / waiting to play) — the cursor stays frozen (rate 0) but the state reads
+    /// `.playing`, so the head unit shows ⏸ instead of a ▶ whose press would PAUSE the start.
     func publish(writer: String, title: String, artist: String, elapsed: Double,
                  duration: Double?, advancing: Bool, rate: Double = 1, isLive: Bool = false,
                  artwork: MPMediaItemArtwork? = nil, updatesPlaybackState: Bool = true,
+                 intentPlaying: Bool = false,
                  detail: @autoclosure () -> String = "") {
         let dur = (duration ?? 0) > 0 && !isLive ? duration : nil
         var el = max(0, elapsed.isFinite ? elapsed : 0)
@@ -78,7 +82,7 @@ final class NowPlayingCardPublisher {
         }
         if let artwork { info[MPMediaItemPropertyArtwork] = artwork }
         let state: MPNowPlayingPlaybackState = updatesPlaybackState
-            ? (advancing ? .playing : .paused)
+            ? ((advancing || intentPlaying) ? .playing : .paused)
             : (last?.playbackState ?? .unknown)
         deliver(Publication(writer: writer, info: info, playbackState: state, at: Date()),
                 setsState: updatesPlaybackState, detail: detail())
@@ -128,7 +132,8 @@ final class NowPlayingCardPublisher {
     private func trace(_ p: Publication, detail: String) {
         func fmt(_ d: Double?) -> String { d.map { String(format: "%.1f", $0) } ?? "-" }
         let line = "card PUB w=\(p.writer) title=\(p.title ?? "∅") rate=\(String(format: "%.2f", p.rate)) "
-            + "el=\(fmt(p.elapsed)) dur=\(fmt(p.duration)) st=\(Self.name(p.playbackState))"
+            + "el=\(fmt(p.elapsed)) dur=\(fmt(p.duration)) st=\(Self.name(p.playbackState)) "
+            + "owner=\(NowPlayingArbiter.name(NowPlayingArbiter.shared.owner))"
             + (p.isLive ? " live" : "") + (detail.isEmpty ? "" : " \(detail)")
         guard let prev = lastTraced else { lastTraced = p; NPLog.trace(line); return }
         var why: String?

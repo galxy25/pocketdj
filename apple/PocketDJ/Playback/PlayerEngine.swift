@@ -221,6 +221,8 @@ final class PlayerEngine {
         timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] player, _ in
             Task { @MainActor in
                 guard let self, !self.externalActive else { return }
+                // FIRST AUDIO after a load: the start window (runway + start watchdog) closes here.
+                if player.timeControlStatus == .playing { self.noteFirstAudioIfPending() }
                 let stalled = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
                 guard stalled != self.isStalled else { return }
                 self.isStalled = stalled
@@ -233,7 +235,9 @@ final class PlayerEngine {
                 // In external mode our AVPlayer is idle (rate 0); the streaming player's state
                 // drives `isPlaying` via the external ticker — don't let the idle rate clobber it.
                 if self.externalActive { return }
+                let wasPlaying = self.isPlaying
                 self.isPlaying = player.rate != 0
+                if wasPlaying, !self.isPlaying { self.logRateDropped() }
                 self.updateNowPlayingInfo()
             }
         }
@@ -256,7 +260,7 @@ final class PlayerEngine {
         endExternalNowPlaying()
         // Defensively re-arm the audio session: an interruption (call / other app) can
         // deactivate it, and a backgrounded set must keep playing across track boundaries.
-        configureAudioSession()
+        configureAudioSession(by: "player.load")
         // Release the PREVIOUS track's scoped-folder access before swapping items, then hold the
         // NEW one for the lifetime of this item so AVPlayer can read a user-folder burned file.
         self.scopeRelease?()
@@ -274,9 +278,19 @@ final class PlayerEngine {
         nowPlayingSongId = songId
         cardOffsetSec = live ? 0 : max(0, Double(songStartMs ?? 0) / 1000)
         isStalled = false
+        // A load is a START: the listener wants sound (gesture or the sequencer's advance), any
+        // interruption that never delivered `.ended` is over, and the first-audio hook re-arms.
+        listenerIntentPlaying = true
+        interruptionOpen = false
+        firstAudioPending = true
+        loadedAt = Date()
         refreshArtwork(for: songId)   // async: fetches the cover, then re-pushes the card
 
         let item = AVPlayerItem(url: url)
+        // A smaller forward buffer gets a cold cellular start to "playing" sooner (the 29-32 s
+        // `.waitingToPlayAtSpecifiedRate` gaps at the AM→local boundary). Stalling policy itself
+        // (`automaticallyWaitsToMinimizeStalling`) is left at its default this ship.
+        item.preferredForwardBufferDuration = 4
         statusObservation?.invalidate()
         statusObservation = item.observe(\.status, options: [.new]) { [weak self] item, _ in
             Task { @MainActor in self?.itemBecameReady(item) }
@@ -311,7 +325,7 @@ final class PlayerEngine {
             }
         }
         player.replaceCurrentItem(with: item)
-        NowPlayingArbiter.shared.claim(self)   // this engine started audio → own the lock-screen card
+        NowPlayingArbiter.shared.claim(self, reason: "load")   // this engine started audio → own the lock-screen card
         // Re-assert the setlist-driven ⏭/⏮ enablement on every claim: the Mix engine flips the SAME
         // shared commands for its auto-mix skip mapping, so reclaiming the card must restore the
         // collection semantics (⏮ previous / ⏭ next while a set runs, disabled otherwise).
@@ -326,6 +340,20 @@ final class PlayerEngine {
             let err = item.error as NSError?
             NPLog.trace("engine item status FAILED \(err.map { "\($0.domain)#\($0.code)" } ?? "?")")
             DiagLog.shared.log("playback", "item load failed song=\(nowPlayingSongId ?? "?") err=\(err.map { "\($0.domain)#\($0.code)" } ?? "?")")
+            // A dead item never plays and never posts an end — without this the set sat silent
+            // on it until ⏭. Same one-shot latch as the natural end, after a short grace
+            // (`itemFailedSignalDelay`) in which a superseding load/skip wins — only the item
+            // that is STILL current when the grace ends advances the set.
+            guard item === player.currentItem else { return }
+            firstAudioPending = false
+            let delay = Self.itemFailedSignalDelay
+            Task { @MainActor [weak self, weak item] in
+                if delay > 0 { try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000)) }
+                guard let self, let item, item === self.player.currentItem, item.status == .failed else { return }
+                DiagLog.shared.log("playback", "item load failed → advance song=\(self.nowPlayingSongId ?? "?")")
+                self.signalTrackFailed()
+            }
+            return
         }
         guard item.status == .readyToPlay else { return }
         let d = item.duration.seconds
@@ -341,6 +369,7 @@ final class PlayerEngine {
     func play() {
         // External mode: resume the streaming player, not our idle AVPlayer.
         if externalActive {
+            listenerIntentPlaying = true; interruptionOpen = false
             NPLog.trace("engine.play → external stream"); externalPlay?(); isPlaying = true
             clock.currentTime = externalPosition?() ?? clock.currentTime   // resume FROM the live position
             updateNowPlayingInfo(); return
@@ -349,8 +378,15 @@ final class PlayerEngine {
         // A blind play() here used to re-claim the arbiter and re-write the Now Playing card
         // with the PREVIOUS track's stale title (the macOS "ghost second card" bug) and flip
         // `isPlaying` with no sound behind it (the widget play-state mismatch). Refuse it.
-        guard player.currentItem != nil else { NPLog.trace("engine.play REFUSED (idle)"); return }
-        NowPlayingArbiter.shared.claim(self)
+        guard player.currentItem != nil else {
+            // The idle engine's owner (a held / never-started setlist) gets the chance to turn
+            // this ▶ into real playback (interruption `.ended`, widget, intents all land here).
+            if let verdict = onIdlePlay?() { NPLog.trace("engine.play idle → onIdlePlay→\(verdict)"); return }
+            NPLog.trace("engine.play REFUSED (idle)"); return
+        }
+        listenerIntentPlaying = true
+        interruptionOpen = false
+        NowPlayingArbiter.shared.claim(self, reason: "play")
         setNextPreviousEnabled(onNext != nil)   // reclaim heals ⏭/⏮ after a Mix auto-mix flipped them
         setLikeCommandEnabled(true)             // …and heals the ♥ a Mix card interlude disabled
         pausedByListener = false
@@ -358,12 +394,16 @@ final class PlayerEngine {
     }
     func pause() {
         if externalActive {
+            listenerIntentPlaying = false
             NPLog.trace("engine.pause → external stream"); externalPause?(); isPlaying = false
             clock.currentTime = externalPosition?() ?? clock.currentTime   // pin WHERE the audio stopped
             updateNowPlayingInfo(); return
         }
         guard player.currentItem != nil else { NPLog.trace("engine.pause REFUSED (idle)"); return }
         pausedByListener = true
+        listenerIntentPlaying = false
+        lastPauseCallAt = Date()
+        DiagLog.shared.log("playback", "engine.pause local byListener=1 song=\(nowPlayingSongId ?? "?")")
         player.pause(); isPlaying = false; updateNowPlayingInfo()
     }
     /// The loaded item was paused ON PURPOSE (our `pause()`), as opposed to not rendering
@@ -377,12 +417,173 @@ final class PlayerEngine {
     /// TEST SEAM: the loaded AVPlayerItem (to post its item notifications).
     var currentItemForTesting: AVPlayerItem? { player.currentItem }
 
+    // MARK: Bulletproof playback seams (docs/design/playback-bulletproof-plan.md)
+
+    /// P0-1 — asked when a ▶ reaches this engine while it holds NO item (a restored, HELD set;
+    /// a row whose resolve produced no audio). The owner (`SetlistPlayer`, wired in its init so
+    /// it is live while held) turns it into real playback and returns the verdict it took
+    /// ("resumeHeld" / "startCurrent" / "startInFlight"), or nil when it had nothing to start.
+    @ObservationIgnored var onIdlePlay: (() -> String?)?
+    /// P0-1 — a REMOTE ▶ refused because nothing (no item, no held set) could act on it — the
+    /// head unit's play-on-connect landing before the launch task restored the session. The
+    /// restore consumes it (within a short window) and resumes the held set.
+    @ObservationIgnored private(set) var pendingRemotePlayAt: Date?
+    /// Take the pending remote ▶ if it is younger than `maxAge` seconds (always clears it).
+    func consumePendingRemotePlay(maxAge: TimeInterval, now: Date = Date()) -> Date? {
+        guard let t = pendingRemotePlayAt else { return nil }
+        pendingRemotePlayAt = nil
+        return now.timeIntervalSince(t) <= maxAge ? t : nil
+    }
+    /// P0-4 — Apple Music's "the current pause was OURS (a listener gesture)" flag, injected so
+    /// an interruption `.ended` never un-pauses a stream the listener paused before the call.
+    @ObservationIgnored var appleMusicPauseWasIntentional: (() -> Bool)?
+    /// P0-6 — while a SET runs, keep the arbiter ownership across the gap between two tracks
+    /// (the local-lane `stop()` before the next row resolves): `clearNowPlayingInfo` still
+    /// clears the card + ♥ but does not resign, so a parked Mix can't grab the card / remote
+    /// commands in the gap. Set by the sequencer while it runs, cleared on its `stop()`.
+    @ObservationIgnored var holdsOwnershipAcrossTracks = false
+    /// P1-7 — fired ONCE per `load` when the item first actually renders (`timeControlStatus ==
+    /// .playing`). The sequencer closes its start window (runway + start watchdog) on it.
+    @ObservationIgnored var onFirstAudio: (() -> Void)?
+    /// Grace between an item reporting `.failed` and the failed-track signal (a superseding
+    /// skip/load within it wins). Tests shorten it.
+    static var itemFailedSignalDelay: Double = 2.5
+    /// How many times this engine asked for `.playback` + `setActive(true)` (diagnostics/tests).
+    @ObservationIgnored private(set) var sessionActivationRequests = 0
+    @ObservationIgnored private var firstAudioPending = false
+    @ObservationIgnored private var loadedAt: Date?
+    /// §3 — the listener's last REQUEST: true after load/play/a resumed interruption, false
+    /// after pause / an interruption that did not resume / a route loss (headphones, CarPlay
+    /// unplugged). The supervisor only ever acts while this is true.
+    @ObservationIgnored private(set) var listenerIntentPlaying = false
+    /// An audio-session interruption (call, Siri, another app) began and has not ended.
+    @ObservationIgnored private(set) var interruptionOpen = false
+    @ObservationIgnored private var wasPlayingAtInterruption = false
+    @ObservationIgnored private var lastPauseCallAt: Date?
+    @ObservationIgnored private var routeLossAt: Date?
+    @ObservationIgnored private var routeObserver: NSObjectProtocol?
+
+    /// Live AVPlayer state for the start watchdog / supervisor (read-only).
+    var timeControlStatus: AVPlayer.TimeControlStatus { externalActive ? .paused : player.timeControlStatus }
+    var reasonForWaitingToPlay: String { player.reasonForWaitingToPlay?.rawValue ?? "-" }
+    var itemStatusDescription: String {
+        guard let item = player.currentItem else { return "none" }
+        switch item.status {
+        case .unknown: return "unknown"
+        case .readyToPlay: return "ready"
+        case .failed: return "failed"
+        @unknown default: return "?"
+        }
+    }
+    var itemErrorDescription: String {
+        (player.currentItem?.error as NSError?).map { "\($0.domain)#\($0.code)" } ?? "-"
+    }
+    /// The current item already fired its end/failed signal (the sequencer owns what's next).
+    var trackEndAlreadySignaled: Bool { trackEndSignaled }
+
+    /// The sequencer's own intent changes (stop / cascade halt → false; resume → true).
+    func noteListenerIntent(_ playing: Bool) { listenerIntentPlaying = playing }
+
+    /// Re-kick a loaded local item IN PLACE: re-arm the session and ask AVPlayer to play again.
+    /// Never un-pauses a listener pause. Used by the start watchdog (8 s), the supervisor's L1,
+    /// and a ⏯ press on a still-waiting item.
+    func rekick(by caller: String) {
+        guard !externalActive, player.currentItem != nil, !pausedByListener else { return }
+        configureAudioSession(by: caller)
+        listenerIntentPlaying = true
+        interruptionOpen = false
+        player.play()
+        updateNowPlayingInfo()
+    }
+
+    /// First render after a load → close the start window (once per load).
+    private func noteFirstAudioIfPending() {
+        guard firstAudioPending else { return }
+        firstAudioPending = false
+        let ms = loadedAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? -1
+        DiagLog.shared.log("playback", "start-ok song=\(nowPlayingSongId ?? "?") after=\(ms)ms")
+        onFirstAudio?()
+    }
+
+    #if DEBUG
+    /// Tests: AVPlayer never renders a stub file headlessly — fire the first-audio path directly.
+    func simulateFirstAudioForTesting() { noteFirstAudioIfPending() }
+    /// Tests: is a first-audio signal still owed for the current load?
+    var firstAudioPendingForTesting: Bool { firstAudioPending }
+    #endif
+
+    /// The rate dropped to 0 — record WHY (a pause we made, an interruption, the end, a stall,
+    /// a route loss, or nothing we know of — the drive logs had bare rate→0 lines).
+    private func logRateDropped() {
+        let now = Date()
+        let cause: String
+        if let t = lastPauseCallAt, now.timeIntervalSince(t) < 1.5 { cause = "pause" }
+        else if interruptionOpen { cause = "interruption" }
+        else if let t = routeLossAt, now.timeIntervalSince(t) < 1.5 { cause = "route" }
+        else if trackEndSignaled { cause = "end" }
+        else if player.timeControlStatus == .waitingToPlayAtSpecifiedRate { cause = "stall" }
+        else if player.currentItem == nil { cause = "unload" }
+        else { cause = "unknown" }
+        DiagLog.shared.log("playback", "rate→0 cause=\(cause) song=\(nowPlayingSongId ?? "?") t=\(Int(clock.currentTime))")
+    }
+
+    // MARK: Remote command bodies (extracted from the MPRemoteCommandCenter targets — testable)
+
+    private func transportLog(_ cmd: String, _ verdict: String) {
+        let arb = NowPlayingArbiter.shared
+        DiagLog.shared.telemetry("transport", "rc cmd=\(cmd) engine=PlayerEngine owner=\(NowPlayingArbiter.name(arb.owner)) "
+                                 + "preferred=\(NowPlayingArbiter.name(arb.preferred)) verdict=\(verdict)")
+    }
+
+    /// The remote ▶ (`playCommand`) body. An idle engine first offers the ▶ to its owner
+    /// (`onIdlePlay` — resume the held set / start the never-started row); if nobody can act,
+    /// the press is LATCHED for a restore that may land a moment later.
+    func handleRemotePlay() -> MPRemoteCommandHandlerStatus {
+        guard NowPlayingArbiter.shared.isActive(self) else { transportLog("play", "not-owner"); return .commandFailed }
+        if !hasLoadedItem {
+            if let verdict = onIdlePlay?() { transportLog("play", "onIdlePlay→\(verdict)"); return .success }
+            pendingRemotePlayAt = Date()
+            transportLog("play", "refused-idle")
+            NPLog.trace("engine.play REFUSED (idle) — latched for a pending restore")
+            return .success
+        }
+        transportLog("play", "handled")
+        play(); return .success
+    }
+
+    func handleRemotePause() -> MPRemoteCommandHandlerStatus {
+        guard NowPlayingArbiter.shared.isActive(self) else { transportLog("pause", "not-owner"); return .commandFailed }
+        transportLog("pause", hasLoadedItem ? "handled" : "refused-idle")
+        pause(); return .success
+    }
+
+    /// The remote ⏯ body — an idle engine has nothing to pause, so ⏯ means ▶ (same ladder).
+    func handleRemoteToggle() -> MPRemoteCommandHandlerStatus {
+        guard NowPlayingArbiter.shared.isActive(self) else { transportLog("toggle", "not-owner"); return .commandFailed }
+        if !hasLoadedItem {
+            if let verdict = onIdlePlay?() { transportLog("toggle", "onIdlePlay→\(verdict)"); return .success }
+            pendingRemotePlayAt = Date()
+            transportLog("toggle", "refused-idle")
+            toggle()   // keeps the probe count + the REFUSED trace
+            return .success
+        }
+        transportLog("toggle", "handled")
+        toggle(); return .success
+    }
+
     /// Toggle off the player's REAL `timeControlStatus` — NOT the async rate-KVO-observed
     /// `isPlaying`, which lags a tap and made rapid back-to-back play/pause unreliable.
     func toggle() {
         toggleCount += 1
         if externalActive { (externalIsPlaying?() ?? isPlaying) ? pause() : play(); return }
         guard player.currentItem != nil else { NPLog.trace("engine.toggle REFUSED (idle)"); return }
+        // A track that WANTS to play but is still waiting for data shows ⏸ on the honest card;
+        // a ▶/⏯ press there means "play it", not "pause it" — re-kick instead of pausing (the
+        // old behaviour made the field "kick" take two presses). The discrete pause still pauses.
+        if player.timeControlStatus == .waitingToPlayAtSpecifiedRate, !pausedByListener {
+            NPLog.trace("engine.toggle while waiting → re-kick (not pause)")
+            rekick(by: "player.toggle"); return
+        }
         player.timeControlStatus == .paused ? play() : pause()
     }
 
@@ -455,6 +656,7 @@ final class PlayerEngine {
         externalPause = pause
         cardOffsetSec = 0
         isStalled = false
+        firstAudioPending = false   // the stream's own first audio is the provider's signal
 
         // Seed the card from the stream's LIVE state — never a hard-coded 0:00 / playing. A
         // restored session resuming mid-song published 0:00 for the first second (field
@@ -463,11 +665,12 @@ final class PlayerEngine {
         clock.duration = durationSeconds
         duration = durationSeconds
         self.isPlaying = isPlaying()                  // `isPlaying` param shadows the property here
+        listenerIntentPlaying = self.isPlaying
         nowPlayingTitle = title
         nowPlayingArtist = artist
         nowPlayingSongId = songId
 
-        NowPlayingArbiter.shared.claim(self)          // own the card + remote commands
+        NowPlayingArbiter.shared.claim(self, reason: "beginExternal")   // own the card + remote commands
         setNextPreviousEnabled(onNext != nil)         // ⏭/⏮ advance the set
         setLikeCommandEnabled(true)                   // iOS AM card offers the ♥ (PlayerEngine owns it)
         refreshArtwork(for: songId)                   // async cover fetch → re-pushes the card
@@ -572,6 +775,7 @@ final class PlayerEngine {
         if let stallObserver { NotificationCenter.default.removeObserver(stallObserver); self.stallObserver = nil }
         clock.currentTime = 0; clock.duration = 0; duration = 0; isPlaying = false; isLive = false
         cardOffsetSec = 0; isStalled = false
+        firstAudioPending = false
         pendingSeekMs = nil
         endBoundarySec = nil; trackEndSignaled = false
         scopeRelease?(); scopeRelease = nil   // release the user-folder file's security scope
@@ -580,22 +784,38 @@ final class PlayerEngine {
         clearNowPlayingInfo()
     }
 
-    private func configureAudioSession() {
+    /// Re-arm the shared session for playback. `by` names the call site for the `[session]
+    /// activate` telemetry row (the drive logs could not tell who re-grabbed the session).
+    private func configureAudioSession(by caller: String = "player") {
+        sessionActivationRequests += 1
         #if canImport(UIKit) && !os(macOS)
         // Studio mic capture holds the shared session at .playAndRecord — re-arming .playback
         // here (every load calls this) would tear down the recorder's live input tap mid-take
         // (spec §4 coexistence rule); playback works fine under .playAndRecord, so skip.
         guard !AudioSessionPolicy.micCaptureActive else { return }
+        let session = AVAudioSession.sharedInstance()
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .default)
-            try AVAudioSession.sharedInstance().setActive(true)
-        } catch { /* best-effort — playback still works in most cases */ }
+            try session.setCategory(.playback, mode: .default)
+            try session.setActive(true)
+            DiagLog.shared.log("session", "activate by=\(caller) amActive=\(externalActive ? 1 : 0) result=ok")
+        } catch {
+            // Best-effort — playback still works in most cases — but no longer SILENT: a failed
+            // activation under someone else's non-mixable session is exactly the dead-air shape.
+            let e = error as NSError
+            DiagLog.shared.log("session", "activate by=\(caller) amActive=\(externalActive ? 1 : 0) "
+                               + "result=err \(e.domain)#\(e.code) otherAudio=\(session.isOtherAudioPlaying ? 1 : 0)")
+        }
         #endif
     }
 
-    /// Re-activate the audio session + resume playback when an interruption (call, other app)
-    /// ends, so a backgrounded/locked set keeps going per the user's intent. iOS-only — macOS
-    /// has no `AVAudioSession` interruption notification.
+    /// Interruptions (call, Siri, another app) — OWNER- and INTENT-scoped (plan P0-4):
+    ///  - `.began` records whether THIS engine was actually playing (the stream's real state while
+    ///    impersonating Apple Music, else the AVPlayer rate) and parks the listener intent.
+    ///  - `.ended` resumes ONLY what was playing and was not paused on purpose. While Apple Music
+    ///    owns the audio we never re-activate OUR session (MusicKit owns it — re-grabbing it
+    ///    interrupted MusicKit again: the pause/resume ping-pong); the stream is resumed through
+    ///    its own closure unless the listener's pause was intentional.
+    /// iOS-only — macOS has no `AVAudioSession` interruption notification.
     private func configureInterruptionObserver() {
         #if canImport(UIKit) && !os(macOS)
         interruptionObserver = NotificationCenter.default.addObserver(
@@ -606,17 +826,83 @@ final class PlayerEngine {
                       let info = note.userInfo,
                       let raw = info[AVAudioSessionInterruptionTypeKey] as? UInt,
                       let type = AVAudioSession.InterruptionType(rawValue: raw) else { return }
-                if type == .ended {
-                    // The system signals whether we SHOULD resume; honor it (and the user intent
-                    // to keep the set running) by re-activating + playing.
-                    let shouldResume = (info[AVAudioSessionInterruptionOptionKey] as? UInt)
-                        .map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) } ?? true
-                    self.configureAudioSession()
-                    if shouldResume { self.play() }
-                }
+                let opts = info[AVAudioSessionInterruptionOptionKey] as? UInt
+                self.handleInterruption(began: type == .began,
+                                        shouldResume: opts.map { AVAudioSession.InterruptionOptions(rawValue: $0).contains(.shouldResume) })
+            }
+        }
+        // A ROUTE LOSS (headphones / CarPlay / BT unplugged) makes AVPlayer pause itself. That is
+        // the listener's pause by platform convention — record it as one, so neither the start
+        // watchdog nor the supervisor re-kicks the set out of the phone speaker.
+        routeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance(), queue: .main) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self,
+                      let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+                      let reason = AVAudioSession.RouteChangeReason(rawValue: raw),
+                      reason == .oldDeviceUnavailable else { return }
+                self.handleRouteLoss()
             }
         }
         #endif
+    }
+
+    /// The interruption verdict, extracted so it is unit-testable without posting system
+    /// notifications (`shouldResume` nil ⇒ the option key was missing — treated as resume, as
+    /// before). Returns the action taken ("resume" / "hold") for `.ended`, nil for `.began`.
+    @discardableResult
+    func handleInterruption(began: Bool, shouldResume: Bool?) -> String? {
+        let owner = NowPlayingArbiter.name(NowPlayingArbiter.shared.owner)
+        if began {
+            wasPlayingAtInterruption = externalActive ? (externalIsPlaying?() ?? false) : player.rate > 0
+            interruptionOpen = true
+            DiagLog.shared.log("session", "interruption began engine=player wasPlaying=\(wasPlayingAtInterruption ? 1 : 0) "
+                               + "external=\(externalActive ? 1 : 0) owner=\(owner)")
+            return nil
+        }
+        interruptionOpen = false
+        let resumeAllowed = shouldResume ?? true
+        let action: String
+        if externalActive {
+            let intentional = appleMusicPauseWasIntentional?() ?? false
+            if resumeAllowed && wasPlayingAtInterruption && !intentional {
+                action = "resume"
+                listenerIntentPlaying = true
+                externalPlay?(); isPlaying = true
+                clock.currentTime = externalPosition?() ?? clock.currentTime
+                updateNowPlayingInfo()
+            } else {
+                action = "hold"
+                if wasPlayingAtInterruption { listenerIntentPlaying = false }
+            }
+            DiagLog.shared.log("session", "interruption ended shouldResume=\(shouldResume.map { $0 ? "1" : "0" } ?? "missing") engine=player "
+                               + "external=1 pauseWasIntentional=\(intentional ? 1 : 0) wasPlaying=\(wasPlayingAtInterruption ? 1 : 0) action=\(action)")
+        } else {
+            if resumeAllowed && wasPlayingAtInterruption && !pausedByListener && player.currentItem != nil {
+                action = "resume"
+                configureAudioSession(by: "player.ended")
+                play()
+            } else {
+                action = "hold"
+                // The system said not to resume (or nothing was playing): the set stays paused,
+                // and the supervisor must treat it as such.
+                if wasPlayingAtInterruption { listenerIntentPlaying = false }
+            }
+            DiagLog.shared.log("session", "interruption ended shouldResume=\(shouldResume.map { $0 ? "1" : "0" } ?? "missing") engine=player "
+                               + "external=0 pausedByListener=\(pausedByListener ? 1 : 0) wasPlaying=\(wasPlayingAtInterruption ? 1 : 0) action=\(action)")
+        }
+        wasPlayingAtInterruption = false
+        return action
+    }
+
+    /// Headphones / CarPlay / BT went away and AVPlayer paused itself: a listener pause.
+    func handleRouteLoss() {
+        routeLossAt = Date()
+        listenerIntentPlaying = false
+        guard !externalActive, player.currentItem != nil else { return }
+        pausedByListener = true
+        DiagLog.shared.log("session", "route change reason=oldDeviceUnavailable engine=player → treated as listener pause")
     }
 
     /// Enable/disable the lock-screen NEXT + PREVIOUS commands — the setlist sequencer turns
@@ -675,17 +961,18 @@ final class PlayerEngine {
     private func configureRemoteCommands() {
         let center = MPRemoteCommandCenter.shared()
 
+        // Bodies extracted (`handleRemote*`) for unit tests + the `[transport]` telemetry row.
         center.playCommand.addTarget { [weak self] _ in
-            guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
-            self.play(); return .success
+            guard let self else { return .commandFailed }
+            return self.handleRemotePlay()
         }
         center.pauseCommand.addTarget { [weak self] _ in
-            guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
-            self.pause(); return .success
+            guard let self else { return .commandFailed }
+            return self.handleRemotePause()
         }
         center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            guard let self, NowPlayingArbiter.shared.isActive(self) else { return .commandFailed }
-            self.toggle(); return .success
+            guard let self else { return .commandFailed }
+            return self.handleRemoteToggle()
         }
         center.changePlaybackPositionCommand.addTarget { [weak self] event in
             guard let self, NowPlayingArbiter.shared.isActive(self), !self.isLive,
@@ -798,6 +1085,9 @@ final class PlayerEngine {
             advancing: isPlaying && !isStalled,
             rate: externalActive ? (externalRate?() ?? 1) : 1,
             isLive: isLive, artwork: nowPlayingArtwork,
+            // HONEST card: a start that is still buffering wants to play — state `.playing`
+            // (head unit shows ⏸), cursor frozen (rate 0). A listener pause stays `.paused`.
+            intentPlaying: isPlaying && isStalled && !pausedByListener,
             detail: "art=\(nowPlayingArtwork != nil)\(isStalled ? " stalled" : "")\(cardOffsetSec > 0 ? " off=\(Int(cardOffsetSec))" : "")")
         // The lock-screen ♥ fill state — pushed on every card write (this method re-runs on each
         // load/play/pause/seek AND on a favorite change via refreshFavoriteState). Reads through
@@ -905,6 +1195,14 @@ final class PlayerEngine {
         // track's filled heart would bleed into the next owner / the idle lock screen. This is the sole
         // resign funnel, so clearing it here also covers the resign path.
         MPRemoteCommandCenter.shared().likeCommand.isActive = false
+        // P0-6: a running SET keeps the card ownership across the gap between two tracks (the
+        // local-lane stop before the next row resolves) — resigning there let a parked Mix
+        // answer the next remote command / flash its stale card. The set's own stop() clears
+        // the flag first, so a finished set still frees the card.
+        if holdsOwnershipAcrossTracks {
+            NPLog.trace("engine card CLEAR (ownership held across tracks)")
+            return
+        }
         NowPlayingArbiter.shared.resign(self)                           // release so the Mix can reclaim
     }
 }
