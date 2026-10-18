@@ -216,6 +216,10 @@ struct PocketDJApp: App {
     /// and routes the widget's transport buttons back to real playback. Held app-scoped so its
     /// state observation lives for the app's lifetime.
     @State private var widgetSync: WidgetSync
+    /// "Keep playing" supervisor (setlist lane): a 1 Hz watchdog that re-kicks / retries / advances
+    /// a set the listener wants playing but that has gone silent — never while paused or during
+    /// an interruption. App-scoped beside `widgetSync` (docs/design/playback-bulletproof-plan.md §3).
+    @State private var playbackSupervisor: PlaybackSupervisor
     /// Lazily resolves streaming cover art (Apple Music) for albums lacking a bundled
     /// cover, keyed off the indexer's catalog id — fetched ONLY when an album is on-screen.
     @State private var albumArt: AlbumArtworkStore
@@ -1195,6 +1199,10 @@ struct PocketDJApp: App {
                 SimilarityFamilies.canonicalGenre(
                     app?.songsById[id]?.albumId.flatMap { app?.albumsById[$0] }?.genre)
             }))
+        // "Keep playing" supervisor — the setlist lane only this ship (Mix gets its own detector).
+        let playbackSupervisor = PlaybackSupervisor(setlist: setlistPlayer, player: player, coordinator: coordinator)
+        playbackSupervisor.start()
+        _playbackSupervisor = State(initialValue: playbackSupervisor)
 
         // ── Apple Music playlist write-back ────────────────────────────────────
         // Adding a song to a SOURCE (Apple Music) playlist writes locally and queues the
