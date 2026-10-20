@@ -194,7 +194,7 @@ final class PlaylistAppleMusicSync {
         var indexByKey: [String: Int] = [:]
         var out: [AMPlaylistSyncClient.OutgoingPlaylist] = []
         var seenByKey: [String: Set<String>] = [:]
-        var seenNameByKey: [String: Set<String>] = [:]
+        var seenNameByKey: [String: SongDuplicateJudge.Seen] = [:]
         // PLURAL by necessity: resolveOutgoing merges name-colliding collections (a playlist
         // "Mix" and a pocket "Mix ") into ONE outgoing entry, so the push result's single id must
         // be stamped onto EVERY local collection that folded into it — otherwise the unstamped one
@@ -205,7 +205,7 @@ final class PlaylistAppleMusicSync {
             if indexByKey[key] == nil {
                 indexByKey[key] = out.count
                 seenByKey[key] = []
-                seenNameByKey[key] = []
+                seenNameByKey[key] = SongDuplicateJudge.Seen()
                 out.append(.init(name: name, description: nil, trackCatalogIds: []))
             }
             let i = indexByKey[key]!
@@ -215,7 +215,7 @@ final class PlaylistAppleMusicSync {
                 guard seenByKey[key]!.insert(catalogId).inserted else { continue }
                 // NAME+ARTIST duplicate gate (Levi 2026-07-29): the same recording under two
                 // catalog ids must push once — the duplicate-flood killer, client half.
-                guard seenNameByKey[key]!.insert(SongDuplicateJudge.key(name: song.name, artist: song.artist)).inserted else { continue }
+                guard let ident = app.duplicateIdentity(songId), seenNameByKey[key]!.insert(ident) else { continue }
                 out[i].trackCatalogIds.append(catalogId)
                 out[i].trackMeta.append(.init(id: catalogId, n: song.name, a: song.artist))
             }
@@ -548,13 +548,13 @@ final class PlaylistAppleMusicSync {
     /// catalog id, and one per name+artist identity (the duplicate-flood killer).
     static func catalogIds(for songIds: [String], app: AppModel,
                            resolved: [String: String]) -> [(id: String, name: String, artist: String)] {
-        var seenId = Set<String>(), seenIdentity = Set<String>()
+        var seenId = Set<String>(), seenIdentity = SongDuplicateJudge.Seen()
         var out: [(id: String, name: String, artist: String)] = []
         for songId in songIds {
             guard let song = app.songsById[songId],
                   let catalogId = song.appleMusicId ?? resolved[songId] else { continue }
             guard seenId.insert(catalogId).inserted else { continue }
-            guard seenIdentity.insert(SongDuplicateJudge.key(name: song.name, artist: song.artist)).inserted else { continue }
+            guard let ident = app.duplicateIdentity(songId), seenIdentity.insert(ident) else { continue }
             out.append((catalogId, song.name, song.artist))
         }
         return out
@@ -750,10 +750,10 @@ final class PlaylistAppleMusicSync {
             for r in (mayImport ? unmatched : []) {
                 // NAME+ARTIST duplicate gate on the way IN too: two remote ids resolving to two
                 // local twins of the same recording import once.
-                var seenSongKeys = Set<String>()
+                var seenSongKeys = SongDuplicateJudge.Seen()
                 let localIds = r.trackCatalogIds.compactMap { localByAppleMusicId[$0] }.filter { id in
-                    guard let song = app.songsById[id] else { return true }
-                    return seenSongKeys.insert(SongDuplicateJudge.key(name: song.name, artist: song.artist)).inserted
+                    guard let ident = app.duplicateIdentity(id) else { return true }
+                    return seenSongKeys.insert(ident)
                 }
                 _ = collections.createPlaylist(r.name, songIds: localIds,
                                                source: mirrorByName[Self.normName(r.name)])
