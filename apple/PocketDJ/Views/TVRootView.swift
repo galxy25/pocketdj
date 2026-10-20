@@ -415,6 +415,10 @@ struct TVSetlistNowPlayingCard: View {
                     }
                     positionLine(for: item)
                     transport
+                    HStack(spacing: 20) {
+                        TVNowPlayingActions(songId: item.id, idPrefix: "tv-np-set")
+                    }
+                    .font(.callout)
                 }
                 queueSection
             }
@@ -533,11 +537,38 @@ struct TVSetlistNowPlayingCard: View {
     }
 }
 
+/// ♥ Love + Add to… for whatever is on air — shared by BOTH tvOS Now Playing cards (setlist
+/// and mix) so the two can't drift. Add to… opens the shared `AddToCollectionView` (its tvOS
+/// layout: search on top, pockets A–Z, then playlists A–Z), never a TV-only picker.
+struct TVNowPlayingActions: View {
+    @Environment(AppModel.self) private var app
+    @Environment(FavoritesStore.self) private var favorites
+    let songId: String
+    /// Accessibility-id prefix: "tv-np-set" / "tv-np-mix".
+    let idPrefix: String
+    @State private var showAdd = false
+
+    var body: some View {
+        let fav = favorites.isFavorite(songId)
+        Button {
+            _ = favorites.toggle(songId, appleMusicId: app.songsById[songId]?.appleMusicId)
+        } label: {
+            Label(fav ? "Loved" : "Love", systemImage: fav ? "heart.fill" : "heart")
+                .foregroundStyle(fav ? Theme.accent : Theme.fg)
+        }
+        .accessibilityIdentifier("\(idPrefix)-heart")
+        Button { showAdd = true } label: {
+            Label("Add to…", systemImage: "text.badge.plus")
+        }
+        .accessibilityIdentifier("\(idPrefix)-addto")
+        .sheet(isPresented: $showAdd) { AddToCollectionView(item: .song(songId)) }
+    }
+}
+
 struct TVMixNowPlayingCard: View {
     @Environment(MixEngine.self) private var engine
     @Environment(SettingsStore.self) private var settings
     @Environment(AppModel.self) private var app
-    @Environment(FavoritesStore.self) private var favorites
     @Environment(RecFeedbackStore.self) private var feedback: RecFeedbackStore?
     @Environment(CollectionMixDownloader.self) private var downloader
     @State private var showPlayed = false
@@ -630,20 +661,12 @@ struct TVMixNowPlayingCard: View {
         }
     }
 
-    /// Second strip (owner's spec): ♥ · shuffle the queue · 👍 · 👎. The repeat toggle lives
+    /// Second strip (owner's spec): ♥ · Add to… · shuffle the queue · 👍 · 👎. The repeat toggle lives
     /// on the transport row above (`TVRepeatButton` — engine-backed, task #52).
     private var secondStrip: some View {
         HStack(spacing: 20) {
             if let track = engine.onAirTrack {
-                let fav = favorites.isFavorite(track.songId)
-                Button {
-                    _ = favorites.toggle(track.songId,
-                                         appleMusicId: app.songsById[track.songId]?.appleMusicId)
-                } label: {
-                    Label(fav ? "Loved" : "Love", systemImage: fav ? "heart.fill" : "heart")
-                        .foregroundStyle(fav ? Theme.accent : Theme.fg)
-                }
-                .accessibilityIdentifier("tv-np-mix-heart")
+                TVNowPlayingActions(songId: track.songId, idPrefix: "tv-np-mix")
             }
             Button { engine.autoQueueShuffleUpcoming() } label: {
                 Label("Shuffle queue", systemImage: "shuffle")
