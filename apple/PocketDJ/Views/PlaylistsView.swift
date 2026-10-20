@@ -95,6 +95,8 @@ struct PlaylistsView: View {
     @State private var showNewFolder = false
     @State private var newFolderName = ""
     @State private var renamingFolderId: String?
+    @State private var confirmingDedupeAll = false
+    @State private var dedupeAllRemoved: Int?
     @State private var folderNameDraft = ""
     @State private var deletingFolderId: String?
     /// Collapsed folder ids, persisted across launches (UserDefaults).
@@ -668,11 +670,29 @@ struct PlaylistsView: View {
                 }
                 .accessibilityIdentifier("collection-sort-\(order.rawValue)")
             }
+            Divider()
+            // Collections-wide maintenance rides this menu (a sixth toolbar icon overflows
+            // the iPhone bar). Confirmed first — it edits every pocket + playlist at once.
+            Button { confirmingDedupeAll = true } label: {
+                Label("Remove duplicates in all collections…", systemImage: "square.on.square.dashed")
+            }
+            .accessibilityIdentifier("collections-remove-duplicates")
         } label: {
             Image(systemName: "arrow.up.arrow.down")
         }
         .help("Sort collections")
         .accessibilityIdentifier("collection-sort-menu")
+        .confirmationDialog("Remove duplicates in every collection?", isPresented: $confirmingDedupeAll,
+                            titleVisibility: .visible) {
+            Button("Remove duplicates", role: .destructive) {
+                dedupeAllRemoved = collections.removeDuplicatesEverywhere()
+            }
+            .accessibilityIdentifier("collections-remove-duplicates-confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Keeps one copy of any song listed twice on the same album in a pocket or playlist.")
+        }
+        .removeDuplicatesAlert($dedupeAllRemoved)
     }
 
     @ToolbarContentBuilder private var toolbarContent: some ToolbarContent {
@@ -1056,6 +1076,7 @@ struct PlaylistDetailView: View {
     @State private var showCSVExporter = false
     @State private var csvDoc = CSVFile(data: Data())
     @State private var renamingSetlistId: String?
+    @State private var duplicatesRemoved: Int?
     @State private var setlistNameDraft = ""
     @State private var deletingSetlistId: String?
     @State private var addingNoteChapter: String?     // sequence nodeId to add a text note to
@@ -1222,6 +1243,7 @@ struct PlaylistDetailView: View {
                            play: { play(shuffle: $0) },
                            menuItems: { overflowMenu })
         .modifier(playlistAlerts)
+        .removeDuplicatesAlert($duplicatesRemoved)
         .alert("Sync from source", isPresented: syncResultShowing) {
             Button("OK") { syncResult = nil }
         } message: {
@@ -1294,6 +1316,11 @@ struct PlaylistDetailView: View {
             .accessibilityIdentifier("rename-playlist")
         Button { showFormatDialog = true } label: { Label("Export…", systemImage: "square.and.arrow.up") }
             .accessibilityIdentifier("export-playlist")
+        Button { duplicatesRemoved = collections.removeDuplicates(inPlaylist: playlistId) } label: {
+            Label("Remove duplicates", systemImage: "square.on.square.dashed")
+        }
+        .disabled(itemCount == 0)
+        .accessibilityIdentifier("playlist-remove-duplicates")
         Button { convertToPocket() } label: { Label("Convert to pocket", systemImage: "rectangle.stack.badge.plus") }
             .disabled(itemCount == 0)
             .accessibilityIdentifier("convert-to-pocket")

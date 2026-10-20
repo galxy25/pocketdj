@@ -38,6 +38,7 @@ struct PocketDetailView: View {
     @State private var resolvedSongIds: [String] = []
     @State private var isResolvingSongs = false
     @State private var renaming = false
+    @State private var duplicatesRemoved: Int?
     @State private var nameDraft = ""
     @State private var confirmingDelete = false
     @State private var showExporter = false
@@ -342,6 +343,7 @@ struct PocketDetailView: View {
             get: { linkResult != nil }, set: { if !$0 { linkResult = nil } })) {
             Button("OK") { linkResult = nil }
         } message: { Text(linkResult ?? "") }
+        .removeDuplicatesAlert($duplicatesRemoved)
         .alert("Rename pocket", isPresented: $renaming) {
             TextField("Name", text: $nameDraft)
             Button("Save") { let n = nameDraft.trimmingCharacters(in: .whitespaces); if !n.isEmpty { collections.renamePocket(pocketId, n) } }
@@ -391,6 +393,10 @@ struct PocketDetailView: View {
             .accessibilityIdentifier("rename-pocket")
         Button { showFormatDialog = true } label: { Label("Export…", systemImage: "square.and.arrow.up") }
             .accessibilityIdentifier("export-pocket")
+        Button { duplicatesRemoved = collections.removeDuplicates(inPocket: pocketId) } label: {
+            Label("Remove duplicates", systemImage: "square.on.square.dashed")
+        }
+        .accessibilityIdentifier("pocket-remove-duplicates")
         if pocket?.hasSource == true {
             sourceSyncMenuItems
         } else if !linkableSources.isEmpty {

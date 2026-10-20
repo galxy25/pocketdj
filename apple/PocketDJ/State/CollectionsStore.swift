@@ -814,6 +814,89 @@ final class CollectionsStore {
         }
     }
 
+    // MARK: Remove duplicates (same recording under two ids)
+
+    /// Collapse same-recording twins (`SongDuplicateJudge.collapsePlan`: exact name+artist OR
+    /// the same-release tier — "Never Let Me Down" vs "Never Let Me Down (feat. JAŸ-Z & J.
+    /// Ivy)" on The College Dropout). The kept copy prefers an Apple Music catalog id and takes
+    /// the group's earliest slot. NOT emitted as remove activity: a dedupe isn't a "don't want
+    /// this song" signal. Returns how many songs were removed.
+    @discardableResult
+    func removeDuplicates(inPocket id: String) -> Int {
+        guard let i = pockets.firstIndex(where: { $0.id == id }) else { return 0 }
+        let n = collapseDuplicates(&pockets[i])
+        if n > 0 { pockets[i].updatedAt = now; save() }
+        return n
+    }
+
+    @discardableResult
+    func removeDuplicates(inPlaylist id: String) -> Int {
+        guard let i = playlists.firstIndex(where: { $0.id == id }) else { return 0 }
+        let n = collapseDuplicates(&playlists[i])
+        if n > 0 { playlists[i].updatedAt = now; save() }
+        return n
+    }
+
+    /// Every pocket + playlist, ONE save (the document is multi-MB). Returns removed count.
+    @discardableResult
+    func removeDuplicatesEverywhere() -> Int {
+        var total = 0
+        for i in pockets.indices {
+            let n = collapseDuplicates(&pockets[i]); if n > 0 { pockets[i].updatedAt = now; total += n }
+        }
+        for i in playlists.indices {
+            let n = collapseDuplicates(&playlists[i]); if n > 0 { playlists[i].updatedAt = now; total += n }
+        }
+        if total > 0 { save() }
+        return total
+    }
+
+    private func duplicatePlan(_ ids: [String]) -> SongDuplicateJudge.CollapsePlan {
+        guard let app else { return .init() }
+        return SongDuplicateJudge.collapsePlan(ids) { app.duplicateIdentity($0) }
+    }
+
+    private func collapseDuplicates(_ p: inout Pocket) -> Int {
+        let plan = duplicatePlan(p.songIds)
+        guard !plan.isEmpty else { return 0 }
+        let before = p.songIds.count
+        p.songIds = p.songIds.filter { !plan.drop.contains($0) }.map { plan.rename[$0] ?? $0 }
+        // The slot's repeat count follows it onto the survivor; every other twin's goes.
+        let survivors = Set(plan.rename.values)
+        var repeats = p.songRepeats
+        for gone in plan.drop where !survivors.contains(gone) { repeats[gone] = nil }
+        for (from, to) in plan.rename { repeats[to] = repeats.removeValue(forKey: from) }
+        p.songRepeats = repeats
+        return before - p.songIds.count
+    }
+
+    private func collapseDuplicates(_ pl: inout Playlist) -> Int {
+        var order: [String] = []
+        func collect(_ ns: [PlaylistNode]) {
+            for n in ns {
+                if n.kind == .song, let sid = n.songId { order.append(sid) }
+                if let kids = n.children { collect(kids) }
+            }
+        }
+        collect(pl.sequences)
+        let plan = duplicatePlan(order)
+        guard !plan.isEmpty else { return 0 }
+        var removed = 0
+        func rewrite(_ ns: [PlaylistNode]) -> [PlaylistNode] {
+            ns.compactMap { n in
+                var c = n
+                if c.kind == .song, let sid = c.songId {
+                    if plan.drop.contains(sid) { removed += 1; return nil }   // prune by ORIGINAL id first
+                    if let to = plan.rename[sid] { c.songId = to }
+                }
+                if let kids = c.children { c.children = rewrite(kids) }
+                return c
+            }
+        }
+        pl.sequences = rewrite(pl.sequences)
+        return removed
+    }
+
     // MARK: Convert playlist → pocket
 
     /// Convert an editable playlist TEMPLATE into a NEW, reusable Pocket. Its song /
@@ -1104,13 +1187,13 @@ final class CollectionsStore {
         // "we shouldn't add a new song to a collection … if there is already a song with that
         // same name and artist".
         let keptAfterRemovals = p.songIds.filter { !removals.contains($0) }
-        var presentKeys = Set(keptAfterRemovals.compactMap { sid in
-            app?.songsById[sid].map { SongDuplicateJudge.key(name: $0.name, artist: $0.artist) }
-        })
+        // + the SAME-RELEASE tier (2026-10-19): feat.-credit / respelt-artist twins on one album.
+        var present = SongDuplicateJudge.Seen()
+        for sid in keptAfterRemovals { if let s = app?.duplicateIdentity(sid) { _ = present.insert(s) } }
         let additions = srcIds.filter { sid in
             guard !snapSet.contains(sid), !current.contains(sid) else { return false }
-            guard let song = app?.songsById[sid] else { return true }
-            return presentKeys.insert(SongDuplicateJudge.key(name: song.name, artist: song.artist)).inserted
+            guard let s = app?.duplicateIdentity(sid) else { return true }
+            return present.insert(s)
         }
         var newSongIds = keptAfterRemovals
         newSongIds.append(contentsOf: additions)
@@ -1149,13 +1232,14 @@ final class CollectionsStore {
         // recording already sits here under a different id is skipped; removals are pruned from a
         // separate pass below, and a removed id's key no longer guards once pruned next sync).
         let snapSetPl = Set(snapshot)
-        var presentKeysPl = Set(currentSongIds.subtracting(removals).compactMap { sid in
-            app?.songsById[sid].map { SongDuplicateJudge.key(name: $0.name, artist: $0.artist) }
-        })
+        var presentPl = SongDuplicateJudge.Seen()
+        for sid in currentSongIds.subtracting(removals) {
+            if let s = app?.duplicateIdentity(sid) { _ = presentPl.insert(s) }
+        }
         let additions = srcIds.filter { sid in
             guard !snapSetPl.contains(sid), !currentSongIds.contains(sid) else { return false }
-            guard let song = app?.songsById[sid] else { return true }
-            return presentKeysPl.insert(SongDuplicateJudge.key(name: song.name, artist: song.artist)).inserted
+            guard let s = app?.duplicateIdentity(sid) else { return true }
+            return presentPl.insert(s)
         }
 
         var removedCount = 0
