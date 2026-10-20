@@ -133,6 +133,7 @@ struct AddToCollectionView: View {
         func hit(_ name: String) -> Bool { FuzzyMatch.matches(query: search, candidate: name) }
         if collections.pockets.contains(where: { hit($0.name) }) { return false }
         if collections.playlists.contains(where: { hit($0.name) }) { return false }
+        if Self.tvLayout { return true }   // tvOS lists pockets + playlists only
         if songId != nil, app.indexPlaylists.contains(where: { hit($0.name) }) { return false }
         if recentTargets.contains(where: { hit(collections.lastTargetLabel($0) ?? "") }) { return false }
         return !suggestedTargets.contains(where: { hit(collections.lastTargetLabel($0) ?? "") })
@@ -172,6 +173,15 @@ struct AddToCollectionView: View {
         .onDisappear { rowSelection?.textEntryFocused = false }
     }
 
+    /// tvOS (Levi 2026-10-20): search on top, then pockets A–Z, then playlists A–Z — nothing
+    /// else. The remote walks the list top-down by focus, so Suggested/Recent/shared-source
+    /// sections and per-chapter rows were just distance between the field and the targets.
+    #if os(tvOS)
+    private static let tvLayout = true
+    #else
+    private static let tvLayout = false
+    #endif
+
     @ViewBuilder private var noMatchesSection: some View {
         if hasNoMatches {
             Section {
@@ -185,6 +195,10 @@ struct AddToCollectionView: View {
     var body: some View {
         NavigationStack {
             List {
+                // tvOS: the field is the FIRST focusable row (an inset above the List isn't
+                // reliably reachable by the focus engine).
+                if Self.tvLayout { Section { searchField } }
+
                 // WHAT is being added — shown only for studio items: a sample/loop/
                 // sequence row has no backing detail screen naming it behind this
                 // sheet, so the sheet itself says so. Songs/albums keep the sheet
@@ -230,7 +244,7 @@ struct AddToCollectionView: View {
                 // SUGGESTED (recommendation engine): the server's collection matches for this
                 // song, above Recent. Deduped against Recent by (kind,id); hidden when the
                 // engine is off, the song has no suggestions, or none still resolve locally.
-                if !filteredSuggestedTargets.isEmpty {
+                if !Self.tvLayout, !filteredSuggestedTargets.isEmpty {
                     Section("Suggested") {
                         ForEach(Array(filteredSuggestedTargets.enumerated()), id: \.offset) { idx, target in
                             Button { toggleTarget(target) } label: {
@@ -251,7 +265,7 @@ struct AddToCollectionView: View {
                 // RECENT quick-add (F11): the last few collections you added to, most-recent
                 // first — one tap re-adds. Supersedes the single "Last used" row. Filtered to
                 // targets that still RESOLVE (a deleted collection drops out) and capped at 3.
-                if !filteredRecentTargets.isEmpty {
+                if !Self.tvLayout, !filteredRecentTargets.isEmpty {
                     Section("Recent") {
                         ForEach(Array(filteredRecentTargets.enumerated()), id: \.offset) { idx, target in
                             Button { toggleTarget(target) } label: {
@@ -288,7 +302,7 @@ struct AddToCollectionView: View {
                 } header: {
                     Text("Pockets")
                 } footer: {
-                    Text("Tap to add or remove — an item can live in several.")
+                    if !Self.tvLayout { Text("Tap to add or remove — an item can live in several.") }
                 }
 
                 Section {
@@ -304,7 +318,7 @@ struct AddToCollectionView: View {
                             }
                         }
                         .accessibilityIdentifier("add-playlist-\(pl.id)")
-                        if pl.sequences.count > 1 {
+                        if !Self.tvLayout, pl.sequences.count > 1 {
                             ForEach(pl.sequences) { seq in
                                 Button {
                                     // Chapter rows dedup against THIS chapter only — placing
@@ -326,15 +340,17 @@ struct AddToCollectionView: View {
                 } header: {
                     Text("Playlists")
                 } footer: {
-                    Text("Tap to add or remove. Chapters add to a specific one.")
+                    if !Self.tvLayout { Text("Tap to add or remove. Chapters add to a specific one.") }
                 }
 
-                sourcePlaylistsSection
+                if !Self.tvLayout { sourcePlaylistsSection }
                 noMatchesSection
             }
             // The filter field rides the top edge of the list on every platform (iPhone,
             // iPad, Mac, Vision Pro) — pinned, so it stays put while the list scrolls.
-            .safeAreaInset(edge: searchFirst ? .bottom : .top, spacing: 0) { searchField }
+            .safeAreaInset(edge: searchFirst ? .bottom : .top, spacing: 0) {
+                if !Self.tvLayout { searchField }
+            }
             .navigationTitle("Add to…")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
