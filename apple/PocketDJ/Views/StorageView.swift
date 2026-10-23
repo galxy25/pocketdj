@@ -301,8 +301,10 @@ struct StorageView: View {
                 .accessibilityIdentifier("storage-cap-stepper")
                 HStack {
                     Button("Prune now") {
-                        storage.pruneNow()
-                        refreshUsage()
+                        Task {
+                            await storage.prune()
+                            refreshUsage()
+                        }
                     }
                     .accessibilityIdentifier("storage-prune-now")
                     Spacer()

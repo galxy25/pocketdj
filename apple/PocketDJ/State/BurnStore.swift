@@ -867,7 +867,8 @@ final class BurnStore {
     /// Prefers the recorded `cutFileName`; if that's missing or its file is gone, scans the burn
     /// dir for the cut by its deterministic `-<songId>.mp3` suffix and HEALS the record (so the
     /// next load is O(1) and the ledger becomes correct). Caller must already hold the dir's scope.
-    private func resolveCutFileName(for item: BurnItem, in dir: URL) -> String? {
+    private func resolveCutFileName(for item: BurnItem, in dir: URL,
+                                    listing: (() -> [String])? = nil, heal: Bool = true) -> String? {
         if let cut = item.cutFileName,
            FileManager.default.fileExists(atPath: dir.appendingPathComponent(cut).path) {
             return cut
@@ -878,9 +879,10 @@ final class BurnStore {
         // "-<songId>.mp3" would be an ORPHAN from a prior burn, not a cut. Never scan/heal for
         // digital: fall back to the current audioFileName.
         guard item.source == "analog" else { return nil }
-        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path),
+        guard let names = listing?() ?? (try? FileManager.default.contentsOfDirectory(atPath: dir.path)),
               let found = Self.cutFileName(amongst: names, songId: item.songId,
                                            audioFileName: item.audioFileName) else { return nil }
+        guard heal else { return found }
         items[item.songId]?.cutFileName = found   // self-heal the stale record + persist
         save()
         return found
@@ -992,6 +994,10 @@ final class BurnStore {
         guard !gonerIds.isEmpty else { return }
         // Audio files still referenced by a surviving (or skipped) item must not be deleted.
         let survivorAudio = Set(items.values.filter { !gonerIds.contains($0.songId) }.map(\.audioFileName))
+        // One listing per dir for the whole batch: an analog cut lookup otherwise re-lists the
+        // (thousands-of-files) burns dir PER SONG, and its self-heal re-saves the ledger per
+        // song — for records this very call is about to drop.
+        var listings: [String: [String]] = [:]
         for (id, resolved) in goners {
             guard let item = items[id] else { continue }
             let dir = resolved.url
@@ -1001,7 +1007,13 @@ final class BurnStore {
             if !item.sidecarFileName.isEmpty {
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(item.sidecarFileName))
             }
-            if let cut = resolveCutFileName(for: item, in: dir) {
+            let listing = {
+                if let cached = listings[dir.path] { return cached }
+                let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+                listings[dir.path] = names
+                return names
+            }
+            if let cut = resolveCutFileName(for: item, in: dir, listing: listing, heal: false) {
                 try? FileManager.default.removeItem(at: dir.appendingPathComponent(cut))
             }
             if resolved.scoped { dir.stopAccessingSecurityScopedResource() }
@@ -1195,6 +1207,87 @@ final class BurnStore {
             }
         }
         return total
+    }
+
+    /// The prune planner's output: the burned footprint measured by ONE disk scan, and the
+    /// songs to evict (in eviction order) to fit the cap(s), with the projected footprint.
+    struct EvictionPlan: Equatable {
+        var usageBytes: Int          // measured footprint BEFORE any eviction
+        var projectedBytes: Int      // footprint once `evict` is gone (estimate; re-measure after)
+        var evict: [String]
+    }
+
+    /// Plan a soft-cap prune with ONE scan of each burn root: walk `order` (eviction
+    /// priority), crediting each song the bytes `removeBurns` would actually free — its
+    /// sidecar, cut, stems and beat grid, plus the audio file only once no other ledger item
+    /// still references it (a shared analog album mp3 frees with its LAST song) — until the
+    /// footprint fits `capBytes` and the ready count fits `capSongs`. Pure planning; deletes
+    /// nothing. Replaces re-measuring the whole disk after every single eviction, which on a
+    /// 35 GB library pinned the main thread long enough for the watchdog to kill the app on
+    /// every launch (the stamp that would have stopped the retry never got written).
+    func planEviction(order: [String], capBytes: Int, capSongs: Int) -> EvictionPlan {
+        var ledgerNames = Set<String>()
+        var audioRefs: [String: Int] = [:]
+        for it in items.values {
+            if !it.audioFileName.isEmpty {
+                ledgerNames.insert(it.audioFileName)
+                audioRefs[it.audioFileName, default: 0] += 1
+            }
+            if !it.sidecarFileName.isEmpty { ledgerNames.insert(it.sidecarFileName) }
+            if let c = it.cutFileName { ledgerNames.insert(c) }
+        }
+        var sizes: [String: [String: Int]] = [:]   // root path → counted file name → bytes
+        var listings: [String: [String]] = [:]
+        var appRoot: String?
+        var userRoot: String?
+        var usage = 0
+        forEachBurnRoot { dir, isUserFolder in
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+            if isUserFolder { userRoot = dir.path } else { appRoot = dir.path }
+            listings[dir.path] = names
+            var counted: [String: Int] = [:]
+            for n in names where ledgerNames.contains(n) || ownsAuxFile(n, inUserFolder: isUserFolder) {
+                let path = dir.appendingPathComponent(n).path
+                if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int {
+                    counted[n] = size
+                    usage += size
+                }
+            }
+            sizes[dir.path] = counted
+        }
+        var projected = usage
+        var songCount = readyBurnedIds.count
+        var evict: [String] = []
+        for id in order {
+            guard projected > capBytes || songCount > capSongs else { break }
+            guard let item = items[id] else { continue }
+            // Same reachability rule as `removeBurns`: an unresolvable root's item is kept.
+            guard let root = (item.wasAppStorage ?? true) ? appRoot : userRoot,
+                  let counted = sizes[root] else { continue }
+            var freed = 0
+            if !item.sidecarFileName.isEmpty { freed += counted[item.sidecarFileName] ?? 0 }
+            if let cut = item.cutFileName, let size = counted[cut] {
+                freed += size
+            } else if item.source == "analog",
+                      let cut = Self.cutFileName(amongst: listings[root] ?? [], songId: id,
+                                                 audioFileName: item.audioFileName) {
+                freed += counted[cut] ?? 0
+            }
+            if !item.audioFileName.isEmpty {
+                let left = (audioRefs[item.audioFileName] ?? 1) - 1
+                audioRefs[item.audioFileName] = left
+                if left <= 0 { freed += counted[item.audioFileName] ?? 0 }
+            }
+            // Aux files go from EVERY root (`removeAuxFiles`).
+            let auxNames = Self.stemNames.map { Self.stemFileName(id, $0) } + [Self.beatgridFileName(id)]
+            for (_, rootCounted) in sizes {
+                for n in auxNames { freed += rootCounted[n] ?? 0 }
+            }
+            projected -= freed
+            evict.append(id)
+            if item.state == .ready { songCount -= 1 }
+        }
+        return EvictionPlan(usageBytes: usage, projectedBytes: projected, evict: evict)
     }
 
     /// Ready burned songs grouped by artist with APPROXIMATE attributable bytes (each

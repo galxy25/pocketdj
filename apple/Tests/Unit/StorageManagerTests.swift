@@ -61,11 +61,11 @@ final class StorageManagerTests: XCTestCase {
 
     // MARK: Unset cap ⇒ fully manual
 
-    func testUnsetCapNeverPrunes() throws {
+    func testUnsetCapNeverPrunes() async throws {
         let w = try makeWorld(items: [("s1", 1), ("s2", 2), ("s3", 3)])
         XCTAssertNil(w.settings.storageSoftCapGB, "cap must default to UNSET")
         XCTAssertNil(w.mgr.pruneNow(now: 1_000))
-        w.mgr.pruneIfDue(now: 1_000)
+        await w.mgr.pruneIfDue(now: 1_000)
         XCTAssertEqual(w.burns.items.count, 3, "no cap ⇒ nothing is ever auto-deleted")
         XCTAssertNil(w.settings.lastStoragePruneAt)
     }
@@ -148,28 +148,28 @@ final class StorageManagerTests: XCTestCase {
 
     // MARK: The once-a-day gate
 
-    func testPruneIfDueHonorsDailyGate() throws {
+    func testPruneIfDueHonorsDailyGate() async throws {
         let w = try makeWorld(items: [("s1", 1), ("s2", 2)])
         w.settings.storageSoftCapGB = gb(5)
         let day: Double = 24 * 3600 * 1000
 
         // Ran 1 h ago → not due.
         w.settings.lastStoragePruneAt = day - 3_600_000
-        w.mgr.pruneIfDue(now: day)
+        await w.mgr.pruneIfDue(now: day)
         XCTAssertEqual(w.burns.items.count, 2)
 
         // Ran 21 h ago (> the 20 h gate) → due.
         w.settings.lastStoragePruneAt = day - 21 * 3_600_000
-        w.mgr.pruneIfDue(now: day)
+        await w.mgr.pruneIfDue(now: day)
         XCTAssertLessThan(w.burns.items.count, 2)
         XCTAssertEqual(w.settings.lastStoragePruneAt, day)
     }
 
-    func testPruneIfDueRunsWhenNeverRan() throws {
+    func testPruneIfDueRunsWhenNeverRan() async throws {
         let w = try makeWorld(items: [("s1", 1), ("s2", 2)])
         w.settings.storageSoftCapGB = gb(5)
         XCTAssertNil(w.settings.lastStoragePruneAt)
-        w.mgr.pruneIfDue(now: 1_000)
+        await w.mgr.pruneIfDue(now: 1_000)
         XCTAssertLessThan(w.burns.items.count, 2)
     }
 
@@ -205,10 +205,10 @@ final class StorageManagerTests: XCTestCase {
     }
 
     /// A songs cap ALONE arms the daily gate — pruneIfDue must not still require the GB cap.
-    func testSongsCapAloneArmsTheDailyGate() throws {
+    func testSongsCapAloneArmsTheDailyGate() async throws {
         let w = try makeWorld(items: [("s1", 1), ("s2", 2)])
         w.settings.storageSoftCapSongs = 1
-        w.mgr.pruneIfDue(now: 7_000)
+        await w.mgr.pruneIfDue(now: 7_000)
         XCTAssertEqual(w.burns.items.count, 1, "songs cap alone must prune")
         XCTAssertEqual(w.settings.lastStoragePruneAt, 7_000)
     }
@@ -242,14 +242,14 @@ final class StorageManagerTests: XCTestCase {
 
     /// tvOS semantics (autoManageGate): the TV Settings toggle is the MASTER switch —
     /// toggle OFF ⇒ no pruning at all, even with caps set.
-    func testAutoManageGateOffDisablesAllPruning() throws {
+    func testAutoManageGateOffDisablesAllPruning() async throws {
         let w = try makeWorld(items: [("s1", 1), ("s2", 2)])
         w.mgr.autoManageGate = true               // simulate tvOS from the iOS bundle
         w.settings.storageAutoManage = false
         w.settings.storageSoftCapGB = gb(5)
         w.settings.storageSoftCapSongs = 1
         XCTAssertNil(w.mgr.pruneNow(now: 1_000))
-        w.mgr.pruneIfDue(now: 1_000)
+        await w.mgr.pruneIfDue(now: 1_000)
         XCTAssertEqual(w.burns.items.count, 2, "auto-manage OFF ⇒ the TV never deletes")
         XCTAssertNil(w.settings.lastStoragePruneAt)
     }
@@ -277,5 +277,57 @@ final class StorageManagerTests: XCTestCase {
         w.settings.storageSoftCapGB = gb(5)
         _ = w.mgr.pruneNow(now: 1_000)
         XCTAssertLessThan(w.burns.items.count, 2, "cap set ⇒ prune, toggle ignored")
+    }
+
+    // MARK: Launch-crash-loop regression (35 GB library, 32 GB cap)
+
+    /// The daily stamp must be on disk BEFORE any eviction work starts: a prune the
+    /// watchdog kills mid-run must not re-run on the very next launch (it did, every launch).
+    func testDailyStampIsWrittenBeforeEvicting() throws {
+        let w = try makeWorld(items: [("s1", 1), ("s2", 2), ("s3", 3)])
+        w.settings.storageSoftCapGB = gb(15)
+        var stampSeenDuringPlanning: Double?
+        w.mgr.protectedSongIds = { [settings = w.settings] in
+            stampSeenDuringPlanning = settings.lastStoragePruneAt
+            return []
+        }
+        _ = w.mgr.pruneNow(now: 55_000)
+        XCTAssertEqual(stampSeenDuringPlanning, 55_000, "stamp must precede the eviction work")
+    }
+
+    /// The async (app) pass evicts the same LRP set as the sync pass, in chunks.
+    func testAsyncPruneEvictsAcrossChunks() async throws {
+        let ids = (0..<(StorageManager.evictionChunk * 2 + 5)).map { (id: "s\($0)", downloadedAt: Double($0)) }
+        let w = try makeWorld(items: ids)
+        w.settings.storageSoftCapGB = gb(35)   // 30 ≤ 35 < 40 → keep the 3 newest downloads
+        let pruned = await w.mgr.prune(now: 1_000)
+        let result = try XCTUnwrap(pruned)
+        XCTAssertEqual(result.evicted, ids.count - 3)
+        XCTAssertEqual(result.usageBytes, 30)
+        XCTAssertEqual(Set(w.burns.items.keys), Set(ids.suffix(3).map(\.id)), "oldest downloads go first")
+        XCTAssertFalse(w.mgr.isPruning)
+    }
+
+    /// A song that becomes protected (loaded on a deck) mid-prune is spared by later chunks.
+    func testAsyncPruneRereadsProtectedSetPerChunk() async throws {
+        let ids = (0..<(StorageManager.evictionChunk + 5)).map { (id: "s\($0)", downloadedAt: Double($0)) }
+        let w = try makeWorld(items: ids)
+        w.settings.storageSoftCapGB = gb(10)
+        let late = "s\(StorageManager.evictionChunk + 1)"   // lands in the SECOND chunk
+        var calls = 0
+        w.mgr.protectedSongIds = { calls += 1; return calls > 1 ? [late] : [] }
+        _ = await w.mgr.prune(now: 1_000)
+        XCTAssertNotNil(w.burns.items[late], "protected after planning → still spared")
+    }
+
+    /// Planning credits stems + beat grids, so a cap reached by deleting aux bytes stops early.
+    func testPlanCountsAuxFilesTowardFreedBytes() throws {
+        let w = try makeWorld(items: [("s1", 1), ("s2", 2)])
+        try Data(repeating: 0, count: 40).write(to: dir.appendingPathComponent("stem-s1-vocals.mp3"))
+        // 20 audio + 40 stem = 60; cap 25 → evicting s1 frees 50 (audio 10 + stem 40) → fits.
+        let plan = w.burns.planEviction(order: ["s1", "s2"], capBytes: 25, capSongs: .max)
+        XCTAssertEqual(plan.usageBytes, 60)
+        XCTAssertEqual(plan.evict, ["s1"])
+        XCTAssertEqual(plan.projectedBytes, 10)
     }
 }
