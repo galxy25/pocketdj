@@ -438,3 +438,14 @@ final class PlayerEngineFavoriteTests: XCTestCase {
         player.stop()
     }
 }
+
+/// Burned (local-file) playback must never use AirPlay external-playback mode: an Apple TV
+/// receiver can't open the phone's local file, so every downloaded song failed with
+/// AVFoundationErrorDomain#-11870 and a shuffled collection skipped all of them (2026-10-23).
+@MainActor
+final class PlayerEngineExternalPlaybackTests: XCTestCase {
+    func testExternalPlaybackModeIsDisabled() {
+        let engine = PlayerEngine()
+        XCTAssertFalse(engine.allowsExternalPlayback)
+    }
+}

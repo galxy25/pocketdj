@@ -176,6 +176,13 @@ final class PlayerEngine {
         // re-arms it before playback, and every engine (Mix / Studio / Stem / Instrument) does its
         // own setCategory + setActive on start — so nothing is silenced; activation just no longer
         // sits on the launch critical path.
+        // Audio-only player: NEVER switch to AirPlay "external playback" mode. In that mode the
+        // asset itself is handed to the receiver (an Apple TV), which can't open a local burned
+        // file → every burned item fails AVFoundationErrorDomain#-11870
+        // (ExternalPlaybackNotSupportedForAsset) and the set skips each downloaded song until
+        // it lands on an Apple Music one. Off, the audio simply follows the AirPlay ROUTE like
+        // any other app sound — local files, streams and analog cuts all play.
+        player.allowsExternalPlayback = false
         configureInterruptionObserver()
         configureRemoteCommands()
         // Drive the scrubber ~4×/s.
@@ -335,11 +342,25 @@ final class PlayerEngine {
         updateNowPlayingInfo()
     }
 
+    /// The current audio output ports ("AirPlay:Living Room") — for the failure diag line, so
+    /// a route-dependent failure is visible in the trace instead of looking like a bad file.
+    /// Test probe: whether the underlying AVPlayer may enter AirPlay external-playback mode.
+    var allowsExternalPlayback: Bool { player.allowsExternalPlayback }
+
+    static func outputRouteSummary() -> String {
+        #if os(macOS)
+        return "-"
+        #else
+        let outs = AVAudioSession.sharedInstance().currentRoute.outputs
+        return outs.isEmpty ? "none" : outs.map { "\($0.portType.rawValue):\($0.portName)" }.joined(separator: ",")
+        #endif
+    }
+
     private func itemBecameReady(_ item: AVPlayerItem) {
         if item.status == .failed {
             let err = item.error as NSError?
             NPLog.trace("engine item status FAILED \(err.map { "\($0.domain)#\($0.code)" } ?? "?")")
-            DiagLog.shared.log("playback", "item load failed song=\(nowPlayingSongId ?? "?") err=\(err.map { "\($0.domain)#\($0.code)" } ?? "?")")
+            DiagLog.shared.log("playback", "item load failed song=\(nowPlayingSongId ?? "?") err=\(err.map { "\($0.domain)#\($0.code)" } ?? "?") route=\(Self.outputRouteSummary()) external=\(player.isExternalPlaybackActive ? 1 : 0)")
             // A dead item never plays and never posts an end — without this the set sat silent
             // on it until ⏭. Same one-shot latch as the natural end, after a short grace
             // (`itemFailedSignalDelay`) in which a superseding load/skip wins — only the item
