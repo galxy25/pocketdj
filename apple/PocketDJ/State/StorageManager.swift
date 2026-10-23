@@ -92,65 +92,101 @@ final class StorageManager {
         self.settings = settings
     }
 
+    /// True while a prune is running — the 15-min tick, scenePhase hook and BGTask can all
+    /// fire close together; only one pass may run.
+    @ObservationIgnored private(set) var isPruning = false
+    /// Evictions per main-actor turn in the async pass — big enough to be quick, small
+    /// enough that the UI never stalls behind a long delete run.
+    nonisolated static let evictionChunk = 25
+
     /// The once-a-day gate: prune only when a cap is SET and the last run is old enough.
     /// Called from the daily BGTask (iOS) and every foreground activation (both platforms).
-    func pruneIfDue(now: Double = Date().timeIntervalSince1970 * 1000) {
-        guard activeCap() != nil else { return }   // no active cap ⇒ manual-only
+    func pruneIfDue(now: Double = Date().timeIntervalSince1970 * 1000) async {
+        guard activeCap() != nil, !isPruning else { return }   // no active cap ⇒ manual-only
         if let last = settings.lastStoragePruneAt, now - last < Self.pruneIntervalMs { return }
-        pruneNow(now: now)
+        await prune(now: now)
+    }
+
+    /// The app's prune: plan once, then evict in small chunks, yielding the main actor
+    /// between them so taps, playback and the UI keep running through a multi-GB prune.
+    @discardableResult
+    func prune(now: Double = Date().timeIntervalSince1970 * 1000) async -> PruneResult? {
+        guard !isPruning, let run = beginPrune(now: now) else { return nil }
+        isPruning = true
+        defer { isPruning = false }
+        var start = 0
+        while start < run.plan.evict.count {
+            let end = min(start + Self.evictionChunk, run.plan.evict.count)
+            // Re-read the protected set per chunk: a song loaded onto a deck mid-prune is spared.
+            let protected = protectedSongIds()
+            burns.removeBurns(songIds: run.plan.evict[start..<end].filter { !protected.contains($0) })
+            start = end
+            await Task.yield()
+        }
+        return finishPrune(run)
+    }
+
+    /// Synchronous prune (Settings' "prune now" path and tests): same plan, one batch.
+    @discardableResult
+    func pruneNow(now: Double = Date().timeIntervalSince1970 * 1000) -> PruneResult? {
+        guard !isPruning, let run = beginPrune(now: now) else { return nil }
+        burns.removeBurns(songIds: run.plan.evict)
+        return finishPrune(run)
+    }
+
+    private struct PruneRun {
+        var cap: ActiveCap
+        var usageBefore: Int
+        var plan: BurnStore.EvictionPlan
+        var itemsBefore: Int
     }
 
     /// Evict least-recently-played burned songs until the burned footprint fits the active
     /// cap(s) — bytes, song count, or both: never-played songs first (oldest download
-    /// first), then by last play time. Usage is re-measured from disk after each eviction
-    /// (a shared analog album mp3 only frees when its LAST song goes). No-op when no cap
-    /// is active.
-    @discardableResult
-    func pruneNow(now: Double = Date().timeIntervalSince1970 * 1000) -> PruneResult? {
+    /// first), then by last play time. ONE disk scan plans the whole pass
+    /// (`BurnStore.planEviction`) and the footprint is re-measured once at the end — never
+    /// per eviction. The daily stamp is written FIRST: if the process dies mid-prune
+    /// (watchdog, jetsam, user force-quit) the next launch must NOT retry straight away —
+    /// that is exactly the launch-crash loop a 35 GB → 32 GB cap produced. No-op when no
+    /// cap is active.
+    private func beginPrune(now: Double) -> PruneRun? {
         guard let cap = activeCap() else { return nil }
+        settings.lastStoragePruneAt = now
+        settings.persist()
         let capBytes = cap.bytes ?? Int.max
         let capSongs = cap.songs ?? Int.max
-        var usage = burns.burnedUsageBytes()
-        var songCount = burns.readyBurnedIds.count
-        var result = PruneResult(usageBytes: usage, capBytes: cap.bytes ?? 0,
-                                 usageSongs: songCount, capSongs: cap.songs ?? 0)
-        if usage > capBytes {
+        let usageBefore = burns.burnedUsageBytes()
+        if usageBefore > capBytes {
             // Cheap space first: orphan stem/beat-grid cache (songs with no burned
             // audio) goes before any real burned song is evicted.
             burns.sweepOrphanAuxFiles()
-            let afterSweep = burns.burnedUsageBytes()
-            result.freedBytes += max(0, usage - afterSweep)
-            usage = afterSweep
         }
-        if usage > capBytes || songCount > capSongs {
-            let protected = protectedSongIds()
-            // LRP first — never-played (0) ahead of everything, oldest download breaking ties.
-            // A burn's `songId` is the RESOLVING id, so a substituted (clean/explicit) burn is
-            // keyed "sng_…_clean" while its plays are recorded against the BASE song — read
-            // recency through `baseId` or every variant burn looks never-played and is evicted
-            // first, ahead of genuinely cold files.
-            let candidates = burns.items.values
-                .filter { $0.state == .ready && !protected.contains($0.songId) }
-                .sorted { a, b in
-                    let lastA = playStats.lastPlayedAt(SongVariant.baseId(a.songId)) ?? 0
-                    let lastB = playStats.lastPlayedAt(SongVariant.baseId(b.songId)) ?? 0
-                    if lastA != lastB { return lastA < lastB }
-                    return a.downloadedAt < b.downloadedAt
-                }
-            for candidate in candidates {
-                guard usage > capBytes || songCount > capSongs else { break }
-                burns.removeBurns(songIds: [candidate.songId])
-                let after = burns.burnedUsageBytes()
-                result.freedBytes += max(0, usage - after)
-                result.evicted += 1
-                usage = after
-                songCount = burns.readyBurnedIds.count
+        let protected = protectedSongIds()
+        // LRP first — never-played (0) ahead of everything, oldest download breaking ties.
+        // A burn's `songId` is the RESOLVING id, so a substituted (clean/explicit) burn is
+        // keyed "sng_…_clean" while its plays are recorded against the BASE song — read
+        // recency through `baseId` or every variant burn looks never-played and is evicted
+        // first, ahead of genuinely cold files.
+        let order = burns.items.values
+            .filter { $0.state == .ready && !protected.contains($0.songId) }
+            .map { (item: $0, last: playStats.lastPlayedAt(SongVariant.baseId($0.songId)) ?? 0) }
+            .sorted { a, b in
+                if a.last != b.last { return a.last < b.last }
+                return a.item.downloadedAt < b.item.downloadedAt
             }
-        }
-        result.usageBytes = usage
-        result.usageSongs = burns.readyBurnedIds.count
-        settings.lastStoragePruneAt = now
-        settings.persist()
+            .map(\.item.songId)
+        let plan = burns.planEviction(order: order, capBytes: capBytes, capSongs: capSongs)
+        DiagLog.shared.log("storage", "prune start usage=\(usageBefore) cap=\(cap.bytes ?? 0) capSongs=\(cap.songs ?? 0) songs=\(burns.readyBurnedIds.count) evict=\(plan.evict.count) projected=\(plan.projectedBytes)")
+        return PruneRun(cap: cap, usageBefore: usageBefore, plan: plan, itemsBefore: burns.items.count)
+    }
+
+    private func finishPrune(_ run: PruneRun) -> PruneResult {
+        let usage = burns.burnedUsageBytes()
+        let result = PruneResult(evicted: max(0, run.itemsBefore - burns.items.count),
+                                 freedBytes: max(0, run.usageBefore - usage),
+                                 usageBytes: usage, capBytes: run.cap.bytes ?? 0,
+                                 usageSongs: burns.readyBurnedIds.count, capSongs: run.cap.songs ?? 0)
+        DiagLog.shared.log("storage", "prune done evicted=\(result.evicted) freed=\(result.freedBytes) usage=\(usage)")
         lastResult = result
         return result
     }

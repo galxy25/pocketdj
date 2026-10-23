@@ -999,7 +999,7 @@ struct PocketDJApp: App {
         // itself is server-side; this only catches up the client's "ripped" view).
         RipReconcileBridge.shared.refresh = { [weak rips] in await rips?.refreshManifest() }
         // Let the daily storage-prune BGTask reach the live prune engine (gate included).
-        StoragePruneBridge.shared.prune = { [weak storage] in storage?.pruneIfDue() }
+        StoragePruneBridge.shared.prune = { [weak storage] in await storage?.pruneIfDue() }
         #endif
         // ── Studio cross-wiring ────────────────────────────────────────────────
         // The store resolves per-family folder bookmarks through settings; the mic recorder
@@ -2002,7 +2002,7 @@ struct PocketDJApp: App {
                         // and can sit .active for days, so the scenePhase hook below alone
                         // would let burns grow past the cap indefinitely. Cheap: pruneIfDue
                         // exits on its own 20 h gate (and instantly when no cap is active).
-                        storage.pruneIfDue()
+                        await storage.pruneIfDue()
                     }
                 }
                 // Cross-device freshness while the app is OPEN. Without this, a Mac that stays
@@ -2070,7 +2070,7 @@ struct PocketDJApp: App {
                         // best-effort). Gated inside; a plain Task defers it past the
                         // activation tick so foregrounding never waits on disk scans. A TV
                         // that never leaves .active is covered by the 15-min tick above.
-                        Task { storage.pruneIfDue() }
+                        Task { await storage.pruneIfDue() }
                     case .background:
                         streaming.onScenePhaseBackground()
                         // Diag/telemetry tail: the debounce window would otherwise die with the

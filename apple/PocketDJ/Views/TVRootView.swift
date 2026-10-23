@@ -1740,7 +1740,7 @@ struct TVSettingsView: View {
     /// disk walk (`burnedUsageBytes` measures the burns folder file-by-file).
     private func pruneAndRemeasure() {
         Task {
-            storage.pruneNow()
+            await storage.prune()
             refreshUsage()
         }
     }
