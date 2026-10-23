@@ -182,7 +182,9 @@ final class PlayerEngine {
         // (ExternalPlaybackNotSupportedForAsset) and the set skips each downloaded song until
         // it lands on an Apple Music one. Off, the audio simply follows the AirPlay ROUTE like
         // any other app sound — local files, streams and analog cuts all play.
+        #if !os(visionOS)   // no external-playback API on visionOS (nothing to disable)
         player.allowsExternalPlayback = false
+        #endif
         configureInterruptionObserver()
         configureRemoteCommands()
         // Drive the scrubber ~4×/s.
@@ -345,7 +347,20 @@ final class PlayerEngine {
     /// The current audio output ports ("AirPlay:Living Room") — for the failure diag line, so
     /// a route-dependent failure is visible in the trace instead of looking like a bad file.
     /// Test probe: whether the underlying AVPlayer may enter AirPlay external-playback mode.
-    var allowsExternalPlayback: Bool { player.allowsExternalPlayback }
+    var allowsExternalPlayback: Bool {
+        #if os(visionOS)
+        return false
+        #else
+        return player.allowsExternalPlayback
+        #endif
+    }
+    private var externalPlaybackActive: Bool {
+        #if os(visionOS)
+        return false
+        #else
+        return player.isExternalPlaybackActive
+        #endif
+    }
 
     static func outputRouteSummary() -> String {
         #if os(macOS)
@@ -360,7 +375,7 @@ final class PlayerEngine {
         if item.status == .failed {
             let err = item.error as NSError?
             NPLog.trace("engine item status FAILED \(err.map { "\($0.domain)#\($0.code)" } ?? "?")")
-            DiagLog.shared.log("playback", "item load failed song=\(nowPlayingSongId ?? "?") err=\(err.map { "\($0.domain)#\($0.code)" } ?? "?") route=\(Self.outputRouteSummary()) external=\(player.isExternalPlaybackActive ? 1 : 0)")
+            DiagLog.shared.log("playback", "item load failed song=\(nowPlayingSongId ?? "?") err=\(err.map { "\($0.domain)#\($0.code)" } ?? "?") route=\(Self.outputRouteSummary()) external=\(externalPlaybackActive ? 1 : 0)")
             // A dead item never plays and never posts an end — without this the set sat silent
             // on it until ⏭. Same one-shot latch as the natural end, after a short grace
             // (`itemFailedSignalDelay`) in which a superseding load/skip wins — only the item
