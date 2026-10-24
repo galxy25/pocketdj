@@ -411,6 +411,7 @@ final class SetlistPlayer {
     }
 
     private func handleFirstAudio(source: String) {
+        DeadAirMeter.shared.firstAudio()
         startStallTask?.cancel(); startStallTask = nil
         endStartWindow(reason: "firstAudio.\(source)")
     }
@@ -422,6 +423,7 @@ final class SetlistPlayer {
     #endif
 
     private func logTrackStart(_ it: Item, backend: String, resumeAtMs: Int?) {
+        DeadAirMeter.shared.trackStarting(backend: backend)
         DiagLog.shared.log("playback", "track start song=\(it.id) index=\(index)/\(queue.count) backend=\(backend) resumeAtMs=\(resumeAtMs ?? 0)")
     }
 
@@ -760,6 +762,7 @@ final class SetlistPlayer {
         waitingForLive = false
         startStallTask?.cancel(); startStallTask = nil
         endStartWindow(reason: "stop")
+        DeadAirMeter.shared.transitionAbandoned(reason: "stop")
         // P0-6: release the across-tracks hold FIRST so `player.stop()` below resigns the card;
         // P0-2: and a held set that resigned is no longer the preferred remote target.
         player.holdsOwnershipAcrossTracks = false
@@ -1650,6 +1653,8 @@ final class SetlistPlayer {
 
     private func advanceToNext(_ cause: AdvanceCause = .auto) {
         guard isRunning else { return }
+        // Dead-air clock: an auto-advance is the between-tracks gap; a skip is listener-driven.
+        DeadAirMeter.shared.transitionBegan(cause: cause == .user ? "skip" : "advance")
         switch cause {
         case .user:
             noteUserTransport()
@@ -1851,6 +1856,7 @@ final class SetlistPlayer {
         liveBackstopTask?.cancel(); liveBackstopTask = nil
         startStallTask?.cancel(); startStallTask = nil   // the previous start's watchdog is moot
         endStartWindow(reason: "superseded")              // …and so is its runway
+        DeadAirMeter.shared.transitionBegan(cause: "start")   // no-op inside an open advance/skip
         resolvingGeneration = nil
         prefetchUpcoming()   // the NEXT songs' URLs resolve while this one plays
         // P1-7: every branch that actually STARTS audio opens a start window (runway until first
@@ -2033,7 +2039,10 @@ final class SetlistPlayer {
                 applyStemLockOnTrackStart(resumeAtMs: resumeAtMs)   // (unavailable: not a local file)
                 // The start window stays open until MusicKit REPORTS playing (`onFirstAudio`) or
                 // its cap; the provider's never-started verdict owns a dead AM start.
-                if coordinator.appleMusic.audioConfirmed { endStartWindow(reason: "firstAudio.appleMusic") }
+                if coordinator.appleMusic.audioConfirmed {
+                    DeadAirMeter.shared.firstAudio()
+                    endStartWindow(reason: "firstAudio.appleMusic")
+                }
                 logTrackStart(it, backend: "appleMusic", resumeAtMs: resumeAtMs)
                 return
             }
@@ -2529,6 +2538,7 @@ extension SetlistPlayer {
         liveBackstopTask?.cancel(); liveBackstopTask = nil
         startStallTask?.cancel(); startStallTask = nil
         endStartWindow(reason: "cascade-halt")
+        DeadAirMeter.shared.transitionAbandoned(reason: "cascade-halt")
         waitingForLive = false
         if coordinator.activeBackend == .appleMusic { coordinator.appleMusic.pausePlayback() }
         player.pause()

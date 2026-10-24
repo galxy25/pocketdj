@@ -72,6 +72,7 @@ struct DebugView: View {
                 }
                 .accessibilityIdentifier("debug-build-copy")
             }
+            deadAirSection
             // Which AWS account (blue/green) this install talks to and where that came from
             // (remote fetch / cached last-good / compiled-in). docs/design/remote-endpoints.md.
             Section("Backend") {
@@ -327,3 +328,56 @@ struct DebugLogDocument: FileDocument {
         FileWrapper(regularFileWithContents: Data(text.utf8))
     }
 }
+
+
+// MARK: Playback dead air (DeadAirMeter)
+
+extension DebugView {
+    /// Today + the last 7 days of the dead-air metric, with the worst transition pairs.
+    @ViewBuilder var deadAirSection: some View {
+        let meter = DeadAirMeter.shared
+        let today = meter.day()
+        Section {
+            LabeledContent("Today") {
+                Text(Self.deadAirLabel(today)).font(.caption.monospacedDigit())
+            }
+            .accessibilityIdentifier("debug-deadair-today")
+            ForEach(Self.lastDays(7, meter: meter), id: \.key) { row in
+                LabeledContent(row.key) {
+                    Text(Self.deadAirLabel(row.day)).font(.caption2.monospacedDigit())
+                }
+            }
+            ForEach(Self.worstPairs(today), id: \.key) { row in
+                LabeledContent(row.key) {
+                    Text(String(format: "%d× avg %.1fs max %.0fs", row.pair.n,
+                                row.pair.seconds / Double(max(1, row.pair.n)), row.pair.max))
+                        .font(.caption2.monospacedDigit())
+                }
+            }
+        } header: {
+            Text("Playback dead air")
+        } footer: {
+            Text("Silent seconds while a set was meant to be playing. Transition = between tracks; mid-song = a stall inside a song.")
+        }
+    }
+
+    static func deadAirLabel(_ d: DeadAirMeter.Day) -> String {
+        guard d.activeSeconds > 0 else { return "—" }
+        return String(format: "%.1f%% · %.0fs dead / %.0f min · %d gaps≥3s",
+                      d.deadRatio * 100, d.deadSeconds, d.activeSeconds / 60, d.gapsOver3s)
+    }
+
+    static func lastDays(_ n: Int, meter: DeadAirMeter) -> [(key: String, day: DeadAirMeter.Day)] {
+        let today = meter.dayKey(Date())
+        return meter.document.days
+            .filter { $0.key != today && $0.value.activeSeconds > 0 }
+            .sorted { $0.key > $1.key }
+            .prefix(n)
+            .map { ($0.key, $0.value) }
+    }
+
+    static func worstPairs(_ d: DeadAirMeter.Day) -> [(key: String, pair: DeadAirMeter.Pair)] {
+        d.byPair.sorted { $0.value.seconds > $1.value.seconds }.prefix(4).map { ($0.key, $0.value) }
+    }
+}
+
