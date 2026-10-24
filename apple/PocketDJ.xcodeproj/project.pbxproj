@@ -90,6 +90,7 @@
 		1B5BA1AD4F47799BD71BD90F /* PocketZip.swift in Sources */ = {isa = PBXBuildFile; fileRef = F11B7EC4B70A5ACF2181C302 /* PocketZip.swift */; };
 		1C74D4BF99475D16BFCD1316 /* StudioScoreView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B734C4E507E391171211F1C /* StudioScoreView.swift */; };
 		1D87FE3C5DCC6914B83A7C30 /* NowPlayingWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BE8B14258411EBD3CF17B7A /* NowPlayingWidget.swift */; };
+		1DD67C383944BFB6DF0B5E5D /* DeadAirMeterTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BFA14C516AA5FE60FF8C5AD /* DeadAirMeterTests.swift */; };
 		1DE50D5967D44C92838ABC13 /* StemPlayerSeekProbeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 87C8C8E3B145646BD31D56A5 /* StemPlayerSeekProbeTests.swift */; };
 		1E24D94C729F6C56C60F0C8A /* StudioMicRecorderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4928D27784081864D2776F1B /* StudioMicRecorderTests.swift */; };
 		1E4DDEBA84E972BC4152E1D8 /* GameScoreboardStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16589E7B36812CDA72B0C5B3 /* GameScoreboardStore.swift */; };
@@ -171,6 +172,7 @@
 		36D67E846321CAA3FEF77AD3 /* ShazamCatalogMatchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB39E73B2A9B00B34B58BBB6 /* ShazamCatalogMatchTests.swift */; };
 		3707C92A37BB3088456C5796 /* InstrumentPacksTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F706312DEBB77DC97A8A660F /* InstrumentPacksTests.swift */; };
 		37438608B7BA8D524F4BCC5C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 3830E3E264B6BA8F13CD16F0 /* PrivacyInfo.xcprivacy */; };
+		386E26A425C57A0ED8E0075D /* DeadAirMeter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BB6F16EE6BA20F64B6CE0BC /* DeadAirMeter.swift */; };
 		391139A60A6703C616A8AED4 /* StudioAnalyzer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B0A4D3FC482AAB7C3C06971 /* StudioAnalyzer.swift */; };
 		39173F1C99F093BEB0FA4396 /* EngineTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6598C8C55660B7CBF3D9642A /* EngineTests.swift */; };
 		3A3320C6AC787FE7D0E80EF1 /* DemuxTranscriptRunTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A71975788C7662705B6BCC6 /* DemuxTranscriptRunTests.swift */; };
@@ -883,6 +885,7 @@
 		4A71975788C7662705B6BCC6 /* DemuxTranscriptRunTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxTranscriptRunTests.swift; sourceTree = "<group>"; };
 		4AAA16326C9972435232F275 /* NowPlayingDSPTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NowPlayingDSPTests.swift; sourceTree = "<group>"; };
 		4BA1B9BA1FAD98E98FFA18C9 /* SessionFoldersTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionFoldersTests.swift; sourceTree = "<group>"; };
+		4BB6F16EE6BA20F64B6CE0BC /* DeadAirMeter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeadAirMeter.swift; sourceTree = "<group>"; };
 		4C32EE86465865DE9505E670 /* PuzzleSamplerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PuzzleSamplerTests.swift; sourceTree = "<group>"; };
 		4C3A971B345113403B50653A /* CloudSyncService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CloudSyncService.swift; sourceTree = "<group>"; };
 		4C6FF13DBD9CB307EDD3B8D8 /* TVCompat.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TVCompat.swift; sourceTree = "<group>"; };
@@ -1093,6 +1096,7 @@
 		9B9937C62AF0BC45009823AB /* StudioRenderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioRenderTests.swift; sourceTree = "<group>"; };
 		9B9B9B7FD84BD26BBFECC5C5 /* StudioMicRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StudioMicRecorder.swift; sourceTree = "<group>"; };
 		9BAFF3CCE620AD9C6DAAF17D /* GamesUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GamesUITests.swift; sourceTree = "<group>"; };
+		9BFA14C516AA5FE60FF8C5AD /* DeadAirMeterTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeadAirMeterTests.swift; sourceTree = "<group>"; };
 		9C4003133C3FBA4504E36EBA /* FuzzyMatchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FuzzyMatchTests.swift; sourceTree = "<group>"; };
 		9C6AD5780B96F5F8DD1561EF /* MasterFXTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MasterFXTests.swift; sourceTree = "<group>"; };
 		9D400DC3AE74183BA918C015 /* RecommendationService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecommendationService.swift; sourceTree = "<group>"; };
@@ -1451,6 +1455,7 @@
 				44D73C41BA289BDBD7312F60 /* CollectionTimelineTests.swift */,
 				76A5CA33CF4571EDF63C200C /* CollectorsPuzzleEngineTests.swift */,
 				BF7BCE3590F102AC79B4A74F /* CuePlumbingTests.swift */,
+				9BFA14C516AA5FE60FF8C5AD /* DeadAirMeterTests.swift */,
 				38E6AAF75A6227BF4086E222 /* DebugSessionStoreTests.swift */,
 				965C2BB9FBBCAB3DF71E888F /* DemuxCloudLyricsTests.swift */,
 				1463698BF7377961243141EC /* DemuxInstrumentalTests.swift */,
@@ -1978,6 +1983,7 @@
 			isa = PBXGroup;
 			children = (
 				CEE53668B264B16244CBCEF1 /* AppleMusicPlaybackProvider.swift */,
+				4BB6F16EE6BA20F64B6CE0BC /* DeadAirMeter.swift */,
 				C5A90AB83D9B1C5A88939E3F /* NowPlayingArbiter.swift */,
 				F5336A4E6D12BB9E9ABD1B56 /* NowPlayingCardPublisher.swift */,
 				70CA1E471270B08E47CCA895 /* NowPlayingDSP.swift */,
@@ -2598,6 +2604,7 @@
 				66F2BFCBF61DD38E7E959052 /* CollectionsTests.swift in Sources */,
 				E8B579DBFAD28B99F4948724 /* CollectorsPuzzleEngineTests.swift in Sources */,
 				9AEF31B8C7E8AEC3F66292F3 /* CuePlumbingTests.swift in Sources */,
+				1DD67C383944BFB6DF0B5E5D /* DeadAirMeterTests.swift in Sources */,
 				8FEFB402C3584B9D9D373446 /* DebugSessionStoreTests.swift in Sources */,
 				C2ED9BFABA86D3F6F44BBA35 /* DemuxCloudLyricsTests.swift in Sources */,
 				22DBCC37C8F90A55EA2D974F /* DemuxInstrumentalTests.swift in Sources */,
@@ -2872,6 +2879,7 @@
 				DE7DD815C722810FC38BA392 /* CoreLocationVisitSource.swift in Sources */,
 				6C6A81900B64AAE83504575A /* CoverImage.swift in Sources */,
 				21063060439E4F98FB009F91 /* CreatePocketIntent.swift in Sources */,
+				386E26A425C57A0ED8E0075D /* DeadAirMeter.swift in Sources */,
 				36AA53760A4E89496FD668BD /* DebugSessionStore.swift in Sources */,
 				A3B7813A03D639792F32ED67 /* DebugView.swift in Sources */,
 				50CC6524B0F24DC694BD30ED /* DemuxChordDetailView.swift in Sources */,
