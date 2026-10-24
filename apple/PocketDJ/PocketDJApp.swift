@@ -2072,6 +2072,7 @@ struct PocketDJApp: App {
                         // that never leaves .active is covered by the 15-min tick above.
                         Task { await storage.pruneIfDue() }
                     case .background:
+                        DeadAirMeter.shared.flush()   // persist + summary line before suspension
                         streaming.onScenePhaseBackground()
                         // Diag/telemetry tail: the debounce window would otherwise die with the
                         // suspension (same doctrine as every flush below).

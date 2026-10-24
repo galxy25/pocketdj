@@ -65,6 +65,10 @@ final class PlaybackSupervisor {
         private(set) var ladderAnchor: Date?
         private(set) var stage = 0
         private(set) var deadAirTotal: Double = 0
+        /// Seconds the lane was ENGAGED (listener wants sound, lane owned) — dead air's denominator.
+        private(set) var activeTotal: Double = 0
+        /// The share of `deadAirTotal` spent inside a track start / after the track ended.
+        private(set) var transitionDeadTotal: Double = 0
         private var windowDeadAir: Double = 0
         private var windowStart: Date?
         private var lastTick: Date?
@@ -95,6 +99,7 @@ final class PlaybackSupervisor {
                 return (nil, lines)
             }
             haltedLogged = false
+            activeTotal += dt
             if p.audible {
                 if let s = silentSince {
                     lines.append("ok after=\(Int(now.timeIntervalSince(s).rounded()))s lane=\(p.lane.rawValue) stage=L\(stage)")
@@ -105,6 +110,7 @@ final class PlaybackSupervisor {
             // SILENT while the listener wants sound — dead air.
             deadAirTotal += dt
             windowDeadAir += dt
+            if p.startPending || p.trackEnded { transitionDeadTotal += dt }
             if silentSince == nil {
                 silentSince = now
                 lines.append("silent owner=\(p.lane == .appleMusic ? "AppleMusic" : "PlayerEngine") lane=\(p.lane.rawValue) "
@@ -163,6 +169,8 @@ final class PlaybackSupervisor {
     private var ticker: Task<Void, Never>?
     /// Actions taken (diagnostics + tests).
     private(set) var actionsTaken: [Action] = []
+    /// Where each tick's active / dead seconds roll up (nil in shell tests).
+    var meter: DeadAirMeter?
 
     init(probe: @escaping () -> Probe, perform: @escaping (Action) -> Void) {
         self.probe = probe
@@ -208,6 +216,7 @@ final class PlaybackSupervisor {
             case .escalate: setlist?.supervisorEscalate()
             }
         })
+        meter = .shared
     }
 
     func start() {
@@ -225,8 +234,19 @@ final class PlaybackSupervisor {
 
     /// One supervisor beat (the ticker calls this at 1 Hz; tests call it directly).
     func tick() {
-        let (action, lines) = core.step(probe(), now: now())
+        let p = probe()
+        let at = now()
+        let before = (core.activeTotal, core.deadAirTotal, core.transitionDeadTotal)
+        let (action, lines) = core.step(p, now: at)
         for l in lines { log(l) }
+        if let meter {
+            meter.accumulate(active: core.activeTotal - before.0, dead: core.deadAirTotal - before.1,
+                             transitionDead: core.transitionDeadTotal - before.2, now: at)
+            // The listener paused / a call / a held restore mid-start: that silence is theirs.
+            if !p.intentPlaying || p.userPaused || p.held || p.interruptionOpen {
+                meter.transitionAbandoned(reason: p.interruptionOpen ? "interruption" : p.held ? "held" : "paused")
+            }
+        }
         if let action {
             actionsTaken.append(action)
             perform(action)
