@@ -350,7 +350,7 @@ final class SetlistPlayer {
             if self.coordinator.activeBackend == .appleMusic { return nil }
             if self.isStartPending { return "startInFlight" }
             if self.pausedByCascade || !self.player.hasLoadedItem {
-                return self.startCurrent() ? "startCurrent" : nil
+                return self.startCurrent(by: "idlePlay") ? "startCurrent" : nil
             }
             return nil
         }
@@ -1780,24 +1780,40 @@ final class SetlistPlayer {
                   self.resolvingGeneration == gen, self.playGeneration == gen,
                   self.index < self.queue.count else { return }
             if !self.hopToOnDeviceRow(reason: "resolve stalled \(Int(wait))s") {
-                DiagLog.shared.log("playback", "resolve stalled \(Int(wait))s song=\(self.queue[self.index].id) — no on-device row to hop to; waiting")
+                DiagLog.shared.log("playback", "resolve stalled \(Int(wait))s song=\(self.queue[self.index].id) — no on-device/instant row to hop to; waiting")
             }
         }
     }
 
-    /// Play the next ON-DEVICE row now and DEFER the current (stalled) row right behind it —
-    /// reordered, never dropped. Shared by the resolve stall, the start watchdog, and the
-    /// supervisor's L3. Returns false when no on-device row is within `hopLookahead`.
+    /// Can this row start with NO network round trip before play — on-device, a rip whose
+    /// presigned URL is already cached, or an Apple Music row already pre-resolved? The stall
+    /// hop's fallback when no on-device row is near: a row still waiting on a QUEUED rip sat
+    /// silent 47 s with nothing to hop to (drive log 2026-10-25 05:15, "icameisaww").
+    private func rowStartsInstantly(_ it: Item) -> Bool {
+        if StudioFactory.isStudioId(it.id) || ProfileSourceStore.isProfileSongId(it.id) { return false }
+        return coordinator.startsInstantly(id: it.id, resolveId: it.resolveId, title: it.title,
+                                           artist: it.artist, variant: it.variant)
+    }
+
+    /// Play the next ON-DEVICE row now (else the next row that starts instantly — see
+    /// `rowStartsInstantly`) and DEFER the current (stalled) row right behind it — reordered,
+    /// never dropped. Shared by the resolve stall, the start watchdog, and the supervisor's L3.
+    /// Returns false when no such row is within `hopLookahead`.
     @discardableResult
     private func hopToOnDeviceRow(reason: String) -> Bool {
         guard index < queue.count else { return false }
         let stalled = queue[index]
         let end = min(queue.count, index + 1 + Self.hopLookahead)
-        guard index + 1 < end,
-              let j = ((index + 1)..<end).first(where: { rowOnDevice(queue[$0]) }) else { return false }
+        guard index + 1 < end else { return false }
+        let range = (index + 1)..<end
+        let kind: String
+        let j: Int
+        if let d = range.first(where: { rowOnDevice(queue[$0]) }) { j = d; kind = "on-device" }
+        else if let c = range.first(where: { rowStartsInstantly(queue[$0]) }) { j = c; kind = "instant" }
+        else { return false }
         let row = queue.remove(at: j)
         queue.insert(row, at: index)
-        DiagLog.shared.log("playback", "\(reason) song=\(stalled.id) → hop to on-device \(row.id) (deferred stalled row)")
+        DiagLog.shared.log("playback", "\(reason) song=\(stalled.id) → hop to \(kind) \(row.id) (deferred stalled row)")
         persistSession(positionMs: 0)
         startPlayCurrent(fresh: true)
         return true
@@ -2225,8 +2241,9 @@ final class SetlistPlayer {
     /// so its repeat counter must not be re-armed. Returns false when there is nothing to
     /// start (no run, or a held deck, which routes to `resumeFromHold` instead).
     @discardableResult
-    func startCurrent() -> Bool {
+    func startCurrent(by caller: String = "?") -> Bool {
         guard isRunning, index < queue.count, !isHeldForResume else { return false }
+        DiagLog.shared.log("playback", "start current by=\(caller) song=\(queue[index].id) pending=\(isStartPending ? 1 : 0)")
         noteUserTransport()
         startPlayCurrent(fresh: false)
         return true

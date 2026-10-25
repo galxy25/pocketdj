@@ -206,6 +206,11 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
     /// Keys whose prefetch is in flight (a re-prefetch of the same rows must not double-fetch).
     @ObservationIgnored var prefetchInFlight: Set<String> = []
 
+    /// Is a fresh pre-resolve held for `song` (its start needs no catalog round trip)?
+    func isPrefetched(_ song: IndexSong, now: Date = Date()) -> Bool {
+        prefetchCache.value(for: Self.prefetchKey(song), now: now) != nil
+    }
+
     /// The cache key: the id AND every catalog id the edition choice reads — a row re-stamped
     /// to another edition is a different resolve.
     nonisolated static func prefetchKey(_ song: IndexSong) -> String {

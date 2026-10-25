@@ -117,6 +117,37 @@ final class SetlistEndOfSongTests: XCTestCase {
         r.seq.stop()
     }
 
+    /// No on-device row nearby: the stall hop falls back to a row that starts INSTANTLY (a durable
+    /// rip) instead of waiting — a row stuck on a queued rip sat silent 47 s (drive 2026-10-25).
+    func testStalledResolveWithNoOnDeviceRowHopsToAnInstantRow() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["hang", "c2"])
+        EOSStub.hangPresign = ["hang"]
+        r.seq.play([item("hang"), item("c2")])
+        await waitUntil("hopped onto the durable-rip row") { r.rips.nowPlaying?.songId == "c2" }
+        XCTAssertEqual(r.seq.queue.map(\.id), ["c2", "hang"], "the stalled row is deferred, not dropped")
+        r.seq.stop()
+    }
+
+    /// ▶ in the app while the row's start is still in flight must NOT restart it — that cancelled
+    /// the wait each time (six taps, six restarts, never played: drive 2026-10-25 05:15).
+    func testPanelPlayDuringAnInFlightStartDoesNotRestartIt() async {
+        SetlistPlayer.resolveStallSeconds = 30
+        let r = makeRig()
+        manifest(r.rips, ["hang"])
+        EOSStub.hangPresign = ["hang"]
+        r.seq.play([item("hang")])
+        await waitUntil("start in flight") { r.seq.isStartPending && EOSStub.presignCount["hang", default: 0] >= 1 }
+        for _ in 0..<3 {
+            NowPlayingPanel.togglePlayPause(sequencer: r.seq, coordinator: r.coord, player: r.player)
+        }
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        XCTAssertEqual(EOSStub.presignCount["hang", default: 0], 1, "no restart re-requested the row")
+        XCTAssertTrue(r.seq.isStartPending)
+        r.seq.stop()
+    }
+
     /// The stall window holds a UIKit background-task assertion: a locked/CarPlay phone with no
     /// audio playing between songs is otherwise suspended mid-resolve, and only the NEXT remote
     /// press wakes it (the "skip several times" signature).

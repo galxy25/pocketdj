@@ -245,13 +245,20 @@ struct NowPlayingPanel: View {
         if sequencer.isHeldForResume { sequencer.resumeFromHold(); return }
         // The cascade breaker halted the set on this row: ▶ RETRIES the row (a fresh resolve),
         // not a blind resume of whatever backend last held it.
-        if sequencer.pausedByCascade, sequencer.startCurrent() { return }
+        if sequencer.pausedByCascade, sequencer.startCurrent(by: "panel.cascade") { return }
         if coordinator.activeBackend == .appleMusic { coordinator.togglePlayPause(); return }
         // The deck's current row never started sounding (its cloud resolve produced no audio
         // — a rip still queued, a stream that missed), so the engine holds NOTHING and
         // `toggle()` would be refused outright: ▶ appears dead. Start the displayed row
         // instead, so ▶ always plays what the deck is showing.
-        if !player.hasLoadedItem, sequencer.startCurrent() { return }
+        // …but NOT while that row's start is still IN FLIGHT (a rip being waited on, a resolve):
+        // restarting cancelled the wait — six ▶ taps on a queued rip restarted it six times and
+        // it never played (drive log 2026-10-25 05:15). The resolve stall / start watchdog own it.
+        if !player.hasLoadedItem, sequencer.isStartPending {
+            DiagLog.shared.log("playback", "▶ ignored: start in flight song=\(sequencer.queue.indices.contains(sequencer.index) ? sequencer.queue[sequencer.index].id : "?")")
+            return
+        }
+        if !player.hasLoadedItem, sequencer.startCurrent(by: "panel") { return }
         player.toggle()
     }
 

@@ -24,6 +24,7 @@
 		05CF89454BADE3EC679A04A6 /* DemuxTranscriberChunkTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 47341CD32CABE6F1D9A79054 /* DemuxTranscriberChunkTests.swift */; };
 		05F8DE521A0B67813E696C0A /* HistoryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F167BA69383E2AFE262B4B03 /* HistoryView.swift */; };
 		06119ED252EE0E319E5CEA2D /* StemLockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F31BCC47CA829DD99D66AF25 /* StemLockTests.swift */; };
+		06332DC1FE286E5AA6DB9A1D /* MixCrateMenuTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67CD6F8A5FB99680041F23F5 /* MixCrateMenuTests.swift */; };
 		06BDDFDBEF03AE566F99A6B6 /* stream-tone-12s.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 0D8E4F4B1E4ABF2E71295DA1 /* stream-tone-12s.mp3 */; };
 		070F972F12C9C3EAAFF09328 /* BurnFilenameTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44255BB1F3B38905C973201A /* BurnFilenameTests.swift */; };
 		072DF60027DB8A2415DCA943 /* MixSessionsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 02AE25A0F889C29EFF74A434 /* MixSessionsView.swift */; };
@@ -454,6 +455,7 @@
 		AEE49F566ED2221338C32640 /* Fixtures.swift in Sources */ = {isa = PBXBuildFile; fileRef = 027D9207F27E99DB6D901080 /* Fixtures.swift */; };
 		AF95D2C550AD4908C8FAB47B /* EditAudioAnalysisView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 114B066AD3EE709562FCA10B /* EditAudioAnalysisView.swift */; };
 		B17C7B10A47982F0928A6A2E /* CollectionMixDownloaderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EC9B2E762FC19A8EAAE9B56 /* CollectionMixDownloaderTests.swift */; };
+		B1D205EE851D7363CC9AE425 /* MixCrateMenu.swift in Sources */ = {isa = PBXBuildFile; fileRef = C11771D471070EA519623DCC /* MixCrateMenu.swift */; };
 		B2CC63CD4946BDADA73AF0D2 /* DeviceIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = D5196EC65976E293CBD35E83 /* DeviceIdentity.swift */; };
 		B3544EDFE50B5C09559D4160 /* WidgetTransport.swift in Sources */ = {isa = PBXBuildFile; fileRef = CB67ACEBFBA39A524C4A44F1 /* WidgetTransport.swift */; };
 		B39B7EBE268A92AB3B3FE05B /* SetlistPlayerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B925ADBC5613B9CB101B7189 /* SetlistPlayerTests.swift */; };
@@ -963,6 +965,7 @@
 		65E0EC3D7BF449A729CF9353 /* OnboardingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingUITests.swift; sourceTree = "<group>"; };
 		665B1CF3EFAC781C56438C40 /* StreamingStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingStore.swift; sourceTree = "<group>"; };
 		67A794B2E1384DC5F2FF8E98 /* AudioSchema27.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioSchema27.swift; sourceTree = "<group>"; };
+		67CD6F8A5FB99680041F23F5 /* MixCrateMenuTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixCrateMenuTests.swift; sourceTree = "<group>"; };
 		6847266CA8BB84DE6F265BE0 /* PuzzlePlayabilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PuzzlePlayabilityTests.swift; sourceTree = "<group>"; };
 		6860EB414894C76BE5230D4C /* DemuxInstrumentalUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DemuxInstrumentalUITests.swift; sourceTree = "<group>"; };
 		6A3B38B92DD6CE2B3FD2DE88 /* ShazamResultSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShazamResultSheet.swift; sourceTree = "<group>"; };
@@ -1193,6 +1196,7 @@
 		C0DC921C54A7ABB9CCF30BEB /* RipServerPlaybackProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RipServerPlaybackProvider.swift; sourceTree = "<group>"; };
 		C0FED504D84B028FB5886B91 /* BurnStaleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BurnStaleTests.swift; sourceTree = "<group>"; };
 		C101A26C849781CAE24DA68B /* SkipTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SkipTracker.swift; sourceTree = "<group>"; };
+		C11771D471070EA519623DCC /* MixCrateMenu.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MixCrateMenu.swift; sourceTree = "<group>"; };
 		C1CFF8AEA6487C5EF9A258BC /* OnboardingStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingStoreTests.swift; sourceTree = "<group>"; };
 		C2C659752C32856A6D3A1238 /* listening-pockets-upload.app.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "listening-pockets-upload.app.json"; sourceTree = "<group>"; };
 		C3A3F3C28D099119AFB573C5 /* WidgetSync.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetSync.swift; sourceTree = "<group>"; };
@@ -1518,6 +1522,7 @@
 				E9E0ECB5A0E7FAEB4C1A48B9 /* MelodyTrackerTests.swift */,
 				F786D640626FDC10E8C41F41 /* MixAutoResetTests.swift */,
 				3E6370C72934900CF37DD26F /* MixBurnFixture.swift */,
+				67CD6F8A5FB99680041F23F5 /* MixCrateMenuTests.swift */,
 				E44A42CB8C055BE3AB40D4D2 /* MixDeckSessionTests.swift */,
 				12A7A9B460E0F816D8FB61AE /* MixEndOfSongTests.swift */,
 				F4AD30694DB4ECEC615800AA /* MixEngineTests.swift */,
@@ -1783,6 +1788,7 @@
 				7AF2006A818A5AAD956500B5 /* CollectionMixDownloader.swift */,
 				3114C7979FC9315629D622E8 /* FXRack.swift */,
 				5F8C5C6954CAA705DF4AFDB4 /* MixBufferingBadge.swift */,
+				C11771D471070EA519623DCC /* MixCrateMenu.swift */,
 				469A732C6C97D2B46EFD04AB /* MixEngine.swift */,
 				D0C8A3B9AC9D85D51A04BE77 /* MixResolver.swift */,
 				63C6865680AB3F93F6BCF8BB /* MixStreamLoader.swift */,
@@ -2668,6 +2674,7 @@
 				72FF7AE28DE015E234CD53AD /* MelodyTrackerTests.swift in Sources */,
 				B958BC8BAABBAD6C4F1560CB /* MixAutoResetTests.swift in Sources */,
 				EA8AD8E950DA31640E3900C1 /* MixBurnFixture.swift in Sources */,
+				06332DC1FE286E5AA6DB9A1D /* MixCrateMenuTests.swift in Sources */,
 				2214A4BCE61DB8C470C0C8AD /* MixDeckSessionTests.swift in Sources */,
 				9BD494DAF74A8CF3224CBD5A /* MixEndOfSongTests.swift in Sources */,
 				C8E817F720036B4090DBB138 /* MixEngineTests.swift in Sources */,
@@ -2968,6 +2975,7 @@
 				FCB1ABFCDC5E1DC9E47B03BF /* MasterFX.swift in Sources */,
 				97AA9807DA89998D23B41C7D /* MelodyTracker.swift in Sources */,
 				E378C74F6220B74F7ED6351C /* MixBufferingBadge.swift in Sources */,
+				B1D205EE851D7363CC9AE425 /* MixCrateMenu.swift in Sources */,
 				657EF0367FBF0CBAEE6D462C /* MixDeckSessionStore.swift in Sources */,
 				E9B39C840851B06D8DF2F18B /* MixEngine.swift in Sources */,
 				575635D6BB4568391DE3D0C7 /* MixIntents.swift in Sources */,

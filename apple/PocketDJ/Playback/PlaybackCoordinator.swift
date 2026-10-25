@@ -170,6 +170,14 @@ final class PlaybackCoordinator {
             .first?.backend == .appleMusic
     }
 
+    /// Can this row start with no network round trip before play? Its rip URL is cached (the
+    /// rip provider starts instantly), or it streams Apple Music first and is pre-resolved.
+    func startsInstantly(id: String, resolveId: String, title: String, artist: String, variant: SongVariant?) -> Bool {
+        if ripProvider.canPlayImmediately(resolveId) { return true }
+        let song = projectedSong(id: id, title: title, artist: artist, variant: variant)
+        return providers(for: song).first?.backend == .appleMusic && appleMusic.isPrefetched(song)
+    }
+
     /// Pre-resolve the upcoming rows that will stream from Apple Music (see
     /// `AppleMusicPlaybackProvider.prefetch`). Rows that would go rip-first are left alone.
     func prefetchAppleMusic(_ rows: [(id: String, title: String, artist: String, variant: SongVariant?)]) {
