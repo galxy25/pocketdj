@@ -749,6 +749,7 @@ final class SetlistPlayer {
         // An EXTERNAL interruption of the stream (Music.app taking over — e.g. a same-Mac rip
         // capture) is not the end of the track: the row holds, paused; ▶ resumes it.
         coordinator.appleMusic.onInterrupted = { [weak self] in self?.handleAppleMusicInterrupted() }
+        coordinator.appleMusic.onNearEnd = { [weak self] in self?.handleAppleMusicNearEnd() }
     }
 
     /// Stop the sequence + clear now-playing; resets so the toolbar flips back to Play.
@@ -781,6 +782,7 @@ final class SetlistPlayer {
         coordinator.appleMusic.onTrackEnded = nil
         coordinator.appleMusic.onTrackRestarted = nil
         coordinator.appleMusic.onInterrupted = nil
+        coordinator.appleMusic.onNearEnd = nil
         player.stop()
         coordinator.stop()
         rips.setNowPlaying(nil)
@@ -1725,12 +1727,31 @@ final class SetlistPlayer {
 
     /// Resolve the next rows' presigned URLs WHILE this one plays (cloud mode, ripped rows with
     /// no device file) — the boundary then starts the next song with no network round trip.
+    /// Apple Music rows get their catalog resolve run ahead too (`prefetchAppleMusic`) — that
+    /// resolve used to start only at the boundary, the AM→AM gap.
     private func prefetchUpcoming() {
         guard isRunning, playbackMode() != .device, index + 1 < queue.count else { return }
-        let ids = queue[(index + 1)..<min(queue.count, index + 1 + Self.prefetchAhead)]
+        let rows = queue[(index + 1)..<min(queue.count, index + 1 + Self.prefetchAhead)]
             .filter { !StudioFactory.isStudioId($0.id) && !ProfileSourceStore.isProfileSongId($0.id) && !hasDeviceFile($0) }
-            .map(\.resolveId)
-        if !ids.isEmpty { rips.prefetchPresigned(Array(ids)) }
+        guard !rows.isEmpty else { return }
+        // AM first: the presign prefetch caches rip URLs, which would flip a fallback-only AM
+        // row to rip-first — decide the AM set on the ordering the start will see NOW.
+        coordinator.prefetchAppleMusic(rows.map { ($0.id, $0.title, $0.artist, $0.variant) })
+        rips.prefetchPresigned(rows.map(\.resolveId))
+    }
+
+    /// The Apple Music track is about to end (`onNearEnd`): when the NEXT row will play through
+    /// our own AVPlayer (a burned file / a cloud rip), pre-arm a mixable audio session now. A
+    /// locked phone cannot ACTIVATE a non-mixable session once MusicKit's audio stops
+    /// ('!int', CannotInterruptOthers) — the AM→downloaded boundary sat silent 18–38 s until
+    /// the app came to the foreground (drive logs 2026-10-24).
+    private func handleAppleMusicNearEnd() {
+        guard isRunning, index + 1 < queue.count else { return }
+        let next = queue[index + 1]
+        let local = rowOnDevice(next)
+            || !coordinator.streamsAppleMusicFirst(id: next.id, title: next.title, artist: next.artist, variant: next.variant)
+        guard local else { return }
+        player.prearmHandoffSession(reason: "am-near-end next=\(next.id)")
     }
 
     /// Is this row playable from THIS device with no network (burned file / studio / profile)?
