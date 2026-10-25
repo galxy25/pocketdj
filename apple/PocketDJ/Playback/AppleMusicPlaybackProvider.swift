@@ -161,6 +161,58 @@ final class AppleMusicPlaybackProvider: TrackPlaybackProvider {
         mutating func resetForTrack() { self = InterruptedResumeGate() }
     }
 
+    /// Fired ONCE per track when the stream is `nearEndLeadSeconds` from its end — the sequencer
+    /// pre-arms the hand-off to a LOCAL next row (`PlayerEngine.prearmHandoffSession`) while
+    /// MusicKit still holds the audio. Owned by `SetlistPlayer` alongside `onTrackEnded`.
+    @ObservationIgnored var onNearEnd: (() -> Void)?
+    /// How far (seconds) before the track's end `onNearEnd` fires.
+    nonisolated(unsafe) static var nearEndLeadSeconds: Double = 8
+    /// Pure verdict for `onNearEnd`: inside the last `nearEndLeadSeconds` of a known length.
+    nonisolated static func nearEnd(playbackTime: Double, expectedDuration: Double) -> Bool {
+        expectedDuration > nearEndLeadSeconds + 1 && playbackTime >= expectedDuration - nearEndLeadSeconds
+    }
+
+    // MARK: Pre-resolve (AM → AM gaps)
+
+    /// PRE-RESOLVE. A start used to run the whole resolve chain — `provider.resolve` (one or
+    /// more catalog round trips) then the `MusicCatalogResourceRequest` — only AFTER the
+    /// previous track ended: 2–8 s of silence per AM→AM boundary on cellular (dead-air audit,
+    /// drive logs 2026-10-23/24). `prefetch` runs that chain for the next rows WHILE the current
+    /// one plays; `tryPlay` takes a fresh hit and goes straight to `queue = [song]; play()`.
+    /// Values are `MusicKit.Song` (held as `Any` so this stored state compiles without MusicKit).
+    struct PrefetchCache {
+        nonisolated(unsafe) static var ttlSeconds: Double = 1800
+        static let capacity = 8
+        private(set) var entries: [String: (at: Date, value: Any)] = [:]
+
+        func value(for key: String, now: Date) -> Any? {
+            guard let e = entries[key], now.timeIntervalSince(e.at) < Self.ttlSeconds else { return nil }
+            return e.value
+        }
+
+        mutating func insert(_ value: Any, for key: String, now: Date) {
+            entries[key] = (now, value)
+            entries = entries.filter { now.timeIntervalSince($0.value.at) < Self.ttlSeconds }
+            while entries.count > Self.capacity,
+                  let oldest = entries.min(by: { $0.value.at < $1.value.at })?.key {
+                entries.removeValue(forKey: oldest)
+            }
+        }
+
+        mutating func remove(_ key: String) { entries.removeValue(forKey: key) }
+        mutating func removeAll() { entries = [:] }
+    }
+    @ObservationIgnored var prefetchCache = PrefetchCache()
+    /// Keys whose prefetch is in flight (a re-prefetch of the same rows must not double-fetch).
+    @ObservationIgnored var prefetchInFlight: Set<String> = []
+
+    /// The cache key: the id AND every catalog id the edition choice reads — a row re-stamped
+    /// to another edition is a different resolve.
+    nonisolated static func prefetchKey(_ song: IndexSong) -> String {
+        [song.id, song.appleMusicId ?? "", song.appleMusicIdExplicit ?? "", song.appleMusicIdClean ?? "",
+         song.explicit.map { $0 ? "e" : "c" } ?? ""].joined(separator: "|")
+    }
+
     /// The polling task that watches `ApplicationMusicPlayer` for end-of-track. Cancelled on
     /// stop / superseded on each new `tryPlay`.
     @ObservationIgnored private var stateMonitor: Task<Void, Never>?
@@ -405,18 +457,20 @@ extension AppleMusicPlaybackProvider {
         resumeRequestedAt = nil
         audioConfirmed = false
         interruptedResume.resetForTrack()
-        // 1) Resolve the song to a catalog track (namespaced `am:<id>` → direct fetch,
-        //    else a title/artist search). A miss → false → the engine falls back to rips.
-        guard let track = await provider.resolve(song) else { return false }
-        guard ticket == tryPlayGeneration else { return false }   // superseded mid-resolve
-        // 2) Enqueue the resolved catalog song by its store id + play.
         do {
             let player = ApplicationMusicPlayer.shared
-            let id = MusicItemID(track.providerTrackID)
-            var req = MusicCatalogResourceRequest<MusicKit.Song>(matching: \.id, equalTo: id)
-            req.limit = 1
-            let resp = try await req.response()
-            guard let catalogSong = resp.items.first else { return false }
+            let catalogSong: MusicKit.Song
+            if let hit = prefetchCache.value(for: Self.prefetchKey(song), now: Date()) as? MusicKit.Song {
+                // PRE-RESOLVED while the previous track played — no network before play().
+                catalogSong = hit
+                DiagLog.shared.log("playback", "am prefetch hit song=\(song.id)")
+            } else {
+                // 1) Resolve the song to a catalog track (namespaced `am:<id>` → direct fetch,
+                //    else a title/artist search) and 2) fetch it by store id. A resolve miss →
+                //    false → the engine falls back to rips.
+                guard let fetched = try await fetchCatalogSong(song, ticket: ticket) else { return false }
+                catalogSong = fetched
+            }
             guard ticket == tryPlayGeneration else { return false }   // superseded mid-fetch
             do {
                 player.queue = [catalogSong]
@@ -461,7 +515,44 @@ extension AppleMusicPlaybackProvider {
             // let the rip server fall back. The coordinator surfaces no error for this
             // (the fallback will), matching "first attempt is Apple Music; else rip".
             NPLog.trace("AM tryPlay FAILED title=\(song.name): \(error.localizedDescription)")
+            prefetchCache.remove(Self.prefetchKey(song))   // never replay a bad pre-resolve
             return false
+        }
+    }
+
+    /// The resolve chain: `provider.resolve` (catalog-id candidates / search) → the catalog
+    /// `Song` by store id. nil = no stream for this row (resolve miss, empty fetch, or — with a
+    /// `ticket` — superseded mid-resolve). Throws only from the catalog fetch.
+    private func fetchCatalogSong(_ song: IndexSong, ticket: Int? = nil) async throws -> MusicKit.Song? {
+        guard let track = await provider.resolve(song) else { return nil }
+        if let ticket, ticket != tryPlayGeneration { return nil }   // superseded mid-resolve
+        var req = MusicCatalogResourceRequest<MusicKit.Song>(matching: \.id, equalTo: MusicItemID(track.providerTrackID))
+        req.limit = 1
+        return try await req.response().items.first
+    }
+
+    /// Pre-resolve `songs` (the next rows that will stream from Apple Music) in the background,
+    /// one at a time, so their `tryPlay` starts without a network round trip. Rows already
+    /// cached or in flight are skipped; a miss simply leaves the row to resolve at its start.
+    func prefetch(_ songs: [IndexSong]) {
+        guard isReady else { return }
+        let now = Date()
+        let todo = songs.filter {
+            let k = Self.prefetchKey($0)
+            return prefetchCache.value(for: k, now: now) == nil && !prefetchInFlight.contains(k)
+        }
+        guard !todo.isEmpty else { return }
+        for s in todo { prefetchInFlight.insert(Self.prefetchKey(s)) }
+        Task { [weak self] in
+            for song in todo {
+                guard let self else { return }
+                let key = Self.prefetchKey(song)
+                let t0 = Date()
+                let hit = try? await self.fetchCatalogSong(song)
+                self.prefetchInFlight.remove(key)
+                if let hit { self.prefetchCache.insert(hit, for: key, now: Date()) }
+                DiagLog.shared.log("playback", "am prefetch song=\(song.id) ok=\(hit != nil ? 1 : 0) ms=\(Int(Date().timeIntervalSince(t0) * 1000))")
+            }
         }
     }
 
@@ -566,6 +657,7 @@ extension AppleMusicPlaybackProvider {
         stateMonitor = Task { [weak self] in
             let player = ApplicationMusicPlayer.shared
             var everPlayed = false
+            var nearEndFired = false
             let armedAt = Date()
             var polls = 0
             var lastStatus: MusicPlayer.PlaybackStatus?
@@ -699,6 +791,11 @@ extension AppleMusicPlaybackProvider {
                     continue
                 }
                 if t > self.monitorMaxPlaybackTime { self.monitorMaxPlaybackTime = t }
+                if !nearEndFired, status == .playing,
+                   Self.nearEnd(playbackTime: max(t, self.positionSeconds), expectedDuration: expected) {
+                    nearEndFired = true
+                    self.onNearEnd?()
+                }
                 // System remote ⏮ also lands in MusicKit (never our handler): it rewinds its
                 // one-song queue to 0:00 while STAYING .playing — no state change to observe,
                 // only the backward jump of the otherwise-monotonic playbackTime. Mirror the
@@ -743,6 +840,7 @@ extension AppleMusicPlaybackProvider {
     var isReady: Bool { false }
     var positionSeconds: Double { 0 }
     func tryPlay(_ song: IndexSong, atMs: Int?) async -> Bool { false }
+    func prefetch(_ songs: [IndexSong]) {}
     func togglePlayPause() {}
     func resume() {}
     func pausePlayback() {}

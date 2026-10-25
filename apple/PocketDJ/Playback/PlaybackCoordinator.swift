@@ -162,6 +162,23 @@ final class PlaybackCoordinator {
         return ordered
     }
 
+    /// Will a row ▶ for this (id, title, artist, variant) try Apple Music FIRST? — the same
+    /// projection + ordering `play(id:…)` uses, so a pre-resolve / session pre-arm decision
+    /// matches what the start will actually do.
+    func streamsAppleMusicFirst(id: String, title: String, artist: String, variant: SongVariant?) -> Bool {
+        providers(for: projectedSong(id: id, title: title, artist: artist, variant: variant))
+            .first?.backend == .appleMusic
+    }
+
+    /// Pre-resolve the upcoming rows that will stream from Apple Music (see
+    /// `AppleMusicPlaybackProvider.prefetch`). Rows that would go rip-first are left alone.
+    func prefetchAppleMusic(_ rows: [(id: String, title: String, artist: String, variant: SongVariant?)]) {
+        let songs = rows
+            .map { projectedSong(id: $0.id, title: $0.title, artist: $0.artist, variant: $0.variant) }
+            .filter { providers(for: $0).first?.backend == .appleMusic }
+        if !songs.isEmpty { appleMusic.prefetch(songs) }
+    }
+
     /// Can the Apple Music streaming backend play RIGHT NOW (enabled + authorized)? The
     /// row-transport reads this so a streamable-only song's ▶ enables with no rip server.
     var canStreamAppleMusic: Bool { appleMusic.isReady }

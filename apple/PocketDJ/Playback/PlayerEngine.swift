@@ -538,6 +538,7 @@ final class PlayerEngine {
         firstAudioPending = false
         let ms = loadedAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? -1
         DiagLog.shared.log("playback", "start-ok song=\(nowPlayingSongId ?? "?") after=\(ms)ms")
+        promoteSessionIfMixable(by: "player.firstAudio")
         onFirstAudio?()
     }
 
@@ -822,6 +823,16 @@ final class PlayerEngine {
 
     /// Re-arm the shared session for playback. `by` names the call site for the `[session]
     /// activate` telemetry row (the drive logs could not tell who re-grabbed the session).
+    ///
+    /// BACKGROUND HAND-OFF. Normally the session is EXCLUSIVE (`.playback`, non-mixable — the
+    /// mode that owns the lock-screen card and remote commands). But a locked phone cannot
+    /// ACTIVATE a non-mixable session from silence: after an Apple Music track ends, MusicKit's
+    /// audio is gone, ours was never active, and `setActive` throws '!int'
+    /// (CannotInterruptOthers) — the downloaded next song then sat silent 18–38 s until the app
+    /// came to the foreground (drive logs 2026-10-24). So on '!int' (or pre-armed near the AM
+    /// track's end, `prearmHandoffSession`) the session activates MIXABLE, which the background
+    /// may do; the item plays, and at first audio it is promoted back to exclusive
+    /// (`promoteSessionIfMixable`) — legal now that this app is the one playing.
     private func configureAudioSession(by caller: String = "player") {
         sessionActivationRequests += 1
         #if canImport(UIKit) && !os(macOS)
@@ -830,9 +841,15 @@ final class PlayerEngine {
         // (spec §4 coexistence rule); playback works fine under .playAndRecord, so skip.
         guard !AudioSessionPolicy.micCaptureActive else { return }
         let session = AVAudioSession.sharedInstance()
+        if Self.sessionStep(mixable: sessionMixable, appActive: Self.appIsActive, rendering: player.rate > 0) == .keepMixable {
+            // Still locked and silent: going exclusive would throw '!int' again — stay mixable.
+            activateMixable(by: caller)
+            return
+        }
         do {
             try session.setCategory(.playback, mode: .default)
             try session.setActive(true)
+            sessionMixable = false
             DiagLog.shared.log("session", "activate by=\(caller) amActive=\(externalActive ? 1 : 0) result=ok")
         } catch {
             // Best-effort — playback still works in most cases — but no longer SILENT: a failed
@@ -840,6 +857,70 @@ final class PlayerEngine {
             let e = error as NSError
             DiagLog.shared.log("session", "activate by=\(caller) amActive=\(externalActive ? 1 : 0) "
                                + "result=err \(e.domain)#\(e.code) otherAudio=\(session.isOtherAudioPlaying ? 1 : 0)")
+            if e.code == Self.cannotInterruptOthersCode { activateMixable(by: caller) }
+        }
+        #endif
+    }
+
+    /// '!int' — AVAudioSession.ErrorCode.cannotInterruptOthers.
+    nonisolated static let cannotInterruptOthersCode = 560557684
+    /// True while our session is active as `.mixWithOthers` (the background hand-off).
+    @ObservationIgnored private(set) var sessionMixable = false
+
+    enum SessionStep: Equatable { case exclusive, keepMixable }
+    /// Pure policy for `configureAudioSession`: an already-mixable session stays mixable while
+    /// the app is not in the foreground and our player is silent (exclusive would be refused);
+    /// otherwise go exclusive.
+    nonisolated static func sessionStep(mixable: Bool, appActive: Bool, rendering: Bool) -> SessionStep {
+        mixable && !appActive && !rendering ? .keepMixable : .exclusive
+    }
+
+    #if canImport(UIKit) && !os(macOS)
+    private static var appIsActive: Bool { UIApplication.shared.applicationState == .active }
+
+    /// Activate the session MIXABLE — allowed from the background, interrupts no one.
+    @discardableResult
+    private func activateMixable(by caller: String) -> Bool {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setActive(true)
+            sessionMixable = true
+            DiagLog.shared.log("session", "activate by=\(caller) mode=mixable result=ok")
+            return true
+        } catch {
+            let e = error as NSError
+            DiagLog.shared.log("session", "activate by=\(caller) mode=mixable result=err \(e.domain)#\(e.code)")
+            return false
+        }
+    }
+    #endif
+
+    /// The Apple Music track is about to end and the next row plays through THIS player: bring
+    /// our session up (mixable) while the app still may — see `configureAudioSession`. No-op in
+    /// the foreground (the boundary's own exclusive activation works there) and during capture.
+    func prearmHandoffSession(reason: String) {
+        #if canImport(UIKit) && !os(macOS)
+        guard !AudioSessionPolicy.micCaptureActive, !Self.appIsActive, !sessionMixable else { return }
+        DiagLog.shared.log("session", "prearm \(reason)")
+        activateMixable(by: "player.prearm")
+        #endif
+    }
+
+    /// First audio under a mixable hand-off session: promote it back to exclusive so this app
+    /// owns the lock-screen card + remote commands again. A refusal leaves it mixable (audio
+    /// keeps playing); the next foreground activation goes exclusive.
+    private func promoteSessionIfMixable(by caller: String) {
+        #if canImport(UIKit) && !os(macOS)
+        guard sessionMixable, !AudioSessionPolicy.micCaptureActive else { return }
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default)
+            sessionMixable = false
+            DiagLog.shared.log("session", "promote by=\(caller) result=ok")
+        } catch {
+            let e = error as NSError
+            DiagLog.shared.log("session", "promote by=\(caller) result=err \(e.domain)#\(e.code)")
         }
         #endif
     }
