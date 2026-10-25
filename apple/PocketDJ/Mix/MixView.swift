@@ -416,27 +416,6 @@ struct MixView: View {
         }
     }
 
-    @ViewBuilder private func autoSourceMenuItems(pick: @escaping (MixSource) -> Void) -> some View {
-        if collections.pockets.isEmpty && collections.playlists.isEmpty && collections.visibleSetlists.isEmpty {
-            Text("No pockets, playlists, or set lists yet")
-        }
-        if !collections.pockets.isEmpty {
-            Section("Pockets") {
-                ForEach(collections.pocketsAZ) { p in Button(p.name) { pick(.pocket(p.id)) } }
-            }
-        }
-        if !collections.playlists.isEmpty {
-            Section("Playlists") {
-                ForEach(collections.playlistsAZ) { p in Button(p.name) { pick(.playlist(p.id)) } }
-            }
-        }
-        if !collections.visibleSetlists.isEmpty {
-            Section("Set lists") {
-                ForEach(collections.visibleSetlistsAZ) { s in Button(s.name ?? "Set list") { pick(.setlist(s.id)) } }
-            }
-        }
-    }
-
     private func crateName(_ source: MixSource?) -> String? {
         switch source {
         case .pocket(let id):   return collections.pocket(id)?.name
@@ -464,21 +443,19 @@ struct MixView: View {
         VStack(spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: "wand.and.stars").foregroundStyle(Theme.accent)
-                Menu {
-                    autoSourceMenuItems { autoSource = $0 }
-                } label: {
-                    Label("A · \(autoSourceName ?? engine.autoSourceLabel ?? "Pick a collection")",
-                          systemImage: "a.circle.fill")
-                        .lineLimit(1)
+                let entries = MixCrateEntry.all(collections)
+                let aText = "A · \(autoSourceName ?? engine.autoSourceLabel ?? "Pick a collection")"
+                MixCrateMenu(entries: entries, labelText: aText, onPick: { if let s = $0 { autoSource = s } }) {
+                    Label(aText, systemImage: "a.circle.fill").lineLimit(1)
                 }
+                .equatable()
                 .accessibilityIdentifier("mix-auto-source")
-                Menu {
-                    Button("Same as Crate A") { autoSourceB = nil }
-                    autoSourceMenuItems { autoSourceB = $0 }
-                } label: {
-                    Label("B · \(crateName(autoSourceB) ?? "Same as A")", systemImage: "b.circle.fill")
-                        .lineLimit(1)
+                let bText = "B · \(crateName(autoSourceB) ?? "Same as A")"
+                MixCrateMenu(entries: entries, resetTitle: "Same as Crate A", labelText: bText,
+                             onPick: { autoSourceB = $0 }) {
+                    Label(bText, systemImage: "b.circle.fill").lineLimit(1)
                 }
+                .equatable()
                 .accessibilityIdentifier("mix-auto-source-b")
                 Spacer(minLength: 8)
                 Button { startAuto(shuffled: false) } label: { Label("Play", systemImage: "play.fill") }
@@ -933,38 +910,16 @@ private struct DeckView: View {
     }
 
     private var sourceMenu: some View {
-        Menu {
-            if collections.pockets.isEmpty && collections.playlists.isEmpty && collections.visibleSetlists.isEmpty {
-                Text("No pockets, playlists, or set lists yet")
-            }
-            if !collections.pockets.isEmpty {
-                Section("Pockets") {
-                    ForEach(collections.pocketsAZ) { p in
-                        Button(p.name) { source = .pocket(p.id) }
-                    }
-                }
-            }
-            if !collections.playlists.isEmpty {
-                Section("Playlists") {
-                    ForEach(collections.playlistsAZ) { p in
-                        Button(p.name) { source = .playlist(p.id) }
-                    }
-                }
-            }
-            if !collections.visibleSetlists.isEmpty {
-                Section("Set lists") {
-                    ForEach(collections.visibleSetlistsAZ) { s in
-                        Button(s.name ?? "Set list") { source = .setlist(s.id) }
-                    }
-                }
-            }
-        } label: {
+        let text = sourceName ?? "Pick source"
+        return MixCrateMenu(entries: MixCrateEntry.all(collections), labelText: text,
+                            onPick: { if let s = $0 { source = s } }) {
             HStack(spacing: 4) {
                 Image(systemName: "rectangle.stack")
-                Text(sourceName ?? "Pick source").lineLimit(1)
+                Text(text).lineLimit(1)
             }
             .font(.caption).foregroundStyle(Theme.accent2)
         }
+        .equatable()
         .accessibilityIdentifier("\(a11y)-source")
     }
 
@@ -2769,32 +2724,19 @@ private struct TrackLoaderSheet: View {
     }
 
     private var sourceMenu: some View {
-        Menu {
-            if !collections.pockets.isEmpty {
-                Section("Pockets") {
-                    ForEach(collections.pocketsAZ) { p in Button(p.name) { source = .pocket(p.id) } }
-                }
-            }
-            if !collections.playlists.isEmpty {
-                Section("Playlists") {
-                    ForEach(collections.playlistsAZ) { p in Button(p.name) { source = .playlist(p.id) } }
-                }
-            }
-            if !collections.visibleSetlists.isEmpty {
-                Section("Set lists") {
-                    ForEach(collections.visibleSetlistsAZ) { s in Button(s.name ?? "Set list") { source = .setlist(s.id) } }
-                }
-            }
-        } label: {
+        let text = sourceName ?? "Pick a source"
+        return MixCrateMenu(entries: MixCrateEntry.all(collections), labelText: text,
+                            onPick: { if let s = $0 { source = s } }) {
             HStack {
                 Image(systemName: "rectangle.stack").foregroundStyle(Theme.accent2)
-                Text(sourceName ?? "Pick a source").foregroundStyle(Theme.fg)
+                Text(text).foregroundStyle(Theme.fg)
                 Spacer()
                 Image(systemName: "chevron.up.chevron.down").font(.caption).foregroundStyle(Theme.fgDim)
             }
             .padding(.horizontal, 10).padding(.vertical, 7)
             .background(Theme.bgOverlay, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
         }
+        .equatable()
         .accessibilityIdentifier("mix-loader-source")
     }
 
