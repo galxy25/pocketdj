@@ -19,6 +19,7 @@ object SyncRegistry {
     const val KEY_PLAY_HISTORY = "play-history"
     const val KEY_COLLECTION_ACTIVITY = "collection-activity"
     const val KEY_PLAY_STATS = "play-stats"
+    const val KEY_TIMELINE_CUES = "timeline-cues"
 
     /** Registers [entries] against [service], resolving file names under [filesDir]. Returns the keys, in order. */
     fun registerAll(service: CloudSyncService, filesDir: File, entries: List<SyncEntry>): List<String> {

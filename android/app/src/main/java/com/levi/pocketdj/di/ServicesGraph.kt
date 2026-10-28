@@ -124,6 +124,13 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     }
     val playStats: com.levi.pocketdj.data.stats.PlayStatsStore get() = playStatsLazy.value
 
+    /** BRW-7 Collection-timeline cues (`pocketdj-timeline-cues.json`): synced, cleared on account deletion. Touch off-main. */
+    private val timelineCuesLazy = lazy {
+        val f = File(app.appContext.filesDir, com.levi.pocketdj.data.timeline.TimelineCueStore.FILE_NAME)
+        com.levi.pocketdj.data.timeline.TimelineCueStore(f, writer = VersionedJsonWriter(f, VersionedJsonWriter.backgroundExecutor("pdj-timeline-cues-writer")))
+    }
+    val timelineCues: com.levi.pocketdj.data.timeline.TimelineCueStore get() = timelineCuesLazy.value
+
     /** Starts the recorder once; idempotent. Call off-main (the store reads its doc from disk). */
     fun startPlayStats() {
         if (playStatsStarted.compareAndSet(false, true)) {
@@ -341,11 +348,15 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             onPulled = { app.collectionActivity.reloadFromDisk() }),
         SyncEntry(SyncRegistry.KEY_PLAY_STATS, com.levi.pocketdj.data.stats.PlayStatsStore.FILE_NAME,
             onPulled = { playStats.reloadFromDisk(); false }),
+        SyncEntry(SyncRegistry.KEY_TIMELINE_CUES, com.levi.pocketdj.data.timeline.TimelineCueStore.FILE_NAME,
+            onPulled = { timelineCues.reloadFromDisk() }),
     )
 
     override val resetHooks: List<ResetHook> = listOf(
         ResetHook { if (cloudSyncLazy.isInitialized()) cloudSync.clearLocalSyncState() },
         ResetHook { profileSecrets.clear() },
+        // iOS AccountDeletionService: timelineCues?.clear(). Clears (and deletes the file) even if never opened.
+        ResetHook { timelineCues.clear() },
     )
 
     override val settingsSections: List<SettingsSection> by lazy {

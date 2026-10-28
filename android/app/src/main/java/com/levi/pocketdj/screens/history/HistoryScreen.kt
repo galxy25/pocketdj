@@ -134,6 +134,7 @@ internal fun visibleHistoryTabs(pocketsEnabled: Boolean, forYouEnabled: Boolean)
 fun HistoryScreen(
     modifier: Modifier = Modifier,
     onSongClick: (songId: String) -> Unit = {},
+    onAlbumClick: (albumId: String) -> Unit = {},
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
@@ -203,10 +204,18 @@ fun HistoryScreen(
                 catalog = catalog,
                 onSongClick = onSongClick,
             )
-            HistoryTab.COLLECTION -> ActivityContent(
+            HistoryTab.COLLECTION -> CollectionTab(
                 catalog = catalog,
                 query = inputs.query,
                 onSongClick = onSongClick,
+                onAlbumClick = onAlbumClick,
+                activityContent = {
+                    ActivityContent(
+                        catalog = catalog,
+                        query = inputs.query,
+                        onSongClick = onSongClick,
+                    )
+                },
             )
             HistoryTab.POCKETS -> EmptyState(
                 icon = Icons.Filled.Layers,

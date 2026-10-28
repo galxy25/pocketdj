@@ -49,6 +49,17 @@ class RecentlyAddedTest {
     }
 
     @Test
+    fun randomFiveKMatchesFullSortForSeveralLimits() {
+        val rnd = java.util.Random(20261028L)
+        val songs = (0 until 5000).map { song("s${rnd.nextInt(1_000_000)}-$it", (rnd.nextInt(2_000_000) + 1).toDouble()) }
+        val c = catalog(*songs.toTypedArray())
+        val full = songs.sortedWith(compareByDescending<IndexSong> { it.dateAdded }.thenByDescending { it.id }).map { it.id }
+        for (n in listOf(1, 7, 40, 500, 4999, 5000, 9000)) {
+            assertEquals("limit $n", full.take(n), RecentlyAddedBuilder().songIds(c, emptyList(), n))
+        }
+    }
+
+    @Test
     fun memoHitNoRecompute() {
         val c = catalog(song("a", 1.0), song("b", 2.0))
         val b = RecentlyAddedBuilder()
