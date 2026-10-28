@@ -188,7 +188,7 @@ class SortEngineTest {
         assertEquals(
             listOf(
                 "artist", "name", "year", "playCount", "genre", "fileType", "source",
-                "trackNumber", "length", "bpm", "key", "camelot", "explicit", "dateAdded",
+                "trackNumber", "length", "bpm", "key", "camelot", "explicit",
             ),
             songFields,
         )

@@ -178,7 +178,7 @@ data class Clause(
 }
 
 object FilterEngine {
-    private fun norm(s: String): String = s.trim { it == ' ' || it == '\t' }.lowercase(Locale.ROOT)
+    private fun norm(s: String): String = s.trim { it.isWhitespace() && it != '\n' && it != '\r' }.lowercase(Locale.ROOT)
 
     fun matches(row: BrowseRow, c: Clause, playCounts: Map<String, Int> = emptyMap()): Boolean {
         val field = Fields.byId[c.field] ?: return true

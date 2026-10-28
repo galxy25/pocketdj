@@ -49,6 +49,15 @@ class FilterEngineTest {
 
     // ---- number ------------------------------------------------------------
 
+    @Test fun string_eq_trimsUnicodeHorizontalSpace() {
+        val c = Clause("artist", FilterOp.EQ, value = "Artist\u00A0")
+        assertTrue(m(song(artist = "Artist"), c))
+    }
+
+    @Test fun dateAdded_notOfferedAsSortUntilWired() {
+        assertFalse("dateAdded" in SortField.forKind(BrowseKind.SONGS).map { it.id })
+    }
+
     @Test fun number_eq() {
         val c = Clause("year", FilterOp.EQ, value = "1990")
         assertTrue(m(song(year = 1990), c))

@@ -275,7 +275,10 @@ private fun BrowseContent(
             // the UI thread was a shipped runloop hang (§13).
             val rows = BrowseRows.of(catalog)
             val playCounts = if (usesPlayCounts) {
-                history.events.groupingBy { it.songId }.eachCount()
+                rows.songRows.asSequence()
+                    .map { it.song.id }
+                    .associateWith(history::playCount)
+                    .filterValues { it > 0 }
             } else {
                 emptyMap()
             }
