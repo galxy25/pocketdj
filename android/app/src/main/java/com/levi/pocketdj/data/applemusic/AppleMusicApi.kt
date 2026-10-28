@@ -119,6 +119,50 @@ class AppleMusicApi(
         return AmResult.Ok(out)
     }
 
+    // ---- BRW-17 recognizer lookups (additive) -----------------------------------
+
+    /** `GET /v1/catalog/{sf}/songs/{id}?include=albums` -> the song + first album (Shazam result sheet). */
+    suspend fun recognizedSong(
+        songId: String,
+        storefront: String = defaultStorefront,
+    ): AmResult<AppleMusicResolution> {
+        if (songId.isBlank()) return AmResult.Failure(null, "Empty song id")
+        val url = url("v1", "catalog", storefront, "songs", songId) { addQueryParameter("include", "albums") }
+        return call(get(url), userScoped = false) {
+            AppleMusicRecognitionParsing.parseCatalogSong(it)
+        }
+    }
+
+    /** Top catalog song for a "title artist" term (fallback when Shazam returns no store id). */
+    suspend fun recognizedSongSearch(
+        term: String,
+        storefront: String = defaultStorefront,
+    ): AmResult<AppleMusicResolution> {
+        if (term.isBlank()) return AmResult.Failure(null, "Empty search term")
+        val url = url("v1", "catalog", storefront, "search") {
+            addQueryParameter("types", "songs")
+            addQueryParameter("term", term)
+            addQueryParameter("limit", "1")
+            addQueryParameter("include[songs]", "albums")
+        }
+        return call(get(url), userScoped = false) {
+            AppleMusicRecognitionParsing.parseSearchTopSong(it)
+        }
+    }
+
+    /** `GET /v1/me/library/search?types=library-songs`: does the user's library hold title/artist? */
+    suspend fun librarySongRows(term: String): AmResult<List<Pair<String, String>>> {
+        if (term.isBlank()) return AmResult.Ok(emptyList())
+        val url = url("v1", "me", "library", "search") {
+            addQueryParameter("types", "library-songs")
+            addQueryParameter("term", term)
+            addQueryParameter("limit", "25")
+        }
+        return call(get(url), userScoped = true) {
+            AppleMusicRecognitionParsing.libraryRows(it)
+        }
+    }
+
     // ---- User ----------------------------------------------------------------
 
     suspend fun userStorefront(): AmResult<String> =

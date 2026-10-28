@@ -336,6 +336,78 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     suspend fun hasMusicUserToken(): Boolean = app.settings.current().hasAppleMusic
 
+    // ---- BRW-17: "?♪?" song recognizer ------------------------------------------------------
+
+    /**
+     * The capture + match pipeline. The ShazamKit-for-Android AAR (app/libs/shazamkit-android.aar) is not in
+     * the repo, so this defaults to the unavailable backend; the AudioRecord/StreamingSession adapter replaces it.
+     */
+    var shazamBackend: com.levi.pocketdj.screens.shazam.RecognitionBackend =
+        com.levi.pocketdj.screens.shazam.UnavailableRecognitionBackend
+
+    /** Apple Music Web API adapter behind the result sheet's Apple Music block. */
+    val appleMusicRecognition: com.levi.pocketdj.screens.shazam.AppleMusicRecognitionPort by lazy {
+        object : com.levi.pocketdj.screens.shazam.AppleMusicRecognitionPort {
+            private fun <T> com.levi.pocketdj.data.applemusic.AmResult<T>.okOrNull() =
+                (this as? com.levi.pocketdj.data.applemusic.AmResult.Ok)?.value
+
+            override val available get() = true
+            override suspend fun canContribute() = app.settings.current().hasAppleMusic
+            override val canAdd get() = true
+
+            @Volatile private var storefront: String? = null
+            private suspend fun sf(): String {
+                storefront?.let { return it }
+                return (app.appleMusicApi.userStorefront().okOrNull() ?: "us").also { storefront = it }
+            }
+
+            override suspend fun resolve(storeId: String?, title: String?, artist: String?):
+                com.levi.pocketdj.data.applemusic.AppleMusicResolution? {
+                val api = app.appleMusicApi
+                val front = sf()
+                var song = if (!storeId.isNullOrBlank()) api.recognizedSong(storeId, front).okOrNull() else null
+                if (song == null) {
+                    val term = listOfNotNull(title, artist).joinToString(" ").trim()
+                    if (term.isNotEmpty()) song = api.recognizedSongSearch(term, front).okOrNull()
+                }
+                song ?: return null
+                val rows = api.librarySongRows("${song.title} ${song.artist}".trim()).okOrNull().orEmpty()
+                return song.copy(inLibrary = com.levi.pocketdj.screens.shazam.libraryRowsContain(rows, song.title, song.artist))
+            }
+
+            override suspend fun addSongToLibrary(storeId: String) =
+                app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.SONGS, listOf(storeId)) is
+                    com.levi.pocketdj.data.applemusic.AmResult.Ok
+
+            override suspend fun startRipAndBurn(songId: String, title: String, artist: String, storeId: String):
+                com.levi.pocketdj.screens.shazam.RipStart {
+                if (!app.ripServerClient.isConfigured()) return com.levi.pocketdj.screens.shazam.RipStart.NO_SERVER
+                val burns = app.servicesGraph.burnStore
+                // Intent first: whichever path sees the rip land (tracker onRipReady / launch drain) finishes the burn.
+                burns.burnWhenRipped(songId, title, artist)
+                if (app.ripsRepository.entry(songId) != null) {
+                    burns.drainPendingAfterRip()
+                    return com.levi.pocketdj.screens.shazam.RipStart.REQUESTED
+                }
+                val job = app.ripServerClient.requestRip(songId, title, artist, storeId, null)
+                app.ripJobTracker.adopt(songId, job)
+                if (job.isReady) {
+                    // Already ripped server-side: the tracker will never fire, so refresh + drain here.
+                    runCatching { app.ripsRepository.refresh() }
+                    burns.drainPendingAfterRip()
+                } else {
+                    job.jobId?.let { app.ripJobTracker.pollToReady(songId, it) }
+                }
+                return com.levi.pocketdj.screens.shazam.RipStart.REQUESTED
+            }
+        }
+    }
+
+    /** App-scoped add -> rip -> burn driver for the recognizer sheet (survives sheet dismissal). */
+    val recognitionAdds: com.levi.pocketdj.screens.shazam.RecognitionAddController by lazy {
+        com.levi.pocketdj.screens.shazam.RecognitionAddController(app.appScope + Dispatchers.IO, appleMusicRecognition)
+    }
+
     /** On-demand lyrics (memory -> disk `filesDir/lyrics-cache` -> catalog CDN). */
     val lyricsStore: com.levi.pocketdj.data.lyrics.LyricsStore by lazy {
         com.levi.pocketdj.data.lyrics.LyricsStore(
