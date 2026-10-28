@@ -260,4 +260,71 @@ class RipServerClientTest {
         server.enqueue(MockResponse().setResponseCode(500)) // per-song fallback
         assertFalse(client().stemifyCollection(listOf("a"), fallbackOne = { null }).viaBatch)
     }
+
+    // ---- Discover (BRW-15): /search and /album-tracks ----
+
+    @Test
+    fun searchSongs_decodesHitsToleratingMissingOptionalKeys_andSendsQueryAndAuth() = runTest {
+        token = "tok"
+        server.enqueue(
+            MockResponse().setBody(
+                """{"results":[{"appleMusicId":"1","title":"A","artist":"B","songId":"amrec_1","ripped":true,"url":"https://r/1.mp3","explicit":true,"future":1},
+                    {"appleMusicId":"2","title":"C","artist":"D","songId":"amrec_2"}]}""",
+            ),
+        )
+        val hits = client().searchSongs("daft punk", 25)
+        val req = server.takeRequest()
+        assertEquals("/search?q=daft%20punk&limit=25", req.path)
+        assertEquals("Bearer tok", req.getHeader("Authorization"))
+        assertEquals(listOf("1", "2"), hits.map { it.appleMusicId })
+        assertEquals(true, hits[0].ripped)
+        assertNull(hits[1].url)
+        assertNull(hits[1].albumAppleMusicId)
+    }
+
+    @Test
+    fun searchAlbums_sendsEntityAlbum() = runTest {
+        server.enqueue(MockResponse().setBody("""{"results":[{"appleMusicId":"9","albumId":"amrec_album_9","title":"LP","artist":"X","trackCount":10,"year":1999}]}"""))
+        val hits = client().searchAlbums("lp")
+        assertTrue(server.takeRequest().path!!.contains("entity=album"))
+        assertEquals("amrec_album_9", hits.single().albumId)
+        assertEquals(10, hits.single().trackCount)
+    }
+
+    @Test
+    fun searchSongs_unauthorized_throwsWithCode() = runTest {
+        server.enqueue(MockResponse().setResponseCode(401).setBody("{}"))
+        val e = runCatching { client().searchSongs("x") }.exceptionOrNull() as RipServerClient.RipServerException
+        assertEquals(401, e.code)
+    }
+
+    @Test
+    fun albumTracks_withAlbumEnvelope() = runTest {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"tracks":[{"id":"t1","title":"One","artist":"X","trackNumber":1,"durationMs":1000},{"id":"t2","title":"Two","artist":"X","discNumber":1}],
+                    "album":{"appleMusicId":"9","albumId":"amrec_album_9","title":"LP","artist":"X","releaseDate":"2026-11-01T08:00:00Z"}}""",
+            ),
+        )
+        val exp = client().albumTracks("9")
+        assertEquals("/album-tracks?id=9", server.takeRequest().path)
+        assertEquals(2, exp.tracks.size)
+        assertEquals("2026-11-01T08:00:00Z", exp.album!!.releaseDate)
+    }
+
+    @Test
+    fun albumTracks_missingAlbumEnvelope_stillDecodesTracks() = runTest {
+        server.enqueue(MockResponse().setBody("""{"tracks":[{"id":"t1","title":"One","artist":"X"}]}"""))
+        val exp = client().albumTracks("9")
+        assertEquals(1, exp.tracks.size)
+        assertNull(exp.album)
+    }
+
+    @Test
+    fun albumTracks_failureOrBlankId_isEmptyNotThrow() = runTest {
+        server.enqueue(MockResponse().setResponseCode(500).setBody("{}"))
+        assertTrue(client().albumTracks("9").tracks.isEmpty())
+        assertTrue(client().albumTracks("  ").tracks.isEmpty())
+        assertEquals(1, server.requestCount)
+    }
 }

@@ -70,6 +70,7 @@ import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.favorites.FavoriteFilter
 import com.levi.pocketdj.data.search.OnlineSearchModel
+import com.levi.pocketdj.screens.discover.DiscoverPane
 import com.levi.pocketdj.data.search.SearchSettings
 import com.levi.pocketdj.di.AppGraph
 import androidx.compose.material.icons.filled.Cloud
@@ -347,6 +348,7 @@ private fun BrowseContent(
     val collRevision = if (membership.active) collStore.state.collectAsState().value.revision else -1
     // ---- Online (OpenSearch) mode: Albums/Songs only; Artists is always on-device. ----
     val online = searchMode == SearchMode.ONLINE && kind != BrowseKind.ARTISTS
+    val discover = searchMode == SearchMode.DISCOVER
     val onlineGraph = remember { AppGraph.get(context) }
     val onlineScope = rememberCoroutineScope()
     val onlineModel = remember { OnlineSearchModel(onlineGraph.browseGraph.searchService, onlineScope) }
@@ -369,9 +371,9 @@ private fun BrowseContent(
         }
     }
 
-    val results by produceState(initialValue = BrowseResults(), if (online) "online" else resultsKey) {
+    val results by produceState(initialValue = BrowseResults(), if (online) "online" else if (discover) "discover" else resultsKey) {
         // iOS parity: the heavy local filter/sort never runs in online mode.
-        if (online) return@produceState
+        if (online || discover) return@produceState
         value = withContext(Dispatchers.Default) {
             // Pipeline (§4.1): base rows → text query → filter clauses → sort,
             // all in BrowseEngine.filterSort. A ~90k-row locale-aware pass on
@@ -435,7 +437,7 @@ private fun BrowseContent(
     // Multi-select (COL-5): Songs list only, never in online mode. The registered universe is the
     // FULL filtered list (shownSongs), not the rendered page.
     val rowSelection = remember { AppGraph.get(context).collectionsGraph.rowSelection }
-    val selectable = kind == BrowseKind.SONGS && !online
+    val selectable = kind == BrowseKind.SONGS && !online && !discover
     if (selectable) {
         SelectionScope(
             selection = rowSelection,
@@ -451,7 +453,7 @@ private fun BrowseContent(
 
     Column(Modifier.fillMaxSize()) {
         if (selectable) SelectionBar(rowSelection, BROWSE_SELECTION_SCOPE, collStore)
-        SourcesRail(
+        if (!discover) SourcesRail(
             sources = catalog.availableSources,
             selected = filters.sources,
             onSelect = { selection -> onFilters(filters.withSources(selection)) },
@@ -466,9 +468,13 @@ private fun BrowseContent(
             SingleChoiceSegmentedButtonRow(modifier = Modifier.weight(1f)) {
                 BrowseKind.entries.forEachIndexed { index, entry ->
                     SegmentedButton(
-                        selected = kind == entry,
-                        onClick = { onKind(entry) },
-                        shape = SegmentedButtonDefaults.itemShape(index, BrowseKind.entries.size),
+                        selected = kind == entry && !discover,
+                        onClick = {
+                            // Leaving Discover returns to device mode (Discover is a search mode, not a kind).
+                            if (discover) onSearchMode(SearchMode.DEVICE)
+                            onKind(entry)
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(index, BrowseKind.entries.size + 1),
                     ) {
                         Text(
                             when (entry) {
@@ -479,8 +485,13 @@ private fun BrowseContent(
                         )
                     }
                 }
+                SegmentedButton(
+                    selected = discover,
+                    onClick = { onSearchMode(SearchMode.DISCOVER) },
+                    shape = SegmentedButtonDefaults.itemShape(BrowseKind.entries.size, BrowseKind.entries.size + 1),
+                ) { Text("Discover") }
             }
-            if (kind == BrowseKind.ALBUMS) {
+            if (!discover && kind == BrowseKind.ALBUMS) {
                 IconButton(
                     onClick = {
                         onLayout(if (layout == AlbumLayout.GRID) AlbumLayout.LIST else AlbumLayout.GRID)
@@ -496,7 +507,7 @@ private fun BrowseContent(
                     )
                 }
             }
-            if (kind != BrowseKind.ARTISTS) {
+            if (!discover && kind != BrowseKind.ARTISTS) {
                 IconButton(
                     onClick = {
                         onSearchMode(if (online) SearchMode.DEVICE else SearchMode.ONLINE)
@@ -509,7 +520,7 @@ private fun BrowseContent(
                     )
                 }
             }
-            IconButton(onClick = onShowSort) {
+            if (!discover) IconButton(onClick = onShowSort) {
                 Icon(
                     Icons.Filled.SwapVert,
                     contentDescription = "Sort",
@@ -520,7 +531,7 @@ private fun BrowseContent(
                     },
                 )
             }
-            BadgedBox(
+            if (!discover) BadgedBox(
                 badge = {
                     if (filters.activeCount(kind) > 0) Badge { Text(filters.activeCount(kind).toString()) } else if (filters.glyphLit(kind)) Badge()
                 },
@@ -545,7 +556,7 @@ private fun BrowseContent(
             singleLine = true,
             placeholder = {
                 Text(
-                    when (kind) {
+                    if (discover) "Search Apple Music" else when (kind) {
                         BrowseKind.ALBUMS -> "Search albums"
                         BrowseKind.SONGS -> "Search songs"
                         BrowseKind.ARTISTS -> "Search artists"
@@ -566,7 +577,7 @@ private fun BrowseContent(
         )
 
         // Results header: "<count> albums|songs" (+ refresh spinner in place).
-        Row(
+        if (!discover) Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
@@ -620,7 +631,9 @@ private fun BrowseContent(
             else -> "Nothing here yet — pull the catalog from Settings"
         }
 
-        if (online) {
+        if (discover) {
+            DiscoverPane(query = query, modifier = Modifier.weight(1f))
+        } else if (online) {
             OnlineResults(
                 ui = onlineUi,
                 kind = kind,

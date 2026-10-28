@@ -426,6 +426,51 @@ class RipServerClient(
         }
     }
 
+    // ---- Discover (iOS RipsStore.discoverSearch / discoverSearchAlbums / fetchAlbumExpansion) ----
+
+    /** `GET /search?q=&limit=` — Apple Music catalog SONG hits via the iTunes proxy (metadata only). */
+    suspend fun searchSongs(query: String, limit: Int = 25): List<com.levi.pocketdj.screens.discover.DiscoverHit> {
+        val config = requireConfig()
+        val request = builder(config, url(config, "search").newBuilder()
+            .addQueryParameter("q", query.trim()).addQueryParameter("limit", limit.toString()).build()).get().build()
+        return execute(request) {
+            json.decodeFromString<com.levi.pocketdj.screens.discover.DiscoverSongsEnvelope>(it).results
+        }
+    }
+
+    /** `GET /search?entity=album` — ALBUM hits. */
+    suspend fun searchAlbums(query: String, limit: Int = 25): List<com.levi.pocketdj.screens.discover.DiscoverAlbumHit> {
+        val config = requireConfig()
+        val request = builder(config, url(config, "search").newBuilder()
+            .addQueryParameter("q", query.trim()).addQueryParameter("entity", "album")
+            .addQueryParameter("limit", limit.toString()).build()).get().build()
+        return execute(request) {
+            json.decodeFromString<com.levi.pocketdj.screens.discover.DiscoverAlbumsEnvelope>(it).results
+        }
+    }
+
+    /**
+     * `GET /album-tracks?id=<collectionId>` — ordered tracks plus (newer servers) the album row.
+     * [DiscoverAlbumExpansion.EMPTY] on any failure, exactly like iOS (callers decide how to surface it).
+     */
+    suspend fun albumTracks(collectionId: String): com.levi.pocketdj.screens.discover.DiscoverAlbumExpansion {
+        val id = collectionId.trim()
+        if (id.isEmpty() || !configProvider().configured) return com.levi.pocketdj.screens.discover.DiscoverAlbumExpansion.EMPTY
+        return try {
+            val config = requireConfig()
+            val request = builder(config, url(config, "album-tracks").newBuilder().addQueryParameter("id", id).build())
+                .get().build()
+            execute(request) {
+                val e = json.decodeFromString<com.levi.pocketdj.screens.discover.DiscoverAlbumTracksEnvelope>(it)
+                com.levi.pocketdj.screens.discover.DiscoverAlbumExpansion(e.album, e.tracks)
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            com.levi.pocketdj.screens.discover.DiscoverAlbumExpansion.EMPTY
+        }
+    }
+
     private suspend fun requireConfig(): Config {
         val config = configProvider()
         if (!config.configured) {

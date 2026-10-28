@@ -65,7 +65,7 @@ class BrowseSessionPersistenceTest {
     @Test
     fun unknownEnumStrings_fallBackToSafeDefaults() {
         // A future/other build wrote kinds/modes this build doesn't understand.
-        val snap = BrowseSnapshot(kind = "zzz", layout = "carousel", searchMode = "discover")
+        val snap = BrowseSnapshot(kind = "zzz", layout = "carousel", searchMode = "holodeck")
         val state = snap.toSessionState()
         assertEquals(BrowseKind.ALBUMS, state.kind)
         assertEquals(AlbumLayout.GRID, state.layout)
