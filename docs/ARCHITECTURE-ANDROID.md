@@ -423,7 +423,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | BRW-3 — Explicit/edition system (SongVariant, EditionPolicy, clean-only) + streaming-link and dat… | 2 | Planned | Actual explicit/clean Apple Music streaming (DRM) verification. |
 | BRW-8 — Recs core A: SimilarityFamilies, Similarity profile, TimbreCatalog (timbrePrior=2 load-be… | 2 | Planned | — |
 | BRW-5 — Online OpenSearch (aoss) search: device↔online toggle, SigV4-signed direct queries, claus… | 4 | Planned | — |
-| BRW-9 — Recs core B: identity + shaping (version/recording identity, membership, novelty, composi… | 4 | Planned | — |
+| BRW-9 — Recs core B: identity + shaping (version/recording identity, membership, novelty, composi… | 4 | DONE | device-only: none (pure) |
 | BRW-4 — Song/Album detail parity: lyrics store + timed-lyrics sidecar + lyrics panel, share text,… | 5 | Planned | — |
 | BRW-2 — Filter/sort sheets at full width + membership (in/not-in, none-of) + favorite + hide-skip… | 8 | Planned | — |
 | BRW-6 — History screen parity: tab model (Playback \| Collection \| Pockets \| For You slots), en… | 9 | Planned | — |
