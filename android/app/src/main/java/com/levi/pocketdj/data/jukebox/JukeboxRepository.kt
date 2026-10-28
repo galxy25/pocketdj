@@ -1,26 +1,15 @@
 package com.levi.pocketdj.data.jukebox
 
-import android.content.ComponentName
 import android.content.Context
-import android.net.Uri
-import androidx.core.os.bundleOf
-import androidx.media3.common.C
-import androidx.media3.common.MediaItem
-import androidx.media3.common.MediaMetadata
-import androidx.media3.session.MediaController
-import androidx.media3.session.SessionToken
-import com.google.common.util.concurrent.ListenableFuture
-import com.google.common.util.concurrent.MoreExecutors
 import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.data.config.Endpoints
-import com.levi.pocketdj.data.rips.PlayAction
-import com.levi.pocketdj.data.rips.PlayResolver
 import com.levi.pocketdj.data.rips.RipsRepository
-import com.levi.pocketdj.playback.PlaybackContract
 import com.levi.pocketdj.playback.PlaybackController
-import com.levi.pocketdj.playback.PlaybackService
 import com.levi.pocketdj.playback.PlayContext
+import com.levi.pocketdj.playback.sequencer.QueueItem
+import com.levi.pocketdj.playback.sequencer.SequencerState
+import com.levi.pocketdj.playback.sequencer.SetlistSequencer
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
@@ -35,7 +24,6 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -69,6 +57,8 @@ class JukeboxRepository(
     @Volatile var placementSink: JukeboxPlacementSink = JukeboxPlacementSink.None,
     /** Seam: Apple-Music catalog match stage (device-only; default null). */
     @Volatile var externalMatch: JukeboxExternalMatch = JukeboxExternalMatch.None,
+    /** Where accepted requests land: the sequencer (null in tests that never place). */
+    @Volatile var queue: JukeboxQueue? = null,
 ) {
     private val appContext by lazy { context.applicationContext }
 
@@ -125,9 +115,6 @@ class JukeboxRepository(
     private var lastPosted: JukeboxStatePayload? = null
     private var lastPostAtMs = 0L
     private var lastOnAir: Pair<String, String>? = null
-
-    private var controller: MediaController? = null
-    private val controllerMutex = Mutex()
 
     /** Serializes session commits (bootstrap / start / adopt) so a slow
      *  coroutine can't overwrite a session another one already committed. */
@@ -241,7 +228,6 @@ class JukeboxRepository(
         scope.launch {
             runCatching { client.end(session) }
             sessionStore.clear()
-            releaseController()
             resetLoopBookkeeping()
             _state.value = UiState()
         }
@@ -359,7 +345,6 @@ class JukeboxRepository(
     /** Server-side death (§2.4): clear everything, back to the create view. */
     private suspend fun foldSession() {
         sessionStore.clear()
-        releaseController()
         resetLoopBookkeeping()
         _state.value = UiState(notice = "This jukebox has ended.")
     }
@@ -472,34 +457,20 @@ class JukeboxRepository(
 
     private suspend fun applyPlacement(song: IndexSong, action: JukeboxDecisionAction) {
         try {
-            val snapshot = readPlayer()
-            if (snapshot.songId == null) {
-                // Nothing playing — the accepted request starts the music with
-                // a one-item queue (§4.3).
+            val target = queue
+            if (target == null) {
+                // Not wired (unit tests): fall back to a plain play so a request is never silently lost.
                 playback.play(song.id, queueAlbumContext = false)
                 kick()
                 return
             }
-            val stream = PlayResolver.resolve(song.id, rips.entry(song.id), false)
-                as? PlayAction.Stream
-            if (stream == null) {
-                _state.update {
-                    it.copy(transientError = "“${song.name}” isn't playable anymore")
-                }
+            if (!rips.isPlayable(song.id)) {
+                _state.update { it.copy(transientError = "“${song.name}” isn't playable anymore") }
                 return
             }
-            val item = queueItem(song, stream)
-            withController { player ->
-                val count = player.mediaItemCount
-                val afterCurrent = (player.currentMediaItemIndex + 1).coerceIn(0, count)
-                val insertAt = when (action) {
-                    JukeboxDecisionAction.NEXT -> afterCurrent
-                    JukeboxDecisionAction.END -> count
-                    // Uniform random slot within the upcoming tail.
-                    else -> if (afterCurrent >= count) count else Random.nextInt(afterCurrent, count + 1)
-                }
-                player.addMediaItem(insertAt, item)
-            }
+            val item = QueueItem(id = song.id, title = song.name, artist = song.artist, lengthMs = song.length)
+            // The sequencer is Main-confined; every queue mutation hops there.
+            withContext(Dispatchers.Main) { JukeboxPlacement.place(target, item, action) }
             kick()
         } catch (error: CancellationException) {
             throw error
@@ -508,91 +479,23 @@ class JukeboxRepository(
         }
     }
 
-    /**
-     * Build a queue item the [PlaybackService] can resolve — the same
-     * [PlaybackContract] request-metadata contract the [PlaybackController]
-     * uses, so the URI + clip window survive the controller → session hop.
-     */
-    private fun queueItem(song: IndexSong, action: PlayAction.Stream): MediaItem {
-        val merged = catalog.state.value.catalog
-        val album = song.albumId?.let { merged?.albumsById?.get(it) }
-        val extras = bundleOf(
-            PlaybackContract.EXTRA_URL to action.url,
-            PlaybackContract.EXTRA_SOURCE to PlayContext.SOURCE_BROWSER,
-            PlaybackContract.EXTRA_IS_LIVE to false,
-        ).apply {
-            action.clipStartMs?.let { putLong(PlaybackContract.EXTRA_CLIP_START_MS, it) }
-            action.clipEndMs?.let { putLong(PlaybackContract.EXTRA_CLIP_END_MS, it) }
-            album?.id?.let { putString(PlaybackContract.EXTRA_ALBUM_ID, it) }
-        }
-        return MediaItem.Builder()
-            .setMediaId(song.id)
-            .setRequestMetadata(
-                MediaItem.RequestMetadata.Builder()
-                    .setMediaUri(Uri.parse(action.url))
-                    .setExtras(extras)
-                    .build(),
-            )
-            .setMediaMetadata(
-                MediaMetadata.Builder()
-                    .setTitle(song.name)
-                    .setArtist(song.artist)
-                    .setAlbumTitle(album?.name)
-                    .apply {
-                        album?.artCandidates()?.firstOrNull()?.let { setArtworkUri(Uri.parse(it)) }
-                    }
-                    .build(),
-            )
-            .build()
-    }
-
-    /** One main-thread hop reading now-playing + the upcoming queue tail. */
-    private suspend fun readPlayer(): PlayerSnapshot = withController { player ->
-        val item = player.currentMediaItem
-        val upNext = buildList {
-            val from = if (player.currentMediaItemIndex >= 0) player.currentMediaItemIndex + 1 else 0
-            for (index in from until player.mediaItemCount) {
-                val metadata = player.getMediaItemAt(index).mediaMetadata
-                add(
-                    JukeboxStatePayload.Track(
-                        title = metadata.title?.toString().orEmpty(),
-                        artist = metadata.artist?.toString().orEmpty(),
-                    ),
-                )
-            }
-        }
-        PlayerSnapshot(
-            songId = item?.mediaId,
-            title = item?.mediaMetadata?.title?.toString(),
-            artist = item?.mediaMetadata?.artist?.toString(),
-            durationMs = player.duration.takeIf { it != C.TIME_UNSET },
-            positionMs = player.currentPosition,
-            upNext = upNext,
+    /** One read of now-playing + the upcoming queue tail, from the sequencer (never the MediaController). */
+    private suspend fun readPlayer(): PlayerSnapshot {
+        val seq = queue?.snapshot()
+        val current = seq?.current
+        val np = playback.nowPlaying.value
+        val position = runCatching { playback.currentPositionMs() }.getOrDefault(0L)
+        val songId = current?.id ?: np?.songId
+        return PlayerSnapshot(
+            songId = songId,
+            title = current?.title ?: np?.title,
+            artist = current?.artist ?: np?.artist,
+            durationMs = np?.durationMs ?: current?.lengthMs,
+            positionMs = position,
+            upNext = seq?.upcoming.orEmpty().map {
+                JukeboxStatePayload.Track(title = it.title, artist = it.artist.orEmpty())
+            },
         )
-    }
-
-    /** MediaController is main-thread confined; every touch hops to Main. */
-    private suspend fun <T> withController(block: (MediaController) -> T): T =
-        withContext(Dispatchers.Main) { block(obtainController()) }
-
-    private suspend fun obtainController(): MediaController {
-        controller?.let { return it }
-        return controllerMutex.withLock {
-            controller ?: run {
-                val token = SessionToken(
-                    appContext,
-                    ComponentName(appContext, PlaybackService::class.java),
-                )
-                val built = MediaController.Builder(appContext, token).buildAsync().await()
-                controller = built
-                built
-            }
-        }
-    }
-
-    private suspend fun releaseController() = withContext(Dispatchers.Main) {
-        controller?.release()
-        controller = null
     }
 
     companion object {
@@ -603,17 +506,57 @@ class JukeboxRepository(
     }
 }
 
-private suspend fun <T> ListenableFuture<T>.await(): T =
-    suspendCancellableCoroutine { continuation ->
-        addListener(
-            {
-                try {
-                    continuation.resumeWith(Result.success(get()))
-                } catch (error: Exception) {
-                    continuation.resumeWith(Result.failure(error))
-                }
-            },
-            MoreExecutors.directExecutor(),
-        )
-        continuation.invokeOnCancellation { cancel(false) }
+/** The slice of the sequencer the jukebox needs - a seam so placement is unit-testable without Media3. */
+interface JukeboxQueue {
+    /** Is a run active (accepting inserts)? */
+    val isRunning: Boolean
+    fun snapshot(): SequencerState
+    fun insertNext(item: QueueItem)
+    fun append(item: QueueItem)
+    /** Insert at a uniformly random slot of [slots] (index+1..count); [slot] is injectable. */
+    fun insertRandom(item: QueueItem, slot: (IntRange) -> Int)
+    /** Nothing running: start a one-item run tagged with [context]. */
+    fun startRun(item: QueueItem, context: PlayContext)
+}
+
+/** Production [JukeboxQueue]: every accepted request goes through the [SetlistSequencer]. */
+class SequencerJukeboxQueue(private val sequencer: SetlistSequencer) : JukeboxQueue {
+    override val isRunning: Boolean get() = sequencer.state.value.isRunning
+    override fun snapshot(): SequencerState = sequencer.state.value
+    override fun insertNext(item: QueueItem) = sequencer.insertNextInQueue(listOf(item))
+    override fun append(item: QueueItem) = sequencer.appendToQueue(listOf(item))
+    override fun insertRandom(item: QueueItem, slot: (IntRange) -> Int) =
+        sequencer.insertRandomInQueue(listOf(item), slot)
+    override fun startRun(item: QueueItem, context: PlayContext) = sequencer.play(listOf(item), context = context)
+}
+
+/** Placement rules for an accepted request (§4.3, §5). */
+object JukeboxPlacement {
+    /** History context of a run the jukebox started. */
+    val CONTEXT = PlayContext(source = "jukebox", contextName = "Jukebox")
+
+    /** The slot range a RANDOM insert draws from: right after the current row through the very end. */
+    fun randomSlots(currentIndex: Int, count: Int): IntRange {
+        val lo = (currentIndex + 1).coerceIn(0, count)
+        return lo..count
     }
+
+    fun place(
+        queue: JukeboxQueue,
+        item: QueueItem,
+        action: JukeboxDecisionAction,
+        slot: (IntRange) -> Int = { Random.nextInt(it.first, it.last + 1) },
+    ) {
+        if (!action.isPlacement) return
+        if (!queue.isRunning) {
+            // Nothing playing: the accepted request starts the music with a one-item queue.
+            queue.startRun(item, CONTEXT)
+            return
+        }
+        when (action) {
+            JukeboxDecisionAction.NEXT -> queue.insertNext(item)
+            JukeboxDecisionAction.END -> queue.append(item)
+            else -> queue.insertRandom(item, slot)
+        }
+    }
+}

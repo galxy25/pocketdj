@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,6 +26,13 @@ import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.screens.browse.MinimalSong
 import com.levi.pocketdj.screens.browse.SongDetailSheet
+import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
+import com.levi.pocketdj.playback.sequencer.QueueItem
+import com.levi.pocketdj.shell.NavRequestBus
+import com.levi.pocketdj.shell.ShellRoute
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 
 /** The home Now Playing deck: gold record, transport, modes, notice. */
 @Composable
@@ -56,24 +64,55 @@ fun NowPlayingScreen(modifier: Modifier = Modifier) {
     val progress = RecordMath.progressFraction(position, state.lengthMs)
 
     val cfg = LocalConfiguration.current
-    val landscapePhone = cfg.orientation == Configuration.ORIENTATION_LANDSCAPE && cfg.screenHeightDp < 480
-    var detailFor by remember { mutableStateOf<String?>(null) }
+    val landscape = cfg.orientation == Configuration.ORIENTATION_LANDSCAPE
+    val landscapePhone = landscape && cfg.screenHeightDp < 480
+    val expanded = QueueReorder.useExpandedLayout(cfg.screenWidthDp, landscape)
+    var detail by remember { mutableStateOf<Pair<String, MinimalSong?>?>(null) }
     val snackbar = remember { SnackbarHostState() }
+    val sequencer = graph.playbackGraph.sequencer
+    val collections = graph.collections
 
-    Column(
-        modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
+    // Debounced (200 ms), off-main add-search over the catalog snapshot.
+    var query by remember { mutableStateOf("") }
+    var results by remember { mutableStateOf(NowPlayingSearch.Results()) }
+    LaunchedEffect(query, catalogState) {
+        if (query.isBlank()) { results = NowPlayingSearch.Results(); return@LaunchedEffect }
+        delay(NowPlayingSearch.DEBOUNCE_MS)
+        val merged = catalogState.catalog
+        results = if (merged == null) NowPlayingSearch.Results()
+        else withContext(Dispatchers.Default) { NowPlayingSearch.search(query, merged) }
+    }
+    val searching = query.isNotBlank()
+
+    fun showDetail(item: QueueItem) {
+        val inCatalog = catalogState.catalog?.songsById?.containsKey(item.id) == true
+        detail = item.id to if (inCatalog) null else MinimalSong(item.title, item.artist.orEmpty(), item.lengthMs)
+    }
+    fun openSetlist() {
+        val sid = seq.sourceSetlistId
+        if (!QueueReorder.needsMaterialize(sid) { collections.setlist(it) != null }) {
+            NavRequestBus.post(ShellRoute.Setlist(sid!!))
+        } else if (seq.queue.isNotEmpty()) {
+            // Re-materialize the reserved set from the LIVE queue, keeping the run's origin.
+            val origin = seq.capturedOrigin
+            collections.playNow(
+                songIds = seq.queue.map { it.id },
+                name = seq.capturedContext?.contextName ?: "Now Playing",
+                sourceToken = origin?.first,
+                originId = origin?.second,
+            )?.let { NavRequestBus.post(ShellRoute.Setlist(NOW_PLAYING_SETLIST_ID)) }
+        }
+    }
+    val originRoute = QueueReorder.originRoute(seq.capturedOrigin)
+
+    val deck: @Composable () -> Unit = {
         NowPlayingTitleBlock(state)
         if (!landscapePhone) {
             Spacer(Modifier.height(12.dp))
             NowPlayingRecord(
                 state = state,
                 progress = progress,
-                onLongPress = { state.songId?.let { detailFor = it } },
+                onLongPress = { state.songId?.let { detail = it to if (state.inCatalog) null else MinimalSong(state.title, state.artist, state.lengthMs) } },
                 modifier = Modifier.padding(horizontal = 24.dp),
             )
         }
@@ -89,16 +128,54 @@ fun NowPlayingScreen(modifier: Modifier = Modifier) {
             onTogglePlayed = vm::togglePlayed,
         )
         NowPlayingNotice(state.notice, Modifier.padding(top = 8.dp))
-        if (showPlayed) NowPlayingSeams.playedList?.invoke()
         NowPlayingSeams.dspSlot?.invoke()
     }
+    val playedPane: @Composable () -> Unit = {
+        if (seq.played.isNotEmpty()) PlayedList(seq.played, sequencer, ::showDetail)
+    }
+    val upNextPane: @Composable () -> Unit = {
+        if (searching) {
+            val merged = catalogState.catalog
+            NowPlayingSearchResults(
+                results = results,
+                onAddNextSong = { sequencer.insertNextInQueue(listOf(NowPlayingSearch.queueItem(it))) },
+                onAddEndSong = { sequencer.appendToQueue(listOf(NowPlayingSearch.queueItem(it))) },
+                onAddNextAlbum = { a -> merged?.let { sequencer.insertNextInQueue(NowPlayingSearch.queueItems(a, it)) } },
+                onAddEndAlbum = { a -> merged?.let { sequencer.appendToQueue(NowPlayingSearch.queueItems(a, it)) } },
+            )
+        } else if (seq.isRunning) {
+            UpNextList(
+                upcoming = seq.upcoming,
+                sequencer = sequencer,
+                onSongDetail = ::showDetail,
+                onOpenSetlist = ::openSetlist,
+                onOpenOrigin = originRoute?.let { r -> { NavRequestBus.post(r) } },
+            )
+        }
+    }
 
-    detailFor?.let { id ->
-        SongDetailSheet(
-            songId = id,
-            onDismiss = { detailFor = null },
-            snackbar = snackbar,
-            fallback = if (state.inCatalog) null else MinimalSong(state.title, state.artist, state.lengthMs),
-        )
+    if (expanded) {
+        Column(modifier.fillMaxSize()) {
+            NowPlayingSearchBar(query, { query = it }, Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
+            NowPlayingExpandedLayout(played = playedPane, center = deck, upNext = upNextPane, modifier = Modifier.weight(1f))
+        }
+    } else {
+        Column(
+            modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            NowPlayingSearchBar(query, { query = it })
+            Spacer(Modifier.height(8.dp))
+            deck()
+            if (showPlayed) playedPane()
+            upNextPane()
+        }
+    }
+
+    detail?.let { (id, fb) ->
+        SongDetailSheet(songId = id, onDismiss = { detail = null }, snackbar = snackbar, fallback = fb)
     }
 }
