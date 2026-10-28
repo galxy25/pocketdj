@@ -44,4 +44,40 @@ class RipFromCloudBodyTest {
             server.shutdown()
         }
     }
+
+    private suspend fun sentBodies(flag: Boolean, call: suspend (RipServerClient) -> Unit): kotlinx.serialization.json.JsonObject {
+        val server = MockWebServer().apply { start() }
+        try {
+            server.enqueue(MockResponse().setBody("""{"jobId":"j","phase":"queued","results":[],"counts":{}}"""))
+            val client = RipServerClient(
+                http = OkHttpClient(),
+                configProvider = { RipServerClient.Config(server.url("/").toString(), "", "dev", ripFromCloud = flag) },
+            )
+            call(client)
+            return Json.parseToJsonElement(server.takeRequest().body.readUtf8()).jsonObject
+        } finally {
+            server.shutdown()
+        }
+    }
+
+    @Test fun ripCollection_followsFlag() = runTest {
+        for (flag in listOf(true, false)) {
+            val sent = sentBodies(flag) { it.ripCollection(listOf("a", "b")) }
+            assertEquals(flag, "ripFromCloud" in sent)
+        }
+    }
+
+    @Test fun requestStemify_followsFlag() = runTest {
+        for (flag in listOf(true, false)) {
+            val sent = sentBodies(flag) { it.requestStemify("a") }
+            assertEquals(flag, "ripFromCloud" in sent)
+        }
+    }
+
+    @Test fun stemifyCollection_followsFlag() = runTest {
+        for (flag in listOf(true, false)) {
+            val sent = sentBodies(flag) { it.stemifyCollection(listOf("a", "b")) }
+            assertEquals(flag, "ripFromCloud" in sent)
+        }
+    }
 }

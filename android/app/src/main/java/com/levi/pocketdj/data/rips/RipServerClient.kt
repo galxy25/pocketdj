@@ -185,6 +185,7 @@ class RipServerClient(
         return try {
             val body = buildJsonObject {
                 put("songIds", kotlinx.serialization.json.JsonArray(ids.map(::JsonPrimitive)))
+                if (config.ripFromCloud) put("ripFromCloud", true)
             }.toString().toRequestBody("application/json".toMediaType())
             val request = builder(config, url(config, "rip-collection")).post(body).build()
             val (code, text) = withContext(Dispatchers.IO) {
@@ -276,7 +277,7 @@ class RipServerClient(
         val config = configProvider()
         if (!config.configured) return null
         return try {
-            val body = buildJsonObject { put("songId", songId) }.toString()
+            val body = ripBody(songId, config.ripFromCloud)
                 .toRequestBody("application/json".toMediaType())
             val request = builder(config, url(config, "stemify")).post(body).build()
             execute(request) { text -> json.decodeFromString<StemJob>(text) }
@@ -312,6 +313,7 @@ class RipServerClient(
             val body = buildJsonObject {
                 put("songIds", kotlinx.serialization.json.JsonArray(ids.map(::JsonPrimitive)))
                 if (confirmLarge) put("confirmLarge", true)
+                if (config.ripFromCloud) put("ripFromCloud", true)
             }.toString().toRequestBody("application/json".toMediaType())
             val request = builder(config, url(config, "stemify-collection")).post(body).build()
             val (code, text) = withContext(Dispatchers.IO) {

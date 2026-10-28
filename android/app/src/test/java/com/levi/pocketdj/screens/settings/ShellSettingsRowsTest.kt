@@ -1,6 +1,5 @@
 package com.levi.pocketdj.screens.settings
 
-import com.levi.pocketdj.data.settings.PrefKey
 import com.levi.pocketdj.data.settings.ShellSettings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -22,7 +21,8 @@ class ShellSettingsRowsTest {
     @Test fun clamp_lowAndHigh() {
         assertEquals(1, ShellSettings.clampRecentlyAdded(0))
         assertEquals(1, ShellSettings.clampRecentlyAdded(-50))
-        assertEquals(500, ShellSettings.clampRecentlyAdded(500))
+        assertEquals(100_000, ShellSettings.clampRecentlyAdded(100_000))
+        assertEquals(100_000, ShellSettings.clampRecentlyAdded(100_001))
         assertEquals(100_000, ShellSettings.clampRecentlyAdded(100_999))
         assertEquals(3650, ShellSettings.clampRecentlyAdded(3650))
     }
@@ -52,6 +52,5 @@ class ShellSettingsRowsTest {
         assertEquals(305, ids["importServerRipFromCloud"])
         assertTrue(ids.getValue("importServerRipFromCloud") > builtin.getValue(SettingsSections.IMPORT_SERVER))
         assertTrue(ids.getValue("importServerRipFromCloud") < builtin.getValue(SettingsSections.APPLE_MUSIC))
-        assertTrue(PrefKey.int("x", 1).default == 1)
     }
 }

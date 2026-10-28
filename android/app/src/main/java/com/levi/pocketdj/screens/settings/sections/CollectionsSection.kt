@@ -10,6 +10,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.text.input.KeyboardType
 import com.levi.pocketdj.data.settings.ShellSettings
 import com.levi.pocketdj.data.settings.defaultRecentlyAddedCount
@@ -33,13 +34,20 @@ internal fun collectionsSection() = SettingsSection(COLLECTIONS_SECTION_ID, 250)
         onValueChange = { raw ->
             text = raw.filter { it.isDigit() }
             ShellSettings.parseRecentlyAdded(text)?.let { n ->
+                // Mirror iOS didSet: the field shows the clamped value that is stored.
+                if (n != text.toIntOrNull()) text = n.toString()
                 host.scope.launch { graph.settings.setDefaultRecentlyAddedCount(n) }
             }
         },
         label = { Text("Default recently added") },
         singleLine = true,
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().onFocusChanged { f ->
+            // Blank field on focus loss: restore the stored value (it was never cleared).
+            if (!f.isFocused && text.isBlank()) {
+                host.scope.launch { text = graph.settings.defaultRecentlyAddedCount().toString() }
+            }
+        },
     )
     SettingsCaption(
         "How many items the “Recently added” playlist shows — the last N songs you added to " +
