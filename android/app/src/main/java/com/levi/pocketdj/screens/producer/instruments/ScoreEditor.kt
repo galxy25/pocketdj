@@ -338,7 +338,7 @@ fun ScoreEditor(
                 Box(
                     Modifier.fillMaxWidth().size(boxW, heightDp)
                         .border(1.dp, GREY.copy(alpha = 0.4f))
-                        .pointerInput(editing, st.mode, st.granularity, events, pages, onSeek) {
+                        .pointerInput(editing, st.mode, st.granularity, events, pages, onSeek, scale, page) {
                             detectTapGestures { off ->
                                 val p = Pt(off.x / scale, off.y / scale)
                                 if (editing) {

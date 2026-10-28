@@ -21,11 +21,13 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,6 +77,29 @@ object ScoreExport {
     }
 }
 
+/** Pure replay-cursor rules: this screen's own `parked` is the source of truth unless THIS take is actively replaying. */
+object ScoreCursor {
+    /** The cursor: the live engine position only while [ours] is replaying, else the screen's parked position (never the engine's global park). */
+    fun clock(ours: Boolean, enginePos: Int?, parked: Int?): Int? = if (ours) enginePos ?: parked else parked
+
+    /** Clamp a tap-to-seek target to 0..[endMs]. */
+    fun clampSeek(ms: Int, endMs: Int): Int = ms.coerceIn(0, maxOf(0, endMs))
+
+    /** Where Replay resumes: the parked cursor, or the top when none / already played through. */
+    fun resume(parked: Int?, endMs: Int): Int {
+        val p = parked ?: 0
+        return if (p >= endMs) 0 else p.coerceAtLeast(0)
+    }
+}
+
+/** Pre-edit snapshots survive recomposition-scope loss and rotation (process-scoped; keyed by take). */
+object ScorePreEditCache {
+    private val map = java.util.concurrent.ConcurrentHashMap<String, Map<String, List<StudioNoteEvent>?>>()
+    fun put(takeId: String, snap: Map<String, List<StudioNoteEvent>?>) { map[takeId] = snap }
+    fun get(takeId: String): Map<String, List<StudioNoteEvent>?>? = map[takeId]
+    fun clear(takeId: String) { map.remove(takeId) }
+}
+
 /**
  * The saved-take Score screen (iOS `StudioScoreView`): the editable notation of one take with Replay (cursor + played / current
  * highlighting, tap-to-seek), Edit / Done / Cancel (Cancel restores every staff's pre-edit stream; a derive-from-raw staff goes back to
@@ -92,10 +117,12 @@ fun ScoreScreen(graph: AppGraph, takeId: String, onBack: () -> Unit, onNeedPacks
     val scope = rememberCoroutineScope()
     val take = remember(doc, takeId) { store.take(takeId) }
 
-    var editing by remember { mutableStateOf(false) }
-    var preEdit by remember { mutableStateOf<Map<String, List<StudioNoteEvent>?>>(emptyMap()) }
+    var editingFlag by rememberSaveable(takeId) { mutableStateOf(false) }
+    // Edit mode is only meaningful while Cancel still has its snapshot (lost on process death => leave edit mode).
+    val editing = editingFlag && ScorePreEditCache.get(takeId) != null
+    val preEdit = ScorePreEditCache.get(takeId).orEmpty()
     var message by remember { mutableStateOf<String?>(null) }
-    var parked by remember { mutableStateOf<Int?>(null) }
+    var parked by rememberSaveable(takeId) { mutableStateOf<Int?>(null) }
     var preparing by remember { mutableStateOf(false) }
     var exportingAudio by remember { mutableStateOf(false) }
     var replayingId by remember { mutableStateOf<String?>(null) }
@@ -138,14 +165,19 @@ fun ScoreScreen(graph: AppGraph, takeId: String, onBack: () -> Unit, onNeedPacks
     /** Where Replay resumes: the cursor (a tap-to-seek / left-off position), or the top once played through. */
     fun resumeMs(t: StudioTake): Int {
         val end = t.allScoreEvents.maxOfOrNull { it.offMs } ?: 0
-        val p = engine.replayPositionMs() ?: parked ?: 0
-        return if (p >= end) 0 else p.coerceAtLeast(0)
+        return ScoreCursor.resume(parked, end)
     }
 
-    val clock: () -> Int? = { if (replayingId == takeId) engine.replayPositionMs() ?: parked else parked }
-    val seek: (Int) -> Unit = { ms ->
+    // Natural end of replay: the engine parks nothing, so drop our cursor (Replay restarts from the top).
+    LaunchedEffect(es.isReplaying) {
+        if (!es.isReplaying && replayingId == takeId && engine.replayPositionMs() == null) { parked = null; replayingId = null }
+    }
+
+    val clock: () -> Int? = { ScoreCursor.clock(ours, engine.replayPositionMs(), parked) }
+    val seek: (Int) -> Unit = { raw ->
+        val ms = ScoreCursor.clampSeek(raw, take.allScoreEvents.maxOfOrNull { it.offMs } ?: 0)
         parked = ms
-        if (ours) scope.launch { play(take, ms) }
+        if (ours && !preparing) scope.launch { play(take, ms) }
     }
 
     Column(modifier.fillMaxSize().testTag("score-screen")) {
@@ -162,19 +194,19 @@ fun ScoreScreen(graph: AppGraph, takeId: String, onBack: () -> Unit, onNeedPacks
                 if (!editing) {
                     OutlinedButton({
                         // Snapshot EVERY staff's edit state for Cancel ("" = the primary staff).
-                        preEdit = buildMap { put("", take.editedEvents); take.extraStaffs.orEmpty().forEach { put(it.id, it.editedEvents) } }
-                        if (ours) engine.stopReplay()
-                        editing = true
+                        val preEdit = buildMap { put("", take.editedEvents); take.extraStaffs.orEmpty().forEach { put(it.id, it.editedEvents) } }
+                        if (ours) { parked = engine.replayPositionMs(); engine.stopReplay() }
+                        ScorePreEditCache.put(takeId, preEdit); editingFlag = true
                     }, modifier = Modifier.testTag("score-edit")) { Text("Edit") }
                 } else {
-                    OutlinedButton({ editing = false }, modifier = Modifier.testTag("score-done")) { Text("Done") }
+                    OutlinedButton({ editingFlag = false; ScorePreEditCache.clear(takeId) }, modifier = Modifier.testTag("score-done")) { Text("Done") }
                     OutlinedButton({
                         when (val a = CancelAction.forSnapshot(preEdit[""])) { is CancelAction.Set -> store.setTakeEvents(takeId, a.events); CancelAction.Revert -> store.revertTakeEdits(takeId) }
                         for (s in take.extraStaffs.orEmpty()) when (val a = CancelAction.forSnapshot(preEdit[s.id])) {
                             is CancelAction.Set -> store.setStaffEvents(takeId, s.id, a.events)
                             CancelAction.Revert -> store.revertStaffEdits(takeId, s.id)
                         }
-                        editing = false
+                        editingFlag = false; ScorePreEditCache.clear(takeId)
                     }, modifier = Modifier.testTag("score-cancel")) { Text("Cancel") }
                 }
                 OutlinedButton({

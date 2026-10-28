@@ -69,14 +69,19 @@ fun LiveStaff(graph: AppGraph, onMessage: (String) -> Unit, modifier: Modifier =
                     onClick = {
                         val r = LiveStaffSave.result(es.liveEvents, instrument) ?: return@OutlinedButton
                         saving = true
+                        // Snapshot + clear at TAP time (iOS clears synchronously): notes played during the render belong to the next take.
+                        engine.clearLive(); editing = false
                         scope.launch {
                             try {
                                 val name = "Take ${studio.studioStore.takes(null).size + 1}"
                                 val bank = studio.instrumentPacks.localBankFile(instrument)
                                 withContext(Dispatchers.IO) { studio.takeFiler.file(r, name, bank) }
-                                engine.clearLive(); editing = false
                                 onMessage("Saved “$name” — find it under Takes.")
-                            } catch (e: TakeFileException) { onMessage(e.failure.message) } finally { saving = false }
+                            } catch (e: TakeFileException) {
+                                // Nothing was filed: put the capture back (unless the player already started a new one).
+                                if (engine.state.value.liveEvents.isEmpty()) engine.setLiveEvents(r.events)
+                                onMessage(e.failure.message)
+                            } finally { saving = false }
                         }
                     },
                     enabled = !saving, modifier = Modifier.testTag("live-save"),

@@ -61,6 +61,7 @@ fun InstrumentsScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     LaunchedEffect(Unit) {
         InstrumentEngine.DEBUG_THREADS = (ctx.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
     }
+    androidx.activity.compose.BackHandler(enabled = scoreTakeId != null) { scoreTakeId = null }
     scoreTakeId?.let { id ->
         ScoreScreen(graph, id, onBack = { scoreTakeId = null }, onNeedPacks = { scoreTakeId = null; section = InstrumentsSection.Packs.name }, modifier = modifier)
         return

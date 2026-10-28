@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # STU-9 — Score: quantizer, layout, editor (Enter/Select/Move/Edit, undo/cancel), live staff, PDF + MIDI + audio export
 
@@ -26,3 +26,16 @@ state: implemented
 
 ## Questions for Levi
 - None blocking.
+
+## Review
+fixes applied
+- MAJOR replay clock/resume read engine global park -> fixed: `ScoreCursor` (clock only reads engine while THIS take replays; resume uses screen `parked`, set on Stop/Edit); natural end clears parked. Tests: ScoreCursorTest.
+- MAJOR no BackHandler on score route -> fixed (InstrumentsScreen BackHandler pops to Takes).
+- MAJOR MIDI import had no UI -> fixed: "Import MIDI" button in Takes header (OpenDocument, IO read, MidiImport.importTake, surfaces MidiImportException.message).
+- MINOR pointerInput stale scale/page -> fixed (added to keys).
+- MINOR LiveStaff save wipes notes during render -> fixed: live stream cleared at tap, restored on failure if still empty. Placeholder-save with no pack: rejected (needs silent placeholder + deferred render infra in TakeFiler/reconcile; pack-missing message kept).
+- MINOR editing/preEdit/parked lost on recreation -> fixed: `editing`/`parked` rememberSaveable, pre-edit snapshot in process-scoped `ScorePreEditCache` (edit mode drops if snapshot gone). Per-take persisted score cursor (iOS setScoreCursorMs): not ported (rejected; in-session cursor only).
+- MINOR seek clamp / stacked loads -> fixed: clamp to 0..end, seeks ignored while preparing.
+- MINOR status/ledger/tests -> store-level Cancel test added (editedEvents == null after Revert). Ledger row left to integrator (as per package convention); emulator/PDF-viewer steps still unrun (integrator).
+- NIT Paint churn -> fixed: cached stroke/fill paints.
+Tests: 3759 -> 3764, 0 failures; assembleDebug green.

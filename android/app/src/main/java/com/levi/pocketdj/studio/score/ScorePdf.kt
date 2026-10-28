@@ -16,10 +16,13 @@ import java.io.ByteArrayOutputStream
  * The sheet is paper-white / black ink in both hosts by design (screen == export).
  */
 object ScoreRenderer {
-    private fun stroke(width: Float, cap: Paint.Cap = Paint.Cap.ROUND) = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE; color = Color.BLACK; strokeWidth = width; strokeCap = cap
+    // Cached per stroke width / cap (hosts draw on one thread at a time; guarded anyway) so dense scores don't allocate a Paint per glyph.
+    private val strokes = HashMap<Pair<Float, Paint.Cap>, Paint>()
+    private val fillPaint by lazy { Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = Color.BLACK } }
+    @Synchronized private fun stroke(width: Float, cap: Paint.Cap = Paint.Cap.ROUND): Paint = strokes.getOrPut(width to cap) {
+        Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.BLACK; strokeWidth = width; strokeCap = cap }
     }
-    private fun fill() = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.FILL; color = Color.BLACK }
+    private fun fill() = fillPaint
 
     fun draw(page: ScorePage, canvas: Canvas) {
         val bg = Paint().apply { style = Paint.Style.FILL; color = Color.WHITE }
