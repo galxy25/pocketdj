@@ -255,7 +255,10 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
 
     override val periodicWork: List<com.levi.pocketdj.shell.PeriodicWorkSpec> by lazy {
         com.levi.pocketdj.work.WorkerRegistry.register(AppleMusicAutoSync.WORK_ID, AmAutoSyncWorker::class.java)
-        listOf(com.levi.pocketdj.shell.PeriodicWorkSpec(AppleMusicAutoSync.WORK_ID, repeatMinutes = 60, requiresNetwork = true))
+        listOf(
+            com.levi.pocketdj.shell.PeriodicWorkSpec(AppleMusicAutoSync.WORK_ID, repeatMinutes = 60, requiresNetwork = true),
+            // COL-20: the dwell-detector poll is NOT declared here: FusedVisitSource enqueues it on start and cancels it on stop.
+        )
     }
 
     /** Provisional "Imported" catalog source (COL-15); lazy - reads its small doc on first touch. */
@@ -341,6 +344,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             com.levi.pocketdj.screens.settings.appleMusicSyncSection(),
             com.levi.pocketdj.screens.settings.appleMusicWriteBackSection(),
             com.levi.pocketdj.screens.settings.appleMusicFavoritesSection(),
+            com.levi.pocketdj.screens.settings.sections.listeningLocationSection(),
         )
     }
 
@@ -361,9 +365,41 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
      * The listening-pockets service. Inert (zero network) until BOTH the rec engine and "Find my listening
      * pockets" are ON and the rec-engine credentials exist. Touch off-main (reads two small docs).
      */
-    /** The on-device place/trip labeller shared by the service and the Pockets screen (Noop until COL-19 wires the real store). */
-    val listeningContextProvider: com.levi.pocketdj.data.location.ListeningContextProviding =
-        com.levi.pocketdj.data.location.NoopListeningContextProvider
+    /** The on-device place/trip labeller shared by the service and the Pockets screen (COL-20: the real store). */
+    val listeningContextProvider: com.levi.pocketdj.data.location.ListeningContextProviding get() = locationStore
+
+    @Volatile private var fusedSource: com.levi.pocketdj.data.location.FusedVisitSource? = null
+
+    /**
+     * COL-20: the opt-in places & trips store (default OFF, erased on disable). Creation arms the Fused source when
+     * it was left on, so a background location delivery can find a live source.
+     */
+    val locationStore: com.levi.pocketdj.data.location.ListeningLocationStore by lazy {
+        com.levi.pocketdj.data.location.ListeningLocationStore(
+            file = File(app.appContext.filesDir, com.levi.pocketdj.data.location.ListeningLocationStore.FILE_NAME),
+            makeSource = {
+                com.levi.pocketdj.data.location.FusedVisitSource(
+                    context = app.appContext,
+                    // iOS: settle after each ingest so plays pick up their place/trip id promptly.
+                    onIngested = { app.appScope.launch(Dispatchers.IO) { runCatching { listeningPockets.settleContexts() } } },
+                    onStopped = { fusedSource = null },
+                ).also { fusedSource = it }
+            },
+        ).also { it.startIfEnabled() }
+    }
+
+    /** The live Fused source (null while places & trips is off). Used by the location receiver + poll worker. */
+    fun fusedLocationSource(): com.levi.pocketdj.data.location.FusedVisitSource? {
+        locationStore // forces creation + startIfEnabled
+        return fusedSource
+    }
+
+    /** After a permission result: re-sync the store's authorization and (re)register the updates. */
+    fun locationPermissionChanged() {
+        val ctx = app.appContext
+        locationStore.sourceAuthorizationDidChange(com.levi.pocketdj.data.location.LocationSettings.current(ctx))
+        fusedSource?.registerUpdates()
+    }
 
     val listeningPockets: com.levi.pocketdj.data.pockets.ListeningPocketsService by lazy {
         val files = app.appContext.filesDir
@@ -389,6 +425,8 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             svc.collectionsProvider = ::pocketsCollectionsInput
             svc.onDisabled = {
                 app.appScope.launch(Dispatchers.IO) {
+                    // Pockets closed: places & trips goes off with it, and its data is erased (opt-out always works).
+                    runCatching { locationStore.setEnabled(false) }
                     runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_LOCATION_ENABLED, false) }
                 }
             }
@@ -469,6 +507,8 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 pocketsEnabledMirror.set(app.settings.flow(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED).first())
             }
             svc.enabledDidChange()
+            // Arm places & trips if the user left it on (the lazy store starts its source).
+            runCatching { locationStore }
             launch {
                 // One collector over BOTH halves of the gate (rec engine + pockets); real changes only.
                 kotlinx.coroutines.flow.combine(
