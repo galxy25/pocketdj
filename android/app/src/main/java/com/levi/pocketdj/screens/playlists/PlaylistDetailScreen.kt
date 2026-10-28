@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.playlists
 
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -38,6 +39,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.screens.collections.RemoveDuplicatesResultAlert
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.PlaylistNode
 import com.levi.pocketdj.data.rips.PlayResolver
@@ -82,6 +84,7 @@ fun PlaylistDetailScreen(
     var detailSongId by remember { mutableStateOf<String?>(null) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
+    var dedupeResult by rememberSaveable { mutableStateOf<Int?>(null) }
     var addChapterOpen by remember { mutableStateOf(false) }
     var noteChapterId by remember { mutableStateOf<String?>(null) }
     var renameChapter by remember { mutableStateOf<PlaylistNode?>(null) }
@@ -165,6 +168,10 @@ fun PlaylistDetailScreen(
                                 dismiss()
                                 store.convertPlaylistToPocket(playlistId)?.let { onOpenPocket(it.id) }
                             },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Remove duplicates") },
+                            onClick = { dismiss(); dedupeResult = store.removeDuplicatesInPlaylist(playlistId) },
                         )
                         DropdownMenuItem(
                             text = { Text("Delete playlist") },
@@ -358,6 +365,7 @@ fun PlaylistDetailScreen(
         )
     }
 
+    RemoveDuplicatesResultAlert(dedupeResult) { dedupeResult = null }
     if (deleteOpen) {
         ConfirmDialog(
             title = "Delete this playlist?",

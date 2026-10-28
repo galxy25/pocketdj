@@ -826,8 +826,17 @@ class CollectionsStore(
         val snapSet = snapshot.toSet()
         val removals = snapSet - srcIds.toSet()
         val current = p.songIds.toSet()
-        val additions = srcIds.filter { it !in snapSet && it !in current }
-        val newSongIds = p.songIds.filterNot { it in removals } + additions
+        // NAME+ARTIST (+ same-release) duplicate gate: a source add whose recording already sits
+        // in the pocket under a DIFFERENT id is skipped.
+        val keptAfterRemovals = p.songIds.filterNot { it in removals }
+        val present = SongDuplicateJudge.Seen()
+        for (sid in keptAfterRemovals) duplicateIdentity(sid)?.let { present.insert(it) }
+        val additions = srcIds.filter { sid ->
+            if (sid in snapSet || sid in current) return@filter false
+            val ident = duplicateIdentity(sid) ?: return@filter true
+            present.insert(ident)
+        }
+        val newSongIds = keptAfterRemovals + additions
         if (newSongIds == p.songIds && srcIds == snapshot) return false
         mutatePocketLocked(id) {
             it.copy(
@@ -854,7 +863,13 @@ class CollectionsStore(
         val removals = snapSet - srcIds.toSet()
 
         val currentSongIds = songIdsInNodes(pl.sequences)
-        val additions = srcIds.filter { it !in snapSet && it !in currentSongIds }
+        val presentPl = SongDuplicateJudge.Seen()
+        for (sid in currentSongIds - removals) duplicateIdentity(sid)?.let { presentPl.insert(it) }
+        val additions = srcIds.filter { sid ->
+            if (sid in snapSet || sid in currentSongIds) return@filter false
+            val ident = duplicateIdentity(sid) ?: return@filter true
+            presentPl.insert(ident)
+        }
 
         var removedCount = 0
         fun prune(nodes: List<PlaylistNode>): List<PlaylistNode> = nodes.mapNotNull { n ->
@@ -884,6 +899,104 @@ class CollectionsStore(
             it.copy(sequences = seqs, sourceSongIds = srcIds, sourceSyncedAt = now())
         }
         return true
+    }
+
+    // MARK: Remove duplicates (same recording under two ids)
+
+    /** The same-release identity of a catalog song (null = not in the live catalog). */
+    fun duplicateIdentity(songId: String): SongDuplicateJudge.Identity? {
+        val merged = catalogProvider?.invoke() ?: return null
+        val song = merged.songsById[songId] ?: return null
+        return SongDuplicateJudge.Identity(
+            name = song.name,
+            artist = song.artist,
+            album = song.albumId?.let { merged.albumsById[it]?.name },
+            appleMusicId = song.appleMusicId,
+        )
+    }
+
+    private fun duplicatePlan(ids: List<String>): SongDuplicateJudge.CollapsePlan {
+        if (catalogProvider?.invoke() == null) return SongDuplicateJudge.CollapsePlan()
+        return SongDuplicateJudge.collapsePlan(ids) { duplicateIdentity(it) }
+    }
+
+    /** Pure rewrite of a pocket; returns (new pocket, removed count). No stamping, no save. */
+    private fun collapsed(p: Pocket): Pair<Pocket, Int> {
+        val plan = duplicatePlan(p.songIds)
+        if (plan.isEmpty) return p to 0
+        val songIds = p.songIds.filterNot { it in plan.drop }.map { plan.rename[it] ?: it }
+        // The slot's repeat count follows it onto the survivor; every other twin's goes.
+        val survivors = plan.rename.values.toSet()
+        val repeats = p.songRepeats.toMutableMap()
+        for (gone in plan.drop) if (gone !in survivors) repeats.remove(gone)
+        for ((from, to) in plan.rename) {
+            val v = repeats.remove(from)
+            if (v != null) repeats[to] = v else repeats.remove(to)
+        }
+        return p.copy(songIds = songIds, songRepeats = repeats) to (p.songIds.size - songIds.size)
+    }
+
+    private fun collapsed(pl: Playlist): Pair<Playlist, Int> {
+        val order = ArrayList<String>()
+        fun collect(ns: List<PlaylistNode>) {
+            for (n in ns) {
+                if (n.kind == PlaylistNode.Kind.SONG) n.songId?.let(order::add)
+                n.children?.let(::collect)
+            }
+        }
+        collect(pl.sequences)
+        val plan = duplicatePlan(order)
+        if (plan.isEmpty) return pl to 0
+        var removed = 0
+        fun rewrite(ns: List<PlaylistNode>): List<PlaylistNode> = ns.mapNotNull { n ->
+            var c = n
+            val sid = c.songId
+            if (c.kind == PlaylistNode.Kind.SONG && sid != null) {
+                if (sid in plan.drop) { removed++; return@mapNotNull null } // prune by ORIGINAL id first
+                plan.rename[sid]?.let { c = c.copy(songId = it) }
+            }
+            c.children?.let { c = c.copy(children = rewrite(it)) }
+            c
+        }
+        return pl.copy(sequences = rewrite(pl.sequences)) to removed
+    }
+
+    /**
+     * Collapse same-recording twins in one pocket. Survivor prefers an Apple Music id and takes
+     * the group's earliest slot. NOT emitted as remove activity (a dedupe is not a "don't want
+     * this" signal). Returns how many songs were removed.
+     */
+    fun removeDuplicatesInPocket(id: String): Int = synchronized(lock) {
+        val p = pocket(id) ?: return 0
+        val (next, n) = collapsed(p)
+        if (n > 0) mutatePocketLocked(id) { next }
+        n
+    }
+
+    fun removeDuplicatesInPlaylist(id: String): Int = synchronized(lock) {
+        val pl = playlist(id) ?: return 0
+        val (next, n) = collapsed(pl)
+        if (n > 0) mutatePlaylistLocked(id) { next }
+        n
+    }
+
+    /** Every pocket + playlist, ONE save (the document is multi-MB). Returns the removed total. */
+    fun removeDuplicatesEverywhere(): Int = synchronized(lock) {
+        var total = 0
+        val ts = now()
+        val newPockets = pockets.map { p ->
+            val (next, n) = collapsed(p)
+            if (n > 0) { total += n; next.copy(updatedAt = ts) } else p
+        }
+        val newPlaylists = playlists.map { pl ->
+            val (next, n) = collapsed(pl)
+            if (n > 0) { total += n; next.copy(updatedAt = ts) } else pl
+        }
+        if (total > 0) {
+            publish { it.copy(pockets = newPockets, playlists = newPlaylists) }
+            save()
+        }
+        total
     }
 
     // MARK: Folders (flat)
