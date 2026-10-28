@@ -86,6 +86,16 @@ class AppleMusicApi(
         return call(get(url), userScoped = false) { AppleMusicApiModels.parseCatalogSearch(it) }
     }
 
+    /** `GET /v1/catalog/{sf}/albums/{id}/tracks` - ordered album tracks (Discover album fan-out, DISC-2). */
+    suspend fun albumTracks(
+        albumId: String,
+        storefront: String = defaultStorefront,
+    ): AmResult<List<com.levi.pocketdj.screens.discover.DiscoverAlbumTrack>> {
+        if (albumId.isBlank()) return AmResult.Failure(null, "Empty album id")
+        val url = url("v1", "catalog", storefront, "albums", albumId, "tracks") { addQueryParameter("limit", "100") }
+        return call(get(url), userScoped = false) { AppleMusicApiModels.parseAlbumTracks(it) }
+    }
+
     /**
      * `GET /v1/catalog/{sf}/artists?ids=&views=latest-release,similar-artists`.
      * Batched at [MAX_ARTIST_IDS]; any non-Ok batch fails the whole call so no id

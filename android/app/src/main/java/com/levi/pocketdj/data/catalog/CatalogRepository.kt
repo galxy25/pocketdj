@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /**
@@ -68,6 +69,40 @@ class CatalogRepository(
     @Volatile
     var syntheticDocuments: () -> List<IndexJson> = { emptyList() }
 
+    /**
+     * Provisional "Discover" source (DISC-2): resolved against the REAL documents of THIS merge so a real
+     * row carrying the same appleMusicId supersedes the provisional twin (excluded, never duplicated).
+     * Its document is appended after every real source and BEFORE [syntheticDocuments]. Null = none.
+     */
+    @Volatile
+    var provisionalSources: ((real: List<IndexJson>) -> com.levi.pocketdj.data.discover.ProvisionalSource.Result)? = null
+
+    /**
+     * Fired (off the merge path, after the catalog published) with the (provisional -> indexed) song id pairs
+     * a merge superseded - the app prunes the provisional store and remaps collection references.
+     */
+    @Volatile
+    var onSupersede: ((List<Pair<String, String>>) -> Unit)? = null
+
+    /** Real docs + provisional + synthetic, in merge order; reports supersedes through [onSupersede]. */
+    private fun withProvisional(real: List<IndexJson>): Pair<List<IndexJson>, com.levi.pocketdj.data.discover.ProvisionalSource.Result?> {
+        val prov = provisionalSources?.let { runCatching { it(real) }.getOrNull() }
+        return (real + prov?.documents.orEmpty() + syntheticDocuments()) to prov
+    }
+
+    private fun notifySupersede(prov: com.levi.pocketdj.data.discover.ProvisionalSource.Result?) {
+        val pairs = prov?.supersededSongs.orEmpty()
+        val albums = prov?.supersededAlbums.orEmpty()
+        if (pairs.isEmpty() && albums.isEmpty()) return
+        runCatching { onSupersede?.invoke(pairs) }
+        // Albums have nothing to remap (collections reference SONG ids): prune only.
+        runCatching { onAlbumsSuperseded?.invoke(albums) }
+    }
+
+    /** Provisional ALBUM supersedes (provisional album id -> indexed album id); prune-only. */
+    @Volatile
+    var onAlbumsSuperseded: ((List<Pair<String, String>>) -> Unit)? = null
+
     private val inFlight = AtomicBoolean(false)
     private val seeded = AtomicBoolean(false)
 
@@ -82,6 +117,32 @@ class CatalogRepository(
      * from the single-flight load coroutine.
      */
     private val lastGoodBySource = HashMap<String, IndexJson>()
+
+    /** Real (non-provisional) documents behind the last publish - the no-fetch local re-merge input. */
+    @Volatile private var lastRealDocs: List<IndexJson> = emptyList()
+
+    private val publishLock = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * Local re-merge (no network): last-good real docs + provisional + synthetic. Used when a LOCAL store
+     * (Discover adds, Imported songs) changed so the row shows up at once instead of after N source reloads.
+     */
+    fun remergeLocal() {
+        scope.launch {
+            publishLock.withLock {
+                val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(lastRealDocs) }
+                if (inputs.isEmpty()) return@withLock
+                if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs)) return@withLock
+                val mergedCatalog = withContext(Dispatchers.Default) {
+                    mergeCount++
+                    MergedCatalog.merge(inputs)
+                }
+                lastMergedInputs = inputs
+                _state.update { it.copy(catalog = mergedCatalog, phase = Phase.Ready) }
+                notifySupersede(prov)
+            }
+        }
+    }
 
     /** Exact documents (by identity) behind the currently-published catalog. */
     private var lastMergedInputs: List<IndexJson>? = null
@@ -148,13 +209,18 @@ class CatalogRepository(
             _state.update { it.copy(phase = Phase.Loading) }
             return
         }
-        val inputs = cached + syntheticDocuments()
-        val merged = withContext(Dispatchers.Default) {
-            mergeCount++
-            MergedCatalog.merge(inputs)
+        lastRealDocs = cached
+        val prov = publishLock.withLock {
+            val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(cached) }
+            val merged = withContext(Dispatchers.Default) {
+                mergeCount++
+                MergedCatalog.merge(inputs)
+            }
+            lastMergedInputs = inputs
+            _state.update { it.copy(catalog = merged, phase = Phase.Ready, error = null) }
+            prov
         }
-        lastMergedInputs = inputs
-        _state.update { it.copy(catalog = merged, phase = Phase.Ready, error = null) }
+        notifySupersede(prov)
         timing("seed ready in ${(System.nanoTime() - t0) / 1_000_000} ms (${cached.size} sources)")
     }
 
@@ -182,6 +248,20 @@ class CatalogRepository(
                     }
             }
             if (loaded.isEmpty()) {
+                // No real source: local rows (Discover / Imported) still merge on their own.
+                val localOnly = publishLock.withLock {
+                    lastRealDocs = emptyList()
+                    val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(emptyList()) }
+                    if (inputs.isEmpty()) return@withLock null
+                    val mergedCatalog = withContext(Dispatchers.Default) {
+                        mergeCount++
+                        MergedCatalog.merge(inputs)
+                    }
+                    lastMergedInputs = inputs
+                    _state.update { it.copy(catalog = mergedCatalog, phase = Phase.Ready, error = lastError) }
+                    prov
+                }
+                if (localOnly != null) { merged = true; notifySupersede(localOnly); return }
                 // Every source failed — surface a failure only when nothing was
                 // ever rendered; otherwise keep the catalog and note the error.
                 _state.update { current ->
@@ -193,21 +273,26 @@ class CatalogRepository(
                 }
                 return
             }
-            val inputs = loaded + syntheticDocuments()
-            if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs)) {
-                // Every source unchanged (304 / failure on seed): skip the derived rebuild.
-                _state.update { it.copy(phase = Phase.Ready, error = lastError) }
-                return
+            lastRealDocs = loaded
+            val prov = publishLock.withLock {
+                val (inputs, prov) = withContext(Dispatchers.IO) { withProvisional(loaded) }
+                if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs)) {
+                    // Every source unchanged (304 / failure on seed): skip the derived rebuild.
+                    _state.update { it.copy(phase = Phase.Ready, error = lastError) }
+                    return@withLock prov
+                }
+                val mergedCatalog = withContext(Dispatchers.Default) {
+                    mergeCount++
+                    MergedCatalog.merge(inputs)
+                }
+                merged = true
+                lastMergedInputs = inputs
+                _state.update {
+                    it.copy(catalog = mergedCatalog, phase = Phase.Ready, error = lastError)
+                }
+                prov
             }
-            val mergedCatalog = withContext(Dispatchers.Default) {
-                mergeCount++
-                MergedCatalog.merge(inputs)
-            }
-            merged = true
-            lastMergedInputs = inputs
-            _state.update {
-                it.copy(catalog = mergedCatalog, phase = Phase.Ready, error = lastError)
-            }
+            notifySupersede(prov)
         } finally {
             _state.update { it.copy(isRefreshing = false) }
             timing("refresh complete in ${(System.nanoTime() - t0) / 1_000_000} ms (merged=$merged)")

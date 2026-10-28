@@ -139,7 +139,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
      */
     private fun wireImported(store: CollectionsStore) {
         wireCatalogSource()
-        importedSongs.onChanged = { app.catalogRepository.refresh() }
+        importedSongs.onChanged = { app.catalogRepository.remergeLocal() }
         store.onPortableItems = { payload ->
             app.appScope.launch(Dispatchers.IO) { runCatching { importedSongs.addPortable(payload) } }
         }

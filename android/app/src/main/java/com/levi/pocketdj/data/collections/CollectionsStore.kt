@@ -2212,6 +2212,55 @@ class CollectionsStore(
         save()
     }
 
+    /**
+     * SUPERSEDE remap (Discover eventual consistency; iOS `remapSongIds`): every collection reference to a
+     * provisional `amrec_` song follows the INDEXED catalog entry that replaced it - playlist node trees
+     * (recursive), pocket songIds + per-song repeats, source song ids, and frozen setlist tracks. One save
+     * when anything moved; `updatedAt` is left alone (every device derives the same remap on its own).
+     */
+    fun remapSongIds(pairs: List<Pair<String, String>>) = synchronized(lock) {
+        if (pairs.isEmpty()) return@synchronized
+        val map = pairs.toMap()
+        var changed = false
+        fun nodes(list: List<PlaylistNode>): List<PlaylistNode> = list.map { n ->
+            val to = n.songId?.let(map::get)
+            val kids = n.children?.let(::nodes)
+            if (to != null || kids != n.children) {
+                changed = true
+                n.copy(songId = to ?: n.songId, children = kids)
+            } else n
+        }
+        fun ids(list: List<String>?): List<String>? =
+            if (list != null && list.any { it in map }) list.map { map[it] ?: it }.also { changed = true } else list
+        val newPlaylists = _state.value.playlists.map { p ->
+            val seq = nodes(p.sequences)
+            val src = ids(p.sourceSongIds)
+            if (seq != p.sequences || src != p.sourceSongIds) p.copy(sequences = seq, sourceSongIds = src) else p
+        }
+        val newPockets = _state.value.pockets.map { p ->
+            val sids = if (p.songIds.any { it in map }) p.songIds.map { map[it] ?: it }.also { changed = true } else p.songIds
+            val reps = if (p.songRepeats.keys.any { it in map }) {
+                changed = true
+                LinkedHashMap<String, Int>().also { out ->
+                    for ((k, v) in p.songRepeats) out[map[k] ?: k] = v
+                }
+            } else p.songRepeats
+            val src = ids(p.sourceSongIds)
+            if (sids != p.songIds || reps != p.songRepeats || src != p.sourceSongIds) {
+                p.copy(songIds = sids, songRepeats = reps, sourceSongIds = src)
+            } else p
+        }
+        val newSetlists = _state.value.setlists.map { sl ->
+            if (sl.tracks.any { it.songId in map }) {
+                changed = true
+                sl.copy(tracks = sl.tracks.map { t -> map[t.songId]?.let { t.copy(songId = it) } ?: t })
+            } else sl
+        }
+        if (!changed) return@synchronized
+        publish { it.copy(playlists = newPlaylists, pockets = newPockets, setlists = newSetlists) }
+        save()
+    }
+
     // MARK: Import / export (COL-14 — .pdjcollection / .pocketdj.zip / CSV)
 
     /**

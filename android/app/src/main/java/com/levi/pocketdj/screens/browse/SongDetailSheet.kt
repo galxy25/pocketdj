@@ -74,6 +74,7 @@ fun SongDetailSheet(
     val graph = remember { AppGraph.get(context) }
     val scope = rememberCoroutineScope()
     var showAddSheet by remember { mutableStateOf(false) }
+    var confirmRemove by remember { mutableStateOf(false) }
 
     val catalogState by graph.catalogRepository.state.collectAsState()
     val manifest by graph.ripsRepository.manifest.collectAsState()
@@ -270,6 +271,45 @@ fun SongDetailSheet(
                     sentiments.forEach { keyword ->
                         AssistChip(onClick = {}, label = { Text(keyword) }, enabled = false)
                     }
+                }
+            }
+
+            // DISC-2: user-added provisional songs (Discover / Imported) can be removed from the library.
+            if (com.levi.pocketdj.screens.discover.isRemovableFromLibrary(source)) {
+                Spacer(Modifier.height(14.dp))
+                androidx.compose.material3.TextButton(
+                    onClick = { confirmRemove = true },
+                    colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                        contentColor = MaterialTheme.colorScheme.error,
+                    ),
+                    modifier = Modifier.testTag("song-remove-from-library"),
+                ) { Text("Remove from Library") }
+                if (confirmRemove) {
+                    androidx.compose.material3.AlertDialog(
+                        onDismissRequest = { confirmRemove = false },
+                        title = { Text("Remove from Library?") },
+                        text = { Text("${song.name} will be removed from your library.") },
+                        confirmButton = {
+                            androidx.compose.material3.TextButton(
+                                modifier = Modifier.testTag("song-remove-confirm"),
+                                onClick = {
+                                    confirmRemove = false
+                                    scope.launch {
+                                        val removed = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                            graph.browseGraph.removeFromLibrary(songId, source, song.name, song.artist)
+                                        }
+                                        if (removed) {
+                                            scope.launch { snackbar.showSnackbar("Removed ${song.name} from your library") }
+                                            onDismiss()
+                                        }
+                                    }
+                                },
+                            ) { Text("Remove", color = MaterialTheme.colorScheme.error) }
+                        },
+                        dismissButton = {
+                            androidx.compose.material3.TextButton(onClick = { confirmRemove = false }) { Text("Cancel") }
+                        },
+                    )
                 }
             }
 
