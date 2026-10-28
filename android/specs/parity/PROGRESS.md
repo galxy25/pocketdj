@@ -252,3 +252,15 @@ Emulator results:
 - SVC-13 PARTIAL: Settings > Reset all app state with typed RESET -> app relaunches into onboarding (Link a device / Just this device). Delete account + other-device "profile not found" not runnable (no linked profile or sync backend, Q54/Q66).
 Not reproduced once: after Download > Open, Games tab taps briefly ignored (seen once next to a wifi toggle; 2 clean repros fine).
 No FATAL EXCEPTION after fixes. Open: Q64-Q68.
+
+## Wave 16
+Merged: BRW-13, MIX-16, STU-10, STU-13, COL-14, COL-16 (one trivial conflict in docs/ARCHITECTURE-ANDROID.md ledger, both sides kept). JVM suite 4466 tests, 0 failures (4167 baseline + package tests + 1 integration test); assembleDebug OK.
+
+Emulator results (shots in pocketdj-parity/_shots/wave16/):
+- BRW-13 PASS: Settings > Recommendations ON reveals lifetime toggle, Last sent, Send now, Delete cloud data; Send now -> Last sent "0 minutes ago" (live service); History > For You > Refresh -> In Da Zone subtitle "Top picks · recommendation engine". Suggested collections block on song detail NOT seen: the service returned no suggestions for the seeded songs (data-dependent; JVM-tested).
+- MIX-16 PASS (after 2 fixes): Mix auto plays are in the History store tagged source=mix with the crate name and listened fractions (History tab shows "Mix · SeedRip"). Jukebox against a local dry-run jukebox-server.mjs: the broker state carries the on-air deck track + auto-queue tail; a guest request accepted with Play Next appears first in upNext. Bugs found+fixed: (a) cold start Mix Auto Play said "No songs ... on this device yet" because the catalog was never loaded (MixCratePort.ensureLoaded + regression test); (b) cold start jukebox requests all showed "No match found" (matcher ran on an empty catalog; now loads + waits up to 10 s); (c) accept buttons stayed disabled ("no audio yet") while an auto mix owns the audio, contradicting the repository's park-behind-a-burn design (UiState.mixOwns enables them).
+- STU-10 PASS: Arp program 3 keys -> Play -> live staff filled (42 notes); Overdub started ("Recording a new staff") and ended without crash; MIDI section shows the empty state "No MIDI keyboards connected" + Bluetooth MIDI sheet button. Overdub on a saved take deferred (Q71). USB/BLE hardware: not verifiable.
+- STU-13 PASS: Bounce all -> bounce-<ts>.m4a (0:03, 44.1 kHz) listed under Bounces; scissor Delete -> Undo -> Delete -> Save changes the clips (gap); Record master -> Stop -> live-recording-<ts>.m4a baked (24.9 s ~ wall clock, 44.1 kHz), partial WAV cleaned from cache. 48 kHz hardware pitch check: not verifiable on the emulator.
+- COL-14 / COL-16: pure JVM packages, no emulator steps (IO-2 / LP-2/3 cover them).
+Debug-only cleartext network config added so the emulator can reach a local broker (Q74).
+No FATAL EXCEPTION / ANR in logcat. Open: Q69-Q74.

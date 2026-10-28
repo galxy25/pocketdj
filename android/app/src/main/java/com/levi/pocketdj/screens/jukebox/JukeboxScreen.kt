@@ -354,6 +354,7 @@ private fun LiveView(
                     if (index > 0) HorizontalDivider(color = MaterialTheme.colorScheme.outline)
                     RequestRowView(
                         row = row,
+                        mixOwns = state.mixOwns,
                         onDecide = { action -> repository.decide(row.request.id, action) },
                     )
                 }
@@ -456,6 +457,7 @@ private fun OnAirBody(state: JukeboxRepository.UiState) {
 @Composable
 private fun RequestRowView(
     row: JukeboxRepository.RequestRow,
+    mixOwns: Boolean = false,
     onDecide: (JukeboxDecisionAction) -> Unit,
 ) {
     Column(modifier = Modifier.padding(vertical = 4.dp)) {
@@ -487,7 +489,7 @@ private fun RequestRowView(
             is JukeboxRepository.Match.Found -> Text(
                 text = buildString {
                     append("Match: ${match.song.name} — ${match.song.artist}")
-                    if (!match.playable) append(" (no audio yet)")
+                    if (!match.playable) append(if (mixOwns) " (will burn into the mix)" else " (no audio yet)")
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = if (match.playable) {
@@ -497,7 +499,10 @@ private fun RequestRowView(
                 },
             )
         }
-        val playable = (row.match as? JukeboxRepository.Match.Found)?.playable == true
+        // A live auto mix accepts a match that is not on disk yet (it burns + parks it), so only a
+        // missing match disables the placement buttons while mixing.
+        val found = row.match as? JukeboxRepository.Match.Found
+        val playable = found != null && (found.playable || mixOwns)
         FlowRow(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
             TextButton(onClick = { onDecide(JukeboxDecisionAction.DENIED) }) {
                 Text(JukeboxDecisionAction.DENIED.label, color = MaterialTheme.colorScheme.error)

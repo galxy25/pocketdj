@@ -95,6 +95,11 @@ class JukeboxRepository(
         val played: List<JukeboxPlayedEntry> = emptyList(),
         /** Queue items after the current one, from the last loop tick. */
         val upNextCount: Int = 0,
+        /**
+         * A live auto mix owns the audio, so an accepted request joins ITS queue (parked behind a burn when
+         * the song is not on disk yet): the accept buttons must not wait for a rip-playable match.
+         */
+        val mixOwns: Boolean = false,
         /** Transient broker trouble — shown as a subtle hint; loop keeps going. */
         val transientError: String? = null,
         /** Create-view message: start failure or "This jukebox has ended." */
@@ -332,7 +337,8 @@ class JukeboxRepository(
             if (snapshotResult.isSuccess) {
                 val snapshot = snapshotResult.getOrNull()
                 derivePlayed(snapshot)
-                _state.update { it.copy(upNextCount = snapshot?.upNext?.size ?: 0) }
+                val mixOwns = runCatching { onMain { mixSource()?.autoMixing } == true }.getOrDefault(false)
+                _state.update { it.copy(upNextCount = snapshot?.upNext?.size ?: 0, mixOwns = mixOwns) }
                 val payload = composePayload(snapshot, hear)
                 val now = System.currentTimeMillis()
                 if (payload != lastPosted || now - lastPostAtMs > HEARTBEAT_MS) {
@@ -396,6 +402,12 @@ class JukeboxRepository(
     }
 
     private suspend fun computeMatch(request: JukeboxRequest) {
+        // A cold start that never visited Browse has no catalog in memory; matching against nothing
+        // would flag every request "No match found". Load it (cache-seeded) and wait a bounded time.
+        if (catalog.state.value.catalog == null) {
+            catalog.loadIfNeeded()
+            withTimeoutOrNull(CATALOG_WAIT_MS) { catalog.state.first { it.catalog != null } }
+        }
         val songs = catalog.state.value.catalog?.songs.orEmpty()
         val song = JukeboxMatcher.match(request.title, request.artist, songs)
             ?: try {
@@ -547,6 +559,8 @@ class JukeboxRepository(
     }
 
     companion object {
+        /** Upper bound on waiting for a cold catalog before matching a guest request. */
+        const val CATALOG_WAIT_MS = 10_000L
         const val DEFAULT_SESSION_NAME = "PocketDJ Jukebox"
         private const val TICK_MS = 4_000L
         private const val HEARTBEAT_MS = 15_000L

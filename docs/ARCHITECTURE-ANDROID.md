@@ -404,8 +404,6 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | COL-12 — Recently added virtual playlist (derivation from IndexSong.dateAdded + add history) + Set… | 12 | PARTIAL (JVM; branch `parity/COL-12`) | Owner-gate scoping is a seam only (`filterToOwnLibrary`/`isOwnLibrary`, off: no owner identity on Android); no Android producer emits `catalogAdd` yet, so the list is effectively catalog-dateAdded-only; emulator step (Yours row, Settings 50 -> "50 songs") not run (integrator). |
 | COL-8 — Apple Music write-back queue (durable, Web API transport via SVC-15, batch confirm, backf… | 13 | Planned | Needs a real Apple Music subscription + Music-User-Token; emulator ve… |
 | COL-14 — .pdjcollection + backup .pocketdj.zip codecs, idempotent import merge, CSV (pure JVM, byt… | 16 | PARTIAL (JVM) | Codecs/merge/backup done + JVM-tested. Open: onPortableItems materialization seam unwired; SET-2 must merge sources (BackupSources.merge), edits, favorites; fixtures hand-built (no real iOS export); profile song ids not yet excluded from items.json. |
-| COL-16 — Listening pockets wire models (extending GM-5 PocketsModels), HTTP client, CollectionFlat… | 16 | Planned | — |
-| COL-14 — .pdjcollection + backup .pocketdj.zip codecs, idempotent import merge, CSV (pure JVM, byt… | 16 | Planned | — |
 | COL-16 — Listening pockets wire models (extending GM-5 PocketsModels), HTTP client, CollectionFlat… | 16 | DONE (JVM; branch `parity/COL-16`) | Pure JVM, no device-only items. Deviations: results decoder reused from GM-5; no postRounds (InThePocketRoundsClient owns it); client takes PocketsCredentials; Android-only byte-cap enforcement (largest fitting prefix). |
 | COL-13 — Per-collection sort/filter on every collection detail (BrowseEngine over the song subset,… | 17 | Planned | — |
 | COL-15 — .pdjcollection / backup SAF export-import UI, tapped-file open (deep-link handler), provi… | 17 | Planned | — |
@@ -480,7 +478,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | STU-9 — Score: quantizer, layout, editor (Enter/Select/Move/Edit, undo/cancel), live staff, PDF +… | 14 | Planned | — |
 | STU-12 — MultitrackPlayer (single render callback: clip sum + per-track gain/pan + TrackFX + Maste… | 15 | PARTIAL (player, live mix/FX, loop, UI done + reviewed; WYSIWYG-vs-ArrangerBouncer test and record-to-master deferred to STU-13; emulator steps not run) | Oboe latency, live FX quality judgement |
 | STU-10 — MIDI input (USB + BLE via MidiManager) + arpeggiator + overdub staffs | 16 | PARTIAL | Take-score overdub (ScoreScreen cursor + cached-mixdown backing) and cursor anchor on the live staff deferred (live overdub anchors at 0); USB/BLE MIDI hardware is device-only. JVM tests 4237 -> 4247. |
-| STU-13 — Bounce (artifact), record-to-master (Clean/Quantized), scissor trim (multi-select), Beat … | 16 | Planned | Record-pitch correctness on a 48 kHz hardware device (the iOS 8.8%-sl… |
+| STU-13 — Bounce (artifact), record-to-master (Clean/Quantized), scissor trim (multi-select), Beat … | 16 | DONE (JVM + emulator: bounce, record, scissor) | Record-pitch correctness on a 48 kHz hardware device (the iOS 8.8%-sl… |
 | STU-15 — Demux drum pattern + melody + key + instrumental + cut sample + send stems to arrangement… | 17 | Planned | Real-stem detection quality |
 | STU-16 — Studio hardening + diagnostics + emulator seed + docs sync + single-audio-layer grep guard | 19 | Planned | Headphone unplug / Bluetooth route change re-prime across each engine |
 

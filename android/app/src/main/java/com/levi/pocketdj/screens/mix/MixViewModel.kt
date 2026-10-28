@@ -59,6 +59,12 @@ interface MixCratePort {
     fun loadables(source: MixSource): List<MixLoadable>
     /** null when the crate no longer exists. */
     fun name(source: MixSource): String?
+    /**
+     * Suspends until the catalog the crate resolves against is in memory. A cold start that lands on
+     * another tab has not loaded it yet, and an unresolved catalog makes every crate look empty
+     * ("No songs ... on this device yet"). Default no-op for ports whose data is always resident.
+     */
+    suspend fun ensureLoaded() {}
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -134,6 +140,7 @@ class MixAutoStarter(
     ): MixStartOutcome {
         // iOS pushes the four settings before starting (headless starts honour the prefs).
         pushSettings?.let { MixSettingsPush.pushAll(settings, it) }
+        crates.ensureLoaded()
         val lead = settings.autoMixLeadSeconds
         val fade = settings.autoMixFadeSeconds
         val nameA = crateName(a)

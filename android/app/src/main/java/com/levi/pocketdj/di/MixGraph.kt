@@ -412,6 +412,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val resolver = mixResolver
         val cratePort = object : com.levi.pocketdj.screens.mix.MixCratePort {
             override fun loadables(source: com.levi.pocketdj.mix.model.MixSource) = resolver.loadables(source)
+            override suspend fun ensureLoaded() {
+                if (app.catalogRepository.state.value.catalog != null) return
+                app.catalogRepository.loadIfNeeded()
+                kotlinx.coroutines.withTimeoutOrNull(15_000) { app.catalogRepository.state.first { it.catalog != null } }
+            }
             override fun name(source: com.levi.pocketdj.mix.model.MixSource): String? = when (source) {
                 is com.levi.pocketdj.mix.model.MixSource.Pocket -> app.collections.pocket(source.value)?.name
                 is com.levi.pocketdj.mix.model.MixSource.Playlist -> app.collections.playlist(source.value)?.name

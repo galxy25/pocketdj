@@ -66,6 +66,10 @@ class MixViewModelTest {
         val names = HashMap<MixSource, String>()
         override fun loadables(source: MixSource) = tracks[source].orEmpty()
         override fun name(source: MixSource) = names[source]
+        /** Cold-start catalog: crate members only resolve once [ensureLoaded] has run. */
+        var lateTracks: Map<MixSource, List<MixLoadable>>? = null
+        var ensureCalls = 0
+        override suspend fun ensureLoaded() { ensureCalls++; lateTracks?.let { tracks.putAll(it); lateTracks = null } }
     }
 
     private val A = MixSource.Pocket("A")
@@ -249,6 +253,15 @@ class MixViewModelTest {
         try { starter.start(A, B, false, true, MixSettings()); org.junit.Assert.fail("expected not found") }
         catch (e: MixSourceNotFoundException) { assertEquals(B, e.source) }
         assertNull(r.engine.started)
+    }
+
+    @Test fun autoStartWaitsForColdCatalogBeforeJudgingTheCrateEmpty() = runTest {
+        val r = rig(); r.crates.tracks.remove(A)
+        r.crates.lateTracks = mapOf(A to songs("a", 3))
+        val out = MixAutoStarter(r.engine, r.downloads, r.crates).start(A, null, false, false, MixSettings())
+        assertEquals(1, r.crates.ensureCalls)
+        assertEquals(3, out.count)
+        assertNotNull(r.engine.started)
     }
 
     @Test fun unnamedSetlistStillReadsSetList_andStartPushesSettings() = runTest {

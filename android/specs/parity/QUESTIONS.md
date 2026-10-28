@@ -81,6 +81,13 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q67 [BRW-12]** New tile shows 0 until the release feed (BRW-14); cloud zone ranker not wired (on-device zone only); `recEngineEnabled` pref gates the tab (Settings > Recommendations package should reuse the key). In Da Zone full-catalog rank is slow on the emulator (see Q49). -- *Default: as built.* -- For You parity.
 - **Q68 [STU-12]** Bouncer parity deferred to STU-13; Oboe latency and Drive audibility are device-only (the Drive toggle was verified via applyMix logging only). -- *Default: deferred.* -- Studio.
 
+- **Q69 [BRW-13]** The rec-engine enrollment secret (X-PocketDJ-Enroll) is copied verbatim from the iOS `Config.swift` into `Endpoints.kt`, so it ships in the APK as it does in the .ipa. Acceptable, or fetch it at runtime? Also the Add-to sheet does not yet use `RecSuggestionFilter` (built + tested). Suggested collections on song detail could not be seen on the emulator: the live service returned none for the seeded songs. -- *Default: ship as iOS does.* -- Secret handling.
+- **Q70 [STU-13]** Should an audio-focus-loss stop during Record-to-master bake the partial take or discard it (current)? Bounce above 1.0 peak-normalizes (iOS rule) instead of running the live limiter, so a hot mix differs slightly from what was heard. -- *Default: discard; normalize.* -- Studio.
+- **Q71 [STU-10]** Overdub on a SAVED take (cursor anchor + cached-mixdown backing) is deferred (package PARTIAL); overdub works on the live staff (verified: staff recorded, End overdub). USB/BLE MIDI hardware paths (lifetime, pre-plugged, BLE disconnect) are device-only; emulator shows the empty-state device list. -- *Default: deferred.* -- Studio parity.
+- **Q72 [COL-14]** Backup/.pdjcollection fixtures are hand-built in iOS/PWA shape (no real iOS-exported backup captured); the onPortableItems materialization seam is unwired until the IO UI package. Can you export one real iOS backup + .pdjcollection into test resources? -- *Default: hand-built fixtures.* -- Format compatibility.
+- **Q73 [MIX-16]** Deferred: streaming-deck durationMs from catalog length and the buffering flag in the jukebox payload; un-ripped broadcast requests only park behind a burn-when-ripped intent (Android has no stream-through-rip trigger). -- *Default: as built.* -- Jukebox over Mix.
+- **Q74 [Wave 16 integrator]** Added a DEBUG-only network security config allowing cleartext to 10.0.2.2/localhost so the emulator can reach a local dev jukebox broker (src/debug). Release builds are untouched. OK to keep? -- *Default: keep (debug only).* -- Dev tooling.
+
 ## ANSWERED
 
 (none yet)
