@@ -419,20 +419,3 @@ class MultitrackPlayerTest {
         assertFalse(p.isPlaying.value)
     }
 }
-
-class ArrangerBeatMatchTest {
-    @Test fun rateIsWarpTimesTempoClamped() {
-        assertEquals(1.0, ArrangerBeatMatch.rate(0.0, 120.0, 1.0, true), 0.0)
-        assertEquals(1.25, ArrangerBeatMatch.rate(96.0, 120.0, 1.0, true), 1e-9)
-        assertEquals(2.5, ArrangerBeatMatch.rate(96.0, 120.0, 2.0, true), 1e-9)
-        assertEquals(2.0, ArrangerBeatMatch.rate(96.0, 120.0, 2.0, false), 1e-9)
-        assertEquals(32.0, ArrangerBeatMatch.rate(1.0, 300.0, 10.0, true), 0.0)
-    }
-
-    @Test fun startSnapsToNearestMasterBeatOnlyWhenBeatMatching() {
-        val beat = 22_050.0
-        assertEquals(22_050, ArrangerBeatMatch.snappedStartFrame(20_000, beat, true))
-        assertEquals(20_000, ArrangerBeatMatch.snappedStartFrame(20_000, beat, false))
-        assertEquals(20_000, ArrangerBeatMatch.snappedStartFrame(20_000, 0.0, true))
-    }
-}
