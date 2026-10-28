@@ -30,6 +30,9 @@ import com.levi.pocketdj.studio.audio.PrepareOutcome
 import com.levi.pocketdj.studio.audio.StudioOutputs
 import com.levi.pocketdj.studio.audio.StudioRender
 import com.levi.pocketdj.studio.engine.AudioFocusPolicy
+import com.levi.pocketdj.studio.engine.LoopAudition
+import com.levi.pocketdj.studio.engine.LoopFactory
+import com.levi.pocketdj.studio.engine.SliceBaker
 import com.levi.pocketdj.studio.engine.MicRecorder
 import com.levi.pocketdj.studio.engine.SampleFactory
 import com.levi.pocketdj.studio.engine.SampleRenderCache
@@ -103,6 +106,35 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     }
     val studioEngine: StudioEngine get() = engineLazy.value
 
+    // ---- STU-4: loops (render / seamless audition) + slice pads (all lazy)
+
+    /** Loop preview + Save both render through the REAL renderer from the RAW sample file. */
+    val loopFactory: LoopFactory by lazy {
+        LoopFactory(
+            studioRoots, studioStore, studioRender, { sampleRenderCache.sourceFile(it) },
+            File(app.appContext.cacheDir, "studio-loop-preview.wav"),
+        )
+    }
+
+    val sliceBaker: SliceBaker by lazy { SliceBaker(studioRoots, studioStore, studioRender, { sampleRenderCache.sourceFile(it) }) }
+
+    private val loopLazy = lazy {
+        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { loopAudition.stop() } }
+        LoopAudition(
+            sinkFactory = { StudioOutputs.create(audioManager) },
+            decode = { studioRender.decodeBuffer(it) },
+            focus = {
+                // One audible owner: park Now Playing and any sample audition before a loop sounds.
+                app.appScope.launch { runCatching { app.playbackController.pause() } }
+                if (engineLazy.isInitialized()) studioEngine.pauseSample()
+                focus.requestPlayback()
+            },
+            focusRelease = { focus.abandon() },
+            diag = { msg -> runCatching { com.levi.pocketdj.audio.core.AudioDiag.emit("studio.loop $msg") } },
+        )
+    }
+    val loopAudition: LoopAudition get() = loopLazy.value
+
     private val micLazy = lazy {
         val captureFocus = AudioFocusPolicy.FocusHandle(audioManager) { /* a competing app took focus: the take keeps going */ }
         MicRecorder(
@@ -144,6 +176,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     // A take in flight is filed + the store flushed synchronously (Android blocks background mic capture).
     override val flushables: List<Flushable> = listOf(
         Flushable { if (micLazy.isInitialized()) micRecorder.finalizeForExit() },
+        Flushable { if (loopLazy.isInitialized()) loopAudition.stop() },
         Flushable { if (storeLazy.isInitialized()) studioStore.flush() },
     )
 

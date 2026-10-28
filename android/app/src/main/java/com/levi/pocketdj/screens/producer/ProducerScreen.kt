@@ -35,6 +35,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.screens.producer.loops.LoopsScreen
 import com.levi.pocketdj.screens.producer.samples.SamplesScreen
 import com.levi.pocketdj.studio.StudioSettings
 import kotlinx.coroutines.launch
@@ -89,6 +90,7 @@ fun ProducerScreen(graph: AppGraph, modifier: Modifier = Modifier, hideTabs: Boo
         Box(Modifier.fillMaxSize()) {
             if (restored) when (tab) {
                 StudioSubTab.Samples -> SamplesScreen(graph)
+                StudioSubTab.Loops -> LoopsScreen(graph)
                 else -> ComingSoon(tab)
             }
         }
