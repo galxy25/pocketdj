@@ -97,7 +97,9 @@ class SliceBaker(
         val fileName = StudioFolders.fileName(StudioFamily.SAMPLES, id)
         val dest = StudioFiles.appFile(roots, StudioFamily.SAMPLES, fileName) ?: return null
         dest.parentFile?.mkdirs()
-        val carved = try { render.carveTrackRegion(src.path, start, end, dest) } catch (e: StudioRenderException) {
+        val carved = try { render.carveTrackRegion(src.path, start, end, dest) } catch (e: kotlinx.coroutines.CancellationException) {
+            dest.delete(); throw e
+        } catch (e: Exception) {
             dest.delete(); return null
         }
         store.addSample(

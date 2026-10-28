@@ -122,7 +122,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { loopAudition.stop() } }
         LoopAudition(
             sinkFactory = { StudioOutputs.create(audioManager) },
-            decode = { studioRender.decodeBuffer(it) },
+            decode = { runCatching { studioRender.decodeBuffer(it) }.getOrNull() },
             focus = {
                 // One audible owner: park Now Playing and any sample audition before a loop sounds.
                 app.appScope.launch { runCatching { app.playbackController.pause() } }
@@ -133,7 +133,20 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             diag = { msg -> runCatching { com.levi.pocketdj.audio.core.AudioDiag.emit("studio.loop $msg") } },
         )
     }
-    val loopAudition: LoopAudition get() = loopLazy.value
+    val loopAudition: LoopAudition get() = loopLazy.value.also { ensureLoopStopObserver() }
+
+    private var loopStopObserverAdded = false
+
+    /** Backgrounding (process ON_STOP, main thread) silences the loop; onPause / rotation must NOT (they run the flush funnel). */
+    private fun ensureLoopStopObserver() {
+        if (loopStopObserverAdded) return
+        loopStopObserverAdded = true
+        app.appScope.launch(Dispatchers.Main) {
+            androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(object : androidx.lifecycle.DefaultLifecycleObserver {
+                override fun onStop(owner: androidx.lifecycle.LifecycleOwner) { loopAudition.stop() }
+            })
+        }
+    }
 
     private val micLazy = lazy {
         val captureFocus = AudioFocusPolicy.FocusHandle(audioManager) { /* a competing app took focus: the take keeps going */ }
@@ -176,7 +189,6 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     // A take in flight is filed + the store flushed synchronously (Android blocks background mic capture).
     override val flushables: List<Flushable> = listOf(
         Flushable { if (micLazy.isInitialized()) micRecorder.finalizeForExit() },
-        Flushable { if (loopLazy.isInitialized()) loopAudition.stop() },
         Flushable { if (storeLazy.isInitialized()) studioStore.flush() },
     )
 

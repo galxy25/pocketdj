@@ -14,6 +14,7 @@ import com.levi.pocketdj.studio.model.StudioSample
 import com.levi.pocketdj.studio.store.StudioFamily
 import com.levi.pocketdj.studio.store.TestEnv
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -177,6 +178,50 @@ class LoopAuditionTest {
         sink.renderer!!.render(blk, 150)
         assertEquals(1f, blk[2 * 99], 0f)
         assertEquals(0f, blk[2 * 100], 0f)   // silence tail keeps the seam on the musical boundary
+    }
+
+    @Test fun throwingDecoderIsAnUnreadableRefusalNotACrash() = runBlocking {
+        val a = LoopAudition({ FakeSink() }, { throw java.io.IOException("truncated") })
+        assertFalse(a.play("lp_x", File("bad.wav"), 10))
+        assertEquals("unreadable", a.lastRefusal)
+        assertNull(a.playingId.value)
+        assertNull(a.arming.value)
+    }
+
+    @Test fun stopDuringDecodeCancelsThePendingPlay() = runBlocking {
+        val gate = kotlinx.coroutines.CompletableDeferred<PcmBuffer>()
+        val sink = FakeSink()
+        val a = LoopAudition({ sink }, { gate.await() })
+        val r = async(Dispatchers.Default) { a.play("lp_x", File("x.wav"), 10) }
+        while (a.arming.value == null) kotlinx.coroutines.yield()
+        assertEquals("lp_x", a.arming.value)
+        a.stop()
+        gate.complete(PcmBuffer(44_100, 2, FloatArray(20)))
+        assertFalse(r.await())
+        assertNull(a.playingId.value)
+        assertFalse(sink.isRendering)
+    }
+
+    @Test fun sinkThatFailsToOpenRefusesAndReleasesFocus() = runBlocking {
+        var released = 0
+        val dead = object : AudioSink by FakeSink() {
+            override val isRendering = false
+            override fun start(renderer: BlockRenderer) {}
+        }
+        val a = LoopAudition({ dead }, { PcmBuffer(44_100, 2, FloatArray(20)) }, focusRelease = { released++ })
+        assertFalse(a.play("lp_x", File("x.wav"), 10))
+        assertNull(a.playingId.value)
+        assertEquals("output-unavailable", a.lastRefusal)
+        assertEquals(1, released)
+    }
+
+    @Test fun switchingLoopsKeepsTheSinkRunning() = runBlocking {
+        val sink = FakeSink()
+        val a = LoopAudition({ sink }, { PcmBuffer(44_100, 2, FloatArray(20)) })
+        assertTrue(a.play("a", File("a.wav"), 10))
+        assertTrue(a.play("b", File("b.wav"), 10))
+        assertEquals("b", a.playingId.value)
+        assertTrue(sink.isRendering)
     }
 
     @Test fun refusesWhileMicCapturesOrFileUnreadableAndStopSilences() = runBlocking {

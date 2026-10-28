@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # STU-4 — Loops tab + slice editor (performance pads)
 
@@ -34,3 +34,16 @@ Tests: +28 new JVM tests (LoopAuditionTest 17, SliceMathTest 11). Full `:app:tes
 
 ## Questions for Levi
 - Should the loop audition keep playing when the app is backgrounded (needs a foreground media service) or stop as now?
+
+## Review
+- MAJOR decode throws crash (StudioGraph/LoopAudition) -> fixed: play() catches decode exceptions (rethrows cancellation) as "unreadable"; StudioGraph lambda also runCatching; test throwingDecoderIsAnUnreadableRefusalNotACrash.
+- MINOR audition stopped from onPause flush / off-main race -> fixed: removed the Flushable; stop now from a ProcessLifecycleOwner ON_STOP observer on Main; LoopAudition play/stop are lock-guarded. (Status note above "ON_STOP stop" is now accurate.)
+- MINOR no generation/arming -> fixed: generation bumped by play()/stop(), `arming` flow; stale decode dropped; LoopsScreen toggle/delete stop when arming; test stopDuringDecodeCancelsThePendingPlay.
+- MINOR bakePad only catches StudioRenderException -> fixed: catches Exception (rethrows cancellation), deletes dest; sendToSequencer in sheet wrapped in try/finally resetting `baking`.
+- MINOR start() result unchecked -> fixed: refuses with "output-unavailable" and releases focus if sink not rendering; loop switch swaps the track inside the running sink; tests sinkThatFailsToOpen..., switchingLoopsKeepsTheSinkRunning.
+- MINOR .kotlin error logs committed -> fixed: removed from index, `.kotlin/` added to android/.gitignore.
+- MINOR ARCHITECTURE-ANDROID ledger row -> fixed: STU-4 row set to Partial (emulator steps + seam click device-only, unrun).
+- NIT showBuilder rotation -> showBuilder now rememberSaveable (builder inner inputs and iOS "Add to playlist or pocket" menu item left as follow-ups).
+- NIT SliceMath.window duplicates StudioStore.sliceWindow -> not changed (optional; follow-up).
+
+fixes applied. Tests: 2791 run, 0 failures (+4 added).

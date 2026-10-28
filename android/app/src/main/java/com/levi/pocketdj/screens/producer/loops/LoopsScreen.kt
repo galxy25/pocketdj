@@ -69,8 +69,9 @@ fun LoopsScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     val scope = rememberCoroutineScope()
     val audition = studio.loopAudition
     val playingId by audition.playingId.collectAsState()
+    val arming by audition.arming.collectAsState()
 
-    var showBuilder by remember { mutableStateOf(false) }
+    var showBuilder by rememberSaveable { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<StudioLoop?>(null) }
     var pendingDelete by remember { mutableStateOf<StudioLoop?>(null) }
     var note by remember { mutableStateOf<String?>(null) }
@@ -85,7 +86,7 @@ fun LoopsScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     val unfiled = remember(doc) { store.loops(null) }
 
     fun toggle(l: StudioLoop) {
-        if (playingId == l.id) { audition.stop(); return }
+        if (playingId == l.id || arming == l.id) { audition.stop(); return }
         val file = store.localUrlForPlayback(l.id)?.ref?.file
         if (file == null || !file.isFile) {
             note = "“${l.name}” can’t play right now — its audio file or folder is unreachable."
@@ -179,7 +180,7 @@ fun LoopsScreen(graph: AppGraph, modifier: Modifier = Modifier) {
             confirmButton = {
                 TextButton(modifier = Modifier.testTag("loop-delete-confirm"), onClick = {
                     // Silence it first: deleting the file under a looping schedule leaves the buffer ringing with no row to stop it.
-                    if (playingId == l.id) audition.stop()
+                    if (playingId == l.id || arming == l.id) audition.stop()
                     note = if (store.deleteLoop(l.id)) null
                     else "The loops folder is unreachable right now — reconnect it, then delete “${l.name}”."
                     pendingDelete = null

@@ -215,9 +215,12 @@ fun SliceEditorSheet(graph: AppGraph, sampleId: String, pcm: PcmBuffer? = null, 
                 onClick = {
                     baking = true
                     scope.launch {
-                        val r = studio.sliceBaker.sendToSequencer(sampleId)
-                        notice = if (r != null) "Baked ${r.baked} pads → a new sequencer pattern." else "Couldn’t bake the pads — check the samples folder."
-                        baking = false
+                        try {
+                            val r = studio.sliceBaker.sendToSequencer(sampleId)
+                            notice = if (r != null) "Baked ${r.baked} pads → a new sequencer pattern." else "Couldn’t bake the pads — check the samples folder."
+                        } catch (e: kotlinx.coroutines.CancellationException) { throw e
+                        } catch (e: Exception) { notice = "Couldn’t bake the pads — check the samples folder."
+                        } finally { baking = false }
                     }
                 },
                 enabled = !baking && pads.isNotEmpty(),

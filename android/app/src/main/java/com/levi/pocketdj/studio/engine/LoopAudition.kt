@@ -20,6 +20,7 @@ import com.levi.pocketdj.studio.store.StudioFamily
 import com.levi.pocketdj.studio.store.StudioFolders
 import com.levi.pocketdj.studio.store.StudioRoots
 import com.levi.pocketdj.studio.store.StudioStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -215,24 +216,48 @@ class LoopAudition(
     /** Frames of the buffer actually looping (logcat verification: equals the loop's recorded frames). */
     @Volatile var loopedFrames: Long = 0; private set
 
-    /** Loop [file] as [id], conformed to [frames] (<= 0: as decoded). False when refused or unreadable. */
+    private val lock = Any()
+    /** Bumped by every play()/stop(): a decode that finishes under a stale generation drops its result. */
+    private var generation = 0L
+    private val _arming = MutableStateFlow<String?>(null)
+    /** The loop id whose decode is in flight (so a second tap / delete can cancel it); null otherwise. */
+    val arming: StateFlow<String?> = _arming.asStateFlow()
+
+    /** Loop [file] as [id], conformed to [frames] (<= 0: as decoded). False when refused, unreadable or superseded. */
     suspend fun play(id: String, file: File, frames: Long): Boolean {
         if (!AudioFocusPolicy.mayStartPlayback()) { lastRefusal = "mic-capture-active"; diag("loop play refused: mic capture"); return false }
-        val raw = decode(file.path) ?: run { lastRefusal = "unreadable"; diag("loop $id unreadable ${file.name}"); return false }
-        val buf = LoopMath.conform(raw, frames) ?: run { lastRefusal = "unreadable"; return false }
-        if (focus != null && !focus.invoke()) { lastRefusal = "no-focus"; diag("loop play refused: no focus"); return false }
-        lastRefusal = null
-        stopInternal(releaseFocus = false)
-        loopedFrames = buf.frames.toLong()
-        graph.addTrack(TRACK, PcmClipSource(buf, loop = true))
-        val k = sink ?: sinkFactory().also { sink = it }
-        if (!k.isRendering) k.start(graph)
-        _playingId.value = id
-        diag("loop play $id decoded=${raw.frames} looped=${buf.frames} expected=$frames")
-        return true
+        val gen = synchronized(lock) { generation += 1; _arming.value = id; generation }
+        val raw = try { decode(file.path) } catch (e: CancellationException) {
+            synchronized(lock) { if (generation == gen) _arming.value = null }
+            throw e
+        } catch (e: Exception) { null }
+        synchronized(lock) {
+            if (generation != gen) { diag("loop $id superseded during decode"); return false }
+            _arming.value = null
+            if (raw == null) { lastRefusal = "unreadable"; diag("loop $id unreadable ${file.name}"); return false }
+            val buf = LoopMath.conform(raw, frames) ?: run { lastRefusal = "unreadable"; return false }
+            if (focus != null && !focus.invoke()) { lastRefusal = "no-focus"; diag("loop play refused: no focus"); return false }
+            lastRefusal = null
+            // Swap the track inside a running graph (no sink stop/re-open when moving between loops).
+            graph.removeTrack(TRACK)
+            loopedFrames = buf.frames.toLong()
+            graph.addTrack(TRACK, PcmClipSource(buf, loop = true))
+            val k = sink ?: sinkFactory().also { sink = it }
+            if (!k.isRendering) k.start(graph)
+            if (!k.isRendering) {
+                graph.removeTrack(TRACK)
+                lastRefusal = "output-unavailable"; diag("loop $id: output failed to open")
+                _playingId.value = null
+                focusRelease?.invoke()
+                return false
+            }
+            _playingId.value = id
+            diag("loop play $id decoded=${raw.frames} looped=${buf.frames} expected=$frames")
+            return true
+        }
     }
 
-    fun stop() = stopInternal(releaseFocus = true)
+    fun stop() = synchronized(lock) { generation++; _arming.value = null; stopInternal(releaseFocus = true) }
 
     private fun stopInternal(releaseFocus: Boolean) {
         graph.removeTrack(TRACK)
