@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="shortcut_collections_short">Collections</string>
+    <string name="shortcut_collections_long">Open your collections</string>
+    <string name="shortcut_browse_short">Browse</string>
+    <string name="shortcut_browse_long">Browse and search the library</string>
+    <string name="shortcut_mix_short">Mix</string>
+    <string name="shortcut_mix_long">Open the Mix</string>
+</resources>

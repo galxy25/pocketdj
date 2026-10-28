@@ -277,6 +277,37 @@ class PlaybackService : MediaSessionService() {
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
         }
 
+        /**
+         * Voice search through a MediaController (Assistant / Android Auto): the item carries only
+         * `requestMetadata.searchQuery` (+ structured extras). The request is handed to
+         * [com.levi.pocketdj.assistant.SearchPlayBridge] (the single search seam; SURF-8's
+         * MediaLibraryService conversion MUST keep or absorb this hook, not add a second one).
+         * The shell's sequencer owns the start, so the controller's set is REFUSED: echoing the
+         * current queue would re-prepare the playing item, double-log History and resume the old
+         * track before the query resolves. Device-only path.
+         */
+        override fun onSetMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long,
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val item = mediaItems.singleOrNull()
+                ?.takeIf { it.mediaId.isEmpty() || it.localConfiguration == null }
+            val query = item?.requestMetadata?.searchQuery
+            val handler = com.levi.pocketdj.assistant.SearchPlayBridge.handler
+            if (item != null && !query.isNullOrBlank() && handler != null) {
+                val extras = item.requestMetadata.extras
+                val base = com.levi.pocketdj.assistant.MediaSearchRequest.from { extras?.getString(it) }
+                handler(base.copy(query = query))
+                return Futures.immediateFailedFuture(
+                    UnsupportedOperationException("search handled by the shell; player untouched"),
+                )
+            }
+            return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
+        }
+
         override fun onAddMediaItems(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,
