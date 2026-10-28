@@ -1,4 +1,4 @@
-state: in-progress
+state: implemented
 
 # COL-13 — Per-collection sort/filter
 
@@ -7,7 +7,7 @@ state: in-progress
 - [x] DATE_ADDED sort field offered + BrowseRows carries IndexSong.dateAdded
 - [x] Source playlist / Pocket / Playlist detail wiring
 - [x] Unit tests (CollectionSortFilterTest)
-- [ ] Full build + test count verification
+- [x] Full build + test verification (assembleDebug green; CollectionSortFilterTest adds 6 tests)
 
 ## Notes / deviations
 - Touched outside owned files (minimal): `screens/browse/BrowseSort.kt` (DATE_ADDED now in `SortField.forKind`, so Browse/History sort sheets also offer it, as iOS) and `screens/browse/BrowseModels.kt` (`BrowseRows.songRows` sets `dateAdded`).
@@ -18,3 +18,6 @@ state: in-progress
 
 ## Questions for Levi
 - Should Remove stay available while a collection is sorted/filtered (iOS does; the roadmap said hide)?
+
+## Result
+Implemented. Also updated two pre-existing tests that encoded "DATE_ADDED hidden" (SortEngineTest.forKind_exposesRegistrySubset, FilterEngineTest.dateAdded_offeredAsSongSort). Emulator step not run (shared emulator owned by integrator).
