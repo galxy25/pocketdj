@@ -48,6 +48,11 @@ import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.games.GameKind
 import com.levi.pocketdj.data.games.GameScoreboardStore
 import com.levi.pocketdj.data.games.RunRecord
+import com.levi.pocketdj.data.games.friends.MusicWithFriendsStore
+import com.levi.pocketdj.data.games.friends.MwFSessionEntry
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material.icons.filled.WorkspacePremium
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.Dispatchers
@@ -93,6 +98,10 @@ fun GamesScreen(
     onOpenPuzzle: (() -> Unit)? = null,
     onOpenInThePocket: (() -> Unit)? = null,
     deleteScope: CoroutineScope? = null,
+    friends: MusicWithFriendsStore? = null,
+    onNewSession: (() -> Unit)? = null,
+    onJoinSession: (() -> Unit)? = null,
+    onOpenSession: ((String) -> Unit)? = null,
 ) {
     val state by store.state.collectAsState()
     val scope = rememberCoroutineScope()
@@ -141,6 +150,16 @@ fun GamesScreen(
                 lineTag = "games-best-musicWithFriends",
                 onClick = null,
             )
+        }
+        if (friends != null) {
+            item {
+                MwFSessionRows(
+                    friends = friends,
+                    onNew = { onNewSession?.invoke() },
+                    onJoin = { onJoinSession?.invoke() },
+                    onOpen = { onOpenSession?.invoke(it) },
+                )
+            }
         }
         item {
             ScoreboardTitleRow(
@@ -324,3 +343,45 @@ private fun GameBlock(
 
 private fun dateLabel(atMs: Double): String =
     DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(Date(atMs.toLong()))
+
+/** Session rows + New / Join buttons under the Music with Friends card (iOS `GamesView` friends section). */
+@Composable
+private fun MwFSessionRows(
+    friends: MusicWithFriendsStore,
+    onNew: () -> Unit,
+    onJoin: () -> Unit,
+    onOpen: (String) -> Unit,
+) {
+    val sessions by friends.sessions.collectAsState()
+    val states by friends.lastState.collectAsState()
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        for (entry in sessions) {
+            MwFSessionRow(entry, states[entry.id]?.let { friends.myScore(it) }, onClick = { onOpen(entry.id) })
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Button(onClick = onNew, modifier = Modifier.testTag("mwf-new")) { Text("New Session") }
+            OutlinedButton(onClick = onJoin, modifier = Modifier.testTag("mwf-join")) { Text("Join Session") }
+        }
+    }
+}
+
+@Composable
+private fun MwFSessionRow(entry: MwFSessionEntry, score: Int?, onClick: () -> Unit) {
+    Card(Modifier.fillMaxWidth().clickable(onClick = onClick).testTag("mwf-session-${entry.id}")) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (entry.isLeader) Icon(Icons.Filled.WorkspacePremium, "Leader", tint = MaterialTheme.colorScheme.tertiary)
+                Text(entry.name ?: "Music with Friends", style = MaterialTheme.typography.bodyLarge)
+            }
+            entry.theme?.takeIf { it.isNotEmpty() }?.let {
+                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                entry.expiresAt?.let {
+                    Text(MwFScreenLogic.expiresLabel(it, System.currentTimeMillis().toDouble()), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                if (score != null) Text("your score: $score", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            }
+        }
+    }
+}

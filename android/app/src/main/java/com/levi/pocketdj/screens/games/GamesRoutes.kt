@@ -2,6 +2,8 @@ package com.levi.pocketdj.screens.games
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -38,7 +40,30 @@ fun GamesRoute(
         InThePocketScreen(graph, modifier = modifier)
         return
     }
+    // ---- Music with Friends (GM-10) ----
+    val friends = graph.gamesGraph.friends
+    var sessionId by rememberSaveable { mutableStateOf<String?>(null) }
+    var showCreate by rememberSaveable { mutableStateOf(false) }
+    var showJoin by rememberSaveable { mutableStateOf(false) }
+    val pendingJoin by friends.pendingJoin.collectAsState()
+    val pendingOpen by friends.pendingOpenId.collectAsState()
+    // A create/join success or a tapped link raises the open signal; take it atomically and push.
+    LaunchedEffect(pendingOpen) {
+        friends.consumePendingOpenId()?.let { sessionId = it }
+    }
+    sessionId?.let { id ->
+        BackHandler { sessionId = null }
+        MwFSessionScreen(graph, id, onClose = { sessionId = null }, modifier = modifier)
+        return
+    }
+    if (showCreate) MwFCreateSheet(graph, onDismiss = { showCreate = false })
+    if (showJoin) MwFJoinSheet(graph, link = null, onDismiss = { showJoin = false })
+    pendingJoin?.let { link -> MwFJoinSheet(graph, link = link, onDismiss = { friends.clearPendingJoin() }) }
     GamesScreen(
+        friends = friends,
+        onNewSession = { showCreate = true },
+        onJoinSession = { showJoin = true },
+        onOpenSession = { sessionId = it },
         store = graph.gamesGraph.scoreboard,
         modifier = modifier,
         deleteScope = graph.appScope,
