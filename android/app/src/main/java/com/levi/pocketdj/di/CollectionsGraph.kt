@@ -44,10 +44,37 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         File(app.appContext.filesDir, FavoritesStore.FILE_NAME).let { f ->
             FavoritesStore(f, writer = VersionedJsonWriter(f, VersionedJsonWriter.backgroundExecutor("pdj-favorites-writer")))
         }.also { store ->
-            store.onChanged = favoriteActivityRecorder(app.collectionActivity) { id ->
+            val record = favoriteActivityRecorder(app.collectionActivity) { id ->
                 app.catalogRepository.state.value.catalog?.songsById?.get(id)?.let { it.name to it.artist }
             }
+            store.onChanged = { e ->
+                record(e)
+                // COL-11: push the tap now (no-op when opted out / no AM id / signed out).
+                app.appScope.launch(Dispatchers.IO) { runCatching { favoritesSync.pushNow(e) } }
+            }
         }
+    }
+
+    /** Opt-in two-way Apple Music favorites sync (COL-11). Zero requests while the toggle is OFF. */
+    val favoritesSync: com.levi.pocketdj.data.favorites.FavoritesSyncService by lazy {
+        com.levi.pocketdj.data.favorites.FavoritesSyncService(
+            favorites = favorites,
+            remote = com.levi.pocketdj.data.favorites.ApiFavoritesRemote(app.appleMusicApi, amTokens),
+            twoWayEnabled = { app.settings.get(com.levi.pocketdj.data.favorites.FavoritesSyncSettings.TWO_WAY) },
+            seedOptIn = { app.settings.get(com.levi.pocketdj.data.favorites.FavoritesSyncSettings.APPLY_OWNER_SEED) },
+            catalogPairs = {
+                app.catalogRepository.state.value.catalog?.songsById?.values
+                    ?.mapNotNull { s -> s.appleMusicId?.let { s.id to it } }.orEmpty()
+            },
+            ready = { app.onboarding.isComplete && app.catalogRepository.state.value.catalog != null },
+            fetchSeed = {
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    app.httpClient.newCall(
+                        okhttp3.Request.Builder().url(com.levi.pocketdj.data.config.Endpoints.FAVORITES_SEED_URL).build(),
+                    ).execute().use { r -> if (!r.isSuccessful) error("seed ${r.code}"); r.body!!.string() }
+                }
+            },
+        )
     }
 
     /**
@@ -302,6 +329,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             com.levi.pocketdj.screens.settings.sections.collectionsSyncSection(),
             com.levi.pocketdj.screens.settings.appleMusicSyncSection(),
             com.levi.pocketdj.screens.settings.appleMusicWriteBackSection(),
+            com.levi.pocketdj.screens.settings.appleMusicFavoritesSection(),
         )
     }
 
@@ -326,6 +354,24 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             runCatching {
                 androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
                     com.levi.pocketdj.data.applemusic.WriteBackForegroundDrain { writeBack.runSoon() },
+                )
+            }
+        }
+        // COL-11: launch + every foreground, drain/reconcile favorites (no-op while opted out).
+        // Launch pass = the ON_START observer below (fires on add) + the first loaded catalog; both are
+        // gated on onboarding + catalog (iOS syncFavoritesIfReady) so an empty catalog never "syncs".
+        app.appScope.launch(Dispatchers.IO) {
+            app.catalogRepository.state
+                .map { it.catalog }
+                .distinctUntilChanged { a, b -> (a == null) == (b == null) }
+                .collect { c -> if (c != null) runCatching { favoritesSync.runIfReady() } }
+        }
+        app.appScope.launch(Dispatchers.Main) {
+            runCatching {
+                androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
+                    com.levi.pocketdj.data.applemusic.WriteBackForegroundDrain {
+                        app.appScope.launch(Dispatchers.IO) { runCatching { favoritesSync.runIfReady() } }
+                    },
                 )
             }
         }

@@ -285,3 +285,64 @@ private fun AuditReportRows(report: AmSyncReport, fmt: (Double) -> String) {
         report.errors.forEach { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, maxLines = 2) }
     }
 }
+
+/**
+ * Settings > "Favorites" (COL-11, iOS AppleMusicSettingsView favorites half): the opt-in
+ * two-way sync toggle (default OFF), "Sync favorites now", last-synced / error lines, and the
+ * curator-seed opt-in (default OFF, hidden once two-way sync is on). The un-favorite caveat is
+ * part of the copy because the ★ cannot be retracted.
+ */
+fun appleMusicFavoritesSection() = SettingsSection("appleMusicFavorites", 406) { host ->
+    val graph = host.graph
+    val sync = graph.collectionsGraph.favoritesSync
+    val st by sync.state.collectAsState()
+    val twoWay by remember(graph) { graph.settings.flow(com.levi.pocketdj.data.favorites.FavoritesSyncSettings.TWO_WAY) }
+        .collectAsState(initial = false)
+    val seedOpt by remember(graph) { graph.settings.flow(com.levi.pocketdj.data.favorites.FavoritesSyncSettings.APPLY_OWNER_SEED) }
+        .collectAsState(initial = false)
+
+    SettingsHeader("Favorites")
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+        Text("Two-way favorites sync", modifier = Modifier.weight(1f))
+        Switch(
+            checked = twoWay,
+            onCheckedChange = { v ->
+                // App scope: leaving Settings must not cancel the pass mid-flight (iOS unstructured Task).
+                graph.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    graph.settings.set(com.levi.pocketdj.data.favorites.FavoritesSyncSettings.TWO_WAY, v)
+                    if (v) runCatching { sync.run() }
+                }
+            },
+            modifier = Modifier.testTag("favorites-sync-gate"),
+        )
+    }
+    st.lastError?.let {
+        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error, modifier = Modifier.testTag("favorites-sync-error"))
+    }
+    st.lastSyncedAtMs?.let {
+        SettingsCaption("Last synced " + java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.SHORT).format(java.util.Date(it.toLong())))
+    }
+    OutlinedButton(
+        enabled = twoWay && !st.isSyncing,
+        onClick = { graph.appScope.launch(kotlinx.coroutines.Dispatchers.IO) { runCatching { sync.run() } } },
+        modifier = Modifier.testTag("favorites-sync-now"),
+    ) {
+        if (st.isSyncing) CircularProgressIndicator(modifier = Modifier.height(16.dp)) else Text("Sync favorites now")
+    }
+    if (!twoWay) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text("Start with the curator’s picks", modifier = Modifier.weight(1f))
+            Switch(
+                checked = seedOpt,
+                onCheckedChange = { v -> host.scope.launch { graph.settings.set(com.levi.pocketdj.data.favorites.FavoritesSyncSettings.APPLY_OWNER_SEED, v) } },
+                modifier = Modifier.testTag("favorites-seed-optin"),
+            )
+        }
+    }
+    SettingsCaption(
+        "With favorites sync ON, ♥ on an Apple Music song also loves it in Apple Music, and songs you love " +
+            "there appear here. Vinyl, My Digital and Studio favorites stay on this device. Un-favoriting is " +
+            "lossy on Apple Music: it removes the love rating, but Apple provides no way to remove the ★ " +
+            "from “Favorite Songs”, so remove it there yourself.",
+    )
+}
