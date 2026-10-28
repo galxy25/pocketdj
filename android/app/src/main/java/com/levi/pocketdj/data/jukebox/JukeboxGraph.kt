@@ -10,6 +10,7 @@ import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * Jukebox-feature object graph, hanging off [AppGraph] (the core graph is
@@ -44,6 +45,16 @@ class JukeboxGraph private constructor(context: Context) {
         },
     )
 
+    /** JBX-2 guest side: joined-sessions list (process-wide, UI-independent) + public client. */
+    val joined: JoinedSessionsStore = joinedSessions(appContext)
+
+    val guestClient: JukeboxGuestClient = JukeboxGuestClient(
+        http = app.httpClient,
+        json = app.json,
+        installId = { app.settings.ensureInstallId() },
+        configuredBase = { app.settings.current().jukeboxServerUrl },
+    )
+
     val repository: JukeboxRepository = JukeboxRepository(
         context = appContext,
         client = client,
@@ -60,6 +71,29 @@ class JukeboxGraph private constructor(context: Context) {
     companion object {
         @Volatile
         private var instance: JukeboxGraph? = null
+
+        @Volatile
+        private var joinedInstance: JoinedSessionsStore? = null
+
+        /**
+         * The joined-sessions store on its own light DataStore file, so deep links / the route
+         * resolver can use it without constructing the whole (player-bound) jukebox graph.
+         */
+        fun joinedSessions(context: Context): JoinedSessionsStore =
+            joinedInstance ?: synchronized(this) {
+                joinedInstance ?: run {
+                    val app = AppGraph.get(context)
+                    val ctx = context.applicationContext
+                    val ds = PreferenceDataStoreFactory.create(
+                        corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+                        scope = CoroutineScope(Dispatchers.IO + SupervisorJob()),
+                    ) { File(ctx.filesDir, "pocketdj-jukebox-joined.preferences_pb") }
+                    JoinedSessionsStore(DataStoreJoinedStorage(ds), app.appScope).also {
+                        joinedInstance = it
+                        app.appScope.launch(Dispatchers.IO) { it.load() }
+                    }
+                }
+            }
 
         fun get(context: Context): JukeboxGraph =
             instance ?: synchronized(this) {

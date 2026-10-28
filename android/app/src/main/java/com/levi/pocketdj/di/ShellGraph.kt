@@ -180,6 +180,13 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
     override val deepLinkHandlers: List<DeepLinkHandler> by lazy {
         // Cheap and side-effect-light: runs on the main thread during cold start. Nothing heavy
         // (history decode, catalog/collections graphs) is forced here.
+        // JBX-2: a tapped/parked jukebox link joins as a guest and opens the join panel.
+        deepLinkSeams.joinJukebox = { id, guestBase ->
+            com.levi.pocketdj.data.jukebox.JukeboxLink.forEntry(id, guestBase)?.let { link ->
+                com.levi.pocketdj.data.jukebox.JukeboxGraph.joinedSessions(app.appContext).addJoined(link)
+                NavRequestBus.post(ShellRoute.JukeboxJoin(id))
+            }
+        }
         deepLinkSeams.playItem = { kind, id, shuffle ->
             if (kind == PlayKind.Setlist) {
                 NavRequestBus.post(ShellRoute.Setlist(id, autoplay = true))
