@@ -1,6 +1,5 @@
 package com.levi.pocketdj.audio.core
 
-import kotlin.math.floor
 
 /** Interleaved float PCM held in memory (Studio decode result, WAV/AAC encode input). */
 class PcmBuffer(val sampleRate: Int, val channels: Int, val samples: FloatArray) {
@@ -25,7 +24,8 @@ class PcmBuffer(val sampleRate: Int, val channels: Int, val samples: FloatArray)
     fun resampled(rate: Int): PcmBuffer {
         if (rate == sampleRate || frames == 0) return PcmBuffer(rate, channels, samples)
         val ratio = sampleRate.toDouble() / rate
-        val outFrames = floor(frames / ratio).toInt()
+        // ceil(frames * rate / sampleRate) in exact integer math (iOS convertToCanonical contract: never one frame short)
+        val outFrames = ((frames.toLong() * rate + sampleRate - 1) / sampleRate).toInt()
         val out = FloatArray(outFrames * channels)
         for (i in 0 until outFrames) {
             val pos = i * ratio

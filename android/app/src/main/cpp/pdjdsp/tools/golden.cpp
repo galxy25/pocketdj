@@ -20,7 +20,8 @@ int main() {
     pdj::MasterFx f; f.configure(44100, 2);
     pdj::MasterFxParams q; q.phaser = true; q.ringMod = true; q.brazil = true; q.drive = true; q.masterGain = 0.8; q.bpm = 120;
     f.update(q);
-    f.process(m, 2, 1024, 0); f.process(m, 2, 1024, 1024);
+    float* m2[2] = {a.data() + 1024, b.data() + 1024};
+    f.process(m, 2, 1024, 0); f.process(m2, 2, 1024, 1024);
     printf("MASTER %d\n", N);
     for (int i = 0; i < N; i++) printf("%.9g %.9g\n", a[i], b[i]);
 }

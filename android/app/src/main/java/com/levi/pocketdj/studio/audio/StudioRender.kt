@@ -155,6 +155,14 @@ object StudioRenderCore {
         private var env = 0.0
         private val planar = arrayOf(FloatArray(CHUNK), FloatArray(CHUNK))
 
+        /** True while the slap-delay line still holds audible energy (a silent gap before an echo must not end the drain). */
+        fun delayPending(): Boolean {
+            val db = delayBuf ?: return false
+            val floor = 10.0.pow(StudioAudio.TAIL_FLOOR_DB / 20.0).toFloat()
+            for (c in 0..1) for (v in db[c]) if (abs(v) > floor) return true
+            return false
+        }
+
         /** True when the chain does nothing to the signal except (possibly) unity gain. */
         val isNeutral: Boolean get() = !compOn && lp == null && reverb == null && delayBuf == null && gain == 1f
 
@@ -242,7 +250,7 @@ object StudioRenderCore {
             System.arraycopy(w, 0, out, len, w.size)
             len += w.size
             tail += win
-            if (StudioAudio.isBelowFloor(w, 0, w.size)) break
+            if (StudioAudio.isBelowFloor(w, 0, w.size) && !fx.delayPending()) break
         }
         return PcmBuffer(StudioAudio.CANONICAL_RATE, 2, out.copyOf(len))
     }
