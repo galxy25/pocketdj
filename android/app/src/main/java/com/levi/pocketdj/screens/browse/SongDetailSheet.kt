@@ -221,6 +221,8 @@ fun SongDetailSheet(
                 }
             }
 
+            SuggestedCollectionsBlock(songId = songId, graph = graph)
+
             Spacer(Modifier.height(12.dp))
             HorizontalDivider()
             Spacer(Modifier.height(8.dp))
@@ -296,5 +298,74 @@ fun SongDetailSheet(
             item = AddToItem.Song(songId),
             onDismiss = { showAddSheet = false },
         )
+    }
+}
+
+/** Row cap (iOS `prefix(5)`). */
+internal const val SUGGESTED_COLLECTIONS_MAX = 5
+
+/**
+ * "Suggested collections" (BRW-13): the rec engine's per-song collection matches, hidden when there
+ * are none (engine off, offline, nothing above threshold). Rows whose collection no longer resolves
+ * locally are dropped; a stale server snapshot that already contains the song shows a check, not Add.
+ */
+@Composable
+private fun SuggestedCollectionsBlock(songId: String, graph: AppGraph) {
+    val engineOn by graph.settings.flow(com.levi.pocketdj.data.recs.RecsSettings.REC_ENGINE_ENABLED).collectAsState(initial = false)
+    var rows by remember(songId) { mutableStateOf<List<com.levi.pocketdj.data.recs.RecommendationService.CollectionSuggestion>>(emptyList()) }
+    var added by remember(songId) { mutableStateOf(setOf<String>()) }
+    LaunchedEffect(songId, engineOn) {
+        rows = emptyList(); added = emptySet()
+        if (!engineOn) return@LaunchedEffect
+        rows = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val svc = graph.browseGraph.recService
+            val collections = graph.collections
+            svc.collectionSuggestions(songId).filter {
+                if (it.kind == "pocket") collections.pocket(it.id) != null else collections.playlist(it.id) != null
+            }
+        }
+    }
+    if (rows.isEmpty()) return
+    val collections = graph.collections
+    HorizontalDivider(Modifier.padding(top = 12.dp))
+    Column(Modifier.fillMaxWidth().padding(top = 8.dp).testTag("song-suggested-collections")) {
+        Text(
+            "SUGGESTED COLLECTIONS",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        rows.take(SUGGESTED_COLLECTIONS_MAX).forEachIndexed { idx, sug ->
+            val isPocket = sug.kind == "pocket"
+            val member = added.contains(sug.id) ||
+                if (isPocket) collections.pocket(sug.id)?.songIds?.contains(songId) == true
+                else collections.playlistContains(sug.id, songId)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).testTag("song-suggested-collection-$idx"),
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(sug.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1)
+                    sug.reasons.firstOrNull()?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
+                    }
+                }
+                if (member) {
+                    Text("Added", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+                } else {
+                    androidx.compose.material3.OutlinedButton(onClick = {
+                        // The generic addSong choke point: stamps activity + MRU exactly like the Add sheet.
+                        collections.addSong(
+                            songId,
+                            com.levi.pocketdj.data.collections.AddTarget(
+                                if (isPocket) com.levi.pocketdj.data.collections.AddTarget.Kind.POCKET
+                                else com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST,
+                                sug.id,
+                            ),
+                        )
+                        added = added + sug.id
+                    }) { Text("Add") }
+                }
+            }
+        }
     }
 }

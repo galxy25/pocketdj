@@ -75,3 +75,11 @@ object Endpoints {
     /** Playable audio for a rips-manifest entry key (e.g. "rips/<id>.mp3"). */
     fun ripAudioUrl(key: String): String = "$RIPS_BASE/${key.removePrefix("/")}"
 }
+
+/**
+ * Rec-engine shared enrollment secret (BRW-13), mirrored from iOS `Config.recEngineEnrollSecret`.
+ * Sent as `X-PocketDJ-Enroll` ONLY on the two routes that can create or destroy server state
+ * (`POST /events`, `DELETE /state`); the read routes authenticate with the bearer key alone.
+ * Not a user secret: it ships in every client build, exactly like the iOS .ipa constant.
+ */
+const val REC_ENGINE_ENROLL_SECRET: String = "108fe53e75eb4bcf5a6c1390ee756ea100d3fa4ae7d3194d"
