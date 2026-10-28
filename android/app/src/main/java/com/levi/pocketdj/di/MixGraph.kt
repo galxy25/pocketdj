@@ -170,7 +170,6 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 engine = it, loader = MixStreamLoaderPort(loader), sources = Mp3StreamSourceFactory(),
                 stems = extras.stems, hasLocalFile = { id -> burns.hasLocalFile(id) },
             )
-            decks.upcomingProvider = { autoMixHost.autoUpcomingSongIds }
             decks.install()
             streamDecksRef = decks
             loader.onProgress = { id -> decks.streamProgressed(id) }

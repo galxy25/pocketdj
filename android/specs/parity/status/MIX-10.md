@@ -29,3 +29,13 @@ Real Mp3Decoder over a growing file (`totalFrames` claim from the Xing header, `
 
 ## Questions for Levi
 - None.
+
+## Review
+fixes applied
+- MAJOR stall clock: fixed. `heldSinceMs` is stamped only while held AND playing (setHolding, onTransport(playing=true)); cleared on pause/unhold/clearStream. Test `theStallClockStartsWhenAHeldDeckStartsPLAYINGNotWhenItWasHeld`.
+- MINOR frontier from bytes only: fixed. Frontier is capped by `source.availableFrames`. Test `theFrontierNeverOutrunsWhatTheDecoderCanProduce`.
+- MINOR failure paths: fixed. Stems-carried path ends the main voice at its frontier (`growTo(endFrame, final=true)`); both failure paths call `sources.markComplete`. Test `aStreamFailureDrainsTheDecoderSoTheTruncatedEndIsReachable`.
+- MINOR Buffering badge on stem hold: fixed. New `StemController.onHold` callback (fired at both hold sites) republishes.
+- MINOR circular upcoming wiring: fixed. Removed `StreamDecks.upcomingProvider`/`autoUpcomingSongIds`; `EngineAutoMixHost.upcomingProvider` is the single source that MIX-9 assigns (the downloader reads the host). Removed the obsolete StreamDecks test; downloader ordering stays covered by CollectionMixDownloaderTest.
+- MINOR untagged CBR: fixed. `Mp3Decoder(expectedBytes)` + `Mp3FrameReader.estimateTotalFrames` give a partial untagged file an estimated length (exact once complete).
+- NIT: `streamingSongIds` is now a @Volatile snapshot. onTick/MixTick double-handling left as is (the tick order is owned by the engine; very narrow window).

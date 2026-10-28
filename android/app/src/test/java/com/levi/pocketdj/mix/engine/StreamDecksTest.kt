@@ -550,12 +550,42 @@ class StreamDecksTest {
         assertFalse("never ripped: permanent", r.decks.transientlyUnloadable("zzz"))
     }
 
-    @Test fun autoUpcomingSongIdsIsEmptyUnlessAutoMixing() {
-        val r = Rig()
-        r.decks.upcomingProvider = { listOf("a", "b") }
-        assertTrue(r.decks.autoUpcomingSongIds.isEmpty())
-        r.engine.autoDj = HeldCountingAuto()
-        assertEquals(listOf("a", "b"), r.decks.autoUpcomingSongIds)
+    @Test fun theStallClockStartsWhenAHeldDeckStartsPLAYINGNotWhenItWasHeld() {
+        val r = Rig(); r.load(lengthMs = 100_000)
+        assertNull("held but stopped: no stall clock", r.decks.heldSinceMs(A))
+        r.h.nowMs += 40_000        // 40 s of a buffering standby deck
+        r.engine.play(A)           // now the live deck, still buffering
+        val since = r.decks.heldSinceMs(A)
+        assertNotNull("held AND playing", since)
+        assertTrue("measured from the play, not the load", r.h.nowMs - since!! < 1_000)
+        r.engine.pause(A)
+        assertNull("paused: clock cleared", r.decks.heldSinceMs(A))
+        r.h.nowMs += 20_000
+        r.engine.play(A)
+        assertTrue(r.h.nowMs - r.decks.heldSinceMs(A)!! < 1_000)
+    }
+
+    @Test fun theFrontierNeverOutrunsWhatTheDecoderCanProduce() {
+        val r = Rig(); r.load(lengthMs = 100_000)
+        // 10 s of BYTES landed (a fat ID3 / art tag) but the decoder has no audio frames yet
+        r.handle.bytesReceived = (10 * r.bps).toLong()
+        r.src.available = 0
+        r.decks.streamProgressed("s")
+        assertTrue("no real audio: still buffering", r.decks.isBuffering(A))
+        r.src.available = 6L * r.sr
+        r.decks.streamProgressed("s")
+        assertFalse(r.decks.isBuffering(A))
+        assertEquals(6.0, r.frontier, 0.05)
+    }
+
+    @Test fun aStreamFailureDrainsTheDecoderSoTheTruncatedEndIsReachable() {
+        val r = Rig(); r.load(lengthMs = 100_000)
+        r.engine.play(A)
+        r.download(21.5)
+        r.run(1.0)
+        r.handle.failed = true
+        r.decks.streamProgressed("s")
+        assertTrue("decoder told the stream is over", r.factory.completes >= 1)
     }
 
     @Test fun canStreamPassesThroughTheLoaderGate() {

@@ -142,8 +142,6 @@ class StreamDecks(
 
     /** Auto-DJ facts (MIX-9). */
     var autoHooks: AutoStreamHooks? = null
-    /** The not-yet-played auto queue from the live slot on, in play order (MIX-9 assigns; empty when not auto-mixing). */
-    var upcomingProvider: (() -> List<String>)? = null
 
     private val _buffering = MutableStateFlow<Set<Deck>>(emptySet())
     private val _streaming = MutableStateFlow<Set<Deck>>(emptySet())
@@ -161,8 +159,8 @@ class StreamDecks(
     /** The full mix's playhead is frozen waiting for bytes. */
     fun isHeld(deck: Deck): Boolean = s(deck)?.holding == true
     /** Song ids the decks play from live streams (the loader never evicts these). */
-    val streamingSongIds: Set<String> get() = Deck.entries.mapNotNull { s(it)?.handle?.songId }.toSet()
-    val autoUpcomingSongIds: List<String> get() = if (engine.autoMixing) upcomingProvider?.invoke().orEmpty() else emptyList()
+    val streamingSongIds: Set<String> get() = pinned
+    @Volatile private var pinned: Set<String> = emptySet()   // snapshot: the loader reads it from its IO thread
     /** Since when (engine clock) a PLAYING deck's hold has lasted; null when not held or not playing. */
     fun heldSinceMs(deck: Deck): Long? =
         s(deck)?.takeIf { it.holding && engine.deckState(deck).isPlaying }?.heldSinceMs
@@ -235,6 +233,8 @@ class StreamDecks(
         engine.onStemsReset = { d -> prevReset?.invoke(d); clearStream(d) }
         stems?.let { sc ->
             sc.main = this
+            val prevHold = sc.onHold
+            sc.onHold = { d -> prevHold?.invoke(d); publish() }
             val prevUnhold = sc.onUnhold
             sc.onUnhold = { d -> prevUnhold?.invoke(d); onStemsUnhold(d) }
         }
@@ -254,13 +254,15 @@ class StreamDecks(
         val d = s(deck) ?: return
         if (d.holding == on) return
         d.holding = on
-        d.heldSinceMs = if (on) engine.nowMs() else null
+        // The stall clock measures held-WHILE-PLAYING time only (iOS streamHeldSince).
+        d.heldSinceMs = if (on && engine.deckState(deck).isPlaying) engine.nowMs() else null
         publish()
     }
 
     private fun publish() {
         val b = Deck.entries.filter { isBuffering(it) }.toSet()
         val st = Deck.entries.filter { s(it) != null }.toSet()
+        pinned = Deck.entries.mapNotNull { s(it)?.handle?.songId }.toSet()
         if (b != _buffering.value) {
             _buffering.value = b
             // A hold freezes the playhead and a resume restarts it: the system card's rate follows AT ONCE.
@@ -286,7 +288,6 @@ class StreamDecks(
         engine.beginStreamLoad(deck)     // forgets the prior voice / stem intent (-> clearStream)
         val d = DeckStream(handle)
         d.windowMs = item.lengthMs
-        d.heldSinceMs = engine.nowMs()
         ds[deck.ordinal] = d
         truncated[deck.ordinal] = false
         publish()
@@ -325,7 +326,11 @@ class StreamDecks(
         val fullEnd = d.fullEnd
         val complete = h.isComplete
         val frontier = if (complete) fullEnd
-        else min(fullEnd, MixMath.streamPlayableFrames(h.bytesReceived, d.bps, sr.toDouble(), start))
+        else min(
+            min(fullEnd, MixMath.streamPlayableFrames(h.bytesReceived, d.bps, sr.toDouble(), start)),
+            // never past what the decoder can actually produce (ID3 / art bytes, VBR intros)
+            d.source?.let { start + max(0L, it.availableFrames) } ?: fullEnd,
+        )
 
         if (d.holding) {
             val pos = engine.position(deck)
@@ -407,6 +412,9 @@ class StreamDecks(
         val c = engine.controller(deck)
         if (stemsActive(deck)) {
             logError("deck ${deck.label} $songId failed - stems carry the deck")
+            // the main voice ENDS at its frontier (never underruns forever if the full mix returns)
+            if (c.isOpen) c.growTo(c.endFrame, final = true)
+            d.source?.let { sources.markComplete(it) }
             clearStream(deck)
             truncated[deck.ordinal] = true
             stems?.mainStreamDied(deck)
@@ -427,6 +435,7 @@ class StreamDecks(
         val dur = (end - c.startFrame).toDouble() / sr
         logError("deck ${deck.label} truncate $songId at ${dur.toInt()}s")
         c.growTo(end, final = true)     // the voice now ENDS at the frontier instead of underrunning
+        d.source?.let { sources.markComplete(it) }   // drain every byte that arrived
         engine.updateDeck(deck) { it.copy(durationSec = dur) }
         if (d.holding) {
             setHolding(deck, false)
@@ -491,7 +500,12 @@ class StreamDecks(
 
     /** A deck started playing: a held stream may already have the runway a PLAYING deck needs. */
     internal fun onTransport(deck: Deck, playing: Boolean) {
-        if (playing && s(deck)?.holding == true) pumpStream(deck)
+        val d = s(deck) ?: return
+        if (!playing) { d.heldSinceMs = null; return }
+        if (d.holding) {
+            if (d.heldSinceMs == null) d.heldSinceMs = engine.nowMs()   // the stall clock starts at the PLAY
+            pumpStream(deck)
+        }
     }
 
     /** The stems took the deck over: their audio is playable, so the full mix's hold clears. */
@@ -535,7 +549,9 @@ class MixStreamLoaderPort(private val loader: MixStreamLoader) : StreamLoaderPor
 class Mp3StreamSourceFactory : StreamSourceFactory {
     override fun open(h: StreamHandle): PcmSource? {
         val f = h.file ?: return null
-        val dec = runCatching { Mp3Decoder(MonotonicByteSource(FileByteSource(f)), complete = h.isComplete) }.getOrNull()
+        val dec = runCatching {
+            Mp3Decoder(MonotonicByteSource(FileByteSource(f)), complete = h.isComplete, expectedBytes = h.expectedBytes)
+        }.getOrNull()
             ?: return null
         // The header (and its full-length claim) must be readable now; a headerless partial retries later.
         if (dec.totalFrames <= 0) { runCatching { dec.close() }; return null }
