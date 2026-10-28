@@ -47,6 +47,10 @@ import com.levi.pocketdj.ui.selection.selectableRow
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.screens.browse.SongDetailSheet
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 /**
@@ -85,14 +89,28 @@ fun SourcePlaylistDetailScreen(
     val catalog = catalogState.catalog
 
     // Source ids are unique only within a source namespace — match BOTH (§8.4).
-    val source = catalog?.playlists?.firstOrNull {
+    val isRecentlyAdded = playlistId == com.levi.pocketdj.data.collections.RecentlyAdded.PLAYLIST_ID
+    val recentlyLimit by remember {
+        graph.settings.flow(com.levi.pocketdj.data.settings.ShellSettings.DEFAULT_RECENTLY_ADDED_COUNT)
+            .map { com.levi.pocketdj.data.settings.ShellSettings.clampRecentlyAdded(it) }
+    }.collectAsState(initial = com.levi.pocketdj.data.settings.ShellSettings.RECENTLY_ADDED_DEFAULT)
+    val activityState by graph.collectionActivity.state.collectAsState()
+    // The virtual "Recently added" playlist is derived off-main (memoized), never in the body.
+    val virtualSource by produceState<com.levi.pocketdj.data.catalog.SourcePlaylist?>(
+        initialValue = null, catalog, activityState.revision, recentlyLimit, isRecentlyAdded,
+    ) {
+        value = if (!isRecentlyAdded || catalog == null) null else withContext(Dispatchers.Default) {
+            graph.collectionsGraph.recentlyAdded.playlist(catalog, activityState.events, recentlyLimit)
+        }
+    }
+    val source = if (isRecentlyAdded) virtualSource else catalog?.playlists?.firstOrNull {
         it.playlist.id == playlistId && it.sourceName == sourceName
     }
 
     var detailSongId by remember { mutableStateOf<String?>(null) }
 
     Box(modifier = modifier.fillMaxSize()) {
-        if (source == null) {
+        if (source == null || catalog == null) {
             Text(
                 if (catalog == null) "Loading catalog…" else "Source playlist not found",
                 style = MaterialTheme.typography.bodyLarge,

@@ -103,4 +103,14 @@ class IndexModelsDecodeTest {
         assertNotNull(song.bpm)
         assertEquals(118.2, song.bpm!!, 0.0001)
     }
+
+    @Test
+    fun dateAddedOptional() {
+        val songs = PdjJson.lenient.decodeFromString<IndexJson>(
+            """{"albums":[],"songs":[{"id":"a","artist":"x","name":"n","dateAdded":1700000000000.5},{"id":"b","artist":"x","name":"n","dateAdded":null},{"id":"c","artist":"x","name":"n"}]}""",
+        ).songs
+        org.junit.Assert.assertEquals(1700000000000.5, songs[0].dateAdded!!, 0.0)
+        org.junit.Assert.assertNull(songs[1].dateAdded)
+        org.junit.Assert.assertNull(songs[2].dateAdded)
+    }
 }
