@@ -339,6 +339,13 @@ class AppGraph private constructor(context: Context) {
             runCatching { SecretMigration.run(settingsDataStore, secrets) }
                 .onFailure { android.util.Log.e("PocketDJ", "[secrets] migration failed", it) }
         }
+        // SVC-2: drop ledger items whose file vanished / were poisoned (after the onboarding gate).
+        appScope.launch(Dispatchers.IO) {
+            runCatching {
+                onboarding.waitUntilComplete()
+                servicesGraph.burnStore.reconcileOnLaunch()
+            }.onFailure { android.util.Log.e("PocketDJ", "[burns] reconcile failed", it) }
+        }
         // MainActivity forwards every intent to IntentSink; the modules' handlers answer.
         appScope.launch { IntentSink.install(features.deepLinkHandlers) }
     }
