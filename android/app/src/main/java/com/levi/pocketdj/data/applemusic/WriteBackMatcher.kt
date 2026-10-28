@@ -61,7 +61,18 @@ object WriteBackMatcher {
                 }
             }
         }
-        return t.filter { Character.isLetterOrDigit(it) }.toString()
+        // Code points, not UTF-16 chars (supplementary-plane letters), and L*/N*/M* like Swift's
+        // CharacterSet.alphanumerics (combining marks stay, e.g. Devanagari matras).
+        val out = StringBuilder()
+        t.codePoints().forEach { cp ->
+            if (Character.isLetterOrDigit(cp) || isMark(cp)) out.appendCodePoint(cp)
+        }
+        return out.toString()
+    }
+
+    private fun isMark(cp: Int): Boolean = when (Character.getType(cp).toByte()) {
+        Character.NON_SPACING_MARK, Character.COMBINING_SPACING_MARK, Character.ENCLOSING_MARK -> true
+        else -> false
     }
 
     private data class Scored(val id: String, val artist: String, val score: Int)

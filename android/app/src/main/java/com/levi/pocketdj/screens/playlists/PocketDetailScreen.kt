@@ -342,9 +342,8 @@ fun PocketDetailScreen(
                                 )
                                 // COL-8: manual escape hatch when a song the user KNOWS isn't in the real
                                 // Apple Music playlist reads as "already upstream" (stale snapshot).
-                                if (pocket.hasSource && com.levi.pocketdj.data.applemusic.PlaylistWriteBack.isAppleMusicSource(pocket.sourceName) &&
-                                    !PlayResolver.isStudioId(songId)
-                                ) {
+                                // Shown on every catalog row (like iOS) so an unlinked pocket explains NOT_LINKED.
+                                if (!PlayResolver.isStudioId(songId)) {
                                     DropdownMenuItem(
                                         text = { Text("Force Apple Music sync") },
                                         onClick = {

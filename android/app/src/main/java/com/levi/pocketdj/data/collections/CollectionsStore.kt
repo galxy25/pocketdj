@@ -93,6 +93,10 @@ class CollectionsStore(
         val writeBackQueued: Boolean = false,
         /** The song is already in Apple Music's own membership (the source snapshot) — nothing owed. */
         val alreadyUpstream: Boolean = false,
+        /** Eligible, but the queue already holds / delivered this song ("already on its way"). */
+        val writeBackDeduped: Boolean = false,
+        /** Apple Music source, but the song has neither a store id nor title+artist to match with. */
+        val writeBackNoIdentity: Boolean = false,
     )
 
     /** How many recent add-targets we retain (UI shows the top 3 that resolve). */
@@ -721,7 +725,10 @@ class CollectionsStore(
         // and re-adding would DUPLICATE the track.
         val upstream = songId in source.playlist.songIds
         var queued = false
-        if (eligible && !present && !upstream) {
+        var deduped = false
+        // iOS addToSource: eligible + not in the source snapshot enqueues even when the local copy
+        // already holds it (the queue dedups) - recovers adds made before write-back existed.
+        if (eligible && !upstream) {
             val enqueue = enqueueSourceWriteBack
             if (enqueue != null) {
                 queued = enqueue(
@@ -732,6 +739,7 @@ class CollectionsStore(
                         durationMs = song?.length?.toInt(),
                     ),
                 )
+                deduped = !queued && canWriteBackUpstream?.invoke() != false
             }
         }
         IndexPlaylistAdd(
@@ -742,6 +750,8 @@ class CollectionsStore(
             appleMusicId = amId.ifEmpty { null },
             writeBackQueued = queued,
             alreadyUpstream = eligible && upstream,
+            writeBackDeduped = deduped,
+            writeBackNoIdentity = PlaylistWriteBack.isAppleMusicSource(source.sourceName) && !eligible,
         )
     }
 
@@ -1396,6 +1406,21 @@ class CollectionsStore(
         )
     }
 
+    /** The eligible queue item for one collection add, or null (any verdict that would not queue). */
+    private fun writeBackItem(songId: String, kind: AddTarget.Kind, collectionId: String): PlaylistWriteBack.EnqueueItem? {
+        val t = when (kind) {
+            AddTarget.Kind.POCKET -> pocket(collectionId)?.let {
+                WbTarget(it.sourcePlaylistId, it.sourceName, it.sourceSongIds, it.name, it.amSyncDir.allowsPush)
+            }
+            AddTarget.Kind.PLAYLIST -> playlist(collectionId)?.let {
+                WbTarget(it.sourcePlaylistId, it.sourceName, it.sourceSongIds, it.name, it.amSyncDir.allowsPush)
+            }
+        } ?: return null
+        if (!t.allowsPush) return null
+        return (writeBackPayload(songId, t.plId, t.sourceName, t.snapshot.orEmpty().toSet(), t.name, false)
+            as? WriteBackResolution.Eligible)?.item
+    }
+
     /** Resolve a collection's provenance from its id + kind, then decide whether to write [songId] back. */
     private fun writeBackSong(
         songId: String,
@@ -1501,6 +1526,7 @@ class CollectionsStore(
         val sinceMs = nowMs - clamped * 86_400_000.0
         val seen = HashSet<String>()
         var queued = 0
+        val items = ArrayList<PlaylistWriteBack.EnqueueItem>()
         // Newest-first so a re-add after a remove is judged on the LATEST add's timestamp.
         for (e in events.asReversed()) {
             if (e.kind != ActivityKind.ADD || e.at < sinceMs) continue
@@ -1514,8 +1540,15 @@ class CollectionsStore(
                 AddTarget.Kind.PLAYLIST -> playlistContains(cid, e.itemId)
             }
             if (!stillMember) continue
-            if (writeBackSong(e.itemId, kind, cid) == WriteBackAttempt.QUEUED) queued++
+            val item = writeBackItem(e.itemId, kind, cid) ?: continue
+            items += item
         }
+        if (items.isEmpty()) return 0
+        // ONE queue write + one drain (not a synchronous full-file write per add).
+        val batch = enqueueSourceWriteBackBatch
+        if (batch != null) return batch(items)
+        val single = enqueueSourceWriteBack ?: return 0
+        for (it in items) if (single(it)) queued++
         return queued
     }
 

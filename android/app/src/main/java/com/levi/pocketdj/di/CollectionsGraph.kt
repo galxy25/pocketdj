@@ -142,6 +142,18 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         // COL-8: drain any write-back queued in a previous session (or backed off after a failure) -
         // the queue has no internal timer, so launch is what re-arms it.
         app.appScope.launch(Dispatchers.IO) { runCatching { writeBack.runSoon() } }
+        // ...and re-arm on every process foreground (iOS scenePhase .active) + after a Music-User-Token
+        // sign-in: a long-lived process would otherwise leave backed-off / signed-out jobs parked.
+        app.appScope.launch(Dispatchers.Main) {
+            runCatching {
+                androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
+                    com.levi.pocketdj.data.applemusic.WriteBackForegroundDrain { writeBack.runSoon() },
+                )
+            }
+        }
+        app.appScope.launch(Dispatchers.IO) {
+            runCatching { app.musicKitAuth.onSignedIn = { writeBack.runSoon() } }
+        }
         // Converted-collection source sync (COL-7, iOS onCatalogAssigned): every NEW catalog
         // snapshot (cache seed + refresh) reconciles source-linked pockets/playlists, gated by
         // the global Settings toggle (default ON). Same-instance re-emissions are skipped.

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Shuffle
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
+import kotlinx.coroutines.launch
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -73,6 +74,7 @@ fun PlaylistDetailScreen(
     val graph = remember { AppGraph.get(context) }
     val store = remember { graph.collections }
     val snackbar = remember { SnackbarHostState() }
+    val forceScope = androidx.compose.runtime.rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         graph.catalogRepository.loadIfNeeded()
@@ -294,6 +296,32 @@ fun PlaylistDetailScreen(
                                     enabled = index < children.lastIndex,
                                     onClick = { dismiss(); store.moveNodeDown(node.nodeId, playlistId) },
                                 )
+                                // COL-8: manual escape hatch for a stale source snapshot (iOS ForceSyncMenu).
+                                val forceSongId = node.songId
+                                if (node.kind == PlaylistNode.Kind.SONG && forceSongId != null &&
+                                    !com.levi.pocketdj.data.rips.PlayResolver.isStudioId(forceSongId)
+                                ) {
+                                    DropdownMenuItem(
+                                        text = { Text("Force Apple Music sync") },
+                                        onClick = {
+                                            dismiss()
+                                            val wb = graph.collectionsGraph.writeBack
+                                            val attempt = store.forceWriteBackSong(
+                                                forceSongId, com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, playlistId,
+                                            )
+                                            if (attempt == com.levi.pocketdj.data.collections.CollectionsStore.WriteBackAttempt.QUEUED ||
+                                                attempt == com.levi.pocketdj.data.collections.CollectionsStore.WriteBackAttempt.DEDUPED
+                                            ) wb.runSoon()
+                                            forceScope.launch {
+                                                snackbar.showSnackbar(
+                                                    com.levi.pocketdj.data.applemusic.ForceSyncMessages.line(
+                                                        attempt, wb.canWriteBack, wb.isUnsyncable(forceSongId),
+                                                    ),
+                                                )
+                                            }
+                                        },
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text("Remove") },
                                     onClick = { dismiss(); store.removeNode(node.nodeId, playlistId) },

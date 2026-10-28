@@ -418,6 +418,8 @@ private fun sourceAddMessage(
     }
     return when {
         outcome.alreadyUpstream -> "$head\n\nYour Apple Music library playlist already has it."
+        outcome.writeBackDeduped -> "$head\n\nIt\u2019s already on its way to \u201c$name\u201d in your Apple Music library."
+        outcome.writeBackNoIdentity -> "$head\n\nThis track can\u2019t be matched to Apple Music, so it stays in your local copy."
         outcome.writeBackQueued -> "$head\n\nIt\u2019s also being added to \u201c$name\u201d in your Apple Music library."
         else -> head
     }

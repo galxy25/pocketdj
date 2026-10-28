@@ -11,6 +11,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -127,7 +128,7 @@ class PlaylistWriteBack(
     val state: StateFlow<State>
     private var version = 0L
     private val running = AtomicBoolean(false)
-    private var unsyncableMemo: Pair<List<Job>, Set<String>>? = null
+    @Volatile private var unsyncableMemo: Pair<List<Job>, Set<String>>? = null
 
     /** Catalog seam for the playlist JOIN tie-break: indexPlaylistId -> store ids the INDEX thinks it holds. */
     @Volatile var appleMusicIdsForIndexPlaylist: ((String) -> List<String>)? = null
@@ -455,19 +456,19 @@ class PlaylistWriteBack(
     /** Empty the whole outbound queue and delete its backing document - a full wipe. */
     fun clear() = synchronized(lock) {
         val v = ++version
-        _state.value = _state.value.copy(jobs = emptyList(), resolvedPlaylistIds = emptyMap(), lastError = null, resolutionWarning = null)
+        _state.update { it.copy(jobs = emptyList(), resolvedPlaylistIds = emptyMap(), lastError = null, resolutionWarning = null) }
         writer.delete(v)
     }
 
     /** Re-decode after an external write (tests; the document is not cloud-synced). */
     fun reloadFromDisk() = synchronized(lock) {
         val doc = decode(file)
-        _state.value = _state.value.copy(jobs = doc.first, resolvedPlaylistIds = doc.second)
+        _state.update { it.copy(jobs = doc.first, resolvedPlaylistIds = doc.second) }
     }
 
     // ---- Internals -----------------------------------------------------------------
 
-    private fun publish(f: (State) -> State) { _state.value = f(_state.value) }
+    private fun publish(f: (State) -> State) { _state.update(f) }
 
     private fun update(jobId: String, body: (Job) -> Job) {
         synchronized(lock) {
@@ -483,7 +484,7 @@ class PlaylistWriteBack(
         resolved: Map<String, String> = _state.value.resolvedPlaylistIds,
         warning: String? = _state.value.resolutionWarning,
     ) {
-        _state.value = _state.value.copy(jobs = jobs, resolvedPlaylistIds = resolved, resolutionWarning = warning)
+        _state.update { it.copy(jobs = jobs, resolvedPlaylistIds = resolved, resolutionWarning = warning) }
         val v = ++version
         val doc = Document(jobs = jobs, resolvedPlaylistIds = resolved)
         writer.write(v) { PdjJson.lenient.encodeToString(Document.serializer(), doc) }

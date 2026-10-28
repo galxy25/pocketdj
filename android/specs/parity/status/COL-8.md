@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 COL-8 Apple Music write-back queue (Web API transport) + Apple Music settings.
 - [x] WriteBackMatcher (matchKey/bestMatch, conservative + deterministic) - WriteBackMatcherTest (12)
@@ -18,3 +18,18 @@ Notes / deviations
 
 ## Questions for Levi
 - None blocking. Should a signed-out Android user's adds queue at all (current: yes, iOS parity), or should enqueue wait for Apple Music sign-in?
+
+## Review
+
+fixes applied
+
+- MAJOR queue only re-armed at process start -> fixed: `WriteBackForegroundDrain` ProcessLifecycleOwner ON_START observer (CollectionsGraph) + `MusicKitAuth.onSignedIn` hook calls `runSoon()`; test WriteBackForegroundDrainTest.
+- MINOR unlocked `publish` RMW -> fixed: every `_state` mutation (publish, commit, clear, reloadFromDisk) uses CAS `update {}`.
+- MINOR source-row `!present` -> fixed: enqueue whenever eligible and not upstream; `writeBackDeduped` / `writeBackNoIdentity` surfaced in `sourceAddMessage`; tests in WriteBackSourceSyncTest.
+- MINOR Force sync only on AM-linked pocket rows -> fixed: shown on every catalog row of pockets and added to PlaylistDetailScreen song rows (NOT_LINKED now reachable).
+- MINOR backfill on main thread -> fixed: runs on Dispatchers.IO and uses the batch seam (one write, one runSoon); per-item fallback kept.
+- NIT unsyncableMemo -> fixed (@Volatile).
+- NIT matchKey code points / marks -> fixed (code points; letters, digits, M*); WriteBackMatchKeyUnicodeTest.
+- NIT status/housekeeping -> noted for orchestrator: WriteBackBackfillTest lives in data/collections; ARCHITECTURE-ANDROID.md ledger row left to orchestrator; shared-file edits (AppGraph, ShellNavigation, AddToCollectionSheet, CollectionsActivityChokePointsTest, now also PlaylistDetailScreen, PocketDetailScreen, MusicKitAuth) are merge-sequencing points.
+
+Build: testDebugUnitTest + assembleDebug green, 3463 tests, 0 failures.

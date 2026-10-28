@@ -181,6 +181,27 @@ class WriteBackSourceSyncTest {
         assertFalse(vinyl.writeBackEligible)
     }
 
+    @Test fun sourceRowAdd_localCopyHoldsItButUpstreamDoesNot_stillQueues_thenDedups() {
+        setup(song("s1"), song("s2"))
+        // Pre-COL-8 state: the duplicate already holds s2 (no job was ever queued).
+        store.convertSourceToPocket(src("s1")) // unrelated; ensure store alive
+        val pre = store.addSongToIndexPlaylist("s2", src("s1", sourceName = "My Vinyl")) // creates dup path w/o queue
+        assertFalse(pre.writeBackQueued)
+        assertEquals(0, wb.jobs.size)
+        val again = store.addSongToIndexPlaylist("s2", src("s1"))
+        assertTrue(again.alreadyPresent || again.createdDuplicate)
+        assertTrue(again.writeBackQueued)
+        val dup = store.addSongToIndexPlaylist("s2", src("s1"))
+        assertTrue(dup.alreadyPresent); assertFalse(dup.writeBackQueued); assertTrue(dup.writeBackDeduped)
+        assertEquals(1, wb.jobs.size)
+    }
+
+    @Test fun sourceRowAdd_noIdentityIsFlagged() {
+        setup(song("s1"), song("s2", am = null, name = "", artist = ""))
+        val r = store.addSongToIndexPlaylist("s2", src("s1"))
+        assertFalse(r.writeBackEligible); assertTrue(r.writeBackNoIdentity)
+    }
+
     // ---- batch + confirm ----
     private fun bigCatalog(n: Int) = (1..n).map { song("b$it") }.toTypedArray()
 

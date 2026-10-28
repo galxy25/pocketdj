@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.settings
 
+import kotlinx.coroutines.withContext
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -63,13 +64,17 @@ fun appleMusicWriteBackSection() = SettingsSection("appleMusicWriteBack", 405) {
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedButton(
             onClick = {
-                val n = graph.collections.backfillSourceWriteBacks(
-                    events = graph.collectionActivity.state.value.events,
-                    days = clamped,
-                    localInstallId = graph.collectionActivity.installId,
-                )
-                if (n > 0) writeBack.runSoon()
-                status = listOf(WriteBackStatus.sendLine(writeBack.canWriteBack, n))
+                host.scope.launch {
+                    // Off-main: the store walk + queue writes must not run on the UI thread.
+                    val n = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        graph.collections.backfillSourceWriteBacks(
+                            events = graph.collectionActivity.state.value.events,
+                            days = clamped,
+                            localInstallId = graph.collectionActivity.installId,
+                        ).also { if (it > 0) writeBack.runSoon() }
+                    }
+                    status = listOf(WriteBackStatus.sendLine(writeBack.canWriteBack, n))
+                }
             },
             modifier = Modifier.testTag("writeback-send"),
         ) { Text("Send my adds") }
