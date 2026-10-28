@@ -31,6 +31,8 @@ private fun SessionsStub(onBack: () -> Unit) {
     val ctx = androidx.compose.ui.platform.LocalContext.current
     val store = androidx.compose.runtime.remember { AppGraph.get(ctx).mixGraph.mixSessions }
     val sessions by store.sessions.collectAsState()
+    val player = androidx.compose.runtime.remember { AppGraph.get(ctx).mixGraph.recordingPlayer }
+    val playingFile by player.playing.collectAsState()
     Column(Modifier.fillMaxSize().testTag("mix-sessions-screen")) {
         Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
@@ -38,7 +40,16 @@ private fun SessionsStub(onBack: () -> Unit) {
         }
         LazyColumn(Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
             items(sessions.sortedByDescending { it.startedAt }, key = { it.id }) { s ->
-                Text(s.name, Modifier.padding(vertical = 10.dp))
+                Column(Modifier.padding(vertical = 10.dp)) {
+                    Text(s.name)
+                    s.recordingsList.forEach { r ->
+                        val file = java.io.File(java.io.File(com.levi.pocketdj.mix.recording.SessionFolders.root(ctx.filesDir), s.id), r.fileName)
+                        androidx.compose.material3.TextButton(
+                            onClick = { player.toggle(file) },
+                            modifier = Modifier.testTag("mix-recording-row"),
+                        ) { Text((if (playingFile == file.path) "Stop " else "Play ") + "recording " + recordingClock(r.durationMs.toLong())) }
+                    }
+                }
             }
         }
     }

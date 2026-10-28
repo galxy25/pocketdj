@@ -190,6 +190,68 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         }) { Text("Seed 500 songs") }
         Text(seedStatus, style = MaterialTheme.typography.bodySmall)
     }
+    // STU emulator seed: a 2 s 440 Hz mono WAV filed as a Studio sample ("SeedTone").
+    var sampleSeedStatus by remember { mutableStateOf("Sample seed: idle") }
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            sampleSeedStatus = withContext(Dispatchers.IO) {
+                runCatching {
+                    val rate = 44100; val n = rate * 2
+                    val bb = java.nio.ByteBuffer.allocate(44 + n * 2).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    bb.put("RIFF".toByteArray()).putInt(36 + n * 2).put("WAVEfmt ".toByteArray()).putInt(16)
+                        .putShort(1).putShort(1).putInt(rate).putInt(rate * 2).putShort(2).putShort(16)
+                        .put("data".toByteArray()).putInt(n * 2)
+                    for (i in 0 until n) bb.putShort((Math.sin(2 * Math.PI * 440 * i / rate) * 12000).toInt().toShort())
+                    val f = java.io.File(host.graph.appContext.cacheDir, "SeedTone.wav").also { it.writeBytes(bb.array()) }
+                    val smp = host.graph.studioGraph.sampleFactory.importFile(f, "SeedTone.wav")
+                    "Sample seed: ${smp.name} ${smp.durationMs}ms"
+                }.getOrElse { "Sample seed failed: $it" }
+            }
+        }
+    }) { Text("Seed sample (tone)") }
+    Text(sampleSeedStatus, style = MaterialTheme.typography.bodySmall)
+
+    // STU-11 emulator seed: a Bounce artifact (copy of the seed tone) on the newest arrangement.
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            sampleSeedStatus = withContext(Dispatchers.IO) {
+                runCatching {
+                    val g = host.graph.studioGraph
+                    val arr = g.studioStore.arrangementsOrdered().firstOrNull() ?: error("no arrangement")
+                    val src = java.io.File(host.graph.appContext.cacheDir, "SeedTone.wav")
+                    check(src.isFile) { "seed the tone sample first" }
+                    val fn = "bounce-seed-${System.currentTimeMillis()}.wav"
+                    src.copyTo(java.io.File(g.studioRoots.arrangementsDir(), fn))
+                    g.studioStore.addArrangementArtifact(
+                        com.levi.pocketdj.studio.model.StudioArrangementArtifact(
+                            id = com.levi.pocketdj.studio.model.StudioFactory.newArtifactId(), arrangementId = arr.id,
+                            kind = com.levi.pocketdj.studio.model.StudioArrangementArtifact.Kind.BOUNCE,
+                            name = "Seed bounce", fileName = fn, durationMs = 2000, createdAt = System.currentTimeMillis().toDouble(),
+                        ),
+                    )
+                    "Sample seed: bounce on ${arr.name}"
+                }.getOrElse { "Bounce seed failed: $it" }
+            }
+        }
+    }) { Text("Seed bounce artifact") }
+
+    // COL-8 emulator step: 60-song batch into the converted AM pocket "SeedDup" -> confirm dialog (>50).
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            val store = host.graph.collections
+            val pocket = store.pockets.firstOrNull { it.name == "SeedDup" }
+            val ids = withContext(Dispatchers.IO) {
+                val snap = pocket?.sourceSongIds.orEmpty().toSet()
+                host.graph.catalogRepository.catalogFlow.first()?.songs
+                    ?.filter { !it.appleMusicId.isNullOrBlank() && it.id !in snap && !it.id.startsWith("pdj_") }
+                    ?.take(60)?.map { it.id } ?: emptyList()
+            }
+            if (pocket != null) {
+                store.addSongs(ids, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.POCKET, pocket.id))
+                seedStatus = "Seed: batch ${ids.size} -> SeedDup"
+            } else seedStatus = "Seed: no SeedDup pocket"
+        }
+    }) { Text("Seed 60 AM batch") }
 
     // Wave-4 verify seeds (debug only): a short-rip queue with a metadata-only row between playables.
     var ripStatus by remember { mutableStateOf("Rip seed: idle") }

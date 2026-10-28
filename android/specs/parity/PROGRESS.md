@@ -203,3 +203,21 @@ Emulator (emulator-5554), screenshots in pocketdj-parity/_shots/wave12:
 No FATAL EXCEPTION / ANR from com.levi.pocketdj in logcat.
 
 Open: Q50-Q53.
+
+## Wave 13
+
+Merged: MIX-12, SVC-9, COL-8, BRW-7, STU-11, STU-8. Conflicts: di/ServicesGraph.kt resetHooks (SVC-9 profileSecrets + BRW-7 timelineCues, kept both) and screens/producer/ProducerScreen.kt (STU-11 Tracks + STU-8 Instruments branches, kept both). JVM: 3681 tests, 0 failures (wave-12 3381 moved by the six packages' new tests). assembleDebug green.
+
+Emulator (emulator-5554), screenshots in pocketdj-parity/_shots/wave13:
+- BRW-7 PASS: History > Collection opens on Activity; Songs shows the date-added timeline with month header and "13 of 94509 songs heard"; Since Oct 1 narrows to 332 songs; Collections tab "Recently added - 50 songs, newest first" with Settings count 50.
+- COL-8 PASS (offline half): 155 queued jobs persisted in pocketdj-playlist-writeback.json and survived force-stop; Settings > Apple Music shows "Waiting to send", "Send my adds" reports the queue; new Debug "Seed 60 AM batch" into the converted pocket shows the "Add to Apple Music? ... 60 songs" confirm dialog and Add 60 songs takes the queue 155 -> 215. Real delivery device-only.
+- STU-11 PASS (new Debug "Seed sample (tone)" / "Seed bounce artifact"): New arrangement > Add a track > Add clip from sample SeedTone renders at 0:00 (x=484), Zoom in widens it, Zoom out floors at fit, ruler tap moves the cursor to 0:01, bounce row audition toggles Play -> Pause.
+- STU-8 PASS: Packs lists the live S3 index, Download of the 32 MB bank -> Installed; Piano enabled; Record with count-in, 4 key taps -> "Saved Take 1" in Takes; Replay toggles to Stop. No crash. Audibility/latency device-only.
+- MIX-12 PASS after wiring (package had no UI): Mix screen Record/Stop row; AutoDJ over burned songs recorded a take, filed in Mix sessions as "Play recording 0:26" and plays; force-stop mid-take and relaunch recovered the 0:10 orphan (recording-2.aac) into the session.
+- SVC-9 NOT RUNNABLE: needs the profile-sync endpoint (Q42/Q54) and two instances; Settings shows "Device sync isn't configured for this build". Covered by 47 JVM tests (LinkCode, Enrollment, S3CloudDocDatabase, LinkDeviceProbe).
+
+Integrator additions: MixRecordingUi.kt + MixScreen/MixSessionsScreen wiring (MIX-12); Debug seeds "Seed sample (tone)", "Seed bounce artifact", "Seed 60 AM batch".
+
+No FATAL EXCEPTION / ANR from com.levi.pocketdj in logcat.
+
+Open: Q54-Q58.

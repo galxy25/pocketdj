@@ -145,6 +145,7 @@ fun MixScreen(
                         onAllSessions = onOpenSessions,
                     )
                 }
+                MixRecordingControls(mix.mixRecorder)
                 recordingIndicator()
                 if (st.autoEnabled && !auto.mixing) {
                     AutoSetupBar(
