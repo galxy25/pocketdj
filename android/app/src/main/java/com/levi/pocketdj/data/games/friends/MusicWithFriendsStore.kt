@@ -8,10 +8,13 @@ import com.levi.pocketdj.data.jukebox.JukeboxExternalMatch
 import com.levi.pocketdj.data.jukebox.JukeboxMatcher
 import com.levi.pocketdj.playback.RunItem
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 
@@ -35,6 +38,8 @@ interface MwFHost {
     fun createPocket(name: String, songIds: List<String>, description: String?): String
     fun pocketExists(pocketId: String): Boolean
     fun addSongToPocket(songId: String, pocketId: String)
+    /** Song ids already in the pocket (so a re-download reports only what it really added). */
+    fun pocketSongIds(pocketId: String): List<String>
 }
 
 /** Result of [MusicWithFriendsStore.downloadCollection]. */
@@ -100,6 +105,11 @@ class MusicWithFriendsStore(
         _queueAccepted.value = kv.getString(QUEUE_ACCEPTED_KEY) == "true"
     }
 
+    private fun rememberDisplayName(name: String) {
+        val n = name.trim()
+        if (n.isNotEmpty()) kv.putString(DISPLAY_NAME_KEY, n)
+    }
+
     private fun persistSessions() = sessionFile.save(_sessions.value)
 
     private fun persistScored() {
@@ -125,6 +135,7 @@ class MusicWithFriendsStore(
         sessionFile.delete()
         kv.putString(SCORED_KEY, null)
         kv.putString(QUEUE_ACCEPTED_KEY, null)
+        kv.putString(DISPLAY_NAME_KEY, null)
     }
 
     // ---- Create / join / open ----
@@ -145,6 +156,7 @@ class MusicWithFriendsStore(
             )
             _sessions.update { listOf(entry) + it.filterNot { e -> e.id == sid } }
             persistSessions()
+            rememberDisplayName(displayName)
             _pendingOpenId.value = sid
             return null
         } catch (e: MwFException) {
@@ -218,6 +230,7 @@ class MusicWithFriendsStore(
                 )
                 _sessions.update { listOf(entry) + it }
                 persistSessions()
+                rememberDisplayName(name)
                 _pendingJoin.value = null
                 _pendingOpenId.value = link.sessionId
                 return null
@@ -311,7 +324,9 @@ class MusicWithFriendsStore(
         val e = entry(id) ?: return false
         if (!recovering.add(id)) return false
         try {
-            val display = host.profileName().trim().ifEmpty { "Player" }
+            val display = kv.getString(DISPLAY_NAME_KEY)?.trim()?.takeIf { it.isNotEmpty() }
+                ?: _lastState.value[id]?.members?.firstOrNull { it.memberId == e.memberId }?.name?.trim()?.takeIf { it.isNotEmpty() }
+                ?: host.profileName().trim().ifEmpty { "Player" }
             for (presented in listOf<String?>(e.memberKey, null)) {
                 val r = runCatching {
                     client.join(e.apiBase, id, display, clientId(), joinSecret.current(), presented)
@@ -357,7 +372,15 @@ class MusicWithFriendsStore(
         val title = suggestion.title.orEmpty()
         val artist = suggestion.artist.orEmpty()
         var match = MwFMatch(title = title, artist = artist)
-        val hit = JukeboxMatcher.match(title, artist, host.songs()) ?: host.external.match(title, artist)
+        val hit = withContext(Dispatchers.Default) {
+            JukeboxMatcher.match(title, artist, host.songs()) ?: try {
+                host.external.match(title, artist)
+            } catch (c: CancellationException) {
+                throw c
+            } catch (_: Exception) {
+                null
+            }
+        }
         if (hit != null) {
             match = MwFMatch(songId = hit.id, appleMusicId = hit.appleMusicId, title = hit.name, artist = hit.artist, lengthMs = hit.length)
         }
@@ -481,9 +504,12 @@ class MusicWithFriendsStore(
         val distinct = memberIds.distinct()
         val existing = entry(id)?.pocketId?.takeIf { host.pocketExists(it) }
         if (existing != null) {
-            distinct.forEach { host.addSongToPocket(it, existing) }
-            return MwFDownloadResult(existing, distinct.size, unresolved)
+            val already = host.pocketSongIds(existing).toSet()
+            val fresh = distinct.filterNot { it in already }
+            fresh.forEach { host.addSongToPocket(it, existing) }
+            return MwFDownloadResult(existing, fresh.size, unresolved)
         }
+        if (distinct.isEmpty()) return null
         val pocketId = host.createPocket("MwF — ${state.name ?: "Session"}", distinct, state.theme)
         _sessions.update { list -> list.map { if (it.id == id) it.copy(pocketId = pocketId) else it } }
         persistSessions()
@@ -493,5 +519,6 @@ class MusicWithFriendsStore(
     companion object {
         const val SCORED_KEY = "mwfScoredSessionIds"
         const val QUEUE_ACCEPTED_KEY = "mwfQueueAccepted"
+        const val DISPLAY_NAME_KEY = "mwfDisplayName"
     }
 }

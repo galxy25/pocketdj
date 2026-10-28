@@ -261,6 +261,7 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
         override fun songIdForAppleMusicId(appleMusicId: String): String? =
             catalog?.songs?.firstOrNull { it.appleMusicId == appleMusicId }?.id
         override fun profileName(): String = ""
+        override fun pocketSongIds(pocketId: String): List<String> = app.collections.songIdsForPocket(pocketId)
         override val queue: MwFQueueSink = object : MwFQueueSink {
             private val seq get() = app.playbackGraph.sequencer
             override val runningSourceTag: String? get() = seq.state.value.sourceSetlistId
@@ -296,6 +297,7 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
     init {
         // Warm the store off the main thread so the first Games-tab composition never does disk IO.
         app.appScope.launch(Dispatchers.IO) { runCatching { scoreboard } }
+        app.appScope.launch(Dispatchers.IO) { runCatching { friends } }
         // A round that was playing when the process went away keeps being tracked.
         app.appScope.launch(Dispatchers.IO) { runCatching { inThePocket.resumeTrackingIfNeeded() } }
     }

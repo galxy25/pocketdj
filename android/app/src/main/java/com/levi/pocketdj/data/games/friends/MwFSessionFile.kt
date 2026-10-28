@@ -8,11 +8,13 @@ import kotlinx.serialization.builtins.ListSerializer
 class MwFSessionFile(private val file: File) {
     private val serializer = ListSerializer(MwFSessionEntry.serializer())
 
+    @Synchronized
     fun load(): List<MwFSessionEntry> {
         val text = runCatching { file.readText(Charsets.UTF_8) }.getOrNull() ?: return emptyList()
         return runCatching { PdjJson.lenient.decodeFromString(serializer, text) }.getOrDefault(emptyList())
     }
 
+    @Synchronized
     fun save(list: List<MwFSessionEntry>) {
         val bytes = runCatching { PdjJson.lenient.encodeToString(serializer, list).toByteArray(Charsets.UTF_8) }
             .getOrNull() ?: return
@@ -27,6 +29,7 @@ class MwFSessionFile(private val file: File) {
         }
     }
 
+    @Synchronized
     fun delete() {
         runCatching { file.delete() }
     }

@@ -43,6 +43,25 @@ class MwFClientTest {
         assertEquals("abcd2345", r.sessionId)
     }
 
+    @Test fun callTimeoutsPerRoute() = runBlocking {
+        val seen = HashMap<String, Long>()
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            seen[chain.request().method + " " + chain.request().url.encodedPath.replace(Regex("/mwf/[^/]+"), "/mwf/ID")] =
+                chain.call().timeout().timeoutNanos() / 1_000_000_000L
+            chain.proceed(chain.request())
+        }.build()
+        val c = MwFClient(http) { MwFClient.Config(server.url("/").toString(), "SRV", "i") }
+        repeat(6) { ok("""{"sessionId":"abcd2345","memberId":"m","memberKey":"k"}""") }
+        c.create("N", "T", "L", "cid", "s", MwFSettings())
+        c.state(leader)
+        c.end(leader)
+        c.unregisterDevice(leader)
+        assertEquals(30L, seen["POST /mwf"])
+        assertEquals(12L, seen["GET /mwf/ID/state"])
+        assertEquals(30L, seen["POST /mwf/ID/end"])
+        assertEquals(6L, seen["DELETE /mwf/ID/register-device"])
+    }
+
     @Test fun emptyTokenOmitsAuthorization() = runBlocking {
         val c = MwFClient(OkHttpClient()) { MwFClient.Config(server.url("/").toString(), "", "i") }
         ok("""{"ok":true,"version":3,"mwf":true}""")

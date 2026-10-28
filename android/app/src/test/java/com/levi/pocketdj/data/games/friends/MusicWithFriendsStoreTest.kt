@@ -45,7 +45,7 @@ class MusicWithFriendsStoreTest {
     private class FakeHost(val q: FakeQueue = FakeQueue()) : MwFHost {
         var catalog = listOf(IndexSong(id = "sng_1", artist = "Daft Punk", name = "Around the World", appleMusicId = "111", length = 200000))
         val pockets = HashMap<String, MutableList<String>>()
-        override fun songs() = catalog
+        override fun songs(): List<IndexSong> { songsThread = Thread.currentThread().name; return catalog }
         override fun songExists(songId: String) = catalog.any { it.id == songId }
         override fun songIdForAppleMusicId(appleMusicId: String) = catalog.firstOrNull { it.appleMusicId == appleMusicId }?.id
         override fun profileName() = "Pat"
@@ -56,6 +56,10 @@ class MusicWithFriendsStoreTest {
         val names = HashMap<String, String>()
         override fun pocketExists(pocketId: String) = pockets.containsKey(pocketId)
         override fun addSongToPocket(songId: String, pocketId: String) { pockets[pocketId]?.let { if (songId !in it) it += songId } }
+        override fun pocketSongIds(pocketId: String): List<String> = pockets[pocketId].orEmpty()
+        var externalMatch: com.levi.pocketdj.data.jukebox.JukeboxExternalMatch = com.levi.pocketdj.data.jukebox.JukeboxExternalMatch.None
+        override val external: com.levi.pocketdj.data.jukebox.JukeboxExternalMatch get() = externalMatch
+        var songsThread: String? = null
     }
 
     @Before fun setUp() {
@@ -347,6 +351,49 @@ class MusicWithFriendsStoreTest {
         assertEquals(1, host.pockets.size)
         assertEquals(listOf("sng_1", "sng_2"), host.pockets[first.pocketId])
         assertNull(store.downloadCollection(sid, MwFState(sessionId = sid)))
+    }
+
+    @Test fun approveMatchesOffCallerThreadAndSurvivesExternalMatcherThrowing() = runBlocking(kotlinx.coroutines.CoroutineName("caller")) {
+        makeLeader()
+        host.externalMatch = com.levi.pocketdj.data.jukebox.JukeboxExternalMatch { _, _ -> throw java.io.IOException("boom") }
+        reply("POST /mwf/$sid/suggestions/s1/decision")
+        reply("GET /mwf/$sid/state")
+        val caller = Thread.currentThread().name
+        store.approve(sid, MwFSuggestion(id = "s1", title = "Nope", artist = "Nobody"))
+        assertTrue(log.any { it.startsWith("POST /mwf/$sid/suggestions/s1/decision") })
+        assertNotNull(host.songsThread)
+        assertTrue("matcher ran on caller thread $caller", host.songsThread != caller)
+    }
+
+    @Test fun recoveryReusesRememberedDisplayName() = runBlocking {
+        reply("POST /mwf", body = createBody)
+        assertNull(store.create("Party", "disco", "Sam", MwFSettings()))
+        assertEquals("Sam", kv.getString(MusicWithFriendsStore.DISPLAY_NAME_KEY))
+        reply("GET /mwf/$sid/state", code = 401)
+        var joinBody = ""
+        val inner = server.dispatcher
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse {
+                if (request.method == "POST" && request.path!!.endsWith("/join")) joinBody = request.body.readUtf8()
+                return inner.dispatch(request)
+            }
+        }
+        reply("POST /mwf/$sid/join", body = """{"memberId":"m9","memberKey":"MK9"}""")
+        store.refresh(sid)
+        assertTrue(joinBody, joinBody.contains("Sam"))
+        assertFalse(joinBody, joinBody.contains("Player"))
+    }
+
+    @Test fun redownloadReportsOnlyNewSongsAndEmptyCollectionMakesNoPocket() = runBlocking {
+        makeLeader()
+        fun state(vararg ids: String) = MwFState(sessionId = sid, name = "Party", theme = "disco",
+            collection = ids.map { MwFCollectionEntry(songId = null, appleMusicId = it, title = it) })
+        assertNull(store.downloadCollection(sid, state("zzz")))
+        assertTrue(host.pockets.isEmpty())
+        val first = store.downloadCollection(sid, state("111"))!!
+        assertEquals(1, first.added)
+        val again = store.downloadCollection(sid, state("111"))!!
+        assertEquals(0, again.added)
     }
 
     @Test fun eraseAllClearsEverything() = runBlocking {

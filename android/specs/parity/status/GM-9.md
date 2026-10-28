@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # GM-9 Music with Friends link, models, client, join secret, session file, store
 
@@ -22,3 +22,13 @@ state: implemented
 
 ## Questions for Levi
 - none
+
+## Review
+fixes applied
+- MINOR approve() main-thread match + unguarded external matcher -> fixed (withContext(Dispatchers.Default); external.match try/catch, CancellationException rethrown). Test: approveMatchesOffCallerThreadAndSurvivesExternalMatcherThrowing.
+- MINOR disk IO on caller thread / unsynchronized session file -> fixed (`friends` warmed on IO in GamesGraph.init; MwFSessionFile load/save/delete @Synchronized).
+- MINOR recovery always "Player" -> fixed (mwfDisplayName persisted at create/join, cleared on eraseAll; recovery uses it, then lastState member name, then profileName, then "Player"). Test: recoveryReusesRememberedDisplayName.
+- MINOR ledger row -> fixed (docs/ARCHITECTURE-ANDROID.md GM-9 row set DONE with deviations).
+- NIT re-download count / empty pocket -> fixed (MwFHost.pocketSongIds; added counts only new songs; no pocket when nothing resolves). Test: redownloadReportsOnlyNewSongsAndEmptyCollectionMakesNoPocket.
+- NIT per-route timeouts -> fixed (callTimeoutsPerRoute asserts 30/12/30/6 s via interceptor).
+- Tests: 3167 -> 3171, 0 failures; assembleDebug OK.
