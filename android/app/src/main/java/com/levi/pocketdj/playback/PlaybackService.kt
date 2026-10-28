@@ -277,6 +277,38 @@ class PlaybackService : MediaSessionService() {
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
         }
 
+        /**
+         * Voice search through a MediaController (Assistant / Android Auto): the item carries only
+         * `requestMetadata.searchQuery`. The query is handed to the shell (which resolves it to a
+         * playlist/pocket and starts the sequencer); the controller's own set is answered with the
+         * player's CURRENT queue so nothing is cleared underneath the sequencer. Device-only path.
+         */
+        override fun onSetMediaItems(
+            mediaSession: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            mediaItems: MutableList<MediaItem>,
+            startIndex: Int,
+            startPositionMs: Long,
+        ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            val query = mediaItems.singleOrNull()
+                ?.takeIf { it.mediaId.isEmpty() || it.localConfiguration == null }
+                ?.requestMetadata?.searchQuery
+            val handler = com.levi.pocketdj.assistant.SearchPlayBridge.handler
+            if (!query.isNullOrBlank() && handler != null) {
+                handler(query)
+                val p = mediaSession.player
+                val current = List(p.mediaItemCount) { p.getMediaItemAt(it) }.toMutableList()
+                return Futures.immediateFuture(
+                    MediaSession.MediaItemsWithStartPosition(
+                        current,
+                        if (current.isEmpty()) androidx.media3.common.C.INDEX_UNSET else p.currentMediaItemIndex,
+                        if (current.isEmpty()) androidx.media3.common.C.TIME_UNSET else p.currentPosition,
+                    ),
+                )
+            }
+            return super.onSetMediaItems(mediaSession, controller, mediaItems, startIndex, startPositionMs)
+        }
+
         override fun onAddMediaItems(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,

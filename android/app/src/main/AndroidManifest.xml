@@ -95,7 +95,12 @@
                 <data android:pathPattern=".*\\.pocketdj\\.zip" />
                 <data android:pathPattern=".*\\..*\\.pocketdj\\.zip" />
             </intent-filter>
-            <!-- Static shortcuts (filled by SURF-9); empty today. -->
+            <!-- SURF-5: Assistant / adb voice search ("play my warmup pocket on PocketDJ"). -->
+            <intent-filter>
+                <action android:name="android.media.action.MEDIA_PLAY_FROM_SEARCH" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <!-- SURF-5: static launcher shortcuts (res/xml/shortcuts.xml); dynamic ones come from ShortcutsPublisher. -->
             <meta-data
                 android:name="android.app.shortcuts"
                 android:resource="@xml/shortcuts" />
