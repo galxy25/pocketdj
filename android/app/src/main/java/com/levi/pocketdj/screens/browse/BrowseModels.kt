@@ -178,6 +178,7 @@ class BrowseRows(catalog: MergedCatalog) {
             source = catalog.sourceOfSong[song.id],
             genreCategory = Genre.category(album?.genre),
             searchKey = Fmt.fold("${song.name}\n${song.artist}\n${album?.name.orEmpty()}"),
+            dateAdded = song.dateAdded,
         )
     }
 

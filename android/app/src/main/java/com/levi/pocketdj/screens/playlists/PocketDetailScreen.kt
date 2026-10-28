@@ -32,6 +32,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -97,6 +100,11 @@ fun PocketDetailScreen(
     var syncMessage by remember { mutableStateOf<String?>(null) }
     var syncIsLink by remember { mutableStateOf(false) }
     var editNote by remember { mutableStateOf<PocketNote?>(null) }
+    // COL-13: per-pocket sort/filter (key pdj.collection.<id>); the stored order is never mutated.
+    val sortState = rememberCollectionSortState(pocketId)
+    val playCountOf = rememberPlayCountOf()
+    var showSort by remember { mutableStateOf(false) }
+    var showFilter by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
         if (pocket == null) {
@@ -110,6 +118,15 @@ fun PocketDetailScreen(
         }
 
         val stats = store.statsForPocket(pocketId)
+        val sortInputs = sortState.inputs
+        val defaultOrder = sortInputs.isDefaultOrder
+        val resolved by produceState<List<String>?>(
+            initialValue = null, pocket.songIds, sortInputs, catalog, state.revision,
+        ) {
+            value = if (defaultOrder || catalog == null) null else withContext(Dispatchers.Default) {
+                CollectionSortFilter.resolvePocketSongs(pocket.songIds, catalog, sortInputs, playCountOf)
+            }
+        }
 
         fun playNow(shuffle: Boolean) {
             val set = store.playNowPocket(pocketId, shuffle = shuffle) ?: return
@@ -159,6 +176,11 @@ fun PocketDetailScreen(
                         Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
                     OverflowMenu { dismiss ->
+                        CollectionSortFilterMenuItems(
+                            sortState, dismiss,
+                            onSort = { showSort = true },
+                            onFilter = { showFilter = true },
+                        )
                         DropdownMenuItem(
                             text = { Text("Add note") },
                             onClick = { dismiss(); addNoteOpen = true },
@@ -319,11 +341,20 @@ fun PocketDetailScreen(
             // 4. Songs (n) (§6.1.4) — Studio ids degrade to "(missing song)".
             if (pocket.songIds.isNotEmpty()) {
                 item(key = "hdr-songs") { SectionHeader("Songs (${pocket.songIds.size})") }
-                pocket.songIds.forEachIndexed { index, songId ->
+                // Default order: stored ids (reorderable). Sorted/filtered: the off-main resolved order.
+                val shownSongIds: List<String> = if (defaultOrder) pocket.songIds else resolved.orEmpty()
+                if (!defaultOrder && resolved == null) {
+                    item(key = "songs-resolving") { SectionCaption("Sorting…") }
+                } else if (!defaultOrder && shownSongIds.isEmpty()) {
+                    item(key = "songs-no-match") { SectionCaption("No songs match the filter.") }
+                }
+                shownSongIds.forEachIndexed { index, songId ->
                     item(key = "song-$songId") {
                         val song = catalog?.songsById?.get(songId)
                         val menu: @Composable androidx.compose.foundation.layout.ColumnScope.(() -> Unit) -> Unit =
                             { dismiss ->
+                                // Reorder / remove only make sense on the stored order.
+                                if (defaultOrder) {
                                 DropdownMenuItem(
                                     text = { Text("Move up") },
                                     enabled = index > 0,
@@ -340,6 +371,7 @@ fun PocketDetailScreen(
                                         store.movePocketSongs(pocketId, index, index + 1)
                                     },
                                 )
+                                }
                                 // COL-8: manual escape hatch when a song the user KNOWS isn't in the real
                                 // Apple Music playlist reads as "already upstream" (stale snapshot).
                                 // Shown on every catalog row (like iOS) so an unlinked pocket explains NOT_LINKED.
@@ -361,10 +393,12 @@ fun PocketDetailScreen(
                                         },
                                     )
                                 }
+                                if (defaultOrder) {
                                 DropdownMenuItem(
                                     text = { Text("Remove") },
                                     onClick = { dismiss(); store.removeSongFromPocket(songId, pocketId) },
                                 )
+                                }
                             }
                         val studio = rememberStudioInfo(songId)
                         if (studio != null) {
@@ -457,6 +491,16 @@ fun PocketDetailScreen(
     }
 
     // ---- dialogs -----------------------------------------------------------
+
+    CollectionSortFilterSheets(
+        state = sortState,
+        catalog = catalog,
+        songIds = pocket?.songIds.orEmpty(),
+        showSort = showSort,
+        showFilter = showFilter,
+        onDismissSort = { showSort = false },
+        onDismissFilter = { showFilter = false },
+    )
 
     detailSongId?.let { songId ->
         SongDetailSheet(

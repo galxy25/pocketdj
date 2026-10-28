@@ -44,6 +44,9 @@ import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.screens.collections.RemoveDuplicatesResultAlert
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.PlaylistNode
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import com.levi.pocketdj.data.rips.PlayResolver
 import com.levi.pocketdj.ui.selection.SelectionBar
 import com.levi.pocketdj.ui.selection.SelectionScope
@@ -98,6 +101,11 @@ fun PlaylistDetailScreen(
     var renameChapter by remember { mutableStateOf<PlaylistNode?>(null) }
     var renameSetlist by remember { mutableStateOf<Pair<String, String?>?>(null) }
     var deleteSetlistId by remember { mutableStateOf<String?>(null) }
+    // COL-13: per-playlist sort/filter (key pdj.collection.<id>); stored node order is never mutated.
+    val sortState = rememberCollectionSortState(playlistId)
+    val playCountOf = rememberPlayCountOf()
+    var showSort by remember { mutableStateOf(false) }
+    var showFilter by remember { mutableStateOf(false) }
 
     Box(modifier = modifier.fillMaxSize()) {
         if (playlist == null) {
@@ -111,6 +119,20 @@ fun PlaylistDetailScreen(
         }
 
         val stats = store.statsForPlaylist(playlistId)
+        val sortInputs = sortState.inputs
+        val defaultOrder = sortInputs.isDefaultOrder
+        // chapter nodeId -> display children (song nodes sorted, non-song nodes last), off-main.
+        val resolvedChapters by produceState<Map<String, List<PlaylistNode>>?>(
+            initialValue = null, playlist.sequences, sortInputs, catalog, state.revision,
+        ) {
+            value = if (defaultOrder || catalog == null) null else withContext(Dispatchers.Default) {
+                playlist.sequences.associate {
+                    it.nodeId to CollectionSortFilter.resolveChapterChildren(
+                        it.children.orEmpty(), catalog, sortInputs, playCountOf,
+                    )
+                }
+            }
+        }
         val itemCount = playlist.sequences.sumOf { it.children?.size ?: 0 }
         val setlists = store.setlistsForPlaylist(playlistId)
 
@@ -181,6 +203,11 @@ fun PlaylistDetailScreen(
                         Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
                     OverflowMenu { dismiss ->
+                        CollectionSortFilterMenuItems(
+                            sortState, dismiss,
+                            onSort = { showSort = true },
+                            onFilter = { showFilter = true },
+                        )
                         DropdownMenuItem(
                             text = { Text("Make set list") },
                             enabled = itemCount > 0,
@@ -266,8 +293,15 @@ fun PlaylistDetailScreen(
                         trailing = store.statsForChapter(chapter).summary,
                     )
                 }
-                val children = chapter.children.orEmpty()
-                if (children.isEmpty()) {
+                val stored = chapter.children.orEmpty()
+                // Default order: stored children. Otherwise the resolved display order (empty until it lands).
+                val children = if (defaultOrder) stored else resolvedChapters?.get(chapter.nodeId).orEmpty()
+                if (!defaultOrder && resolvedChapters == null && stored.isNotEmpty()) {
+                    item(key = "ch-resolving-${chapter.nodeId}") { SectionCaption("Sorting…") }
+                } else if (!defaultOrder && children.isEmpty() && stored.isNotEmpty()) {
+                    item(key = "ch-nomatch-${chapter.nodeId}") { SectionCaption("No songs match the filter.") }
+                }
+                if (stored.isEmpty()) {
                     item(key = "ch-empty-${chapter.nodeId}") {
                         SectionCaption("Empty chapter — add items from a song/album ▸ Add to…")
                     }
@@ -286,6 +320,8 @@ fun PlaylistDetailScreen(
                             onOpenAlbum = onOpenAlbum,
                             onOpenPocket = onOpenPocket,
                             menu = { dismiss ->
+                                // Reorder / remove only make sense on the stored order.
+                                if (defaultOrder) {
                                 DropdownMenuItem(
                                     text = { Text("Move up") },
                                     enabled = index > 0,
@@ -296,6 +332,7 @@ fun PlaylistDetailScreen(
                                     enabled = index < children.lastIndex,
                                     onClick = { dismiss(); store.moveNodeDown(node.nodeId, playlistId) },
                                 )
+                                }
                                 // COL-8: manual escape hatch for a stale source snapshot (iOS ForceSyncMenu).
                                 val forceSongId = node.songId
                                 if (node.kind == PlaylistNode.Kind.SONG && forceSongId != null &&
@@ -322,10 +359,12 @@ fun PlaylistDetailScreen(
                                         },
                                     )
                                 }
+                                if (defaultOrder) {
                                 DropdownMenuItem(
                                     text = { Text("Remove") },
                                     onClick = { dismiss(); store.removeNode(node.nodeId, playlistId) },
                                 )
+                                }
                             },
                         )
                     }
@@ -381,6 +420,18 @@ fun PlaylistDetailScreen(
     }
 
     // ---- dialogs -----------------------------------------------------------
+
+    CollectionSortFilterSheets(
+        state = sortState,
+        catalog = catalog,
+        songIds = playlist?.sequences.orEmpty().flatMap { ch ->
+            ch.children.orEmpty().filter { it.kind == PlaylistNode.Kind.SONG }.mapNotNull { it.songId }
+        },
+        showSort = showSort,
+        showFilter = showFilter,
+        onDismissSort = { showSort = false },
+        onDismissFilter = { showFilter = false },
+    )
 
     detailSongId?.let { songId ->
         SongDetailSheet(
