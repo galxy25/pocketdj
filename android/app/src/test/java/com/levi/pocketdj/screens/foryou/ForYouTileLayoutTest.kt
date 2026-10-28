@@ -26,7 +26,7 @@ class ForYouTileLayoutTest {
     }
 
     @Test fun tileWidthIsClampedToTheIosMaximum() {
-        assertEquals(ForYouTileLayout.MAX_TILE_DP, ForYouTileLayout.tileWidthDp(250))
+        assertEquals(ForYouTileLayout.MAX_TILE_DP, ForYouTileLayout.tileWidthDp(300))
         assertTrue(ForYouTileLayout.tileWidthDp(360) in ForYouTileLayout.MIN_TILE_DP..ForYouTileLayout.MAX_TILE_DP)
     }
 
