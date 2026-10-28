@@ -13,4 +13,6 @@
     <exclude domain="file" path="pocketdj-in-the-pocket.json.tmp" />
     <exclude domain="file" path="pocketdj-in-the-pocket-sync.json" />
     <exclude domain="file" path="pocketdj-in-the-pocket-sync.json.tmp" />
+    <exclude domain="file" path="pocketdj-listening-places.json" />
+    <exclude domain="file" path="pocketdj-listening-places.json.tmp" />
 </full-backup-content>
