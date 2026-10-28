@@ -4,7 +4,6 @@ import android.app.PendingIntent
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
-import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -12,6 +11,16 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
+import com.levi.pocketdj.playback.sequencer.RepeatMode
+import com.levi.pocketdj.playback.session.FavoriteCommand
+import com.levi.pocketdj.playback.session.SequencerControl
+import com.levi.pocketdj.playback.session.SequencerForwardingPlayer
+import com.levi.pocketdj.playback.session.SessionSwitchboard
+import com.levi.pocketdj.playback.session.TransportLog
+import com.levi.pocketdj.playback.session.TransportOwner
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionCommands
+import androidx.media3.session.SessionResult
 
 /**
  * The one audio owner (locked decision 4): Media3 ExoPlayer hosted in a
@@ -25,6 +34,7 @@ import com.google.common.util.concurrent.ListenableFuture
 class PlaybackService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
+    private var forwardingPlayer: SequencerForwardingPlayer? = null
 
     /** Id-changed gate: a same-song restart/seek must not re-fire the play hook. */
     private var lastPlayEventSongId: String? = null
@@ -94,7 +104,26 @@ class PlaybackService : MediaSessionService() {
             )
         }
 
-        mediaSession = MediaSession.Builder(this, RunAwarePlayer(player))
+        val forwarding = SequencerForwardingPlayer(player, DeferredControl)
+        forwardingPlayer = forwarding
+        val exo = ExoOwner(forwarding)
+        val board = SessionSwitchboard.shared
+        board.register(exo)
+        player.addListener(object : Player.Listener {
+            override fun onIsPlayingChanged(isPlaying: Boolean) {
+                if (isPlaying) {
+                    exo.hasSounded = true
+                    board.setOwner(exo)
+                }
+            }
+
+            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = refreshCustomLayout()
+        })
+        RunTransportBus.instantMetadata = { md -> forwarding.showInstantMetadata(md) }
+        RunTransportBus.stateChanged = { forwarding.syncGate(); forwarding.onHeldRestored() }
+        board.onChange = { o -> mediaSession?.let { it.player = (o ?: exo).sessionPlayer }; refreshCustomLayout() }
+
+        mediaSession = MediaSession.Builder(this, forwarding)
             .setCallback(SessionCallback())
             .apply { sessionActivity?.let(::setSessionActivity) }
             .build()
@@ -111,6 +140,9 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        RunTransportBus.instantMetadata = null
+        RunTransportBus.stateChanged = null
+        SessionSwitchboard.shared.onChange = {}
         mediaSession?.run {
             player.release()
             release()
@@ -119,45 +151,38 @@ class PlaybackService : MediaSessionService() {
         super.onDestroy()
     }
 
-    /**
-     * Interim (until PB-2's SequencerForwardingPlayer): ExoPlayer holds ONE item during a sequencer
-     * run, so system next/previous (notification, lock screen, headset) would be unavailable. While a
-     * run is active, advertise them and route them to the sequencer through [RunTransportBus].
-     */
-    private class RunAwarePlayer(player: Player) : ForwardingPlayer(player) {
-        private fun active() = RunTransportBus.handler?.isRunActive == true
+    /** The sequencer as seen from the service; inert until the controller registers [RunTransportBus.control]. */
+    private object DeferredControl : SequencerControl {
+        private val c get() = RunTransportBus.control
+        override val isRunning get() = c?.isRunning == true
+        override val isHeldForResume get() = c?.isHeldForResume == true
+        override val isStartPending get() = c?.isStartPending == true
+        override val currentNeverSounded get() = c?.currentNeverSounded == true
+        override var repeatMode: RepeatMode
+            get() = c?.repeatMode ?: RepeatMode.OFF
+            set(v) { c?.repeatMode = v }
+        override var shuffleEnabled: Boolean
+            get() = c?.shuffleEnabled == true
+            set(v) { c?.shuffleEnabled = v }
+        override fun skipNext() { c?.skipNext() }
+        override fun skipPrevious() { c?.skipPrevious() }
+        override fun resumeFromHold() { c?.resumeFromHold() }
+        override fun startCurrent() = c?.startCurrent() == true
+    }
 
-        override fun getAvailableCommands(): Player.Commands {
-            val base = super.getAvailableCommands()
-            if (!active()) return base
-            return base.buildUpon()
-                .addAll(
-                    Player.COMMAND_SEEK_TO_NEXT,
-                    Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
-                    Player.COMMAND_SEEK_TO_PREVIOUS,
-                    Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
-                )
-                .build()
-        }
+    /** The standalone ExoPlayer as a [TransportOwner]. */
+    private inner class ExoOwner(override val sessionPlayer: Player) : TransportOwner {
+        override val engine = "exo"
+        @Volatile override var hasSounded = false
+        override fun pauseForHandoff() { sessionPlayer.pause() }
+    }
 
-        override fun isCommandAvailable(command: Int): Boolean = availableCommands.contains(command)
-
-        override fun hasNextMediaItem(): Boolean = active() || super.hasNextMediaItem()
-
-        override fun seekToNext() = routeNext { super.seekToNext() }
-        override fun seekToNextMediaItem() = routeNext { super.seekToNextMediaItem() }
-        override fun seekToPrevious() = routePrevious { super.seekToPrevious() }
-        override fun seekToPreviousMediaItem() = routePrevious { super.seekToPreviousMediaItem() }
-
-        private inline fun routeNext(fallback: () -> Unit) {
-            val h = RunTransportBus.handler
-            if (h != null && h.isRunActive) h.next() else fallback()
-        }
-
-        private inline fun routePrevious(fallback: () -> Unit) {
-            val h = RunTransportBus.handler
-            if (h != null && h.isRunActive) h.previous() else fallback()
-        }
+    private fun refreshCustomLayout() {
+        val session = mediaSession ?: return
+        val songId = session.player.currentMediaItem?.mediaId
+        val owner = SessionSwitchboard.shared.current
+        val seam = if (owner == null || owner.engine == "exo") FavoriteCommand.seam else null
+        session.setCustomLayout(FavoriteCommand.layout(seam, songId))
     }
 
     /**
@@ -166,7 +191,43 @@ class PlaybackService : MediaSessionService() {
      * ClippingConfiguration gives seek-to-start and the end boundary in one
      * shot, so auto-advance fires at `startMs + durationMs`, not file end).
      */
-    private class SessionCallback : MediaSession.Callback {
+    private inner class SessionCallback : MediaSession.Callback {
+        override fun onConnect(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+        ): MediaSession.ConnectionResult {
+            val cmds = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+                .add(FavoriteCommand.sessionCommand)
+                .build()
+            return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                .setAvailableSessionCommands(cmds)
+                .build()
+        }
+
+        override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
+            refreshCustomLayout()
+        }
+
+        override fun onCustomCommand(
+            session: MediaSession,
+            controller: MediaSession.ControllerInfo,
+            customCommand: SessionCommand,
+            args: android.os.Bundle,
+        ): ListenableFuture<SessionResult> {
+            if (customCommand.customAction == FavoriteCommand.ACTION) {
+                val songId = session.player.currentMediaItem?.mediaId
+                val did = FavoriteCommand.press(FavoriteCommand.seam, songId)
+                TransportLog.rc(
+                    TransportLog.Cmd.FAVORITE,
+                    SessionSwitchboard.shared.current?.engine ?: "exo",
+                    if (did) TransportLog.Verdict.HANDLED else TransportLog.Verdict.NOT_RUNNING,
+                )
+                refreshCustomLayout()
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+            return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
+        }
+
         override fun onAddMediaItems(
             mediaSession: MediaSession,
             controller: MediaSession.ControllerInfo,

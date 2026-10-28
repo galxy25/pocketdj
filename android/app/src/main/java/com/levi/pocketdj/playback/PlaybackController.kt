@@ -216,6 +216,13 @@ class PlaybackController(
             override fun next() = seq.skipNext()
             override fun previous() = seq.skipPrevious()
         }
+        val base = com.levi.pocketdj.playback.session.SetlistSequencerControl(seq)
+        RunTransportBus.control = object : com.levi.pocketdj.playback.session.SequencerControl by base {
+            // The session's next/prev/repeat/shuffle exist only while the sequencer's row is on ExoPlayer.
+            override val isRunning: Boolean get() = base.isRunning && (sequencerOwnsPlayer || base.isHeldForResume)
+        }
+        seq.onHeldRestored = { RunTransportBus.stateChanged?.invoke() }
+        sequencerScope.launch { seq.state.collect { RunTransportBus.stateChanged?.invoke() } }
         scope.launch {
             runCatching {
                 cachedMode = PlaybackMode.fromToken(settings.get(PlaybackPrefKeys.PLAYBACK_MODE))
@@ -864,6 +871,15 @@ class PlaybackController(
             val merged = catalog.state.value.catalog
             val song = merged?.songsById?.get(item.id)
             val album = song?.albumId?.let { merged.albumsById[it] }
+            // Instant metadata (PB-2): the notification shows the new row before any network resolve.
+            RunTransportBus.instantMetadata?.invoke(
+                MediaMetadata.Builder()
+                    .setTitle(song?.name ?: item.title ?: item.id)
+                    .setArtist(song?.artist ?: item.artist)
+                    .setAlbumTitle(album?.name)
+                    .apply { album?.artCandidates()?.firstOrNull()?.let { setArtworkUri(Uri.parse(it)) } }
+                    .build(),
+            )
             val ripConfigured = settings.current().hasRipServer
             val action = when (val src = request.source) {
                 is LocalFileSource -> PlayAction.Stream(src.file.url, src.file.startMs, src.file.endMs)
