@@ -1,6 +1,7 @@
 package com.levi.pocketdj.studio.engine
 
 import com.levi.pocketdj.audio.core.AudioSink
+import com.levi.pocketdj.audio.core.BlockRenderer
 import com.levi.pocketdj.audio.core.PcmBuffer
 import com.levi.pocketdj.studio.audio.StudioAudio
 import com.levi.pocketdj.studio.audio.StudioRender
@@ -55,6 +56,8 @@ class MultitrackPlayer(
     private val reprimeDebounceMs: Long = REPRIME_DEBOUNCE_MS,
     private val onFocus: () -> Unit = {},
     private val onFocusRelease: () -> Unit = {},
+    /** Record-to-master tap (STU-13). The default writes its temp WAVs to the JVM temp dir; the app passes the cache dir. */
+    val recorder: MasterRecorder = MasterRecorder(),
 ) {
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
@@ -91,48 +94,29 @@ class MultitrackPlayer(
         playOutcome(arrangement, fromMs) == PlayOutcome.STARTED
 
     /** Like [play] but distinguishes "superseded by a newer play/stop" (silent) from "no playable clips" (toast). */
-    suspend fun playOutcome(arrangement: StudioArrangement, fromMs: Int = 0): PlayOutcome =
-        playInternal(arrangement, fromMs, fromReprime = false)
+    suspend fun playOutcome(arrangement: StudioArrangement, fromMs: Int = 0, record: Boolean? = null, quantized: Boolean? = null): PlayOutcome =
+        // null = carry the active recording (a seek/loop restart must never silently drop the take); an explicit value wins.
+        playInternal(arrangement, fromMs, fromReprime = false, record = record ?: recordWanted, quantized = quantized ?: recordQuantized)
 
-    private suspend fun playInternal(arrangement: StudioArrangement, fromMs: Int, fromReprime: Boolean): PlayOutcome {
+    /** True while a master recording tap is active. */
+    val isRecording: Boolean get() = recorder.isRecording
+
+    /** Bumped ONLY when a recording ends because playback reached its NATURAL end (the view's single bake signal). */
+    val recordingFinishedNonce: StateFlow<Int> get() = recorder.finishedNonce
+
+    /** Hand the finished master capture to the baker (once). Call after [stop]. */
+    fun consumeRecording(): MasterCapture? = recorder.consume()
+
+    /** What the last explicit play asked for; a debounced re-prime restart carries it so a restart keeps recording. */
+    @Volatile private var recordWanted = false
+    @Volatile private var recordQuantized = false
+
+    private suspend fun playInternal(arrangement: StudioArrangement, fromMs: Int, fromReprime: Boolean, record: Boolean = false, quantized: Boolean = false): PlayOutcome {
         val gen = synchronized(lock) { stopInternal(keepReprime = fromReprime); generation.get() }
-        // Each source file is decoded once per pass and released after its last clip; only the clip's
-        // window (not the whole file) is retained by the render context.
-        val uses = HashMap<String, Int>()
-        for (t in arrangement.tracks) for (c in t.clips) uses.merge(c.fileName, 1, Int::plus)
-        val decoded = HashMap<String, PcmBuffer?>()
         val rate = StudioAudio.CANONICAL_RATE
-        val clips = ArrayList<MultitrackRenderContext.Clip>()
-        val beatMatch = arrangement.beatMatchEnabled
-        val masterBpm = arrangement.bpm
-        val beatFrames = if (masterBpm > 0) 60.0 / masterBpm * rate else 0.0
-        for ((ti, track) in arrangement.tracks.withIndex()) {
-            val strip = track.strip.clamped()
-            for (clip in track.clips) {
-                val left = (uses[clip.fileName] ?: 1) - 1
-                uses[clip.fileName] = left
-                val buf = if (decoded.containsKey(clip.fileName)) decoded[clip.fileName] else loader.decode(clip.fileName).also { decoded[clip.fileName] = it }
-                if (left <= 0) decoded.remove(clip.fileName)
-                if (gen != generation.get()) return PlayOutcome.SUPERSEDED // stop-during-decode wins
-                if (buf == null || buf.frames <= 0) continue
-                val r = ArrangerBeatMatch.rate(clip.grid?.bpm ?: 0.0, masterBpm, strip.tempoRatio, beatMatch)
-                val pitchCents = strip.pitchSemitones * 100
-                val needsBake = Math.abs(r - 1) > 0.0005 || Math.abs(pitchCents) > 0.5
-                val startFrame = ArrangerBeatMatch.snappedStartFrame(
-                    MultitrackRenderContext.msToFrames(clip.startMs, rate), beatFrames, beatMatch)
-                val window = clipWindow(buf.frames, clip.fileStartMs, clip.durationMs, rate)
-                if (window.frameLength <= 0) continue
-                val warped = if (needsBake) loader.transform(buf, window.srcStart.toLong(), window.frameLength.toLong(), r, pitchCents) else null
-                if (gen != generation.get()) return PlayOutcome.SUPERSEDED
-                if (warped != null && warped.frames > 0) {
-                    clips += MultitrackRenderContext.Clip(ti, startFrame, warped.frames, 0, warped.toStereo().samples)
-                } else {
-                    val all = buf.toStereo().samples
-                    val win = all.copyOfRange(window.srcStart * 2, (window.srcStart + window.frameLength) * 2)
-                    clips += MultitrackRenderContext.Clip(ti, startFrame, window.frameLength, 0, win)
-                }
-            }
-        }
+        // The ONE planning path shared with ArrangerBouncer (WYSIWYG): decode once, window, warp, beat-snap.
+        val clips = ArrangerClipPlan.build(arrangement.tracks, arrangement.bpm, arrangement.beatMatchEnabled, loader, rate) { gen != generation.get() }
+            ?: return PlayOutcome.SUPERSEDED // stop-during-decode wins
         if (gen != generation.get()) return PlayOutcome.SUPERSEDED
         if (clips.isEmpty()) return PlayOutcome.NOTHING_TO_PLAY
 
@@ -161,7 +145,10 @@ class MultitrackPlayer(
             onFocus()
             val s = sinkFactory()
             sink = s
-            s.start(ctx)
+            recordWanted = record; recordQuantized = quantized
+            // begin() always discards the previous partial first (restart keeps recording, never leaks/concats).
+            val tapped = recorder.begin(record, s.sampleRate, quantized) && record
+            s.start(if (tapped) BlockRenderer { out, n -> ctx.render(out, n); recorder.tap(out, n) } else ctx)
             clock.latencyMs = (s.latencyFrames() * 1000L / rate).toInt()
             clock.start()
             _isPlaying.value = true
@@ -172,15 +159,16 @@ class MultitrackPlayer(
         return PlayOutcome.STARTED
     }
 
-    fun stop() = stopInternal(keepReprime = false)
+    fun stop() { stopInternal(keepReprime = false); recordWanted = false; recordQuantized = false }
 
-    private fun stopInternal(keepReprime: Boolean) = synchronized(lock) {
+    private fun stopInternal(keepReprime: Boolean, naturalEnd: Boolean = false) = synchronized(lock) {
         generation.incrementAndGet()
         autoStop?.cancel(); autoStop = null
         if (!keepReprime) { reprime?.cancel(); reprime = null }
         val s = sink
         sink = null
         runCatching { s?.stop(); s?.release() }
+        recorder.end(naturalEnd)   // after the sink stopped: no more taps; natural end bumps the bake nonce
         context?.release()
         context = null
         trackIds = emptyList()
@@ -238,7 +226,7 @@ class MultitrackPlayer(
                 delay(reprimeDebounceMs)
                 val a = latest ?: return@launch
                 val at = positionMs(a) ?: return@launch
-                playInternal(a, at, fromReprime = true)
+                playInternal(a, at, fromReprime = true, record = recordWanted, quantized = recordQuantized)
             }
         }
     }
@@ -247,7 +235,7 @@ class MultitrackPlayer(
         synchronized(lock) { autoStop?.cancel() }
         val job = scope.launch {
             delay(lengthMs + 350L + 120L)
-            if (gen == generation.get()) stop()
+            if (gen == generation.get()) { stopInternal(keepReprime = false, naturalEnd = true); recordWanted = false; recordQuantized = false }
         }
         synchronized(lock) { autoStop = job }
     }
@@ -270,7 +258,7 @@ class MultitrackPlayer(
             tracks = a.tracks.map { t ->
                 val s = t.strip.clamped()
                 TrackBake(t.id, s.pitchSemitones, s.tempoRatio,
-                    t.clips.map { listOf(it.id, it.startMs, it.durationMs, it.fileStartMs, it.grid?.bpm) })
+                    t.clips.map { listOf(it.id, it.startMs, it.durationMs, it.fileStartMs, if (a.beatMatchEnabled) it.grid?.bpm else null) })
             },
             loop = a.loopEnabled.let { on ->
                 val usable = on && a.loopEndMs > a.loopStartMs

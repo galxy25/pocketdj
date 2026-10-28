@@ -329,6 +329,15 @@ class MultitrackPlayerTest {
         p.stop()
     }
 
+    @Test fun gridWriteBackDoesNotChangeTheBakeSignatureUnlessBeatMatchIsOn() {
+        val t = StudioTrack("t", "t", listOf(StudioClip("c", "c", "f", startMs = 0, durationMs = 100)))
+        fun withGrid(a: StudioArrangement) = a.copy(tracks = listOf(t.copy(clips = t.clips.map { it.copy(grid = com.levi.pocketdj.studio.model.StudioGrid(bpm = 120.0)) })))
+        val off = arr(t)
+        assertEquals(MultitrackPlayer.bakeSignature(off), MultitrackPlayer.bakeSignature(withGrid(off)))
+        val on = arr(t).copy(beatMatchEnabled = true)
+        assertTrue(MultitrackPlayer.bakeSignature(on) != MultitrackPlayer.bakeSignature(withGrid(on)))
+    }
+
     @Test fun bakeSignatureIgnoresMixButSeesBakeInputs() {
         val t = track("t1", "a")
         val base = MultitrackPlayer.bakeSignature(arr(t))
@@ -417,22 +426,5 @@ class MultitrackPlayerTest {
         val deadline = System.currentTimeMillis() + 3000
         while (p.isPlaying.value && System.currentTimeMillis() < deadline) Thread.sleep(20)
         assertFalse(p.isPlaying.value)
-    }
-}
-
-class ArrangerBeatMatchTest {
-    @Test fun rateIsWarpTimesTempoClamped() {
-        assertEquals(1.0, ArrangerBeatMatch.rate(0.0, 120.0, 1.0, true), 0.0)
-        assertEquals(1.25, ArrangerBeatMatch.rate(96.0, 120.0, 1.0, true), 1e-9)
-        assertEquals(2.5, ArrangerBeatMatch.rate(96.0, 120.0, 2.0, true), 1e-9)
-        assertEquals(2.0, ArrangerBeatMatch.rate(96.0, 120.0, 2.0, false), 1e-9)
-        assertEquals(32.0, ArrangerBeatMatch.rate(1.0, 300.0, 10.0, true), 0.0)
-    }
-
-    @Test fun startSnapsToNearestMasterBeatOnlyWhenBeatMatching() {
-        val beat = 22_050.0
-        assertEquals(22_050, ArrangerBeatMatch.snappedStartFrame(20_000, beat, true))
-        assertEquals(20_000, ArrangerBeatMatch.snappedStartFrame(20_000, beat, false))
-        assertEquals(20_000, ArrangerBeatMatch.snappedStartFrame(20_000, 0.0, true))
     }
 }

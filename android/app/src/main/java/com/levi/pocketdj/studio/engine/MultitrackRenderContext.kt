@@ -17,24 +17,6 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.roundToInt
 
-/**
- * Pure Beat Match geometry shared by BOTH arranger read paths (live [MultitrackPlayer] and the bounce)
- * so a bounce can never drift from playback (iOS `ArrangerBeatMatch`).
- */
-object ArrangerBeatMatch {
-    /** Beat-Match warp (master / clip bpm) x per-track tempo; rate > 1 = faster. Clamped 1/32..32. */
-    fun rate(clipBpm: Double, masterBpm: Double, tempoRatio: Double, beatMatch: Boolean): Double {
-        val warp = if (beatMatch && clipBpm > 0 && masterBpm > 0) masterBpm / clipBpm else 1.0
-        return min(32.0, max(1.0 / 32, warp * tempoRatio))
-    }
-
-    /** Snap a start frame to the nearest master beat when beat-matching (else unchanged). */
-    fun snappedStartFrame(frame: Int, beatFrames: Double, beatMatch: Boolean): Int {
-        if (!beatMatch || beatFrames <= 0) return frame
-        return (Math.rint(frame / beatFrames) * beatFrames).toInt()
-    }
-}
-
 /** Studio model -> kernel params (iOS `MasterFXParams.init(_, bpm:, allowFreeze:)`). */
 fun StudioMasterFX.toKernelParams(bpm: Double, allowFreeze: Boolean): MasterFxParams = MasterFxParams(
     phaser = phaserEnabled, phaserRate = phaserRate, phaserDepth = phaserDepth,
