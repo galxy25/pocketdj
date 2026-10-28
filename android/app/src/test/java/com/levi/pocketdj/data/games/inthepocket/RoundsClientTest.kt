@@ -144,6 +144,7 @@ class RoundsClientTest {
         assertEquals("POST", req.method)
         assertEquals("/pockets/rounds", req.path)
         assertEquals("Bearer key", req.getHeader("Authorization"))
+        assertEquals("DEVICE-1", req.getHeader("X-PocketDJ-Device"))
         assertEquals("ab".repeat(32), req.getHeader("X-PocketDJ-Profile"))
         assertEquals("enroll", req.getHeader("X-PocketDJ-Enroll"))
         assertTrue(req.getHeader("Content-Type")!!.startsWith("application/json"))
@@ -198,5 +199,17 @@ class RoundsClientTest {
     @Test fun corruptSyncFileStartsEmpty() = runBlocking {
         val file = File(dir, "sync.json").also { it.writeText("{{{") }
         assertTrue(client(file).acknowledged.isEmpty())
+    }
+
+    @Test fun floorMovedMidFlightRecordsNoAcks() = runBlocking {
+        server.enqueue(MockResponse().setBody("{}"))
+        lateinit var c: InThePocketRoundsClient
+        val http = OkHttpClient.Builder().addInterceptor { chain ->
+            c.setUploadFloor(nowMs.toDouble() + 1) // "Delete cloud data" lands while the POST is in flight
+            chain.proceed(chain.request())
+        }.build()
+        c = InThePocketRoundsClient(http, { server.url("/").toString() }, File(dir, "sync.json"), { nowMs })
+        assertFalse(c.flush(creds, listOf(wire()), "I"))
+        assertTrue(c.acknowledged.isEmpty())
     }
 }

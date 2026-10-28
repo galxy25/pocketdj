@@ -39,12 +39,15 @@ class InThePocketRoundsClient(
     private val baseUrl: () -> String,
     private val syncFile: File,
     private val clock: () -> Long = { System.currentTimeMillis() },
-    private val deviceId: () -> String? = { null },
+    private val deviceId: suspend () -> String? = { null },
 ) {
     private val mutex = Mutex()
     private val ackLock = Any()
     private var sentRounds: Map<String, String> = emptyMap()
     private var uploadFloorMs: Double? = null
+
+    /** Bumped by [setUploadFloor] ("Delete cloud data"): an in-flight flush then records no acks. */
+    private val epoch = java.util.concurrent.atomic.AtomicLong(0)
     @Volatile private var loaded = false
 
     private val _available = MutableStateFlow(true)
@@ -57,7 +60,7 @@ class InThePocketRoundsClient(
 
     /** "Delete cloud data": nothing started before [ms] uploads again. */
     fun setUploadFloor(ms: Double?) = synchronized(ackLock) {
-        ensureLoaded(); uploadFloorMs = ms; persist()
+        ensureLoaded(); uploadFloorMs = ms; epoch.incrementAndGet(); persist()
     }
 
     /**
@@ -66,6 +69,8 @@ class InThePocketRoundsClient(
      */
     suspend fun flush(creds: PocketsCredentials, wires: List<InThePocketRoundWire>, installId: String): Boolean =
         mutex.withLock {
+            val startEpoch = epoch.get()
+            val deviceIdValue = deviceId()
             val now = clock().toDouble()
             val floor = maxOf(now - WINDOW_DAYS * 86_400_000.0, synchronized(ackLock) { ensureLoaded(); uploadFloorMs } ?: 0.0)
             val eligible = wires.filter { it.startedAtMs.toDouble() >= floor }
@@ -78,16 +83,21 @@ class InThePocketRoundsClient(
             var sentAny = false
             while (pending.isNotEmpty()) {
                 val slice = pending.take(BATCH_CAP)
-                val batch = InThePocketRoundsBatch(deviceId(), installId, clock(), slice)
+                val batch = InThePocketRoundsBatch(deviceIdValue, installId, clock(), slice)
                 when (post(batch, creds)) {
                     in 200..299 -> Unit
                     404 -> { _available.value = false; return@withLock sentAny }
                     else -> return@withLock sentAny
                 }
-                synchronized(ackLock) {
-                    sentRounds = sentRounds + slice.associate { it.id to it.fingerprint }
-                    persist()
+                val stale = synchronized(ackLock) {
+                    if (epoch.get() != startEpoch) true else {
+                        sentRounds = sentRounds + slice.associate { it.id to it.fingerprint }
+                        persist()
+                        false
+                    }
                 }
+                // The floor moved mid-flight (Delete cloud data): never ack rounds it excludes.
+                if (stale) return@withLock sentAny
                 pending = pending.drop(slice.size)
                 sentAny = true
                 _available.value = true
@@ -103,6 +113,7 @@ class InThePocketRoundsClient(
                 .header("Authorization", "Bearer ${creds.key}")
                 .header(PROFILE_HEADER, creds.profileId)
             if (creds.enrollSecret.isNotEmpty()) b.header(ENROLL_HEADER, creds.enrollSecret)
+            batch.deviceId?.takeIf { it.isNotEmpty() }?.let { b.header(DEVICE_HEADER, it) }
             try {
                 http.newCall(b.build()).execute().use { it.code }
             } catch (_: IOException) {
@@ -139,5 +150,6 @@ class InThePocketRoundsClient(
         const val WINDOW_DAYS = 90.0
         const val PROFILE_HEADER = "X-PocketDJ-Profile"
         const val ENROLL_HEADER = "X-PocketDJ-Enroll"
+        const val DEVICE_HEADER = "X-PocketDJ-Device"
     }
 }

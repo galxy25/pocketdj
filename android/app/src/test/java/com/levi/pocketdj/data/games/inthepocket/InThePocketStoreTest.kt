@@ -6,6 +6,11 @@ import com.levi.pocketdj.data.games.GameScoreboardStore
 import com.levi.pocketdj.data.history.PlayEvent
 import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.data.pockets.NoPocketsBridge
+import com.levi.pocketdj.data.pockets.PocketsBridge
+import com.levi.pocketdj.data.pockets.PocketsCredentials
+import com.levi.pocketdj.data.pockets.ListeningPocketsResults
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import com.levi.pocketdj.playback.FakeGameRunPlayer
 import com.levi.pocketdj.playback.PlayContext
 import java.io.File
@@ -40,11 +45,14 @@ class InThePocketStoreTest {
         val store: InThePocketStore, val history: PlayHistoryStore, val scores: GameScoreboardStore, val file: File,
     )
 
-    private fun makeEnv(file: File = File(dir, "rounds.json"), history: PlayHistoryStore? = null): Env {
+    private fun makeEnv(
+        file: File = File(dir, "rounds.json"), history: PlayHistoryStore? = null,
+        bridgeProvider: (() -> PocketsBridge)? = null,
+    ): Env {
         val h = history ?: PlayHistoryStore(File(dir, "history.json"))
         val scores = GameScoreboardStore(File(dir, "scores.json"))
         val store = InThePocketStore(
-            history = h, scoreboard = scores, player = fake, file = file, bridge = NoPocketsBridge,
+            history = h, scoreboard = scores, player = fake, file = file, bridgeFixed = NoPocketsBridge, bridgeProvider = bridgeProvider,
             scope = CoroutineScope(Dispatchers.Unconfined), buildDispatcher = Dispatchers.Unconfined,
             asyncPersist = false,
         )
@@ -352,5 +360,66 @@ class InThePocketStoreTest {
         assertNotNull(NoPocketsBridge.roundsProvider)
         assertTrue(NoPocketsBridge.roundsProvider!!.invoke("I").isEmpty())
         assertEquals(env.store.uploadWires("I"), NoPocketsBridge.roundsProvider!!.invoke("I"))
+    }
+
+    private class CountingBridge : PocketsBridge {
+        var enabledReads = 0
+        override val isEnabled: StateFlow<Boolean> = object : StateFlow<Boolean> {
+            private val inner = MutableStateFlow(false)
+            override val replayCache get() = inner.replayCache
+            override val value: Boolean get() { enabledReads++; return false }
+            override suspend fun collect(collector: kotlinx.coroutines.flow.FlowCollector<Boolean>): Nothing = inner.collect(collector)
+        }
+        override val results: StateFlow<ListeningPocketsResults?> = MutableStateFlow(null)
+        override suspend fun refreshIfStale() = Unit
+        override fun flushSoon() = Unit
+        override var roundsProvider: ((String) -> List<InThePocketRoundWire>)? = null
+        override suspend fun credentials(): PocketsCredentials? = null
+        override val installId: String = "X"
+    }
+
+    @Test fun bridgeAssignedAfterConstructionIsTheOneTheBuildConsults() {
+        var live: PocketsBridge = NoPocketsBridge
+        val late = CountingBridge()
+        val env = makeEnv(bridgeProvider = { live })
+        live = late // the services wave assigns its bridge after the store exists
+        builtRound(env)
+        assertTrue("privacy gate read the LATE bridge", late.enabledReads > 0)
+    }
+
+    @Test fun anyBuildExceptionFailsTheBuildInsteadOfWedgingBuilding() {
+        val env = makeEnv()
+        seedHistory(env)
+        var boom = true
+        env.store.audioAvailability = { if (boom) throw IllegalStateException("io") else InThePocketAudio(canStreamAppleMusic = true) }
+        runBlocking { env.store.buildRound(3u) }
+        assertTrue(env.store.buildState is InThePocketStore.BuildState.Failed)
+        boom = false
+        runBlocking { env.store.buildRound(3u) }
+        assertNotNull("a later build is not refused", env.store.current)
+    }
+
+    @Test fun restoredRoundSurvivesWhenThePlayerOnlyKnowsTheRestoredTag() {
+        val env = makeEnv()
+        builtRound(env)
+        env.store.start()
+        val round = env.store.current!!
+        val relaunched = makeEnv(env.file, env.history)
+        // Process restart: the restored sequencer session is the itp_ run; nothing else is known.
+        fake.foreignPlay(InThePocketStore.runTag(round.id))
+        clockMs = round.startedAtMs!! + 1_000
+        relaunched.store.evaluate()
+        clockMs += InThePocketRoundEvaluator.SETTLE_MS * 3
+        relaunched.store.evaluate()
+        assertNull("still the game's queue: not abandoned", relaunched.store.current!!.outcome)
+    }
+
+    @Test fun clearLocalDuringABuildDropsTheBuildResult() {
+        val env = makeEnv()
+        seedHistory(env)
+        env.store.collectionsInput = { env.store.clearLocal(); emptyList() }
+        runBlocking { env.store.buildRound(3u) }
+        assertTrue(env.store.rounds.isEmpty())
+        assertFalse(env.file.exists())
     }
 }

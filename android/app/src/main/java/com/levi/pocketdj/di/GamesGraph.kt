@@ -156,6 +156,12 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
      * `pdj.pocketsStub` extra turns on).
      */
     @Volatile var servicesBridge: PocketsBridge? = null
+        set(value) {
+            field = value
+            // The store registered its rounds provider on whatever bridge existed at construction;
+            // the real service needs it too.
+            value?.roundsProvider = { installId -> inThePocket.uploadWires(installId) }
+        }
     val pocketsBridge: PocketsBridge
         get() = servicesBridge ?: if (isDebuggable()) debugBridge else NoPocketsBridge
 
@@ -165,32 +171,33 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
             http = app.httpClient,
             baseUrl = { RemoteEndpoints.url(EndpointKey.LISTENING_POCKETS_BASE) },
             syncFile = File(app.appContext.filesDir, ROUNDS_SYNC_FILE),
+            deviceId = { runCatching { app.settings.ensureInstallId() }.getOrNull() },
         )
     }
 
-    private var roundsUploadJob: kotlinx.coroutines.Job? = null
+    private val roundsUploadJob = java.util.concurrent.atomic.AtomicReference<kotlinx.coroutines.Job?>(null)
 
     /** 5 s debounce, then upload finished rounds (gated on the bridge's privacy switch). */
     private fun scheduleRoundsUpload() {
         val bridge = pocketsBridge
-        if (!bridge.isEnabled.value) return
-        roundsUploadJob?.cancel()
-        roundsUploadJob = app.appScope.launch(Dispatchers.IO) {
+        // A real service that uploads rounds inside its own flush (after plays) owns the timing.
+        if (!bridge.isEnabled.value || bridge.flushesRounds) return
+        val job = app.appScope.launch(Dispatchers.IO) {
             delay(5_000)
             val creds = bridge.credentials() ?: return@launch
             runCatching { roundsClient.flush(creds, inThePocket.uploadWires(bridge.installId), bridge.installId) }
         }
+        roundsUploadJob.getAndSet(job)?.cancel()
     }
 
     /** The app-scoped In the Pocket store (a running round survives tab switches). */
     val inThePocket: InThePocketStore by lazy {
-        val bridge = pocketsBridge
         InThePocketStore(
             history = PlayHistoryStore.get(app.appContext),
             scoreboard = scoreboard,
             player = gameRunPlayer,
             file = File(app.appContext.filesDir, InThePocketStore.FILE_NAME),
-            bridge = bridge,
+            bridgeProvider = { pocketsBridge },
             scope = app.appScope,
         ).also { st ->
             st.appVersion = runCatching {
@@ -208,13 +215,13 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
                 )
             }
             st.collectionsInput = {
-                app.collections.pockets.map {
-                    InThePocketScorer.CollectionInfo(it.id, it.name.ifEmpty { null }, app.collections.songIdsForPocket(it.id).toSet())
-                } + app.collections.playlists.map {
-                    InThePocketScorer.CollectionInfo(it.id, it.name.ifEmpty { null }, app.collections.songIdsForPlaylist(it.id).toSet())
-                }
+                // Runs inside the build dispatcher (off the UI thread); iOS ListeningPocketsCollections caps.
+                val sources = app.collections.pockets.map { Triple(it.id, it.name, app.collections.songIdsForPocket(it.id)) } +
+                    app.collections.playlists.map { Triple(it.id, it.name, app.collections.songIdsForPlaylist(it.id)) }
+                        .filter { it.third.size <= SONG_CAP } // iOS drops oversized SOURCE playlists
+                capCollections(sources)
             }
-            st.onRoundsChanged = { bridge.flushSoon(); scheduleRoundsUpload() }
+            st.onRoundsChanged = { pocketsBridge.flushSoon(); scheduleRoundsUpload() }
         }
     }
 
@@ -260,6 +267,28 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
     )
 
     companion object {
+        // iOS ListeningPocketsCollections caps.
+        const val COLLECTION_CAP = 500
+        const val SONG_CAP = 5_000
+        const val TOTAL_SONG_CAP = 100_000
+
+        /**
+         * Mirror of `ListeningPocketsCollections.flattened` (oversized playlists are dropped by the caller):
+         * at most [COLLECTION_CAP] collections, [SONG_CAP] songs each, [TOTAL_SONG_CAP] overall.
+         */
+        internal fun capCollections(
+            sources: List<Triple<String, String, List<String>>>,
+        ): List<InThePocketScorer.CollectionInfo> {
+            var budget = TOTAL_SONG_CAP
+            val out = ArrayList<InThePocketScorer.CollectionInfo>()
+            for ((id, name, songs) in sources.take(COLLECTION_CAP)) {
+                val take = minOf(songs.size, SONG_CAP, maxOf(0, budget))
+                budget -= take
+                out += InThePocketScorer.CollectionInfo(id, name.ifEmpty { null }, songs.take(take).toSet())
+            }
+            return out
+        }
+
         const val ROUNDS_SYNC_FILE = "pocketdj-in-the-pocket-sync.json"
         const val POCKETS_STUB_EXTRA = "pdj.pocketsStub"
         const val PUZZLE_DECISIONS_FILE = "pocketdj-puzzle-decisions.json"

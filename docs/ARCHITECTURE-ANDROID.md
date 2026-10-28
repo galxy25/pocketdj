@@ -491,7 +491,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | GM-5 — In the Pocket core: models, pockets results decode (PocketsModels owner), scorer, members… | 8 | Merged (`73c168bd`) | Pure JVM (79 tests). Golden cross-platform scorer test OPEN. |
 | GM-3 — Gem Collector engine + GameRunPlayer over the sequencer (appendRows(runTag), preview-reso… | 9 | Merged (wave 9) | Apple Music preview resolution needs network; full-track AM is delibe… |
 | GM-4 — Gem Collector screens (setup / countdown / running / summary) + multi-collection filing v… | 10 | PARTIAL | UI shipped; emulator steps not run (device-only, unverified) |
-| GM-7 — In the Pocket store + PocketsBridge interface (NoPocketsBridge default) + rounds upload c… | 11 | Planned | Cloud mode needs real pockets results (services area + rec key) — ver… |
+| GM-7 — In the Pocket store + PocketsBridge interface (NoPocketsBridge default) + rounds upload c… | 11 | PARTIAL | Store, bridge seam, rounds client landed + unit-tested. Device-only: cloud mode (needs services bridge + rec key). Deferred seams: contextGuess unwired, collection add times, emulator steps not run |
 | GM-9 — Music with Friends link, models, client, join secret, session file, store (broker-driven,… | 12 | Planned | — |
 | GM-8 — In the Pocket screen + on-device feedback dictation | 14 | Planned | SpeechRecognizer dictation needs a real microphone/Google app; emulat… |
 | GM-10 — Music with Friends screens + deep-link handler (pocketdj://mwf, https /mwf/) + Games home… | 15 | Planned | https App Link auto-verification needs /.well-known/assetlinks.json o… |

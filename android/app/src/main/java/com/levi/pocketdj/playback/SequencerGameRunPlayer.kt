@@ -67,7 +67,16 @@ class SequencerGameRunPlayer(
 
     override val position: Int get() = sequencer.state.value.index
 
-    override fun ownsRun(tag: String): Boolean =
+    override fun ownsRun(tag: String): Boolean {
+        // After a process restart the durable session restores the queue but this player has no
+        // session of its own: fall back to the iOS rule (running && source tag == tag).
+        if (ourSession == null && ourTag == null) {
+            return sequencer.state.value.let { it.isRunning && it.runTagOrSource() == tag }
+        }
+        return ownsOwnRun(tag)
+    }
+
+    private fun ownsOwnRun(tag: String): Boolean =
         !taken() && ourTag == tag && sequencer.state.value.let { it.isRunning && it.sessionId == ourSession }
 
     private fun com.levi.pocketdj.playback.sequencer.SequencerState.runTagOrSource(): String? =

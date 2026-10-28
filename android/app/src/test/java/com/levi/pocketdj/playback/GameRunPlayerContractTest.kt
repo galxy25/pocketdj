@@ -249,4 +249,14 @@ class GameRunPlayerContractTest {
         assertNull(st.capturedContext?.runTag)
         assertNull(st.queue.single().runTag)
     }
+
+    @Test fun sequencer_freshPlayerOwnsARestoredRunByItsTag() = runTest {
+        val h = SequencerHarness(this, backgroundScope, setOf("a", "b", "c"))
+        val first = TestHarnessPlayer(h, backgroundScope, setOf("a", "b", "c"))
+        ownedRun(h, first)
+        // Process restart: a new player over the restored session knows nothing but the tag.
+        val restored = TestHarnessPlayer(h, backgroundScope, setOf("a", "b", "c"))
+        assertTrue(restored.ownsRun("puzzle_R1"))
+        assertFalse(restored.ownsRun("puzzle_OTHER"))
+    }
 }

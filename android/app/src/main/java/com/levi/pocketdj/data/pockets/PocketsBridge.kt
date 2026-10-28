@@ -39,6 +39,12 @@ interface PocketsBridge {
 
     /** This install's history id (the rounds' `originInstallId`). */
     val installId: String
+
+    /**
+     * True when the service's OWN flush uploads [roundsProvider] rows (via InThePocketRoundsClient.flush)
+     * AFTER the plays they reference. Games then runs no fallback rounds timer of its own.
+     */
+    val flushesRounds: Boolean get() = false
 }
 
 /** Default until the services wave wires the real bridge: disabled, empty, never networks. */

@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # GM-7 In the Pocket store + PocketsBridge + rounds upload client
 
@@ -23,3 +23,18 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+
+fixes applied
+
+- MAJOR bridge bound at store init -> fixed: store resolves the bridge per use (`bridgeProvider`), `servicesBridge` setter registers `roundsProvider`, `onRoundsChanged` reads `pocketsBridge`. Test: bridgeAssignedAfterConstructionIsTheOneTheBuildConsults.
+- MINOR collections resolved on caller thread/uncapped -> fixed: `collectionsInput` is suspend and runs inside the build dispatcher; iOS caps (500/5000/100000, oversized source playlists dropped) via `GamesGraph.capCollections`. Test: GamesGraphCapsTest.
+- MINOR buildState wedged on non-cancel throwable -> fixed: catch-all publishes Failed. Test: anyBuildExceptionFailsTheBuildInsteadOfWedgingBuilding.
+- MINOR no device identity on rounds POST -> fixed: `X-PocketDJ-Device` header + body deviceId from `settings.ensureInstallId()`. Asserted in headersPathAndBodyShape.
+- MINOR resume ownership after restart -> fixed: SequencerGameRunPlayer.ownsRun falls back to running && source tag == tag when it has no session of its own. Tests: sequencer_freshPlayerOwnsARestoredRunByItsTag, restoredRoundSurvivesWhenThePlayerOnlyKnowsTheRestoredTag.
+- MINOR rounds upload ordering/epoch/atomicity -> fixed in part: flush epoch bumped by setUploadFloor (no acks for a stale flush; test floorMovedMidFlightRecordsNoAcks); roundsUploadJob swap is atomic; new `PocketsBridge.flushesRounds` (default false) lets the real service own rounds upload after plays and disables the Games fallback timer. The service wave must set it true and call `roundsClient.flush` after plays.
+- MINOR ledger row -> fixed: GM-7 PARTIAL in docs/ARCHITECTURE-ANDROID.md.
+- NIT clearLocal vs in-flight build -> fixed (generation counter; test clearLocalDuringABuildDropsTheBuildResult); `.tmp` sync-file excludes added.
+
+Suite: 2916 tests, 0 failures (was 2909); assembleDebug OK.

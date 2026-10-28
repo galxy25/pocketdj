@@ -49,12 +49,19 @@ class InThePocketStore(
     private val scoreboard: GameScoreboardStore,
     private val player: GameRunPlayer,
     private val file: File,
-    private val bridge: PocketsBridge = NoPocketsBridge,
+    private val bridgeFixed: PocketsBridge = NoPocketsBridge,
     private val scope: CoroutineScope,
     private val buildDispatcher: CoroutineDispatcher = Dispatchers.Default,
     /** false = persist inline (tests); true = coalesced off-thread writes. */
     private val asyncPersist: Boolean = true,
+    /** Resolved on EVERY use, so a bridge assigned after construction (services wave) is honoured. */
+    private val bridgeProvider: (() -> PocketsBridge)? = null,
 ) {
+    private val bridge: PocketsBridge get() = bridgeProvider?.invoke() ?: bridgeFixed
+
+    /** Bumped by [clearLocal]; a build that started before it drops its result. */
+    private val generation = java.util.concurrent.atomic.AtomicInteger(0)
+
     sealed class BuildState {
         data object Idle : BuildState()
         data object Building : BuildState()
@@ -98,7 +105,7 @@ class InThePocketStore(
     var audioAvailability: suspend () -> InThePocketAudio = { InThePocketAudio() }
 
     /** This device's collections (pockets x collections). Empty => the scorer ignores them. */
-    var collectionsInput: () -> List<InThePocketScorer.CollectionInfo> = { emptyList() }
+    var collectionsInput: suspend () -> List<InThePocketScorer.CollectionInfo> = { emptyList() }
 
     /** Current place / trip GUESS + its display label (null when location is off / unavailable). */
     var contextGuess: () -> Pair<ListeningContextTag?, String?> = { null to null }
@@ -123,7 +130,9 @@ class InThePocketStore(
     /** Build a new round for NOW (replaces an unstarted one; refused while building or playing). */
     suspend fun buildRound(seed: ULong? = null) {
         val nowMs: Double
+        val gen: Int
         synchronized(lock) {
+            gen = generation.get()
             if (buildState == BuildState.Building || activeRound != null) return
             publish { it.copy(buildState = BuildState.Building) }
             nowMs = now()
@@ -139,16 +148,17 @@ class InThePocketStore(
             // Privacy gate: cloud results only exist for the build while pockets are enabled.
             val results = if (bridge.isEnabled.value) bridge.results.value else null
             val past = rounds.filter { it.isFinished }
-            val collections = collectionsInput()
             val theSeed = seed ?: randomSeed()
 
             val outcome = withContext(buildDispatcher) {
+                val collections = collectionsInput()
                 InThePocketScorer.build(
                     InThePocketInputs.makeInput(
                         context, label, results, songs, albums, audio, events, past, nowMs, theSeed, collections,
                     ),
                 )
             }
+            if (generation.get() != gen) return // account deleted mid-build: nothing to re-create
             when (outcome) {
                 is InThePocketScorer.BuildResult.Failed -> publishBuild(
                     BuildState.Failed(
@@ -184,6 +194,7 @@ class InThePocketStore(
                         appVersion = appVersion,
                     )
                     synchronized(lock) {
+                        if (generation.get() != gen) return
                         chipsById[round.id] = out.chips
                         var list = _state.value.rounds
                         // An unstarted round is simply replaced (it predicted nothing yet).
@@ -199,8 +210,11 @@ class InThePocketStore(
             }
         } catch (e: CancellationException) {
             // Never wedge on "building" when the caller goes away mid-build.
-            publishBuild(BuildState.Idle)
+            publishBuildIf(gen, BuildState.Idle)
             throw e
+        } catch (e: Exception) {
+            // Never wedge on "Building…": any other failure is a retryable, generic message.
+            publishBuildIf(gen, BuildState.Failed("Couldn't build a round right now. Try again."))
         }
     }
 
@@ -369,6 +383,7 @@ class InThePocketStore(
     /** Account deletion: drop every round and the file. */
     fun clearLocal() {
         synchronized(lock) {
+            generation.incrementAndGet()
             tickerJob?.cancel(); tickerJob = null
             chipsById.clear()
             _state.value = State()
@@ -380,6 +395,9 @@ class InThePocketStore(
 
     private fun publish(f: (State) -> State) { _state.value = f(_state.value) }
     private fun publishBuild(b: BuildState) = synchronized(lock) { publish { it.copy(buildState = b) } }
+    private fun publishBuildIf(gen: Int, b: BuildState) = synchronized(lock) {
+        if (generation.get() == gen) publish { it.copy(buildState = b) }
+    }
 
     private fun replace(round: InThePocketRound) {
         publish { st -> st.copy(rounds = st.rounds.map { if (it.id == round.id) round else it }) }
