@@ -36,6 +36,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -168,9 +169,9 @@ fun TimelineCard(event: MixSessionEvent, active: Boolean, onTap: () -> Unit, mod
 @Composable
 fun MixReplayTimeline(events: List<MixSessionEvent>, modifier: Modifier = Modifier) {
     val durationMs = events.lastOrNull()?.tMs ?: 0
-    var replayMs by remember { mutableFloatStateOf(0f) }
+    var replayMs by rememberSaveable { mutableFloatStateOf(0f) }
     var playing by remember { mutableStateOf(false) }
-    var speed by remember { mutableStateOf(1.0) }
+    var speed by rememberSaveable { mutableStateOf(1.0) }
     var scrubbing by remember { mutableStateOf(false) }
     var speedMenu by remember { mutableStateOf(false) }
     val tMs = remember(events) { events.map { it.tMs } }

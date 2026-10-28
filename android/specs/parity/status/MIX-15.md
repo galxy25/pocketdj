@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-15 Sessions screen + replay timeline + recordings panel
 - [x] MixEventSentences.kt (pure port of iOS MixEventDisplay; unknown kind shows raw string)
@@ -14,3 +14,13 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+fixes applied
+- MAJOR stale current-session counts -> fixed: rows built from store.sessionsNewestFirst + durationMs/playedSongIds/events/startedAt (SessionRowText.rows), recomputed on sessions/currentId/playedRevision + 1 s tick; detail header uses store.playedSongIds. Test: SessionRowDataTest (live current session non-zero).
+- MINOR rememberSaveable -> fixed: openId, replayMs, speed saved (playing intentionally restarts paused; list scroll already saveable).
+- MINOR status ledger -> fixed: docs/ARCHITECTURE-ANDROID.md MIX-15 row = PARTIAL (omits CSV export, load-card sheet, tablet layout); emulator pass pending (integrator).
+- MINOR take delete/tags/time -> fixed: empty session folder removed, per-take tags mix-recording-play-/delete-<id>, start time shown.
+- NIT unknown-kind count -> accepted, documented (unknown events are shown, so counted).
+- NIT test rename -> renamed ReplayClockTest; Compose UI scrub test not added (no emulator allowed).
+Tests: 4015 -> 4016, 0 failures; assembleDebug green.

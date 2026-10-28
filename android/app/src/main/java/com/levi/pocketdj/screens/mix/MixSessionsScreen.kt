@@ -44,6 +44,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,11 +74,24 @@ object SessionRowText {
 
     /** Newest first by timeline t0. */
     fun newestFirst(sessions: List<MixSession>): List<MixSession> = sessions.sortedByDescending { it.startedAt }
+
+    /** Row data built from the store's FOLDED readers so the current session reflects its live buffers. */
+    fun rows(store: MixSessionStore): List<SessionRowData> = store.sessionsNewestFirst.map { s ->
+        SessionRowData(
+            session = s, startedAt = store.startedAt(s.id), durationMs = store.durationMs(s.id),
+            tracks = store.playedSongIds(s.id).size, actions = store.events(s.id).size,
+        )
+    }
 }
+
+data class SessionRowData(val session: MixSession, val startedAt: Double, val durationMs: Int, val tracks: Int, val actions: Int)
 
 private fun dateText(epochMs: Double): String =
     if (epochMs <= 0) "—" else java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
         .format(Date(epochMs.toLong()))
+
+private fun timeText(epochMs: Double): String =
+    if (epochMs <= 0) "—" else java.text.DateFormat.getTimeInstance(java.text.DateFormat.SHORT).format(Date(epochMs.toLong()))
 
 /** Sessions list -> tap a row to open its replay timeline. Back from the detail returns to the list. */
 @Composable
@@ -85,7 +99,7 @@ fun MixSessionsRoute(onBack: () -> Unit) {
     val ctx = LocalContext.current
     val graph = remember { AppGraph.get(ctx).mixGraph }
     val store = graph.mixSessions
-    var openId by remember { mutableStateOf<String?>(null) }
+    var openId by rememberSaveable { mutableStateOf<String?>(null) }
     val id = openId
     BackHandler(enabled = id != null) { openId = null }
     Column(Modifier.fillMaxSize().testTag("mix-sessions-screen")) {
@@ -102,13 +116,17 @@ fun MixSessionsRoute(onBack: () -> Unit) {
 private fun SessionsList(store: MixSessionStore, onBack: () -> Unit, onOpen: (String) -> Unit) {
     val sessions by store.sessions.collectAsState()
     val currentId by store.currentIdFlow.collectAsState()
+    val playedRev by store.playedRevisionFlow.collectAsState()
+    // Live action logging does not emit on `sessions`, so also tick while the list is visible.
+    var tick by remember { mutableStateOf(0) }
+    LaunchedEffect(Unit) { while (true) { delay(1000); tick++ } }
+    val list = remember(sessions, currentId, playedRev, tick) { SessionRowText.rows(store) }
     var renaming by remember { mutableStateOf<MixSession?>(null) }
     var draft by remember { mutableStateOf("") }
     Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
         Text("Sessions", style = MaterialTheme.typography.titleLarge)
     }
-    val list = SessionRowText.newestFirst(sessions)
     if (list.isEmpty()) {
         Text(
             "No sessions yet. Start mixing on the Mix tab — your actions are recorded into a session you can replay here.",
@@ -116,7 +134,8 @@ private fun SessionsList(store: MixSessionStore, onBack: () -> Unit, onOpen: (St
         )
     }
     LazyColumn(Modifier.fillMaxWidth().testTag("mix-sessions-list")) {
-        items(list, key = { it.id }) { s ->
+        items(list, key = { it.session.id }) { row ->
+            val s = row.session
             val dismiss = rememberSwipeToDismissBoxState(confirmValueChange = {
                 if (it == SwipeToDismissBoxValue.EndToStart) { store.delete(s.id); true } else false
             })
@@ -128,7 +147,7 @@ private fun SessionsList(store: MixSessionStore, onBack: () -> Unit, onOpen: (St
                     }
                 },
             ) {
-                SessionRow(s, isCurrent = s.id == currentId, onClick = { onOpen(s.id) },
+                SessionRow(row, isCurrent = s.id == currentId, onClick = { onOpen(s.id) },
                     onRename = { renaming = s; draft = s.name }, onDelete = { store.delete(s.id) })
             }
         }
@@ -146,7 +165,8 @@ private fun SessionsList(store: MixSessionStore, onBack: () -> Unit, onOpen: (St
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun SessionRow(s: MixSession, isCurrent: Boolean, onClick: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+private fun SessionRow(row: SessionRowData, isCurrent: Boolean, onClick: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit) {
+    val s = row.session
     var menu by remember { mutableStateOf(false) }
     Box(Modifier.background(MaterialTheme.colorScheme.background)) {
         Row(
@@ -166,9 +186,9 @@ private fun SessionRow(s: MixSession, isCurrent: Boolean, onClick: () -> Unit, o
                         )
                     }
                 }
-                Text(dateText(s.startedAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(dateText(row.startedAt), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text(
-                    SessionRowText.summary(s.durationMs, s.playedSongIds.size, s.events.size, s.recordingsList.size),
+                    SessionRowText.summary(row.durationMs, row.tracks, row.actions, s.recordingsList.size),
                     style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -187,6 +207,8 @@ private fun SessionDetail(store: MixSessionStore, player: RecordingPlayer, folde
     // Stable snapshot for the screen's lifetime (the current session keeps recording). Unknown
     // (newer-build) kinds are kept and shown by their raw kind string.
     val events = remember(id) { store.events(id) }
+    val playedRev by store.playedRevisionFlow.collectAsState()
+    val trackCount = remember(sessions, playedRev) { store.playedSongIds(id).size }
     DisposableEffect(id) { onDispose { player.stop() } }
     // A deleted-from-under-us session: bounce back to the list.
     LaunchedEffect(session == null) { if (session == null) onBack() }
@@ -194,7 +216,7 @@ private fun SessionDetail(store: MixSessionStore, player: RecordingPlayer, folde
         IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
         Column {
             Text(session?.name ?: "Session", style = MaterialTheme.typography.titleLarge)
-            Text("${session?.playedSongIds?.size ?: 0} tracks · ${events.size} actions", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("$trackCount tracks · ${events.size} actions", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
     val recs = session?.recordingsList.orEmpty()
@@ -220,14 +242,14 @@ private fun RecordingsPanel(store: MixSessionStore, player: RecordingPlayer, fol
                 val file = File(folder, rec.fileName)
                 val isPlaying = playingPath == file.path
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    IconButton(onClick = { player.toggle(file) }, modifier = Modifier.testTag("mix-recording-row")) {
+                    IconButton(onClick = { player.toggle(file) }, modifier = Modifier.testTag("mix-recording-play-${rec.id}")) {
                         Icon(if (isPlaying) Icons.Filled.StopCircle else Icons.Filled.PlayCircle, if (isPlaying) "Stop recording" else "Play recording", Modifier.size(30.dp), tint = MaterialTheme.colorScheme.primary)
                     }
                     Column(Modifier.weight(1f)) {
                         Text("Take ${idx + 1}", style = MaterialTheme.typography.bodySmall)
-                        Text("${recordingClock(rec.durationMs.toLong())}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("${timeText(rec.startedAt)} · ${recordingClock(rec.durationMs.toLong())}", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    IconButton(onClick = { pendingDelete = rec }) { Icon(Icons.Filled.Delete, "Delete recording", Modifier.size(20.dp), tint = MaterialTheme.colorScheme.error) }
+                    IconButton(onClick = { pendingDelete = rec }, modifier = Modifier.testTag("mix-recording-delete-${rec.id}")) { Icon(Icons.Filled.Delete, "Delete recording", Modifier.size(20.dp), tint = MaterialTheme.colorScheme.error) }
                 }
                 if (isPlaying) RecordingScrubBar(player)
             }
@@ -243,6 +265,7 @@ private fun RecordingsPanel(store: MixSessionStore, player: RecordingPlayer, fol
                     val f = File(folder, rec.fileName)
                     if (player.playing.value == f.path) player.stop()   // release the file first
                     runCatching { f.delete() }
+                    runCatching { if (folder.isDirectory && folder.list().isNullOrEmpty()) folder.delete() }
                     store.removeRecording(sessionId, rec.id)
                     pendingDelete = null
                 }) { Text("Delete recording") }

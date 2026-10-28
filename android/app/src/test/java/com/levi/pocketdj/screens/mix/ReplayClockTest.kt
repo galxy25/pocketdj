@@ -7,7 +7,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class ReplayTimelineTest {
+class ReplayClockTest {
     private val t = listOf(0, 500, 500, 500, 2000, 5000)
 
     @Test fun emptyIsNull() = assertNull(ReplayClock.currentIndex(emptyList(), 100.0))
