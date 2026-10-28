@@ -41,6 +41,7 @@ class JukeboxGraph private constructor(context: Context) {
                 baseUrl = current.jukeboxServerUrl,
                 token = current.jukeboxToken,
                 installId = app.settings.ensureInstallId(),
+                profileId = app.servicesGraph.enrolledProfileId(), // SVC-10
             )
         },
     )

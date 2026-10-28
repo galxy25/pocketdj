@@ -1,6 +1,7 @@
 package com.levi.pocketdj.data.jukebox
 
 import com.levi.pocketdj.data.PdjJson
+import com.levi.pocketdj.data.credentials.ProfileHeader
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -22,8 +23,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
  * Auth (jukebox.md §2.2): the server-level token is the bearer on create (and
  * sent on health, harmless); the per-session `hostKey` is the bearer on every
  * other host route. `Authorization` is OMITTED ENTIRELY when the credential is
- * empty. `X-PocketDJ-Device` rides every call; `X-PocketDJ-Profile` is omitted
- * on Android P1 (no profiles).
+ * empty. `X-PocketDJ-Device` rides every call; `X-PocketDJ-Profile` rides only
+ * when an enrolled profile id exists (Config.profileId).
  */
 class JukeboxClient(
     http: OkHttpClient,
@@ -35,6 +36,8 @@ class JukeboxClient(
         val baseUrl: String,
         val token: String,
         val installId: String,
+        /** Enrolled profile id; empty => `X-PocketDJ-Profile` omitted. */
+        val profileId: String = "",
     ) {
         val normalizedBase: String get() = JukeboxUrls.normalizedBase(baseUrl)
         val configured: Boolean get() = normalizedBase.isNotEmpty()
@@ -57,7 +60,7 @@ class JukeboxClient(
     suspend fun health(): JukeboxHealth {
         val config = requireConfig()
         val url = JukeboxUrls.health(config.normalizedBase) ?: throw invalidUrl()
-        val request = builder(config.installId, bearer = config.token).url(url).get().build()
+        val request = builder(config, bearer = config.token).url(url).get().build()
         return execute(shortClient, request) { body -> json.decodeFromString<JukeboxHealth>(body) }
     }
 
@@ -74,7 +77,7 @@ class JukeboxClient(
             put("timeless", false)
             put("requiresToken", requiresToken)
         }.toString().toRequestBody(JSON_MEDIA_TYPE)
-        val request = builder(config.installId, bearer = config.token).url(url).post(body).build()
+        val request = builder(config, bearer = config.token).url(url).post(body).build()
         return execute(longClient, request) { text ->
             json.decodeFromString<JukeboxSessionInfo>(text)
         }
@@ -86,7 +89,7 @@ class JukeboxClient(
         val url = JukeboxUrls.state(config.normalizedBase, session.jukeboxId) ?: throw invalidUrl()
         val body = json.encodeToString(JukeboxStatePayload.serializer(), payload)
             .toRequestBody(JSON_MEDIA_TYPE)
-        val request = builder(config.installId, bearer = session.hostKey).url(url).post(body).build()
+        val request = builder(config, bearer = session.hostKey).url(url).post(body).build()
         execute(shortClient, request) { }
     }
 
@@ -95,7 +98,7 @@ class JukeboxClient(
         val config = requireConfig()
         val url = JukeboxUrls.requests(config.normalizedBase, session.jukeboxId, since)
             ?: throw invalidUrl()
-        val request = builder(config.installId, bearer = session.hostKey).url(url).get().build()
+        val request = builder(config, bearer = session.hostKey).url(url).get().build()
         return execute(shortClient, request) { text ->
             json.decodeFromString<JukeboxRequestsPage>(text)
         }
@@ -112,7 +115,7 @@ class JukeboxClient(
             ?: throw invalidUrl()
         val body = buildJsonObject { put("action", action.wire) }
             .toString().toRequestBody(JSON_MEDIA_TYPE)
-        val request = builder(config.installId, bearer = session.hostKey).url(url).post(body).build()
+        val request = builder(config, bearer = session.hostKey).url(url).post(body).build()
         execute(shortClient, request) { }
     }
 
@@ -120,7 +123,7 @@ class JukeboxClient(
     suspend fun end(session: JukeboxSessionInfo) {
         val config = requireConfig()
         val url = JukeboxUrls.end(config.normalizedBase, session.jukeboxId) ?: throw invalidUrl()
-        val request = builder(config.installId, bearer = session.hostKey)
+        val request = builder(config, bearer = session.hostKey)
             .url(url)
             .post(ByteArray(0).toRequestBody(JSON_MEDIA_TYPE))
             .build()
@@ -131,7 +134,7 @@ class JukeboxClient(
     suspend fun listSessions(): List<JukeboxSessionRow> {
         val config = requireConfig()
         val url = JukeboxUrls.sessions(config.normalizedBase) ?: throw invalidUrl()
-        val request = builder(config.installId, bearer = config.token).url(url).get().build()
+        val request = builder(config, bearer = config.token).url(url).get().build()
         return execute(shortClient, request) { text ->
             json.decodeFromString<JukeboxSessionsPage>(text).sessions
         }
@@ -141,7 +144,7 @@ class JukeboxClient(
     suspend fun sessionInfo(jukeboxId: String): JukeboxSessionInfo {
         val config = requireConfig()
         val url = JukeboxUrls.sessionInfo(config.normalizedBase, jukeboxId) ?: throw invalidUrl()
-        val request = builder(config.installId, bearer = config.token).url(url).get().build()
+        val request = builder(config, bearer = config.token).url(url).get().build()
         return execute(shortClient, request) { text ->
             json.decodeFromString<JukeboxSessionInfo>(text)
         }
@@ -158,8 +161,9 @@ class JukeboxClient(
     private fun invalidUrl() =
         JukeboxException(null, "Jukebox server URL is invalid — check Settings.")
 
-    private fun builder(installId: String, bearer: String): Request.Builder {
-        val builder = Request.Builder().header("X-PocketDJ-Device", installId)
+    private fun builder(config: Config, bearer: String): Request.Builder {
+        val builder = Request.Builder().header("X-PocketDJ-Device", config.installId)
+        ProfileHeader.apply(builder, config.profileId)
         if (bearer.isNotEmpty()) builder.header("Authorization", "Bearer $bearer")
         return builder
     }

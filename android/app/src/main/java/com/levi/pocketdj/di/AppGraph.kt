@@ -186,6 +186,7 @@ class AppGraph private constructor(context: Context) {
             token = current.ripToken,
             installId = settings.ensureInstallId(),
             ripFromCloud = settings.get(com.levi.pocketdj.data.settings.ShellSettings.RIP_FROM_CLOUD), // SURF-6
+            profileId = servicesGraph.enrolledProfileId(), // SVC-10 X-PocketDJ-Profile (only when enrolled)
         )
     }
 
