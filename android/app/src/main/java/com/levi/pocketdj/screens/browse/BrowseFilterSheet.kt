@@ -1,11 +1,7 @@
 package com.levi.pocketdj.screens.browse
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.ui.platform.testTag
-import com.levi.pocketdj.data.favorites.FavoriteFilter
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -19,46 +15,75 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.DatePicker
+import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.data.favorites.FavoriteFilter
+import java.text.DateFormat
+import java.util.Date
 
 /**
- * P1 filter sheet — the task-locked field cut: genre, BPM range, key (Camelot),
- * source (specs/browse.md §6.5). Selections AND-compose; each section is one
- * clause of the shared engine semantics in [BrowseFilters].
+ * Filter sheet — the iOS clause editor (`FilterSheet.swift`): a list of AND-composed clauses
+ * (field -> operator -> value editor), per-clause remove, Add filter, then the song-mode
+ * Favorites tri-state, History-only Hide skips, and the song-mode membership SHOW/HIDE section.
+ * Opens fully expanded (full width/height) so long editors never clip.
  */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun BrowseFilterSheet(
+    kind: BrowseKind,
     filters: BrowseFilters,
-    genreOptions: List<String>,
-    camelotOptions: List<String>,
-    sourceOptions: List<String>,
-    /** Song mode only (iOS): the ♥ tri-state is meaningless for albums/artists. */
+    /** Distinct values for an options-backed field (genre, key, source...). */
+    optionsFor: (String) -> List<String>,
+    /** Song mode only (iOS): the heart tri-state is meaningless for albums/artists. */
     showFavorite: Boolean = false,
+    /** History mode adds the Last played field and the Hide skips toggle, drops membership. */
+    historyMode: Boolean = false,
+    playlists: List<CollectionRef> = emptyList(),
+    pockets: List<CollectionRef> = emptyList(),
     onFilters: (BrowseFilters) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    // BPM bounds edit as local text, committed on every keystroke that parses.
-    var bpmMinText by remember { mutableStateOf(filters.bpmMin?.let(::trimDouble) ?: "") }
-    var bpmMaxText by remember { mutableStateOf(filters.bpmMax?.let(::trimDouble) ?: "") }
+    val fields = Fields.forKind(kind, includeHistory = historyMode)
+    val showMembership = kind == BrowseKind.SONGS && !historyMode && (playlists.isNotEmpty() || pockets.isNotEmpty())
 
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -75,18 +100,46 @@ fun BrowseFilterSheet(
                     modifier = Modifier.weight(1f),
                 )
                 TextButton(
-                    onClick = {
-                        bpmMinText = ""
-                        bpmMaxText = ""
-                        onFilters(BrowseFilters())
-                    },
-                    enabled = filters.activeCount > 0 || filters.favoriteActive,
-                ) {
-                    Text("Clear all")
-                }
+                    onClick = { onFilters(filters.clearedAll()) },
+                    enabled = filters.clauses.isNotEmpty() || filters.favoriteActive || filters.hideSkips,
+                    modifier = Modifier.testTag("filter-clear-all"),
+                ) { Text("Clear all") }
+                TextButton(onClick = onDismiss, modifier = Modifier.testTag("filter-done")) { Text("Done") }
             }
 
-            if (showFavorite) {
+            if (filters.clauses.isEmpty()) {
+                Text(
+                    "No filters. Add one to narrow the ${if (kind == BrowseKind.ALBUMS) "albums" else if (kind == BrowseKind.ARTISTS) "artists" else "songs"}.",
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            }
+
+            filters.clauses.forEach { clause -> key(clause.id) {
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                ClauseEditorRow(
+                    clause = clause,
+                    fields = fields,
+                    options = optionsFor,
+                    onChange = { updated ->
+                        onFilters(filters.copy(clauses = filters.clauses.map { if (it.id == clause.id) updated else it }))
+                    },
+                    onRemove = { onFilters(filters.copy(clauses = filters.clauses.filterNot { it.id == clause.id })) },
+                )
+            } }
+
+            OutlinedButton(
+                onClick = {
+                    ClauseReducer.newClause(fields)?.let { onFilters(filters.copy(clauses = filters.clauses + it)) }
+                },
+                modifier = Modifier.padding(top = 12.dp).testTag("add-filter"),
+            ) {
+                Icon(Icons.Filled.Add, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("Add filter")
+            }
+
+            if (showFavorite && !historyMode) {
                 SectionLabel("Favorites")
                 SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
                     val opts = listOf(
@@ -105,107 +158,34 @@ fun BrowseFilterSheet(
                 }
             }
 
-            if (genreOptions.isNotEmpty()) {
-                SectionLabel("Genre")
-                OptionChips(
-                    options = genreOptions,
-                    selected = filters.genres,
-                    onSelected = { onFilters(filters.withGenres(it)) },
-                )
+            if (historyMode) {
+                SectionLabel("Playback")
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                    Text("Hide skips", modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = filters.hideSkips,
+                        onCheckedChange = { onFilters(filters.withHideSkips(it)) },
+                        modifier = Modifier.testTag("filter-hide-skips"),
+                    )
+                }
             }
 
-            SectionLabel("BPM")
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                OutlinedTextField(
-                    value = bpmMinText,
-                    onValueChange = { text ->
-                        bpmMinText = text
-                        onFilters(filters.withBpm(text.toDoubleOrNull(), filters.bpmMax))
-                    },
-                    label = { Text("Min") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f),
-                )
-                Spacer(Modifier.width(12.dp))
-                Text("–", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.width(12.dp))
-                OutlinedTextField(
-                    value = bpmMaxText,
-                    onValueChange = { text ->
-                        bpmMaxText = text
-                        onFilters(filters.withBpm(filters.bpmMin, text.toDoubleOrNull()))
-                    },
-                    label = { Text("Max") },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    modifier = Modifier.weight(1f),
-                )
-            }
-            Text(
-                "Applies to songs; songs without a BPM are hidden while set.",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 4.dp),
-            )
-
-            if (camelotOptions.isNotEmpty()) {
-                SectionLabel("Key (Camelot)")
-                OptionChips(
-                    options = camelotOptions,
-                    selected = filters.camelots,
-                    onSelected = { onFilters(filters.withCamelots(it)) },
-                )
-            }
-
-            if (sourceOptions.size > 1) {
-                SectionLabel("Source")
-                OptionChips(
-                    options = sourceOptions,
-                    selected = filters.sources,
-                    onSelected = { onFilters(filters.withSources(it)) },
+            if (showMembership) {
+                SectionLabel("Collection membership")
+                MembershipSection(
+                    membership = filters.membership,
+                    playlists = playlists,
+                    pockets = pockets,
+                    onChange = { onFilters(filters.withMembership(it)) },
                 )
             }
         }
     }
 }
-
-private fun trimDouble(value: Double): String =
-    if (value == value.toLong().toDouble()) value.toLong().toString() else value.toString()
 
 @Composable
 private fun SectionLabel(text: String) {
-    Spacer(Modifier.height(16.dp))
-    Text(
-        text,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+    Spacer(Modifier.height(20.dp))
+    Text(text, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
     Spacer(Modifier.height(6.dp))
-}
-
-@OptIn(ExperimentalLayoutApi::class)
-@Composable
-private fun OptionChips(
-    options: List<String>,
-    selected: Set<String>,
-    onSelected: (Set<String>) -> Unit,
-) {
-    FlowRow(
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        options.forEach { option ->
-            FilterChip(
-                selected = option in selected,
-                onClick = {
-                    onSelected(if (option in selected) selected - option else selected + option)
-                },
-                label = { Text(option) },
-            )
-        }
-    }
 }
