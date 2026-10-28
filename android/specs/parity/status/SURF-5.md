@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SURF-5 - ShellActions facade + MixFacade seam + Assistant media search + shortcuts
 

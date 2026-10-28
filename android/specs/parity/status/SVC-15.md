@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-15 Apple Music Web API client
 - [x] AppleMusicTokens (interface + Default/Static impls)

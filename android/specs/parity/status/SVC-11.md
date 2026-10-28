@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-11 Cloud stems client + burned stems pull + Stemify on burn bar
 
