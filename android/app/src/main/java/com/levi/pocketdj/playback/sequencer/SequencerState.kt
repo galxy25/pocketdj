@@ -17,6 +17,10 @@ data class SequencerState(
     val shuffleEnabled: Boolean = false,
     /** User-visible one-shot message (e.g. device queue unplayable). */
     val playbackNotice: String? = null,
+    /** The current row is a live capture with no natural end (scrubber disabled, "Next" offered). */
+    val waitingForLive: Boolean = false,
+    /** The cascade breaker halted the run: paused on the current row until the listener acts. */
+    val pausedByCascade: Boolean = false,
     val playGeneration: Long = 0,
     /** A device-mode run ended having loaded no on-device file (one-shot banner signal). */
     val deviceQueueUnplayable: Boolean = false,
