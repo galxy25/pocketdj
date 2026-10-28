@@ -70,6 +70,13 @@ final class SetlistEndOfSongTests: XCTestCase {
         .init(id: id, title: id, artist: "A", lengthMs: lengthMs)
     }
 
+    /// Let a just-loaded row's nowPlaying-change observer (the jump-adopt, one main-actor turn
+    /// later) run BEFORE the test ends that row — a real track ends minutes after it loads,
+    /// never in the same turn. Yields only: a stub burned file fails in AVFoundation ~100 ms in.
+    private func settleLoad() async {
+        for _ in 0..<5 { await Task.yield() }
+    }
+
     /// Wait (bounded) for the asserted condition.
     private func waitUntil(_ message: String, timeout: TimeInterval = 3, _ predicate: () -> Bool) async {
         let deadline = Date().addingTimeInterval(timeout)
@@ -160,6 +167,108 @@ final class SetlistEndOfSongTests: XCTestCase {
         await waitUntil("the deferred row plays next") { r.rips.nowPlaying?.songId == "slow" }
         XCTAssertEqual(r.seq.index, 1)
         XCTAssertEqual(EOSStub.presignCount["slow", default: 0], before, "started instantly — no new round trip")
+        r.seq.stop()
+    }
+
+    // MARK: 2b — stall EPISODES: never hop back to a row this episode abandoned
+
+    /// THE ping-pong (drive log 2026-10-27 07:12, ios-3712BFDE): two Apple Music rows whose
+    /// catalog Song is prefetched count as "instant", but their audio still streams — on weak
+    /// signal BOTH stall, and the hop went b229 → 1393 → b229 → … every 6 s, each hop cancelling
+    /// the other's partial buffer. Now the row abandoned in this episode is never a target again:
+    /// the current row is left resolving (not cancelled, not restarted) and plays when it lands.
+    func testStallHopNeverPingPongsBackToTheAbandonedRowAndTheCurrentRowKeepsBuffering() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["amA", "amB"])
+        r.seq.startsInstantlyOverrideForTesting = { ["amA", "amB"].contains($0) ? true : nil }
+        EOSStub.hangPresign = ["amA"]
+        EOSStub.delayedPresign = ["amB": 1.2]       // stalls past its own 0.3 s, then lands
+        r.seq.play([item("amA"), item("amB")])
+        await waitUntil("hopped off the stalled row") { r.seq.stallHopCount == 1 }
+        XCTAssertEqual(r.seq.queue.map(\.id), ["amB", "amA"], "deferred, not dropped")
+        try? await Task.sleep(nanoseconds: 100_000_000)
+        let presigns = EOSStub.presignCount["amB", default: 0]
+
+        // amB stalls too (0.3 s) — the only other row is amA, abandoned this episode: no hop back.
+        await waitUntil("amB's buffered resolve lands and plays", timeout: 4) { r.rips.nowPlaying?.songId == "amB" }
+        XCTAssertEqual(r.seq.stallHopCount, 1, "no return hop to the abandoned row")
+        XCTAssertEqual(r.seq.queue.map(\.id), ["amB", "amA"])
+        XCTAssertEqual(r.seq.index, 0)
+        XCTAssertEqual(EOSStub.presignCount["amB", default: 0], presigns,
+                       "the stalled current row was never cancelled + restarted from zero")
+        r.seq.stop()
+    }
+
+    /// An on-device row anywhere in the hop range beats an earlier "instant" (streaming) row.
+    func testStallHopPrefersAnOnDeviceRowOverAnEarlierInstantRow() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["hang", "inst", "b1"])
+        await burn(r, "b1")
+        r.seq.startsInstantlyOverrideForTesting = { $0 == "inst" ? true : nil }
+        EOSStub.hangPresign = ["hang", "inst"]
+        r.seq.play([item("hang"), item("inst"), item("b1")])
+        await waitUntil("hopped onto the burned row") { r.rips.nowPlaying?.songId == "b1" }
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "hang", "inst"])
+        XCTAssertEqual(r.seq.stallHopCount, 1)
+        r.seq.stop()
+    }
+
+    /// Several streaming hops in one episode are fine — each to a row not yet abandoned.
+    func testMultipleDistinctStreamingHopsInOneEpisode() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["s1", "s2", "s3"])
+        r.seq.startsInstantlyOverrideForTesting = { ["s1", "s2", "s3"].contains($0) ? true : nil }
+        EOSStub.hangPresign = ["s1", "s2"]
+        r.seq.play([item("s1"), item("s2"), item("s3")])
+        await waitUntil("hopped twice onto s3", timeout: 4) { r.rips.nowPlaying?.songId == "s3" }
+        XCTAssertEqual(r.seq.stallHopCount, 2, "s1 → s2 → s3: two distinct hops")
+        XCTAssertEqual(r.seq.queue.map(\.id), ["s3", "s2", "s1"], "each stalled row deferred behind its hop target")
+        r.seq.stop()
+    }
+
+    /// First audio ends the episode: a LATER stall may hop to a row abandoned in an earlier one.
+    func testEpisodeResetsAfterFirstAudioSoALaterStallCanHopToAPreviouslyAbandonedRow() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["amA", "b1", "late"])
+        await burn(r, "b1")
+        r.seq.startsInstantlyOverrideForTesting = { $0 == "amA" ? true : nil }
+        EOSStub.hangPresign = ["amA", "late"]
+        r.seq.play([item("amA"), item("b1")])
+        await waitUntil("episode 1: hopped onto the burned row") { r.rips.nowPlaying?.songId == "b1" }
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "amA"])
+        r.player.onFirstAudio?()                     // b1 renders → the episode is over (the stub bytes never render, and can fail first: drive the wired hook)
+        r.seq.insertNextInQueue([item("late")])      // a stalling row now sits BEFORE amA
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "late", "amA"])
+        await settleLoad()
+        r.player.onTrackEnded?()                     // b1 ends → "late" starts and stalls
+        await waitUntil("episode 2 may hop to amA again") { r.seq.stallHopCount == 2 }
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "amA", "late"])
+        r.seq.stop()
+    }
+
+    /// Control for the above: WITHOUT first audio the episode persists, so the same stall finds
+    /// only the abandoned row and leaves the current one buffering.
+    func testWithoutFirstAudioTheEpisodePersistsAndTheAbandonedRowIsNotATarget() async {
+        SetlistPlayer.resolveStallSeconds = 0.3
+        let r = makeRig()
+        manifest(r.rips, ["amA", "b1", "late"])
+        await burn(r, "b1")
+        r.seq.startsInstantlyOverrideForTesting = { $0 == "amA" ? true : nil }
+        EOSStub.hangPresign = ["amA", "late"]
+        r.seq.play([item("amA"), item("b1")])
+        await waitUntil("episode 1: hopped onto the burned row") { r.rips.nowPlaying?.songId == "b1" }
+        r.seq.insertNextInQueue([item("late")])
+        await settleLoad()
+        r.player.onTrackEnded?()                     // b1 never rendered (no first audio)
+        await waitUntil("late is the current row") { r.seq.index == 1 }
+        try? await Task.sleep(nanoseconds: 700_000_000)   // well past late's 0.3 s stall
+        XCTAssertEqual(r.seq.stallHopCount, 1, "amA was abandoned this episode — no hop")
+        XCTAssertEqual(r.seq.queue.map(\.id), ["b1", "late", "amA"])
+        XCTAssertEqual(r.seq.index, 1, "the stalled row is left buffering, not advanced past")
         r.seq.stop()
     }
 

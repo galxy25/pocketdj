@@ -412,6 +412,7 @@ final class SetlistPlayer {
 
     private func handleFirstAudio(source: String) {
         DeadAirMeter.shared.firstAudio()
+        endStallEpisode(reason: "firstAudio.\(source)")
         startStallTask?.cancel(); startStallTask = nil
         endStartWindow(reason: "firstAudio.\(source)")
     }
@@ -773,6 +774,7 @@ final class SetlistPlayer {
         player.onTrackFailed = nil
         resolveStallTask?.cancel(); resolveStallTask = nil
         liveBackstopTask?.cancel(); liveBackstopTask = nil
+        endStallEpisode(reason: "stop")
         player.onNext = nil
         player.onPrevious = nil
         player.setNextPreviousEnabled(false)
@@ -1721,6 +1723,25 @@ final class SetlistPlayer {
     /// How far ahead a stalled resolve looks for an on-device row to play instead.
     static let hopLookahead = 50
     @ObservationIgnored private var resolveStallTask: Task<Void, Never>?
+    /// Rows (by `Item.uid`) the stall hop abandoned in the CURRENT stall episode — consecutive
+    /// hops with no row reaching first audio. Never hop targets until the episode ends
+    /// (`endStallEpisode`: first audio, a user transport, stop).
+    @ObservationIgnored private var stallEpisodeAbandoned: Set<UUID> = []
+    /// Stall hops taken this run (diagnostics + tests).
+    @ObservationIgnored private(set) var stallHopCount = 0
+    #if DEBUG
+    /// Tests: force `rowStartsInstantly` for a song id (nil ⇒ the real answer) — models an
+    /// Apple Music row whose catalog Song is prefetched but whose audio still streams.
+    @ObservationIgnored var startsInstantlyOverrideForTesting: ((String) -> Bool?)?
+    #endif
+
+    /// A row produced audio (or the listener acted / the run stopped): the stall episode is
+    /// over, so a later stall may hop to a row abandoned in this one again.
+    private func endStallEpisode(reason: String) {
+        guard !stallEpisodeAbandoned.isEmpty else { return }
+        DiagLog.shared.log("playback", "stall episode end reason=\(reason) abandoned=\(stallEpisodeAbandoned.count)")
+        stallEpisodeAbandoned.removeAll()
+    }
     @ObservationIgnored private var liveBackstopTask: Task<Void, Never>?
     /// The generation whose cloud resolve is still awaiting (nil when none is).
     @ObservationIgnored private var resolvingGeneration: Int?
@@ -1779,8 +1800,11 @@ final class SetlistPlayer {
             guard !Task.isCancelled, let self, self.isRunning,
                   self.resolvingGeneration == gen, self.playGeneration == gen,
                   self.index < self.queue.count else { return }
+            // No eligible hop target ⇒ the current row is NOT touched: its resolve keeps going
+            // (no cancel, no restart from zero) and plays the moment it lands. The request
+            // timeouts / the AM never-started verdict / the cascade breaker still bound it.
             if !self.hopToOnDeviceRow(reason: "resolve stalled \(Int(wait))s") {
-                DiagLog.shared.log("playback", "resolve stalled \(Int(wait))s song=\(self.queue[self.index].id) — no on-device/instant row to hop to; waiting")
+                DiagLog.shared.log("playback", "resolve stalled \(Int(wait))s song=\(self.queue[self.index].id) — no on-device/instant row to hop to (abandoned=\(self.stallEpisodeAbandoned.count)); keep buffering")
             }
         }
     }
@@ -1790,6 +1814,9 @@ final class SetlistPlayer {
     /// hop's fallback when no on-device row is near: a row still waiting on a QUEUED rip sat
     /// silent 47 s with nothing to hop to (drive log 2026-10-25 05:15, "icameisaww").
     private func rowStartsInstantly(_ it: Item) -> Bool {
+        #if DEBUG
+        if let forced = startsInstantlyOverrideForTesting?(it.id) { return forced }
+        #endif
         if StudioFactory.isStudioId(it.id) || ProfileSourceStore.isProfileSongId(it.id) { return false }
         return coordinator.startsInstantly(id: it.id, resolveId: it.resolveId, title: it.title,
                                            artist: it.artist, variant: it.variant)
@@ -1799,6 +1826,14 @@ final class SetlistPlayer {
     /// `rowStartsInstantly`) and DEFER the current (stalled) row right behind it — reordered,
     /// never dropped. Shared by the resolve stall, the start watchdog, and the supervisor's L3.
     /// Returns false when no such row is within `hopLookahead`.
+    ///
+    /// STALL EPISODE (drive log 2026-10-27 07:12, ios-3712BFDE): "instant" only means no
+    /// round trip BEFORE play — an Apple Music row whose catalog Song is prefetched still
+    /// STREAMS, so on weak signal it stalls too, and two such rows hopped back and forth every
+    /// 6 s, each hop cancelling the other's partial buffer. So every row a hop abandons is
+    /// remembered until some row reaches first audio (or the listener transports / stops), and
+    /// is never a hop target again within that episode. Several distinct hops per episode are
+    /// fine; with no eligible row left the caller leaves the current row buffering.
     @discardableResult
     private func hopToOnDeviceRow(reason: String) -> Bool {
         guard index < queue.count else { return false }
@@ -1806,18 +1841,22 @@ final class SetlistPlayer {
         let end = min(queue.count, index + 1 + Self.hopLookahead)
         guard index + 1 < end else { return false }
         let range = (index + 1)..<end
+        let abandoned = stallEpisodeAbandoned.union([stalled.uid])
+        let eligible = range.filter { !abandoned.contains(queue[$0].uid) }
         let kind: String
         let j: Int
-        if let d = range.first(where: { rowOnDevice(queue[$0]) }) { j = d; kind = "on-device" }
-        else if let c = range.first(where: { rowStartsInstantly(queue[$0]) }) { j = c; kind = "instant" }
+        if let d = eligible.first(where: { rowOnDevice(queue[$0]) }) { j = d; kind = "on-device" }
+        else if let c = eligible.first(where: { rowStartsInstantly(queue[$0]) }) { j = c; kind = "instant" }
         else { return false }
+        stallEpisodeAbandoned.insert(stalled.uid)
+        stallHopCount &+= 1
         // [.., stalled, x, y, row, ..] → [.., row, stalled, x, y, ..]: the hop target plays NOW
         // and the stalled row is the very next one (instant by then if its download landed).
         // The stalled row's in-flight resolve is cancelled + superseded by the restart below and
         // must NEVER start it early — it plays only when the hop target ends.
         let row = queue.remove(at: j)
         queue.insert(row, at: index)
-        DiagLog.shared.log("playback", "\(reason) song=\(stalled.id) → hop to \(kind) \(row.id) (deferred stalled row)")
+        DiagLog.shared.log("playback", "\(reason) song=\(stalled.id) → hop to \(kind) \(row.id) (deferred stalled row) abandoned=\(stallEpisodeAbandoned.count)")
         persistSession(positionMs: 0)
         startPlayCurrent(fresh: true)
         return true
@@ -2087,6 +2126,7 @@ final class SetlistPlayer {
                 // its cap; the provider's never-started verdict owns a dead AM start.
                 if coordinator.appleMusic.audioConfirmed {
                     DeadAirMeter.shared.firstAudio()
+                    endStallEpisode(reason: "firstAudio.appleMusic")
                     endStartWindow(reason: "firstAudio.appleMusic")
                 }
                 logTrackStart(it, backend: "appleMusic", resumeAtMs: resumeAtMs)
@@ -2569,6 +2609,7 @@ extension SetlistPlayer {
     /// The listener acted: whatever happened before is not a cascade any more.
     func noteUserTransport() {
         cascade.reset()
+        endStallEpisode(reason: "user")
         pausedByCascade = false
         playbackNotice = nil
     }
