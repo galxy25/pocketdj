@@ -1,6 +1,7 @@
 package com.levi.pocketdj.mix.nowplaying
 
 import android.os.Looper
+import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.SimpleBasePlayer
 import androidx.media3.common.util.UnstableApi
@@ -21,6 +22,10 @@ interface NowPlayingDspPort {
     fun pause()
     fun skipNext()
     fun skipPrevious()
+    /** Scrub within the engaged song (ms from the song start). */
+    fun seekTo(positionMs: Long) {}
+    /** Extras (album id, play context) cached at engage so the controller's now-playing keeps art + context. */
+    fun extras(): android.os.Bundle? = null
     /** Another owner started (or the session yielded): leave the graph. */
     fun release()
 }
@@ -45,6 +50,9 @@ class NowPlayingDspSessionPlayer(
     init { board.register(this) }
 
     fun onAudioStarted() { board.setOwner(this); invalidateState() }
+
+    /** The engine engaged (playing or not): claim the ONE session so remote/in-app Play routes to the engine. */
+    fun claim() { board.setOwner(this); invalidateState() }
     fun refresh() = invalidateState()
 
     /** The engine left the graph on its own (end of window, disengage): hand the session back. */
@@ -57,15 +65,21 @@ class NowPlayingDspSessionPlayer(
     override fun getState(): State {
         val m = model()
         val b = State.Builder()
-            .setAvailableCommands(m.commands)
+            .setAvailableCommands(if (m.hasTrack) m.commands.buildUpon().add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM).build() else m.commands)
             .setPlaybackState(m.playbackState)
             .setPlayWhenReady(m.playWhenReady, Player.PLAY_WHEN_READY_CHANGE_REASON_REMOTE)
             .setPlaybackParameters(androidx.media3.common.PlaybackParameters(m.rate))
         val c = port.card() ?: return b.build()
         val cur = MediaItemData.Builder(c.songId)
-            .setMediaItem(MixPlayerStateMap.toMediaItem(c))
+            .setMediaItem(
+                MixPlayerStateMap.toMediaItem(c).let { mi ->
+                    port.extras()?.let { x ->
+                        mi.buildUpon().setRequestMetadata(MediaItem.RequestMetadata.Builder().setExtras(x).build()).build()
+                    } ?: mi
+                },
+            )
             .apply { m.durationMs?.let { setDurationUs(it * 1000L) } }
-            .setIsSeekable(false)
+            .setIsSeekable(true)
             .build()
         b.setPlaylist(
             listOf(MediaItemData.Builder(MixPlayerStateMap.UID_PREV).build(), cur, MediaItemData.Builder(MixPlayerStateMap.UID_NEXT).build()),
@@ -88,7 +102,7 @@ class NowPlayingDspSessionPlayer(
         when (MixPlayerStateMap.route(mediaItemIndex, seekCommand, currentIndex = 1)) {
             MixPlayerStateMap.Route.Next -> port.skipNext()
             MixPlayerStateMap.Route.Previous -> port.skipPrevious()
-            MixPlayerStateMap.Route.None -> Unit
+            MixPlayerStateMap.Route.None -> if (positionMs != androidx.media3.common.C.TIME_UNSET) port.seekTo(positionMs.coerceAtLeast(0L))
         }
         return Futures.immediateVoidFuture()
     }

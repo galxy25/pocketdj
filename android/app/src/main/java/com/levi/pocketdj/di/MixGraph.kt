@@ -62,6 +62,9 @@ import java.io.File
 /** MIX-18: how many upcoming rows the Stem Lock prefetch looks ahead (unmetered network). */
 private const val STEM_LOCK_WINDOW = 3
 
+/** MIX-18: a prefetch song step that has not completed in this long is marked failed (frees the lane). */
+private const val STEM_LOCK_FETCH_TIMEOUT_MS = 10 * 60_000L
+
 /**
  * Sidecar graph for the mix area (decision D3). Owns the two durable Mix documents
  * (`pocketdj-mix-decks.json`, `pocketdj-mix-sessions.json`) over the shared off-main
@@ -331,6 +334,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
 
     private val npMain by lazy { CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate) }
     @Volatile private var npInstalled = false
+    /** Resign the npdsp MediaSession owner (set by [installNowPlayingDsp]). */
+    @Volatile private var npReleaseSession: () -> Unit = {}
+    /** Album/context extras + title/artist cached at engage (the controller's now-playing loses them once npdsp owns the session). */
+    @Volatile private var npMeta: NpMeta? = null
+    private class NpMeta(val songId: String, val title: String?, val artist: String?, val artworkUri: String?, val extras: android.os.Bundle)
 
     /** The session-scoped Stem Lock carry; every change re-persists the durable session's `stemLock`. */
     val stemLockSession: com.levi.pocketdj.mix.nowplaying.StemLockSession by lazy {
@@ -373,10 +381,13 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 val s = loader.open(step.id, step.title, step.artist)
                 var ok = false
                 if (s != null) {
-                    while (true) {
-                        if (s.isComplete) { ok = true; break }
-                        if (s.failed || loader.stream(step.id) !== s) break
-                        kotlinx.coroutines.delay(250)
+                    // Bounded: a stalled rip must not park the single-lane prefetcher forever.
+                    kotlinx.coroutines.withTimeoutOrNull(STEM_LOCK_FETCH_TIMEOUT_MS) {
+                        while (true) {
+                            if (s.isComplete) { ok = true; break }
+                            if (s.failed || loader.stream(step.id) !== s) break
+                            kotlinx.coroutines.delay(250)
+                        }
                     }
                 }
                 ok
@@ -423,7 +434,9 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             stemSource = object : com.levi.pocketdj.mix.nowplaying.DspStemSource {
                 override fun localParts(songId: String) = burns.localStemPartFiles(songId).orEmpty()
                 override fun obtainable(songId: String) = burns.stemsRemote(songId)
-                override suspend fun fetch(songId: String, parts: List<String>): Boolean = parts.all { burns.burnStemPart(songId, it) }
+                override suspend fun fetch(songId: String, parts: List<String>): Boolean =
+                    parts.sortedBy { com.levi.pocketdj.mix.nowplaying.StemLock.partPriority.indexOf(it).let { i -> if (i < 0) Int.MAX_VALUE else i } }
+                        .all { burns.burnStemPart(songId, it) }
             },
             scope = npMain,
         )
@@ -442,7 +455,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             override val mixSessionActive: Boolean get() = com.levi.pocketdj.screens.nowplaying.NowPlayingSeams.mixSessionActive
             override val appleMusicActive: Boolean get() = controller.isAppleMusicActive
             override fun resolve(songId: String) = resolver.resolve(songId)
-            override fun windowLengthMs(songId: String): Long = controller.nowPlaying.value?.takeIf { it.songId == songId }?.durationMs ?: 0L
+            // The QUEUE row's clipped length (never the controller's now-playing, which may still be the previous row).
+            override fun windowLengthMs(songId: String): Long = seq.state.value.current?.takeIf { it.id == songId }?.lengthMs ?: 0L
+            override val loadedSongId: String? get() = controller.nowPlaying.value?.songId
+            override val playWanted: Boolean get() = !seq.discriminator.pausedByListener
+            override fun engineEnded() { npReleaseSession() }
             override suspend fun positionMs(): Long = controller.currentPositionMs()
             override val exoPlaying: Boolean get() = controller.nowPlaying.value?.isPlaying == true
             override fun advanceAfterEnd(songId: String) { seq.handleEnded(songId) }
@@ -464,6 +481,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     fun installNowPlayingDsp() {
         if (npInstalled) return
         npInstalled = true
+        try { installNowPlayingDspImpl() } catch (t: Throwable) { npInstalled = false; throw t }
+    }
+
+    @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+    private fun installNowPlayingDspImpl() {
         val host = npDspHost
         val engine = npDspEngine
         val controller = app.playbackController
@@ -474,11 +496,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val port = object : com.levi.pocketdj.mix.nowplaying.NowPlayingDspPort {
             override fun card(): com.levi.pocketdj.mix.service.MixCard? {
                 val id = engine.engagedSongId ?: return null
-                val np = controller.nowPlaying.value?.takeIf { it.songId == id }
+                val meta = npMeta?.takeIf { it.songId == id }
                 val dur = engine.durationSec
                 return com.levi.pocketdj.mix.service.MixCard(
-                    songId = id, title = np?.title ?: id, artist = np?.artist.orEmpty(),
-                    artworkUri = np?.albumId?.let { a -> app.catalogRepository.state.value.catalog?.albumsById?.get(a)?.artCandidates()?.firstOrNull() },
+                    songId = id, title = meta?.title ?: id, artist = meta?.artist.orEmpty(),
+                    artworkUri = meta?.artworkUri,
                     durationMs = if (dur > 0) (dur * 1000).toLong() else null,
                     positionMs = (engine.currentTimeSec * 1000).toLong(), rate = engine.rate.toFloat(),
                 )
@@ -490,8 +512,30 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             override fun skipNext() { npMain.launch { controller.next() } }
             override fun skipPrevious() { npMain.launch { controller.previous() } }
             override fun release() { engine.disengage(); host.refresh() }
+            override fun seekTo(positionMs: Long) { engine.seekTo(positionMs / 1000.0) }
+            override fun extras(): android.os.Bundle? = npMeta?.takeIf { it.songId == engine.engagedSongId }?.extras
         }
         val player = com.levi.pocketdj.mix.nowplaying.NowPlayingDspSessionPlayer(android.os.Looper.getMainLooper(), port)
+        npReleaseSession = { player.released() }
+        // Snapshot the playing row's metadata while the controller still mirrors ExoPlayer, then claim the
+        // session BEFORE the voice starts (ExoPlayer pauses silently; remote Play routes to the engine even
+        // when the swap was made while paused).
+        engine.onEngaged = {
+            val np = controller.nowPlaying.value
+            val id = np?.songId
+            if (np != null && id != null) {
+                val x = android.os.Bundle().apply {
+                    np.albumId?.let { putString(com.levi.pocketdj.playback.PlaybackContract.EXTRA_ALBUM_ID, it) }
+                    putString(com.levi.pocketdj.playback.PlaybackContract.EXTRA_SOURCE, np.context.source)
+                    np.context.contextId?.let { putString(com.levi.pocketdj.playback.PlaybackContract.EXTRA_CONTEXT_ID, it) }
+                    np.context.contextName?.let { putString(com.levi.pocketdj.playback.PlaybackContract.EXTRA_CONTEXT_NAME, it) }
+                }
+                val art = np.albumId?.let { a -> app.catalogRepository.state.value.catalog?.albumsById?.get(a)?.artCandidates()?.firstOrNull() }
+                npMeta = NpMeta(id, np.title, np.artist, art, x)
+            }
+            ensureMediaService(); player.claim()
+        }
+        engine.onDisengaged = { player.released() }
         engine.onAudioStarted = { ensureMediaService(); player.onAudioStarted() }
         val chained = engine.onChanged
         engine.onChanged = { chained?.invoke(); player.refresh() }
@@ -512,9 +556,15 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                     return@collect
                 }
                 if (sid != prevSession) {
-                    if (st.isHeldForResume) {
-                        val persisted = app.playbackGraph.sessionStore.let { it.currentSnapshot ?: it.load() }
-                        lock.restore(persisted?.takeIf { it.sessionId == sid }?.stemLock)
+                    // The FIRST observed session may be the restored one even when a latched remote play already
+                    // un-held it: match on the persisted sessionId, held or not. Disk read stays off Main.
+                    val persisted = if (prevSession == null) {
+                        kotlinx.coroutines.withContext(Dispatchers.IO) {
+                            app.playbackGraph.sessionStore.let { it.currentSnapshot ?: it.load() }
+                        }?.takeIf { it.sessionId == sid }
+                    } else null
+                    if (persisted != null || st.isHeldForResume) {
+                        lock.restore(persisted?.stemLock)
                         host.refresh()
                     } else { host.sessionEnded(); persistStemLock() }   // a NEW session clears the lock
                     prevSession = sid
@@ -530,6 +580,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 val mixNow = deckExtras != null && mixEngine.isRunning
                 if (mixNow != lastMix) { lastMix = mixNow; com.levi.pocketdj.screens.nowplaying.NowPlayingSeams.mixSessionActive = mixNow; host.refresh() }
                 host.heartbeat()
+                host.carryIfReady()
             }
         }
         // A Mix session starting takes the audio from the DSP engine (one audio owner): the switchboard

@@ -7,6 +7,7 @@ import com.levi.pocketdj.mix.engine.MixSourceOpener
 import com.levi.pocketdj.mix.engine.ResolvedTrack
 import com.levi.pocketdj.mix.engine.VoiceRunner
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -34,10 +35,17 @@ class NowPlayingDspHostTest {
         val local = HashSet<String>()
         override fun resolve(songId: String) = if (songId in local) ResolvedTrack(File("$songId.mp3"), isCut = true) else null
         override fun windowLengthMs(songId: String) = 0L
-        override suspend fun positionMs() = 1500L
+        var posDelay = false
+        override suspend fun positionMs(): Long { if (posDelay) kotlinx.coroutines.yield(); return 1500L }
         override var exoPlaying = true
+        /** While set, ExoPlayer is still holding this (previous) row. */
+        var loadedOverride: String? = null
+        override val loadedSongId: String? get() = loadedOverride ?: song
         val ended = ArrayList<String>()
-        override fun advanceAfterEnd(songId: String) { ended += songId }
+        var onAdvance: (String) -> Unit = {}
+        var engineEndedCalls = 0
+        override fun engineEnded() { engineEndedCalls++ }
+        override fun advanceAfterEnd(songId: String) { ended += songId; onAdvance(songId) }
     }
 
     private class Rig {
@@ -50,8 +58,9 @@ class NowPlayingDspHostTest {
         val ports = Ports()
         val lock = StemLockSession()
         var replans = 0
+        var sinks = 0
         val engine = NowPlayingDspEngine(
-            sinkFactory = { OfflineRenderer(sr, 512).also { sink = it } },
+            sinkFactory = { sinks++; OfflineRenderer(sr, 512).also { sink = it } },
             opener = MixSourceOpener { f -> SyntheticPcmSource.tone(440.0, sr * 10L, sr, if (f.name.startsWith("stem")) 0.125f else 0.5f) },
             runner = VoiceRunner { v -> voices += v; AutoCloseable { voices.remove(v) } },
             stemSource = object : DspStemSource {
@@ -76,7 +85,7 @@ class NowPlayingDspHostTest {
                 var g = 0
                 do { var any = false; for (v in voices.toList()) while (v.pump()) any = true; g++ } while (any && g < 50)
                 val n = minOf(512, frames - done)
-                sink?.renderFrames(n)
+                if (engine.isEngaged) sink?.renderFrames(n)
                 done += n
                 host.heartbeat(); scope.testScheduler.runCurrent()
             }
@@ -204,14 +213,79 @@ class NowPlayingDspHostTest {
         assertEquals(StemLockState(), r.lock.current)
     }
 
-    @Test fun reachingTheEndAdvancesTheSequencer() {
+    @Test fun reachingTheEndLeavesTheGraphBeforeTheSequencerAdvances() {
         val r = Rig(); r.give("a", false)
         r.ports.song = "a"
-        r.engine.onReachedEnd = { r.ports.advanceAfterEnd("a") }
+        var engagedAtAdvance: Boolean? = null
+        r.ports.onAdvance = { engagedAtAdvance = r.engine.isEngaged }
         assertTrue(runBlocking { r.host.engage() })
         r.engine.disengage()
         r.engine.engage(File("a.mp3"), 0, 300, 0.1, true); r.engine.bindSong("a")
         r.render(sr)
         assertEquals(listOf("a"), r.ports.ended)
+        assertEquals("repeat/advance must be driven by ExoPlayer", false, engagedAtAdvance)
+        assertEquals(1, r.ports.engineEndedCalls)
+    }
+
+    @Test fun stemLockCarryWaitsForTheNewRowToLoadThenEngagesAtZero() {
+        val r = Rig(); r.give("a", true); r.give("b", true)
+        r.start("a")
+        runBlocking { r.host.withEngaged { it.setStemMode(true) } }
+        r.render(sr); r.host.setStemLock(true)
+        // skip to b: ExoPlayer still holds a (the controller's now-playing has not moved)
+        r.ports.loadedOverride = "a"
+        r.start("b")
+        assertFalse("must not engage b against the previous row's position", r.engine.isEngaged)
+        runBlocking { r.host.carryIfReady() }
+        assertFalse(r.engine.isEngaged)
+        // the load lands
+        r.ports.loadedOverride = null
+        runBlocking { r.host.carryIfReady() }
+        assertEquals("b", r.engine.engagedSongId)
+        assertEquals("explicit start, not the controller position", 0.0, r.engine.currentTimeSec, 0.02)
+        r.render(sr)
+        assertTrue(r.engine.stemsOnAir)
+    }
+
+    @Test fun theSessionIsClaimedBeforeAnyVoiceSounds() {
+        val r = Rig(); r.give("a", false)
+        r.ports.song = "a"
+        var claimed = false
+        var statuses: List<Voice.Status> = emptyList()
+        r.engine.onEngaged = { claimed = true; statuses = r.voices.map { it.status } }
+        assertTrue(runBlocking { r.host.engage() })
+        assertTrue(claimed)
+        assertTrue("voice must not be PLAYING at claim time (no double audio)", statuses.isNotEmpty() && statuses.none { it == Voice.Status.PLAYING })
+    }
+
+    @Test fun anEngageMadeWhilePausedStillClaimsTheSession() {
+        val r = Rig(); r.give("a", false)
+        r.ports.song = "a"; r.ports.exoPlaying = false
+        var claims = 0
+        r.engine.onEngaged = { claims++ }
+        assertTrue(runBlocking { r.host.engage() })
+        assertEquals(1, claims)
+        assertFalse(r.engine.isPlaying)
+    }
+
+    @Test fun concurrentSliderEventsEngageExactlyOnce() {
+        val r = Rig(); r.give("a", false)
+        r.ports.song = "a"; r.ports.posDelay = true
+        runBlocking {
+            val jobs = (1..8).map { async { r.host.withEngaged { e -> e.setRate(1.1) } } }
+            jobs.forEach { it.await() }
+        }
+        assertEquals("one sink build, no teardown/rebuild per value event", 1, r.sinks)
+        assertTrue(r.engine.isEngaged)
+    }
+
+    @Test fun disengageNotifiesTheSessionHost() {
+        val r = Rig(); r.give("a", false)
+        r.ports.song = "a"
+        var n = 0
+        r.engine.onDisengaged = { n++ }
+        assertTrue(runBlocking { r.host.engage() })
+        r.engine.disengage()
+        assertEquals(1, n)
     }
 }

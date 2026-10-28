@@ -96,6 +96,13 @@ class NowPlayingDspEngine(
     override var onReachedEnd: (() -> Unit)? = null
     /** The first audio left the engine (host: claim the MediaSession / pause ExoPlayer here). */
     var onAudioStarted: (() -> Unit)? = null
+    /**
+     * The graph is built and the sink attached but NOTHING sounds yet: the host claims the MediaSession here
+     * (silently pausing ExoPlayer) so exactly one engine ever sounds during the swap, whether or not it plays.
+     */
+    var onEngaged: (() -> Unit)? = null
+    /** The engine left the graph ([disengage], for any reason): the host resigns the session. */
+    var onDisengaged: (() -> Unit)? = null
     /** A USER stem control moved (Stem Lock captures the carry from this; carried applies do not fire it). */
     var onUserStemChange: (() -> Unit)? = null
     /** The stems went on air for [songId]. */
@@ -175,6 +182,8 @@ class NowPlayingDspEngine(
         started = false
         endFired = false
         tickCount = 0
+        // Claim the session (ExoPlayer pauses silently) BEFORE the voice starts: no double audio.
+        onEngaged?.invoke()
         if (play) v.play(-1)
         onChanged?.invoke()
         return true
@@ -201,6 +210,7 @@ class NowPlayingDspEngine(
         songId = null
         started = false
         onChanged?.invoke()
+        onDisengaged?.invoke()
         return pos
     }
 

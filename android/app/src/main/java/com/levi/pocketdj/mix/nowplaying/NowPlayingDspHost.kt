@@ -6,6 +6,8 @@ import com.levi.pocketdj.mix.model.Effect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /** What the host needs from the app (production: PlaybackController + BurnStore + the switchboard). */
 interface DspHostPorts {
@@ -22,14 +24,20 @@ interface DspHostPorts {
     val appleMusicActive: Boolean
     /** The burned/local file for [songId] (null = not mixable). */
     fun resolve(songId: String): ResolvedTrack?
-    /** Window length for the row (clipped analog duration), 0 = whole file. */
+    /** Window length for the row (the QUEUE row's clipped length), 0 = whole file. */
     fun windowLengthMs(songId: String): Long
+    /** The song ExoPlayer has actually LOADED (the controller's current item), null = none/other. The Stem Lock carry waits for it. */
+    val loadedSongId: String? get() = currentSongId
     /** Current ExoPlayer position within the song, ms (read at the moment of the swap). */
     suspend fun positionMs(): Long
     /** Is ExoPlayer currently producing audio? (engage plays only if so.) */
     val exoPlaying: Boolean
+    /** The listener wants audio (iOS `!pausedByListener`): a just-loaded row may still be buffering, so [exoPlaying] is not enough. */
+    val playWanted: Boolean get() = exoPlaying
     /** The natural end of the engaged window: advance the sequencer exactly like an ExoPlayer ENDED. */
     fun advanceAfterEnd(songId: String)
+    /** The engine ended its window: reset session-side state (resign the MediaSession) BEFORE the sequencer advances/replays. */
+    fun engineEnded() {}
     fun log(line: String) {}
 }
 
@@ -69,6 +77,10 @@ class NowPlayingDspHost(
     private var version = 0
     /** Song the engine's hand-off is currently armed for (guards async work). */
     private var lastTrackSongId: String? = null
+    /** One engage at a time: concurrent slider events must not tear down/rebuild the graph. */
+    private val engageLock = Mutex()
+    /** A track started whose Stem Lock carry waits for ExoPlayer to finish loading the row. */
+    private var carryPending: String? = null
 
     init {
         engine.onChanged = { publish() }
@@ -76,7 +88,14 @@ class NowPlayingDspHost(
         engine.onStemsOnAir = { id -> StemLock.log("handover song=$id full mix -> stems @${"%.2f".format(java.util.Locale.US, engine.currentTimeSec)}s") ; publish() }
         engine.onReachedEnd = {
             val id = engine.engagedSongId
-            if (id != null) ports.advanceAfterEnd(id)
+            if (id != null) {
+                // Leave the graph FIRST so a repeat/advance is driven by ExoPlayer (iOS handleDSPEnded).
+                engine.disengage()
+                engine.resetControls()
+                ports.engineEnded()
+                publish()
+                ports.advanceAfterEnd(id)
+            }
         }
     }
 
@@ -90,15 +109,17 @@ class NowPlayingDspHost(
         return engine.isEngaged && engine.engagedSongId == id || ports.resolve(id) != null
     }
 
-    /** Idempotent: the FIRST control touch hands the playing track off ExoPlayer into the DSP graph. */
-    suspend fun engage(): Boolean {
+    /** Idempotent and serialized: the FIRST control touch hands the playing track off ExoPlayer into the DSP graph. */
+    suspend fun engage(): Boolean = engageLock.withLock { engageLocked(null, null) }
+
+    private suspend fun engageLocked(atSeconds: Double?, play: Boolean?): Boolean {
         val id = ports.currentSongId ?: return false
         if (engine.isEngaged && engine.engagedSongId == id) return true
         if (!available()) return false
         val t = ports.resolve(id) ?: return false
-        val pos = ports.positionMs() / 1000.0
-        val play = ports.exoPlaying
-        val ok = engine.engage(t.file, if (t.isCut) 0L else (t.startMs ?: 0).toLong(), ports.windowLengthMs(id), pos, play)
+        val pos = atSeconds ?: (ports.positionMs() / 1000.0)
+        val go = play ?: ports.exoPlaying
+        val ok = engine.engage(t.file, if (t.isCut) 0L else (t.startMs ?: 0).toLong(), ports.windowLengthMs(id), pos, go)
         if (!ok) { lock.markUnavailable(id); ports.log("npdsp engage REFUSED song=$id"); publish(); return false }
         engine.bindSong(id)
         // controls touched before the swap (carried stems) are re-applied by the caller
@@ -113,12 +134,26 @@ class NowPlayingDspHost(
     suspend fun onTrackStarted(songId: String?) {
         if (songId == lastTrackSongId && engine.engagedSongId == songId) return
         lastTrackSongId = songId
+        carryPending = null
         if (engine.isEngaged && engine.engagedSongId != songId) engine.disengage()
         engine.resetControls()
         lock.trackStarted()
-        applyLockOnTrackStart(songId)
         publish()
         replan()
+        // The carry engages only once ExoPlayer has LOADED this row (a load yields/pauses the DSP owner and
+        // the controller still holds the previous row until then): pending until [carryIfReady] sees it.
+        if (songId != null && lock.current.enabled) carryPending = songId
+        carryIfReady()
+    }
+
+    /** Heartbeat/collector hook: apply the pending Stem Lock carry once the new row is loaded. */
+    suspend fun carryIfReady() {
+        val id = carryPending ?: return
+        if (ports.currentSongId != id) { carryPending = null; return }
+        if (ports.loadedSongId != id) return
+        carryPending = null
+        engageLock.withLock { applyLockOnTrackStart(id) }
+        publish()
     }
 
     /** iOS `applyStemLockOnTrackStart`: a locked track starts on the FULL MIX and hands over once the enabled parts are on disk. */
@@ -134,7 +169,8 @@ class NowPlayingDspHost(
         }
         lock.applying = true
         try {
-            if (!engage()) {
+            // iOS applyStemLockOnTrackStart: engaged at 0 (the row just loaded), playing unless the listener paused.
+            if (!engageLocked(0.0, ports.playWanted)) {
                 lock.markUnavailable(songId)
                 StemLock.log("carry song=$songId -> UNAVAILABLE (DSP refused the file) - full mix, lock kept")
                 return

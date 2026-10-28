@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-18 Now Playing Mix mini-panel (F4) + Stem Lock
 
@@ -32,3 +32,18 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+Opus adversarial review: all findings addressed. Fixes applied. Tests 4524 (+6 new in NowPlayingDspHostTest), assembleDebug green.
+- MAJOR track-change carry torn down -> fixed: host holds the carry `pending` until ExoPlayer has LOADED the row (`DspHostPorts.loadedSongId`), then engages at an explicit 0 with `playWanted` and the QUEUE row's lengthMs (`carryIfReady`, also on the 4 Hz loop). Tests: stemLockCarryWaitsForTheNewRowToLoadThenEngagesAtZero.
+- MAJOR double audio -> fixed: engine fires `onEngaged` (session claim, ExoPlayer paused silently) BEFORE `v.play`. Tests: theSessionIsClaimedBeforeAnyVoiceSounds.
+- MAJOR paused engage never claims session -> fixed: claim happens at engage regardless of play state (`player.claim()`). Test: anEngageMadeWhilePausedStillClaimsTheSession.
+- MAJOR repeat-one silence at end -> fixed: `onReachedEnd` disengages, resets controls, resigns the session, THEN advances/replays. Test: reachingTheEndLeavesTheGraphBeforeTheSequencerAdvances. (Deviation: an in-place replay re-engages the lock on the next row, not the replayed one.)
+- MAJOR engage not idempotent under concurrency -> fixed: Mutex in the host. Test: concurrentSliderEventsEngageExactlyOnce.
+- MINOR released() never called -> fixed: engine `onDisengaged` -> `player.released()`. Test: disengageNotifiesTheSessionHost.
+- MINOR art/context lost -> fixed: metadata + extras (album id, source, context) cached at engage and set as the npdsp MediaItem's requestMetadata.
+- MINOR scrubbing -> fixed: item seekable, SEEK_IN_CURRENT_MEDIA_ITEM offered, same-index seek routes to `engine.seekTo` (device-verify; no Looper on JVM).
+- MINOR latched-play restore -> fixed: first observed session restores when the persisted sessionId matches (held or not); disk read off Main.
+- MINOR prefetch stall -> fixed: song step bounded at 10 min; engine's stem fetch ordered by `StemLock.partPriority`. Concurrent engine/prefetcher burns of the same part left as-is (burnStemPart idempotent).
+- NIT install failure -> fixed: logged via NPLog, `npInstalled` reset on failure. Ledger row left to the orchestrator.
+
