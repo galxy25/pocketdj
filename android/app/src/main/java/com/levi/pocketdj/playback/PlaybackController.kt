@@ -874,6 +874,7 @@ class PlaybackController(
                 // events are ignored because activeBackend == APPLE_MUSIC).
                 withContext(Dispatchers.Main) {
                     sequencerOwnsPlayer = false
+                    sequencer.noteForeignPlay()
                     sequencer.retirePendingStart()
                 }
                 withController {
@@ -983,14 +984,16 @@ class PlaybackController(
         activeBackend = ActiveBackend.EXO
         withContext(Dispatchers.Main) {
             sequencerOwnsPlayer = when {
-                adoptSongId != null -> sequencer.adoptCursor(adoptSongId)
+                adoptSongId != null -> sequencer.adoptCursor(adoptSongId).also { if (!it) sequencer.noteForeignPlay() }
                 items.size > 1 -> {
+                    sequencer.noteForeignPlay()
                     sequencer.abandonRun()
                     false
                 }
                 else -> {
                     // A non-member single: the run is kept but its in-flight start must not load
                     // over the user's pick (slow presign window).
+                    sequencer.noteForeignPlay()
                     sequencer.retirePendingStart()
                     false
                 }

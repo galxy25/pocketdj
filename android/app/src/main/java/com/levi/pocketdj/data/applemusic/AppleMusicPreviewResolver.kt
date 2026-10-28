@@ -56,38 +56,50 @@ class AppleMusicPreviewResolver(
         return resolved
     }
 
+    /** Cancellable GET: cancelling the coroutine cancels the OkHttp call (a probe budget really stops it). */
+    private suspend fun fetchBody(request: Request): String? =
+        kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+            val call = shortClient.newCall(request)
+            cont.invokeOnCancellation { runCatching { call.cancel() } }
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: java.io.IOException) {
+                    if (cont.isActive) cont.resumeWith(Result.success(null))
+                }
+
+                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                    val body = runCatching {
+                        response.use { if (it.isSuccessful) it.body?.string().orEmpty() else null }
+                    }.getOrNull()
+                    if (cont.isActive) cont.resumeWith(Result.success(body))
+                }
+            })
+        }
+
     private suspend fun resolveViaDeveloperToken(id: String): String? {
         val token = runCatching { developerTokenProvider() }.getOrNull()?.takeIf { it.isNotBlank() }
             ?: return null
         val url = "${catalogApiBase.trimEnd('/')}/v1/catalog/$storefront/songs/$id"
         val request = Request.Builder().url(url).header("Authorization", "Bearer $token").get().build()
+        val body = fetchBody(request) ?: return null
         return runCatching {
-            shortClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return null
-                val body = response.body?.string().orEmpty()
-                val root = json.parseToJsonElement(body).jsonObject
-                root["data"]?.jsonArray?.firstOrNull()?.jsonObject
-                    ?.get("attributes")?.jsonObject
-                    ?.get("previews")?.jsonArray?.firstOrNull()?.jsonObject
-                    ?.get("url")?.jsonPrimitive?.content
-                    ?.takeIf { it.isNotBlank() }
-            }
+            val root = json.parseToJsonElement(body).jsonObject
+            root["data"]?.jsonArray?.firstOrNull()?.jsonObject
+                ?.get("attributes")?.jsonObject
+                ?.get("previews")?.jsonArray?.firstOrNull()?.jsonObject
+                ?.get("url")?.jsonPrimitive?.content
+                ?.takeIf { it.isNotBlank() }
         }.getOrNull()
     }
 
-    private fun resolveViaItunes(id: String): String? {
+    private suspend fun resolveViaItunes(id: String): String? {
         val sep = if (itunesLookupBase.contains('?')) "&" else "?"
         val url = "$itunesLookupBase${sep}id=$id"
-        val request = Request.Builder().url(url).get().build()
+        val body = fetchBody(Request.Builder().url(url).get().build()) ?: return null
         return runCatching {
-            shortClient.newCall(request).execute().use { response ->
-                if (!response.isSuccessful) return null
-                val body = response.body?.string().orEmpty()
-                val root = json.parseToJsonElement(body).jsonObject
-                root["results"]?.jsonArray?.firstOrNull()?.jsonObject
-                    ?.get("previewUrl")?.jsonPrimitive?.content
-                    ?.takeIf { it.isNotBlank() }
-            }
+            val root = json.parseToJsonElement(body).jsonObject
+            root["results"]?.jsonArray?.firstOrNull()?.jsonObject
+                ?.get("previewUrl")?.jsonPrimitive?.content
+                ?.takeIf { it.isNotBlank() }
         }.getOrNull()
     }
 }
