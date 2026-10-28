@@ -1,6 +1,8 @@
 package com.levi.pocketdj.studio.demux
 
 import com.levi.pocketdj.audio.core.AudioSink
+import com.levi.pocketdj.studio.engine.AudioFocusPolicy
+import com.levi.pocketdj.studio.engine.StudioDiag
 import com.levi.pocketdj.audio.core.PcmSource
 import com.levi.pocketdj.audio.core.Voice
 import com.levi.pocketdj.audio.core.VoiceGroup
@@ -89,15 +91,15 @@ class SingleFileStemPlayer(private val focus: () -> Unit = {}, private val focus
 
     override fun togglePlayPause() {
         val p = mp ?: return
-        if (p.isPlaying) { pausedAt = p.currentPosition / 1000.0; p.pause(); focusRelease() }
-        else { focus(); if (p.currentPosition >= p.duration - 50) p.seekTo(0); p.start() }
+        if (p.isPlaying) { pausedAt = p.currentPosition / 1000.0; p.pause(); focusRelease(); StudioDiag.stop("demux", "user-pause") }
+        else { if (!AudioFocusPolicy.gateStart("demux")) return; focus(); StudioDiag.play("demux", "user-play", started = true); if (p.currentPosition >= p.duration - 50) p.seekTo(0); p.start() }
         bump()
     }
 
     override fun seek(sec: Double) { mp?.seekTo((sec.coerceIn(0.0, durationSec) * 1000).toInt()); pausedAt = sec; bump() }
     override fun solo(name: String) { if (!isPlaying) togglePlayPause() }
     override fun toggleMute(name: String) {}
-    override fun stop() { runCatching { mp?.release() }; mp = null; loadedId = null; pausedAt = 0.0; focusRelease(); bump() }
+    override fun stop() { if (isPlaying) StudioDiag.stop("demux", "user-stop"); runCatching { mp?.release() }; mp = null; loadedId = null; pausedAt = 0.0; focusRelease(); bump() }
     private fun bump() { _version.value = _version.value + 1 }
 }
 
@@ -170,7 +172,7 @@ class VoiceGroupStemPlayer(
 
     private fun applyGains() { for (i in voices.indices) voices[i].setGain(if (mix.isAudible(names[i])) 1f else 0f) }
 
-    override fun togglePlayPause() { if (playing) pauseNow() else startSynced(if (pausedAt >= durationSec) 0.0 else pausedAt) }
+    override fun togglePlayPause() { if (playing) pauseNow() else if (AudioFocusPolicy.gateStart("demux")) startSynced(if (pausedAt >= durationSec) 0.0 else pausedAt) }
 
     override fun seek(sec: Double) {
         val t = sec.coerceIn(0.0, durationSec)
@@ -179,7 +181,7 @@ class VoiceGroupStemPlayer(
 
     override fun solo(name: String) {
         mix.solo(name); applyGains()
-        if (!playing) startSynced(if (pausedAt >= durationSec) 0.0 else pausedAt)
+        if (!playing && AudioFocusPolicy.gateStart("demux")) startSynced(if (pausedAt >= durationSec) 0.0 else pausedAt)
         bump()
     }
 
@@ -189,6 +191,7 @@ class VoiceGroupStemPlayer(
         if (!playing) return
         pausedAt = currentTimeSec
         token++
+        StudioDiag.stop("demux", "user-pause")
         group?.pauseAll(); playing = false; started = false
         focusRelease(); bump()
     }
@@ -201,6 +204,7 @@ class VoiceGroupStemPlayer(
         val frame = (fromSec * rate).roundToLong()
         voices.forEach { it.schedule(frame) }
         startedFrom = fromSec; pausedAt = fromSec; started = false; playing = true
+        StudioDiag.play("demux", "user-play", started = true)
         focus()
         val s = ensureSink()
         bump()
@@ -232,6 +236,7 @@ class VoiceGroupStemPlayer(
 
     override fun stop() {
         token++
+        if (playing) StudioDiag.stop("demux", "user-stop")
         group?.pauseAll()
         sink?.let { runCatching { it.stop() }; runCatching { it.release() } }
         sink = null

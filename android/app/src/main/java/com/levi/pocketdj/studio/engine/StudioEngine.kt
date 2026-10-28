@@ -243,28 +243,36 @@ class StudioEngine(
         releaseSink()
     }
 
+    /** Fired on every EXPLICIT user transport change (play/pause/stop) so a pending interruption-resume is dropped. */
+    @Volatile var onUserTransport: (() -> Unit)? = null
+
     fun playSample(): Boolean {
+        onUserTransport?.invoke()
         val s = source ?: run { lastRefusal = "no-sample"; diag("playSample refused: no sample"); return false }
-        if (!AudioFocusPolicy.mayStartPlayback()) { lastRefusal = "mic-capture-active"; diag("playSample refused: mic capture active"); return false }
+        if (!AudioFocusPolicy.gateStart("sample")) { lastRefusal = "mic-capture-active"; diag("playSample refused: mic capture active"); return false }
         if (focus != null && !focus.invoke()) { lastRefusal = "no-focus"; diag("playSample refused: no audio focus"); return false }
         lastRefusal = null
         if (s.reachedEnd) s.rewind()
         startSink()
         _isPlayingSample.value = true
         startTick()
+        StudioDiag.play("sample", "user-play", started = true)
         return true
     }
 
-    fun pauseSample() {
+    fun pauseSample(reason: String = "user-pause") {
+        if (reason == "user-pause") onUserTransport?.invoke()
         if (!_isPlayingSample.value) return
+        StudioDiag.stop("sample", reason)
         _isPlayingSample.value = false
         stopSinkSoon()
     }
 
     /** Stop and rewind to the trim window's start. */
-    fun stopSample() { stopSampleInternal(); source?.rewind() }
+    fun stopSample() { onUserTransport?.invoke(); stopSampleInternal(); source?.rewind() }
 
     private fun stopSampleInternal() {
+        if (_isPlayingSample.value) StudioDiag.stop("sample", "user-stop")
         _isPlayingSample.value = false
         tick?.cancel(); tick = null
         sink?.stop()
@@ -273,13 +281,14 @@ class StudioEngine(
     /** One-shot audition of a RAW-file window [startMs, endMs); never disturbs the trim window. */
     fun playSlice(startMs: Int, endMs: Int): Boolean {
         val s = source ?: return false
-        if (!AudioFocusPolicy.mayStartPlayback()) { lastRefusal = "mic-capture-active"; return false }
+        if (!AudioFocusPolicy.gateStart("sample")) { lastRefusal = "mic-capture-active"; return false }
         if (focus != null && !focus.invoke()) { lastRefusal = "no-focus"; return false }
         if (!s.playSlice(startMs, endMs)) return false
         lastRefusal = null
         startSink()
         _isPlayingSample.value = true
         startTick()
+        StudioDiag.play("sample", "slice", started = true)
         return true
     }
 
@@ -326,7 +335,7 @@ class StudioEngine(
             while (isActive) {
                 val s = source
                 if (s == null) break
-                if (s.reachedEnd && !s.loop) _isPlayingSample.value = false
+                if (s.reachedEnd && !s.loop && _isPlayingSample.value) { _isPlayingSample.value = false; StudioDiag.stop("sample", "natural-end") }
                 if (s.finished) { sink?.stop(); break }
                 delay(33)
             }

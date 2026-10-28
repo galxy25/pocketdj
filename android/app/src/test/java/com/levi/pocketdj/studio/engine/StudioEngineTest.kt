@@ -343,4 +343,16 @@ class StudioEngineTest {
         assertTrue(waitFor { synchronized(stretchThreads) { stretchThreads.isNotEmpty() } })
         e.release()
     }
+
+    @Test fun engineLogsStartAndEveryStopReason() = captureAudioDiag { lines ->
+        val e = engine()
+        e.loadSample(sample(), flat(44100))
+        assertTrue(e.playSample())
+        assertTrue(lines.any { it == "audio.play owner=studio.sample reason=user-play" })
+        e.pauseSample("focus-loss")
+        assertTrue(lines.any { it == "audio.stop owner=studio.sample reason=focus-loss" })
+        assertTrue(e.playSample()); e.stopSample()
+        assertTrue(lines.any { it == "audio.stop owner=studio.sample reason=user-stop" })
+        e.release()
+    }
 }

@@ -427,4 +427,14 @@ class MultitrackPlayerTest {
         while (p.isPlaying.value && System.currentTimeMillis() < deadline) Thread.sleep(20)
         assertFalse(p.isPlaying.value)
     }
+
+    @Test fun engineLogsStartAndStopReasons() = runBlocking {
+        captureAudioDiag { lines ->
+            val p = player(Loader(files), mutableListOf())
+            assertEquals(PlayOutcome.STARTED, p.playOutcome(arr(track("t1", "a"))))
+            assertTrue(lines.any { it.startsWith("audio.play owner=studio.multitrack reason=user-play") })
+            p.stop("focus-loss")
+            assertTrue(lines.contains("audio.stop owner=studio.multitrack reason=focus-loss"))
+        }
+    }
 }

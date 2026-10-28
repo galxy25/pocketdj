@@ -459,6 +459,7 @@ class InstrumentEngine(
      */
     fun replay(events: List<StudioNoteEvent>, fromMs: Int = 0, extraStaffs: List<Pair<SynthVoice, List<StudioNoteEvent>>> = emptyList(), loopRegion: Pair<Int, Int>? = null): Boolean {
         if (primary == null || _state.value.isRecordingTake) return false
+        if (!AudioFocusPolicy.gateStart("instrument")) return false
         stopReplay()
         val all = ArrayList<Pair<SynthVoice?, List<NoteAction>>>()
         all.add(null to TakeScore.actions(events, fromMs))
@@ -502,6 +503,7 @@ class InstrumentEngine(
             delay(300)
             finishReplay(parkAtMs = null)
         }
+        StudioDiag.play("instrument", "user-play", started = true, detail = "from=${fromMs}ms")
         log("instr: replay from ${fromMs}ms (end ${endMs}ms)")
         return true
     }
@@ -512,14 +514,15 @@ class InstrumentEngine(
         return parkedMs
     }
 
-    fun stopReplay() {
+    fun stopReplay(reason: String = "user-stop") {
         if (!_state.value.isReplaying && replayJob == null) return
         val pos = replayPositionMs()
         replayJob?.cancel(); replayJob = null
-        finishReplay(parkAtMs = pos)
+        finishReplay(parkAtMs = pos, reason = reason)
     }
 
-    private fun finishReplay(parkAtMs: Int?) {
+    private fun finishReplay(parkAtMs: Int?, reason: String = "natural-end") {
+        if (_state.value.isReplaying) StudioDiag.stop("instrument", reason)
         primary?.allOff()
         val extra = synchronized(lock) { backing.also { backing = emptyList() } }   // swap once: never retired twice
         extra.forEach { it.allOff(); retire(it) }    // the engine owns replay voices once handed to replay()

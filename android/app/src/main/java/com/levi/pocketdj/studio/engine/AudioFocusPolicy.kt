@@ -26,6 +26,28 @@ object AudioFocusPolicy {
     /** Every Studio play path consults this; false => do not start / change route. */
     fun mayStartPlayback(): Boolean = !micCaptureActive
 
+    /** Stable refusal reason ("mic-capture-active") when playback must not start, else null. */
+    fun refusalReason(): String? = if (micCaptureActive) REASON_MIC_CAPTURE else null
+
+    /**
+     * The single gate every start path uses: returns true when [owner] may start; otherwise logs the refusal
+     * reason through [StudioDiag] (so "refused" is never indistinguishable from "never called") and returns false.
+     */
+    fun gateStart(owner: String): Boolean {
+        val r = refusalReason() ?: return true
+        StudioDiag.play(owner, r, started = false)
+        return false
+    }
+
+    /** Same gate for non-Studio owners (Now Playing, Jukebox): [owner] is logged verbatim, NOT "studio."-prefixed. */
+    fun gateStartRaw(owner: String): Boolean {
+        val r = refusalReason() ?: return true
+        com.levi.pocketdj.audio.core.AudioDiag.play(owner, r, started = false)
+        return false
+    }
+
+    const val REASON_MIC_CAPTURE = "mic-capture-active"
+
     /** Focus transitions that must park a Studio engine (iOS interruption park). */
     fun shouldPauseOnFocusChange(change: Int): Boolean = when (change) {
         AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> true
@@ -70,4 +92,67 @@ object AudioFocusPolicy {
             request = null
         }
     }
+}
+
+/**
+ * Reason-tagged Studio play/stop exits (acceptance: every engine stop/start logs a reason). Thin owner-prefixed
+ * facade over [com.levi.pocketdj.audio.core.AudioDiag] so Studio and Mix/Now Playing share counters and the
+ * `audio.play owner=... reason=...` line shape.
+ */
+object StudioDiag {
+    fun owner(engine: String) = "studio.$engine"
+
+    fun play(engine: String, reason: String, started: Boolean, detail: String? = null) =
+        com.levi.pocketdj.audio.core.AudioDiag.play(owner(engine), reason, started, detail)
+
+    fun stop(engine: String, reason: String, detail: String? = null) =
+        com.levi.pocketdj.audio.core.AudioDiag.stop(owner(engine), reason, detail)
+}
+
+/**
+ * Remembers WHICH engines an audio-focus interruption parked, so the matching gain resumes exactly those and
+ * nothing the user had already stopped (iOS interruptionParked pairing). Thread-safe; ids are engine names.
+ */
+class InterruptionLedger {
+    private val parked = LinkedHashSet<String>()
+
+    /** Park [id] because it was audibly running. A second park of the same id is a no-op. Returns whether newly parked. */
+    @Synchronized fun park(id: String): Boolean = parked.add(id)
+
+    /** An explicit user stop/play of [id] supersedes any pending resume. */
+    @Synchronized fun forget(id: String) { parked.remove(id) }
+
+    /** Focus regained: the ids to resume (in park order), clearing the ledger. */
+    @Synchronized fun drainForResume(): List<String> = parked.toList().also { parked.clear() }
+
+    @Synchronized fun isParked(id: String): Boolean = id in parked
+}
+
+/**
+ * Park/resume pairing across engines for a TRANSIENT focus loss (iOS interruptionParked): [onTransientLoss] parks
+ * every registered engine that is audible, [onGain] resumes exactly those, [forget] drops a pending resume when the
+ * user explicitly stops/plays that engine. Engines log their own stop reason inside [park]; they register lambdas, so this is testable without a device.
+ */
+class InterruptionCoordinator(private val ledger: InterruptionLedger = InterruptionLedger()) {
+    private class Entry(val isAudible: () -> Boolean, val park: () -> Unit, val resume: () -> Unit)
+    private val entries = LinkedHashMap<String, Entry>()
+
+    @Synchronized fun register(id: String, isAudible: () -> Boolean, park: () -> Unit, resume: () -> Unit) {
+        entries[id] = Entry(isAudible, park, resume)
+    }
+
+    fun onTransientLoss() {
+        val es = synchronized(this) { entries.toList() }
+        for ((id, e) in es) if (e.isAudible() && ledger.park(id)) { e.park() }
+    }
+
+    fun onGain() {
+        for (id in ledger.drainForResume()) {
+            val e = synchronized(this) { entries[id] } ?: continue
+            e.resume()
+        }
+    }
+
+    fun forget(id: String) = ledger.forget(id)
+    fun isParked(id: String) = ledger.isParked(id)
 }

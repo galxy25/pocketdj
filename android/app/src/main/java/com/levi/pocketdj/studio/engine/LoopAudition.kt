@@ -225,14 +225,14 @@ class LoopAudition(
 
     /** Loop [file] as [id], conformed to [frames] (<= 0: as decoded). False when refused, unreadable or superseded. */
     suspend fun play(id: String, file: File, frames: Long): Boolean {
-        if (!AudioFocusPolicy.mayStartPlayback()) { lastRefusal = "mic-capture-active"; diag("loop play refused: mic capture"); return false }
+        if (!AudioFocusPolicy.gateStart("loop")) { lastRefusal = "mic-capture-active"; diag("loop play refused: mic capture"); return false }
         val gen = synchronized(lock) { generation += 1; _arming.value = id; generation }
         val raw = try { decode(file.path) } catch (e: CancellationException) {
             synchronized(lock) { if (generation == gen) _arming.value = null }
             throw e
         } catch (e: Exception) { null }
         synchronized(lock) {
-            if (generation != gen) { diag("loop $id superseded during decode"); return false }
+            if (generation != gen) { diag("loop $id superseded during decode"); StudioDiag.play("loop", "superseded", started = false); return false }
             _arming.value = null
             if (raw == null) { lastRefusal = "unreadable"; diag("loop $id unreadable ${file.name}"); return false }
             val buf = LoopMath.conform(raw, frames) ?: run { lastRefusal = "unreadable"; return false }
@@ -252,16 +252,18 @@ class LoopAudition(
                 return false
             }
             _playingId.value = id
+            StudioDiag.play("loop", "user-play", started = true, detail = "id=$id")
             diag("loop play $id decoded=${raw.frames} looped=${buf.frames} expected=$frames")
             return true
         }
     }
 
-    fun stop() = synchronized(lock) { generation++; _arming.value = null; stopInternal(releaseFocus = true) }
+    fun stop(reason: String = "user-stop") = synchronized(lock) { generation++; _arming.value = null; stopInternal(releaseFocus = true, reason = reason) }
 
-    private fun stopInternal(releaseFocus: Boolean) {
+    private fun stopInternal(releaseFocus: Boolean, reason: String = "user-stop") {
         graph.removeTrack(TRACK)
         if (_playingId.value != null) {
+            StudioDiag.stop("loop", reason)
             _playingId.value = null
             sink?.stop()
             if (releaseFocus) focusRelease?.invoke()

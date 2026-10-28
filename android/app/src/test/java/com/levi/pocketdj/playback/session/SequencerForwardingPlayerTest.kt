@@ -177,4 +177,12 @@ class SequencerForwardingPlayerTest {
         assertEquals("rc cmd=favorite engine=am verdict=refused-idle",
             TransportLog.format(TransportLog.Cmd.FAVORITE, "am", TransportLog.Verdict.REFUSED_IDLE))
     }
+
+    @Test fun micCaptureRefusesRemotePlayBeforeTheBasePlayer() {
+        p.micGate = { false }
+        p.play()
+        assertTrue(ps.calls.none { it == "play" || it == "prepare" })
+        assertTrue(ctl.calls.isEmpty())
+        assertEquals("rc cmd=play engine=exo verdict=refused-mic-capture", logs.single())
+    }
 }

@@ -503,7 +503,7 @@ class JukeboxRepository(
                 return
             }
             // Studio mic capture owns the audio path: nothing may start sounding into the take.
-            if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.mayStartPlayback()) {
+            if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.gateStartRaw("jukebox")) {
                 _state.update { it.copy(transientError = "Recording in progress - request not queued") }
                 return
             }

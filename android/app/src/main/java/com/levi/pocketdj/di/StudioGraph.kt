@@ -43,6 +43,7 @@ import com.levi.pocketdj.studio.store.FileStudioDir
 import com.levi.pocketdj.studio.engine.PatternBouncer
 import com.levi.pocketdj.studio.engine.StudioStretchKey
 import com.levi.pocketdj.studio.engine.AudioFocusPolicy
+import com.levi.pocketdj.studio.engine.StudioDiag
 import com.levi.pocketdj.studio.engine.LoopAudition
 import com.levi.pocketdj.studio.engine.LoopFactory
 import com.levi.pocketdj.studio.engine.SliceBaker
@@ -118,8 +119,16 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     val sampleFactory: SampleFactory by lazy { SampleFactory(studioRoots, studioStore, studioRender) }
 
+    /** Transient-loss park / gain resume pairing (iOS interruptionParked). Sample + pattern park-and-resume; the rest stop. */
+    val interruptions = com.levi.pocketdj.studio.engine.InterruptionCoordinator()
+
     private val engineLazy: Lazy<StudioEngine> = lazy {
-        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { studioEngine.pauseSample() } }
+        val focus = AudioFocusPolicy.FocusHandle(
+            audioManager,
+            onTransientLoss = { app.appScope.launch(Dispatchers.Main) { interruptions.onTransientLoss() } },
+            onGain = { app.appScope.launch(Dispatchers.Main) { interruptions.onGain() } },
+            onLoss = { app.appScope.launch(Dispatchers.Main) { interruptions.forget("sample"); studioEngine.pauseSample("focus-loss") } },
+        )
         StudioEngine(
             sinkFactory = { StudioOutputs.create(audioManager) },
             stretcher = NativeStretcher,
@@ -127,17 +136,20 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             focus = {
                 // One audible owner: park Now Playing (and a running pattern) before the Studio sample sounds.
                 app.appScope.launch { runCatching { app.playbackController.pause() } }
-                if (patternLazy.isInitialized()) patternEngine.stopPattern()
+                if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
                 focus.requestPlayback()
             },
             focusRelease = { focus.abandon() },
-        )
+        ).also { e ->
+            e.onUserTransport = { interruptions.forget("sample") }
+            interruptions.register("sample", { e.isPlayingSample.value }, { e.pauseSample("focus-transient") }, { e.playSample() })
+        }
     }
     val studioEngine: StudioEngine get() = engineLazy.value
 
     /** STU-12: the Tracks arranger player (one render callback; clip decode/bake via the shared StudioRender). */
     val multitrackPlayer: com.levi.pocketdj.studio.engine.MultitrackPlayer by lazy {
-        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { multitrackPlayer.stop() } }
+        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { multitrackPlayer.stop("focus-loss") } }
         com.levi.pocketdj.studio.engine.MultitrackPlayer(
             loader = com.levi.pocketdj.studio.engine.StudioClipLoader(studioStore, studioRender),
             sinkFactory = { StudioOutputs.create(audioManager) },
@@ -145,8 +157,8 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             onFocus = {
                 // One audible owner: park Now Playing (and a running pattern / sample) before the arranger sounds.
                 app.appScope.launch { runCatching { app.playbackController.pause() } }
-                if (patternLazy.isInitialized()) patternEngine.stopPattern()
-                if (engineLazy.isInitialized()) studioEngine.pauseSample()
+                if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
+                if (engineLazy.isInitialized()) studioEngine.pauseSample("superseded")
                 focus.requestPlayback()
             },
             onFocusRelease = { focus.abandon() },
@@ -185,15 +197,15 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     val sliceBaker: SliceBaker by lazy { SliceBaker(studioRoots, studioStore, studioRender, { sampleRenderCache.sourceFile(it) }) }
 
     private val loopLazy: Lazy<LoopAudition> = lazy {
-        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { loopAudition.stop() } }
+        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { loopAudition.stop("focus-loss") } }
         LoopAudition(
             sinkFactory = { StudioOutputs.create(audioManager) },
             decode = { runCatching { studioRender.decodeBuffer(it) }.getOrNull() },
             focus = {
                 // One audible owner: park Now Playing and any sample audition before a loop sounds.
                 app.appScope.launch { runCatching { app.playbackController.pause() } }
-                if (engineLazy.isInitialized()) studioEngine.pauseSample()
-                if (patternLazy.isInitialized()) patternEngine.stopPattern()
+                if (engineLazy.isInitialized()) studioEngine.pauseSample("superseded")
+                if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
                 focus.requestPlayback()
             },
             focusRelease = { focus.abandon() },
@@ -211,8 +223,8 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         app.appScope.launch(Dispatchers.Main) {
             androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(object : androidx.lifecycle.DefaultLifecycleObserver {
                 override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
-                    loopAudition.stop()
-                    if (patternLazy.isInitialized()) patternEngine.stopPattern()
+                    loopAudition.stop("superseded")
+                    if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
                 }
             })
         }
@@ -223,7 +235,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     private val patternLazy: Lazy<PatternEngine> = lazy {
         val focus = AudioFocusPolicy.FocusHandle(
             audioManager,
-            onLoss = { app.appScope.launch(Dispatchers.Main) { patternEngine.stopPattern() } },
+            onLoss = { app.appScope.launch(Dispatchers.Main) { patternEngine.stopPattern("focus-loss") } },
             onTransientLoss = { app.appScope.launch(Dispatchers.Main) { patternEngine.parkForInterruption() } },
             onGain = { app.appScope.launch(Dispatchers.Main) { patternEngine.resumeFromInterruption() } },
         )
@@ -231,8 +243,8 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             sinkFactory = { StudioOutputs.create(audioManager) },
             focus = {
                 app.appScope.launch { runCatching { app.playbackController.pause() } }
-                if (engineLazy.isInitialized()) studioEngine.pauseSample()
-                if (loopLazy.isInitialized()) loopAudition.stop()
+                if (engineLazy.isInitialized()) studioEngine.pauseSample("superseded")
+                if (loopLazy.isInitialized()) loopAudition.stop("superseded")
                 focus.requestPlayback()
             },
             focusRelease = { focus.abandon() },
@@ -260,16 +272,16 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     }
 
     private val instrumentLazy: Lazy<com.levi.pocketdj.studio.engine.InstrumentEngine> = lazy {
-        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { instrumentEngine.stopReplay(); instrumentEngine.allNotesOff() } }
+        val focus = AudioFocusPolicy.FocusHandle(audioManager) { app.appScope.launch(Dispatchers.Main) { instrumentEngine.stopReplay("focus-loss"); instrumentEngine.allNotesOff() } }
         com.levi.pocketdj.studio.engine.InstrumentEngine(
             sinkFactory = { StudioOutputs.create(audioManager) },
             scope = app.appScope,
             focus = {
                 // One audible owner: park Now Playing and every other Studio voice before the keys sound.
                 app.appScope.launch { runCatching { app.playbackController.pause() } }
-                if (engineLazy.isInitialized()) studioEngine.pauseSample()
-                if (loopLazy.isInitialized()) loopAudition.stop()
-                if (patternLazy.isInitialized()) patternEngine.stopPattern()
+                if (engineLazy.isInitialized()) studioEngine.pauseSample("superseded")
+                if (loopLazy.isInitialized()) loopAudition.stop("superseded")
+                if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
                 focus.requestPlayback()
             },
             focusRelease = { focus.abandon() },
@@ -452,14 +464,14 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     private val demuxPlayer: com.levi.pocketdj.studio.demux.StemPlayer by lazy {
         val focus = AudioFocusPolicy.FocusHandle(audioManager) {
-            app.appScope.launch(Dispatchers.Main) { if (demuxPlayer.isPlaying) demuxPlayer.togglePlayPause() }
+            app.appScope.launch(Dispatchers.Main) { if (demuxPlayer.isPlaying) { StudioDiag.stop("demux", "focus-loss"); demuxPlayer.togglePlayPause() } }
         }
         val request = {
             // One audible owner: park Now Playing and every Studio voice before the Demuxer sounds.
             app.appScope.launch { runCatching { app.playbackController.pause() } }
-            if (engineLazy.isInitialized()) studioEngine.pauseSample()
-            if (loopLazy.isInitialized()) loopAudition.stop()
-            if (patternLazy.isInitialized()) patternEngine.stopPattern()
+            if (engineLazy.isInitialized()) studioEngine.pauseSample("superseded")
+            if (loopLazy.isInitialized()) loopAudition.stop("superseded")
+            if (patternLazy.isInitialized()) patternEngine.stopPattern("superseded")
             focus.requestPlayback()
             Unit
         }
@@ -580,9 +592,11 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
     override val deepLinkHandlers: List<DeepLinkHandler> = listOf(
         DeepLinkHandler { intent ->
-            if (isDebuggable() && intent.getBooleanExtra(SEED_EXTRA, false)) {
-                app.appScope.launch(Dispatchers.IO) { runCatching { seedFixture() } }
-            }
+            val seed = com.levi.pocketdj.studio.StudioSeed.requested(
+                isDebuggable(), intent.getBooleanExtra(SEED_EXTRA, false), intent.getBooleanExtra(SEED_DEMUX_EXTRA, false),
+            )
+            if (seed.studio) app.appScope.launch(Dispatchers.IO) { runCatching { seedFixture() } }
+            if (seed.demux) app.appScope.launch(Dispatchers.IO) { runCatching { seedDemuxFixture() } }
             false   // never consumes the intent
         },
     )
@@ -590,57 +604,14 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     private fun isDebuggable(): Boolean =
         (app.appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
-    /**
-     * Debug fixture (`--ez PDJ_SEED_STUDIO true`): one 1 s tone sample + one loop (real files in
-     * the app roots), a pattern, and two cues. Idempotent by fixed ids. Emulator steps: relaunch
-     * -> rows persist; delete a tone file -> relaunch -> record pruned; revoke the SAF root ->
-     * relaunch -> nothing pruned.
-     */
-    fun seedFixture() {
-        val store = studioStore
-        val smpId = "smp_seed0000-0000-0000-0000-000000000001"
-        val lpId = "lp_seed0000-0000-0000-0000-000000000001"
-        val sName = StudioFolders.fileName(StudioFamily.SAMPLES, smpId)
-        val lName = StudioFolders.fileName(StudioFamily.LOOPS, lpId)
-        writeTone(File(File(app.appContext.filesDir, "studio/samples").also { it.mkdirs() }, sName))
-        writeTone(File(File(app.appContext.filesDir, "studio/loops").also { it.mkdirs() }, lName))
-        val t = System.currentTimeMillis().toDouble()
-        store.addSample(
-            StudioSample(smpId, "Seed Tone", sName, createdAt = t, durationMs = 1000, source = StudioSource.Mic, grid = StudioGrid(120.0)),
-        )
-        store.addLoop(StudioLoop(lpId, "Seed Loop", smpId, bpm = 120.0, lengthMs = 1000, frames = 44100, fileName = lName, createdAt = t))
-        store.addPattern(
-            StudioPattern.of(
-                "ptn_seed0000-0000-0000-0000-000000000001", "Seed Pattern",
-                rows = listOf(StudioPatternRow.of(smpId, steps = List(16) { it % 4 == 0 })), createdAt = t,
-            ),
-        )
-        store.setCue("sng_1", 0, 1000, "Seed A")
-        store.setCue("sng_1", 1, 2000, "Seed B")
-        store.flush()
-    }
+    /** Debug fixture (`--ez PDJ_SEED_STUDIO true`); see [com.levi.pocketdj.studio.StudioSeed]. */
+    fun seedFixture() = com.levi.pocketdj.studio.StudioSeed.seedStudio(studioStore, app.appContext)
 
-    /** 1 s 440 Hz mono 16-bit PCM WAV (the seed's stand-in audio; content-sniffed by the decoder). */
-    private fun writeTone(f: File) {
-        val rate = 44100; val n = rate
-        RandomAccessFile(f, "rw").use { raf ->
-            raf.setLength(0)
-            fun le32(v: Int) = byteArrayOf(v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte())
-            fun le16(v: Int) = byteArrayOf(v.toByte(), (v shr 8).toByte())
-            raf.writeBytes("RIFF"); raf.write(le32(36 + n * 2)); raf.writeBytes("WAVEfmt ")
-            raf.write(le32(16)); raf.write(le16(1)); raf.write(le16(1)); raf.write(le32(rate))
-            raf.write(le32(rate * 2)); raf.write(le16(2)); raf.write(le16(16))
-            raf.writeBytes("data"); raf.write(le32(n * 2))
-            val buf = ByteArray(n * 2)
-            for (i in 0 until n) {
-                val v = (sin(2 * PI * 440.0 * i / rate) * 0.3 * Short.MAX_VALUE).toInt()
-                buf[2 * i] = v.toByte(); buf[2 * i + 1] = (v shr 8).toByte()
-            }
-            raf.write(buf)
-        }
-    }
+    /** Debug fixture (`--ez PDJ_SEED_DEMUX true`): imports the bundled 1 s tone as a Demuxer source. */
+    fun seedDemuxFixture() = com.levi.pocketdj.studio.StudioSeed.seedDemux(demuxStore, app.appContext)
 
     companion object {
-        const val SEED_EXTRA = "PDJ_SEED_STUDIO"
+        const val SEED_EXTRA = com.levi.pocketdj.studio.StudioSeed.STUDIO_EXTRA
+        const val SEED_DEMUX_EXTRA = com.levi.pocketdj.studio.StudioSeed.DEMUX_EXTRA
     }
 }

@@ -298,6 +298,7 @@ class PatternEngine(
         _isPlaying.value = false
         _soloedRow.value = null
         sink?.stop()
+        StudioDiag.stop("pattern", "focus-transient")
         diag("pattern parked (interruption)")
     }
 
@@ -335,7 +336,7 @@ class PatternEngine(
         parkedForInterruption = false
         if (_loadedPatternId.value == null) { lastRefusal = "no-pattern"; return false }
         if (!scheduler.hasContent) { lastRefusal = "no-content"; diag("startPattern REFUSED: no sounding steps with buffers"); return false }
-        if (!AudioFocusPolicy.mayStartPlayback()) { lastRefusal = "mic-capture-active"; diag("startPattern refused: mic capture active"); return false }
+        if (!AudioFocusPolicy.gateStart("pattern")) { lastRefusal = "mic-capture-active"; diag("startPattern refused: mic capture active"); return false }
         if (focus != null && !focus.invoke()) { lastRefusal = "no-focus"; diag("startPattern refused: no audio focus"); return false }
         if (!scheduler.restartFromTop()) { lastRefusal = "no-content"; return false }
         if (!trackAdded) { graph.addTrack(TRACK, scheduler); trackAdded = true }
@@ -349,12 +350,13 @@ class PatternEngine(
         lastRefusal = null
         clock.running = true
         _isPlaying.value = true
+        StudioDiag.play("pattern", "user-play", started = true)
         diag("pattern start bpm=${scheduler.patternBpm} from=${clock.startStep} loop=${if (clock.loopEnabled) clock.loopBars else 0}")
         return true
     }
 
     /** Stop (rows keep their buffers - start replays from the top). Read [clock] BEFORE this to park the cursor. */
-    fun stopPattern() {
+    fun stopPattern(reason: String = "user-stop") {
         val was = _isPlaying.value
         val wasParked = parkedForInterruption
         parkedForInterruption = false
@@ -362,7 +364,7 @@ class PatternEngine(
         clock.running = false
         _isPlaying.value = false
         _soloedRow.value = null
-        if (was) { sink?.stop(); focusRelease?.invoke(); diag("stopPattern") }
+        if (was) { sink?.stop(); focusRelease?.invoke(); StudioDiag.stop("pattern", reason); diag("stopPattern") }
         else if (wasParked) { focusRelease?.invoke(); diag("stopPattern (parked)") }
     }
 
