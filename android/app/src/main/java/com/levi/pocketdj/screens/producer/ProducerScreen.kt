@@ -91,6 +91,7 @@ fun ProducerScreen(graph: AppGraph, modifier: Modifier = Modifier, hideTabs: Boo
             if (restored) when (tab) {
                 StudioSubTab.Samples -> SamplesScreen(graph)
                 StudioSubTab.Loops -> LoopsScreen(graph)
+                StudioSubTab.Cues -> com.levi.pocketdj.screens.producer.cues.CuesScreen(graph)
                 else -> ComingSoon(tab)
             }
         }

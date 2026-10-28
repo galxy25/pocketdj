@@ -565,6 +565,7 @@ class PlaybackController(
         songId: String,
         queueAlbumContext: Boolean = true,
         playContext: PlayContext? = null,
+        startMs: Long = 0L,
     ): PlayOutcome {
         // Studio mic capture owns the audio path: nothing may start sounding into the take.
         if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.mayStartPlayback()) return PlayOutcome.Failed("Recording in progress")
@@ -574,7 +575,8 @@ class PlaybackController(
         val ripConfigured = settings.current().hasRipServer
         // A manual ▶ of a song IN the running queue repositions the cursor (it must not queue the
         // album behind it, which would orphan the set) - see setQueueAndPlay's adoption.
-        val queueAlbumContext = queueAlbumContext &&
+        // STU-6: a cue start is a SINGLE-item play (an album queue has no per-item start position).
+        val queueAlbumContext = queueAlbumContext && startMs <= 0L &&
             !withContext(Dispatchers.Main) { sequencer.inRunningQueue(songId) }
 
         return when (val action = PlayResolver.resolveBurnedFirst(songId, rips.entry(songId), ripConfigured, burnedFile(songId))) {
@@ -582,11 +584,11 @@ class PlaybackController(
             // wins first; only for a non-manifest song with an appleMusicId do the
             // AM rungs (full-track → preview) sit BEFORE rip-on-demand / metadata.
             is PlayAction.MetadataOnly ->
-                tryAppleMusic(songId, song, merged, playContext)
+                tryAppleMusic(songId, song, merged, playContext)?.also { seekAfterAm(it, startMs) }
                     ?: PlayOutcome.NotPlayable(action.reason)
 
             is PlayAction.RipRequired ->
-                tryAppleMusic(songId, song, merged, playContext)
+                tryAppleMusic(songId, song, merged, playContext)?.also { seekAfterAm(it, startMs) }
                     ?: startRipAndPlay(songId, playContext ?: PlayContext.BROWSER)
 
             is PlayAction.Stream -> {
@@ -605,11 +607,26 @@ class PlaybackController(
                         album = song?.albumId?.let { merged?.albumsById?.get(it) },
                         playContext = playContext ?: PlayContext.BROWSER,
                     )
-                    setQueueAndPlay(listOf(item), 0, adoptSongId = songId)
+                    // Cue start: ExoPlayer positions are relative to the item's ClippingConfiguration, so the
+                    // seek is the song-relative cue ALONE (the shared-album clipStart is applied by the clip,
+                    // never pre-added here — that would push the end boundary into the next song).
+                    setQueueAndPlay(listOf(item), 0, adoptSongId = songId, startPositionMs = startMs.takeIf { it > 0 })
                     PlayOutcome.Started
                 }
             }
         }
+    }
+
+    /** STU-6: would an Apple Music start offset be honoured (full-track engine ready)? Cached facts only. */
+    suspend fun canSeekAppleMusic(): Boolean = runCatching { appleMusicBackend?.canPlayFullTrackCached() == true }.getOrDefault(false)
+
+    /**
+     * Apple Music play-then-seek (device-only): the SDK has no start offset, so once the engine confirms
+     * playing we seek. A no-op for a zero start or an outcome that did not start.
+     */
+    private suspend fun seekAfterAm(outcome: PlayOutcome, startMs: Long) {
+        if (startMs <= 0L || outcome !is PlayOutcome.Started) return
+        runCatching { seekTo(startMs) }
     }
 
     /** Play a whole album from its first playable track (or [startSongId]). */
@@ -1197,7 +1214,12 @@ class PlaybackController(
      * auto-advancing; a non-member single leaves the index untouched. A multi-item queue (album
      * up-next) replaces the run.
      */
-    private suspend fun setQueueAndPlay(items: List<MediaItem>, startIndex: Int, adoptSongId: String? = null) {
+    private suspend fun setQueueAndPlay(
+        items: List<MediaItem>,
+        startIndex: Int,
+        adoptSongId: String? = null,
+        startPositionMs: Long? = null,
+    ) {
         // Single-owner: hand audio to ExoPlayer, stopping the AM engine first.
         cancelRipOnDemand() // a foreign play retires the run's rip-on-demand wait
         playGeneration.incrementAndGet()
@@ -1222,7 +1244,7 @@ class PlaybackController(
             }
         }
         withController {
-            it.setMediaItems(items, startIndex, androidx.media3.common.C.TIME_UNSET)
+            it.setMediaItems(items, startIndex, startPositionMs ?: androidx.media3.common.C.TIME_UNSET)
             it.prepare()
             it.play()
         }

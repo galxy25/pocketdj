@@ -80,6 +80,11 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     }
     val studioStore: StudioStore get() = storeLazy.value
 
+    /** STU-6: the cue seam shared by the Mix deck cue-jump row and the Producer Cues tab (one store). */
+    val cuePoints: com.levi.pocketdj.studio.cues.StudioCuePointsProvider by lazy {
+        com.levi.pocketdj.studio.cues.StudioCuePointsProvider { studioStore }
+    }
+
     // ---- STU-3: render / engine / recorder / source cache (all lazy: a user who never opens Producer pays nothing)
 
     private val audioManager get() = app.appContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
