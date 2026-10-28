@@ -51,6 +51,15 @@ class SequencerForwardingPlayerTest {
         assertTrue(p.availableCommands.contains(Player.COMMAND_PLAY_PAUSE))
     }
 
+    @Test fun playOnCascadeHaltedDeckWithLoadedItemRetriesTheRow() {
+        ctl.isRunning = true; ctl.isPausedByCascade = true
+        ps.state = Player.STATE_BUFFERING; ps.items = 1; ps.playWhenReady = false
+        p.play()
+        assertEquals(listOf("startCurrent"), ctl.calls)
+        assertFalse(ps.calls.contains("play"))
+        assertFalse(ps.calls.contains("seekTo"))
+    }
+
     @Test fun bufferingPlayRekicksWithARealSeek() {
         ps.state = Player.STATE_BUFFERING; ps.playWhenReady = true
         p.play()

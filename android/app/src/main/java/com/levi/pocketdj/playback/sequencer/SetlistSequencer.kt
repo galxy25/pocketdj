@@ -4,6 +4,17 @@ import com.levi.pocketdj.data.collections.CollectionMembership
 import com.levi.pocketdj.diag.NPLog
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.playback.PlaybackMode
+import com.levi.pocketdj.playback.health.AutoAdvanceCascadeBreaker
+import com.levi.pocketdj.playback.health.DeadAirMeter
+import com.levi.pocketdj.playback.health.EngineProbe
+import com.levi.pocketdj.playback.health.LiveBackstop
+import com.levi.pocketdj.playback.health.PauseDiscriminator
+import com.levi.pocketdj.playback.health.PlaybackRipWindow
+import com.levi.pocketdj.playback.health.PlaybackRunway
+import com.levi.pocketdj.playback.health.ResolveStallHop
+import com.levi.pocketdj.playback.health.ResolveStallTimer
+import com.levi.pocketdj.playback.health.RunwayLock
+import com.levi.pocketdj.playback.health.StartWatchdog
 import com.levi.pocketdj.playback.outcome.PlayOutcomeRegistry
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.random.Random
@@ -41,7 +52,9 @@ class SetlistSequencer(
     private val modeProvider: () -> PlaybackMode = { PlaybackMode.CLOUD },
     initialRepeatMode: RepeatMode = RepeatMode.OFF,
     private val random: Random = Random.Default,
-    private val log: (String) -> Unit = { NPLog.lane(NPLog.PLAYBACK, it) },
+    private val log: (String) -> Unit = { NPLog.lane(NPLog.PLAYBACK, it.removePrefix("[playback] ")) },
+    /** Wall clock (ms) for audible-time sampling and the runway; tests pass virtual time. */
+    private val clockMs: () -> Long = System::currentTimeMillis,
 ) {
     /** Captured ONCE at [play]: the History context of the run (CollectionsStore.historyContext). */
     @Volatile var historyContextProvider: (String?) -> PlayContext? = { null }
@@ -65,6 +78,36 @@ class SetlistSequencer(
 
     /** Cascade-breaker seam: return false to HALT an [AdvanceCause.AUTO] advance. */
     @Volatile var autoAdvanceGate: () -> Boolean = { true }
+
+    // ---- PB-3 zero-dead-air seams ---------------------------------------------------------------
+
+    /**
+     * Engine facts + re-kick. Attaching one ARMS the machinery that needs real audio facts: the start
+     * watchdog, the audible-time sampler and the auto-advance cascade breaker. Without it (unit tests of the
+     * queue semantics) those stay inert, so a harness that never produces audio is not read as a cascade.
+     */
+    @Volatile var engine: EngineProbe? = null
+
+    /** Who paused (listener vs interruption) - fed by the controller from Media3's playWhenReady reasons. */
+    val discriminator = PauseDiscriminator()
+
+    @Volatile var meter: DeadAirMeter? = null
+    @Volatile var runwayLock: RunwayLock? = null
+
+    /** Can this row play with NO network (burned / local file)? Drives the stall hop. */
+    @Volatile var rowOnDevice: (QueueItem) -> Boolean = { false }
+
+    /** Can this row start with no network round trip before play (a manifest rip)? The hop's fallback. */
+    @Volatile var rowStartsInstantly: (QueueItem) -> Boolean = { false }
+
+    /** `POST /rip-cancel` for ids that left the rip window (fire-and-forget; the graph supplies it). */
+    @Volatile var cancelPlaybackRips: ((List<String>) -> Unit)? = null
+
+    /** A user surface (collection Rip / Rip+Burn / recognizer) asked for this rip: never cancel it. */
+    @Volatile var isUserRequestedRip: (String) -> Boolean = { false }
+
+    /** Apple Music engine active? Picks the cascade notice variant. */
+    @Volatile var appleMusicActive: () -> Boolean = { false }
 
     private val _state = MutableStateFlow(SequencerState(repeatMode = initialRepeatMode))
     val state: StateFlow<SequencerState> = _state.asStateFlow()
@@ -93,10 +136,46 @@ class SetlistSequencer(
     private var unplayableStreak = 0
     private var memberIds: Set<String>? = null
 
+    // PB-3 state
+    private val breaker = AutoAdvanceCascadeBreaker()
+    private var trackAudibleSeconds = 0.0
+    private var lastAudibleSampleMs: Long? = null
+    private var pausedByCascade = false
+    private var waitingForLive = false
+    private val ripWindow = PlaybackRipWindow()
+    private var ripReconcileQueued = false
+    private var firstAudioPending = false
+    private var currentBackend = "none"
+    private var startWindow: StartWindow? = null
+    private var startCapJob: Job? = null
+    private var healthTicker: Job? = null
+    private val startWatchdog = StartWatchdog(scope)
+    private val stallTimer = ResolveStallTimer(scope)
+    private val liveBackstop = LiveBackstop(scope)
+
+    private class StartWindow(val gen: Long, val songId: String, val runway: PlaybackRunway, val beganMs: Long)
+
     val isRunning: Boolean get() = running
 
     /** A row's resolve/load is in flight (a remote idle ▶ must not double-start it). */
-    val isStartPending: Boolean get() = playJob?.isActive == true
+    /** True while the current row is a rip-on-demand placeholder still resolving (set by the controller). */
+    @Volatile var ripWaitProbe: (() -> Boolean)? = null
+
+    val isStartPending: Boolean
+        get() = playJob?.isActive == true || startWindow != null ||
+            (firstAudioPending && ripWaitProbe?.invoke() == true)
+
+    /** The cascade breaker halted the run: the deck holds the current row paused until the listener acts. */
+    val isPausedByCascade: Boolean get() = pausedByCascade
+
+    /** The current row is a live capture with no natural end (the UI offers "Next"). */
+    val isWaitingForLive: Boolean get() = waitingForLive
+
+    /** Audible seconds the CURRENT track has produced (cascade breaker + rip window input). */
+    val audibleSecondsOfCurrent: Double get() = trackAudibleSeconds
+
+    /** The rip ids this session got queued and may still cancel (diagnostics + tests). */
+    val trackedPlaybackRips: Set<String> get() = ripWindow.requested
 
     /** Running, not held, and no row has produced audio yet (cascade-halted / never-started deck). */
     val currentNeverSounded: Boolean get() = running && !held && !startedAnyRow && playJob?.isActive != true
@@ -136,6 +215,8 @@ class SetlistSequencer(
             repeatMode = repeatMode,
             shuffleEnabled = shuffleEnabled,
             playbackNotice = notice,
+            waitingForLive = waitingForLive,
+            pausedByCascade = pausedByCascade,
             playGeneration = playGeneration,
             deviceQueueUnplayable = deviceQueueUnplayable,
             deviceUnplayableSourceId = deviceUnplayableSourceId,
@@ -145,6 +226,7 @@ class SetlistSequencer(
     private fun queueEdited() {
         memberIds = null
         publish()
+        scheduleRipWindowReconcile()
     }
 
     // ---- start / stop ---------------------------------------------------------------------
@@ -166,6 +248,10 @@ class SetlistSequencer(
         log("[playback] set start count=${items.size} source=${sourceSetlistId ?: "-"}")
         val first = items.first()
         if (running && !isRestartOfCurrent(first.id)) noteAdvanceAway()
+        // The previous session's playback rips (minus the row that was sounding and anything heard) are
+        // cancelled - a fresh run has its own window.
+        if (running) endRipWindowSession("new-session")
+        noteUserTransport()
         this.sourceSetlistId = sourceSetlistId
         capturedContext = context ?: historyContextProvider(sourceSetlistId)
         capturedOrigin = originProvider(sourceSetlistId)
@@ -209,6 +295,18 @@ class SetlistSequencer(
     fun abandonRun() = endRun()
 
     private fun endRun() {
+        endRipWindowSession("stop") // before the queue is cleared: the playing row is exempt
+        cancelHealthTimers()
+        endStartWindow("stop")
+        meter?.transitionAbandoned("stop")
+        healthTicker?.cancel()
+        healthTicker = null
+        firstAudioPending = false
+        waitingForLive = false
+        pausedByCascade = false
+        breaker.reset()
+        trackAudibleSeconds = 0.0
+        lastAudibleSampleMs = null
         playJob?.cancel()
         playJob = null
         playGeneration++ // a resolve past its last cancellation point must stand down
@@ -237,6 +335,10 @@ class SetlistSequencer(
         playJob = null
         playGeneration++
         lastLoadedId = null
+        cancelHealthTimers()
+        endStartWindow("superseded")
+        if (firstAudioPending) meter?.transitionAbandoned("superseded")
+        firstAudioPending = false
         if (running) publish()
     }
 
@@ -251,6 +353,9 @@ class SetlistSequencer(
     // ---- the ONE start funnel -----------------------------------------------------------
 
     private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false) {
+        resetTrackAudible()
+        reconcileRipWindow() // the playhead (may have) moved: rips outside the window go
+        ensureHealthTicker()
         playJob?.cancel()
         // LAZY + assign + start: an inline-dispatching scope may run (and even recurse into) this
         // body before launch() returns; the handle must already be in place so a nested start
@@ -268,6 +373,13 @@ class SetlistSequencer(
         val gen = ++playGeneration
         val item = queue[index]
         val at = index
+        // A new generation retires the previous start's timers; the start window + resolve stall guard this one.
+        cancelHealthTimers()
+        waitingForLive = false
+        firstAudioPending = true
+        meter?.transitionBegan("start") // no-op inside an open advance/skip: a hop stays ONE transition
+        beginStartWindow(item, gen)
+        armResolveStall(gen)
         publish()
 
         // Same row again (repeat-ONE / repeatCount pass / consecutive duplicate row): restart the
@@ -284,6 +396,7 @@ class SetlistSequencer(
             if (!owns(gen)) return
             if (restarted) {
                 log("[playback] replay in place song=${item.id} index=${at + 1}/${queue.size}")
+                handleFirstAudio("replay") // the engine already holds the row: audio is immediate
                 return
             }
         }
@@ -314,6 +427,8 @@ class SetlistSequencer(
             count = queue.size,
         )
         log("[playback] track start song=${item.id} index=${at + 1}/${queue.size} backend=${source.backend}")
+        currentBackend = source.backend
+        meter?.trackStarting(source.backend)
         try {
             port.load(request)
         } catch (e: CancellationException) {
@@ -331,6 +446,11 @@ class SetlistSequencer(
         if (owns(gen)) {
             startedAnyRow = true
             lastLoadedId = item.id
+            if (source !is RipOnDemandSource) {
+                // Loaded: the network resolve is over. The start watchdog owns it from here.
+                stallTimer.cancel()
+                armStartStall(gen, item.id)
+            } // a rip-on-demand row stays under the resolve stall until noteSourceResolved()
         }
     }
 
@@ -403,6 +523,7 @@ class SetlistSequencer(
             return true
         }
         val pos = nearestOccurrence(songId, index) ?: return false
+        noteUserTransport()
         noteAdvanceAway()
         exitHoldIfNeeded()
         retirePendingStart() // the manual play owns the engine now; a pending resolve must not load over it
@@ -443,6 +564,7 @@ class SetlistSequencer(
     /** ⏮: never below 0; at the top it restarts (or wraps to the last row with repeat ALL). */
     fun skipPrevious() {
         if (!running) return
+        noteUserTransport()
         exitHoldIfNeeded()
         if (index == 0) {
             if (repeatMode == RepeatMode.ALL && queue.size > 1) index = queue.size - 1
@@ -455,7 +577,21 @@ class SetlistSequencer(
 
     private fun advanceToNext(cause: AdvanceCause) {
         if (!running) return
-        if (cause == AdvanceCause.AUTO && !autoAdvanceGate()) return
+        when (cause) {
+            AdvanceCause.USER -> noteUserTransport()
+            AdvanceCause.UNPLAYABLE_HERE -> Unit
+            AdvanceCause.AUTO -> {
+                // Halted: nothing advances by itself until the listener acts.
+                if (pausedByCascade || !autoAdvanceGate()) return
+                if (engine != null && breaker.shouldHalt(trackAudibleSeconds)) {
+                    haltCascade()
+                    return
+                }
+            }
+        }
+        // Dead-air clock: an auto-advance is the between-tracks gap; a skip is listener-driven.
+        meter?.transitionBegan(if (cause == AdvanceCause.USER) "skip" else "advance")
+        waitingForLive = false
         log("[playback] advance from=${queue.getOrNull(index)?.id ?: "?"} index=$index/${queue.size} cause=$cause")
         val fromId = queue.getOrNull(index)?.id
         val dupNext = cause == AdvanceCause.AUTO && fromId != null && queue.getOrNull(index + 1)?.id == fromId
@@ -540,6 +676,7 @@ class SetlistSequencer(
     fun resumeFromHold() {
         if (!running || !held) return
         val at = pendingResumeMs
+        noteUserTransport()
         held = false
         pendingResumeMs = null
         playsRemaining = CollectionMembership.normalizedRepeat(queue.getOrNull(index)?.repeatCount)
@@ -550,6 +687,8 @@ class SetlistSequencer(
     /** Start the current row from the top (cascade-halted deck, idle ▶). */
     fun startCurrent(): Boolean {
         if (!running || index >= queue.size) return false
+        noteUserTransport()
+        discriminator.noteListenerIntent(true)
         held = false
         publish()
         startPlayCurrent()
@@ -721,6 +860,7 @@ class SetlistSequencer(
     fun jumpToUpcoming(uid: String) {
         val pos = upcomingPos(uid) ?: return
         if (!isRestartOfCurrent(queue[pos].id)) noteAdvanceAway()
+        noteUserTransport()
         exitHoldIfNeeded()
         index = pos
         publish()
@@ -735,6 +875,7 @@ class SetlistSequencer(
     fun playNow(item: QueueItem) {
         if (!running) return
         if (!isRestartOfCurrent(item.id)) noteAdvanceAway()
+        noteUserTransport()
         exitHoldIfNeeded()
         val fresh = if (queue.any { it.uid == item.uid }) item.freshInstance() else item
         val at = minOf(index + 1, queue.size)
@@ -749,6 +890,7 @@ class SetlistSequencer(
         if (!running || index <= 0) return
         val pos = (0 until minOf(index, queue.size)).firstOrNull { queue[it].uid == uid } ?: return
         if (!isRestartOfCurrent(queue[pos].id)) noteAdvanceAway()
+        noteUserTransport()
         exitHoldIfNeeded()
         index = pos
         publish()
@@ -773,6 +915,313 @@ class SetlistSequencer(
         lastLoadedId = null
         log("[playback] play url title=$title seek=${seekMs}ms")
         port.loadUrl(UrlRequest(title, artist, url, seekMs))
+    }
+
+    // ---- PB-3: start window, stall hop, watchdogs ----------------------------------------------------
+
+    /**
+     * Open the start window for generation [gen]: a runway (wake lock) held until the track actually renders,
+     * capped at [PlaybackRunway.CAP_MS]. `isStartPending` is true for its whole life.
+     */
+    private fun beginStartWindow(item: QueueItem, gen: Long) {
+        endStartWindow("superseded")
+        val runway = PlaybackRunway("pocketdj-start-${item.id}", runwayLock, clockMs)
+        startWindow = StartWindow(gen, item.id, runway, clockMs())
+        startCapJob = scope.launch {
+            kotlinx.coroutines.delay(PlaybackRunway.CAP_MS)
+            if (startWindow?.gen == gen) endStartWindow("cap")
+        }
+    }
+
+    private fun endStartWindow(reason: String) {
+        val w = startWindow ?: return
+        startWindow = null
+        startCapJob?.cancel()
+        startCapJob = null
+        w.runway.end(reason)
+    }
+
+    private fun cancelHealthTimers() {
+        startWatchdog.cancel()
+        stallTimer.cancel()
+        liveBackstop.cancel()
+    }
+
+    /**
+     * The engine produced the row's FIRST audio (Media3 isPlaying with READY). Closes the dead-air transition,
+     * the start window and the watchdogs. Idempotent per start; ignores a stale row's audio via [songId].
+     */
+    fun onFirstAudio(songId: String? = null, source: String = "player") {
+        if (!running || held) return
+        if (songId != null && queue.getOrNull(index)?.matches(songId) != true) return
+        handleFirstAudio(source)
+    }
+
+    private fun handleFirstAudio(source: String) {
+        if (!firstAudioPending && startWindow == null) return
+        firstAudioPending = false
+        meter?.firstAudio(currentBackend, clockMs())
+        startWatchdog.cancel()
+        stallTimer.cancel()
+        startWindow?.let { log("[playback] start-ok song=${it.songId} after=${clockMs() - it.beganMs}ms") }
+        endStartWindow("firstAudio.$source")
+    }
+
+    /** A rip-on-demand row's url resolved (the data source is about to read it): the start watchdog takes over. */
+    fun noteSourceResolved(songId: String) {
+        if (!running || held) return
+        val cur = queue.getOrNull(index) ?: return
+        if (!cur.matches(songId) || !firstAudioPending) return
+        stallTimer.cancel()
+        armStartStall(playGeneration, cur.id)
+    }
+
+    /**
+     * The current row switched to a live HLS capture: no natural end, scrubber disabled, "Next" offered.
+     * Arms the [LiveBackstop] (known length + 45 s of un-paused play).
+     */
+    fun noteLive(songId: String) {
+        if (!running || held) return
+        val cur = queue.getOrNull(index) ?: return
+        if (!cur.matches(songId)) return
+        val gen = playGeneration
+        waitingForLive = true
+        currentBackend = "hls"
+        meter?.trackStarting("hls")
+        publish()
+        liveBackstop.arm(
+            lengthMs = cur.lengthMs,
+            isPausedByListener = { discriminator.pausedByListener },
+            stillWaiting = { running && playGeneration == gen && waitingForLive },
+            onExpire = {
+                log("[playback] advance: live capture past its length+grace song=${queue.getOrNull(index)?.id ?: "?"}")
+                advanceToNext(AdvanceCause.AUTO)
+            },
+        )
+    }
+
+    private fun armResolveStall(gen: Long) {
+        stallTimer.arm(
+            stillStalled = {
+                running && playGeneration == gen && index < queue.size && firstAudioPending && !held && !pausedByCascade
+            },
+            onStall = { waited ->
+                if (!hopToPlayableRow("resolve stalled ${waited}s")) {
+                    log(
+                        "[playback] resolve stalled ${waited}s song=${queue.getOrNull(index)?.id ?: "?"} " +
+                            "\u2014 no on-device/instant row to hop to; waiting",
+                    )
+                }
+            },
+        )
+    }
+
+    /**
+     * Play the next ON-DEVICE row now (else the next row that starts instantly) and DEFER the current
+     * (stalled) row right behind it - reordered, never dropped. Shared by the resolve stall, the start
+     * watchdog and the supervisor's L3. False when no such row is within the lookahead.
+     */
+    private fun hopToPlayableRow(reason: String): Boolean {
+        if (index >= queue.size) return false
+        val choice = ResolveStallHop.choose(queue, index, rowOnDevice, rowStartsInstantly) ?: return false
+        val stalled = queue[index]
+        val row = ResolveStallHop.apply(queue, index, choice)
+        log("[playback] $reason song=${stalled.id} \u2192 hop to ${choice.kind.label} ${row.id} (deferred stalled row)")
+        queueEdited()
+        startPlayCurrent()
+        return true
+    }
+
+    private fun armStartStall(gen: Long, songId: String) {
+        if (engine == null) return
+        startWatchdog.arm(
+            stillOwed = { startStallStillOwed(gen) },
+            onRekick = { waited ->
+                logStartStall(songId, waited)
+                engine?.rekick("player.startStall")
+            },
+            onEscalate = { waited ->
+                logStartStall(songId, waited)
+                escalateStalledStart("start-stall ${waited}s")
+            },
+        )
+    }
+
+    private fun startStallStillOwed(gen: Long): Boolean {
+        val e = engine ?: return false
+        return running && playGeneration == gen && !held && !pausedByCascade &&
+            e.hasLoadedItem && !e.isPlaying && !e.trackEnded &&
+            !discriminator.pausedByListener && !discriminator.interruptionOpen
+    }
+
+    private fun logStartStall(songId: String, waited: Int) {
+        val pos = engine?.positionMs ?: 0
+        log("[playback] start-stall song=$songId waited=$waited status=waiting pos=${pos}ms runway=${if (startWindow != null) 1 else 0}")
+    }
+
+    /**
+     * The current row could not get to audio: hop to the next playable row (deferring this one right behind
+     * it), else advance - through the cascade breaker (AUTO).
+     */
+    fun escalateStalledStart(reason: String) {
+        if (!running || index >= queue.size || held || pausedByCascade) return
+        if (hopToPlayableRow(reason)) return
+        log("[playback] advance: $reason song=${queue[index].id} \u2014 no on-device row to hop to")
+        advanceToNext(AdvanceCause.AUTO)
+    }
+
+    // ---- supervisor hooks (only ever called while the listener intends to hear sound) ---------------
+
+    /** L2: re-resolve + restart the CURRENT row at its current position. NOT a user transport. */
+    fun supervisorRetryInPlace() {
+        if (!running || index >= queue.size || held || pausedByCascade) return
+        val at = engine?.positionMs ?: 0L
+        NPLog.lane(NPLog.SUPERVISOR, "retry in place song=${queue[index].id} atMs=$at")
+        startPlayCurrent(fresh = false, resumeAtMs = if (at > 1000) at else null)
+    }
+
+    /** L3: hop / advance through the cascade breaker. */
+    fun supervisorEscalate() = escalateStalledStart("supervisor L3")
+
+    // ---- PB-3: audible time, cascade breaker, rip window ----------------------------------------------
+
+    private fun resetTrackAudible() {
+        trackAudibleSeconds = 0.0
+        lastAudibleSampleMs = clockMs()
+    }
+
+    private fun ensureHealthTicker() {
+        if (engine == null || healthTicker?.isActive == true) return
+        healthTicker = scope.launch {
+            while (isActive) {
+                kotlinx.coroutines.delay(1_000)
+                sampleAudible()
+            }
+        }
+    }
+
+    /** One 1 Hz sample: accumulate audible time while the engine is really rendering this run's row. */
+    fun sampleAudible() {
+        val now = clockMs()
+        val dtMs = lastAudibleSampleMs?.let { now - it } ?: 0L
+        lastAudibleSampleMs = now
+        val e = engine ?: return
+        if (!running || held) return
+        if (!(e.hasLoadedItem && e.isPlaying)) return
+        addAudibleSeconds((dtMs / 1000.0).coerceIn(0.0, 5.0))
+    }
+
+    /**
+     * Test seam + the ticker's sink. Once the track has really played the run is not a cascade (reset + clear
+     * any stale notice); past [PlaybackRipWindow.HEARD_SECONDS] its rip is exempt from window cancellation.
+     */
+    fun addAudibleSeconds(seconds: Double) {
+        val before = trackAudibleSeconds
+        trackAudibleSeconds += seconds
+        if (before < AutoAdvanceCascadeBreaker.MIN_AUDIBLE_SECONDS &&
+            trackAudibleSeconds >= AutoAdvanceCascadeBreaker.MIN_AUDIBLE_SECONDS
+        ) {
+            breaker.reset()
+            if (!pausedByCascade && notice != null) {
+                notice = null
+                publish()
+            }
+        }
+        if (before < PlaybackRipWindow.HEARD_SECONDS && trackAudibleSeconds >= PlaybackRipWindow.HEARD_SECONDS &&
+            running && index < queue.size
+        ) {
+            ripWindow.keep(setOf(queue[index].id, queue[index].resolveId))
+        }
+    }
+
+    /** The listener acted: whatever happened before is not a cascade any more. */
+    private fun noteUserTransport() {
+        breaker.reset()
+        pausedByCascade = false
+        notice = null
+    }
+
+    /**
+     * Stop auto-advancing: hold the CURRENT row (the queue position is kept), silence it, and say why.
+     * Play retries this row ([startCurrent]); skip / previous / jump move on as usual.
+     */
+    private fun haltCascade() {
+        val row = queue.getOrNull(index)?.id ?: "?"
+        log(
+            "[playback] cascade-stop song=$row index=$index/${queue.size} " +
+                "quickAdvances=${AutoAdvanceCascadeBreaker.LIMIT} backend=$currentBackend audible=${trackAudibleSeconds.toInt()}s",
+        )
+        playJob?.cancel()
+        playJob = null
+        playGeneration++ // a resolve still in flight must not start audio now
+        cancelHealthTimers()
+        endStartWindow("cascade-halt")
+        meter?.transitionAbandoned("cascade-halt")
+        firstAudioPending = false
+        waitingForLive = false
+        scope.launch { runCatching { port.pause() } }
+        discriminator.noteListenerIntent(false) // halted: nothing may "keep playing" it until play
+        pausedByCascade = true
+        notice = if (appleMusicActive()) {
+            AutoAdvanceCascadeBreaker.APPLE_MUSIC_NOTICE
+        } else {
+            AutoAdvanceCascadeBreaker.GENERIC_NOTICE
+        }
+        publish()
+    }
+
+    /** The ids inside the rip window: the playing row + the next [PlaybackRipWindow.AHEAD], base + resolve. */
+    fun currentRipWindowIds(): Set<String> {
+        if (!running || index >= queue.size) return emptySet()
+        return PlaybackRipWindow.windowIds(queue.map { PlaybackRipWindow.Row(it.id, it.resolveId) }, index)
+    }
+
+    /** May a playback rip for [id] be requested right now? A song outside the running set is not this session's call. */
+    fun playbackRipAllowed(id: String): Boolean {
+        if (!running || held || !inRunningQueue(id)) return true
+        return id in currentRipWindowIds()
+    }
+
+    /**
+     * The server queued a playback rip. Track it when it is this session's (a member row inside the window);
+     * one that landed after the playhead already left the window (a slow POST under a skip storm) is
+     * cancelled at once.
+     */
+    fun notePlaybackRipQueued(id: String) {
+        if (!running || !inRunningQueue(id) || isUserRequestedRip(id)) return
+        if (id in currentRipWindowIds()) ripWindow.record(id) else cancelRipIds(listOf(id), "late-outside-window")
+    }
+
+    /** Cancel every tracked rip that is no longer inside the window. */
+    fun reconcileRipWindow() {
+        if (!running || ripWindow.requested.isEmpty()) return
+        cancelRipIds(ripWindow.evict(currentRipWindowIds()), "outside-window")
+    }
+
+    /** Coalesce queue-edit reconciles (a reshuffle and a track start in one turn reconcile once). */
+    private fun scheduleRipWindowReconcile() {
+        if (ripWindow.requested.isEmpty() || ripReconcileQueued) return
+        ripReconcileQueued = true
+        scope.launch {
+            ripReconcileQueued = false
+            reconcileRipWindow()
+        }
+    }
+
+    /** The session is ending (stop / replaced by a fresh play): cancel everything it queued except the sounding row. */
+    private fun endRipWindowSession(reason: String) {
+        if (ripWindow.requested.isEmpty()) return
+        val cur = queue.getOrNull(index)
+        val playing = if (running && cur != null) setOf(cur.id, cur.resolveId) else emptySet()
+        cancelRipIds(ripWindow.endSession(playing), reason)
+    }
+
+    private fun cancelRipIds(ids: List<String>, reason: String) {
+        // Belt and braces: a user surface may have asked for the same song since we tracked it.
+        val toCancel = ids.filter { !isUserRequestedRip(it) }
+        if (toCancel.isEmpty()) return
+        NPLog.lane(NPLog.RIPREQ, "rip window cancel n=${toCancel.size} reason=$reason ids=${toCancel.joinToString(",")}")
+        cancelPlaybackRips?.invoke(toCancel)
     }
 
     // ---- transport passthrough ---------------------------------------------------------------

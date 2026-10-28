@@ -41,6 +41,7 @@ class FakeControl : SequencerControl {
     override var isRunning = false
     override var isHeldForResume = false
     override var isStartPending = false
+    override var isPausedByCascade = false
     override var currentNeverSounded = false
     var hasRunOverride: Boolean? = null
     override val hasRun get() = hasRunOverride ?: isRunning

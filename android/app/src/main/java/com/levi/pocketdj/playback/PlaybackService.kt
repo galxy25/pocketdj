@@ -42,7 +42,13 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        // PB-3: `pdj-resolve://song/<id>` rows (rip-on-demand inside a run) load immediately and resolve their
+        // real url on the loader thread; every other uri passes through the resolver untouched.
+        val dataSources = com.levi.pocketdj.playback.session.ResolvingSongDataSource.wrap(
+            androidx.media3.datasource.DefaultDataSource.Factory(this),
+        )
         val player = ExoPlayer.Builder(this)
+            .setMediaSourceFactory(androidx.media3.exoplayer.source.DefaultMediaSourceFactory(dataSources))
             .setAudioAttributes(
                 AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA)
@@ -51,6 +57,7 @@ class PlaybackService : MediaSessionService() {
                 /* handleAudioFocus = */ true,
             )
             .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NETWORK) // holds CPU+wifi while buffering a long rip-on-demand wait
             .build()
 
         player.addListener(object : Player.Listener {
@@ -166,6 +173,7 @@ class PlaybackService : MediaSessionService() {
         override val isRunning get() = c?.isRunning == true
         override val isHeldForResume get() = c?.isHeldForResume == true
         override val isStartPending get() = c?.isStartPending == true
+        override val isPausedByCascade get() = c?.isPausedByCascade == true
         override val currentNeverSounded get() = c?.currentNeverSounded == true
         override val hasRun get() = c?.hasRun == true
         override var repeatMode: RepeatMode
