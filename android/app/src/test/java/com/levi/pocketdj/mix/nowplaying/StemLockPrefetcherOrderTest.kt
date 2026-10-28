@@ -150,4 +150,18 @@ class StemLockPrefetcherOrderTest {
         pf.apply(plan); pf.apply(plan)
         assertEquals(listOf("n"), asked)
     }
+
+    @Test fun finishedSongStepIsNotReplannedInsideTheCooldown() {
+        val scope = TestScope(StandardTestDispatcher())
+        var clock = 0L
+        val pf = StemLockPrefetcher(scope, now = { clock })
+        var songCalls = 0
+        pf.fetchSong = { songCalls++; true }   // "ok" yet the planner still sees the song as non-local (cut stream, no adoption)
+        pf.fetchStemPart = { _, _ -> true }
+        val plan = StemLockPrefetcher.plan(null, listOf(t("n")), carry, Network.UNMETERED, 1)
+        pf.apply(plan); scope.advanceUntilIdle()
+        pf.apply(plan); scope.advanceUntilIdle()
+        pf.apply(plan); scope.advanceUntilIdle()
+        assertEquals(1, songCalls)
+    }
 }

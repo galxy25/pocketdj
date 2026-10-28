@@ -414,7 +414,9 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             }
             p.fetchStemPart = { id, part -> burns.burnStemPart(id, part) }
             p.requestStemify = { id -> npMain.launch { runCatching { app.ripJobTracker.stemify(id) } } }
-            p.onStepFinished = { _, _ -> replanStemLock() }
+            // Posted (NOT Main.immediate): a step that finishes without suspending must never re-plan re-entrantly.
+            val replanHandler = android.os.Handler(android.os.Looper.getMainLooper())
+            p.onStepFinished = { _, _ -> replanHandler.post { replanStemLock() } }
         }
     }
 
@@ -429,7 +431,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         val loader = mixStreamLoader
         fun track(q: com.levi.pocketdj.playback.sequencer.QueueItem) = com.levi.pocketdj.mix.nowplaying.StemLockPrefetcher.Track(
             songId = q.id, audioId = q.resolveId, title = q.title, artist = q.artist.orEmpty(),
-            songLocal = burns.hasLocalFile(q.resolveId), songFetchable = loader.canStream(q.resolveId),
+            songLocal = burns.hasLocalFile(q.resolveId) || loader.stream(q.resolveId)?.isComplete == true, songFetchable = loader.canStream(q.resolveId),
             stemsLocal = burns.stemPartsBurned(q.id), stemsRemote = burns.stemsRemote(q.id),
         )
         val cur = st.current?.takeIf { npDspEngine.isEngaged && npDspEngine.engagedSongId == it.id }?.let(::track)
@@ -537,6 +539,28 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         }
         val player = com.levi.pocketdj.mix.nowplaying.NowPlayingDspSessionPlayer(android.os.Looper.getMainLooper(), port)
         npReleaseSession = { player.released() }
+        // Final review: the DSP engine owns its own sink, so it needs the Mix's focus + becoming-noisy policy
+        // (the paused ExoPlayer's focus callbacks reach a player that is already paused).
+        val audio = ctx.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        lateinit var npFocus: com.levi.pocketdj.mix.service.MixFocusMachine
+        val npTransport = object : com.levi.pocketdj.mix.service.FocusTransport {
+            override val isRunning get() = engine.isPlaying
+            override val isOwner get() = com.levi.pocketdj.playback.session.SessionSwitchboard.shared.isActive(player)
+            override fun remotePause() = engine.pause()
+            override fun remotePlay() = engine.play()
+            override fun pauseBoth() = engine.pause()
+        }
+        npFocus = com.levi.pocketdj.mix.service.MixFocusMachine(
+            com.levi.pocketdj.mix.service.AndroidFocusSystem(audio) { change -> npFocus.onFocusChange(change) }, npTransport,
+        )
+        ContextCompat.registerReceiver(
+            ctx,
+            object : android.content.BroadcastReceiver() {
+                override fun onReceive(c: Context?, i: android.content.Intent?) = npFocus.onBecomingNoisy()
+            },
+            android.content.IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+            ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         // Snapshot the playing row's metadata while the controller still mirrors ExoPlayer, then claim the
         // session BEFORE the voice starts (ExoPlayer pauses silently; remote Play routes to the engine even
         // when the swap was made while paused).
@@ -555,10 +579,10 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             }
             ensureMediaService(); player.claim()
         }
-        engine.onDisengaged = { player.released() }
-        engine.onAudioStarted = { ensureMediaService(); player.onAudioStarted() }
+        engine.onDisengaged = { player.released(); npFocus.onTransportIdle() }
+        engine.onAudioStarted = { ensureMediaService(); player.onAudioStarted(); npFocus.onAudioStarted() }
         val chained = engine.onChanged
-        engine.onChanged = { chained?.invoke(); player.refresh() }
+        engine.onChanged = { chained?.invoke(); player.refresh(); npFocus.onTransportIdle() }
 
         com.levi.pocketdj.screens.nowplaying.NowPlayingSeams.dspSlot = {
             com.levi.pocketdj.screens.nowplaying.NowPlayingDspPanel(host)

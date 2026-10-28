@@ -146,7 +146,10 @@ class StemLockPrefetcher(
                     return@launch
                 }
                 inFlight = null
-                if (!ok) failedAt[step] = now()
+                // A song fetch that "succeeded" (a finished stream that was never adopted as a burn stays non-local)
+                // must not be re-planned straight away either: share the failure cooldown, else replan -> fetch ->
+                // replan hard-spins the main thread (Final review).
+                if (!ok || step is Step.Song) failedAt[step] = now()
                 StemLock.log("prefetch $step ${if (ok) "ok" else "FAILED"} ms=${now() - t0}")
                 onStepFinished?.invoke(step, ok)
             }

@@ -277,6 +277,9 @@ class AppGraph private constructor(context: Context) {
     // MIX-18: Now Playing DSP panel + Stem Lock observers (after playbackGraph.wire so the sequencer exists).
     init {
         appScope.launch(Dispatchers.Main) {
+            // Final review: the engine/host lazies construct the BurnStore (ledger read + decode) and the transfer
+            // coordinator; build them on IO first so the first frame never waits on that disk work.
+            kotlinx.coroutines.withContext(Dispatchers.IO) { runCatching { servicesGraph.burnStore } }
             runCatching { mixGraph.installNowPlayingDsp() }
                 .onFailure { com.levi.pocketdj.diag.NPLog.lane(com.levi.pocketdj.diag.NPLog.NP, "npdsp install FAILED: ${it.message}") }
         }
