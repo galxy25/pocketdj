@@ -384,7 +384,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | PB-2 — Session transport + one-owner arbiter: SequencerForwardingPlayer, SessionSwitchboard (Tra… | 5 | PARTIAL (review fixes applied; onPlaybackResumption/ResumptionSnapshot deferred to PB-4, device-only items pending) | Bluetooth/headset routes, AVRCP head units and the actual lock-screen… |
 | PB-3 — Zero dead air: rip-on-demand resolver in runs, runway, watchdogs, stall hop, cascade brea… | 6 | Planned | Real cellular dead zones; Apple Music lane behaviours |
 | PB-6 — Now Playing deck screen (gold record at beat-grid BPM, transport, notices) + mini bar upg… | 6 | Planned | — |
-| PB-5 — History outcomes: SkipTracker + additive PlayEvent fields + progress/advance-away events … | 7 | Planned | — |
+| PB-5 — History outcomes: SkipTracker + additive PlayEvent fields + progress/advance-away events … | 7 | PARTIAL | Unit-tested (1946 green), NOT emulator-verified (device-only: History glyph + live row, skip on real playback). Open: noteSkip per-song skip count unwired until a Kotlin PlayCountService exists |
 | PB-4 — Durable playback session: real-time snapshot, held restore, resume at position, materiali… | 8 | Planned | — |
 | PB-7 — Up Next, previously played, add-search, open set list, queue reorder; jukebox routed thro… | 8 | Planned | — |
 | PB-8 — Apple Music rows in a run: AppleMusicPlayerAdapter (SimpleBasePlayer TransportOwner) + en… | 9 | Planned | Full-track DRM playback requires a real device with a subscription (v… |
