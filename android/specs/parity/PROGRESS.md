@@ -32,3 +32,16 @@ Emulator (emulator-5554, shots in pocketdj-parity/_shots/wave3/):
 - MIX-1: stores have no UI yet (Mix tab is a placeholder), so the adb run-as file check could not be exercised; covered by 42 JVM tests with iOS fixtures.
 No FATAL/ANR from com.levi.pocketdj in logcat.
 Open issues: COL-10 remapSongIds + backup/profile-sync registration; SURF-5 must call onboarding.vetoIfIncomplete(); launch work outside screens must await waitUntilComplete(); Browse debug seeds should be added for Mix stores; STU-1 reconcile not sequenced after onboarding; Q8/Q9 added.
+
+## Wave 4
+
+Merged (no conflicts): PB-1, SVC-2, SURF-4, BRW-5, MIX-4, BRW-9. JVM suite: 1366 tests, 0 failures, assembleDebug green.
+
+Emulator (emulator-5554, shots in pocketdj-parity/_shots/wave4/); no FATAL/ANR in logcat:
+- SURF-4: pocketdj:// and https jukebox links delivered, no crash; pm clear + link parks, onboarding shows, after Start DJing lands on Jukebox tab (PASS). Join panel not shown (seam awaits JBX-2); play link / .pdjcollection import seams unassigned (partial, as documented). App Links verification device-only.
+- BRW-5: cloud toggle works; with no credentials shows "Add OpenSearch credentials in Settings to search online." (PASS). NOT RUN: key paste/'midnight' results/BPM sort reset, because the read-only djpocketsearch key is not available to the integrator.
+- PB-1, SVC-2: NOT RUN on emulator (need a seeded playlist with rip rows and live rips bucket + burn UI/debug action; neither seeded/available). Covered by JVM tests only.
+- MIX-4: instrumented smoke (MixGraphSmokeInstrumentedTest) not run this wave; JVM render tests pass. Cue on real stereo is device-only.
+- BRW-9: pure, n/a.
+
+Open: SVC-2 drainPendingAfterRip/flush hooks unwired; MIX-4 retry on unaligned handover, looping decks; PB-1 system next/previous interim (PB-2 replaces); see Q10-Q12.

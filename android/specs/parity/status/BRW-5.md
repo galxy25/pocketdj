@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # BRW-5 — Online OpenSearch (aoss) search
 

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SURF-4 — Deep links + file opens
 

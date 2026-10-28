@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # BRW-9 Recs core B: identity + shaping
 

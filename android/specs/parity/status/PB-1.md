@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # PB-1 - SetlistSequencer core
 

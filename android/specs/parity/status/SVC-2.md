@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-2 BurnStore core (ONE offline store)
 
