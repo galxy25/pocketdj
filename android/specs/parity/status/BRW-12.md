@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # BRW-12 For You UI: History ▸ For You tab, tiles grid, song list, feedback buttons, recs toggle, Settings ▸ For You
 
@@ -19,3 +19,18 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+
+fixes applied
+
+- MAJOR refresh in screen scope -> fixed: ForYouInputsFactory.launchRefresh runs in AppGraph.appScope via ForYouSingleFlight (UI only triggers); test refreshOutlivesTheScreenScopeAndIsSingleFlight.
+- MAJOR spinner never shown -> fixed: showSpinner(hasResult) only; grid hidden until first build; test uses real ForYouGrid.tiles on empty snapshot.
+- MINOR stores spinner on every open -> fixed: BrowseGraph.forYouStoresReady, warm lazies resolve synchronously.
+- MINOR open list lost on navigate/rotation -> fixed: HistoryScreen keeps encoded route in rememberSaveable (ForYouRoutes.decode with collection-name lookup).
+- MINOR song list stuck empty without catalog -> fixed: loadForYouList returns null when inputs unavailable; data stays unset so the catalog-keyed effect rebuilds.
+- MINOR ledger row -> fixed: PARTIAL in docs/ARCHITECTURE-ANDROID.md. Emulator steps NOT run (emulator owned by integrator); still to verify.
+- MINOR replayed ON_RESUME double build -> fixed: isRealResume (only after ON_PAUSE) + single-flight; test replayedInitialResumeIsIgnored.
+- NIT onOpenSong guard -> fixed (song != null). Per-row play control and New-tile copy left for BRW-14.
+
+Tests: 4018 -> 4021, 0 failures; assembleDebug green.

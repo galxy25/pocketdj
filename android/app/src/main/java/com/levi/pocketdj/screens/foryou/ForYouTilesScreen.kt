@@ -81,6 +81,7 @@ import com.levi.pocketdj.data.recs.ZoneEngine
 import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.playback.PlayContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -127,7 +128,26 @@ object ForYouRefreshPolicy {
         catalogLoaded && !isRefreshing && scheduleDue
 
     /** Cold install: a spinner only until the first build. */
-    fun showSpinner(tileCount: Int, hasResult: Boolean): Boolean = tileCount == 0 && !hasResult
+    fun showSpinner(hasResult: Boolean): Boolean = !hasResult
+
+    /** Only an ON_RESUME after a real pause is "coming back to the app" (addObserver replays the current state). */
+    fun isRealResume(event: Lifecycle.Event, wasPaused: Boolean): Boolean =
+        event == Lifecycle.Event.ON_RESUME && wasPaused
+}
+
+/**
+ * Runs refresh work in a scope that OUTLIVES the screen (the app scope), one at a time. The UI only
+ * triggers; leaving composition never cancels a build. Returns false when one is already running.
+ */
+class ForYouSingleFlight(private val scope: CoroutineScope) {
+    private val running = java.util.concurrent.atomic.AtomicBoolean(false)
+    fun launch(block: suspend () -> Unit): Boolean {
+        if (!running.compareAndSet(false, true)) return false
+        scope.launch {
+            try { block() } finally { running.set(false) }
+        }
+        return true
+    }
 }
 
 /** SF-symbol name (from ForYouTiles) -> Material icon. */
@@ -199,6 +219,16 @@ internal object ForYouInputsFactory {
         withContext(Dispatchers.IO) { feed.refresh(inputs, cloudZone = null) }
     }
 
+    private val flights = java.util.WeakHashMap<AppGraph, ForYouSingleFlight>()
+
+    /** Single-flight, app-scoped trigger; [shouldRun] is evaluated inside the flight (cheap, after the guard). */
+    fun launchRefresh(graph: AppGraph, feed: ForYouFeedStore, shouldRun: suspend () -> Boolean = { true }) {
+        val flight = synchronized(flights) { flights.getOrPut(graph) { ForYouSingleFlight(graph.appScope) } }
+        flight.launch {
+            if (shouldRun()) refresh(graph, feed)
+        }
+    }
+
     suspend fun isScheduleDue(graph: AppGraph, snapshot: ForYouFeedSnapshot, nowMs: Double): Boolean {
         val s = ForYouSettings.load(graph.settings)
         return ForYouRefreshSchedule.isDue(nowMs, snapshot.refreshedAtMs, s.cadence, s.minutesOfDay, s.weekday)
@@ -214,6 +244,13 @@ internal class ForYouStores(
 
 @Composable
 internal fun rememberForYouStores(graph: AppGraph): ForYouStores? {
+    // Warm lazies resolve synchronously so the cached grid paints on the first frame.
+    val warm = remember(graph) {
+        if (graph.browseGraph.forYouStoresReady) {
+            ForYouStores(graph.browseGraph.forYouFeedStore, graph.browseGraph.recFeedbackStore, graph.collections)
+        } else null
+    }
+    if (warm != null) return warm
     val stores by produceState<ForYouStores?>(null, graph) {
         value = withContext(Dispatchers.IO) {
             ForYouStores(graph.browseGraph.forYouFeedStore, graph.browseGraph.recFeedbackStore, graph.collections)
@@ -275,28 +312,27 @@ fun ForYouTilesScreen(
         ForYouFeedStore.updatedLabel(snapshot.refreshedAtMs)
     }
 
-    fun refresh() {
-        scope.launch { ForYouInputsFactory.refresh(graph, stores.feed) }
-    }
-
     // First population (gated on the catalog) or a due schedule; re-armed when the catalog lands.
     LaunchedEffect(catalogLoaded) {
         if (!catalogLoaded) return@LaunchedEffect
-        val s = stores.feed.state.value
-        val due = ForYouInputsFactory.isScheduleDue(graph, s.snapshot, System.currentTimeMillis().toDouble())
-        if (ForYouRefreshPolicy.shouldRefreshAfterCatalog(true, s.snapshot.hasResult, s.isRefreshing, due)) {
-            ForYouInputsFactory.refresh(graph, stores.feed)
+        ForYouInputsFactory.launchRefresh(graph, stores.feed) {
+            val s = stores.feed.state.value
+            val due = ForYouInputsFactory.isScheduleDue(graph, s.snapshot, System.currentTimeMillis().toDouble())
+            ForYouRefreshPolicy.shouldRefreshAfterCatalog(true, s.snapshot.hasResult, s.isRefreshing, due)
         }
     }
     // The schedule's second read point: coming back to the app (never a timer / WorkManager).
     DisposableEffect(catalogLoaded) {
         val lifecycle = ProcessLifecycleOwner.get().lifecycle
+        var wasPaused = false
         val obs = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) scope.launch {
-                val s = stores.feed.state.value
-                val due = ForYouInputsFactory.isScheduleDue(graph, s.snapshot, System.currentTimeMillis().toDouble())
-                if (ForYouRefreshPolicy.shouldRefreshOnResume(catalogLoaded, s.isRefreshing, due)) {
-                    ForYouInputsFactory.refresh(graph, stores.feed)
+            if (event == Lifecycle.Event.ON_PAUSE) wasPaused = true
+            if (ForYouRefreshPolicy.isRealResume(event, wasPaused)) {
+                wasPaused = false
+                ForYouInputsFactory.launchRefresh(graph, stores.feed) {
+                    val s = stores.feed.state.value
+                    val due = ForYouInputsFactory.isScheduleDue(graph, s.snapshot, System.currentTimeMillis().toDouble())
+                    ForYouRefreshPolicy.shouldRefreshOnResume(catalogLoaded, s.isRefreshing, due)
                 }
             }
         }
@@ -308,7 +344,7 @@ fun ForYouTilesScreen(
     LaunchedEffect(refreshToken) {
         if (refreshToken != lastToken) {
             lastToken = refreshToken
-            ForYouInputsFactory.refresh(graph, stores.feed)
+            ForYouInputsFactory.launchRefresh(graph, stores.feed)
         }
     }
 
@@ -317,7 +353,7 @@ fun ForYouTilesScreen(
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val widthDp = maxWidth.value.toInt()
             val cols = ForYouTileLayout.columns(widthDp)
-            LazyVerticalGrid(
+            if (snapshot.hasResult) LazyVerticalGrid(
                 columns = GridCells.Fixed(cols),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(ForYouTileLayout.PADDING_DP.dp),
                 horizontalArrangement = Arrangement.spacedBy(ForYouTileLayout.SPACING_DP.dp),
@@ -340,7 +376,7 @@ fun ForYouTilesScreen(
                     )
                 }
             }
-            if (ForYouRefreshPolicy.showSpinner(tiles.size, snapshot.hasResult)) {
+            if (ForYouRefreshPolicy.showSpinner(snapshot.hasResult)) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
                     CircularProgressIndicator(Modifier.padding(40.dp))
                 }

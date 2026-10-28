@@ -168,7 +168,8 @@ fun ForYouSongListScreen(
 
     LaunchedEffect(route.tileId, catalog != null) {
         if (data != null) return@LaunchedEffect
-        data = loadForYouList(graph, stores, route)
+        // null = inputs unavailable (no catalog yet): stay unloaded so the catalog-keyed re-run builds.
+        loadForYouList(graph, stores, route)?.let { data = it }
     }
 
     val d = data
@@ -268,7 +269,7 @@ fun ForYouSongListScreen(
                             .alpha(if (sunk) 0.45f else 1f)
                             .clickable {
                                 if (ForYouSongListState.tapPlays(route.kind)) start(ForYouSongListState.queueFrom(visible, index), false)
-                                else onOpenSong(id)
+                                else if (song != null) onOpenSong(id)
                             }
                             .padding(horizontal = 16.dp, vertical = 6.dp),
                     ) {
@@ -349,7 +350,7 @@ private fun EmptyList() {
 }
 
 /** Frozen ids first; otherwise rank on demand OFF the main thread. NEW has its own screen -> empty. */
-private suspend fun loadForYouList(graph: AppGraph, stores: ForYouStores, route: ForYouTileRoute): ForYouListData =
+private suspend fun loadForYouList(graph: AppGraph, stores: ForYouStores, route: ForYouTileRoute): ForYouListData? =
     withContext(Dispatchers.Default) {
         val tileId = route.tileId
         val cols = stores.collections.asForYouCollections()
@@ -369,7 +370,7 @@ private suspend fun loadForYouList(graph: AppGraph, stores: ForYouStores, route:
         when (route.kind) {
             ForYouTileKind.NEW -> ForYouListData()
             ForYouTileKind.ZONE -> {
-                val inputs = ForYouInputsFactory.build(graph) ?: return@withContext ForYouListData()
+                val inputs = ForYouInputsFactory.build(graph) ?: return@withContext null
                 val counts = inputs.playCount
                 val q = ZoneEngine.inDaZone(
                     songs = inputs.songs, genreBySongId = inputs.genreBySongId,
@@ -386,7 +387,7 @@ private suspend fun loadForYouList(graph: AppGraph, stores: ForYouStores, route:
                 // The second door to the same work, and it has to be shut too: recs OFF => no sweep.
                 val cid = route.collectionId
                 if (cid == null || !stores.collections.recommendationsEnabled(cid)) return@withContext ForYouListData()
-                val inputs = ForYouInputsFactory.build(graph) ?: return@withContext ForYouListData()
+                val inputs = ForYouInputsFactory.build(graph) ?: return@withContext null
                 val counts = inputs.playCount
                 val ranked = ZoneEngine.explainedSuggestions(
                     memberSongIds = stores.collections.playableIdsForAnyCollection(cid),

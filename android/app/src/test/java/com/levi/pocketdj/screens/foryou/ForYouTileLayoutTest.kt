@@ -3,6 +3,8 @@ package com.levi.pocketdj.screens.foryou
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import org.junit.Test
 
 class ForYouTileLayoutTest {
@@ -31,9 +33,42 @@ class ForYouTileLayoutTest {
     }
 
     @Test fun coldInstallSpinnerOnlyUntilTheFirstBuild() {
-        assertTrue(ForYouRefreshPolicy.showSpinner(tileCount = 0, hasResult = false))
-        assertFalse(ForYouRefreshPolicy.showSpinner(tileCount = 0, hasResult = true))
-        assertFalse(ForYouRefreshPolicy.showSpinner(tileCount = 2, hasResult = false))
+        assertTrue(ForYouRefreshPolicy.showSpinner(hasResult = false))
+        assertFalse(ForYouRefreshPolicy.showSpinner(hasResult = true))
+    }
+
+    @Test fun spinnerShowsOnAnEmptySnapshotEvenThoughPinnedTilesAlwaysExist() {
+        val snap = com.levi.pocketdj.data.recs.ForYouFeedSnapshot()
+        val none = object : com.levi.pocketdj.data.recs.ForYouCollections {
+            override fun exists(id: String) = false
+            override fun recommendationsEnabled(id: String) = true
+            override fun suggestionsExcludingMembers(suggestionIds: List<String>, id: String): List<String> = suggestionIds
+        }
+        // Production always emits the pinned New + In Da Zone cards, so a tile-count gate could never fire.
+        val tiles = com.levi.pocketdj.data.recs.ForYouGrid.tiles(snap, none, null, null)
+        assertTrue(tiles.size >= 2)
+        assertTrue(ForYouRefreshPolicy.showSpinner(snap.hasResult))
+    }
+
+    @Test fun replayedInitialResumeIsIgnored() {
+        val resume = androidx.lifecycle.Lifecycle.Event.ON_RESUME
+        assertFalse(ForYouRefreshPolicy.isRealResume(resume, wasPaused = false))
+        assertTrue(ForYouRefreshPolicy.isRealResume(resume, wasPaused = true))
+    }
+
+    @Test fun refreshOutlivesTheScreenScopeAndIsSingleFlight() = kotlinx.coroutines.runBlocking {
+        val app = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default)
+        val flight = ForYouSingleFlight(app)
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val committed = kotlinx.coroutines.CompletableDeferred<Unit>()
+        // The "screen" triggers, then leaves composition (its scope is cancelled) mid-build.
+        val screen = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Job())
+        screen.launch { assertTrue(flight.launch { gate.await(); committed.complete(Unit) }) }.join()
+        screen.cancel()
+        assertFalse(flight.launch { }) // a second trigger while running is dropped
+        gate.complete(Unit)
+        kotlinx.coroutines.withTimeout(5000) { committed.await() }
+        app.cancel()
     }
 
     @Test fun firstBuildWaitsForTheCatalogAndNeverStampsAnEmptyOne() {

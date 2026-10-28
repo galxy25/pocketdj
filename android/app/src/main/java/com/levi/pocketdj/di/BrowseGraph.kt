@@ -60,6 +60,9 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
     }
     val forYouFeedStore: com.levi.pocketdj.data.recs.ForYouFeedStore by forYouFeedLazy
 
+    /** True once both For You lazies exist, so reading them cannot touch disk on Main. */
+    val forYouStoresReady: Boolean get() = forYouFeedLazy.isInitialized() && recFeedbackLazy.isInitialized()
+
     /** 👍/👎 decisions (BRW-11). Reads its file on first touch: touch off Main. */
     private val recFeedbackLazy: Lazy<com.levi.pocketdj.data.recs.RecFeedbackStore> = lazy {
         com.levi.pocketdj.data.recs.RecFeedbackStore(

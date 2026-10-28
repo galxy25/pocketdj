@@ -151,7 +151,13 @@ fun HistoryScreen(
     }
     var forYouRefreshToken by remember { mutableIntStateOf(0) }
     // The open For You tile list is hosted here (History owns the tab), not a NavHost route.
-    var forYouRoute by remember { mutableStateOf<com.levi.pocketdj.data.recs.ForYouTileRoute?>(null) }
+    // Held as the encoded route so it survives navigate-away (⋯ ▸ Open collection), rotation and process death.
+    var forYouRouteKey by rememberSaveable { mutableStateOf<String?>(null) }
+    val forYouRoute = forYouRouteKey?.let { key ->
+        com.levi.pocketdj.screens.foryou.ForYouRoutes.decode(key) { cid ->
+            graph.collections.playlist(cid)?.name ?: graph.collections.pocket(cid)?.name
+        }
+    }
     val catalogState by graph.catalogRepository.state.collectAsState()
     val catalog = catalogState.catalog ?: MergedCatalog.EMPTY
 
@@ -170,7 +176,7 @@ fun HistoryScreen(
     if (current == HistoryTab.FOR_YOU && openRoute != null) {
         com.levi.pocketdj.screens.foryou.ForYouSongListScreen(
             route = openRoute,
-            onBack = { forYouRoute = null },
+            onBack = { forYouRouteKey = null },
             onOpenSong = onSongClick,
             onOpenCollection = onOpenCollection,
             modifier = modifier,
@@ -261,7 +267,7 @@ fun HistoryScreen(
             )
             HistoryTab.FOR_YOU -> com.levi.pocketdj.screens.foryou.ForYouTilesScreen(
                 refreshToken = forYouRefreshToken,
-                onOpenTile = { forYouRoute = it },
+                onOpenTile = { forYouRouteKey = com.levi.pocketdj.screens.foryou.ForYouRoutes.encode(it) },
                 modifier = Modifier.testTag("history-foryou"),
             )
         }
