@@ -492,6 +492,6 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | GM-3 — Gem Collector engine + GameRunPlayer over the sequencer (appendRows(runTag), preview-reso… | 9 | Merged (wave 9) | Apple Music preview resolution needs network; full-track AM is delibe… |
 | GM-4 — Gem Collector screens (setup / countdown / running / summary) + multi-collection filing v… | 10 | PARTIAL | UI shipped; emulator steps not run (device-only, unverified) |
 | GM-7 — In the Pocket store + PocketsBridge interface (NoPocketsBridge default) + rounds upload c… | 11 | PARTIAL | Store, bridge seam, rounds client landed + unit-tested. Device-only: cloud mode (needs services bridge + rec key). Deferred seams: contextGuess unwired, collection add times, emulator steps not run |
-| GM-9 — Music with Friends link, models, client, join secret, session file, store (broker-driven,… | 12 | Planned | — |
+| GM-9 — Music with Friends link, models, client, join secret, session file, store (broker-driven,… | 12 | DONE (logic only; no push — broker speaks APNs; catalog-only matching; unresolved collection entries counted, not materialized) | none |
 | GM-8 — In the Pocket screen + on-device feedback dictation | 14 | Planned | SpeechRecognizer dictation needs a real microphone/Google app; emulat… |
 | GM-10 — Music with Friends screens + deep-link handler (pocketdj://mwf, https /mwf/) + Games home… | 15 | Planned | https App Link auto-verification needs /.well-known/assetlinks.json o… |
