@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # STU-5 — Sequencer tab + pattern engine (clock, step modes, per-step loop/stretch) + bounce
 
