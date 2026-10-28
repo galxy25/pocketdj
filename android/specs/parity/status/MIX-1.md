@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 MIX-1 Durable Mix stores (MixDeckSessionStore decks v1 + MixSessionStore sessions v2) over VersionedJsonWriter.
 - [x] mix/store/MixDeckSessionStore.kt (TrackRef/FXSlotSnapshot/DeckSnapshot/AutoRow/AutoSnapshot/MixDeckSnapshot, resolvedSlots, isEmpty/isExhausted, save/saveDebounced/updatePosition/clear/load/flush)

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # MIX-2 Shared audio core (audio/core)
 

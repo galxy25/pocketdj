@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-1 Rip client parity
 

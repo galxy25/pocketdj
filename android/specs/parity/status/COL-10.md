@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # COL-10 Favorites store + toggle + Browse tri-state + activity wiring
 

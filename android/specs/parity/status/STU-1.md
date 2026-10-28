@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-1 — Studio models + store (pocketdj-studio.json v1 over VersionedJsonWriter) + folders (SAF roots) + reconcile
 
