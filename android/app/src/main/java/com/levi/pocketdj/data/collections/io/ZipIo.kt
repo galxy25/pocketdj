@@ -37,16 +37,22 @@ object ZipIo {
         return bos.toByteArray()
     }
 
+    const val MAX_INFLATED_BYTES = 512L * 1024 * 1024
+
     /** All entries of a zip by path; null when the bytes are not a readable archive. */
     fun read(data: ByteArray): Map<String, ByteArray>? {
         if (!isZip(data)) return null
         return try {
             val out = LinkedHashMap<String, ByteArray>()
+            var total = 0L
             ZipInputStream(ByteArrayInputStream(data)).use { zis ->
                 while (true) {
                     val e = zis.nextEntry ?: break
                     if (e.isDirectory) continue
-                    out[e.name] = zis.readBytes()
+                    val b = zis.readBytes()
+                    total += b.size
+                    if (total > MAX_INFLATED_BYTES) return null // zip-bomb guard
+                    out[e.name] = b
                 }
             }
             // A zip that starts with a local-file header always has an entry; none ⇒ corrupt (iOS: Archive init throws).

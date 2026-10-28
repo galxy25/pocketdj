@@ -60,11 +60,32 @@ data class SkippedCatalog(val items: Int, val art: Int)
  * `DataSource[]` carries no `urlString`, so it is skipped, never fatal).
  */
 object BackupSources {
+    /**
+     * iOS `SourceConfig.id` is a `UUID` and the whole array decodes strictly, so ONE non-UUID id would drop
+     * every source on restore. Android ids ("vinyl", "apple-music") become a deterministic name-based UUID.
+     */
+    fun wireId(id: String): String =
+        runCatching { java.util.UUID.fromString(id).toString().uppercase() }.getOrNull()
+            ?: java.util.UUID.nameUUIDFromBytes(id.toByteArray(Charsets.UTF_8)).toString().uppercase()
+
     fun toWire(sources: List<SourceConfig>): JsonArray = JsonArray(sources.map {
         buildJsonObject {
-            put("id", it.id); put("name", it.name); put("urlString", it.url); put("enabled", it.enabled)
+            put("id", wireId(it.id)); put("name", it.name); put("urlString", it.url); put("enabled", it.enabled)
         }
     })
+
+    /** The local source an incoming (wire) source denotes: wire-id, then url, then name; null = genuinely new. */
+    fun matchLocal(local: List<SourceConfig>, incoming: SourceConfig): SourceConfig? =
+        local.firstOrNull { wireId(it.id) == wireId(incoming.id) }
+            ?: local.firstOrNull { it.url.trim().equals(incoming.url.trim(), ignoreCase = true) }
+            ?: local.firstOrNull { it.name.trim().equals(incoming.name.trim(), ignoreCase = true) }
+
+    /** SET-2 merge helper: keep every local source as-is, append only incoming sources with no local match. */
+    fun merge(local: List<SourceConfig>, incoming: List<SourceConfig>): List<SourceConfig> {
+        val out = ArrayList(local)
+        for (inc in incoming) if (matchLocal(out, inc) == null) out += inc
+        return out
+    }
 
     fun fromWire(arr: JsonArray): List<SourceConfig> = arr.mapNotNull { el: JsonElement ->
         val o = el as? JsonObject ?: return@mapNotNull null

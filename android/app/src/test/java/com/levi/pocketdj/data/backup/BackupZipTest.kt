@@ -104,7 +104,28 @@ class BackupZipTest {
         val wire = BackupSources.toWire(listOf(SourceConfig(id = "A-1", name = "N", url = "https://u", enabled = false)))
         val o = wire.single() as JsonObject
         assertEquals(setOf("id", "name", "urlString", "enabled"), o.keys)
-        assertEquals(listOf(SourceConfig("A-1", "N", "https://u", false)), BackupSources.fromWire(wire))
+        val back = BackupSources.fromWire(wire).single()
+        assertEquals(BackupSources.wireId("A-1"), back.id)
+        assertEquals(listOf("N", "https://u", false), listOf(back.name, back.url, back.enabled))
+    }
+
+    @Test
+    fun androidDefaultSourcesExportAsUuids_andMergeWithoutDuplicates() {
+        val local = com.levi.pocketdj.data.settings.AppSettings.defaultSources()
+        assertTrue(local.isNotEmpty())
+        val wire = BackupSources.toWire(local)
+        for (el in wire) {
+            val id = ((el as JsonObject)["id"] as kotlinx.serialization.json.JsonPrimitive).content
+            java.util.UUID.fromString(id) // throws if iOS' strict UUID decode would fail
+        }
+        // restoring our own export (or an iOS one with the same url) adds nothing
+        assertEquals(local, BackupSources.merge(local, BackupSources.fromWire(wire)))
+        val iosSameUrl = SourceConfig("6D7E4A44-0000-4000-8000-000000000001", "Other name", local.first().url, true)
+        assertEquals(local, BackupSources.merge(local, listOf(iosSameUrl)))
+        val fresh = SourceConfig("6D7E4A44-0000-4000-8000-000000000002", "New", "https://new.example/i.json", true)
+        assertEquals(local + fresh, BackupSources.merge(local, listOf(fresh)))
+        // a real UUID passes through (uppercased)
+        assertEquals(fresh.id, BackupSources.wireId(fresh.id.lowercase()))
     }
 
     @Test

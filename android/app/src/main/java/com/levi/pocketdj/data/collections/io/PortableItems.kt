@@ -66,6 +66,7 @@ object PortableItems {
         val albums = LinkedHashSet<String>()
         fun walk(nodes: List<PlaylistNode>) {
             for (n in nodes) when (n.kind) {
+                // TODO(profile-source package): also exclude profile song ids (iOS isProfileSongId).
                 PlaylistNode.Kind.SONG -> n.songId?.takeIf { !PlayResolver.isStudioId(it) }?.let(songs::add)
                 PlaylistNode.Kind.ALBUM -> n.albumId?.let(albums::add)
                 PlaylistNode.Kind.SEQUENCE -> walk(n.children.orEmpty())
@@ -87,6 +88,7 @@ object PortableItems {
 
     private fun collect(pockets: List<Pocket>, songs: MutableSet<String>, albums: MutableSet<String>) {
         for (p in pockets) {
+            // TODO(profile-source package): also exclude profile song ids (iOS isProfileSongId).
             p.songIds.filterNot(PlayResolver::isStudioId).forEach(songs::add)
             albums.addAll(p.albumIds)
         }

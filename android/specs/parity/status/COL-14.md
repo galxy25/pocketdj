@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # COL-14 — .pdjcollection + backup .pocketdj.zip codecs, idempotent import merge, CSV
 
@@ -24,3 +24,13 @@ state: implemented
 
 ## Questions for Levi
 - Should a shared .pdjcollection opened from Files import under FRESH ids (iOS behaviour, duplicates on re-import) or merge-by-id (this package's default, idempotent)? Chose merge-by-id.
+
+## Review
+fixes applied
+- MAJOR sources non-UUID id -> fixed: BackupSources.wireId emits UUID (pass-through or name-based), matchLocal/merge match by wire id, url, then name for SET-2; tests androidDefaultSourcesExportAsUuids_andMergeWithoutDuplicates + updated sourcesWireShape.
+- MINOR ledger row -> fixed: COL-14 set to PARTIAL (JVM) in docs/ARCHITECTURE-ANDROID.md.
+- MINOR silent merge/no-op summary -> fixed: Merge.Result/ImportSummary carry added/merged/unchanged (+alreadyUpToDate); importPlaylistZipAsCopy / importPocketZipAsCopy use remintBundle. Test summaryDistinguishesAddedMergedUnchanged_andAsCopyAdds. COL-15 owns wiring the UI (copy vs merge prompt, "already up to date").
+- MINOR hand-built fixtures -> PARTIAL/not fixable here (no Simulator export available in this run): acceptance marked PARTIAL in status + ledger; a real iOS export fixture is a follow-up.
+- NIT zip cap -> fixed (512 MB inflated cap in ZipIo.read); double inflate in detectKind left as is.
+- NIT profile song ids -> fixed as TODO(profile-source package) markers in PortableItems.
+Tests: 4211 -> 4213, 0 failures; assembleDebug green.

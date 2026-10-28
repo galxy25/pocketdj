@@ -2287,7 +2287,7 @@ class CollectionsStore(
             publish { it.copy(pockets = r.sets.pockets, playlists = r.sets.playlists, setlists = r.sets.setlists, folders = r.sets.folders) }
             save()
         }
-        ImportSummary(ImportKind.COLLECTIONS_JSON, r.pockets, r.playlists, r.setlists, r.folders)
+        ImportSummary(ImportKind.COLLECTIONS_JSON, r.pockets, r.playlists, r.setlists, r.folders, r.added, r.merged, r.unchanged)
     }
 
     /** Import a `CollectionsDocument` JSON envelope (setlists are not imported). Ids preserved; a re-import is a no-op. */
@@ -2302,6 +2302,24 @@ class CollectionsStore(
         val s = mergeImported(pockets = b.pockets, playlists = listOf(b.playlist), clearFolderOnInsert = true)
         materializePortableItems(b.items)
         return s.copy(kind = ImportKind.PLAYLIST)
+    }
+
+    /** "Import as copy" (iOS behaviour): fresh ids for the playlist + its pockets, so it always ADDS. */
+    fun importPlaylistZipAsCopy(data: ByteArray): ImportSummary {
+        val b = PlaylistZip.read(data, json)
+        val (pl, pks) = PlaylistZip.remintBundle(b.playlist, b.pockets, now())
+        val s = mergeImported(pockets = pks, playlists = listOf(pl), clearFolderOnInsert = true)
+        materializePortableItems(b.items)
+        return s.copy(kind = ImportKind.PLAYLIST)
+    }
+
+    /** "Import as copy" for a pocket zip: fresh ids for the root + children. */
+    fun importPocketZipAsCopy(data: ByteArray): ImportSummary {
+        val b = PocketZip.read(data, json)
+        val (root, kids) = PocketZip.remintBundle(b.pocket, b.children, now())
+        val s = mergeImported(pockets = listOf(root) + kids, clearFolderOnInsert = true)
+        materializePortableItems(b.items)
+        return s.copy(kind = ImportKind.POCKET)
     }
 
     /** Import a pocket zip: merge root + children by id (folderId cleared on new pockets), then materialize items. */

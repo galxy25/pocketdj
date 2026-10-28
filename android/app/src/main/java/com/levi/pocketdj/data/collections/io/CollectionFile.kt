@@ -14,7 +14,13 @@ import kotlinx.serialization.json.Json
 enum class ImportKind { PLAYLIST, POCKET, BACKUP, COLLECTIONS_JSON }
 
 /** Counts reported to the user after an import (snackbar). */
-data class ImportSummary(val kind: ImportKind, val pockets: Int = 0, val playlists: Int = 0, val setlists: Int = 0, val folders: Int = 0)
+data class ImportSummary(val kind: ImportKind, val pockets: Int = 0, val playlists: Int = 0, val setlists: Int = 0, val folders: Int = 0,
+    /** Incoming items that were new / changed an existing item / changed nothing (sum = items processed). */
+    val added: Int = 0, val merged: Int = 0, val unchanged: Int = 0,
+) {
+    /** True when the import changed nothing ("already up to date"). */
+    val alreadyUpToDate: Boolean get() = added == 0 && merged == 0
+}
 
 /**
  * Content routing + the single-item `CollectionsDocument` envelope (iOS `exportPocket/exportPlaylist/
@@ -67,7 +73,8 @@ object CollectionFile {
      */
     object Merge {
         /** Result of a merge: the new families + how many incoming items were processed. */
-        data class Result(val sets: Sets, val pockets: Int, val playlists: Int, val setlists: Int, val folders: Int)
+        data class Result(val sets: Sets, val pockets: Int, val playlists: Int, val setlists: Int, val folders: Int,
+            val added: Int = 0, val merged: Int = 0, val unchanged: Int = 0)
 
         /**
          * @param clearFolderOnInsert a single-item transfer carries no folder context: a NEW pocket's
@@ -100,9 +107,27 @@ object CollectionFile {
             val curPl = current.playlists.associateBy { it.id }
             val dp = dp0.map { p -> curP[p.id]?.takeIf { it == p.copy(updatedAt = it.updatedAt) } ?: p }
             val dpl = dpl0.map { p -> curPl[p.id]?.takeIf { it == p.copy(updatedAt = it.updatedAt) } ?: p }
+            val sets = Sets(dp, dpl, setlists, folders)
+            var added = 0; var merged = 0; var unchanged = 0
+            fun <T> tally(inc: List<T>, id: (T) -> String, before: List<T>, after: List<T>) {
+                val b = before.associateBy(id); val a = after.associateBy(id)
+                for (x in inc) {
+                    val k = id(x)
+                    when {
+                        !b.containsKey(k) -> if (a.containsKey(k)) added++ else unchanged++
+                        b[k] == a[k] -> unchanged++
+                        else -> merged++
+                    }
+                }
+            }
+            tally(incomingFolders, { it.id }, current.folders, sets.folders)
+            tally(incomingPockets, { it.id }, current.pockets, sets.pockets)
+            tally(incomingPlaylists, { it.id }, current.playlists, sets.playlists)
+            tally(incomingSetlists, { it.id }, current.setlists, sets.setlists)
             return Result(
-                Sets(dp, dpl, setlists, folders),
+                sets,
                 incomingPockets.size, incomingPlaylists.size, incomingSetlists.size, incomingFolders.size,
+                added, merged, unchanged,
             )
         }
 

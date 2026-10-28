@@ -253,4 +253,21 @@ class ImportMergeIdempotenceTest {
         val pl = s.createPlaylist("PL"); s.addSongToPlaylist("s2", pl.id)
         assertTrue(String(s.exportPlaylistCsv(pl.id)!!, Charsets.UTF_8).contains("1,Two,B,"))
     }
+
+    @Test
+    fun summaryDistinguishesAddedMergedUnchanged_andAsCopyAdds() {
+        val zip = IoTestSupport.resource("fixtures/pwa-playlist.pocketdj.zip")
+        val s = store()
+        val first = s.importPlaylistZip(zip)
+        assertTrue(first.added > 0); assertEquals(0, first.merged); assertFalse(first.alreadyUpToDate)
+        clock += 1_000
+        val again = s.importPlaylistZip(zip)
+        assertEquals(0, again.added); assertEquals(0, again.merged)
+        assertTrue(again.unchanged > 0); assertTrue(again.alreadyUpToDate)
+        assertEquals(first.added + first.merged + first.unchanged, first.playlists + first.pockets + first.setlists + first.folders)
+        val n = s.playlists.size
+        val copy = s.importPlaylistZipAsCopy(zip)
+        assertEquals(n + 1, s.playlists.size)
+        assertTrue(copy.added > 0)
+    }
 }
