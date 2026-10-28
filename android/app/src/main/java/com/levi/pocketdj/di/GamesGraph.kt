@@ -10,6 +10,20 @@ import com.levi.pocketdj.shell.SyncEntry
 import com.levi.pocketdj.data.catalog.IndexAlbum
 import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.data.collections.AddTarget
+import com.levi.pocketdj.data.config.EndpointKey
+import com.levi.pocketdj.data.config.RemoteEndpoints
+import com.levi.pocketdj.data.games.inthepocket.InThePocketAudio
+import com.levi.pocketdj.data.games.inthepocket.InThePocketRoundsClient
+import com.levi.pocketdj.data.games.inthepocket.InThePocketScorer
+import com.levi.pocketdj.data.games.inthepocket.InThePocketStore
+import com.levi.pocketdj.data.pockets.ListeningPocketsResults
+import com.levi.pocketdj.data.pockets.NoPocketsBridge
+import com.levi.pocketdj.data.pockets.PocketsBridge
+import com.levi.pocketdj.data.pockets.PocketsCredentials
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import com.levi.pocketdj.data.games.puzzle.CollectorsPuzzleEngine
 import com.levi.pocketdj.data.games.puzzle.CollectorsPuzzleEnv
 import com.levi.pocketdj.data.games.puzzle.PuzzleDecisionStore
@@ -121,12 +135,107 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    // ---- In the Pocket (GM-7) ----
+
+    /** Debug stub gate (`-e pdj.pocketsStub true`): enabled + empty results, never networks. */
+    private val stubEnabled = MutableStateFlow(false)
+
+    private val debugBridge = object : PocketsBridge {
+        override val isEnabled: StateFlow<Boolean> = stubEnabled.asStateFlow()
+        override val results: StateFlow<ListeningPocketsResults?> = MutableStateFlow(ListeningPocketsResults.EMPTY)
+        override suspend fun refreshIfStale() = Unit
+        override fun flushSoon() = Unit
+        override var roundsProvider: ((String) -> List<com.levi.pocketdj.data.games.inthepocket.InThePocketRoundWire>)? = null
+        override suspend fun credentials(): PocketsCredentials? = null
+        override val installId: String get() = PlayHistoryStore.get(app.appContext).installId
+    }
+
+    /**
+     * The listening-pockets service seam. The services wave assigns a real bridge here BEFORE the
+     * first [inThePocket] access; until then it is [NoPocketsBridge] (debug builds: a stub that the
+     * `pdj.pocketsStub` extra turns on).
+     */
+    @Volatile var servicesBridge: PocketsBridge? = null
+        set(value) {
+            field = value
+            // The store registered its rounds provider on whatever bridge existed at construction;
+            // the real service needs it too.
+            value?.roundsProvider = { installId -> inThePocket.uploadWires(installId) }
+        }
+    val pocketsBridge: PocketsBridge
+        get() = servicesBridge ?: if (isDebuggable()) debugBridge else NoPocketsBridge
+
+    /** Rounds upload half (acks in `pocketdj-in-the-pocket-sync.json`). */
+    val roundsClient: InThePocketRoundsClient by lazy {
+        InThePocketRoundsClient(
+            http = app.httpClient,
+            baseUrl = { RemoteEndpoints.url(EndpointKey.LISTENING_POCKETS_BASE) },
+            syncFile = File(app.appContext.filesDir, ROUNDS_SYNC_FILE),
+            deviceId = { runCatching { app.settings.ensureInstallId() }.getOrNull() },
+        )
+    }
+
+    private val roundsUploadJob = java.util.concurrent.atomic.AtomicReference<kotlinx.coroutines.Job?>(null)
+
+    /** 5 s debounce, then upload finished rounds (gated on the bridge's privacy switch). */
+    private fun scheduleRoundsUpload() {
+        val bridge = pocketsBridge
+        // A real service that uploads rounds inside its own flush (after plays) owns the timing.
+        if (!bridge.isEnabled.value || bridge.flushesRounds) return
+        val job = app.appScope.launch(Dispatchers.IO) {
+            delay(5_000)
+            val creds = bridge.credentials() ?: return@launch
+            runCatching { roundsClient.flush(creds, inThePocket.uploadWires(bridge.installId), bridge.installId) }
+        }
+        roundsUploadJob.getAndSet(job)?.cancel()
+    }
+
+    /** The app-scoped In the Pocket store (a running round survives tab switches). */
+    val inThePocket: InThePocketStore by lazy {
+        InThePocketStore(
+            history = PlayHistoryStore.get(app.appContext),
+            scoreboard = scoreboard,
+            player = gameRunPlayer,
+            file = File(app.appContext.filesDir, InThePocketStore.FILE_NAME),
+            bridgeProvider = { pocketsBridge },
+            scope = app.appScope,
+        ).also { st ->
+            st.appVersion = runCatching {
+                app.appContext.packageManager.getPackageInfo(app.appContext.packageName, 0).versionName
+            }.getOrNull()
+            st.catalogSnapshot = {
+                val c = app.catalogRepository.state.value.catalog
+                (c?.songsById ?: emptyMap()) to (c?.albumsById ?: emptyMap())
+            }
+            st.audioAvailability = {
+                InThePocketAudio(
+                    ripIds = app.ripsRepository.manifest.value.keys,
+                    burnedIds = env.burnedIds(),
+                    canStreamAppleMusic = runCatching { app.settings.current().hasAppleMusic }.getOrDefault(false),
+                )
+            }
+            st.collectionsInput = {
+                // Runs inside the build dispatcher (off the UI thread); iOS ListeningPocketsCollections caps.
+                val sources = app.collections.pockets.map { Triple(it.id, it.name, app.collections.songIdsForPocket(it.id)) } +
+                    app.collections.playlists.map { Triple(it.id, it.name, app.collections.songIdsForPlaylist(it.id)) }
+                        .filter { it.third.size <= SONG_CAP } // iOS drops oversized SOURCE playlists
+                capCollections(sources)
+            }
+            st.onRoundsChanged = { pocketsBridge.flushSoon(); scheduleRoundsUpload() }
+        }
+    }
+
     init {
         // Warm the store off the main thread so the first Games-tab composition never does disk IO.
         app.appScope.launch(Dispatchers.IO) { runCatching { scoreboard } }
+        // A round that was playing when the process went away keeps being tracked.
+        app.appScope.launch(Dispatchers.IO) { runCatching { inThePocket.resumeTrackingIfNeeded() } }
     }
 
-    override val resetHooks: List<ResetHook> = listOf(ResetHook { scoreboard.clear() })
+    override val resetHooks: List<ResetHook> = listOf(
+        ResetHook { scoreboard.clear() },
+        ResetHook { inThePocket.clearLocal() },
+    )
 
     override val syncEntries: List<SyncEntry> =
         listOf(
@@ -145,6 +254,11 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
 
     override val deepLinkHandlers: List<DeepLinkHandler> = listOf(
         DeepLinkHandler { intent ->
+            if (isDebuggable() && (intent.getBooleanExtra(POCKETS_STUB_EXTRA, false) ||
+                    intent.getStringExtra(POCKETS_STUB_EXTRA) == "true")
+            ) {
+                stubEnabled.value = true
+            }
             if (isDebuggable() && wantsSeed(intent)) {
                 app.appScope.launch(Dispatchers.IO) { runCatching { scoreboard.seedFixture(replaceExisting = wantsFixture(intent)) } }
             }
@@ -153,6 +267,30 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
     )
 
     companion object {
+        // iOS ListeningPocketsCollections caps.
+        const val COLLECTION_CAP = 500
+        const val SONG_CAP = 5_000
+        const val TOTAL_SONG_CAP = 100_000
+
+        /**
+         * Mirror of `ListeningPocketsCollections.flattened` (oversized playlists are dropped by the caller):
+         * at most [COLLECTION_CAP] collections, [SONG_CAP] songs each, [TOTAL_SONG_CAP] overall.
+         */
+        internal fun capCollections(
+            sources: List<Triple<String, String, List<String>>>,
+        ): List<InThePocketScorer.CollectionInfo> {
+            var budget = TOTAL_SONG_CAP
+            val out = ArrayList<InThePocketScorer.CollectionInfo>()
+            for ((id, name, songs) in sources.take(COLLECTION_CAP)) {
+                val take = minOf(songs.size, SONG_CAP, maxOf(0, budget))
+                budget -= take
+                out += InThePocketScorer.CollectionInfo(id, name.ifEmpty { null }, songs.take(take).toSet())
+            }
+            return out
+        }
+
+        const val ROUNDS_SYNC_FILE = "pocketdj-in-the-pocket-sync.json"
+        const val POCKETS_STUB_EXTRA = "pdj.pocketsStub"
         const val PUZZLE_DECISIONS_FILE = "pocketdj-puzzle-decisions.json"
         const val PUZZLE_DECISIONS_SYNC_KEY = "puzzle-decisions"
         const val PUZZLE_SETTINGS_KEY = "pdj.puzzle.settings.v1"
