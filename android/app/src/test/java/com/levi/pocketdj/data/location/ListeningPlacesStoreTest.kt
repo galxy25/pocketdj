@@ -65,6 +65,26 @@ class ListeningPlacesStoreTest {
         assertFalse(store(f).isEnabled)
     }
 
+    @Test fun disableStopsTheSourceOutsideTheStoreLock() {
+        // The real source's stop() takes its feed lock, which feed() holds while calling back into the store.
+        var storeRef: ListeningLocationStore? = null
+        var lockFreeDuringStop = false
+        val src = object : ListeningLocationSource {
+            override val authorization get() = ListeningLocationAuthorization.WHEN_IN_USE
+            override fun start(store: ListeningLocationStore) {}
+            override fun stop() {
+                val t = Thread { storeRef!!.isEnabled; lockFreeDuringStop = true }
+                t.start(); t.join(2_000)
+            }
+            override fun requestAlwaysUpgrade() {}
+        }
+        val s = ListeningLocationStore(tmp(), now = { clock }, platformSupported = true, makeSource = { src }, io = Executor { it.run() })
+        storeRef = s
+        s.setEnabled(true)
+        s.setEnabled(false)
+        assertTrue("another thread could read the store while stop() ran", lockFreeDuringStop)
+    }
+
     @Test fun contextLookupDelegates() {
         val src = FakeSource(ListeningLocationAuthorization.NOT_DETERMINED)
         val s = store(tmp(), src)

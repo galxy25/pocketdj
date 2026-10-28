@@ -108,16 +108,24 @@ class ListeningLocationStore(
     }
 
     /** On: start tracking now, ask for permission, start the source. Off: stop + erase. */
-    fun setEnabled(on: Boolean) = synchronized(lock) {
-        if (!isSupported) return@synchronized
+    fun setEnabled(on: Boolean) {
+        // Final review: source.stop() takes the source's feedLock while feed() holds it and calls back into this
+        // store's lock (ingestVisit / noteMovement). Never stop the source while holding [lock] (lock-order deadlock).
+        val toStop = setEnabledLocked(on)
+        toStop?.stop()
+    }
+
+    private fun setEnabledLocked(on: Boolean): ListeningLocationSource? = synchronized(lock) {
+        if (!isSupported) return@synchronized null
+        var stopMe: ListeningLocationSource? = null
         if (on) {
-            if (enabled) { startSourceLocked(); return@synchronized }
+            if (enabled) { startSourceLocked(); return@synchronized null }
             enabled = true
             if (engineState.trackingStartedAtMs == null) engineState.trackingStartedAtMs = now()
             bumpLocked()
             startSourceLocked()
         } else {
-            source?.stop()
+            stopMe = source
             source = null
             enabled = false
             auth = ListeningLocationAuthorization.NOT_DETERMINED
@@ -128,6 +136,7 @@ class ListeningLocationStore(
             _revision.value = _revision.value + 1
             deleteFiles()
         }
+        stopMe
     }
 
     /** Wipe every place, trip and visit. While still enabled, tracking restarts from now (earlier times read unavailable). */
