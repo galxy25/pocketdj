@@ -9,7 +9,7 @@ state: implemented
 - [x] NowPlayingDspSessionPlayer.kt: TransportOwner `npdsp` (SimpleBasePlayer) - the ONE MediaSession, never a second card
 - [x] NowPlayingDspPanel.kt + StemLockIndicator.kt (installed in NowPlayingSeams.dspSlot)
 - [x] di/MixGraph.kt: engine/host/prefetcher/lock lazies + `installNowPlayingDsp()` (sequencer observers, heartbeat, mixSessionActive publisher)
-- [x] Tests: NowPlayingDspEngineTest (19), NowPlayingDspHostTest (10), StemLockTest (10), StemLockPrefetcherOrderTest (13) = 53 new (suite 4519, 0 failures; was 4466)
+- [x] Tests: NowPlayingDspEngineTest (21), NowPlayingDspHostTest (10), StemLockTest (10), StemLockPrefetcherOrderTest (12) = 53 new (suite 4519, 0 failures; was 4466)
 - [x] assembleDebug green
 
 ## Files touched outside the owned set (minimal, additive)
