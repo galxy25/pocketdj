@@ -190,7 +190,9 @@ class Mp3Decoder(
     }
 
     companion object {
-        private const val WARMUP_FRAMES = 2L
+        // 12 frames: the emulator's software MP3 decoder emits ~8 frames (8825 samples) of silence after
+        // every start/flush, so a short warm-up leaves a gap after a seek (found by the wave-3 instrumented run).
+        private const val WARMUP_FRAMES = 12L
 
         /**
          * Android's MP3 codecs (C2SoftMp3Dec / SoftMP3) already drop the 529-sample decoder delay
