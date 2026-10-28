@@ -15,8 +15,22 @@ import com.levi.pocketdj.screens.settings.sections.debugSection
 import com.levi.pocketdj.shell.DeepLinkHandler
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
+import com.levi.pocketdj.shell.ResetHook
+import com.levi.pocketdj.shell.SyncEntry
+import com.levi.pocketdj.data.sync.CloudDocDatabase
+import com.levi.pocketdj.data.sync.CloudSyncService
+import com.levi.pocketdj.data.sync.InMemoryCloudDocDatabase
+import com.levi.pocketdj.data.sync.ProfileStore
+import com.levi.pocketdj.data.sync.SyncRegistry
+import com.levi.pocketdj.data.sync.SyncSettings
+import com.levi.pocketdj.data.sync.UnavailableCloudDocDatabase
+import com.levi.pocketdj.onboarding.OnboardingPrefs
+import com.levi.pocketdj.data.settings.ShellSettings
 import com.levi.pocketdj.shell.SettingsSection
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.plus
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 /**
@@ -151,6 +165,104 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         }
     }
 
+    // ---- SVC-7 document sync -------------------------------------------------------------
+
+    /** The user's synced identity (iOS ProfileStore); name edits mirror into settings + collections. */
+    val profile: ProfileStore by lazy {
+        ProfileStore(File(app.appContext.filesDir, ProfileStore.FILE_NAME)).also { p ->
+            p.onNameApplied = { name ->
+                app.appScope.launch(Dispatchers.IO) {
+                    app.settings.set(OnboardingPrefs.PROFILE_NAME, ShellSettings.normalizeProfileName(name))
+                    app.collections.performerName = name
+                }
+            }
+        }
+    }
+
+    /**
+     * The backend the engine syncs against. [UnavailableCloudDocDatabase] until SVC-9 installs the
+     * S3 implementation here (or the debug flag swaps in [InMemoryCloudDocDatabase]).
+     */
+    @Volatile var cloudDocDatabase: CloudDocDatabase = UnavailableCloudDocDatabase
+
+    /** Mirror of [SyncSettings.CLOUD_SYNC_ENABLED] (the engine's `enabled` closure is non-suspend). */
+    @Volatile private var userSyncEnabled: Boolean = true
+
+    private val cloudSyncLazy = lazy {
+        CloudSyncService(
+            database = { cloudDocDatabase },
+            enabled = { userSyncEnabled },
+            stateFile = File(app.appContext.filesDir, "pocketdj-cloudsync-state.json"),
+            scope = app.appScope + Dispatchers.IO,
+            deviceName = android.os.Build.MODEL ?: "Android",
+            log = { tag, msg -> android.util.Log.i("PocketDJ", "[$tag] $msg") },
+        ).also { svc ->
+            // Onboarding push gate: nothing uploads until the zero-to-hero flow resolves (pulls are not gated).
+            svc.pushAllowed = { app.onboarding.isComplete }
+            SyncRegistry.registerAll(svc, app.appContext.filesDir, app.features.syncEntries)
+        }
+    }
+    val cloudSync: CloudSyncService get() = cloudSyncLazy.value
+
+    private val syncStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var appForeground = false
+
+    /**
+     * Launch pipeline (idempotent): flag mirror -> profile migration -> wait for onboarding -> the
+     * bounded launch pass -> foreground re-sync observer + 20 s active tick. Fire-and-forget.
+     */
+    fun startCloudSync() {
+        if (!syncStarted.compareAndSet(false, true)) return
+        app.appScope.launch(Dispatchers.IO) {
+            launch { app.settings.flow(SyncSettings.CLOUD_SYNC_ENABLED).collect { userSyncEnabled = it } }
+            if (isDebuggableBuild() && app.settings.get(SyncSettings.DEBUG_IN_MEMORY_DB) &&
+                cloudDocDatabase === UnavailableCloudDocDatabase
+            ) {
+                cloudDocDatabase = InMemoryCloudDocDatabase()
+            }
+            profile.migrateIfNeeded(app.settings.get(OnboardingPrefs.PROFILE_NAME))
+            val svc = cloudSync
+            app.onboarding.waitUntilComplete()
+            profile.migrateIfNeeded(app.settings.get(OnboardingPrefs.PROFILE_NAME))
+            svc.syncAtLaunch()
+            withContext(Dispatchers.Main) {
+                androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
+                    androidx.lifecycle.LifecycleEventObserver { _, event ->
+                        when (event) {
+                            androidx.lifecycle.Lifecycle.Event.ON_START -> { appForeground = true; svc.syncOnForeground() }
+                            androidx.lifecycle.Lifecycle.Event.ON_STOP -> appForeground = false
+                            else -> Unit
+                        }
+                    },
+                )
+            }
+            while (true) {
+                delay(CloudSyncService.ACTIVE_TICK_GAP_MS)
+                if (appForeground && app.onboarding.isComplete) svc.syncTick()
+            }
+        }
+    }
+
+    private fun isDebuggableBuild(): Boolean =
+        (app.appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+    /** The core synced documents (iOS names). Reload seams re-decode / merge the pulled file. */
+    override val syncEntries: List<SyncEntry> = listOf(
+        SyncEntry(SyncRegistry.KEY_PROFILE, ProfileStore.FILE_NAME, onPulled = { profile.reloadFromDisk() }),
+        SyncEntry(SyncRegistry.KEY_COLLECTIONS, com.levi.pocketdj.data.collections.CollectionsStore.FILE_NAME,
+            onPulled = { app.collections.reloadFromDisk() }),
+        SyncEntry(SyncRegistry.KEY_PLAY_HISTORY, com.levi.pocketdj.data.history.PlayHistoryStore.FILE_NAME,
+            onPulled = { com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext).reloadFromDisk() }),
+        SyncEntry(SyncRegistry.KEY_COLLECTION_ACTIVITY, com.levi.pocketdj.data.activity.CollectionActivityStore.FILE_NAME,
+            onPulled = { app.collectionActivity.reloadFromDisk() }),
+        SyncEntry(SyncRegistry.KEY_PLAY_STATS, com.levi.pocketdj.data.stats.PlayStatsStore.FILE_NAME,
+            onPulled = { playStats.reloadFromDisk() }),
+    )
+
+    override val resetHooks: List<ResetHook> = listOf(
+        ResetHook { if (cloudSyncLazy.isInitialized()) cloudSync.clearLocalSyncState() },
+    )
+
     override val settingsSections: List<SettingsSection> by lazy {
         if (diag.channel) listOf(debugSection()) else emptyList()
     }
@@ -166,6 +278,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             diag.flushable,
             Flushable { if (burnStoreLazy.isInitialized()) burnStore.flush() },
             Flushable { if (playStatsLazy.isInitialized()) playStats.flush() },
+            Flushable { if (cloudSyncLazy.isInitialized()) cloudSync.pushOnBackground() },
         )
     }
 }

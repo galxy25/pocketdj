@@ -183,6 +183,37 @@ class CollectionActivityStore(
         }
     }
 
+    /**
+     * Cloud-pull merge (SVC-7, iOS `reloadFromDisk`): UNION the pulled document's events with this
+     * device's by event id; never adopt the pulled installId. Returns true when this device holds
+     * rows the pulled document lacks and therefore RE-SAVED the superset (inline, so the file mtime
+     * advances before the sync engine looks - it then clears the watermark and the superset pushes
+     * on the next pass). A no-op merge leaves the file clean, which terminates the push loop.
+     */
+    fun reloadFromDisk(): Boolean {
+        val disk = (readDocument() as? ReadResult.Ok)?.doc ?: return false
+        synchronized(lock) {
+            salvagePending = false
+            val byId = LinkedHashMap<String, ActivityEvent>()
+            for (e in _state.value.events) byId.putIfAbsent(e.id, e)
+            var addedFromDisk = 0
+            for (e in disk.events) if (byId.putIfAbsent(e.id, e) == null) addedFromDisk++
+            val weHoldRowsTheDocLacks = byId.size > disk.events.map { it.id }.toSet().size
+            var merged = byId.values.sortedBy { it.at }
+            if (merged.size > maxEvents) merged = merged.takeLast(maxEvents)
+            if (addedFromDisk > 0 || weHoldRowsTheDocLacks) publish(merged)
+            if (!weHoldRowsTheDocLacks) {
+                // The file already holds the pulled bytes; any queued pre-pull write is stale.
+                dirty = false
+                writer.invalidate(++saveVersion)
+                return false
+            }
+            dirty = true
+            flushNow()
+            return true
+        }
+    }
+
     // MARK: Internals (call under lock)
 
     private fun publish(events: List<ActivityEvent>) {

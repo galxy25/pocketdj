@@ -37,6 +37,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         graph.appScope.launch { PlayHistoryStore.get(appContext) }
+        graph.servicesGraph.startCloudSync() // SVC-7: launch pass after onboarding, foreground + tick triggers
         setContent {
             PocketDjTheme {
                 PocketDjApp()

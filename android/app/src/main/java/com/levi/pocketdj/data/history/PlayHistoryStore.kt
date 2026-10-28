@@ -259,6 +259,69 @@ class PlayHistoryStore(
         }
     }
 
+    /**
+     * Cloud-pull merge (SVC-7, iOS `reloadFromDisk`): UNION by event id instead of replacing, so two
+     * devices converge on the same superset. Shared rows keep OUR copy but absorb the monotone peer
+     * fields: skip flag is OR-ed (false -> true only), listened fraction is MAX-merged, tz offset is
+     * first-writer-wins. Never adopts the pulled installId (this install keeps its identity).
+     *
+     * THE SAVE IS CONDITIONAL: [save] re-encodes with THIS install's id so its bytes always differ
+     * from the pulled payload; an unconditional save would leave the file dirty after EVERY pull and
+     * the mtime-only sync would bounce the whole log back and forth forever. Saves (inline) only when
+     * WE hold rows or per-row fields the pulled document lacks. Returns whether it re-saved.
+     */
+    fun reloadFromDisk(): Boolean {
+        val doc = (readDocument() as? ReadResult.Ok)?.doc ?: return false
+        synchronized(lock) {
+            salvagePending = false
+            val byId = LinkedHashMap<String, PlayEvent>()
+            for (e in _state.value.events) byId.putIfAbsent(e.id, e)
+            var addedFromDisk = 0
+            var absorbedPeerFields = false
+            for (theirs in doc.events) {
+                val mine = byId[theirs.id]
+                if (mine == null) {
+                    byId[theirs.id] = theirs
+                    addedFromDisk++
+                    continue
+                }
+                var merged = mine
+                if (theirs.wasSkipped == true && mine.wasSkipped != true) merged = merged.copy(wasSkipped = true)
+                val tf = theirs.listenedFraction
+                if (tf != null && tf > (mine.listenedFraction ?: -1.0)) merged = merged.copy(listenedFraction = tf)
+                if (mine.tzOffsetMin == null && theirs.tzOffsetMin != null) merged = merged.copy(tzOffsetMin = theirs.tzOffsetMin)
+                if (merged != mine) {
+                    byId[theirs.id] = merged
+                    absorbedPeerFields = true
+                }
+            }
+            val docById = HashMap<String, PlayEvent>()
+            for (e in doc.events) docById.putIfAbsent(e.id, e)
+            val weHoldFlagsTheDocLacks = byId.values.any { mine ->
+                val theirs = docById[mine.id] ?: return@any false
+                holdsFieldsMissing(theirs, mine)
+            }
+            val weHoldRowsTheDocLacks = byId.size > docById.size
+            var merged = byId.values.sortedBy { it.playedAt }
+            if (merged.size > maxEvents) merged = merged.takeLast(maxEvents)
+            rebuildIndexes(merged)
+            if (addedFromDisk > 0 || absorbedPeerFields || weHoldRowsTheDocLacks || weHoldFlagsTheDocLacks) publish(merged)
+            else _state.value = _state.value.copy(events = merged)
+            if (!weHoldRowsTheDocLacks && !weHoldFlagsTheDocLacks) return false
+            save()
+            return true
+        }
+    }
+
+    /** Does [mine] carry a per-row field the document's copy of the same event lacks? Mirrors the merge rules. */
+    private fun holdsFieldsMissing(theirs: PlayEvent, mine: PlayEvent): Boolean {
+        if (mine.wasSkipped == true && theirs.wasSkipped != true) return true
+        val f = mine.listenedFraction
+        if (f != null && f > (theirs.listenedFraction ?: -1.0)) return true
+        if (mine.tzOffsetMin != null && theirs.tzOffsetMin == null) return true
+        return false
+    }
+
     // MARK: - Internals (call under lock)
 
     private fun publish(events: List<PlayEvent>) {

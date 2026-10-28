@@ -1730,6 +1730,44 @@ class CollectionsStore(
 
     private fun Setlist.recomputedTotal(): Setlist = copy(totalMs = tracks.sumOf { it.shownMs })
 
+    // MARK: Cloud sync (SVC-7)
+
+    /**
+     * The profile's PocketDJ name, mirrored in by `ProfileStore.onNameApplied` (iOS
+     * `collections.performerName`). Stamped on performance items; blank means "Studio" at the consumers.
+     */
+    @Volatile var performerName: String = ""
+
+    /**
+     * Re-decode the on-disk document after the sync engine pulled a newer cloud copy (whole-document
+     * LWW). Mirrors init's decode + stale Now Playing cleanup, then fires [onChange]. Returns false
+     * when the file is absent/undecodable (state untouched).
+     */
+    fun reloadFromDisk(): Boolean {
+        val doc = (readDocument() as? ReadResult.Ok)?.doc ?: return false
+        synchronized(lock) {
+            salvagePending = false
+            publish {
+                it.copy(
+                    pockets = doc.pockets,
+                    playlists = doc.playlists,
+                    setlists = doc.setlists.filterNot { s ->
+                        s.id == NOW_PLAYING_SETLIST_ID || s.playlistId == NOW_PLAYING_PLAYLIST_ID
+                    },
+                    folders = doc.folders,
+                    lastAddTarget = doc.lastAddTarget,
+                    recentAddTargets = doc.recentAddTargets ?: emptyList(),
+                )
+            }
+            // The file now holds cloud-pulled content newer than anything the async writer may still
+            // have queued: invalidate those stragglers so a pre-pull save cannot overwrite the pull.
+            dirty = false
+            writer.invalidate(++saveVersion)
+        }
+        onChange?.invoke()
+        return true
+    }
+
     // MARK: Full wipe
 
     /** Reset every family AND delete the on-disk document (Settings/tests seam). */
