@@ -91,11 +91,15 @@ private fun PlaySection(graph: AppGraph, onNeedPacks: () -> Unit) {
     val packs = studio.instrumentPacks
     val st by engine.state.collectAsState()
     val packState by packs.state.collectAsState()
+    val odState by engine.overdub.state.collectAsState()
     val scope = rememberCoroutineScope()
     var message by remember { mutableStateOf<String?>(null) }
     var bpm by rememberSaveable { mutableIntStateOf(120) }
-    var clickOn by rememberSaveable { mutableStateOf(true) }
-    var countIn by rememberSaveable { mutableStateOf(true) }
+    // The two take switches persist (iOS studioClickEnabled / studioCountInEnabled, both ON by default).
+    val (clickState, setClickOn) = rememberPrefState(graph, com.levi.pocketdj.studio.midi.MidiSettings.CLICK_ENABLED, true)
+    val (countInState, setCountIn) = rememberPrefState(graph, com.levi.pocketdj.studio.midi.MidiSettings.COUNT_IN_ENABLED, true)
+    val clickOn = clickState.value
+    val countIn = countInState.value
     var octave by rememberSaveable { mutableIntStateOf(4) }       // first C of the 2-octave board
     var filing by remember { mutableStateOf(false) }
 
@@ -112,7 +116,14 @@ private fun PlaySection(graph: AppGraph, onNeedPacks: () -> Unit) {
     LaunchedEffect(packState.downloadedSlugs, packState.index) {
         if (engine.state.value.currentInstrument == null && !engine.state.value.isLoadingInstrument && packs.localBankFile(InstrumentKey.PIANO) != null) select(InstrumentKey.PIANO)
     }
-    DisposableEffect(Unit) { onDispose { engine.allNotesOff() } }
+    DisposableEffect(Unit) {
+        onDispose {
+            engine.arp.stop()
+            // Leaving Play finishes an armed overdub (iOS onDisappear): the backing must not keep looping behind another tab.
+            engine.finishOverdub(engine.state.value.currentInstrument ?: InstrumentKey.PIANO)
+            engine.allNotesOff()
+        }
+    }
 
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -147,8 +158,8 @@ private fun PlaySection(graph: AppGraph, onNeedPacks: () -> Unit) {
             OutlinedButton(onClick = { bpm = (bpm + 1).coerceAtMost(ClickTrack.MAX_BPM.toInt()) }, enabled = !st.isRecordingTake) { Text("+") }
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Click"); Switch(clickOn, { clickOn = it; if (st.isRecordingTake || st.clickEnabled) engine.setClickEnabled(it, bpm.toDouble()) }, modifier = Modifier.testTag("click-switch"))
-            Text("Count-in"); Switch(countIn, { countIn = it }, enabled = !st.isRecordingTake, modifier = Modifier.testTag("countin-switch"))
+            Text("Click"); Switch(clickOn, { setClickOn(it); if (st.isRecordingTake || st.clickEnabled) engine.setClickEnabled(it, bpm.toDouble()) }, modifier = Modifier.testTag("click-switch"))
+            Text("Count-in"); Switch(countIn, { setCountIn(it) }, enabled = !st.isRecordingTake, modifier = Modifier.testTag("countin-switch"))
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             if (!st.isRecordingTake) {
@@ -184,14 +195,17 @@ private fun PlaySection(graph: AppGraph, onNeedPacks: () -> Unit) {
             }
             if (filing) Text("Saving…", color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
-        if (st.liveEvents.isNotEmpty()) {
+        if (st.liveEvents.isNotEmpty() || odState.staffs.isNotEmpty() || odState.active) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("${st.liveEvents.size} notes played", Modifier.weight(1f).testTag("live-count"), color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (st.liveCaptureFull) Text("Capture full  ", color = MaterialTheme.colorScheme.error)
-                TextButton(onClick = { engine.clearLive() }, modifier = Modifier.testTag("live-clear")) { Text("Clear") }
+                TextButton(onClick = { engine.clearLiveScore() }, modifier = Modifier.testTag("live-clear")) { Text("Clear") }
             }
         }
+        ArpPanel(graph, engine, bpm, onMessage = { message = it })
+        MidiDevicesSection(graph)
         LiveStaff(graph, onMessage = { message = it })
+        OverdubControls(graph, engine, bpm, onMessage = { message = it })
         message?.let { Text(it, Modifier.testTag("instruments-message"), color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }

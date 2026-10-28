@@ -266,6 +266,15 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     }
     val instrumentEngine: com.levi.pocketdj.studio.engine.InstrumentEngine get() = instrumentLazy.value
 
+    // MIDI input is app-scoped (iOS keeps BLEMIDIManager + the CoreMIDI client alive): connections survive tab switches / rotation.
+    private val midiManager: android.media.midi.MidiManager? by lazy { app.appContext.getSystemService(android.media.midi.MidiManager::class.java) }
+    val midiInput: com.levi.pocketdj.studio.midi.MidiInput by lazy {
+        com.levi.pocketdj.studio.midi.MidiInput(midiManager, com.levi.pocketdj.studio.midi.EngineMidiSink(instrumentEngine))
+    }
+    val bleMidiScanner: com.levi.pocketdj.studio.midi.BleMidiScanner by lazy {
+        com.levi.pocketdj.studio.midi.BleMidiScanner(app.appContext, midiManager, midiInput)
+    }
+
     private val micLazy = lazy {
         val captureFocus = AudioFocusPolicy.FocusHandle(audioManager) { /* a competing app took focus: the take keeps going */ }
         MicRecorder(

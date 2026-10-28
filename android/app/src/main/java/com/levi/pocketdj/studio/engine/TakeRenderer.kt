@@ -219,12 +219,16 @@ class TakeFiler(
             StudioFiles.appFile(roots, StudioFamily.TAKES, result.fileName)?.delete()
             throw TakeFileException(TakeFileFailure.Failed)
         }
-        return store.addTakeRelocating(
+        val filed = store.addTakeRelocating(
             StudioTake(
                 id = result.takeId, name = name, instrument = result.instrument, fileName = result.fileName,
                 wasUserFolder = false, bpm = result.bpm, events = result.events, durationMs = result.durationMs, createdAt = now(),
             ),
         )
+        // Overdub staffs ride with the take (same path as ScoreScreen's overdub); adding one marks the render stale, so the
+        // next play re-renders the whole multi-staff score.
+        for (s in result.extraStaffs) store.addOverdubStaff(filed.id, s.instrument, s.events)
+        return if (result.extraStaffs.isEmpty()) filed else store.take(filed.id) ?: filed
     }
 
     /** The take's CURRENT audio file: the fresh render cache, else the raw file when never edited/retimed, else null (needs a render). */
