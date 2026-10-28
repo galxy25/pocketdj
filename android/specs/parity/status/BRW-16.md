@@ -1,8 +1,34 @@
-state: in-progress
+state: implemented
 
 # BRW-16 Discover add: provisional catalog entries, album fan-out, supersede, Remove from Library
-- [x] DiscoverAddsStore / DiscoverAddState / ProvisionalSource (data/discover)
-- [x] CatalogRepository provisional hook + supersede callbacks; CollectionsStore.remapSongIds
-- [x] DiscoverAddController (song add, album fan-out, remove) + BrowseGraph wiring + sync entry + reset hook
-- [x] SongDetailSheet Remove from Library; album n/m capsule
-- [ ] Tests, full suite
+- [x] data/discover/DiscoverAddsStore.kt (entries + optional albums doc, iOS-shape lenient JSON `pocketdj-discover-adds.json`, idempotent adds, one batched album add, userRemove vs silent supersede remove, reloadFromDisk, split/splitAlbums, indexSong/indexAlbum/syntheticIndex)
+- [x] data/discover/DiscoverAddState.kt (adding/partial/added; preparedCopies=false never spins)
+- [x] data/discover/ProvisionalSource.kt (Discover IndexJson appended after real sources; supersede by appleMusicId; surviving tracks re-pointed at a superseded album's real twin)
+- [x] CatalogRepository: provisionalSources / onSupersede / onAlbumsSuperseded hooks (merge order: real, Discover, synthetic Imported)
+- [x] CollectionsStore.remapSongIds (playlist node trees, pocket songIds/repeats/sourceSongIds, setlist tracks)
+- [x] screens/discover/DiscoverAddController.kt (song add, album fan-out accepted-only, REST-then-/album-tracks, removeFromLibrary, albumStates flow)
+- [x] BrowseGraph wiring (store, ports, hooks, sync entry "discover-adds", reset hook, catalogAdd/catalogRemove activity)
+- [x] SongDetailSheet "Remove from Library" (Discover + Imported rows); Discover album n/m capsule
+- [x] Tests (see below)
+
+## Files touched outside the owned list (all minimal/additive)
+- data/collections/CollectionsStore.kt: +remapSongIds
+- data/applemusic/AppleMusicApi.kt + AppleMusicApiModels.kt: +albumTracks / parseAlbumTracks (REST tier of the album fan-out)
+- screens/discover/DiscoverAlbumResultsList.kt, DiscoverResultsList.kt: optional addStates param + n/m capsule
+- data/reset/AccountDeletionService.kt (+ AccountDeletionTest key set): "discover-adds" cloud doc key (lockstep test)
+- ActivityModels.kt: already carried CATALOG_ADD/CATALOG_REMOVE/libraryWrite/itemArtist; no edit needed
+
+## Notes / deviations
+- Library write outcome: Android has no membership probe, so an accepted Web API write is stored as "confirmed (web)" (the token History already treats as proof); no-MUT -> "skipped: no Apple Music connection"; failures -> "Apple Music write failed: ...".
+- preparedCopies is recorded true only when the download intent AND a rip server is configured (iOS records true even serverless, which would spin at 0/n forever).
+- Pre-release album refresh (iOS refreshProvisionalAlbums / needsRefresh / applyAlbumRefresh) is NOT ported (not in this package's acceptance); fields releaseDateMs/lastRefreshAtMs are carried so a later package can add it.
+- Retry affordance ("Add to Apple Music again", recordAlbumLibraryWrite) has the store half only; no UI.
+- Supersede prunes the provisional entry from the store (iOS behaviour); the "no deletion" guarantee applies to first-wins shadowing by merge order (same-id real row).
+- Remove from Library also handles Imported rows (via ImportedSongsStore.remove); logs catalogRemove for both.
+- Albums stay add-gated on a Music-User-Token in the Discover UI (BRW-15 behaviour, unchanged).
+
+## Questions for Levi
+- Should serverless (no import server) Discover album adds be allowed without an Apple Music sign-in? iOS allows; the BRW-15 UI still disables the album + without a MUT.
+
+## Tests
+New: DiscoverAddsStoreTest, DiscoverAddStateTest, SupersedeTest, DiscoverAddControllerTest, CatalogRepositoryTest, AlbumTracksParseTest.
