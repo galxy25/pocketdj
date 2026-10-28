@@ -94,6 +94,20 @@ class CollectionsStore(
     var catalogProvider: (() -> MergedCatalog?)? = null
 
     /**
+     * STU-7 Studio seam (iOS `studioLookup`): resolve a studio id to title + REAL length so counts /
+     * runtime / realize / playNow include studio items. null = unwired = studio ids drop out.
+     * Consulted lazily, only for an id that misses the catalog AND has a studio shape.
+     */
+    @Volatile var studioLookup: StudioLookup? = null
+
+    /** Performer label on synthesized studio rows (the profile's "PocketDJ name"), "Studio" when unset. */
+    @Volatile var studioArtist: () -> String = { STUDIO_ARTIST }
+
+    /** Display info for a studio id (the row UI), or null for a non-studio / unknown id. */
+    fun studioInfo(id: String): StudioItemInfo? =
+        if (PlayResolver.isStudioId(id)) studioLookup?.info(id) else null
+
+    /**
      * Re-link seam (COL-7): cancel still-undelivered write-backs owed to the OLD source
      * playlist id for the given songs. Unwired on Android until a write-back queue exists.
      */
@@ -1264,7 +1278,7 @@ class CollectionsStore(
     /** Display-title snapshot for an item id — catalog song, then album, else null. */
     private fun activityTitle(id: String): String? {
         val merged = catalogProvider?.invoke() ?: return null
-        return merged.songsById[id]?.name ?: merged.albumsById[id]?.name
+        return merged.songsById[id]?.name ?: merged.albumsById[id]?.name ?: studioInfo(id)?.title
     }
 
     private fun activityArtist(id: String): String? {
@@ -1327,6 +1341,8 @@ class CollectionsStore(
             songsById = merged?.songsById ?: emptyMap(),
             albumsById = merged?.albumsById ?: emptyMap(),
             pocketsById = pockets.associateBy { it.id },
+            studioLookup = studioLookup,
+            studioArtist = studioArtist().ifBlank { STUDIO_ARTIST },
         )
     }
 
@@ -1378,7 +1394,10 @@ class CollectionsStore(
             songsById = merged.songsById,
             albumsById = merged.albumsById,
             pocketsById = pockets.associateBy { it.id },
+            // Candidates come from the CATALOG only: a studio item is never an autofill bridge.
             candidates = merged.songs.filter { it.bpm != null && it.camelot != null },
+            studioLookup = studioLookup,
+            studioArtist = studioArtist().ifBlank { STUDIO_ARTIST },
         )
     }
 
@@ -1458,7 +1477,9 @@ class CollectionsStore(
         val merged = catalogProvider?.invoke() ?: return null
         var tracks = songIds.mapNotNull { id ->
             val rep = CollectionMembership.storedRepeat(repeats[id] ?: 1)
-            val s = merged.songsById[id] ?: return@mapNotNull null // drop unresolvable ids
+            // Catalog first, then a synthesized studio pseudo-song (real length); else drop.
+            val s = resolveSongOrStudio(merged.songsById, id, studioLookup, studioArtist().ifBlank { STUDIO_ARTIST })
+                ?: return@mapNotNull null // drop unresolvable ids
             SetlistTrack(
                 songId = s.id,
                 artist = s.artist,

@@ -29,6 +29,17 @@ import com.levi.pocketdj.studio.audio.NativeStretcher
 import com.levi.pocketdj.studio.audio.PrepareOutcome
 import com.levi.pocketdj.studio.audio.StudioOutputs
 import com.levi.pocketdj.studio.audio.StudioRender
+import com.levi.pocketdj.audio.core.PcmBuffer
+import com.levi.pocketdj.data.collections.StudioLookup
+import com.levi.pocketdj.data.storage.StorageService
+import com.levi.pocketdj.screens.settings.sections.studioStorageSection
+import com.levi.pocketdj.studio.StudioAnalyzer
+import com.levi.pocketdj.studio.StudioFiles
+import com.levi.pocketdj.studio.StudioPlayback
+import com.levi.pocketdj.studio.StudioPrepareBackend
+import com.levi.pocketdj.studio.StudioRowResolver
+import com.levi.pocketdj.studio.engine.PatternBouncer
+import com.levi.pocketdj.studio.engine.StudioStretchKey
 import com.levi.pocketdj.studio.engine.AudioFocusPolicy
 import com.levi.pocketdj.studio.engine.LoopAudition
 import com.levi.pocketdj.studio.engine.LoopFactory
@@ -59,7 +70,16 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
      * the package that adds the folder pickers (SVC-14 / STU-x); null => app-managed root only.
      */
     @Volatile
-    var userFolderTreeUri: (StudioFamily) -> String? = { null }
+    var userFolderTreeUri: (StudioFamily) -> String? = { f -> folderPrefs.getString(f.rawValue, null) }
+
+    /** Persisted per-family SAF tree uri (STU-7 folder choosers); tiny, so SharedPreferences. */
+    private val folderPrefs by lazy { app.appContext.getSharedPreferences("pocketdj-studio-folders", android.content.Context.MODE_PRIVATE) }
+
+    /** Choose (or clear with null) the user folder for [family]; only user-relocatable families. */
+    fun setUserFolder(family: StudioFamily, treeUri: String?) {
+        if (!family.supportsUserFolder) return
+        folderPrefs.edit().also { if (treeUri.isNullOrEmpty()) it.remove(family.rawValue) else it.putString(family.rawValue, treeUri) }.apply()
+    }
 
     /** Studio family roots: app-private `filesDir/studio/<family>/` + optional SAF user roots. */
     val studioRoots: StudioRoots by lazy {
@@ -218,6 +238,68 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
             },
         ).also { it.sweepPartials() }
     }
+
+    // ---- STU-7: Collections integration (play studio ids as local files, counts, prepare-on-demand, key analysis)
+
+    private val prepareBackend by lazy {
+        object : StudioPrepareBackend {
+            override suspend fun ensureSampleRendered(sampleId: String): Boolean = sampleRenderCache.playableFile(sampleId) != null
+
+            override suspend fun targetBuffer(targetId: String): PcmBuffer? {
+                val file: File? = when {
+                    targetId.startsWith("smp_") -> sampleRenderCache.playableFile(targetId)
+                    else -> studioStore.localUrlForPlayback(targetId)?.ref?.file
+                }
+                val decoded = file?.let { runCatching { studioRender.decodeBuffer(it.path) }.getOrNull() } ?: return null
+                val loop = if (targetId.startsWith("lp_")) studioStore.loop(targetId) else null
+                return if (loop != null) StudioPlayback.exactLoopBuffer(decoded, loop.frames) else decoded
+            }
+
+            override suspend fun stretchSpans(pattern: StudioPattern, natural: Map<String, PcmBuffer>) =
+                PatternBouncer.stretchSpanBuffers(pattern, natural) { b, f -> studioRender.stretchBuffer(b, f) }
+
+            override suspend fun bouncePattern(
+                pattern: StudioPattern, buffers: Map<String, PcmBuffer>, spans: Map<StudioStretchKey, PcmBuffer>,
+            ): String? {
+                val name = StudioPlayback.patternFileName(pattern.id)
+                val dest = StudioFiles.appFile(studioRoots, StudioFamily.SEQUENCES, name) ?: return null
+                PatternBouncer.bounce(pattern, buffers, spans, dest)
+                return name
+            }
+        }
+    }
+
+    /** Resolve + prepare-on-demand for studio ids; also the Collections `studioLookup` source. */
+    val studioPlayback: StudioPlayback by lazy { StudioPlayback(studioStore, prepareBackend) }
+
+    /** Key detection when an item enters a collection (idempotent). */
+    val studioAnalyzer: StudioAnalyzer by lazy {
+        StudioAnalyzer(studioStore, studioPlayback) { path -> runCatching { studioRender.decodeBuffer(path) }.getOrNull() }
+    }
+
+    /** Wired into AppGraph's collections init: lazy, so a user who never has a studio id never builds the store. */
+    val collectionsLookup: StudioLookup = StudioLookup { id -> studioPlayback.infoFor(id) }
+
+    /** Settings > Storage per-family usage + STRICT delete-all (unreachable roots keep records; active take skipped). */
+    val storageOps: StorageService.StudioStorageOps = object : StorageService.StudioStorageOps {
+        override fun usageBytes(family: StudioFamily): Long = studioStore.usageBytes(family)
+        override fun deleteAll(family: StudioFamily) { studioStore.deleteAll(family); studioStore.flush() }
+    }
+
+    /**
+     * Register the STUDIO_LOCAL row rung and make the device-mode "is this row on the device" probe
+     * studio-aware. Cheap (nothing lazy is forced); called once from AppGraph init.
+     */
+    fun wire() {
+        val ctl = app.playbackController
+        ctl.rowResolvers.register(StudioRowResolver(prepare = { id -> studioPlayback.prepare(id) }))
+        val prevOnDevice = ctl.sequencer.rowOnDevice
+        ctl.sequencer.rowOnDevice = { item ->
+            prevOnDevice(item) || StudioRowResolver.studioIdOf(item)?.let { studioPlayback.isPlayable(it) } == true
+        }
+    }
+
+    override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection> by lazy { listOf(studioStorageSection()) }
 
     // A user who never touched Studio must not build/reconcile/rewrite the doc on ON_STOP.
     // A take in flight is filed + the store flushed synchronously (Android blocks background mic capture).

@@ -330,7 +330,25 @@ internal fun storageCategoryMeta(category: Category): StorageCategoryMeta = when
         clearBody = "Removes the add/remove activity history from this device. The " +
             "collections it references are untouched. This can't be undone.",
     )
+    Category.STUDIO_SAMPLES -> studioMeta("Studio samples", "Your recorded and carved samples (and their edited renders).", "samples")
+    Category.STUDIO_LOOPS -> studioMeta("Studio loops", "Loops cut from your samples.", "loops")
+    Category.STUDIO_SEQUENCES -> studioMeta("Studio sequences", "Bounced sequencer patterns.", "sequences")
+    Category.STUDIO_TAKES -> studioMeta("Studio takes", "Instrumental takes and their rendered audio. A take being recorded right now is kept.", "takes")
+    Category.STUDIO_INSTRUMENTS -> StorageCategoryMeta(
+        title = "Studio instruments",
+        description = "Downloaded instrument SoundFonts. Re-downloadable.",
+        clearTitle = "Delete instruments?",
+        clearBody = "Removes the downloaded instrument packs from this device. They can be downloaded again.",
+    )
 }
+
+private fun studioMeta(title: String, description: String, noun: String) = StorageCategoryMeta(
+    title = title,
+    description = description,
+    clearTitle = "Delete all $noun?",
+    clearBody = "Permanently deletes every Studio $noun file and its record. Anything stored in a folder " +
+        "that is unavailable right now is kept. This can't be undone.",
+)
 
 
 /** What the by-artist / by-collection delete dialog is currently offering. */

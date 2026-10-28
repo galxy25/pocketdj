@@ -266,6 +266,9 @@ class AppGraph private constructor(context: Context) {
     // PB-1: connect the sequencer's history-context / origin / outcome seams (additive).
     init { playbackGraph.wire() }
 
+    // STU-7: register the STUDIO_LOCAL row rung (after playbackGraph.wire so the sequencer exists).
+    init { studioGraph.wire() }
+
     // SVC-6: subscribe the play-stats recorder at app init (not from a lazy getter) so a restored
     // session's first play is never lost; SharedFlow has no replay.
     init { appScope.launch(Dispatchers.IO) { servicesGraph.startPlayStats() } }
@@ -295,6 +298,7 @@ class AppGraph private constructor(context: Context) {
             lyricsCacheDir = File(appContext.filesDir, com.levi.pocketdj.data.lyrics.LyricsStore.DIR_NAME),
             clearLyrics = { browseGraph.lyricsStore.clearDisk() },
             burnOps = servicesGraph.burnStorageOps,
+            studioOps = studioGraph.storageOps,
         )
     }
 
@@ -325,6 +329,8 @@ class AppGraph private constructor(context: Context) {
             CollectionsStore(f, writer = VersionedJsonWriter(f, bgWriterExecutor))
         }.also { store ->
             store.catalogProvider = { catalogRepository.state.value.catalog }
+            // STU-7: studio items count/realize/play with their real lengths (lazy; never builds the studio store for catalog ids).
+            store.studioLookup = studioGraph.collectionsLookup
             store.onActivityBatch = { hooks ->
                 collectionActivity.recordAll(
                     ActivityKind.ADD.takeIf { hooks.first().kind == CollectionsStore.ActivityHook.Kind.ADD }
