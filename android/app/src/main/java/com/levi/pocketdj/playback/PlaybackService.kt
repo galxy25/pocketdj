@@ -347,10 +347,15 @@ class PlaybackService : MediaLibraryService() {
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): MediaSession.ConnectionResult {
-            val cmds = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
-                .add(FavoriteCommand.sessionCommand)
-                .add(SessionCommand(AutoLibraryCallback.ACTION_ADD_TO, android.os.Bundle.EMPTY))
-                .build()
+            // Final review: the service is exported (Auto / system controllers need it), but the state-changing custom
+            // commands (favorite, add-to-collection) go only to our own process and trusted system controllers.
+            val trusted = controller.isTrusted || controller.packageName == packageName
+            val cmds = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon().apply {
+                if (trusted) {
+                    add(FavoriteCommand.sessionCommand)
+                    add(SessionCommand(AutoLibraryCallback.ACTION_ADD_TO, android.os.Bundle.EMPTY))
+                }
+            }.build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(cmds)
                 .build()
