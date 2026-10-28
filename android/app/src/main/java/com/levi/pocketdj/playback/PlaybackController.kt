@@ -291,19 +291,22 @@ class PlaybackController(
         return if (token.isEmpty()) url else url + "?token=" + java.net.URLEncoder.encode(token, "UTF-8")
     }
 
+    private fun exoFronts(): Boolean = com.levi.pocketdj.playback.session.SessionSwitchboard.shared.exoFrontsSession()
+
     /** Facts about the engine holding the sequencer's current row (arms the health machinery). */
     private val engineProbe = object : EngineProbe {
         private val c get() = controller
         override val hasLoadedItem: Boolean
             get() = sequencerOwnsPlayer && when (activeBackend) {
-                ActiveBackend.EXO -> (c?.mediaItemCount ?: 0) > 0
+                // Final review: a Mix / npdsp owner makes the controller mirror THEIR playlist, not the setlist row.
+                ActiveBackend.EXO -> exoFronts() && (c?.mediaItemCount ?: 0) > 0
                 ActiveBackend.APPLE_MUSIC -> appleMusicBackend?.currentRow() != null
             }
         override val isPlaying: Boolean
             get() = if (activeBackend == ActiveBackend.APPLE_MUSIC) {
                 appleMusicBackend?.snapshot()?.status == com.levi.pocketdj.playback.am.AmStatus.PLAYING
             } else {
-                c?.isPlaying == true
+                exoFronts() && c?.isPlaying == true
             }
         override val positionMs: Long
             get() = if (activeBackend == ActiveBackend.APPLE_MUSIC) appleMusicBackend?.snapshot()?.positionMs ?: 0L else c?.currentPosition ?: 0L
@@ -419,6 +422,8 @@ class PlaybackController(
             ) {
                 _nowPlaying.value = snapshot(player)
             }
+            // Final review: Mix / npdsp deck changes must not presign their placeholder uids or end the row.
+            if (!exoFronts()) return
             if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION)) refreshAhead()
             if (events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)) {
                 NPLog.lane(NPLog.PLAYBACK, "[playback] engine state=${player.playbackState} item=${player.currentMediaItem?.mediaId}")
@@ -436,7 +441,7 @@ class PlaybackController(
             // PB-10: the engine rolled onto the preloaded window slot by itself. The sequencer advances to
             // that row's uid; everything else (setMediaItems, seeks) is the sequencer's own load.
             if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_AUTO || mediaItem == null) return
-            if (activeBackend != ActiveBackend.EXO || !sequencerOwnsPlayer) return
+            if (activeBackend != ActiveBackend.EXO || !sequencerOwnsPlayer || !exoFronts()) return
             val rendering = controller?.let { it.isPlaying && it.playbackState == Player.STATE_READY } ?: false
             if (!sequencer.handlePreloadedTransition(mediaItem.mediaId, rendering)) return
             urlRetriedFor = null
@@ -453,17 +458,17 @@ class PlaybackController(
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            if (!isPlaying || activeBackend != ActiveBackend.EXO || !sequencerOwnsPlayer) return
+            if (!isPlaying || activeBackend != ActiveBackend.EXO || !sequencerOwnsPlayer || !exoFronts()) return
             // First proof of sound for the row the sequencer loaded: closes the start window + dead-air gap.
             sequencer.onFirstAudio(controller?.currentMediaItem?.mediaId)
         }
 
         override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
-            if (activeBackend == ActiveBackend.EXO) sequencer.discriminator.onPlayWhenReadyChanged(playWhenReady, reason)
+            if (activeBackend == ActiveBackend.EXO && exoFronts()) sequencer.discriminator.onPlayWhenReadyChanged(playWhenReady, reason)
         }
 
         override fun onPlaybackSuppressionReasonChanged(playbackSuppressionReason: Int) {
-            if (activeBackend == ActiveBackend.EXO) sequencer.discriminator.onSuppressionChanged(playbackSuppressionReason)
+            if (activeBackend == ActiveBackend.EXO && exoFronts()) sequencer.discriminator.onSuppressionChanged(playbackSuppressionReason)
         }
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {

@@ -113,6 +113,16 @@ class SessionSwitchboard(
         return t
     }
 
+    /**
+     * True when the MediaSession fronts the forwarding ExoPlayer (no non-Exo owner/preferred). Everything that
+     * reads the in-app MediaController as "the setlist row's engine" must gate on this: while the Mix / npdsp /
+     * Apple Music adapter holds the session the controller mirrors THEIR state.
+     */
+    fun exoFrontsSession(): Boolean = synchronized(lock) {
+        val e = (owner ?: preferred)?.engine
+        e == null || e == "exo"
+    }
+
     /** The Player the session should drive (the owner's, else [fallback] = ExoPlayer). */
     fun sessionPlayer(fallback: Player): Player = synchronized(lock) { (owner ?: preferred)?.sessionPlayer ?: fallback }
 

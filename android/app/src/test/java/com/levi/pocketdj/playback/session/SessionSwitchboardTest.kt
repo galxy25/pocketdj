@@ -106,4 +106,12 @@ class SessionSwitchboardTest {
         board.setOwner(exo)
         assertFalse(board.yieldMixToExo())
     }
+
+    @Test fun exoFrontsSessionOnlyWhenNoNonExoOwner() {
+        assertTrue(board.exoFrontsSession())
+        val exo = Owner("exo"); val mix = Owner("mix")
+        board.setOwner(exo); assertTrue(board.exoFrontsSession())
+        board.setOwner(mix); assertFalse(board.exoFrontsSession())
+        board.yieldMixToExo(); assertTrue(board.exoFrontsSession())
+    }
 }
