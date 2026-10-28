@@ -10,6 +10,8 @@ data class SequencerState(
     /** Restored session waiting for the first explicit play (no audio, no card). */
     val isHeldForResume: Boolean = false,
     val sourceSetlistId: String? = null,
+    /** PB-4: the run's durable identity (`pses_...`); null while idle. */
+    val sessionId: String? = null,
     val capturedContext: PlayContext? = null,
     /** (source token, collection id) of the run's navigable origin. */
     val capturedOrigin: Pair<String, String>? = null,

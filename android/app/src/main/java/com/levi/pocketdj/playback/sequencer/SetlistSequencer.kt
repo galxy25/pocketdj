@@ -124,6 +124,9 @@ class SetlistSequencer(
     private var index = 0
     private var running = false
     private var held = false
+    /** PB-4: identity of ONE run (`pses_<uuid>`), fresh per [play], re-adopted by a restore. */
+    @Volatile var sessionId: String? = null
+        private set
     private var sourceSetlistId: String? = null
     private var capturedContext: PlayContext? = null
     private var capturedOrigin: Pair<String, String>? = null
@@ -191,6 +194,16 @@ class SetlistSequencer(
     @Volatile var onHeldRestored: () -> Unit = {}
     val isHeldForResume: Boolean get() = held
 
+    /** PB-4: the offset the first ▶ of a held deck resumes at (song-relative ms), or null. */
+    val resumeOffsetMs: Long? get() = pendingResumeMs
+
+    /** PB-4: the offset [resumeFromHold] last consumed (null after any fresh play / clear). */
+    @Volatile var lastResumeOffsetMs: Long? = null
+        private set
+
+    /** PB-4: the engine holds THIS cursor row (not the previous row still loaded mid-resolve). */
+    val currentRowLoaded: Boolean get() = lastLoadedId != null && lastLoadedId == queue.getOrNull(index)?.id
+
     /** Cursor position (game runs read it before [appendRows]). */
     fun currentIndex(): Int = index
 
@@ -216,6 +229,7 @@ class SetlistSequencer(
             index = index,
             isRunning = running,
             isHeldForResume = held,
+            sessionId = sessionId,
             sourceSetlistId = sourceSetlistId,
             capturedContext = capturedContext,
             capturedOrigin = capturedOrigin,
@@ -269,7 +283,9 @@ class SetlistSequencer(
         canonicalOrder = null
         running = true
         held = false
+        sessionId = "pses_" + java.util.UUID.randomUUID().toString().uppercase()
         pendingResumeMs = null
+        lastResumeOffsetMs = null
         notice = null
         deviceQueueUnplayable = false
         deviceUnplayableSourceId = null
@@ -323,6 +339,7 @@ class SetlistSequencer(
         playGeneration++ // a resolve past its last cancellation point must stand down
         running = false
         held = false
+        sessionId = null
         notice = null
         index = 0
         queue.clear()
@@ -330,6 +347,7 @@ class SetlistSequencer(
         capturedContext = null
         capturedOrigin = null
         pendingResumeMs = null
+        lastResumeOffsetMs = null
         unplayableStreak = 0
         lastLoadedId = null
         memberIds = null
@@ -684,8 +702,10 @@ class SetlistSequencer(
         shuffle: Boolean,
         resumeAtMs: Long?,
         canonicalOrder: List<String>? = null,
+        sessionId: String? = null,
     ) {
         if (items.isEmpty() || running) return
+        this.sessionId = sessionId ?: ("pses_" + java.util.UUID.randomUUID().toString().uppercase())
         queue.clear()
         queue.addAll(items)
         this.index = index.coerceIn(0, items.lastIndex)
@@ -708,6 +728,7 @@ class SetlistSequencer(
     fun resumeFromHold() {
         if (!running || !held) return
         val at = pendingResumeMs
+        lastResumeOffsetMs = at
         noteUserTransport()
         held = false
         pendingResumeMs = null

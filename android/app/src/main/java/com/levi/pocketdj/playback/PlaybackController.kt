@@ -330,7 +330,7 @@ class PlaybackController(
                 val saved = RepeatMode.fromToken(settings.get(PlaybackPrefKeys.REPEAT_MODE))
                 withContext(Dispatchers.Main) {
                     // A cycle the user made before the saved value arrived wins and is persisted.
-                    if (!repeatTouched) seq.setRepeatMode(saved)
+                    if (!repeatTouched && !(seq.isRunning && seq.isHeldForResume)) seq.setRepeatMode(saved)
                 }
             }
         }
