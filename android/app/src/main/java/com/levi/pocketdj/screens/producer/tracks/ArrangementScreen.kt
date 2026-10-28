@@ -78,6 +78,13 @@ import com.levi.pocketdj.screens.producer.common.NameDialog
 import com.levi.pocketdj.screens.producer.common.WaveformMath
 import com.levi.pocketdj.studio.model.StudioArrangement
 import com.levi.pocketdj.studio.store.ArrangerMath
+import com.levi.pocketdj.studio.store.TrimSession
+import com.levi.pocketdj.studio.engine.ArrangerGridAnalyzer
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Surface
+import androidx.compose.ui.draw.alpha
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -120,6 +127,18 @@ fun ArrangementScreen(
     var deleteTrack by remember { mutableStateOf<String?>(null) }
     var menu by remember { mutableStateOf(false) }
 
+    // STU-13: bounce / record-to-master / scissor trim.
+    val studio = graph.studioGraph
+    val recordPrefs = remember { RecordModePrefs(ctx) }
+    var quantized by remember { mutableStateOf(recordPrefs.quantized) }
+    var recording by remember { mutableStateOf(false) }
+    var bounceOpen by remember { mutableStateOf(false) }
+    var busyMsg by remember { mutableStateOf<String?>(null) }
+    var trim by remember(arrangementId) { mutableStateOf<TrimSession?>(null) }
+    var trimRev by remember { mutableIntStateOf(0) }
+    var peaksNonce by remember { mutableIntStateOf(0) }
+    val trimming = trim != null
+
     // STU-12: live playback. The clock is NOT snapshot state; one frame loop samples it into `liveMs`
     // only while this arrangement is playing (so an idle screen never recomposes per frame).
     val playingId by player.playingArrangementId.collectAsState()
@@ -137,7 +156,12 @@ fun ArrangementScreen(
     LaunchedEffect(arr) { if (playing) player.onArrangementChanged(arr) }
     DisposableEffect(arrangementId) {
         // Rotation / split-screen resize recreates the activity: playback must survive that, only a real exit stops it.
-        onDispose { if (ctx.findActivity()?.isChangingConfigurations != true) player.stop() }
+        onDispose {
+            if (ctx.findActivity()?.isChangingConfigurations != true) {
+                player.stop()
+                player.recorder.discard() // a take that was never baked has no owner once the screen is gone
+            }
+        }
     }
 
     val cursor = ArrangerMath.effectiveCursorMs(playheadMs ?: (if (playing) liveMs else cursorMs), arr.lengthMs)
@@ -147,7 +171,7 @@ fun ArrangementScreen(
     // Per-clip waveform peaks: clips are immutable, so compute once per id.
     val peaks = remember(arrangementId) { mutableStateMapOf<String, FloatArray>() }
     val clipSignature = arr.tracks.flatMap { t -> t.clips.map { it.id } }.joinToString(",")
-    LaunchedEffect(clipSignature) {
+    LaunchedEffect(clipSignature, peaksNonce) {
         for (t in arr.tracks) for (c in t.clips) {
             if (peaks.containsKey(c.id)) continue
             val f = store.clipFile(c.fileName) ?: continue
@@ -158,7 +182,71 @@ fun ArrangementScreen(
         }
     }
 
-    Column(modifier.fillMaxSize().testTag("arrangement-screen")) {
+    // Beat Match needs a beat grid per clip: analyze any clip without one in the background (idempotent).
+    LaunchedEffect(clipSignature) { studio.arrangerGridAnalyzer.ensureGrids(arrangementId) }
+
+    fun toast(msg: String) = Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+
+    /** Bake the finished master capture into a dated Recording artifact (survives leaving the screen). */
+    fun bakeRecording() {
+        val capture = player.consumeRecording()
+        recording = false
+        if (capture == null) return
+        busyMsg = "Saving recording…"
+        graph.appScope.launch {
+            val art = withContext(NonCancellable + Dispatchers.IO) {
+                studio.masterRecordingBaker.bakeArtifact(arrangementId, capture, studio.studioRoots.arrangementsDir(), store, ArrangerMath.artifactStamp())
+            }
+            busyMsg = null
+            toast(if (art != null) "Recording saved" else "Nothing was recorded")
+        }
+    }
+
+    // Playback reached its NATURAL end while recording -> bake. (A manual stop bakes explicitly; a seek/loop/re-prime
+    // restart never bumps the nonce, so there is no truncated bake.)
+    val recNonce by player.recordingFinishedNonce.collectAsState()
+    LaunchedEffect(recNonce) { if (recNonce > 0 && recording) bakeRecording() }
+
+    fun toggleRecord() {
+        if (recording) { player.stop(); bakeRecording(); return }
+        recording = true
+        scope.launch {
+            val outcome = player.playOutcome(arrLatest, ArrangerMath.effectiveCursorMs(cursorMs, arrLatest.lengthMs), record = true, quantized = quantized)
+            if (outcome == PlayOutcome.NOTHING_TO_PLAY) toast("Nothing to record")
+            if (outcome != PlayOutcome.STARTED && !player.isRecording) recording = false
+        }
+    }
+
+    fun bounce(tracks: List<com.levi.pocketdj.studio.model.StudioTrack>) {
+        bounceOpen = false
+        if (tracks.isEmpty()) return
+        player.stop(); if (recording) bakeRecording()
+        busyMsg = "Bouncing…"
+        val snapshot = arrLatest
+        graph.appScope.launch {
+            val art = withContext(NonCancellable) {
+                studio.arrangerBouncer.bounceArtifact(snapshot, tracks, studio.studioRoots.arrangementsDir(), store, ArrangerMath.artifactStamp())
+            }
+            busyMsg = null
+            toast(if (art != null) "Bounced ${ArrangerMath.mmss(art.durationMs / 1000.0)}" else "Couldn’t bounce that")
+        }
+    }
+
+    fun exitTrim() { trim?.cancel(); trim = null; trimRev++ }
+    fun enterTrim() {
+        if (playing) player.stop()
+        trim = TrimSession.begin(arrLatest, cursorMs); trimRev++
+    }
+    fun saveTrim() {
+        val s = trim ?: return
+        // Peaks are keyed by clip id and a head/tail-only cut keeps the id: drop + reload so waveforms redraw windowed.
+        for (t in arrLatest.tracks) if (t.id in s.selected) t.clips.forEach { peaks.remove(it.id) }
+        s.save(store, arrangementId)
+        trim = null; trimRev++; peaksNonce++
+    }
+
+    Box(modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().testTag("arrangement-screen")) {
         // Header.
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             IconButton(onClick = onBack, modifier = Modifier.testTag("tracks-home-back")) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to arrangements") }
@@ -185,9 +273,9 @@ fun ArrangementScreen(
             }
         } else {
             TransportBar(
-                playing = playing, loopEnabled = arr.loopEnabled, fxOpen = fxOpen, canPlay = arr.allClips.isNotEmpty(),
+                playing = playing, loopEnabled = arr.loopEnabled, fxOpen = fxOpen, canPlay = arr.allClips.isNotEmpty() && !trimming,
                 onPlay = { scope.launch { if (player.playOutcome(arr, cursorMs) == PlayOutcome.NOTHING_TO_PLAY) Toast.makeText(ctx, "Nothing to play", Toast.LENGTH_SHORT).show() } },
-                onStop = { player.stop() },
+                onStop = { player.stop(); if (recording) bakeRecording() },
                 onToggleLoop = {
                     if (!arr.loopEnabled && !LoopRegionMath.isUsable(arr.loopStartMs, arr.loopEndMs)) {
                         val (a, b) = LoopRegionMath.defaultRegion(arr.lengthMs, arr.bpm)
@@ -197,6 +285,24 @@ fun ArrangementScreen(
                 onToggleFx = { fxOpen = !fxOpen },
             )
             if (fxOpen) MasterFxGrid(arr.masterFX, onChange = { store.setArrangementMasterFX(arrangementId, it) })
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                RecordControl(
+                    recording, quantized, enabled = arr.allClips.isNotEmpty() && !trimming,
+                    onToggle = { toggleRecord() }, onQuantizedChange = { quantized = it; recordPrefs.quantized = it },
+                )
+                TextButton(onClick = { bounceOpen = true }, enabled = arr.allClips.isNotEmpty() && !trimming, modifier = Modifier.testTag("tracks-bounce")) { Text("Bounce") }
+                ScissorButton(trimming, enabled = arr.allClips.isNotEmpty(), onToggle = { if (trimming) exitTrim() else enterTrim() })
+                val gridMsg = ArrangerGridAnalyzer.underConstructionMessage(arr)
+                FilterChip(
+                    selected = arr.beatMatchEnabled, onClick = { store.setArrangementBeatMatch(arrangementId, !arr.beatMatchEnabled) },
+                    enabled = gridMsg == null || arr.beatMatchEnabled, label = { Text("Beat Match") },
+                    modifier = Modifier.semantics { contentDescription = "Beat Match ${if (arr.beatMatchEnabled) "on" else "off"}" }.testTag("tracks-beat-match"),
+                )
+            }
+            ArrangerGridAnalyzer.underConstructionMessage(arr)?.let {
+                Text(it, Modifier.padding(horizontal = 16.dp).testTag("tracks-beat-grid-building"), style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            trim?.let { s -> TrimToolbar(arr, s, trimRev, onChanged = { trimRev++ }, onCancel = { exitTrim() }, onSave = { saveTrim() }) }
             Transport(
                 arr, cursor, compact, transportCollapsed, follow, pxPerSec, fit,
                 onToggleCollapse = { transportCollapsed = !transportCollapsed; prefs.transportCollapsed = transportCollapsed },
@@ -213,7 +319,8 @@ fun ArrangementScreen(
                         arr.tracks.forEachIndexed { i, t ->
                             TrackHeader(
                                 t, i,
-                                onEdit = { editTrack = t.id }, onAddClip = { pickerTrack = t.id },
+                                modifier = Modifier.alpha(trimLaneAlpha(trimming, trim?.selected?.contains(t.id) == true)),
+                                onEdit = { editTrack = t.id }, onAddClip = { if (!trimming) pickerTrack = t.id },
                                 onDuplicate = { store.duplicateTrack(arrangementId, t.id) },
                                 onDelete = { deleteTrack = t.id },
                                 onMute = { store.setTrackMuted(arrangementId, t.id, it) },
@@ -228,19 +335,23 @@ fun ArrangementScreen(
                             Box {
                                 Column(verticalArrangement = Arrangement.spacedBy(LANE_GAP.dp)) {
                                     arr.tracks.forEachIndexed { i, t ->
+                                        @Suppress("UNUSED_VARIABLE") val rev = trimRev
                                         LaneStrip(
-                                            t, i, pxPerSec, contentDp, peaks, arr.beatMatchEnabled, arr.bpm,
+                                            trim?.let { s -> t.copy(clips = s.clipsFor(t.id)) } ?: t,
+                                            i, pxPerSec, contentDp, peaks, arr.beatMatchEnabled, arr.bpm,
+                                            modifier = Modifier.alpha(trimLaneAlpha(trimming, trim?.selected?.contains(t.id) == true)),
                                             onMoveClip = { cid, to -> store.moveClip(arrangementId, t.id, cid, to) },
                                             onRemoveClip = { cid -> peaks.remove(cid); store.removeClip(arrangementId, t.id, cid) },
                                         )
                                     }
                                 }
                                 BeatGrid(arr.bpm, pxPerSec, contentDp, Modifier.matchParentSize())
+                                trim?.let { s -> TrimRegionLayer(s, trimRev, pxPerSec, arr.bpm, arr.lengthMs, onChanged = { trimRev++ }, modifier = Modifier.matchParentSize()) }
                             }
                         }
                         // Cursor overlay + a REAL layout anchor (spacer flow, not an offset) so a semantics
                         // test can read the cursor's true x after follow/zoom.
-                        if (arr.loopEnabled && LoopRegionMath.isUsable(arr.loopStartMs, arr.loopEndMs)) {
+                        if (!trimming && arr.loopEnabled && LoopRegionMath.isUsable(arr.loopStartMs, arr.loopEndMs)) {
                             LoopRegionOverlay(
                                 arr.loopStartMs, arr.loopEndMs, pxPerSec, arr.bpm, arr.lengthMs, arr.tracks.size,
                                 onChange = { a, b -> store.setArrangementLoop(arrangementId, startMs = a, endMs = b) },
@@ -253,6 +364,16 @@ fun ArrangementScreen(
         }
     }
 
+        busyMsg?.let { msg ->
+            Surface(Modifier.fillMaxSize().alpha(0.85f).clickable(enabled = true) { }, color = MaterialTheme.colorScheme.surface) {
+                Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(); Text(msg, Modifier.padding(top = 12.dp).testTag("tracks-busy-message"))
+                }
+            }
+        }
+    }
+
+    if (bounceOpen) BounceSheet(arr, onBounce = { bounce(it) }, onDismiss = { bounceOpen = false })
     pickerTrack?.let { tid ->
         ClipPickerSheet(doc, actions.stemSource?.songs().orEmpty(), onPick = { pick -> pickerTrack = null; actions.addClip(arrangementId, tid, pick) }, onDismiss = { pickerTrack = null })
     }
@@ -269,7 +390,7 @@ fun ArrangementScreen(
         AlertDialog(
             onDismissRequest = { deleteTrack = null }, title = { Text("Delete track?") },
             text = { Text("“${t?.name ?: "Track"}” and its ${t?.clips?.size ?: 0} clip(s) are removed.") },
-            confirmButton = { TextButton(onClick = { t?.clips?.forEach { peaks.remove(it.id) }; store.deleteTrack(arrangementId, tid); deleteTrack = null }, modifier = Modifier.testTag("tracks-track-delete-confirm")) { Text("Delete") } },
+            confirmButton = { TextButton(onClick = { exitTrim(); t?.clips?.forEach { peaks.remove(it.id) }; store.deleteTrack(arrangementId, tid); deleteTrack = null }, modifier = Modifier.testTag("tracks-track-delete-confirm")) { Text("Delete") } },
             dismissButton = { TextButton(onClick = { deleteTrack = null }) { Text("Cancel") } },
         )
     }

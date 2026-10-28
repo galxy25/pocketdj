@@ -150,6 +150,25 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
                 focus.requestPlayback()
             },
             onFocusRelease = { focus.abandon() },
+            recorder = com.levi.pocketdj.studio.engine.MasterRecorder(tempDir = { File(app.appContext.cacheDir, "master-rec") }),
+        )
+    }
+
+    /** STU-13: artifact-only Bounce (same clip planner + render context as the live player). */
+    val arrangerBouncer: com.levi.pocketdj.studio.engine.ArrangerBouncer by lazy {
+        com.levi.pocketdj.studio.engine.ArrangerBouncer(com.levi.pocketdj.studio.engine.StudioClipLoader(studioStore, studioRender))
+    }
+
+    /** STU-13: bakes a finished record-to-master capture into a Recording artifact. */
+    val masterRecordingBaker: com.levi.pocketdj.studio.engine.MasterRecordingBaker by lazy { com.levi.pocketdj.studio.engine.MasterRecordingBaker() }
+
+    /** STU-13: background beat-grid analysis for Beat Match (idempotent; fire from the open arrangement). */
+    val arrangerGridAnalyzer: com.levi.pocketdj.studio.engine.ArrangerGridAnalyzer by lazy {
+        val loader = com.levi.pocketdj.studio.engine.StudioClipLoader(studioStore, studioRender)
+        com.levi.pocketdj.studio.engine.ArrangerGridAnalyzer(
+            arrangement = { studioStore.arrangement(it) },
+            setGrid = { a, t, c, g -> studioStore.setClipGrid(a, t, c, g) },
+            decode = { loader.decode(it) },
         )
     }
 
