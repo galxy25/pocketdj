@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-10 — MIDI input (USB + BLE via MidiManager) + arpeggiator + overdub staffs
 

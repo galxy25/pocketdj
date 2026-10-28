@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # BRW-13 Cloud recommendation engine service + client + rec key + Settings + Suggested collections
 

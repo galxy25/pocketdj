@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # COL-16 — Listening pockets wire models, client, CollectionFlattener + collections payload
 

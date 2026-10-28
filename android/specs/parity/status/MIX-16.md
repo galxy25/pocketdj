@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # MIX-16 Integrations: Jukebox <-> Mix, MixPlayOutcomeBridge, MixFacadeImpl
 - [x] MixPlayOutcomeBridge (deck-keyed, async event resolution, verdict table)

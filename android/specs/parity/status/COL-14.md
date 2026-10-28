@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # COL-14 — .pdjcollection + backup .pocketdj.zip codecs, idempotent import merge, CSV
 
