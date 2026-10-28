@@ -214,9 +214,9 @@ class MixEnginePersistenceTest {
     @Test fun materializeRightAwayWhenTheTabAskedBeforeTheLaunchRead() {
         val r = Rig(); populated(r); r.store.flush()
         val h2 = r.relaunch()
-        h2.engine.materializePendingRestoreIfNeeded()
-        assertNull(h2.engine.loaded(A))
-        h2.engine.restorePersistedMixIfIdle()
+        h2.engine.materializePendingRestoreIfNeeded()   // parks from the store itself, then materializes
+        assertEquals("a", h2.engine.loaded(A)!!.songId)
+        h2.engine.restorePersistedMixIfIdle()           // a late launch task is a harmless no-op
         assertEquals("a", h2.engine.loaded(A)!!.songId)
     }
 
@@ -311,5 +311,37 @@ class MixEnginePersistenceTest {
         h.engine.play(A); h.engine.setRate(1.2, A); h.engine.pause(A)
         h.engine.restorePersistedMixIfIdle()
         assertFalse(h.engine.hasParkedRestore)
+    }
+
+    @Test fun freshEngineMaterializesStraightFromTheStoreWithoutALaunchPark() {
+        val r = Rig(); populated(r); r.store.flush()
+        val h2 = r.relaunch()
+        h2.engine.materializePendingRestoreIfNeeded()   // NO restorePersistedMixIfIdle call
+        assertEquals("a", h2.engine.loaded(A)!!.songId)
+        assertEquals("b", h2.engine.loaded(B)!!.songId)
+    }
+
+    @Test fun anUnrestoredEmptyEngineSetterNeverDeletesTheSavedMix() {
+        val r = Rig(); populated(r); r.store.flush()
+        val h2 = r.relaunch()
+        h2.engine.setCrossfader(0.9)          // nothing parked yet
+        h2.engine.persist()
+        r.sched.advance(10_000)
+        val h3 = r.relaunch()
+        h3.engine.materializePendingRestoreIfNeeded()
+        assertEquals("a", h3.engine.loaded(A)!!.songId)
+    }
+
+    @Test fun offMainLoadCommitsLaterAndAStaleResolveCannotClobberANewerLoad() {
+        val h = EngineHarness()
+        val pending = ArrayList<Pair<() -> MixEngine.PreparedLoad?, (MixEngine.PreparedLoad?) -> Unit>>()
+        h.engine.loadOffload = { w, c -> pending += w to c }
+        h.engine.load(h.addSong("old", 20.0), A)
+        h.engine.load(h.addSong("new", 20.0), A)
+        assertNull(h.engine.loaded(A))                       // nothing committed on the caller thread
+        // resolves finish out of order: new first, then the stale one
+        val (w2, c2) = pending[1]; c2(w2())
+        val (w1, c1) = pending[0]; c1(w1())
+        assertEquals("new", h.engine.loaded(A)!!.songId)
     }
 }

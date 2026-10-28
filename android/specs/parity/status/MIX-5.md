@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-5 MixEngine core: decks, load/seek/transport, EQ, FX rack, Vol/crossfader, cue, lead/sync, VU, 10 Hz tick, session hooks, durable persistence
 
@@ -28,3 +28,14 @@ JVM suite 1620 -> 1677 (+57), 0 failures; `assembleDebug` green.
 
 ## Questions for Levi
 - None.
+
+## Review
+- MAJOR DeckController closes decoder under live pump -> fixed: `VoicePump.stopAndJoin()` (runner closer joins before source close), pump loop catches decoder faults; test VoicePumpJoinTest (threaded, strict source).
+- MAJOR restore never parked / empty engine clears store -> fixed: `materializePendingRestoreIfNeeded` parks from the store when unsettled (honours setlist-live); `persist()`/`persistPositions()` never clear/write before the restore is settled; tests freshEngineMaterializesStraightFromTheStore..., anUnrestoredEmptyEngineSetterNeverDeletesTheSavedMix.
+- MINOR load() disk IO on main -> fixed: `loadOffload` seam (IO resolve/open/window, Main commit, per-deck generation guard); wired in MixGraph; test offMainLoadCommitsLater...
+- MINOR ledger row -> fixed (PARTIAL).
+- MINOR silent-run position taint -> fixed: persistPositions writes last trusted playhead after 3 s of running with no audible signal.
+- NIT heartbeat gated on deck playing -> fixed (also when mixWantsAudio/autoMixing).
+- NIT wav/opener refusal invisible -> fixed: opener and load refusals log diag lines (decoder-by-extension deferred).
+
+fixes applied. JVM suite 1677 -> 1682, 0 failures; assembleDebug green.

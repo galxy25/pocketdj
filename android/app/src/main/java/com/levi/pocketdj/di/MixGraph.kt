@@ -26,6 +26,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
 import com.levi.pocketdj.shell.ResetHook
@@ -104,12 +105,29 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         MixEngine(
             sinkFactory = { AudioTrackSink(audio) },
             resolver = BurnStoreTrackResolver(app.servicesGraph.burnStore),
-            opener = MixSourceOpener { f -> runCatching { Mp3Decoder(f) }.getOrNull() },
-            runner = VoiceRunner { v -> val p = VoicePump(v).start(); AutoCloseable { p.stop() } },
+            opener = MixSourceOpener { f ->
+                // Mp3Decoder is the only PcmSource today; a burn it cannot open (e.g. adopted .wav) is refused visibly.
+                val d = runCatching { Mp3Decoder(f) }.getOrNull()
+                if (d == null || d.totalFrames <= 0) {
+                    NPLog.lane(NPLog.MIX, "opener refused ${f.name}")
+                    runCatching { d?.close() }
+                    null
+                } else d
+            },
+            runner = VoiceRunner { v -> val p = VoicePump(v).start(); AutoCloseable { p.stopAndJoin() } },
             tickDriver = CoroutineTickDriver(CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)),
             deckStore = mixDeckSession,
             diagSink = { NPLog.lane(NPLog.MIX, it) },
-        ).also { it.recorder = mixSessions }
+        ).also {
+            it.recorder = mixSessions
+            val main = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            it.loadOffload = { work, commit ->
+                main.launch {
+                    val p = withContext(Dispatchers.IO) { work() }
+                    commit(p)
+                }
+            }
+        }
     }
 
     // ON_STOP: both documents are written inline so a process kill right after backgrounding

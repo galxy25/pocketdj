@@ -106,7 +106,7 @@ internal class MixTick(private val e: MixEngine, private val driver: TickDriver)
     /** One liveness line per second while anything plays: which layer is alive (iOS `mixdiag`). */
     private fun heartbeat(now: Long, rendering: Boolean) {
         val a = e.deckState(Deck.A); val b = e.deckState(Deck.B)
-        if (!a.isPlaying && !b.isPlaying) return
+        if (!a.isPlaying && !b.isPlaying && !e.mixWantsAudio && !e.autoMixing) return
         if (now - lastHeartbeatAt < 1000) return
         lastHeartbeatAt = now
         e.diag(

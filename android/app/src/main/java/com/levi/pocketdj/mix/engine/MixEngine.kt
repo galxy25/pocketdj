@@ -115,6 +115,14 @@ class MixEngine(
     private var built = false
 
     private var pendingRestore: MixDeckSnapshot? = null
+    /** True once the launch restore was parked/attempted or a real load took over; before that an empty engine must not clear the store. */
+    private var restoreSettled = false
+    private val loadSeq = IntArray(2)
+    /**
+     * Off-main load seam: runs `work` (resolve + open + window; disk IO) off the main thread and then
+     * `commit` on main. Null = synchronous (tests, restore).
+     */
+    var loadOffload: ((work: () -> PreparedLoad?, commit: (PreparedLoad?) -> Unit) -> Unit)? = null
     private var materializeWanted = false
     override var isRestoringMixSession = false; private set
     var hasSoundedThisProcess = false; private set
@@ -245,30 +253,66 @@ class MixEngine(
         // A manual load disarms an exhausted-ended auto pickup: a landing download must never
         // eject these decks mid-performance.
         autoEndedExhausted = false
-        val r = resolver.resolve(item.songId)
-        if (r == null) {
-            streamLoad?.invoke(item, deck)   // not on disk: playable while it downloads (MIX-10)
+        val off = loadOffload
+        if (off == null || isRestoringMixSession) {
+            commitPrepared(item, deck, prepare(item, deck))
             return
         }
+        restoreSettled = true
+        val gen = ++loadSeq[deck.ordinal]
+        off({ prepare(item, deck) }) { p ->
+            if (gen != loadSeq[deck.ordinal]) { p?.discard(); return@off }   // a newer load superseded this resolve
+            commitPrepared(item, deck, p)
+        }
+    }
+
+    /** A resolved + opened load, ready to install. [notOnDisk] = the resolver had no file. */
+    class PreparedLoad(
+        val notOnDisk: Boolean,
+        val voice: Voice? = null,
+        val window: LoadWindow.Frames? = null,
+        val startMs: Int? = null,
+        val meta: LoadedTrack? = null,
+    ) {
+        fun discard() { runCatching { voice?.close() } }
+    }
+
+    /** Disk-touching half of a load (resolver, sidecars, decoder open, frame walk). Safe off-main. */
+    private fun prepare(item: MixLoadable, deck: Deck): PreparedLoad? {
+        val r = resolver.resolve(item.songId) ?: return PreparedLoad(notOnDisk = true)
         // A per-song CUT plays whole from 0:00; an analog shared-album fallback seeks to startMs AND
         // is bounded to lengthMs so it stops at the song boundary instead of bleeding into the next.
         val startMs = if (r.isCut) null else r.startMs
         val windowMs = if (r.isCut) null else item.lengthMs
-        loadFile(
-            r.file, startMs, windowMs,
-            LoadedTrack(
-                songId = item.songId, title = item.title, artist = item.artist, bpm = item.bpm,
-                camelot = item.camelot, key = item.key, albumId = item.albumId,
-                gridBpm = r.gridBpm, firstDownbeatMs = r.firstDownbeatMs, steady = r.steady,
-                beatsMs = r.beatsMs, downbeatsMs = r.downbeatsMs,
-            ),
-            deck,
+        val src = runCatching { opener.open(r.file) }.getOrNull()
+        if (src == null) { diag("load refused: open failed ${r.file.name}"); return null }
+        val voice = Voice(src, graph.sampleRate, name = "deck${deck.label}")
+        val w = LoadWindow.compute(voice.totalFrames, graph.sampleRate, startMs, windowMs)
+        if (w == null) { runCatching { voice.close() }; diag("load refused: unreadable window ${r.file.name}"); return null }
+        val meta = LoadedTrack(
+            songId = item.songId, title = item.title, artist = item.artist, bpm = item.bpm,
+            camelot = item.camelot, key = item.key, albumId = item.albumId,
+            gridBpm = r.gridBpm, firstDownbeatMs = r.firstDownbeatMs, steady = r.steady,
+            beatsMs = r.beatsMs, downbeatsMs = r.downbeatsMs,
         )
+        return PreparedLoad(false, voice, w, startMs, meta)
+    }
+
+    private fun commitPrepared(item: MixLoadable, deck: Deck, p: PreparedLoad?) {
+        if (!isRestoringMixSession) { pendingRestore = null; restoreSettled = true }
+        if (p == null) return
+        if (p.notOnDisk) {
+            streamLoad?.invoke(item, deck)   // not on disk: playable while it downloads (MIX-10)
+            return
+        }
+        loadSeq[deck.ordinal]++
+        ensureEngine(startNow = !isRestoringMixSession)
+        install(deck, p.voice!!, p.window!!, p.meta!!, p.startMs)
     }
 
     /** Internal load seam (shared with tests): open [file] and load it as [meta]. False = deck untouched. */
     fun loadFile(file: java.io.File, startMs: Int?, lengthMs: Int?, meta: LoadedTrack, deck: Deck): Boolean {
-        if (!isRestoringMixSession) pendingRestore = null
+        if (!isRestoringMixSession) { pendingRestore = null; restoreSettled = true }
         val src = runCatching { opener.open(file) }.getOrNull() ?: return false   // unreadable / corrupt
         return loadSource(src, startMs, lengthMs, meta, deck)
     }
@@ -280,16 +324,21 @@ class MixEngine(
      */
     fun loadSource(source: PcmSource, startMs: Int?, lengthMs: Int?, meta: LoadedTrack, deck: Deck): Boolean {
         // A REAL load supersedes a parked (not-yet-materialized) restore.
-        if (!isRestoringMixSession) pendingRestore = null
+        if (!isRestoringMixSession) { pendingRestore = null; restoreSettled = true }
+        loadSeq[deck.ordinal]++
         ensureEngine(startNow = !isRestoringMixSession)
         val voice = Voice(source, graph.sampleRate, name = "deck${deck.label}")
         val w = LoadWindow.compute(voice.totalFrames, graph.sampleRate, startMs, lengthMs)
         if (w == null) { runCatching { voice.close() }; return false }
+        install(deck, voice, w, meta, startMs)
+        return true
+    }
+
+    private fun install(deck: Deck, voice: Voice, w: LoadWindow.Frames, meta: LoadedTrack, startMs: Int?) {
         masterPausedDecks = masterPausedDecks - deck   // a NEW track was never silenced by the pause
         onStemsReset?.invoke(deck)                     // BEFORE the swap: landing a fade stops the player
         controller(deck).open(voice, w)
         commitLoad(deck, meta, startMs, w.count.toDouble() / graph.sampleRate)
-        return true
     }
 
     /** The shared tail of every deck load. */
@@ -766,7 +815,8 @@ class MixEngine(
         // clobbered or cleared by an idle-engine write.
         if (isRestoringMixSession || pendingRestore != null) return
         val snap = mixDeckSnapshot()
-        if (snap == null) { store.clear(); return }
+        // Before the launch restore is parked/attempted an empty engine's setter must not wipe the saved mix.
+        if (snap == null) { if (restoreSettled) store.clear(); return }
         if (debounced) store.saveDebounced(snap) else store.save(snap)
     }
 
@@ -781,13 +831,28 @@ class MixEngine(
 
     /** The decks' playheads -> the store's throttled position channel (immediate on a run/pause transition). */
     internal fun persistPositions() {
-        if (isRestoringMixSession || pendingRestore != null) return
+        if (isRestoringMixSession || pendingRestore != null || !restoreSettled) return
         val store = sessionStore ?: return
-        store.updatePosition(
-            (position(Deck.A) * 1000).toInt().coerceAtLeast(0), (position(Deck.B) * 1000).toInt().coerceAtLeast(0),
-            st(Deck.A).isPlaying || st(Deck.B).isPlaying,
-        )
+        val playing = st(Deck.A).isPlaying || st(Deck.B).isPlaying
+        val a = (position(Deck.A) * 1000).toInt().coerceAtLeast(0)
+        val b = (position(Deck.B) * 1000).toInt().coerceAtLeast(0)
+        // iOS P1-9 taint: a silent run (decoder stalled, sink rendering zeros) must not persist
+        // advancing playheads, or a never-audible restore creeps to end-of-file across launches.
+        val now = nowMs()
+        if (!playing) runningSinceMs = 0L else if (runningSinceMs == 0L) runningSinceMs = now
+        val audibleAge = tapAgeSeconds(true)
+        val tainted = playing && now - runningSinceMs > SILENT_TAINT_MS && (audibleAge < 0 || audibleAge > SILENT_TAINT_MS / 1000.0)
+        if (tainted) {
+            store.updatePosition(trustedA, trustedB, true)
+        } else {
+            trustedA = a; trustedB = b
+            store.updatePosition(a, b, playing)
+        }
     }
+
+    private var runningSinceMs = 0L
+    private var trustedA = 0
+    private var trustedB = 0
 
     // ---- restore
 
@@ -804,7 +869,8 @@ class MixEngine(
      */
     fun restorePersistedMixIfIdle() {
         val store = sessionStore ?: return
-        if (isRunning || autoMixing || st(Deck.A).loaded != null || st(Deck.B).loaded != null) return
+        if (isRunning || autoMixing || st(Deck.A).loaded != null || st(Deck.B).loaded != null) { restoreSettled = true; return }
+        restoreSettled = true
         val snap = store.load() ?: return
         pendingRestore = snap
         diag("mix RESTORE parked decks=${if (snap.deckA != null) "A" else ""}${if (snap.deckB != null) "B" else ""} auto=${snap.auto?.queue?.size ?: 0}")
@@ -816,6 +882,9 @@ class MixEngine(
     /** Mix-surface entry: actually re-load the parked snapshot onto the decks. Idempotent. */
     fun materializePendingRestoreIfNeeded(trigger: String = "mixTab") {
         materializeWanted = true
+        // Nothing parks the launch restore for us: park from the store on first ask.
+        if (pendingRestore == null && !restoreSettled) restorePersistedMixIfIdle()
+        if (pendingRestore != null && setlistIsLive?.invoke() == true) { diag("materialize skipped setlistLive=1"); return }
         materializeNow(trigger)
     }
 
@@ -868,4 +937,6 @@ class MixEngine(
         onRestoreDeckExtras?.invoke(deck, ds)   // stem mode + loop (MIX-8) arm after the seek
         diag("restore: deck ${deck.label} pos=${ds.positionMs} len=${lenMs ?: "-"} recued=${if (deck in deckExhaustedFromRestore) 1 else 0}")
     }
+
+    private companion object { const val SILENT_TAINT_MS = 3000L }
 }
