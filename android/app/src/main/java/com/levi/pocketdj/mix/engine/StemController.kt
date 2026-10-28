@@ -153,6 +153,11 @@ interface StemStream {
 interface StemProvider {
     /** All four stems on disk, opened; null when not (fully) burned. */
     fun local(songId: String): StemParts?
+    /**
+     * Do [local]'s slow work (open + measure four mp3s) AHEAD of time. Blocking: callers run it off the
+     * main thread; a later [local] on main then returns the warmed parts instantly. Default: nothing to warm.
+     */
+    fun prewarm(songId: String) {}
     fun canStream(songId: String): Boolean
     fun openStream(songId: String, owner: String): StemStream?
     /** Fetch the stems whole (no streaming available); true when all four are now on disk. */
@@ -225,6 +230,8 @@ class StemController(
 
     /** The loop controller (set at wiring); the stems follow a live loop and must hold its window. */
     var loops: LoopController? = null
+    /** Where [prewarm] runs (off the main thread). */
+    var prewarmContext: kotlin.coroutines.CoroutineContext = kotlinx.coroutines.Dispatchers.IO
     /** Holds owned by OTHER sources (MIX-10): a held deck is waiting for bytes. */
     var streamHeld: (Deck) -> Boolean = { false }
     /** A held/streaming deck un-holds because the stems carry it now (MIX-10 clears its hold). */
@@ -370,6 +377,14 @@ class StemController(
                 core.persist()
             }
         }
+    }
+
+    /**
+     * A deck loaded this song: open + measure its on-disk stems on a background thread so the main-thread
+     * [StemProvider.local] at toggle / restore time is instant (it walks four multi-MB mp3s otherwise).
+     */
+    fun prewarm(songId: String) {
+        scope.launch(prewarmContext) { runCatching { provider.prewarm(songId) } }
     }
 
     private fun owner(deck: Deck) = "mix-${deck.label}"
@@ -602,7 +617,7 @@ class StemController(
             if (!scheduleStems(deck, from)) { dropPending(deck); return }
         }
         loopW?.let { c.setLoopSeconds(it, includeStems = true) }   // a live loop follows the deck onto its stems
-        val gen = core.graph.crossfadeTo(deck, toStems = true)
+        val gen = core.graph.crossfadeTo(deck, toStems = true, forceOutright = !audible)
         if (!audible) {
             c.stems?.seekAll(c.frameFor(from))                     // the graph's stamp may be stale on an idle sink
             if (isHeldHere(deck)) { d.held = false; onUnhold?.invoke(deck) }
@@ -619,7 +634,7 @@ class StemController(
         val pos = core.position(deck)
         val audible = core.deckState(deck).isPlaying && core.isRendering && stemsAudible(deck)
         loops?.loopWindow(deck)?.let { c.setLoopSeconds(it, includeStems = false) }
-        val gen = core.graph.crossfadeTo(deck, toStems = false)
+        val gen = core.graph.crossfadeTo(deck, toStems = false, forceOutright = !audible)
         if (!audible) v.seek(c.frameFor(pos))
         else s(deck).fade = Fade(gen, false, core.nowMs())
         commitStemMode(deck, false)
@@ -829,7 +844,23 @@ class BurnStemProvider(
     private val loader: MixStreamLoader?,
     private val open: (File) -> PcmSource? = { f -> runCatching { Mp3Decoder(f) }.getOrNull() },
 ) : StemProvider {
-    override fun local(songId: String): StemParts? {
+    private val warm = LinkedHashMap<String, StemParts>()
+
+    override fun local(songId: String): StemParts? =
+        synchronized(warm) { warm.remove(songId) } ?: openLocal(songId)
+
+    override fun prewarm(songId: String) {
+        if (synchronized(warm) { songId in warm }) return
+        val parts = openLocal(songId) ?: return
+        val evicted = ArrayList<StemParts>()
+        synchronized(warm) {
+            warm.put(songId, parts)?.let { evicted += it }
+            while (warm.size > MAX_WARM) { val k = warm.keys.first(); warm.remove(k)?.let { evicted += it } }
+        }
+        evicted.forEach { e -> e.sources.forEach { runCatching { it.close() } } }
+    }
+
+    private fun openLocal(songId: String): StemParts? {
         val files = burns.localStemFiles(songId) ?: return null
         val opened = ArrayList<PcmSource>()
         for (n in BurnFileNames.STEM_NAMES) {
@@ -845,6 +876,8 @@ class BurnStemProvider(
     }
 
     override fun canStream(songId: String) = loader?.canStreamStems(songId) == true
+
+    private companion object { const val MAX_WARM = 2 }
 
     override fun openStream(songId: String, owner: String): StemStream? {
         val l = loader ?: return null
@@ -902,16 +935,20 @@ class MixDeckExtras(
         stems.loops = loops
         hydrator.onHydrated = { loops.reresolve(it) }
         stems.onDurationShortened = { engine.autoDj?.onSeek(it) }
-        val prior = engine.streamHeldProvider
-        stems.streamHeld = { d -> prior?.invoke(d) == true }
-        engine.streamHeldProvider = { d -> stems.isHeld(d) || prior?.invoke(d) == true }
+        // The stem hold has its OWN seam; the stream-hold seam stays MIX-10's to assign in any order.
+        stems.streamHeld = { d -> engine.streamHeldProvider?.invoke(d) == true }
+        engine.stemHeldProvider = stems::isHeld
+        engine.stemModeOnProvider = stems::modeOn
         engine.loopWindowProvider = loops::loopWindow
         engine.onLoopInvalidated = { loops.clear(it) }
         engine.onStemsReset = { stems.reset(it); hydrator.cancel(it) }
         engine.onSeeked = { d, sec -> if (engine.deckState(d).loopOn) loops.onSeeked(d, sec) else stems.onSeeked(d, sec) }
         engine.onDeckTick = stems::onTick
         engine.onTransport = stems::onTransport
-        engine.onDeckLoaded = { d, l -> hydrator.hydrate(d, l.songId) }
-        engine.onRestoreDeckExtras = { d, ds -> stems.restore(d, ds); loops.restore(d, ds) }
+        engine.onDeckLoaded = { d, l -> stems.prewarm(l.songId); hydrator.hydrate(d, l.songId) }
+        engine.onRestoreDeckExtras = { d, ds ->
+            if (ds.stemMode) stems.prewarm(ds.track.songId)
+            stems.restore(d, ds); loops.restore(d, ds)
+        }
     }
 }

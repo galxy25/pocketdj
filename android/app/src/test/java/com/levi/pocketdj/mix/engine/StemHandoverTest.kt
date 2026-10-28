@@ -382,4 +382,34 @@ class StemHandoverTest {
         r.engine.play(A)
         assertEquals(1, r.fake.fetchCalls)
     }
+
+    @Test fun theDurableSnapshotSavesTheStemIntentNotTheCommittedFlag() {
+        val r = StemRig(); r.load()
+        val gate = CompletableDeferred<Boolean>(); r.fake.fetchGate = gate
+        r.stems.applyStemIntent(true, A, deferSourceUntilPlay = true)
+        assertFalse("committed flag is still off while loading", r.engine.deckState(A).stemMode)
+        assertEquals(true, r.engine.mixDeckSnapshot()?.deckA?.stemMode)
+        r.engine.setVolume(0.5, A)   // a persist during "Loading stems..." keeps the intent
+        assertEquals(true, r.engine.mixDeckSnapshot()?.deckA?.stemMode)
+    }
+
+    @Test fun aStemHoldSurvivesMix10ReassigningTheStreamHoldProvider() {
+        val r = StemRig(); r.load()
+        r.engine.streamHeldProvider = { false }   // MIX-10 wiring AFTER MixDeckExtras was built
+        assertFalse(r.engine.streamHeld(A))
+        r.engine.stemHeldProvider = { true }
+        assertTrue(r.engine.streamHeld(A))
+    }
+
+    @Test fun aHeldDeckSwitchesOutrightEvenWhileItsMainVoiceReportsPlaying() {
+        val r = StemRig(); r.load(); r.burn()
+        r.engine.play(A)
+        r.run(0.5)
+        r.engine.streamHeldProvider = { true }   // StemController decides "not audible"; the graph must agree
+        r.stems.applyStemIntent(true, A, deferSourceUntilPlay = false)
+        assertTrue(r.engine.deckState(A).stemMode)
+        assertTrue("graph and controller agree on the stems", r.engine.graph.isOnStems(A))
+        r.run(0.5)
+        assertTrue(r.engine.graph.isOnStems(A))
+    }
 }

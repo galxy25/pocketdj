@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-8 Loop (infinity) + stem decks + zero-dead-air handover + beat-grid hydrate
 
@@ -34,3 +34,12 @@ Hearing the handover seam and loop click-freeness; real Mp3Decoder over a growin
 
 ## Questions for Levi
 - None.
+
+## Review
+Fixes applied.
+- MAJOR MixPersistence saves committed stemMode -> fixed: `engine.stemModeOnProvider` (= `stems::modeOn`) feeds `MixPersistence.deckSnapshot(stemIntent)`, as iOS `stemModeOn`. Test `theDurableSnapshotSavesTheStemIntentNotTheCommittedFlag`.
+- MINOR audibility predicate mismatch -> fixed: `MixGraph.crossfadeTo(forceOutright)`; StemController passes `!audible`, so graph and controller never disagree. Test `aHeldDeckSwitchesOutrightEvenWhileItsMainVoiceReportsPlaying`.
+- MINOR streamHeldProvider overwrite -> fixed: separate `engine.stemHeldProvider` OR-ed in `MixEngine.streamHeld`; StemController reads `streamHeldProvider` lazily. MIX-10 may assign `streamHeldProvider` in any order. Test `aStemHoldSurvivesMix10ReassigningTheStreamHoldProvider`.
+- MINOR main-thread stem open -> fixed (mitigated): `StemProvider.prewarm` opens+measures the four stems on IO at deck load / stem-mode restore; `BurnStemProvider.local` on main consumes the warmed parts (cold path unchanged as fallback). `localBeatGrid` (small sidecar JSON read) still runs on main in the hydrator; not moved.
+- MINOR status/ledger -> partly: status set to reviewed. Emulator steps not run (no emulator per instructions); ledger row in docs/ARCHITECTURE-ANDROID.md left to the integrator: PARTIAL (device-only handover seam, loop click-freeness, growing-file Mp3Decoder; UI wiring pending MIX-13/14).
+- NIT per-tick pump / unused `runner` -> not changed (runner kept for API stability; pump in stemUnderrun is guarded by active()).

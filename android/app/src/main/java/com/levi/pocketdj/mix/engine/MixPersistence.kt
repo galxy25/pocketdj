@@ -20,7 +20,7 @@ import com.levi.pocketdj.mix.store.TrackRef
  */
 object MixPersistence {
     /** `lengthMs` round-trips the playback WINDOW so an analog shared-album fallback re-windows. */
-    fun deckSnapshot(s: DeckState, positionMs: Int): DeckSnapshot? {
+    fun deckSnapshot(s: DeckState, positionMs: Int, stemIntent: Boolean = s.stemMode): DeckSnapshot? {
         val l = s.loaded ?: return null
         val lengthMs = if (s.durationSec > 0) (s.durationSec * 1000).toInt() else null
         val filterMode = s.firstSlot(Effect.FILTER)?.let { s.slots[it].variant }
@@ -34,7 +34,7 @@ object MixPersistence {
             flanger = s.isEnabled(Effect.FLANGER), filter = s.isEnabled(Effect.FILTER),
             compStrength = s.strength(Effect.COMPRESSOR), reverbStrength = s.strength(Effect.REVERB),
             flangerStrength = s.strength(Effect.FLANGER), filterStrength = s.strength(Effect.FILTER),
-            stemMode = s.stemMode, stemMuted = s.stemMuted.sorted(), stemVol = s.stemVol,
+            stemMode = stemIntent, stemMuted = s.stemMuted.sorted(), stemVol = s.stemVol,
             loopOn = s.loopOn, loopUnits = s.loopUnits,
             eqLow = s.eqLow, eqMid = s.eqMid, eqHigh = s.eqHigh,
             filterMode = filterMode.raw,
