@@ -19,3 +19,15 @@ state: implemented
 
 ## Questions for Levi
 - none
+
+## Review
+fixes applied
+- MAJOR ledger row still Planned -> fixed (PARTIAL, device-only AM seek + unrun emulator step noted; test architectureLedgerRowForStu6IsNoLongerPlanned)
+- MINOR seekAfterAm ignored playGeneration -> fixed (amWithSeek captures gen; CueSeek.shouldSeekAfterAm checks gen + AM ownership; tested)
+- MINOR AM seek applied to 30 s preview -> fixed (tryAppleMusic reports full-track start; preview never seeked)
+- MINOR backstop "Cue dropped" notice -> fixed (PlaybackController.lastStartHonored; CuesScreen notice when offset not applied)
+- MINOR disabled-slider scrub stuck -> fixed (unseekable timeline tap shows notice, never sets scrub)
+- MINOR amReady never refreshed -> fixed (re-polled every 3 s while pane visible)
+- MINOR duplicate provider -> fixed (dropAtNextFree moved into screens/mix StudioCuePoints; StudioCuePointsProvider deleted; StudioGraph.cuePoints is that class; DeckView adoption remains MIX hand-off)
+- NIT rememberSaveable -> fixed; NIT CancellationException swallowed -> fixed (runCatching removed)
+- NIT ProducerScreen routing edit -> rejected as code change; flagged for integrator (single-line `Cues ->` branch, may conflict with STU-5)

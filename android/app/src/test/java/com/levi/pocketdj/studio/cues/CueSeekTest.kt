@@ -29,6 +29,19 @@ class CueSeekTest {
         assertNull(CueSeek.plan(null, 0, 1).durationMs)
     }
 
+    @Test fun amSeekOnlyForTheCurrentPlayStillOwningAudio() {
+        assertEquals(true, CueSeek.shouldSeekAfterAm(5, 5, true))
+        assertEquals(false, CueSeek.shouldSeekAfterAm(5, 6, true))   // a newer tap superseded it
+        assertEquals(false, CueSeek.shouldSeekAfterAm(5, 5, false))  // AM no longer owns audio
+    }
+
+    @Test fun architectureLedgerRowForStu6IsNoLongerPlanned() {
+        val f = java.io.File("../docs/ARCHITECTURE-ANDROID.md").takeIf { it.exists() } ?: java.io.File("docs/ARCHITECTURE-ANDROID.md")
+        if (!f.exists()) return
+        val row = f.readLines().first { it.startsWith("| STU-6 ") }
+        org.junit.Assert.assertFalse(row, row.contains("| Planned |"))
+    }
+
     @Test fun availabilityGatesUnseekableRips() {
         assertEquals(CueSeek.Availability.PLAYABLE, CueSeek.availability(true, false, false, false))
         assertEquals(CueSeek.Availability.PLAYABLE, CueSeek.availability(false, true, false, false))

@@ -31,6 +31,13 @@ class StudioCuePoints(private val store: () -> StudioStore) : CuePointsProvider 
     override fun cues(songId: String): List<StudioCue> = store().cues(songId)
     override fun setCue(songId: String, slot: Int, positionMs: Int): Boolean =
         store().setCue(songId, slot, positionMs) != null
+
+    /** Lowest free slot, or null when all 8 are taken (shared with the Studio Cues tab). */
+    fun dropAtNextFree(songId: String, positionMs: Int): StudioCue? {
+        val taken = cues(songId).map { it.slot }.toSet()
+        val free = (0 until StudioCue.MAX_SLOTS).firstOrNull { it !in taken } ?: return null
+        return store().setCue(songId, free, positionMs)
+    }
 }
 
 /** Stable per-slot chip color (matches the Studio Cues tab palette order). */

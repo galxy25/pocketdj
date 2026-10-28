@@ -38,6 +38,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,8 +71,8 @@ fun CuesScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     val catalog by graph.catalogRepository.state.collectAsState()
     val doc by store.state.collectAsState()
     val burns = graph.servicesGraph.burnStore
-    var query by remember { mutableStateOf("") }
-    var selectedId by remember { mutableStateOf<String?>(null) }
+    var query by rememberSaveable { mutableStateOf("") }
+    var selectedId by rememberSaveable { mutableStateOf<String?>(null) }
     val songs = catalog.catalog?.songsById?.values.orEmpty()
     val cuedIds = remember(doc.cues) { doc.cues.map { it.songId }.toSet() }
 
@@ -139,7 +140,10 @@ private fun SelectedPane(graph: AppGraph, song: IndexSong, modifier: Modifier) {
     val isBurned = burns.hasLocalFile(song.id)
     val cues = remember(doc.cues, song.id) { store.cues(song.id) }
     val durMs = (song.length?.takeIf { it > 0 } ?: entry?.durationMs?.takeIf { it > 0 } ?: 1L).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
-    val amReady by produceState(false, song.id) { value = song.appleMusicId != null && player.canSeekAppleMusic() }
+    // Re-polled while the pane is visible: the AM engine can become ready after open (sign-in, late token).
+    val amReady by produceState(false, song.id) {
+        while (true) { value = song.appleMusicId != null && player.canSeekAppleMusic(); delay(3000) }
+    }
     val availability = CueSeek.availability(isBurned, entry != null, song.appleMusicId != null, amReady)
     val seekable = availability == CueSeek.Availability.PLAYABLE
     var notice by remember(song.id) { mutableStateOf<String?>(null) }
@@ -157,7 +161,7 @@ private fun SelectedPane(graph: AppGraph, song: IndexSong, modifier: Modifier) {
     val png = entry?.waveform?.let { "${Endpoints.RIPS_BASE.trimEnd('/')}/${it.removePrefix("/")}" }
     val shared = entry != null && (entry.startMs != null || entry.source == "analog")
     val peaks by produceState<FloatArray?>(null, song.id, isBurned) {
-        value = if (isBurned && (shared || png == null)) runCatching { MixWaveform.peaksForSong(song.id, song.length?.toInt(), burns) }.getOrNull() else null
+        value = if (isBurned && (shared || png == null)) MixWaveform.peaksForSong(song.id, song.length?.toInt(), burns).takeIf { it.isNotEmpty() } else null
     }
     val wave: CueWave = when {
         peaks != null -> CueWave.Peaks(peaks!!)
@@ -180,6 +184,7 @@ private fun SelectedPane(graph: AppGraph, song: IndexSong, modifier: Modifier) {
             val plan = CueSeek.plan(entry?.startMs, entry?.durationMs ?: song.length, atMs)
             val out = player.play(song.id, queueAlbumContext = false, startMs = plan.clipRelativeMs)
             if (out is com.levi.pocketdj.playback.PlayOutcome.Preparing) notice = "Ripping this track first — it will be playable shortly."
+            else if (plan.clipRelativeMs > 0 && !player.lastStartHonored) notice = "Cue dropped — the full track wasn’t available, so playback started from the top."
         }
     }
 
@@ -196,7 +201,7 @@ private fun SelectedPane(graph: AppGraph, song: IndexSong, modifier: Modifier) {
             if (isBurned) Text("On device", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(end = 8.dp))
             Text(CueSeek.stamp(durMs).substringBeforeLast('.'), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.labelMedium)
         }
-        CueTimeline(wave, durMs, cues, playheadOrNull, Modifier.testTag("cue-timeline"), onTap = { ms -> if (seekable || ms == 0) startAt(ms) else scrub = ms.toFloat() / durMs })
+        CueTimeline(wave, durMs, cues, playheadOrNull, Modifier.testTag("cue-timeline"), onTap = { ms -> if (seekable || ms == 0) startAt(ms) else notice = "Can’t jump into this track yet — it’s still ripping." })
 
         // Transport: play/pause + scrub.
         Row(verticalAlignment = Alignment.CenterVertically) {

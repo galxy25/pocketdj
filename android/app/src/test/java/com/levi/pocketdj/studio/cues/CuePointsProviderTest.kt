@@ -1,5 +1,6 @@
 package com.levi.pocketdj.studio.cues
 
+import com.levi.pocketdj.screens.mix.StudioCuePoints
 import com.levi.pocketdj.studio.model.StudioCue
 import com.levi.pocketdj.studio.store.TestEnv
 import org.junit.Assert.assertEquals
@@ -17,7 +18,7 @@ class CuePointsProviderTest {
 
     @Test fun eighthSlotSucceedsAndNinthIsRefused() {
         val store = env.store()
-        val p = StudioCuePointsProvider { store }
+        val p = StudioCuePoints { store }
         repeat(8) { assertNotNull("slot $it", p.dropAtNextFree("sng_1", it * 1000)) }
         assertEquals((0..7).toList(), p.cues("sng_1").map { it.slot })
         assertNull(p.dropAtNextFree("sng_1", 9000))
@@ -27,7 +28,7 @@ class CuePointsProviderTest {
 
     @Test fun dropFillsTheLowestFreeSlotAfterADelete() {
         val store = env.store()
-        val p = StudioCuePointsProvider { store }
+        val p = StudioCuePoints { store }
         repeat(3) { p.dropAtNextFree("s", it) }
         store.removeCue("s", 1)
         assertEquals(1, p.dropAtNextFree("s", 500)!!.slot)
@@ -35,7 +36,7 @@ class CuePointsProviderTest {
 
     @Test fun deckAndEditorShareOneStoreAndChangesEmit() {
         val store = env.store()
-        val p = StudioCuePointsProvider { store }
+        val p = StudioCuePoints { store }
         assertTrue(p.setCue("s", 2, -10))                  // negative clamps like the store
         assertEquals(0, p.cues("s").single().positionMs)
         store.nudgeCue("s", 2, 100); store.renameCue("s", 2, "  Hook  ")

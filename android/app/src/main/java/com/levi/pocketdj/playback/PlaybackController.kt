@@ -569,7 +569,8 @@ class PlaybackController(
     ): PlayOutcome {
         // Studio mic capture owns the audio path: nothing may start sounding into the take.
         if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.mayStartPlayback()) return PlayOutcome.Failed("Recording in progress")
-        playGeneration.incrementAndGet()
+        val gen = playGeneration.incrementAndGet()
+        lastStartHonored = false
         val merged = catalog.state.value.catalog
         val song = merged?.songsById?.get(songId)
         val ripConfigured = settings.current().hasRipServer
@@ -584,11 +585,11 @@ class PlaybackController(
             // wins first; only for a non-manifest song with an appleMusicId do the
             // AM rungs (full-track → preview) sit BEFORE rip-on-demand / metadata.
             is PlayAction.MetadataOnly ->
-                tryAppleMusic(songId, song, merged, playContext)?.also { seekAfterAm(it, startMs) }
+                amWithSeek(songId, song, merged, playContext, startMs, gen)
                     ?: PlayOutcome.NotPlayable(action.reason)
 
             is PlayAction.RipRequired ->
-                tryAppleMusic(songId, song, merged, playContext)?.also { seekAfterAm(it, startMs) }
+                amWithSeek(songId, song, merged, playContext, startMs, gen)
                     ?: startRipAndPlay(songId, playContext ?: PlayContext.BROWSER)
 
             is PlayAction.Stream -> {
@@ -611,6 +612,7 @@ class PlaybackController(
                     // seek is the song-relative cue ALONE (the shared-album clipStart is applied by the clip,
                     // never pre-added here — that would push the end boundary into the next song).
                     setQueueAndPlay(listOf(item), 0, adoptSongId = songId, startPositionMs = startMs.takeIf { it > 0 })
+                    lastStartHonored = true
                     PlayOutcome.Started
                 }
             }
@@ -620,13 +622,30 @@ class PlaybackController(
     /** STU-6: would an Apple Music start offset be honoured (full-track engine ready)? Cached facts only. */
     suspend fun canSeekAppleMusic(): Boolean = runCatching { appleMusicBackend?.canPlayFullTrackCached() == true }.getOrDefault(false)
 
+    /** STU-6: did the most recent [play] apply its requested start offset (false = started from the top)? */
+    @Volatile var lastStartHonored: Boolean = false
+        private set
+
     /**
-     * Apple Music play-then-seek (device-only): the SDK has no start offset, so once the engine confirms
-     * playing we seek. A no-op for a zero start or an outcome that did not start.
+     * Apple Music ladder + play-then-seek (device-only): the SDK has no start offset, so once the FULL-TRACK engine
+     * confirms playing we seek. A 30 s preview (rung 3) is never seeked, and a superseded play ([gen] moved on, or
+     * AM no longer owns audio) never seeks a newer song.
      */
-    private suspend fun seekAfterAm(outcome: PlayOutcome, startMs: Long) {
-        if (startMs <= 0L || outcome !is PlayOutcome.Started) return
-        runCatching { seekTo(startMs) }
+    private suspend fun amWithSeek(
+        songId: String,
+        song: IndexSong?,
+        merged: com.levi.pocketdj.data.catalog.MergedCatalog?,
+        playContext: PlayContext?,
+        startMs: Long,
+        gen: Long,
+    ): PlayOutcome? {
+        var fullTrack = false
+        val out = tryAppleMusic(songId, song, merged, playContext) { fullTrack = true } ?: return null
+        if (startMs > 0L && out is PlayOutcome.Started && fullTrack && com.levi.pocketdj.studio.cues.CueSeek.shouldSeekAfterAm(gen, playGeneration.get(), activeBackend == ActiveBackend.APPLE_MUSIC)) {
+            runCatching { seekTo(startMs) }
+            lastStartHonored = true
+        }
+        return out
     }
 
     /** Play a whole album from its first playable track (or [startSongId]). */
@@ -1066,6 +1085,7 @@ class PlaybackController(
         song: IndexSong?,
         merged: com.levi.pocketdj.data.catalog.MergedCatalog?,
         playContext: PlayContext?,
+        onFullTrackStarted: () -> Unit = {},
     ): PlayOutcome? {
         val amId = song?.appleMusicId?.takeIf { it.isNotBlank() } ?: return null
         val resolver = previewResolver ?: return null
@@ -1119,6 +1139,7 @@ class PlaybackController(
                         adapter.onEngineChanged()
                     }
                 }
+                onFullTrackStarted()
                 return PlayOutcome.Started
             }
             withContext(Dispatchers.Main) { adapter.releaseClaims() }

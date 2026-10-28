@@ -13,6 +13,10 @@ import com.levi.pocketdj.data.catalog.IndexSong
  * seeks to [CuePlan.clipRelativeMs]; [CuePlan.absoluteMs] is what a raw-file player would seek to.)
  */
 object CueSeek {
+    /** Apple Music play-then-seek guard: only the play that is still current, with AM still owning audio, may seek. */
+    fun shouldSeekAfterAm(startedGeneration: Long, currentGeneration: Long, amOwnsAudio: Boolean): Boolean =
+        startedGeneration == currentGeneration && amOwnsAudio
+
     /** Nudge step of the long-press menu (iOS: +-100 ms per tap). */
     const val NUDGE_MS = 100
 
