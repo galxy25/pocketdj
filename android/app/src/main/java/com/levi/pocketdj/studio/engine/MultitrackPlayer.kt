@@ -1,6 +1,7 @@
 package com.levi.pocketdj.studio.engine
 
 import com.levi.pocketdj.audio.core.AudioSink
+import com.levi.pocketdj.audio.core.BlockRenderer
 import com.levi.pocketdj.audio.core.PcmBuffer
 import com.levi.pocketdj.studio.audio.StudioAudio
 import com.levi.pocketdj.studio.audio.StudioRender
@@ -55,6 +56,8 @@ class MultitrackPlayer(
     private val reprimeDebounceMs: Long = REPRIME_DEBOUNCE_MS,
     private val onFocus: () -> Unit = {},
     private val onFocusRelease: () -> Unit = {},
+    /** Record-to-master tap (STU-13). The default writes its temp WAVs to the JVM temp dir; the app passes the cache dir. */
+    val recorder: MasterRecorder = MasterRecorder(),
 ) {
     private val _isPlaying = MutableStateFlow(false)
     val isPlaying: StateFlow<Boolean> = _isPlaying
@@ -91,10 +94,23 @@ class MultitrackPlayer(
         playOutcome(arrangement, fromMs) == PlayOutcome.STARTED
 
     /** Like [play] but distinguishes "superseded by a newer play/stop" (silent) from "no playable clips" (toast). */
-    suspend fun playOutcome(arrangement: StudioArrangement, fromMs: Int = 0): PlayOutcome =
-        playInternal(arrangement, fromMs, fromReprime = false)
+    suspend fun playOutcome(arrangement: StudioArrangement, fromMs: Int = 0, record: Boolean = false, quantized: Boolean = false): PlayOutcome =
+        playInternal(arrangement, fromMs, fromReprime = false, record = record, quantized = quantized)
 
-    private suspend fun playInternal(arrangement: StudioArrangement, fromMs: Int, fromReprime: Boolean): PlayOutcome {
+    /** True while a master recording tap is active. */
+    val isRecording: Boolean get() = recorder.isRecording
+
+    /** Bumped ONLY when a recording ends because playback reached its NATURAL end (the view's single bake signal). */
+    val recordingFinishedNonce: StateFlow<Int> get() = recorder.finishedNonce
+
+    /** Hand the finished master capture to the baker (once). Call after [stop]. */
+    fun consumeRecording(): MasterCapture? = recorder.consume()
+
+    /** What the last explicit play asked for; a debounced re-prime restart carries it so a restart keeps recording. */
+    @Volatile private var recordWanted = false
+    @Volatile private var recordQuantized = false
+
+    private suspend fun playInternal(arrangement: StudioArrangement, fromMs: Int, fromReprime: Boolean, record: Boolean = false, quantized: Boolean = false): PlayOutcome {
         val gen = synchronized(lock) { stopInternal(keepReprime = fromReprime); generation.get() }
         val rate = StudioAudio.CANONICAL_RATE
         // The ONE planning path shared with ArrangerBouncer (WYSIWYG): decode once, window, warp, beat-snap.
@@ -128,7 +144,10 @@ class MultitrackPlayer(
             onFocus()
             val s = sinkFactory()
             sink = s
-            s.start(ctx)
+            recordWanted = record; recordQuantized = quantized
+            // begin() always discards the previous partial first (restart keeps recording, never leaks/concats).
+            val tapped = recorder.begin(record, s.sampleRate, quantized) && record
+            s.start(if (tapped) BlockRenderer { out, n -> ctx.render(out, n); recorder.tap(out, n) } else ctx)
             clock.latencyMs = (s.latencyFrames() * 1000L / rate).toInt()
             clock.start()
             _isPlaying.value = true
@@ -141,13 +160,14 @@ class MultitrackPlayer(
 
     fun stop() = stopInternal(keepReprime = false)
 
-    private fun stopInternal(keepReprime: Boolean) = synchronized(lock) {
+    private fun stopInternal(keepReprime: Boolean, naturalEnd: Boolean = false) = synchronized(lock) {
         generation.incrementAndGet()
         autoStop?.cancel(); autoStop = null
         if (!keepReprime) { reprime?.cancel(); reprime = null }
         val s = sink
         sink = null
         runCatching { s?.stop(); s?.release() }
+        recorder.end(naturalEnd)   // after the sink stopped: no more taps; natural end bumps the bake nonce
         context?.release()
         context = null
         trackIds = emptyList()
@@ -205,7 +225,7 @@ class MultitrackPlayer(
                 delay(reprimeDebounceMs)
                 val a = latest ?: return@launch
                 val at = positionMs(a) ?: return@launch
-                playInternal(a, at, fromReprime = true)
+                playInternal(a, at, fromReprime = true, record = recordWanted, quantized = recordQuantized)
             }
         }
     }
@@ -214,7 +234,7 @@ class MultitrackPlayer(
         synchronized(lock) { autoStop?.cancel() }
         val job = scope.launch {
             delay(lengthMs + 350L + 120L)
-            if (gen == generation.get()) stop()
+            if (gen == generation.get()) stopInternal(keepReprime = false, naturalEnd = true)
         }
         synchronized(lock) { autoStop = job }
     }
