@@ -57,6 +57,7 @@ internal class MixTick(private val e: MixEngine, private val driver: TickDriver)
         heartbeat(now, rendering)
 
         if (rendering) {
+            e.autoDj?.unparkEngineStall()   // the sink came back via any path: shift the parked auto clocks
             for (d in Deck.entries) if (e.deckState(d).isPlaying) advance(d, dt)
         } else if (e.mixWantsAudio) {
             // WATCHDOG (only while the mix WANTS audio): the system stopped the sink under a live

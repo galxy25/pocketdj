@@ -1,6 +1,8 @@
 package com.levi.pocketdj.di
 
-import android.content.Context
+import com.levi.pocketdj.mix.engine.autoQueueInsert
+import com.levi.pocketdj.mix.engine.autoUpcoming
+android.content.Context
 import android.media.AudioManager
 import com.levi.pocketdj.audio.core.AudioTrackSink
 import com.levi.pocketdj.audio.core.Mp3Decoder
@@ -122,6 +124,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     /** MIX-8: the stem / loop / beat-grid controllers (built with, and hooked into, [mixEngine]). */
     val mixDeckExtras: MixDeckExtras get() { mixEngine; return checkNotNull(deckExtras) }
 
+    @Volatile private var autoDjInst: com.levi.pocketdj.mix.engine.AutoDj? = null
+
+    /** MIX-9: the Auto-DJ machine (built with, and hooked into, [mixEngine]). */
+    val autoDj: com.levi.pocketdj.mix.engine.AutoDj get() { mixEngine; return checkNotNull(autoDjInst) }
+
     val mixEngine: MixEngine by lazy {
         val audio = app.appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         MixEngine(
@@ -142,6 +149,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             diagSink = { NPLog.lane(NPLog.MIX, it) },
         ).also {
             it.recorder = mixSessions
+            autoDjInst = com.levi.pocketdj.mix.engine.AutoDj(it).also { dj -> it.autoDj = dj }
             val main = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
             // MIX-8: stems + loop + beat-grid controllers, hooked into the engine.
             val burns = app.servicesGraph.burnStore
@@ -173,7 +181,21 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     }
 
     /** The Auto-DJ seam over the engine; the Auto-DJ package fills [EngineAutoMixHost]'s hooks. */
-    val autoMixHost: EngineAutoMixHost by lazy { EngineAutoMixHost(mixEngine, mixStreamLoader) }
+    val autoMixHost: EngineAutoMixHost by lazy {
+        EngineAutoMixHost(mixEngine, mixStreamLoader).also { h ->
+            val dj = autoDj
+            h.insertHook = { item, placement ->
+                dj.autoQueueInsert(
+                    item,
+                    if (placement == AutoPlacement.RANDOM) com.levi.pocketdj.data.jukebox.JukeboxDecisionAction.RANDOM
+                    else com.levi.pocketdj.data.jukebox.JukeboxDecisionAction.END,
+                )
+            }
+            h.startHook = { items, shuffled, lead, fade, label -> dj.startAutoMix(items, shuffled, lead, fade, label) }
+            h.labelProvider = { dj.sourceLabel }
+            h.upcomingProvider = { dj.autoUpcoming.map { it.songId } }
+        }
+    }
 
     /** MIX-7: app-scoped collection pull for the Mix tab (survives leaving the tab). */
     val collectionMixDownloader: CollectionMixDownloader by lazy {

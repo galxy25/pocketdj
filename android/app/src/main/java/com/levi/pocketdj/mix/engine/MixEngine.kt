@@ -240,9 +240,11 @@ class MixEngine(
 
     /** Tick watchdog entry: the sink died under a live mix; bring it back and re-kick intent-playing decks. */
     internal fun watchdogRecover() {
+        autoDj?.parkEngineStall()   // the machine's clocks must not burn a runway while the sink is down
         val ok = startEngineIfNeeded()
         diag("watchdog restart sink ok=$ok")
         if (!ok) return
+        autoDj?.unparkEngineStall()
         for (d in Deck.entries) if (st(d).isPlaying && !streamHeld(d)) controller(d).play()
     }
 
@@ -278,6 +280,29 @@ class MixEngine(
             commitPrepared(item, deck, p)
         }
     }
+
+    /**
+     * SYNCHRONOUS load for the Auto-DJ machine (MIX-9): it checks the deck's track straight after the
+     * call (iOS `loadAuto`), so it must not ride [loadOffload]. Supersedes any in-flight async load.
+     */
+    internal fun loadNow(item: MixLoadable, deck: Deck) {
+        deckGestureGeneration++
+        autoEndedExhausted = false
+        loadSeq[deck.ordinal]++
+        commitPrepared(item, deck, prepare(item, deck))
+    }
+
+    /** MIX-9: the audio of [songId] is fully on this device (a load of it airs at once). */
+    internal fun songOnDisk(songId: String): Boolean = resolver.resolve(songId) != null
+
+    /** MIX-9: the Auto-DJ started sounding (iOS `hasSoundedThisProcess`). */
+    internal fun noteSounded() { if (!isRestoringMixSession) hasSoundedThisProcess = true }
+
+    /** MIX-9: forget the lock-screen pause memory (a new mix's start). */
+    internal fun clearMasterPaused() { masterPausedDecks = emptySet() }
+
+    /** MIX-9: a master pause is remembered for the lock-screen play. */
+    internal val hasMasterPaused: Boolean get() = masterPausedDecks.isNotEmpty()
 
     /** A resolved + opened load, ready to install. [notOnDisk] = the resolver had no file. */
     class PreparedLoad(
@@ -537,7 +562,7 @@ class MixEngine(
         persist()   // both decks empty (no auto) => the session is cleared
     }
 
-    private fun ejectDeckCore(deck: Deck) {
+    internal fun ejectDeckCore(deck: Deck) {
         reportDeckEnded(deck, MixTrackEndReason.REPLACED)   // the listen ends here
         resetLoadCycle(deck)
         setPlaying(deck, false)                            // emits .pause BEFORE we forget the track
@@ -684,7 +709,7 @@ class MixEngine(
     }
 
     /** The BPM to beat-match on: the MEASURED grid BPM when available, else the catalog BPM. */
-    private fun matchBpm(deck: Deck): Double? {
+    internal fun matchBpm(deck: Deck): Double? {
         val l = st(deck).loaded
         l?.gridBpm?.takeIf { it > 0 }?.let { return it }
         return l?.bpm?.takeIf { it > 0 }
@@ -815,7 +840,7 @@ class MixEngine(
         hooks.reportEnded(deck, st(deck).loaded?.songId, position(deck), duration(deck), reason)
     }
 
-    private fun resetLoadCycle(deck: Deck) {
+    internal fun resetLoadCycle(deck: Deck) {
         deckExhaustedFromRestore.remove(deck)   // a fresh load is never the restore's finished track
         hooks.resetLoadCycle(deck)
     }

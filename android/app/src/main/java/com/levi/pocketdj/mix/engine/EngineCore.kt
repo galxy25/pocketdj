@@ -67,6 +67,10 @@ interface AutoDjHooks {
     fun resumeAuto() {}
     /** A deck is stream-held this tick: its auto end clock must not burn (held seconds aren't played). */
     fun onDeckHeld(deck: Deck, dtSeconds: Double) {}
+    /** The sink died under a live mix: freeze the machine's wall clocks (iOS `engineStallAt`). */
+    fun parkEngineStall() {}
+    /** The sink is rendering again: shift every armed clock past the stall. */
+    fun unparkEngineStall() {}
     /** Called from the 10 Hz tick while [isMixing] and the sink renders. */
     fun fire(nowMs: Long) {}
     /** Snapshot for persistence; null when no auto queue. */
