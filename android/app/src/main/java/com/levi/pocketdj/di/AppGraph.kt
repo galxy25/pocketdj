@@ -264,7 +264,11 @@ class AppGraph private constructor(context: Context) {
     )
 
     // PB-1: connect the sequencer's history-context / origin / outcome seams (additive).
-    init { playbackGraph.wire() }
+    init {
+        playbackGraph.wire()
+        // MIX-12: a kill mid-take leaves a playable .aac with no row; file it at launch (off-main, streamed scan).
+        appScope.launch(Dispatchers.IO) { runCatching { mixGraph.mixRecorder.recoverOrphans() } }
+    }
 
     // STU-7: register the STUDIO_LOCAL row rung (after playbackGraph.wire so the sequencer exists).
     init { studioGraph.wire() }
@@ -299,6 +303,9 @@ class AppGraph private constructor(context: Context) {
             clearLyrics = { browseGraph.lyricsStore.clearDisk() },
             burnOps = servicesGraph.burnStorageOps,
             studioOps = studioGraph.storageOps,
+            // MIX-12: recorded mix takes; delete-all never unlinks the in-flight take.
+            mixSessionsDir = com.levi.pocketdj.mix.recording.SessionFolders.root(appContext.filesDir),
+            clearMixSessions = { mixGraph.mixRecorder.deleteAllRecordings() },
         )
     }
 

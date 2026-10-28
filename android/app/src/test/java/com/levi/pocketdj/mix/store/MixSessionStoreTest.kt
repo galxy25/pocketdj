@@ -303,6 +303,15 @@ class MixSessionStoreTest {
 
     // Recordings
 
+    @Test fun pruneRecordingsDropsOnlyGoneRows() {
+        val st = store()
+        val id = st.currentId
+        st.addRecording(id, "recording-1.aac", 1.0, 1000)
+        st.addRecording(id, "recording-2.aac", 2.0, 1000)
+        assertEquals(1, st.pruneRecordings { _, n -> n == "recording-1.aac" })
+        assertEquals(listOf("recording-2.aac"), st.recordings(id).map { it.fileName })
+    }
+
     @Test fun recordingsAttachRecoverAndRemove() {
         val s = store()
         val id = s.currentId

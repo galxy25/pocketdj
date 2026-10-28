@@ -23,6 +23,7 @@ import com.levi.pocketdj.mix.engine.ResolvedTrack
 import com.levi.pocketdj.mix.engine.VoiceRunner
 import com.levi.pocketdj.mix.store.MixDeckSessionStore
 import com.levi.pocketdj.mix.store.MixSessionStore
+import com.levi.pocketdj.mix.recording.asRecordingSessions
 import com.levi.pocketdj.mix.stream.BurnStoreAdopter
 import com.levi.pocketdj.mix.stream.ConnectivityNetworkMonitor
 import com.levi.pocketdj.mix.stream.MixStreamLoader
@@ -78,6 +79,35 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         MixSessionStore(f, writer = VersionedJsonWriter(f, writerExecutor))
     }
     val mixSessions: MixSessionStore get() = sessionsLazy.value
+
+    /** MIX-12: the persistent house tap, installed on the engine's graph at first take (start/stop only gates it); plain so launch-time orphan recovery never builds the engine. */
+    val recordingTap: com.levi.pocketdj.mix.recording.RecordingTapSink by lazy {
+        com.levi.pocketdj.mix.recording.RecordingTapSink()
+    }
+
+    /** MIX-12: mix audio recorder. AppGraph calls recoverOrphans() off-main at launch. */
+    val mixRecorder: com.levi.pocketdj.mix.recording.MixRecorder by lazy {
+        val tap = recordingTap
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        com.levi.pocketdj.mix.recording.MixRecorder(
+            root = com.levi.pocketdj.mix.recording.SessionFolders.root(app.appContext.filesDir),
+            tap = tap,
+            sessions = mixSessions.asRecordingSessions(),
+            mixAudible = { mixEngine.isRunning },
+            makeWriter = {
+                mixEngine.graph.tapSink = tap   // idempotent install
+                com.levi.pocketdj.mix.recording.AacAdtsWriter(it, tap, mixEngine.graph.sampleRate)
+            },
+            postMain = { r -> mainHandler.post(r) },
+            scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main),
+            runFinalize = { r -> Thread(r, "pdj-mix-rec-finalize").start() },
+        )
+    }
+
+    /** MIX-12: Sessions-screen take playback; pauses the live mix first. */
+    val recordingPlayer: com.levi.pocketdj.mix.recording.RecordingPlayer by lazy {
+        com.levi.pocketdj.mix.recording.RecordingPlayer(pauseMix = { autoDj.remotePause() })  // suspends Auto-DJ (resumable), not pauseBoth
+    }
 
     /**
      * MIX-6: growing-file song/stem streams. Built on first use; construction sweeps

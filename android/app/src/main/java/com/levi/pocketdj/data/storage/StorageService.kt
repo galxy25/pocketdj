@@ -60,6 +60,10 @@ class StorageService(
     private val burnOps: BurnStorageOps? = null,
     /** STU-7: per-family Studio usage + delete-all (wired to StudioStore). */
     private val studioOps: StudioStorageOps? = null,
+    /** MIX-12: `filesDir/mix-sessions/` - recorded mix takes (user content; delete-all skips the live take). */
+    private val mixSessionsDir: File? = null,
+    /** MIX-12: deletes every take except the in-flight one. */
+    private val clearMixSessions: (() -> Unit)? = null,
 ) {
     /**
      * The slice of StudioStore the Storage screen uses (a port for JVM tests). [deleteAll] is STRICT: it
@@ -101,6 +105,7 @@ class StorageService(
         STUDIO_SEQUENCES(clearable = true),
         STUDIO_TAKES(clearable = true),
         STUDIO_INSTRUMENTS(clearable = true), // downloaded SoundFonts: re-downloadable
+        MIX_SESSIONS(clearable = true), // recorded mix takes: explicit delete-all, skips the active take
         ;
 
         /** The Studio family a STUDIO_* category maps to, else null. */
@@ -130,6 +135,7 @@ class StorageService(
             Category.ACTIVITY -> fileSize(activityFile)
             Category.FAVORITES -> favoritesFile?.let(::fileSize) ?: 0L
             Category.LYRICS -> lyricsCacheDir?.let(::dirSize) ?: 0L
+            Category.MIX_SESSIONS -> mixSessionsDir?.let(::dirSize) ?: 0L
             Category.STUDIO_SAMPLES, Category.STUDIO_LOOPS, Category.STUDIO_SEQUENCES,
             Category.STUDIO_TAKES, Category.STUDIO_INSTRUMENTS ->
                 runCatching { category.studioFamily?.let { studioOps?.usageBytes(it) } }.getOrNull() ?: 0L
@@ -160,6 +166,7 @@ class StorageService(
             Category.LYRICS -> runCatching {
                 clearLyrics?.invoke() ?: lyricsCacheDir?.listFiles()?.forEach { it.delete() }
             }
+            Category.MIX_SESSIONS -> runCatching { clearMixSessions?.invoke() }
             Category.STUDIO_SAMPLES, Category.STUDIO_LOOPS, Category.STUDIO_SEQUENCES,
             Category.STUDIO_TAKES, Category.STUDIO_INSTRUMENTS ->
                 runCatching { category.studioFamily?.let { studioOps?.deleteAll(it) } }
