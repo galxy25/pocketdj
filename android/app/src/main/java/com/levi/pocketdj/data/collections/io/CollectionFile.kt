@@ -93,7 +93,13 @@ object CollectionFile {
             for (sl in incomingSetlists) {
                 if (playlists.any { it.id == sl.playlistId }) setlists = upsertSetlist(setlists, sl)
             }
-            val (dp, dpl) = dropDanglingRefs(pockets, playlists, folders)
+            val (dp0, dpl0) = dropDanglingRefs(pockets, playlists, folders)
+            // A merge that unions a ref in which dangling-drop then removes again (a ghost child) nets to NO
+            // change: keep the original so `updatedAt` isn't re-stamped and a re-import stays a true no-op.
+            val curP = current.pockets.associateBy { it.id }
+            val curPl = current.playlists.associateBy { it.id }
+            val dp = dp0.map { p -> curP[p.id]?.takeIf { it == p.copy(updatedAt = it.updatedAt) } ?: p }
+            val dpl = dpl0.map { p -> curPl[p.id]?.takeIf { it == p.copy(updatedAt = it.updatedAt) } ?: p }
             return Result(
                 Sets(dp, dpl, setlists, folders),
                 incomingPockets.size, incomingPlaylists.size, incomingSetlists.size, incomingFolders.size,

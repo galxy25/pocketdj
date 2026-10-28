@@ -129,7 +129,7 @@ object PortableItems {
             }
             if (!need) break
         }
-        val now = nowMs.toDouble()
+        val now = nowMs
         val rows = ArrayList<JsonElement>()
         for (a in albums.values.sortedBy { it.id }) {
             rows += buildJsonObject {

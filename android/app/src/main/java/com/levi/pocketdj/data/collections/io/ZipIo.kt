@@ -49,7 +49,8 @@ object ZipIo {
                     out[e.name] = zis.readBytes()
                 }
             }
-            out
+            // A zip that starts with a local-file header always has an entry; none ⇒ corrupt (iOS: Archive init throws).
+            out.takeIf { it.isNotEmpty() }
         } catch (_: Exception) {
             null
         }
