@@ -80,6 +80,8 @@ class SearchService(
     private val http: OkHttpClient,
     private val config: SearchConfig,
     private val now: () -> Long = System::currentTimeMillis,
+    /** Test seam: base URL for a resolved config (production = https://<host>). */
+    private val baseUrl: (ResolvedSearchConfig) -> String = { "https://${it.host}" },
 ) : Searching {
 
     override suspend fun search(
@@ -98,7 +100,7 @@ class SearchService(
             method = "POST", host = cfg.host, path = path, body = body,
             region = cfg.region, service = SERVICE, creds = creds, epochMs = now(),
         )
-        val req = Request.Builder().url("https://${cfg.host}$path")
+        val req = Request.Builder().url(baseUrl(cfg) + path)
             .post(body.toRequestBody(JSON_TYPE))
             .apply { signed.headers.forEach { (k, v) -> header(k, v) } }
             .build()
