@@ -1,6 +1,16 @@
 package com.levi.pocketdj.di
 
+import com.levi.pocketdj.data.applemusic.AMPlaylistSyncClient
+import com.levi.pocketdj.data.applemusic.AmAutoSyncWorker
+import com.levi.pocketdj.data.applemusic.AmSyncHost
+import com.levi.pocketdj.data.applemusic.AmSyncSettings
+import com.levi.pocketdj.data.applemusic.AppleMusicAutoSync
+import com.levi.pocketdj.data.applemusic.AutoSyncGate
+import com.levi.pocketdj.data.applemusic.CollectionsAmSyncHost
 import com.levi.pocketdj.data.applemusic.DefaultAppleMusicTokens
+import com.levi.pocketdj.data.applemusic.PlaylistAppleMusicSync
+import com.levi.pocketdj.data.applemusic.SharedPrefsAmJobStore
+import com.levi.pocketdj.data.applemusic.WriteBackSettings
 import com.levi.pocketdj.data.applemusic.PlaylistWriteBack
 import com.levi.pocketdj.data.applemusic.WebApiPlaylistWriteBackTransport
 import com.levi.pocketdj.data.collections.CollectionsStore
@@ -125,6 +135,81 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         store.cancelPendingWriteBacks = { indexPlaylistId, songIds -> writeBack.cancelPending(indexPlaylistId, songIds) }
     }
 
+    // ---- Apple Music playlist sync (COL-9) ---------------------------------------------------
+
+    private val amTokens by lazy { DefaultAppleMusicTokens(app.musicKitDevTokenClient, app.settings) }
+
+    /** The WS2 Lambda client. Base = Settings debug override when set, else the live endpoint config. */
+    val amSyncClient: AMPlaylistSyncClient by lazy {
+        AMPlaylistSyncClient(
+            http = app.httpClient,
+            tokens = amTokens,
+            jobs = SharedPrefsAmJobStore(app.appContext),
+            baseProvider = {
+                val o = runCatching { app.settings.get(AmSyncSettings.BASE_OVERRIDE) }.getOrDefault("")
+                o.trim().ifEmpty { com.levi.pocketdj.data.config.RemoteEndpoints.url(com.levi.pocketdj.data.config.EndpointKey.AM_PLAYLIST_SYNC_BASE) }
+            },
+        )
+    }
+
+    /** Sync coordinator (steps, audit trail, interrupted-run hydration). Lazy - reads its docs on first touch. */
+    val playlistAmSync: PlaylistAppleMusicSync by lazy {
+        PlaylistAppleMusicSync(
+            client = amSyncClient,
+            transport = WebApiPlaylistWriteBackTransport(app.appleMusicApi, amTokens),
+            auditFile = File(app.appContext.filesDir, PlaylistAppleMusicSync.AUDIT_FILE),
+            runFile = File(app.appContext.filesDir, PlaylistAppleMusicSync.RUN_FILE),
+            catalogLookupsFile = File(app.appContext.filesDir, PlaylistAppleMusicSync.LOOKUPS_FILE),
+        ).also { sync ->
+            sync.importNewPlaylistsEnabled = { runCatching { app.settings.get(AmSyncSettings.IMPORT_NEW) }.getOrDefault(false) }
+        }
+    }
+
+    val amSyncHost: AmSyncHost by lazy {
+        CollectionsAmSyncHost(app.collections) { app.catalogRepository.state.value.catalog }
+    }
+
+    private val autoSyncGate by lazy {
+        AutoSyncGate(
+            enabled = { app.settings.get(AmSyncSettings.AUTO_ENABLED) },
+            minutesOfDay = { AmSyncSettings.clampMinutes(app.settings.get(AmSyncSettings.AUTO_MINUTES)) },
+            lastRunMs = { app.settings.get(AmSyncSettings.LAST_AUTO_MS).takeIf { it > 0.0 } },
+            setLastRunMs = { app.settings.set(AmSyncSettings.LAST_AUTO_MS, it) },
+        )
+    }
+
+    /**
+     * Foreground / periodic entry (iOS `autoSyncIfDue`): resume an interrupted run, then run the
+     * daily pass if its local fire time has passed (claim-before-run). Needs a loaded catalog.
+     */
+    suspend fun autoSyncTick() {
+        if (app.catalogRepository.state.value.catalog == null) return
+        val host = amSyncHost
+        playlistAmSync.resumeIfInterrupted(host)
+        autoSyncGate.runIfDue { runFullPass() }
+    }
+
+    /** The unattended full pass: two-way playlist sync, converted-collections reconcile, write-back backfill. */
+    suspend fun runFullPass() {
+        val catalog = app.catalogRepository.state.value.catalog
+        playlistAmSync.syncNow(amSyncHost, PlaylistAppleMusicSync.Direction.BOTH)
+        if (catalog != null) app.collections.syncConvertedCollections(catalog.playlists)
+        if (writeBack.canWriteBack) {
+            val days = WriteBackSettings.clampDays(app.settings.get(WriteBackSettings.BACKFILL_DAYS))
+            val n = app.collections.backfillSourceWriteBacks(
+                events = app.collectionActivity.state.value.events,
+                days = days,
+                localInstallId = app.collectionActivity.installId,
+            )
+            if (n > 0) writeBack.runSoon()
+        }
+    }
+
+    override val periodicWork: List<com.levi.pocketdj.shell.PeriodicWorkSpec> by lazy {
+        com.levi.pocketdj.work.WorkerRegistry.register(AppleMusicAutoSync.WORK_ID, AmAutoSyncWorker::class.java)
+        listOf(com.levi.pocketdj.shell.PeriodicWorkSpec(AppleMusicAutoSync.WORK_ID, repeatMinutes = 60, requiresNetwork = true))
+    }
+
     /** Provisional "Imported" catalog source (COL-15); lazy - reads its small doc on first touch. */
     val importedSongs: com.levi.pocketdj.data.catalog.ImportedSongsStore by lazy {
         com.levi.pocketdj.data.catalog.ImportedSongsStore(
@@ -177,6 +262,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         listOf(
             com.levi.pocketdj.screens.settings.sections.backupSection(),
             com.levi.pocketdj.screens.settings.sections.collectionsSyncSection(),
+            com.levi.pocketdj.screens.settings.appleMusicSyncSection(),
             com.levi.pocketdj.screens.settings.appleMusicWriteBackSection(),
         )
     }
@@ -202,6 +288,16 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             runCatching {
                 androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
                     com.levi.pocketdj.data.applemusic.WriteBackForegroundDrain { writeBack.runSoon() },
+                )
+            }
+        }
+        // COL-9: on every process foreground, resume an interrupted sync / run the daily pass if due.
+        app.appScope.launch(Dispatchers.Main) {
+            runCatching {
+                androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
+                    com.levi.pocketdj.data.applemusic.WriteBackForegroundDrain {
+                        app.appScope.launch(Dispatchers.IO) { runCatching { autoSyncTick() } }
+                    },
                 )
             }
         }
