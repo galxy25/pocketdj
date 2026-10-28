@@ -61,7 +61,13 @@ class PlaybackService : MediaLibraryService() {
         val data = com.levi.pocketdj.auto.AppAutoData(app)
         val main = android.os.Handler(android.os.Looper.getMainLooper())
         val cb = AutoLibraryCallback(
-            tree = com.levi.pocketdj.auto.AutoBrowseTree(data),
+            tree = com.levi.pocketdj.auto.AutoBrowseTree(
+                data,
+                // SURF-9: the Mix tab appears once the Mix facade is wired (cheap: nothing builds until used).
+                mix = app.shellGraph.shellActions.mixFacade?.let {
+                    com.levi.pocketdj.auto.AutoMixTab(it, com.levi.pocketdj.auto.AppAutoMixExtras(app, it))
+                },
+            ),
             addTargets = com.levi.pocketdj.auto.AutoAddTargets(com.levi.pocketdj.auto.AppAutoAddSink(app.collections)),
             player = com.levi.pocketdj.auto.AppAutoPlayer(app),
             scope = scope,

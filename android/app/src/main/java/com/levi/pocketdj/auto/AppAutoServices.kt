@@ -209,3 +209,67 @@ class AppAutoAddSink(private val store: CollectionsStore) : AutoAddSink {
         return true
     }
 }
+
+/**
+ * SURF-9 production [AutoMixExtras] over the Mix engine, collections and the jukebox broker (device-verified
+ * through the DHU, not JVM-tested). Nothing here builds the Mix engine unless the [facade] says a mix is
+ * already running: a car connect must never materialize a parked mix.
+ */
+class AppAutoMixExtras(
+    private val app: AppGraph,
+    private val facade: com.levi.pocketdj.shell.MixFacade,
+) : AutoMixExtras {
+    private val main = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
+
+    override fun crates(): List<AutoCrate> {
+        val s = app.collections
+        return s.pockets.map { AutoCrate(com.levi.pocketdj.shell.MixSource.Pocket(it.id), it.name, AutoCrateGroup.POCKETS) } +
+            s.playlists.filter { it.id != NOW_PLAYING_PLAYLIST_ID }
+                .map { AutoCrate(com.levi.pocketdj.shell.MixSource.Playlist(it.id), it.name, AutoCrateGroup.PLAYLISTS) } +
+            s.setlists.filter { it.id != NOW_PLAYING_SETLIST_ID }.mapNotNull { sl ->
+                val n = sl.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+                AutoCrate(com.levi.pocketdj.shell.MixSource.Setlist(sl.id), n, AutoCrateGroup.SETLISTS)
+            }
+    }
+
+    override fun live(): AutoMixLive? {
+        if (!facade.autoMixing) return null
+        val dj = app.mixGraph.autoDj
+        val ui = dj.ui.value
+        val t = app.mixGraph.mixEngine.loaded(ui.liveDeck)
+        return AutoMixLive(
+            title = t?.title, artist = t?.artist,
+            position = if (ui.queueSize > 0) (ui.livePos + 1).coerceAtMost(ui.queueSize) else null,
+            count = ui.queueSize.takeIf { it > 0 },
+            deck = if (ui.queueSize > 0) "Deck ${ui.liveDeck.name}" else null,
+            buffering = app.mixGraph.mixEngine.streamHeld(ui.liveDeck),
+        )
+    }
+
+    override val slowSkipSeconds: Double get() = if (facade.autoMixing) app.mixGraph.autoDj.skipFadeSeconds else 15.0
+    override fun skipFast() { main.launch { app.mixGraph.autoDj.remoteSkip(AutoMixTab.FAST_SKIP_SECONDS) } }
+    override fun skipSlow() { main.launch { val dj = app.mixGraph.autoDj; dj.remoteSkip(dj.skipFadeSeconds) } }
+    override fun stop() { main.launch { if (facade.autoMixing) app.mixGraph.autoDj.stopAutoMix() } }
+
+    /** Light poll (only while a car browse session is bound): signature-filtered, never builds the engine. */
+    override val changes: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.flow {
+        while (true) {
+            val sig = if (facade.autoMixing) {
+                val l = live()
+                "1|${facade.autoPaused}|${l?.title}|${l?.position}|${l?.count}|${l?.deck}|${l?.buffering}"
+            } else "0"
+            emit(sig)
+            kotlinx.coroutines.delay(1500)
+        }
+    }
+
+    override suspend fun jukeboxSessions(): List<AutoJukeSession>? = try {
+        com.levi.pocketdj.data.jukebox.JukeboxGraph.get(app.appContext).repository.listSessions().map {
+            AutoJukeSession(it.jukeboxId, it.name, it.timeless == true, it.url)
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+}
