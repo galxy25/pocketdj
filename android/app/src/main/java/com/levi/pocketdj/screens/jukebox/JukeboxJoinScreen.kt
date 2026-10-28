@@ -21,14 +21,13 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -42,6 +41,7 @@ import com.levi.pocketdj.data.jukebox.JukeboxGraph
 import com.levi.pocketdj.data.jukebox.JukeboxGuestException
 import com.levi.pocketdj.data.jukebox.JukeboxGuestState
 import com.levi.pocketdj.data.jukebox.JukeboxLink
+import com.levi.pocketdj.data.jukebox.JukeboxTuneIn
 import com.levi.pocketdj.data.jukebox.TuneInSeekMath
 import com.levi.pocketdj.di.AppGraph
 import kotlinx.coroutines.CancellationException
@@ -82,19 +82,27 @@ fun JukeboxJoinScreen(
     var state by remember(jukeboxId) { mutableStateOf<JukeboxGuestState?>(null) }
     var loading by remember(jukeboxId) { mutableStateOf(true) }
     var error by remember(jukeboxId) { mutableStateOf<String?>(null) }
-    var myIds by remember(jukeboxId) { mutableStateOf(setOf<String>()) }
-    var myKeys by remember(jukeboxId) { mutableStateOf(setOf<String>()) }
+    var myIds by rememberSaveable(jukeboxId) { mutableStateOf(setOf<String>()) }
+    var myKeys by rememberSaveable(jukeboxId) { mutableStateOf(setOf<String>()) }
     var clientId by remember { mutableStateOf("") }
     var reqTitle by remember { mutableStateOf("") }
     var reqArtist by remember { mutableStateOf("") }
     var submitting by remember { mutableStateOf(false) }
-    var tunedIn by remember { mutableStateOf(false) }
+    val tuneIn = androidx.lifecycle.viewmodel.compose.viewModel<JukeboxTuneIn>(
+        key = "jukebox-tunein-$jukeboxId",
+        factory = object : androidx.lifecycle.ViewModelProvider.Factory {
+            @Suppress("UNCHECKED_CAST")
+            override fun <T : androidx.lifecycle.ViewModel> create(modelClass: Class<T>): T =
+                JukeboxTuneIn(appGraph.appScope) { u -> appGraph.playbackController.stopUrl(u) } as T
+        },
+    )
+    val tunedIn by tuneIn.tunedIn.collectAsState()
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) { clientId = appGraph.settings.ensureInstallId() }
 
     // The 4 s poll. Runs only while this composable is on screen; stops on an ended session.
-    LaunchedEffect(jukeboxId) {
+    LaunchedEffect(jukeboxId, link) {
         if (link == null) {
             loading = false
             error = "This jukebox link is invalid."
@@ -139,8 +147,7 @@ fun JukeboxJoinScreen(
         val playing = s?.nowPlaying
         val url = playing?.streamUrl
         if (ended || s == null || playing == null || !canTune || url == null) {
-            tunedIn = false
-            appGraph.playbackController.stop()
+            tuneIn.stop()
             return@LaunchedEffect
         }
         val seek = TuneInSeekMath.seekMs(
@@ -149,15 +156,11 @@ fun JukeboxJoinScreen(
             nowMs = System.currentTimeMillis(),
             lengthMs = playing.lengthMs,
         )
+        tuneIn.noteStarted(url)
         appGraph.playbackController.playUrl(playing.title.orEmpty(), playing.artist, url, seek)
     }
-    // Leaving the panel (back / Leave) stops the stream we started.
-    val tunedNow = rememberUpdatedState(tunedIn)
-    DisposableEffect(jukeboxId) {
-        onDispose {
-            if (tunedNow.value) appGraph.appScope.launch { appGraph.playbackController.stop() }
-        }
-    }
+    // Composition dispose deliberately does NOT stop the stream (rotation / mini-player push);
+    // the entry-scoped JukeboxTuneIn stops it on pop, Stop, Leave or ended.
 
     fun submit() {
         val title = reqTitle.trim()
@@ -189,10 +192,7 @@ fun JukeboxJoinScreen(
     }
 
     fun leave() {
-        if (tunedIn) {
-            tunedIn = false
-            appGraph.appScope.launch { appGraph.playbackController.stop() }
-        }
+        tuneIn.stop()
         graph.joined.remove(jukeboxId)
         onClose()
     }
@@ -248,7 +248,7 @@ fun JukeboxJoinScreen(
                     TrackLine(np.title, np.artist, headline = true)
                     if (canTune) {
                         OutlinedButton(
-                            onClick = { tunedIn = !tunedIn },
+                            onClick = { if (tunedIn) tuneIn.stop() else tuneIn.requestTuneIn() },
                             modifier = Modifier.padding(top = 8.dp).testTag("jukebox-join-tunein"),
                         ) { Text(if (tunedIn) "Stop" else "Tune In") }
                     }

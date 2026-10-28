@@ -80,7 +80,7 @@ fun JukeboxScreen(modifier: Modifier = Modifier, onOpenJoin: (String) -> Unit = 
 
     Column(modifier.fillMaxSize()) {
         // Guest strip: joined jukeboxes above whichever host state is showing (iOS safeAreaInset top).
-        if (joined.isNotEmpty() || joinDialog) {
+        if (joined.isNotEmpty() || joinDialog || state.session != null) {
             JoinedSessionsStrip(
                 sessions = joined,
                 onOpen = onOpenJoin,

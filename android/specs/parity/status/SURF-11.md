@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # SURF-11 — Jukebox guest (JukeboxLink, joined list, join panel, Tune In)
 
@@ -20,3 +20,16 @@ state: implemented
 
 ## Questions for Levi
 - Tune-in seek trusts guest clock vs server updatedAt; large clock skew is only clamped to [0,length]. Fine, or use the HTTP Date header?
+
+## Review
+- MAJOR Stop button didn't stop audio -> fixed: entry-scoped JukeboxTuneIn.stop() stops the stream; test stopButtonStopsTheStream.
+- MAJOR stop() wiped held queue / stopped foreign audio -> fixed: PlaybackController.stopUrl(url) only stops when mediaId == "url:"+url, never abandons a run; tests onlyTheTuneInItemIsStoppable.
+- MAJOR stop on composition dispose / not saved across recreation -> fixed: tune-in state lives in a ViewModel scoped to the nav entry; stops on Stop/Leave/ended/entry pop (onCleared), not on dispose; test poppingTheEntryStopsButRecompositionDoesNot.
+- MAJOR JoinedSessionsStore load/persist race -> fixed: load and persist serialize on writeLock and persist merges disk first; tests writeBeatingTheLoadKeepsPersistedSessions, readLandingBeforeWriteStillMerges.
+- MINOR seekMs null position -> fixed: returns 0; elapsed capped at 5 s; tests updated/added.
+- MINOR status ledger -> fixed: SURF-11 row DONE (emulator steps not run), SURF-4 joinJukebox note updated.
+- MINOR Join by link in LiveView -> fixed: strip shown when hosting a live session.
+- NIT poll keyed on link, myIds/myKeys saveable -> fixed.
+
+Tests 3188 -> 3196, 0 failures; assembleDebug OK.
+fixes applied

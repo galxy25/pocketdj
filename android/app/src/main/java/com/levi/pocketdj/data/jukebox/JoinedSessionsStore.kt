@@ -73,13 +73,18 @@ class JoinedSessionsStore(
      * newer than anything on disk).
      */
     suspend fun load() {
+        writeLock.withLock { ensureLoadedLocked() }
+    }
+
+    /** Read disk once and merge under the current list. Caller holds [writeLock]. */
+    private suspend fun ensureLoadedLocked() {
         if (loaded) return
         val persisted = decode(storage.read())
         _sessions.update { current ->
-            loaded = true
             val currentIds = current.mapTo(HashSet()) { it.id }
             current + persisted.filter { it.id !in currentIds }
         }
+        loaded = true
     }
 
     /** Idempotent by id: an existing entry moves to the top (keeping its known name). */
@@ -131,7 +136,11 @@ class JoinedSessionsStore(
 
     private fun persist() {
         scope.launch {
-            writeLock.withLock { storage.write(encode(_sessions.value)) }
+            writeLock.withLock {
+                // A mutation that beats the first load must merge the disk list before overwriting it.
+                ensureLoadedLocked()
+                storage.write(encode(_sessions.value))
+            }
         }
     }
 }

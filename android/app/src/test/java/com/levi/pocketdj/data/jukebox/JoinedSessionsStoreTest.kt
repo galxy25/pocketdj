@@ -4,6 +4,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -94,6 +95,35 @@ class JoinedSessionsStoreTest {
         st.addJoined(link("aaaa"))
         st.load()
         assertEquals(listOf("aaaa", "old1"), st.sessions.value.map { it.id })
+    }
+
+    @Test fun writeBeatingTheLoadKeepsPersistedSessions() = runTest {
+        val storage = MemStorage("""[{"id":"old1"},{"id":"old2"},{"id":"old3"}]""")
+        val st = store(storage)
+        st.addJoined(link("new1"))
+        advanceUntilIdle() // the persist runs BEFORE any load() call
+        val onDisk = st.decode(storage.raw).map { it.id }
+        assertEquals(listOf("new1", "old1", "old2", "old3"), onDisk)
+        st.load()
+        assertEquals(listOf("new1", "old1", "old2", "old3"), st.sessions.value.map { it.id })
+    }
+
+    @Test fun readLandingBeforeWriteStillMerges() = runTest {
+        // A storage whose read suspends until released, with a mutation arriving mid-read.
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val storage = object : JoinedSessionsStorage {
+            var raw: String? = """[{"id":"old1"}]"""
+            override suspend fun read(): String? { gate.await(); return raw }
+            override suspend fun write(json: String) { raw = json }
+        }
+        val st = JoinedSessionsStore(storage, this)
+        val loading = launch { st.load() }
+        advanceUntilIdle()
+        st.addJoined(link("new1"))
+        advanceUntilIdle()
+        gate.complete(Unit)
+        loading.join(); advanceUntilIdle()
+        assertEquals(listOf("new1", "old1"), st.decode(storage.raw).map { it.id })
     }
 
     @Test fun encodedListIsAPlainArrayOfIdNameGuestBase() = runTest {

@@ -122,15 +122,21 @@ object TuneInSeekMath {
     fun isPlayableStream(url: String?): Boolean =
         url != null && url.startsWith("https://", ignoreCase = true) && url.length > "https://".length
 
+    /** Cap on the elapsed term (host posts every ~4 s + 1 s debounce; heartbeats bump updatedAt). */
+    const val MAX_ELAPSED_MS = 5_000L
+
     /**
      * Where to seek the stream: the host's reported `positionMs` plus the time elapsed since the
      * snapshot was composed (`now - updatedAt`), clamped to `[0, lengthMs]` so clock skew or a stale
      * snapshot can't seek past the end. Unknown position -> 0.
      */
     fun seekMs(positionMs: Long?, updatedAtMs: Double?, nowMs: Long, lengthMs: Long? = null): Long {
-        val base = (positionMs ?: 0L).coerceAtLeast(0L)
+        // Unknown position (Mix/broadcast now-playing) starts at 0, as iOS does: no phantom elapsed.
+        if (positionMs == null) return 0L
+        val base = positionMs.coerceAtLeast(0L)
         val elapsed = if (updatedAtMs != null && updatedAtMs > 0) {
-            (nowMs - updatedAtMs.toLong()).coerceAtLeast(0L)
+            // updatedAt is the broker's compose time (also bumped by the 15 s heartbeat), so cap it.
+            (nowMs - updatedAtMs.toLong()).coerceIn(0L, MAX_ELAPSED_MS)
         } else {
             0L
         }

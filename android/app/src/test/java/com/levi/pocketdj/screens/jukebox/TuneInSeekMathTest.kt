@@ -12,8 +12,11 @@ class TuneInSeekMathTest {
     @Test fun addsElapsedSinceSnapshot() =
         assertEquals(13_000L, TuneInSeekMath.seekMs(10_000, 1_000_000.0, 1_003_000))
 
-    @Test fun missingPositionStartsAtElapsed() =
-        assertEquals(2_000L, TuneInSeekMath.seekMs(null, 100_000.0, 102_000))
+    @Test fun missingPositionStartsAtZero() =
+        assertEquals(0L, TuneInSeekMath.seekMs(null, 100_000.0, 102_000))
+
+    @Test fun elapsedIsCappedForHeartbeatStaleness() =
+        assertEquals(15_000L, TuneInSeekMath.seekMs(10_000, 100_000.0, 115_000))
 
     @Test fun missingUpdatedAtUsesPositionOnly() {
         assertEquals(7_000L, TuneInSeekMath.seekMs(7_000, null, 999_999))

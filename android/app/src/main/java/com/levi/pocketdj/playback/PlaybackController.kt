@@ -713,6 +713,19 @@ class PlaybackController(
         withContext(Dispatchers.Main) { sequencer.playUrl(title, artist, url, seekMs) }
     }
 
+    /**
+     * Stop the jukebox stream [url] ONLY if it is what the player currently holds. Never abandons a
+     * run, so a HELD (restored, unstarted) queue survives; foreign audio is left alone.
+     */
+    suspend fun stopUrl(url: String) {
+        withController { ctl ->
+            if (isTuneInMediaId(ctl.currentMediaItem?.mediaId, url)) {
+                ctl.stop()
+                ctl.clearMediaItems()
+            }
+        }
+    }
+
     // Transport routes to whichever engine owns audio (single-owner, §6.1).
     suspend fun pause() {
         if (activeBackend == ActiveBackend.APPLE_MUSIC) {
@@ -1532,3 +1545,6 @@ private suspend fun <T> ListenableFuture<T>.await(): T =
         )
         continuation.invokeOnCancellation { cancel(false) }
     }
+
+/** True when [mediaId] is the Tune-In item for stream [url] (see `loadUrl`'s `"url:" + url` id). */
+fun isTuneInMediaId(mediaId: String?, url: String): Boolean = mediaId == "url:$url"
