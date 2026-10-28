@@ -187,3 +187,19 @@ Emulator (emulator-5554), screenshots in pocketdj-parity/_shots/wave11:
 No FATAL EXCEPTION / ANR from com.levi.pocketdj (two crashes in logcat are the uiautomator dump process itself).
 
 Open: Q46-Q49.
+
+## Wave 12
+
+Merged (clean, no conflicts): SVC-7, COL-12, MIX-14, GM-9, STU-7, SURF-11. JVM: 3381 tests, 0 failures after merge (wave-11 3128 moved by the packages' new tests). assembleDebug green.
+
+Emulator (emulator-5554), screenshots in pocketdj-parity/_shots/wave12:
+- SVC-7 PASS: debug in-memory backend on; editing the profile name then Sync now shows "Pushed studio-cues, game-scores, ... profile"; an unchanged second pass says "Everything in sync"; another edit says "Pushed profile". Real backend not reachable (Q42).
+- COL-12 PASS: Yours shows "Recently added / 77 songs - newest first" above Your playlists; detail lists newest first with Play/Shuffle/Duplicate/Convert; Settings > Collections count 50 -> row says "50 songs - newest first".
+- STU-7 PASS: seeded sample "tone" added to a playlist and a new pocket -> runtime 8:37 to 8:40, pocket "1 song - 0:03", studio row with Studio/Sample badge and key 8A; Play on the pocket plays the local file (engine ready then ended after 3 s, no dead air, gap 0.46 s). Storage > Studio storage shows per-family bytes; Delete all samples -> 0 B, loops stay (500 kB), records gone from the playlist (14 songs). Studio rows are not tappable (Q50).
+- MIX-14 PASS: Mix tab -> A crate SeedDup, B same -> Shuffle -> "Auto-mixing 1/6", download bar "6 of 155 downloaded" (no rip server on the emulator, so no progress), crate menu opens on both decks, skip (single tap) triggers one skip, double tap ignored while a fade is in flight (no double fire), loader sheet filters by title and loads a deck, Settings > Mix steppers/cue channel/beat pulse persisted across force-stop. Scroll-while-ticking not separately provable (menu is too short to scroll) (Q51). Skip fade length 1 vs 5 s only covered by SkipGesture JVM tests.
+- GM-9 PASS (new Debug "MwF: live smoke", since there is no UI until GAMES-10): create on the live broker, refresh (1 member), suggest (1 suggestion), end, no errors.
+- SURF-11 PASS: `adb am start -a VIEW -d pocketdj://jukebox/<id>` adds the session to the joined strip (name + id caption; it does not auto-push the panel, tapping the row opens it); request submitted shows Pending highlighted, host decision via broker flips it to Queued; host state with hear=true shows Tune In, which plays the stream seeked near the host position and re-tunes on a track change; host end shows "This jukebox has ended." and Leave removes the strip row. Host was the same emulator app plus curl as host.
+
+No FATAL EXCEPTION / ANR from com.levi.pocketdj in logcat.
+
+Open: Q50-Q53.

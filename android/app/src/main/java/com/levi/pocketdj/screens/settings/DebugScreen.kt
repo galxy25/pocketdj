@@ -458,6 +458,24 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }) { Text("AM API probe") }
     Text(amStatus, style = MaterialTheme.typography.bodySmall)
 
+    // GM-9 verify probe (debug only): live broker smoke for Music with Friends (create, refresh, suggest, end).
+    var mwfStatus by remember { mutableStateOf("MwF: idle") }
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            val f = host.graph.gamesGraph.friends
+            val err = f.create("Wave12 MwF", "Test theme", "Wave12", com.levi.pocketdj.data.games.friends.MwFSettings())
+            val id = f.sessions.value.firstOrNull()?.id
+            if (err != null || id == null) { mwfStatus = "MwF: create failed: $err"; android.util.Log.d("PdjVerify", mwfStatus); return@launch }
+            val st = f.refresh(id)
+            val sErr = runCatching { f.suggest(id, "Test Song", "Test Artist") }.exceptionOrNull()?.message
+            val st2 = f.refresh(id)
+            f.endSession(id)
+            mwfStatus = "MwF: id=$id members=${st?.members?.size} suggestions=${st2?.suggestions?.size} suggestErr=$sErr ended=${f.entry(id) == null || f.lastState.value[id]?.ended == true} pollErr=${f.pollErrors.value[id]}"
+            android.util.Log.d("PdjVerify", mwfStatus)
+        }
+    }) { Text("MwF: live smoke") }
+    Text(mwfStatus, style = MaterialTheme.typography.bodySmall)
+
     // MIX-7 verify probe (debug only): begin the app-scoped collection download for the SeedRip playlist.
     var mdlStatus by remember { mutableStateOf("Mix dl: idle") }
     OutlinedButton(onClick = {

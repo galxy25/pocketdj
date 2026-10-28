@@ -59,6 +59,11 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q47 [SURF-6]** Confirm iOS numbers for the recently-added count (3650 days, 1..100000) rather than the roadmap's 50 / 1..500. -- *Default: iOS numbers.* -- Collections default.
 - **Q48 [GM-7]** The In the Pocket round upload orders plays before rounds only once the services bridge sets `PocketsBridge.flushesRounds = true`; the Games fallback timer stays on until then. Same wave as the services bridge (cloud mode needs real pockets results). -- *Default: fallback timer.* -- Round/plays ordering.
 - **Q49 [BRW-10]** In Da Zone ranking took 6.5 s over the full 110k-song catalog on the emulator (debug "Zone: rank now"). Acceptable off-main, or precompute/narrow the candidate pool before REC-5 renders it? -- *Default: run off-main, no narrowing.* -- Cold-start Zone latency on phones.
+- **Q50 [STU-7]** Studio rows in pocket/playlist detail are not tappable (no onClick), so a studio item can only be played via the collection Play/Shuffle, not from its row. Make the row tap play it (catalog rows open the song sheet)? Also: should studio rows use the profile "PocketDJ name" as artist (seam `CollectionsStore.studioArtist` unwired)? -- *Default: rows say "Studio"; no row tap.* -- Studio UX.
+- **Q51 [MIX-14]** Stepper taps in Settings > Mix read a stale value on rapid taps (non-atomic increment). The crate menu was too short to scroll on the emulator, so "scroll while the bar ticks" was verified only by design (menu collects no progress). Make steppers atomic? -- *Default: as built.* -- Settings polish.
+- **Q52 [SVC-7]** Profile sync is only exercised against the in-memory CloudDocDatabase (debug toggle); the real backend needs Q42 (profile-sync Lambda deploy). Also the Add-to sheet's "New pocket" Add button sits under the keyboard on the emulator (needs imePadding). -- *Default: in-memory only; sheet as built.* -- Blocks real sync.
+- **Q53 [SURF-11]** Tune In seeks to positionMs + (now - updatedAt) but the broker debounces state writes (>=1 s), so tuned audio can lead/lag the host by about 1-4 s. Accept? -- *Default: accept.* -- Guest audio sync.
+
 
 ## ANSWERED
 
