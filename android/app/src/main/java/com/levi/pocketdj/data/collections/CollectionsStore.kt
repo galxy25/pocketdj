@@ -6,6 +6,15 @@ import com.levi.pocketdj.data.activity.ActivityKind
 import com.levi.pocketdj.data.applemusic.PlaylistWriteBack
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.catalog.SourcePlaylist
+import com.levi.pocketdj.data.backup.BackupPayload
+import com.levi.pocketdj.data.backup.BackupZip
+import com.levi.pocketdj.data.collections.io.CollectionFile
+import com.levi.pocketdj.data.collections.io.ImportKind
+import com.levi.pocketdj.data.collections.io.ImportSummary
+import com.levi.pocketdj.data.collections.io.PlaylistZip
+import com.levi.pocketdj.data.collections.io.PocketZip
+import com.levi.pocketdj.data.collections.io.PortableItems
+import com.levi.pocketdj.data.collections.io.TracklistCsv
 import com.levi.pocketdj.data.rips.PlayResolver
 import com.levi.pocketdj.data.store.VersionedJsonWriter
 import com.levi.pocketdj.playback.PlayContext
@@ -2201,6 +2210,154 @@ class CollectionsStore(
         if (idx < 0 || pockets[idx].amPlaylistId == amPlaylistId) return@synchronized
         publish { s -> s.copy(pockets = s.pockets.replaceAt(idx, s.pockets[idx].copy(amPlaylistId = amPlaylistId))) }
         save()
+    }
+
+    // MARK: Import / export (COL-14 — .pdjcollection / .pocketdj.zip / CSV)
+
+    /**
+     * Seam for PORTABLE zip imports (iOS `ImportedSongsStore` injection): receives the snapshot's items
+     * whose ids the live catalog does NOT already carry, so they can be materialized as provisional
+     * "Imported" catalog entries. Unwired (tests / until the Catalog package lands it) = items are ignored.
+     */
+    @Volatile var onPortableItems: ((PortableItems.Payload) -> Unit)? = null
+
+    private fun pocketsById(): Map<String, Pocket> = pockets.associateBy { it.id }
+
+    /** One pocket as a `CollectionsDocument` envelope; null if it's gone. */
+    fun exportPocket(id: String): ByteArray? = pocket(id)?.let { CollectionFile.pocketEnvelope(it, json) }
+
+    /** One playlist as a `CollectionsDocument` envelope; null if it's gone. */
+    fun exportPlaylist(id: String): ByteArray? = playlist(id)?.let { CollectionFile.playlistEnvelope(it, json) }
+
+    /** Playlist → PORTABLE `.playlist.pdjcollection` zip (items.json when a catalog is wired); null if gone. */
+    fun exportPlaylistZip(id: String): ByteArray? {
+        val pl = playlist(id) ?: return null
+        val cat = catalogProvider?.invoke()
+        return PlaylistZip.export(pl, pocketsById(), cat?.songsById.orEmpty(), cat?.albumsById.orEmpty(), json = json)
+    }
+
+    /** Pocket → PORTABLE `.pocket.pdjcollection` zip; null if gone. */
+    fun exportPocketZip(id: String): ByteArray? {
+        val p = pocket(id) ?: return null
+        val cat = catalogProvider?.invoke()
+        return PocketZip.export(p, pocketsById(), cat?.songsById.orEmpty(), cat?.albumsById.orEmpty(), json = json)
+    }
+
+    /** Playlist → tracklist CSV (resolved songs in order); null if the playlist is gone or no catalog. */
+    fun exportPlaylistCsv(id: String): ByteArray? {
+        if (playlist(id) == null) return null
+        val cat = catalogProvider?.invoke() ?: return null
+        return TracklistCsv.data(TracklistCsv.rows(songIdsForPlaylist(id), cat.songsById, cat.albumsById))
+    }
+
+    /** Pocket → tracklist CSV; null if the pocket is gone or no catalog. */
+    fun exportPocketCsv(id: String): ByteArray? {
+        if (pocket(id) == null) return null
+        val cat = catalogProvider?.invoke() ?: return null
+        return TracklistCsv.data(TracklistCsv.rows(songIdsForPocket(id), cat.songsById, cat.albumsById))
+    }
+
+    /** Setlist → tracklist CSV (audio tracks in order; text cues excluded); null if gone or no catalog. */
+    fun exportSetlistCsv(id: String): ByteArray? {
+        if (setlist(id) == null) return null
+        val cat = catalogProvider?.invoke() ?: return null
+        return TracklistCsv.data(TracklistCsv.rows(songIdsForSetlist(id), cat.songsById, cat.albumsById))
+    }
+
+    /**
+     * Apply an idempotent match-by-id merge of incoming collection families (the single choke point for
+     * every import path). Returns the number of incoming items processed.
+     */
+    fun mergeImported(
+        pockets: List<Pocket> = emptyList(),
+        playlists: List<Playlist> = emptyList(),
+        setlists: List<Setlist> = emptyList(),
+        folders: List<PlaylistFolder> = emptyList(),
+        clearFolderOnInsert: Boolean = false,
+    ): ImportSummary = synchronized(lock) {
+        val r = CollectionFile.Merge.merge(
+            current = CollectionFile.Sets(this.pockets, this.playlists, this.setlists, this.folders),
+            incomingFolders = folders, incomingPockets = pockets, incomingPlaylists = playlists,
+            incomingSetlists = setlists, nowMs = now(), clearFolderOnInsert = clearFolderOnInsert,
+        )
+        val before = _state.value
+        if (r.sets.pockets != before.pockets || r.sets.playlists != before.playlists ||
+            r.sets.setlists != before.setlists || r.sets.folders != before.folders
+        ) {
+            publish { it.copy(pockets = r.sets.pockets, playlists = r.sets.playlists, setlists = r.sets.setlists, folders = r.sets.folders) }
+            save()
+        }
+        ImportSummary(ImportKind.COLLECTIONS_JSON, r.pockets, r.playlists, r.setlists, r.folders, r.added, r.merged, r.unchanged)
+    }
+
+    /** Import a `CollectionsDocument` JSON envelope (setlists are not imported). Ids preserved; a re-import is a no-op. */
+    fun importCollection(data: ByteArray): ImportSummary {
+        val doc = CollectionFile.decodeEnvelope(data, json)
+        return mergeImported(pockets = doc.pockets, playlists = doc.playlists, folders = doc.folders)
+    }
+
+    /** Import a playlist zip (PWA or native): merge by id, then materialize portable items. */
+    fun importPlaylistZip(data: ByteArray): ImportSummary {
+        val b = PlaylistZip.read(data, json)
+        val s = mergeImported(pockets = b.pockets, playlists = listOf(b.playlist), clearFolderOnInsert = true)
+        materializePortableItems(b.items)
+        return s.copy(kind = ImportKind.PLAYLIST)
+    }
+
+    /** "Import as copy" (iOS behaviour): fresh ids for the playlist + its pockets, so it always ADDS. */
+    fun importPlaylistZipAsCopy(data: ByteArray): ImportSummary {
+        val b = PlaylistZip.read(data, json)
+        val (pl, pks) = PlaylistZip.remintBundle(b.playlist, b.pockets, now())
+        val s = mergeImported(pockets = pks, playlists = listOf(pl), clearFolderOnInsert = true)
+        materializePortableItems(b.items)
+        return s.copy(kind = ImportKind.PLAYLIST)
+    }
+
+    /** "Import as copy" for a pocket zip: fresh ids for the root + children. */
+    fun importPocketZipAsCopy(data: ByteArray): ImportSummary {
+        val b = PocketZip.read(data, json)
+        val (root, kids) = PocketZip.remintBundle(b.pocket, b.children, now())
+        val s = mergeImported(pockets = listOf(root) + kids, clearFolderOnInsert = true)
+        materializePortableItems(b.items)
+        return s.copy(kind = ImportKind.POCKET)
+    }
+
+    /** Import a pocket zip: merge root + children by id (folderId cleared on new pockets), then materialize items. */
+    fun importPocketZip(data: ByteArray): ImportSummary {
+        val b = PocketZip.read(data, json)
+        val s = mergeImported(pockets = listOf(b.pocket) + b.children, clearFolderOnInsert = true)
+        materializePortableItems(b.items)
+        return s.copy(kind = ImportKind.POCKET)
+    }
+
+    /**
+     * Merge the COLLECTIONS of a full backup (sources / edits / favorites are merged by the Settings
+     * coordinator, which owns those stores). Setlists survive only with their parent playlist present.
+     */
+    fun mergeBackupCollections(payload: BackupPayload): ImportSummary =
+        mergeImported(payload.pockets, payload.playlists, payload.setlists, payload.folders)
+            .copy(kind = ImportKind.BACKUP)
+
+    /**
+     * Route an imported file by CONTENT (zip magic + manifest `kind`, never the extension): playlist /
+     * pocket zips, a full backup (collections only), or a JSON `CollectionsDocument`.
+     */
+    fun importAny(data: ByteArray): ImportSummary = when (CollectionFile.detectKind(data, json)) {
+        ImportKind.PLAYLIST -> importPlaylistZip(data)
+        ImportKind.POCKET -> importPocketZip(data)
+        ImportKind.BACKUP -> mergeBackupCollections(BackupZip.import(data, json).first)
+        ImportKind.COLLECTIONS_JSON -> importCollection(data).copy(kind = ImportKind.COLLECTIONS_JSON)
+    }
+
+    /** Hand a portable snapshot's items the live catalog doesn't carry to [onPortableItems] (studio ids never). */
+    fun materializePortableItems(items: PortableItems.Payload) {
+        val sink = onPortableItems ?: return
+        if (items.isEmpty) return
+        val cat = catalogProvider?.invoke()
+        val songs = items.songs.filter { cat?.songsById?.containsKey(it.id) != true && !PlayResolver.isStudioId(it.id) }
+        val albums = items.albums.filter { cat?.albumsById?.containsKey(it.id) != true }
+        if (songs.isEmpty() && albums.isEmpty()) return
+        sink(PortableItems.Payload(songs, albums))
     }
 
     private fun publish(transform: (State) -> State) {
