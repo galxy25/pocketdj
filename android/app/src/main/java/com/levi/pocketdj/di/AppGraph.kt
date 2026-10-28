@@ -256,6 +256,7 @@ class AppGraph private constructor(context: Context) {
             clearCatalogCache = { catalogService.clearCache() },
             clearPlayHistory = { PlayHistoryStore.get(appContext).clear() },
             clearActivity = { collectionActivity.clear() },
+            favoritesFile = File(appContext.filesDir, com.levi.pocketdj.data.favorites.FavoritesStore.FILE_NAME),
         )
     }
 

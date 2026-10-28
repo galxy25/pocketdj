@@ -42,6 +42,7 @@ import com.levi.pocketdj.data.collections.PlaylistFolder
 import com.levi.pocketdj.screens.browse.AlbumArt
 import com.levi.pocketdj.screens.browse.Fmt
 import com.levi.pocketdj.screens.browse.KeyChip
+import com.levi.pocketdj.ui.FavoriteToggle
 
 /**
  * Shared building blocks for the Playlists tab (specs/playlists-ui.md): name /
@@ -272,6 +273,9 @@ fun CollectionTrackRow(
     leading: (@Composable () -> Unit)? = null,
     badges: (@Composable RowScope.() -> Unit)? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
+    /** When set, a ♥ [FavoriteToggle] precedes [trailing] (COL-10). Null ⇒ no heart (frozen/missing rows). */
+    favoriteSongId: String? = null,
+    favoriteAppleMusicId: String? = null,
 ) {
     val alpha = if (dimmed) 0.45f else 1f
     Row(
@@ -320,6 +324,9 @@ fun CollectionTrackRow(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        if (favoriteSongId != null) {
+            FavoriteToggle(favoriteSongId, appleMusicId = favoriteAppleMusicId, iconSize = 18.dp)
+        }
         trailing?.invoke(this)
     }
 }

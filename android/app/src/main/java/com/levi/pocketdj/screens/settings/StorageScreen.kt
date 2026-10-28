@@ -277,6 +277,13 @@ internal fun storageCategoryMeta(category: Category): StorageCategoryMeta = when
         clearTitle = "",
         clearBody = "",
     )
+    Category.FAVORITES -> StorageCategoryMeta(
+        // Display-only like Collections: favorites (and un-favorite tombstones) are user content.
+        title = "Favorites",
+        description = "Your hearted songs. Kept — never cleared here.",
+        clearTitle = "",
+        clearBody = "",
+    )
     Category.PLAY_HISTORY -> StorageCategoryMeta(
         title = "Play history",
         description = "Every recorded play on this device. Your install identity is kept.",

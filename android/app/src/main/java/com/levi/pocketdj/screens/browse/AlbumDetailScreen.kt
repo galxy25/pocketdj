@@ -44,6 +44,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.ui.FavoriteToggle
 import com.levi.pocketdj.playback.PlayOutcome
 import com.levi.pocketdj.screens.collections.AddToCollectionSheet
 import com.levi.pocketdj.screens.collections.AddToItem
@@ -276,6 +277,7 @@ private fun AlbumTrackRow(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        FavoriteToggle(songId = song.id, appleMusicId = song.appleMusicId, iconSize = 18.dp)
         when {
             isPreparing -> {
                 Spacer(Modifier.width(10.dp))
