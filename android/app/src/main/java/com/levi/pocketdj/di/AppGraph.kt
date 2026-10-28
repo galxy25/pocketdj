@@ -257,6 +257,11 @@ class AppGraph private constructor(context: Context) {
             clearPlayHistory = { PlayHistoryStore.get(appContext).clear() },
             clearActivity = { collectionActivity.clear() },
             favoritesFile = File(appContext.filesDir, com.levi.pocketdj.data.favorites.FavoritesStore.FILE_NAME),
+            // SVC-2: burns/stems measure + clear (BURNS excludes stems so the total never double-counts).
+            burnsUsageBytes = { (servicesGraph.burnStore.burnedUsageBytes() - servicesGraph.burnStore.stemUsageBytes()).coerceAtLeast(0L) },
+            stemsUsageBytes = { servicesGraph.burnStore.stemUsageBytes() },
+            clearBurns = { servicesGraph.burnStore.removeAllBurns() },
+            clearStems = { servicesGraph.burnStore.removeAllStems() },
         )
     }
 

@@ -43,11 +43,21 @@ class StorageService(
     private val clearActivity: () -> Unit,
     /** `filesDir/pocketdj-favorites.json` (COL-10, measured-only user content). */
     private val favoritesFile: File? = null,
+    /** SVC-2: measured burned-media bytes (audio + sidecars + cuts + grids; owned files only). */
+    private val burnsUsageBytes: (() -> Long)? = null,
+    /** SVC-2: measured owned stem-file bytes (a separately clearable line). */
+    private val stemsUsageBytes: (() -> Long)? = null,
+    /** SVC-2: `BurnStore.removeAllBurns()` — the library/catalog/collections are never touched. */
+    private val clearBurns: (() -> Unit)? = null,
+    /** SVC-2: `BurnStore.removeAllStems(protecting=...)`; beat grids and burned audio stay. */
+    private val clearStems: (() -> Unit)? = null,
 ) {
     /** The five measured categories (specs/storage.md §2, ordered caches → docs). */
     enum class Category(val clearable: Boolean) {
         CATALOG_CACHE(clearable = true),
         ARTWORK(clearable = true),
+        BURNS(clearable = true), // downloaded media only — songs stay in the library, re-burnable
+        STEMS(clearable = true), // burned stem files; beat grids + audio stay
         COLLECTIONS(clearable = false), // user content — display-only (§2.3)
         PLAY_HISTORY(clearable = true),
         ACTIVITY(clearable = true),
@@ -62,6 +72,8 @@ class StorageService(
         when (category) {
             Category.CATALOG_CACHE -> dirSize(catalogCacheDir)
             Category.ARTWORK -> runCatching { artwork.diskSizeBytes() }.getOrDefault(0L)
+            Category.BURNS -> burnsUsageBytes?.invoke() ?: 0L
+            Category.STEMS -> stemsUsageBytes?.invoke() ?: 0L
             Category.COLLECTIONS -> fileSize(collectionsFile)
             Category.PLAY_HISTORY -> fileSize(playHistoryFile)
             Category.ACTIVITY -> fileSize(activityFile)
@@ -88,6 +100,8 @@ class StorageService(
             Category.ARTWORK -> runCatching { artwork.clear() }
             Category.PLAY_HISTORY -> runCatching { clearPlayHistory() }
             Category.ACTIVITY -> runCatching { clearActivity() }
+            Category.BURNS -> runCatching { clearBurns?.invoke() }
+            Category.STEMS -> runCatching { clearStems?.invoke() }
             Category.COLLECTIONS, Category.FAVORITES -> Unit // unreachable — guarded above
         }
         measure(category)

@@ -269,6 +269,20 @@ internal fun storageCategoryMeta(category: Category): StorageCategoryMeta = when
         clearBody = "Removes cached album and song artwork from this device. Images " +
             "re-download the next time they appear. Nothing in your library changes.",
     )
+    Category.BURNS -> StorageCategoryMeta(
+        title = "Downloaded songs",
+        description = "Songs burned to this device for offline play. Your library is never touched.",
+        clearTitle = "Delete downloaded songs?",
+        clearBody = "Removes every downloaded song file from this device. The songs stay in " +
+            "your library and collections and can be downloaded again any time.",
+    )
+    Category.STEMS -> StorageCategoryMeta(
+        title = "Stems",
+        description = "Separated vocal, drum, bass and other parts kept for offline mixing.",
+        clearTitle = "Delete stems?",
+        clearBody = "Removes the downloaded stem files from this device. Downloaded songs " +
+            "and beat grids are kept; stems re-download when needed.",
+    )
     Category.COLLECTIONS -> StorageCategoryMeta(
         // Display-only (§2.3): no clear affordance — the clear-copy fields are
         // never shown for this category.
