@@ -247,10 +247,10 @@ class BurnStoreMixBurns(
         burns.items.value[songId]?.let { MixBurnStatus(it.state, it.error, it.bytes) }
     override fun requestStop() = burns.requestStop()
     override fun cancelTransfers(songIds: Collection<String>) = burns.cancelTransfers(songIds)
-    override fun setOnFinalized(cb: ((String) -> Unit)?) {
+    override fun watchFinalized(cb: ((String) -> Unit)?) {
         burns.onAnyBurnFinalized = cb?.let { f -> { id: String, _: Long -> f(id) } }
     }
-    override fun setOnBytes(cb: ((String, Long) -> Unit)?) { transfers.onBytes = cb }
+    override fun watchBytes(cb: ((String, Long) -> Unit)?) { transfers.onBytes = cb }
 }
 
 class RipsMixRips(

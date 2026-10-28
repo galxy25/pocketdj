@@ -31,9 +31,9 @@ interface MixDownloadBurns {
     fun requestStop()
     fun cancelTransfers(songIds: Collection<String>)
     /** A `.ready` item landed via the background/adopt path. Null clears. */
-    fun setOnFinalized(cb: ((songId: String) -> Unit)?)
+    fun watchFinalized(cb: ((songId: String) -> Unit)?)
     /** Throttled background-transfer chunk deltas. Null clears. */
-    fun setOnBytes(cb: ((songId: String, delta: Long) -> Unit)?)
+    fun watchBytes(cb: ((songId: String, delta: Long) -> Unit)?)
 }
 
 /** The rips plane slice (production: [com.levi.pocketdj.data.rips.RipsRepository] + coordinator). */
@@ -256,8 +256,8 @@ class CollectionMixDownloader(
 
     private fun installHooks() {
         val run = runId
-        burns.setOnFinalized { id -> scope.launch { if (run == runId && isActive && id in trackedIds) noteDownloaded(id) } }
-        burns.setOnBytes { id, delta -> scope.launch { sampleBytes(run, id, delta) } }
+        burns.watchFinalized { id -> scope.launch { if (run == runId && isActive && id in trackedIds) noteDownloaded(id) } }
+        burns.watchBytes { id, delta -> scope.launch { sampleBytes(run, id, delta) } }
         host.setStreamHooks(
             onBytes = { id, delta -> scope.launch { sampleBytes(run, id, delta) } },
             onFailed = { id ->
@@ -273,8 +273,8 @@ class CollectionMixDownloader(
     }
 
     private fun removeHooks() {
-        burns.setOnFinalized(null)
-        burns.setOnBytes(null)
+        burns.watchFinalized(null)
+        burns.watchBytes(null)
         host.setStreamHooks(null, null)
     }
 
