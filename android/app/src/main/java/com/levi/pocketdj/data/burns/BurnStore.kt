@@ -466,8 +466,7 @@ class BurnStore(
 
     // ---- stems --------------------------------------------------------------------------------
 
-    private fun stemFilesPresent(songId: String, dir: File) =
-        BurnFileNames.STEM_NAMES.all { File(dir, BurnFileNames.stemFileName(songId, it)).exists() }
+    private fun stemFilesPresent(songId: String, dir: File) = BurnStems.allPresent(dir, songId)
 
     private suspend fun burnCollectionStems(songs: List<BurnSong>, dir: File): Int {
         val stemmed = songs.filter { rips.entry(it.id)?.stemVersion != null }
@@ -521,7 +520,7 @@ class BurnStore(
         val url = rips.beatgridUrl(songId) ?: return
         try {
             val data = rips.downloadBytes(url)
-            if (BeatGridSidecar.parse(String(data, Charsets.UTF_8)) == null) return
+            if (!BurnStems.isValidBeatGrid(data)) return
             writeAtomic(dest, data)
         } catch (e: CancellationException) {
             throw e
@@ -781,8 +780,7 @@ class BurnStore(
 
     private fun removeAuxFiles(songId: String) {
         for (r in folder.roots()) {
-            for (n in BurnFileNames.STEM_NAMES) File(r.dir, BurnFileNames.stemFileName(songId, n)).delete()
-            File(r.dir, BurnFileNames.beatgridFileName(songId)).delete()
+            BurnStems.removeAux(r.dir, songId)
         }
     }
 

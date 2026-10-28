@@ -206,6 +206,10 @@ class AppGraph private constructor(context: Context) {
         scope = appScope,
         fetchJob = { ripServerClient.job(it) },
         refreshManifest = { ripsRepository.refresh() },
+        requestStemify = { ripServerClient.requestStemify(it) },
+        fetchStemJob = { ripServerClient.stemJob(it) },
+        isStemmed = { ripsRepository.entry(it)?.isStemmed == true },
+        hasServer = { ripServerClient.isConfigured() },
     ).also { t ->
         // SVC-2: a rip that lands while the app is open drains burn-when-ripped intents.
         val prev = t.onRipReady

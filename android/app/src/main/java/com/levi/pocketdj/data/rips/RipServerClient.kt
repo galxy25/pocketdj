@@ -1,6 +1,11 @@
 package com.levi.pocketdj.data.rips
 
 import com.levi.pocketdj.data.PdjJson
+import com.levi.pocketdj.data.stems.BatchStemItem
+import com.levi.pocketdj.data.stems.BatchStemResponse
+import com.levi.pocketdj.data.stems.BatchStemResult
+import com.levi.pocketdj.data.stems.StemClient
+import com.levi.pocketdj.data.stems.StemJob
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -257,6 +262,104 @@ class RipServerClient(
             if (error is kotlinx.coroutines.CancellationException) throw error
             emptyList()
         }
+    }
+
+    /**
+     * `POST /stemify` — fire-and-forget stem request for ONE song (iOS `RipsStore.stemify`).
+     * Returns the job view, or null when refused / unreachable / undecodable (never throws except
+     * cancellation). Fenced ids never reach the network.
+     */
+    suspend fun requestStemify(songId: String): StemJob? {
+        if (StemClient.isFenced(songId)) return null
+        val config = configProvider()
+        if (!config.configured) return null
+        return try {
+            val body = buildJsonObject { put("songId", songId) }.toString()
+                .toRequestBody("application/json".toMediaType())
+            val request = builder(config, url(config, "stemify")).post(body).build()
+            execute(request) { text -> json.decodeFromString<StemJob>(text) }
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            null
+        }
+    }
+
+    /** `GET /jobs/<id>` decoded as a stem job (the stem phases are not rip phases). */
+    suspend fun stemJob(jobId: String): StemJob {
+        val config = requireConfig()
+        val request = builder(config, url(config, "jobs", jobId)).get().build()
+        return execute(request, pollClient) { text -> json.decodeFromString<StemJob>(text) }
+    }
+
+    /**
+     * `POST /stemify-collection`. Dedups, fences studio/device-local ids, 404 (older server) /
+     * transport failure -> per-song fallback via [fallbackOne]; non-2xx -> empty; the over-cap
+     * envelope yields `needsConfirm` (re-call with [confirmLarge]).
+     */
+    suspend fun stemifyCollection(
+        songIds: List<String>,
+        confirmLarge: Boolean = false,
+        isStemmed: (String) -> Boolean = { false },
+        fallbackOne: suspend (String) -> StemJob? = { requestStemify(it) },
+    ): BatchStemResult {
+        val ids = songIds.filterNot(StemClient::isFenced).distinct()
+        if (ids.isEmpty()) return BatchStemResult()
+        val config = configProvider()
+        if (!config.configured) return stemifyFallback(ids, false, isStemmed, fallbackOne)
+        return try {
+            val body = buildJsonObject {
+                put("songIds", kotlinx.serialization.json.JsonArray(ids.map(::JsonPrimitive)))
+                if (confirmLarge) put("confirmLarge", true)
+            }.toString().toRequestBody("application/json".toMediaType())
+            val request = builder(config, url(config, "stemify-collection")).post(body).build()
+            val (code, text) = withContext(Dispatchers.IO) {
+                shortClient.newCall(request).execute().use { it.code to it.body?.string().orEmpty() }
+            }
+            when {
+                code == 404 -> stemifyFallback(ids, true, isStemmed, fallbackOne)
+                code !in 200..299 -> BatchStemResult()
+                else -> {
+                    val d = json.decodeFromString<BatchStemResponse>(text)
+                    if (d.needsConfirm == true) {
+                        BatchStemResult(needsConfirm = true, count = d.count ?: ids.size, cap = d.cap ?: 0)
+                    } else {
+                        BatchStemResult(
+                            results = d.results,
+                            ready = d.counts.ready, queued = d.counts.queued, inflight = d.counts.inflight,
+                            ripping = d.counts.ripping, needsCut = d.counts.needsCut,
+                            ineligible = d.counts.ineligible, unknown = d.counts.unknown, total = d.counts.total,
+                        )
+                    }
+                }
+            }
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            stemifyFallback(ids, true, isStemmed, fallbackOne)
+        }
+    }
+
+    private suspend fun stemifyFallback(
+        ids: List<String>,
+        hasServer: Boolean,
+        isStemmed: (String) -> Boolean,
+        fallbackOne: suspend (String) -> StemJob?,
+    ): BatchStemResult {
+        val items = ids.map { id ->
+            when {
+                isStemmed(id) -> BatchStemItem(id, "ready")
+                hasServer -> {
+                    val job = fallbackOne(id)
+                    BatchStemItem(id, StemClient.batchStatus(job?.phase), job?.jobId)
+                }
+                else -> BatchStemItem(id, "unknown")
+            }
+        }
+        fun count(status: String) = items.count { it.status == status }
+        return BatchStemResult(
+            results = items, ready = count("ready"), queued = count("queued"),
+            ripping = count("ripping"), ineligible = count("ineligible"), unknown = count("unknown"),
+            total = items.size,
+        )
     }
 
     /** Studio ids and "Pocket DJ" profile ids (pdj_) are device-local and never rip. */
