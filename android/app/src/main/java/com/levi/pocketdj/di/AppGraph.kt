@@ -206,7 +206,16 @@ class AppGraph private constructor(context: Context) {
         scope = appScope,
         fetchJob = { ripServerClient.job(it) },
         refreshManifest = { ripsRepository.refresh() },
-    )
+    ).also { t ->
+        // SVC-2: a rip that lands while the app is open drains burn-when-ripped intents.
+        val prev = t.onRipReady
+        t.onRipReady = { id ->
+            prev?.invoke(id)
+            appScope.launch(Dispatchers.IO) {
+                runCatching { servicesGraph.burnStore.drainPendingAfterRip() }
+            }
+        }
+    }
 
     /** Apple Music developer-token client (fetch + cache from the rip server). */
     val musicKitDevTokenClient: MusicKitDeveloperTokenClient = MusicKitDeveloperTokenClient(
@@ -344,6 +353,8 @@ class AppGraph private constructor(context: Context) {
             runCatching {
                 onboarding.waitUntilComplete()
                 servicesGraph.burnStore.reconcileOnLaunch()
+                // A rip that finished while the app was closed still burns (iOS launch drain).
+                servicesGraph.burnStore.drainPendingAfterRip()
             }.onFailure { android.util.Log.e("PocketDJ", "[burns] reconcile failed", it) }
         }
         // MainActivity forwards every intent to IntentSink; the modules' handlers answer.

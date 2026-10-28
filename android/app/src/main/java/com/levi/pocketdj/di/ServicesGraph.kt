@@ -34,7 +34,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
      * SVC-2 the ONE offline store: ledger `filesDir/pocketdj-burns.json`, media `filesDir/burns/`.
      * The download client is the plain app client — it never attaches the rip bearer to S3.
      */
-    val burnStore: BurnStore by lazy {
+    private val burnStoreLazy: Lazy<BurnStore> = lazy {
         val rips = HttpBurnRips(
             http = app.httpClient,
             manifestEntry = { app.ripsRepository.entry(it) },
@@ -54,6 +54,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             writerExecutor = VersionedJsonWriter.backgroundExecutor("pdj-burns-writer"),
         )
     }
+    val burnStore: BurnStore get() = burnStoreLazy.value
 
     override val settingsSections: List<SettingsSection> by lazy {
         if (diag.channel) listOf(debugSection()) else emptyList()
@@ -65,5 +66,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         listOf(diag.deepLink)
     }
 
-    override val flushables: List<Flushable> by lazy { listOf(diag.flushable) }
+    override val flushables: List<Flushable> by lazy {
+        listOf(diag.flushable, Flushable { if (burnStoreLazy.isInitialized()) burnStore.flush() })
+    }
 }

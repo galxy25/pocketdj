@@ -14,7 +14,10 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -48,6 +51,7 @@ class BurnStore(
     private val lookup: (String) -> Pair<IndexSong?, IndexAlbum?> = { null to null },
     private val clock: () -> Long = System::currentTimeMillis,
     writerExecutor: Executor = VersionedJsonWriter.DIRECT,
+    private val io: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val json = PdjJson.lenient
     private val writer = VersionedJsonWriter(ledgerFile, writerExecutor)
@@ -77,11 +81,14 @@ class BurnStore(
     private val now: Double get() = clock().toDouble()
 
     init {
-        runCatching {
-            if (ledgerFile.isFile) {
+        if (ledgerFile.isFile) {
+            try {
                 val doc = json.decodeFromString(BurnDocument.serializer(), ledgerFile.readText())
                 _items.value = LinkedHashMap<String, BurnItem>().also { m -> doc.items.forEach { m.putIfAbsent(it.songId, it) } }
                 _pending.value = LinkedHashMap<String, PendingBurn>().also { m -> (doc.pendingAfterRip ?: emptyList()).forEach { m.putIfAbsent(it.songId, it) } }
+            } catch (e: Exception) {
+                // Undecodable (corrupt / future schema): keep it aside so the next save() can't destroy it.
+                runCatching { ledgerFile.renameTo(File(ledgerFile.parentFile, ledgerFile.name + ".corrupt-" + clock())) }
             }
         }
     }
@@ -244,7 +251,12 @@ class BurnStore(
      */
     suspend fun burn(songs: List<BurnSong>): BurnResult = runLock.withLock { burnLocked(songs) }
 
-    private suspend fun burnLocked(songs: List<BurnSong>): BurnResult {
+    private val priorReady = ConcurrentHashMap<String, BurnItem>()
+
+    /** Disk IO (probe, stats, sidecars, listings) runs on [io], never the caller's (Main) thread. */
+    private suspend fun burnLocked(songs: List<BurnSong>): BurnResult = withContext(io) { burnLockedIo(songs) }
+
+    private suspend fun burnLockedIo(songs: List<BurnSong>): BurnResult {
         stopRequested = false
         val unique = LinkedHashMap<String, BurnSong>().also { m -> songs.forEach { if (it.id.isNotEmpty()) m.putIfAbsent(it.id, it) } }.values.toList()
         if (unique.isEmpty()) return BurnResult()
@@ -305,7 +317,7 @@ class BurnStore(
                             notRipped += 1
                             continue
                         }
-                        existing?.let { patchItem(song.id) { it.copy(state = BurnState.DOWNLOADING) } }
+                        existing?.let { priorReady[song.id] = it; patchItem(song.id) { it.copy(state = BurnState.DOWNLOADING) } }
                         bytes = rips.download(url, audioFile)
                     }
                     writeAtomic(File(dir, names.sidecar), BurnSidecar.build(song.id, song, s, a, entry).toByteArray())
@@ -323,11 +335,15 @@ class BurnStore(
                             cutFileName = prev?.cutFileName, cutDownloadedAt = prev?.cutDownloadedAt,
                         ),
                     )
+                    priorReady.remove(song.id)
                     burned += 1
                     save()
                     exportAnalogCut(song.id, entry, dir)
                 } catch (e: CancellationException) {
-                    _items.value[song.id]?.takeIf { it.state == BurnState.DOWNLOADING }?.let { dropItems(listOf(song.id)) }
+                    // Restore the pre-run READY record (old audio + sidecar are still on disk); else drop.
+                    if (_items.value[song.id]?.state == BurnState.DOWNLOADING) {
+                        priorReady.remove(song.id)?.let { setItem(it) } ?: dropItems(listOf(song.id))
+                    }
                     throw e
                 } catch (e: Exception) {
                     if (isOutOfSpace(e)) {
@@ -339,6 +355,7 @@ class BurnStore(
                     setItem(errorItem(song, e.message ?: e.javaClass.simpleName))
                     failed += 1
                 } finally {
+                    priorReady.remove(song.id)
                     done += 1
                 }
             }

@@ -14,6 +14,12 @@ class BurnFileNamesTest {
         assertEquals("a b", BurnFileNames.sanitizeToken("a\n\tb"))
     }
 
+    @Test fun sanitizeTreatsFormatCharsLikeSwiftControlCharacters() {
+        assertEquals("a b", BurnFileNames.sanitizeToken("a\u200Eb"))
+        assertEquals("co op", BurnFileNames.sanitizeToken("co\u00ADop"))
+        assertEquals("x y", BurnFileNames.sanitizeToken("x\uFEFFy"))
+    }
+
     @Test fun sanitizeCapsTokenAt40() {
         val t = BurnFileNames.sanitizeToken("x".repeat(100))!!
         assertEquals(40, t.length)

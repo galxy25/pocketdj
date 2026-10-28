@@ -137,6 +137,26 @@ class BurnStoreTest {
         assertEquals(2, r.rips.downloads.size) // re-ripped => re-burn
     }
 
+    @Test fun cancelDuringStaleReBurnRestoresThePriorReadyRecord() = runTest {
+        val r = Rig(); r.digitalSong("a")
+        val store = r.store()
+        store.burn(listOf(bs("a")))
+        val before = store.items.value.getValue("a")
+        r.nowMs += 10
+        r.rips.entries["a"] = digital("a", rippedAt = r.nowMs.toDouble() + 5)
+        r.rips.onDownload = { throw kotlinx.coroutines.CancellationException("leave screen") }
+        try { store.burn(listOf(bs("a"))) } catch (_: kotlinx.coroutines.CancellationException) {}
+        assertEquals(before, store.items.value["a"])
+    }
+
+    @Test fun corruptLedgerIsKeptAsideNotOverwritten() = runTest {
+        val r = Rig()
+        r.ledger.parentFile!!.mkdirs(); r.ledger.writeText("{not json")
+        val store = r.store()
+        store.flush()
+        assertTrue(r.ledger.parentFile!!.list()!!.any { it.contains(".corrupt-") })
+    }
+
     @Test fun removeBurnsKeepsSharedAlbumUntilLastSiblingGone() = runTest {
         val r = Rig(); r.analogAlbum("alb_1", listOf("s1", "s2"))
         val store = r.store()

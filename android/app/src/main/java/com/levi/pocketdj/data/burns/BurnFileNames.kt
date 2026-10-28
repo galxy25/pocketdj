@@ -21,7 +21,8 @@ object BurnFileNames {
     /** Characters Swift's `CharacterSet(charactersIn:"/\\:*?\"<>|-")` + control + newlines map to a space. */
     private fun isIllegal(cp: Int): Boolean {
         if ("/\\:*?\"<>|-".indexOf(cp.toChar()) >= 0 && cp < 128) return true
-        if (Character.getType(cp) == Character.CONTROL.toInt()) return true
+        val t = Character.getType(cp)
+        if (t == Character.CONTROL.toInt() || t == Character.FORMAT.toInt()) return true
         return cp in 0x0A..0x0D || cp == 0x85 || cp == 0x2028 || cp == 0x2029
     }
 
