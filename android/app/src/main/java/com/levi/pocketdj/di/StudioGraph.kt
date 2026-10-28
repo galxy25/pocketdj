@@ -1,13 +1,147 @@
 package com.levi.pocketdj.di
 
+import android.content.Intent
+import com.levi.pocketdj.data.store.VersionedJsonWriter
+import com.levi.pocketdj.shell.DeepLinkHandler
 import com.levi.pocketdj.shell.FeatureModule
+import com.levi.pocketdj.shell.Flushable
+import com.levi.pocketdj.shell.ResetHook
+import com.levi.pocketdj.shell.SyncEntry
+import com.levi.pocketdj.studio.model.StudioFactory
+import com.levi.pocketdj.studio.model.StudioLoop
+import com.levi.pocketdj.studio.model.StudioPattern
+import com.levi.pocketdj.studio.model.StudioPatternRow
+import com.levi.pocketdj.studio.model.StudioGrid
+import com.levi.pocketdj.studio.model.StudioSample
+import com.levi.pocketdj.studio.model.StudioSource
+import com.levi.pocketdj.studio.store.DefaultStudioRoots
+import com.levi.pocketdj.studio.store.ExecutorStudioScheduler
+import com.levi.pocketdj.studio.store.SafStudioDir
+import com.levi.pocketdj.studio.store.StudioDir
+import com.levi.pocketdj.studio.store.StudioFamily
+import com.levi.pocketdj.studio.store.StudioFolders
+import com.levi.pocketdj.studio.store.StudioRoots
+import com.levi.pocketdj.studio.store.StudioStore
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import java.io.File
+import java.io.RandomAccessFile
+import kotlin.math.PI
+import kotlin.math.sin
 
 /**
- * Sidecar graph for the studio area (decision D3). Empty today: packages in this area
- * override the FeatureModule members they contribute (nav entries, settings sections,
- * deep-link handlers, flushables, reset hooks, sync entries, row resolvers, play-outcome
- * listeners, periodic work) and add their own lazies here — never in AppGraph.
+ * Sidecar graph for the studio area (decision D3). STU-1 contributes the studio document store
+ * (`pocketdj-studio.json`, device-local) with its ON_STOP flush, the "Reset everything" hook, the
+ * cue-mirror sync entry (the ONLY Studio data that leaves the device), and the debug
+ * `--ez PDJ_SEED_STUDIO true` fixture seed used by the emulator steps.
  */
-class StudioGraph(@Suppress("unused") private val app: AppGraph) : FeatureModule {
+class StudioGraph(private val app: AppGraph) : FeatureModule {
     override val area: String = "studio"
+
+    /**
+     * Per-family user-folder SAF tree URI (persisted permission). Wired to the Storage settings by
+     * the package that adds the folder pickers (SVC-14 / STU-x); null => app-managed root only.
+     */
+    @Volatile
+    var userFolderTreeUri: (StudioFamily) -> String? = { null }
+
+    /** Studio family roots: app-private `filesDir/studio/<family>/` + optional SAF user roots. */
+    val studioRoots: StudioRoots by lazy {
+        DefaultStudioRoots(File(app.appContext.filesDir, "studio")) { family ->
+            SafStudioDir.open(app.appContext, userFolderTreeUri(family)) as StudioDir?
+        }
+    }
+
+    private val writerExecutor by lazy { VersionedJsonWriter.backgroundExecutor("pdj-studio-writer") }
+
+    /** The studio document store. Construction reads the doc and reconciles against disk once. */
+    private val storeLazy = lazy {
+        StudioStore(
+            File(app.appContext.filesDir, StudioStore.FILE_NAME), studioRoots, writerExecutor, ExecutorStudioScheduler(),
+        ).also { s ->
+            // Reconcile lists SAF trees: never on the first caller's (possibly main) thread.
+            app.appScope.launch(Dispatchers.IO) { runCatching { s.reconcileOnLaunch() } }
+        }
+    }
+    val studioStore: StudioStore get() = storeLazy.value
+
+    // A user who never touched Studio must not build/reconcile/rewrite the doc on ON_STOP.
+    override val flushables: List<Flushable> = listOf(Flushable { if (storeLazy.isInitialized()) studioStore.flush() })
+
+    override val resetHooks: List<ResetHook> = listOf(
+        ResetHook {
+            val s = studioStore
+            StudioFamily.entries.forEach { s.deleteAll(it) }
+            s.clearCues()
+            s.flush()
+        },
+    )
+
+    override val syncEntries: List<SyncEntry> = listOf(SyncEntry("studio-cues", "pocketdj-studio.cues.json"))
+
+    override val deepLinkHandlers: List<DeepLinkHandler> = listOf(
+        DeepLinkHandler { intent ->
+            if (isDebuggable() && intent.getBooleanExtra(SEED_EXTRA, false)) {
+                app.appScope.launch(Dispatchers.IO) { runCatching { seedFixture() } }
+            }
+            false   // never consumes the intent
+        },
+    )
+
+    private fun isDebuggable(): Boolean =
+        (app.appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+    /**
+     * Debug fixture (`--ez PDJ_SEED_STUDIO true`): one 1 s tone sample + one loop (real files in
+     * the app roots), a pattern, and two cues. Idempotent by fixed ids. Emulator steps: relaunch
+     * -> rows persist; delete a tone file -> relaunch -> record pruned; revoke the SAF root ->
+     * relaunch -> nothing pruned.
+     */
+    fun seedFixture() {
+        val store = studioStore
+        val smpId = "smp_seed0000-0000-0000-0000-000000000001"
+        val lpId = "lp_seed0000-0000-0000-0000-000000000001"
+        val sName = StudioFolders.fileName(StudioFamily.SAMPLES, smpId)
+        val lName = StudioFolders.fileName(StudioFamily.LOOPS, lpId)
+        writeTone(File(File(app.appContext.filesDir, "studio/samples").also { it.mkdirs() }, sName))
+        writeTone(File(File(app.appContext.filesDir, "studio/loops").also { it.mkdirs() }, lName))
+        val t = System.currentTimeMillis().toDouble()
+        store.addSample(
+            StudioSample(smpId, "Seed Tone", sName, createdAt = t, durationMs = 1000, source = StudioSource.Mic, grid = StudioGrid(120.0)),
+        )
+        store.addLoop(StudioLoop(lpId, "Seed Loop", smpId, bpm = 120.0, lengthMs = 1000, frames = 44100, fileName = lName, createdAt = t))
+        store.addPattern(
+            StudioPattern.of(
+                "ptn_seed0000-0000-0000-0000-000000000001", "Seed Pattern",
+                rows = listOf(StudioPatternRow.of(smpId, steps = List(16) { it % 4 == 0 })), createdAt = t,
+            ),
+        )
+        store.setCue("sng_1", 0, 1000, "Seed A")
+        store.setCue("sng_1", 1, 2000, "Seed B")
+        store.flush()
+    }
+
+    /** 1 s 440 Hz mono 16-bit PCM WAV (the seed's stand-in audio; content-sniffed by the decoder). */
+    private fun writeTone(f: File) {
+        val rate = 44100; val n = rate
+        RandomAccessFile(f, "rw").use { raf ->
+            raf.setLength(0)
+            fun le32(v: Int) = byteArrayOf(v.toByte(), (v shr 8).toByte(), (v shr 16).toByte(), (v shr 24).toByte())
+            fun le16(v: Int) = byteArrayOf(v.toByte(), (v shr 8).toByte())
+            raf.writeBytes("RIFF"); raf.write(le32(36 + n * 2)); raf.writeBytes("WAVEfmt ")
+            raf.write(le32(16)); raf.write(le16(1)); raf.write(le16(1)); raf.write(le32(rate))
+            raf.write(le32(rate * 2)); raf.write(le16(2)); raf.write(le16(16))
+            raf.writeBytes("data"); raf.write(le32(n * 2))
+            val buf = ByteArray(n * 2)
+            for (i in 0 until n) {
+                val v = (sin(2 * PI * 440.0 * i / rate) * 0.3 * Short.MAX_VALUE).toInt()
+                buf[2 * i] = v.toByte(); buf[2 * i + 1] = (v shr 8).toByte()
+            }
+            raf.write(buf)
+        }
+    }
+
+    companion object {
+        const val SEED_EXTRA = "PDJ_SEED_STUDIO"
+    }
 }
