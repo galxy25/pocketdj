@@ -344,7 +344,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
-| SURF-1 — Shell foundation: adaptive scaffold, FeatureModule registry + area sidecar graphs, settin… | 1 | Planned | — |
+| SURF-1 — Shell foundation: adaptive scaffold, FeatureModule registry + area sidecar graphs, settin… | 1 | Merged (`d726ac4b`) | — |
 | SURF-2 — Application lifecycle + background work: PocketDjApplication, ProcessLifecycle flush funn… | 2 | PARTIAL | storage-prune measure-only (no soft-cap prune); jukebox onStart bootstrap deferred; emulator steps not run |
 | SURF-3 — Zero-to-hero onboarding (store, 3 stages, launch gate, mutating-intent veto, link-a-devic… | 3 | PARTIAL (veto wiring done in SURF-5 ShellActions; link probe stubbed until SVC-9; real AM sign-in device-only) | Real Apple Music sign-in completion in stage 2 (emulator verifies can… |
 | SURF-4 — Deep links + file opens: manifest filters, DeepLinkParser, pending-until-onboarding, disp… | 4 | PARTIAL (seams unassigned, defaults are visible placeholders: playItem SURF-5; joinJukebox JBX-2; importCollection SET-2/COL-15; mwf GM-10) | App Links auto-verification (needs https://jukebox.pocket-dj.com/.wel… |
@@ -360,14 +360,14 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
-| SVC-12 — Catalog cache polish + green compiled-in endpoints pinned by test | 1 | Planned | — |
-| SVC-5 — Diagnostics: DiagLog + NPLog lanes, shared SigV4 S3 uploader, .pdjdiagkey import, jank wa… | 2 | Planned | — |
+| SVC-12 — Catalog cache polish + green compiled-in endpoints pinned by test | 1 | Merged (`baa89724`) | — |
+| SVC-5 — Diagnostics: DiagLog + NPLog lanes, shared SigV4 S3 uploader, .pdjdiagkey import, jank wa… | 2 | Merged (`94c411e4`) | — |
 | SVC-1 — Rip client parity: presign + prefetch, 20 s bounded interactive wait + StillRipping, job … | 3 | PARTIAL | emulator-verified 2026-10-27 with a mock rip server (presign, bounded wait + tracker hand-off); not verified: presigned playback on a private bucket, "Still ripping" flow, mid-queue URL refresh) |
-| SVC-2 — BurnStore core (ONE offline store): ledger, byte-identical file names, sidecar, stems + b… | 4 | Planned | — |
-| SVC-3 — TransferCoordinator over WorkManager: background burn downloads surviving process death, … | 5 | PARTIAL (device-only: force-stop survival, notification, periodic jobscheduler run, Doze timing) | Doze-deferred periodic timing is only observable on hardware; the emu… |
+| SVC-2 — BurnStore core (ONE offline store): ledger, byte-identical file names, sidecar, stems + b… | 4 | Merged (`17634c54`) | — |
+| SVC-3 — TransferCoordinator over WorkManager: background burn downloads surviving process death, … | 5 | Merged (`9f8a3e5c`) | Emulator-verified 2026-10-28: 5-song (27-41 MB) burn survives `am force-stop` and finishes after relaunch (transfers file empties), HTTP 400 -> error rows + no audio file, rip-reconcile periodic job registered. Device-only: Doze-deferred periodic timing; POST_NOTIFICATIONS prompt (Q14). |
 | SVC-4 — Burned-first row resolver + device/cloud PlaybackMode + collection Rip/Burn bar with Stop… | 6 | PARTIAL | JVM-tested (1645 tests green), not emulator-verified; Stemify from the iOS bar not ported |
 | SVC-11 — Cloud stems client (stemify/stem jobs) + burned stems/beat-grids pull + Stemify action on… | 7 | PARTIAL | Unit-tested (1946 green); NOT emulator-verified (device-only: History glyph/live row, skip on real playback). Open: `noteSkip` cumulative per-song skip count unwired until a Kotlin PlayCountService port exists (Browse wasSkipped / recs read it) |
-| SVC-15 — Apple Music Web API client: catalog search, library playlists CRUD, favorites, artists la… | 7 | Planned | Library (write) endpoints need a real Music-User-Token from the vendo… |
+| SVC-15 — Apple Music Web API client: catalog search, library playlists CRUD, favorites, artists la… | 7 | Merged (`a6626196`) | Library (write) endpoints need a real Music-User-Token from the vendo… |
 | SVC-6 — PlayStatsStore + StorageManager prune engine + StoragePruneWorker + Storage screen burn/s… | 10 | Planned | Periodic worker cadence under Doze. |
 | SVC-8 — Backend: pocketdj-profile-sync Lambda (S3 document store) + optional endpoint key | 10 | Planned | Deploy to the green account needs AWS profile llc; unit tests run aga… |
 | SVC-7 — Document sync engine (CloudSyncService verbatim port) + ProfileStore + in-memory CloudDoc… | 12 | Planned | — |
@@ -380,10 +380,10 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
-| PB-1 — SetlistSequencer core: cursor queue, live edits, repeat/shuffle, per-row resolve ladder, … | 4 | Planned | Apple Music rows inside a run (full-track rung) need a signed-in arm6… |
-| PB-2 — Session transport + one-owner arbiter: SequencerForwardingPlayer, SessionSwitchboard (Tra… | 5 | PARTIAL (review fixes applied; onPlaybackResumption/ResumptionSnapshot deferred to PB-4, device-only items pending) | Bluetooth/headset routes, AVRCP head units and the actual lock-screen… |
-| PB-3 — Zero dead air: rip-on-demand resolver in runs, runway, watchdogs, stall hop, cascade brea… | 6 | Planned | Real cellular dead zones; Apple Music lane behaviours |
-| PB-6 — Now Playing deck screen (gold record at beat-grid BPM, transport, notices) + mini bar upg… | 6 | Planned | — |
+| PB-1 — SetlistSequencer core: cursor queue, live edits, repeat/shuffle, per-row resolve ladder, … | 4 | Merged (`8402697d`) | Apple Music rows inside a run (full-track rung) need a signed-in arm6… |
+| PB-2 — Session transport + one-owner arbiter: SequencerForwardingPlayer, SessionSwitchboard (Tra… | 5 | Merged (`d26e3db9`) | Emulator-verified 2026-10-28 (media-session next/prev/play/pause + PLAY_PAUSE key, SKIP/REPEAT/SHUFFLE actions, notification heart). NOT done: onPlaybackResumption after process death (PB-4). Device-only: Bluetooth/AVRCP, headset toggle while buffering, real lock-screen render. |
+| PB-3 — Zero dead air: rip-on-demand resolver in runs, runway, watchdogs, stall hop, cascade brea… | 6 | Merged (`0e051921`) | Real cellular dead zones; Apple Music lane behaviours |
+| PB-6 — Now Playing deck screen (gold record at beat-grid BPM, transport, notices) + mini bar upg… | 6 | Merged (`e3cb53ae`) | — |
 | PB-5 — History outcomes: SkipTracker + additive PlayEvent fields + progress/advance-away events … | 7 | PARTIAL | Unit-tested (1946 green), NOT emulator-verified (device-only: History glyph + live row, skip on real playback). Open: noteSkip per-song skip count unwired until a Kotlin PlayCountService exists |
 | PB-4 — Durable playback session: real-time snapshot, held restore, resume at position, materiali… | 8 | Planned | — |
 | PB-7 — Up Next, previously played, add-search, open set list, queue reorder; jukebox routed thro… | 8 | Planned | — |
@@ -395,10 +395,10 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
 | COL-1 — Collections + activity schema parity (additive iOS fields, lenient kinds, iOS fixture rou… | 1 | DONE (JVM) | Emulator adb-push round-trip not run (integrator). amPlaylistId NOT persisted, matches iOS CodingKeys (roadmap deviation, owner decision pending). |
-| COL-2 — Store batch choke points + shared VersionedJsonWriter (off-main, version-ordered, invalid… | 2 | Planned | — |
+| COL-2 — Store batch choke points + shared VersionedJsonWriter (off-main, version-ordered, invalid… | 2 | Merged (`3f35d4e4`) | — |
 | COL-10 — Favorites store + ♥ toggle + Browse favorite tri-state filter model + heart/unheart activ… | 3 | PARTIAL (JVM) | Browse ♥ + tri-state filter (song mode) wired in BrowseScreen/SongDetailSheet/AlbumDetailScreen; emulator drive not run (integrator). Open: backup-zip + profile-sync registration of `pocketdj-favorites.json`; `favorites.remapSongIds` has no caller (no Discover/amrec_ supersede path on Android yet — wire alongside CollectionsStore remap). |
-| COL-4 — AddToActions + Add-to sheet parity (Suggested + Recent, pockets A–Z, playlists A–Z, More…… | 5 | Planned | — |
-| COL-3 — SongDuplicateJudge (deterministic tiers) + Remove duplicates (collection, all collections… | 6 | Planned | — |
+| COL-4 — AddToActions + Add-to sheet parity (Suggested + Recent, pockets A–Z, playlists A–Z, More…… | 5 | Merged (`796e5923`) | — |
+| COL-3 — SongDuplicateJudge (deterministic tiers) + Remove duplicates (collection, all collections… | 6 | Merged (`42809a00`) | — |
 | COL-5 — Multi-select: RowSelection + SelectableRow + SelectionBar on Browse and every collection … | 9 | Planned | — |
 | COL-7 — Source-sync completion: auto reconcile on catalog refresh, global + per-item toggles, dir… | 10 | Planned | — |
 | COL-12 — Recently added virtual playlist (derivation from IndexSong.dateAdded + add history) + Set… | 12 | Planned | — |
@@ -419,12 +419,12 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
-| BRW-1 — Full filter/sort clause engine (18 fields, 5 ops) as pure BrowseEngine.filterSort + persi… | 1 | Planned | — |
-| BRW-3 — Explicit/edition system (SongVariant, EditionPolicy, clean-only) + streaming-link and dat… | 2 | Planned | Actual explicit/clean Apple Music streaming (DRM) verification. |
-| BRW-8 — Recs core A: SimilarityFamilies, Similarity profile, TimbreCatalog (timbrePrior=2 load-be… | 2 | Planned | — |
-| BRW-5 — Online OpenSearch (aoss) search: device↔online toggle, SigV4-signed direct queries, claus… | 4 | Planned | — |
+| BRW-1 — Full filter/sort clause engine (18 fields, 5 ops) as pure BrowseEngine.filterSort + persi… | 1 | Merged (`b178c32d`) | — |
+| BRW-3 — Explicit/edition system (SongVariant, EditionPolicy, clean-only) + streaming-link and dat… | 2 | Merged (`ef44b543`) | Actual explicit/clean Apple Music streaming (DRM) verification. |
+| BRW-8 — Recs core A: SimilarityFamilies, Similarity profile, TimbreCatalog (timbrePrior=2 load-be… | 2 | Merged (`2b93b0dc`) | — |
+| BRW-5 — Online OpenSearch (aoss) search: device↔online toggle, SigV4-signed direct queries, claus… | 4 | Merged (`eb870525`) | — |
 | BRW-9 — Recs core B: identity + shaping (version/recording identity, membership, novelty, composi… | 4 | DONE | device-only: none (pure) |
-| BRW-4 — Song/Album detail parity: lyrics store + timed-lyrics sidecar + lyrics panel, share text,… | 5 | Planned | — |
+| BRW-4 — Song/Album detail parity: lyrics store + timed-lyrics sidecar + lyrics panel, share text,… | 5 | Merged (`01deb63a`) | — |
 | BRW-2 — Filter/sort sheets at full width + membership (in/not-in, none-of) + favorite + hide-skip… | 8 | Planned | — |
 | BRW-6 — History screen parity: tab model (Playback \| Collection \| Pockets \| For You slots), en… | 9 | Planned | — |
 | BRW-10 — ZoneEngine: In Da Zone + collection suggestions + cloud shaping | 11 | Planned | — |
@@ -441,14 +441,14 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
-| MIX-0 — Mix models, FX rack types, pure math (BeatMath, MixMath, Camelot, FxParams) | 1 | In progress (parity/MIX-0) | — |
-| MIX-3 — Shared DSP nodes (`audio/dsp`): Biquad/Eq3/Trim, TimePitch (Sonic), Compressor, Reverb, M… | 2 | Planned | Subjective quality of Sonic at large stretch ratios |
+| MIX-0 — Mix models, FX rack types, pure math (BeatMath, MixMath, Camelot, FxParams) | 1 | Merged (`9a59cd5b`) | — |
+| MIX-3 — Shared DSP nodes (`audio/dsp`): Biquad/Eq3/Trim, TimePitch (Sonic), Compressor, Reverb, M… | 2 | Merged (`d1510a61`) | Subjective quality of Sonic at large stretch ratios |
 | MIX-1 — Durable Mix stores over the shared VersionedJsonWriter: MixDeckSessionStore (decks v1) + … | 3 | DONE (JVM; stores unreachable from UI until MIX-14) | — |
 | MIX-2 — Shared audio core (`audio/`): AudioSink + AudioTrackSink, RenderClock, FloatRing, PcmSour… | 3 | DONE (JVM + emulator decode; audible output device-only) | Audible output and AudioTrack low-latency behaviour on real hardware. |
-| MIX-4 — MixGraph: deck chains, house/cue/limiter, taps, render-thread handover + parameter snapsh… | 4 | Planned | Hearing cue on the chosen channel of a real stereo interface |
-| MIX-6 — MixStreamLoader: growing-file song streams (public rips object + Range) + stem sets, adop… | 5 | Planned | — |
+| MIX-4 — MixGraph: deck chains, house/cue/limiter, taps, render-thread handover + parameter snapsh… | 4 | Merged (`918b5c12`) | Hearing cue on the chosen channel of a real stereo interface |
+| MIX-6 — MixStreamLoader: growing-file song streams (public rips object + Range) + stem sets, adop… | 5 | Merged (`2b5e0ca7`) | Emulator-verified 2026-10-28 (Debug "Mix stream open": file grows in cache/mixstream, completes, adopted into files/burns; presign bypassed by a debug flag since no rip server is reachable). Stream deck handover waits on the Mix UI (MIX-9+). |
 | MIX-5 — MixEngine core: decks, load/seek/transport, EQ, FX rack, Vol/crossfader, cue, lead/sync, … | 6 | PARTIAL | Device-only: audible tempo/pitch quality and cue routing, force-stop/relaunch restore. Deferred hooks: loop/stems (MIX-8), Auto-DJ (MIX-9), stream (MIX-10), silent-playing detector (MIX-11); launch-time `restorePersistedMixIfIdle` not auto-called (Mix tab parks via `materializePendingRestoreIfNeeded`) |
-| MIX-7 — MixResolver + CollectionMixDownloader (collection pull with progress/ETA + progressive el… | 7 | Planned | — |
+| MIX-7 — MixResolver + CollectionMixDownloader (collection pull with progress/ETA + progressive el… | 7 | Merged (`1226d3a4`) | — |
 | MIX-8 — Loop (∞) + stem decks + zero-dead-air handover + beat-grid hydrate | 8 | Planned | Hearing the handover seam and loop click-freeness |
 | MIX-10 — Streaming decks in the engine (growing-file playback, hold/resume, truncation, stem strea… | 9 | Planned | Cellular dead-zone behaviour |
 | MIX-9 — Auto-DJ machine + readiness rules + glide + remote freeze + jukebox queue seams | 9 | Planned | Real lock-screen transport and headset-button behaviour |
@@ -466,7 +466,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
 | STU-1 — Studio models + store (pocketdj-studio.json v1 over VersionedJsonWriter) + folders (SAF r… | 3 | DONE (JVM + emulator seed/persist; SAF persistence device-only) | SAF tree permission persistence on real external storage |
-| STU-2 — Studio native DSP lib (cpp/pdjdsp: TinySoundFont, Signalsmith Stretch, TrackFX/MasterFX k… | 5 | Planned | Oboe low-latency path, real latency numbers, route-change (headphones… |
+| STU-2 — Studio native DSP lib (cpp/pdjdsp: TinySoundFont, Signalsmith Stretch, TrackFX/MasterFX k… | 5 | Merged (`bf8cbc9b`) | Oboe low-latency path, real latency numbers, route-change (headphones… |
 | STU-3 — Producer shell + Samples tab (mic, import, from-track via LocalAudioCache→BurnStore) + sa… | 7 | PARTIAL (no stem carve; other sub-tabs Coming soon; emulator steps unrun) | Real mic quality, Bluetooth input picker, DRM-protected file rejectio… |
 | STU-4 — Loops tab + slice editor (performance pads) | 10 | Planned | Audible seam-click judgement |
 | STU-5 — Sequencer tab + pattern engine (clock, step modes, per-step loop/stretch) + bounce | 11 | Planned | Timing tightness and .interrupts cut audibility |

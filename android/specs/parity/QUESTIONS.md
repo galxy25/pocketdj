@@ -35,6 +35,8 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q24 [PB-5]** Cumulative per-song skip count has no Kotlin sink (no PlayCountService equivalent). Build a PlayStatsStore sink with SVC-6? — *Default: skip verdicts live on PlayEvent only.*
 - **Q25 [SVC-15]** Apple Music catalog search needs a developer token minted by the rip server; emulator cannot reach it. Library/favorites writes need a real Music-User-Token. Confirm on a phone once Q1 is settled. — *Default: unit-tested only; debug probe in Settings > Debug.*
 - **Q26 [SURF-5 / MIX-7]** Mini player shows the track title after a collection search/shortcut play (iOS-style), not the collection name the roadmap step says. Show the collection name? Also MixFacade and the MIX-7 Auto-DJ hooks await MIX-9/MIX-14. — *Default: track title.*
+- **Q27 [PB-2 / COL-10]** The notification/lock-screen heart was never bound (FavoriteCommand.seam stayed null); it is now wired to the favorites store (toggles the local favorite, queues the Apple Music mirror only if that opt-in is on). Keep the heart on the Android notification by default? -- *Default: shown whenever the standalone player owns audio.*
+- **Q28 [SVC-3]** A burn whose background download later fails (HTTP 400/403) is counted as `burned` in the immediate BurnResult (queued), then flips to an error row; the stem/beat-grid post-pass also still runs for those songs. iOS behaves the same way; tighten on Android (skip the post-pass for songs that failed)? -- *Default: match iOS.*
 
 ## ANSWERED
 
