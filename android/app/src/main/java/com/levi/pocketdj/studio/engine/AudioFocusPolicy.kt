@@ -36,7 +36,13 @@ object AudioFocusPolicy {
      * Holder for one AudioFocus request (GAIN for playback engines, GAIN_TRANSIENT_EXCLUSIVE-like
      * capture uses GAIN_TRANSIENT). [onLoss] fires on loss so the engine can pause.
      */
-    class FocusHandle(private val am: AudioManager, private val onLoss: () -> Unit) {
+    class FocusHandle(
+        private val am: AudioManager,
+        /** When set, a TRANSIENT loss calls this (park) instead of [onLoss], and AUDIOFOCUS_GAIN calls [onGain]. */
+        private val onTransientLoss: (() -> Unit)? = null,
+        private val onGain: (() -> Unit)? = null,
+        private val onLoss: () -> Unit,
+    ) {
         private var request: AudioFocusRequest? = null
 
         fun requestPlayback(): Boolean = request(AudioManager.AUDIOFOCUS_GAIN, AudioAttributes.USAGE_MEDIA, AudioAttributes.CONTENT_TYPE_MUSIC)
@@ -47,7 +53,13 @@ object AudioFocusPolicy {
             abandon()
             val req = AudioFocusRequest.Builder(gain)
                 .setAudioAttributes(AudioAttributes.Builder().setUsage(usage).setContentType(content).build())
-                .setOnAudioFocusChangeListener { if (shouldPauseOnFocusChange(it)) onLoss() }
+                .setOnAudioFocusChangeListener {
+                    when {
+                        it == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT && onTransientLoss != null -> onTransientLoss.invoke()
+                        it == AudioManager.AUDIOFOCUS_GAIN -> onGain?.invoke()
+                        shouldPauseOnFocusChange(it) -> onLoss()
+                    }
+                }
                 .build()
             request = req
             return am.requestAudioFocus(req) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
