@@ -538,6 +538,62 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }) { Text("MwF: live smoke") }
     Text(mwfStatus, style = MaterialTheme.typography.bodySmall)
 
+    // SURF-8 verify probe (debug only): a real media3 MediaBrowser against PlaybackService (what Android
+    // Auto does), walking root -> tabs -> collections -> songs, logging every level to tag PdjVerify.
+    var autoBrowseStatus by remember { mutableStateOf("Auto browse: idle") }
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            val ctx = host.graph.appContext
+            val token = androidx.media3.session.SessionToken(ctx, android.content.ComponentName(ctx, com.levi.pocketdj.playback.PlaybackService::class.java))
+            suspend fun <T> com.google.common.util.concurrent.ListenableFuture<T>.await(): T =
+                kotlinx.coroutines.suspendCancellableCoroutine { c ->
+                    addListener({ runCatching { get() }.fold({ c.resumeWith(Result.success(it)) }, { c.resumeWith(Result.failure(it)) }) }, Runnable::run)
+                }
+            val out = StringBuilder()
+            fun log(m: String) { out.appendLine(m); android.util.Log.d("PdjVerify", "auto: $m") }
+            runCatching {
+                val b = androidx.media3.session.MediaBrowser.Builder(ctx, token).buildAsync().await()
+                val rr = b.getLibraryRoot(null).await(); log("rootResult code=${rr.resultCode}")
+                val root = rr.value!!
+                log("root=${root.mediaId}")
+                val tabs = b.getChildren(root.mediaId, 0, 50, null).await().value.orEmpty()
+                tabs.forEach { log("tab ${it.mediaId} '${it.mediaMetadata.title}' browsable=${it.mediaMetadata.isBrowsable} playable=${it.mediaMetadata.isPlayable}") }
+                for (t in tabs.filter { it.mediaMetadata.isBrowsable == true }) {
+                    val cols = b.getChildren(t.mediaId, 0, 50, null).await().value.orEmpty()
+                    log("  ${t.mediaMetadata.title}: ${cols.size} children")
+                    cols.take(3).forEach { c ->
+                        log("    col ${c.mediaId} '${c.mediaMetadata.title}' sub='${c.mediaMetadata.subtitle}'")
+                        if (c.mediaMetadata.isBrowsable == true) {
+                            val songs = b.getChildren(c.mediaId, 0, 10, null).await().value.orEmpty()
+                            songs.take(4).forEach { sg -> log("      ${sg.mediaId} '${sg.mediaMetadata.title}' playable=${sg.mediaMetadata.isPlayable} sub='${sg.mediaMetadata.subtitle}' art=${sg.mediaMetadata.artworkUri}") }
+                        }
+                    }
+                }
+                b.search("Intro", null).await()
+                val sr = b.getSearchResult("Intro", 0, 10, null).await().value.orEmpty()
+                log("search Intro -> ${sr.size}: ${sr.take(3).map { it.mediaMetadata.title }}")
+                // Select the first playable song of the first playlist the way Auto does (setMediaItem by id).
+                val pl = b.getChildren("tab:playlists", 0, 5, null).await().value.orEmpty().first { it.mediaMetadata.title == "SeedRip" }
+                val song = b.getChildren(pl.mediaId, 0, 10, null).await().value.orEmpty().first { it.mediaId.startsWith("song:") && it.mediaMetadata.isPlayable == true }
+                b.setMediaItem(song); b.prepare(); b.play()
+                kotlinx.coroutines.delay(4000)
+                log("play ${song.mediaId} -> state=${b.playbackState} isPlaying=${b.isPlaying} queue=${b.mediaItemCount} pos=${b.currentPosition} err=${b.playerError?.message}")
+                val addRes = b.sendCustomCommand(
+                    androidx.media3.session.SessionCommand(com.levi.pocketdj.auto.AutoLibraryCallback.ACTION_ADD_TO, android.os.Bundle.EMPTY),
+                    android.os.Bundle().apply { putString(androidx.media3.session.MediaConstants.EXTRA_KEY_MEDIA_ID, song.mediaId) },
+                ).await()
+                val chooser = addRes.extras.getString(com.levi.pocketdj.auto.AutoLibraryCallback.KEY_RESULT_BROWSE_NODE)
+                log("addTo result=${addRes.resultCode} chooser=$chooser")
+                if (chooser != null) {
+                    b.getChildren(chooser, 0, 20, null).await().value.orEmpty().take(8).forEach { log("  chooser ${it.mediaId} '${it.mediaMetadata.title}' playable=${it.mediaMetadata.isPlayable}") }
+                }
+                b.pause(); b.release()
+            }.onFailure { log("FAILED ${it::class.simpleName}: ${it.message} ${android.util.Log.getStackTraceString(it).take(600)}") }
+            autoBrowseStatus = out.toString().take(1500)
+        }
+    }) { Text("Auto browse smoke") }
+    Text(autoBrowseStatus, style = MaterialTheme.typography.bodySmall)
+
     // MIX-7 verify probe (debug only): begin the app-scoped collection download for the SeedRip playlist.
     var mdlStatus by remember { mutableStateOf("Mix dl: idle") }
     OutlinedButton(onClick = {

@@ -341,7 +341,7 @@ class PlaybackService : MediaLibraryService() {
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): MediaSession.ConnectionResult {
-            val cmds = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+            val cmds = MediaSession.ConnectionResult.DEFAULT_SESSION_AND_LIBRARY_COMMANDS.buildUpon()
                 .add(FavoriteCommand.sessionCommand)
                 .add(SessionCommand(AutoLibraryCallback.ACTION_ADD_TO, android.os.Bundle.EMPTY))
                 .build()
