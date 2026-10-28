@@ -452,7 +452,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | MIX-8 — Loop (∞) + stem decks + zero-dead-air handover + beat-grid hydrate | 8 | Merged (`db38384e`) | JVM only (50 tests); emulator smoke: two-deck Mix plays with the new hooks, no crash. Stem/loop/beat-pulse steps NOT drivable: no stem/loop UI (MIX-13/14) and no stemmed burn. Device-only: handover seam, loop click-freeness. |
 | MIX-10 — Streaming decks in the engine (growing-file playback, hold/resume, truncation, stem strea… | 9 | Merged (wave 9) | Cellular dead-zone behaviour |
 | MIX-9 — Auto-DJ machine + readiness rules + glide + remote freeze + jukebox queue seams | 9 | Merged (wave 9) | Real lock-screen transport and headset-button behaviour |
-| MIX-13 — Deck UI: DeckView + controls (sliders/knobs/steppers), seek slider, FX chips, stem pads, … | 10 | Planned | — |
+| MIX-13 — Deck UI: DeckView + controls (sliders/knobs/steppers), seek slider, FX chips, stem pads, … | 10 | PARTIAL (UI built + JVM tested, unrouted until MIX-14) | Emulator pass (drag every slider, rotate to side-by-side) carried to MIX-14 acceptance. |
 | MIX-11 — Mix transport owner: MixSessionPlayer (SimpleBasePlayer TransportOwner) into the ONE Medi… | 11 | Planned | Bluetooth route changes, phone-call interruption, headset buttons, re… |
 | MIX-14 — Mix screen shell: session header, Auto setup bar/banner/skip, crate menus A/B (scroll res… | 12 | Planned | — |
 | MIX-12 — Mix session audio recording (house tap → ADTS AAC) + MixRecorder + orphan recovery + Reco… | 13 | Planned | — |
