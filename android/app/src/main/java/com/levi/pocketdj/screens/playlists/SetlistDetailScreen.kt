@@ -476,7 +476,7 @@ private fun SetlistTrackRow(
             camelot = track.camelot,
             lengthMs = track.lengthMs,
             dimmed = dimmed,
-            modifier = Modifier.selectableRow(selection, selectionKey, selectionScope, onTap),
+            modifier = Modifier.selectableRow(selection, selectionKey, selectionScope, onTap, rowSongId = song?.id),
             favoriteSongId = song?.id, favoriteAppleMusicId = song?.appleMusicId,
             leading = {
                 Text(

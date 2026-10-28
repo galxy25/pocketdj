@@ -444,7 +444,7 @@ fun PocketDetailScreen(
                                 camelot = song.camelot,
                                 lengthMs = song.length,
                                 dimmed = !manifest.containsKey(songId),
-                                modifier = Modifier.selectableRow(rowSelection, songId, selScope) { detailSongId = songId },
+                                modifier = Modifier.selectableRow(rowSelection, songId, selScope, { detailSongId = songId }, rowSongId = songId),
                                 favoriteSongId = songId, favoriteAppleMusicId = song.appleMusicId,
                                 badges = {
                                     pocket.songRepeats[songId]?.takeIf { it > 1 }?.let {

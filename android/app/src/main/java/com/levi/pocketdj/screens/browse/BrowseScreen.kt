@@ -706,14 +706,16 @@ private fun BrowseContent(
                                 row = row,
                                 modifier = Modifier
                                     .selectionDecor(rowSelection, songId, BROWSE_SELECTION_SCOPE)
-                                    .songDragSource(enabled = rowSelected) { rowSelection.currentPayload() },
+                                    .songDragSource(enabled = true) {
+                                        if (rowSelected) rowSelection.currentPayload() else com.levi.pocketdj.data.collections.SongTransfer(listOf(songId), null)
+                                    },
                                 // Select mode armed HERE eats the tap; otherwise it opens as before.
                                 onClick = {
                                     selectionTap(rowSelection, songId, BROWSE_SELECTION_SCOPE) { onOpenSong(songId) }
                                 },
                                 onPlay = { onPlaySong(songId) },
                                 // Armed: long-press toggles. Otherwise the COL-4 Add-to menu (with Select / Copy).
-                                onLongClick = if (rowSelected) null else ({
+                                onLongClick = ({
                                     if (rowSelection.state.value.isSelectMode(BROWSE_SELECTION_SCOPE)) {
                                         rowSelection.handleLongPress(songId, BROWSE_SELECTION_SCOPE)
                                     } else {

@@ -210,3 +210,7 @@ fun playlistSelectionPayload(
     val ordered = selection.orderedSelection(eligible.map { it.first })
     return SongTransfer.make(ordered.mapNotNull { byNode[it] }, songsById)
 }
+
+/** Back-compat alias (COL-6 moved SongTransfer to data.collections); drop once the parity wave lands. */
+@Deprecated("Use com.levi.pocketdj.data.collections.SongTransfer")
+typealias SongTransfer = com.levi.pocketdj.data.collections.SongTransfer

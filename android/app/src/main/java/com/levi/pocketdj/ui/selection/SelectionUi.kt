@@ -145,19 +145,21 @@ fun Modifier.selectableRow(
     id: String,
     scope: String,
     onOpen: (() -> Unit)?,
+    rowSongId: String? = null,
 ): Modifier {
     val openLatest by rememberUpdatedState(onOpen)
     val state by selection.state.collectAsState()
-    // COL-6: a SELECTED row in the active list is the drag handle (long-press-drag exports the
-    // whole selection, as iOS `.draggable`). Its long-press must then NOT toggle the row off, so
-    // the long-click hook yields to the drag source.
-    val dragging = state.isSelected(id, scope)
+    // COL-6: long-press-then-move drags the whole selection when this row is selected, else just
+    // this row (iOS `payloadForRow`). A stationary long-press keeps its long-click behavior.
+    val selected = state.isSelected(id, scope)
     return this
         .selectionDecor(selection, id, scope)
-        .songDragSource(enabled = dragging) { selection.currentPayload() }
+        .songDragSource(enabled = selected || rowSongId != null) {
+            if (selected) selection.currentPayload() else rowSongId?.let { SongTransfer(listOf(it), null) }
+        }
         .combinedClickable(
             onClick = { selectionTap(selection, id, scope) { openLatest?.invoke() } },
-            onLongClick = if (dragging) null else ({ selection.handleLongPress(id, scope) }),
+            onLongClick = { selection.handleLongPress(id, scope) },
         )
 }
 

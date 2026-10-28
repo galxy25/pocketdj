@@ -286,7 +286,7 @@ fun SourcePlaylistDetailScreen(
                             camelot = song.camelot,
                             lengthMs = song.length,
                             dimmed = !manifest.containsKey(songId),
-                            modifier = Modifier.selectableRow(rowSelection, shownKeys[index], selScope) { detailSongId = songId },
+                            modifier = Modifier.selectableRow(rowSelection, shownKeys[index], selScope, { detailSongId = songId }, rowSongId = songId),
                             favoriteSongId = songId, favoriteAppleMusicId = song.appleMusicId,
                         )
                     }

@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 COL-6: Song drag & drop + clipboard (SongTransfer, SongDrop, Compose DnD, paste).
 
@@ -17,3 +17,13 @@ COL-6: Song drag & drop + clipboard (SongTransfer, SongDrop, Compose DnD, paste)
 
 ## Questions for Levi
 - Should long-press-drag also work from an UNselected row (single-song drag), as iOS `.draggable` does?
+
+## Review
+fixes applied
+- MAJOR Collections drop targets unreachable: FIXED. Bottom-bar/rail nav items are DnD targets (`springLoadTarget`): hovering a song drag over an unselected tab for 600 ms switches to it, so the live drag carries into Collections row targets. Pure policy tested (SongDragSemanticsTest). Emulator step still device-only (integrator owns emulator).
+- MINOR drag payload cap: FIXED. Drag carries SongTransfer via `localState` with a small label-only clip; drop reads localState first, clip decode as fallback. Clipboard copy keeps its cap + toast.
+- MINOR long-press behavior: FIXED. Unselected rows drag a single-song payload (`rowSongId`); transfer starts only after moving past touch slop, so a stationary long-press keeps Add-to / select toggle on every row (onLongClick restored on selected rows).
+- MINOR paste toast: FIXED. "Nothing to paste" vs "Already in this collection" vs "Pasted songs".
+- MINOR ledger: FIXED. docs/ARCHITECTURE-ANDROID.md COL-6 row set to PARTIAL (emulator drag unverified).
+- NIT typealias: FIXED. Deprecated `ui.selection.SongTransfer` alias kept.
+- Tests: suite 4714, 0 failures (+3 SongDragSemanticsTest); assembleDebug green.

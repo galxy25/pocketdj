@@ -28,6 +28,8 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.levi.pocketdj.data.collections.SongTransfer
 import com.levi.pocketdj.ui.selection.SelectionBarSemantics
 
@@ -43,19 +45,33 @@ object SongDragSemantics {
     fun clipTexts(t: SongTransfer): List<String>? =
         SelectionBarSemantics.clipPayloadOrNull(t)?.let { listOf(it.first, it.second) }
 
+    /** Drag distance (px) past which a long-pressed row actually starts the transfer. */
+    fun movedPastSlop(dx: Float, dy: Float, slop: Float): Boolean = dx * dx + dy * dy > slop * slop
+
+    /** Spring-loading: hover time before a drag over a nav item switches to that tab. */
+    const val SPRING_LOAD_MS = 600L
+
+    /** A drag hovering the already-selected tab does nothing. */
+    fun shouldSpringLoad(alreadySelected: Boolean): Boolean = !alreadySelected
+
+    /** Pasting outcome copy (iOS performPaste is silent; here "nothing" vs "already there" differ). */
+    fun pasteMessage(hadPayload: Boolean, added: Boolean): String = when {
+        !hadPayload -> "Nothing to paste"
+        added -> "Pasted songs"
+        else -> "Already in this collection"
+    }
+
     /** Decode a drop's clip; null for anything that is not our payload. */
     fun decodeClip(label: CharSequence?, texts: List<String>): SongTransfer? =
         SongTransfer.fromClipTexts(label, texts)
 }
 
-private fun clipOf(t: SongTransfer): ClipData? {
-    val texts = SongDragSemantics.clipTexts(t) ?: return null
-    val clip = ClipData.newPlainText(SongTransfer.CLIP_LABEL, texts[0])
-    clip.addItem(ClipData.Item(texts[1]))
-    return clip
-}
+/** Small label-only clip for an in-app drag: the payload itself rides in `localState` (no size cap). */
+private fun dragClipOf(t: SongTransfer): ClipData =
+    ClipData.newPlainText(SongTransfer.CLIP_LABEL, SongDragSemantics.chipLabel(t.songIds.size))
 
 private fun DragAndDropEvent.songTransfer(): SongTransfer? {
+    (toAndroidDragEvent().localState as? SongTransfer)?.let { return it }
     val clip = toAndroidDragEvent().clipData ?: return null
     val texts = (0 until clip.itemCount).map { clip.getItemAt(it).text?.toString().orEmpty() }
     return SongDragSemantics.decodeClip(clip.description?.label, texts)
@@ -99,14 +115,32 @@ fun Modifier.songDragSource(enabled: Boolean, payload: () -> SongTransfer?): Mod
             }
         },
     ) {
+        // The system drag starts only once the finger moves past touch slop AFTER the long-press,
+        // so a stationary long-press keeps the row's own long-click (Add-to menu / select toggle).
+        val slop = viewConfiguration.touchSlop
+        var dx = 0f
+        var dy = 0f
+        var started = false
         detectDragGesturesAfterLongPress(
-            onDragStart = {
-                val clip = payloadL()?.let(::clipOf)
-                if (clip != null) {
-                    startTransfer(DragAndDropTransferData(clipData = clip, flags = 0))
+            onDragStart = { dx = 0f; dy = 0f; started = false },
+            onDragEnd = { started = false },
+            onDragCancel = { started = false },
+            onDrag = { change, amount ->
+                if (!started) {
+                    dx += amount.x
+                    dy += amount.y
+                    if (SongDragSemantics.movedPastSlop(dx, dy, slop)) {
+                        val t = payloadL()
+                        if (t != null && t.songIds.isNotEmpty()) {
+                            started = true
+                            change.consume()
+                            startTransfer(
+                                DragAndDropTransferData(clipData = dragClipOf(t), localState = t, flags = 0),
+                            )
+                        }
+                    }
                 }
             },
-            onDrag = { _, _ -> },
         )
     }
 }
@@ -184,6 +218,41 @@ fun pasteSongsInto(
 ): Boolean {
     val t = com.levi.pocketdj.ui.selection.readSongTransfer(context)
     val ok = t != null && acceptSongsInto(store, target, t)
-    android.widget.Toast.makeText(context, if (ok) "Pasted songs" else "Nothing to paste", android.widget.Toast.LENGTH_SHORT).show()
+    android.widget.Toast.makeText(context, SongDragSemantics.pasteMessage(t != null, ok), android.widget.Toast.LENGTH_SHORT).show()
     return ok
+}
+
+/**
+ * Spring-loaded nav item: a song drag hovering this item for [SongDragSemantics.SPRING_LOAD_MS]
+ * switches to its tab ([onSpring]) so the live drag can carry on into that tab's drop targets
+ * (the system drag survives the recomposition). Accepts no drop itself.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun Modifier.springLoadTarget(alreadySelected: Boolean, onSpring: () -> Unit): Modifier {
+    val springL by rememberUpdatedState(onSpring)
+    val selectedL by rememberUpdatedState(alreadySelected)
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val target = remember {
+        var job: kotlinx.coroutines.Job? = null
+        object : DragAndDropTarget {
+            override fun onEntered(event: DragAndDropEvent) {
+                job?.cancel()
+                if (!SongDragSemantics.shouldSpringLoad(selectedL)) return
+                job = scope.launch {
+                    delay(SongDragSemantics.SPRING_LOAD_MS)
+                    springL()
+                }
+            }
+            override fun onExited(event: DragAndDropEvent) { job?.cancel() }
+            override fun onEnded(event: DragAndDropEvent) { job?.cancel() }
+            override fun onDrop(event: DragAndDropEvent): Boolean { job?.cancel(); return false }
+        }
+    }
+    return this.dragAndDropTarget(
+        shouldStartDragAndDrop = { ev ->
+            ev.toAndroidDragEvent().clipDescription?.label?.toString() == SongTransfer.CLIP_LABEL
+        },
+        target = target,
+    )
 }

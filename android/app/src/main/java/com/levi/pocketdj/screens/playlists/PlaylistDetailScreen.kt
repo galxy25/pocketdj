@@ -573,7 +573,7 @@ private fun NodeRow(
                     camelot = song.camelot,
                     lengthMs = song.length,
                     dimmed = !manifestHit,
-                    modifier = Modifier.selectableRow(selection, node.nodeId, selectionScope) { onTapSong(song.id) },
+                    modifier = Modifier.selectableRow(selection, node.nodeId, selectionScope, { onTapSong(song.id) }, rowSongId = song.id),
                     favoriteSongId = song.id, favoriteAppleMusicId = song.appleMusicId,
                     badges = {
                         node.repeatCount?.takeIf { it > 1 }?.let {
