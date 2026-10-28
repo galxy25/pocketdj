@@ -121,6 +121,7 @@ fun SampleEditorSheet(graph: AppGraph, sampleId: String, onDismiss: () -> Unit) 
     var detecting by remember { mutableStateOf(false) }
     var detectFailed by remember { mutableStateOf(false) }
     var taps by remember { mutableStateOf(emptyList<Double>()) }
+    var slicing by remember { mutableStateOf(false) }
     var bpmText by remember(sampleId) { mutableStateOf(sample?.grid?.bpm?.let { StudioFmt.trim(it) } ?: "") }
 
     // Load the RAW file once; the edit stays on the chain, never in the file.
@@ -275,12 +276,16 @@ fun SampleEditorSheet(graph: AppGraph, sampleId: String, onDismiss: () -> Unit) 
                 )
             }
             HorizontalDivider()
+            SectionLabel("PADS")
+            OutlinedButton(onClick = { slicing = true }, enabled = pcm != null, modifier = Modifier.testTag("sample-slice")) { Text("Slice into pads") }
+            HorizontalDivider()
             Text(
                 if (rendering) "Updating the rendered copy…" else "Edits are non-destructive and apply automatically — nothing to save.",
                 style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.size(16.dp))
         }
+        if (slicing) SliceEditorSheet(graph, sampleId, pcm, onDismiss = { slicing = false })
         if (renaming) NameDialog("Rename sample", sample.name, "Rename", { renaming = false }) { store.renameSample(sampleId, it); renaming = false }
     }
 }
