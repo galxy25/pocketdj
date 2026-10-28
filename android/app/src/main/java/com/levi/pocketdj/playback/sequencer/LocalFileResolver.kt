@@ -24,8 +24,16 @@ fun interface LocalFileResolver {
  * Maps a burn-store hit to a playable [LocalFile]: a per-song cut plays from 0:00 (no window);
  * a shared analog album file plays the song's `[startMs, startMs + durationMs)` window.
  */
-fun burnedLocalFile(file: java.io.File, isCut: Boolean, startMs: Long?, durationMs: Long?): LocalFile {
+fun burnedLocalFile(
+    file: java.io.File,
+    isCut: Boolean,
+    startMs: Long?,
+    durationMs: Long?,
+    // Production passes android.net.Uri.fromFile(..).toString(): the hand-rolled form left ExoPlayer
+    // never signalling STATE_ENDED on the emulator, so the set stalled after the first burned row.
+    toUri: (java.io.File) -> String = { "file://" + it.toURI().rawPath },
+): LocalFile {
     val start = if (isCut) null else startMs
     val end = if (start != null && durationMs != null) start + durationMs else null
-    return LocalFile(file.toURI().toString(), start, end)
+    return LocalFile(toUri(file), start, end)
 }

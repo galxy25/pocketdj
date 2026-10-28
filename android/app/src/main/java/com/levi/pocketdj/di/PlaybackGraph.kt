@@ -44,6 +44,7 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
             store.localUrlPreferringCut(id)?.let { cut ->
                 com.levi.pocketdj.playback.sequencer.burnedLocalFile(
                     cut.file, cut.isCut, store.startMs(id), store.items.value[id]?.durationMs,
+                    toUri = { android.net.Uri.fromFile(it).toString() },
                 )
             }
         }

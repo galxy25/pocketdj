@@ -61,3 +61,21 @@ Emulator (emulator-5554, shots in pocketdj-parity/_shots/wave5/); no FATAL/ANR f
 Note: connectedDebugAndroidTest uninstalls the app, wiping seeded data; run it last.
 
 Open: Q13-Q16 added. MIX-6 yieldBackgroundDownload wiring deferred to SVC-3 TODO; ARCHITECTURE-ANDROID.md ledger rows for the six packages still to be updated.
+
+## Wave 4 verification
+
+Emulator-verified (emulator-5554) against the live catalog + public rips (debug seeds: Settings > Debug "Seed rip playlist" / "Play seed queue" / "Burn first 3"). JVM: 1621 tests, 0 failures. `connectedDebugAndroidTest`: 7/7 PASS (AudioDecoder, Mp3Decoder x4, MixGraphSmokeInstrumentedTest.tapPulseAdvancesWhileAToneRendersOnTheAudioTrackSink). Logcat lanes now mirror to `PocketDJ.<lane>` (`adb logcat | grep PocketDJ.playback`).
+
+- PB-1 step 1 (track start per row, rows advance at clip end): PASS. `[playback] track start song=.. index=i/n backend=rip|burned`; `advance ... cause=AUTO` at natural end (digital rips; analog clips not exercised, no analog seed). Only verifiable after the SetGatedPlayer fix below (the wave-5 PB-2 merge broke advance).
+- PB-1 step 2 (10x rapid next): PASS. 10 media-next presses -> 10 `cause=USER` advances, one live row, no stale load afterwards.
+- PB-1 step 3 (metadata-only row between playables): PASS. `advance: unplayable ... reason=METADATA_ONLY` + `cause=UNPLAYABLE_HERE`, set continues.
+- Dead source mid-song (network off): PASS. `engine error ERROR_CODE_IO_NETWORK_CONNECTION_FAILED` -> `item failed mid-song` -> advance, no replay, no dead air.
+- Resolve-stall hop / start watchdog: not applicable to PB-1 (PB-3..PB-10 scope); NOT RUN.
+- SVC-2 step 1 (burn against live rips): PASS. `files/burns` holds descriptive `Artist-Title-Album-Camelot-Key-BPM-<songId>.mp3` + `.txt` sidecars, plus `stem-*`, `analysis-*`; `pocketdj-burns.json` shows `state:ready`; the non-ripped song is recorded as an error item and the loop continues (BurnResult burned=2 notRipped=1).
+- SVC-2 step 2 (delete an mp3, relaunch): PASS for the ledger (item dropped on launch). Minor: the orphaned `.txt` sidecar is left behind (not removed by reconcile).
+- SVC-2 offline playback (wifi+data off): FAIL before, PASS after. The burned rung was never wired (`PlaybackController.localFiles` stayed `None`), so burned songs streamed from the network and died offline. Now `backend=burned`, full file plays offline, unburned rows hop.
+- MIX-4: JVM + MixGraphSmoke instrumented PASS. Cue on real stereo / latency remain device-only.
+
+Bugs fixed: (1) burned rung wiring (PlaybackGraph.wire + `burnedLocalFile`), (2) wave-5 regression: `SetGatedPlayer.GatedListener` used `Player.Listener by d`, which Kotlin does not delegate for Java default methods, so the MediaSession controller saw IDLE and no row ever advanced; now explicit forwarding + regression test, (3) lane logs mirrored to logcat, engine state/error lines added.
+
+Note: a concurrent wave-5 session shares this emulator and worktree (the app was reinstalled/wiped twice mid-run; the wave-5 "PB-2/SVC-3/MIX-6 NOT RUN, playback does not start" results were this same bug).

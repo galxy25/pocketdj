@@ -36,6 +36,24 @@ class SetGatedCommandsTest {
         gp.removeListener(gp.let { _ -> object : Player.Listener {} }) // unknown listener is harmless
     }
 
+    @Test fun nonCommandEventsReachSessionListeners() {
+        // Regression: wrapping with `Player.Listener by d` dropped every Java-default callback, so the
+        // controller never saw READY/ENDED (set never advanced on a device).
+        val ps = FakePlayerState()
+        val gp = SetGatedPlayer(fakePlayer(ps))
+        val states = mutableListOf<Int>()
+        val playing = mutableListOf<Boolean>()
+        gp.addListener(object : Player.Listener {
+            override fun onPlaybackStateChanged(playbackState: Int) { states += playbackState }
+            override fun onIsPlayingChanged(isPlaying: Boolean) { playing += isPlaying }
+        })
+        ps.listeners.single().onPlaybackStateChanged(Player.STATE_READY)
+        ps.listeners.single().onIsPlayingChanged(true)
+        ps.listeners.single().onPlaybackStateChanged(Player.STATE_ENDED)
+        assertEquals(listOf(Player.STATE_READY, Player.STATE_ENDED), states)
+        assertEquals(listOf(true), playing)
+    }
+
     @Test fun runningIncludesThemEvenIfBaseLacksThem() {
         val bare = Player.Commands.Builder().add(Player.COMMAND_PLAY_PAUSE).build()
         val c = SetGate.apply(bare, true)

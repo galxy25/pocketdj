@@ -12,7 +12,7 @@ class BurnedLocalFileTest {
     @Test fun digitalFilePlaysWhole() {
         val lf = burnedLocalFile(f, isCut = false, startMs = null, durationMs = 20_000)
         assertNull(lf.startMs); assertNull(lf.endMs)
-        assertTrue(lf.url.startsWith("file:/"))
+        assertTrue(lf.url.startsWith("file:///data/burns/a%20b.mp3"))
     }
 
     @Test fun analogSharedFileGetsWindow() {

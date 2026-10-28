@@ -26,6 +26,7 @@ import com.levi.pocketdj.data.rips.RipWaitOutcome
 import com.levi.pocketdj.data.rips.RipServerClient
 import com.levi.pocketdj.data.rips.RipsRepository
 import com.levi.pocketdj.data.settings.AppSettingsStore
+import com.levi.pocketdj.diag.NPLog
 import com.levi.pocketdj.playback.sequencer.LocalFileResolver
 import com.levi.pocketdj.playback.sequencer.LocalFileRowResolver
 import com.levi.pocketdj.playback.sequencer.LocalFileSource
@@ -290,6 +291,9 @@ class PlaybackController(
                 _nowPlaying.value = snapshot(player)
             }
             if (events.contains(Player.EVENT_MEDIA_ITEM_TRANSITION)) refreshAhead()
+            if (events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)) {
+                NPLog.lane(NPLog.PLAYBACK, "[playback] engine state=${player.playbackState} item=${player.currentMediaItem?.mediaId}")
+            }
             if (sequencerOwnsPlayer &&
                 events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED) &&
                 player.playbackState == Player.STATE_ENDED
@@ -300,6 +304,7 @@ class PlaybackController(
         }
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            NPLog.lane(NPLog.PLAYBACK, "[playback] engine error ${error.errorCodeName} item=${controller?.currentMediaItem?.mediaId} cause=${error.cause?.javaClass?.simpleName}: ${error.cause?.message}")
             val c = controller ?: return
             val item = c.currentMediaItem ?: return
             val id = item.mediaId
