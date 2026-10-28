@@ -113,8 +113,8 @@ fun SetlistDetailScreen(
         if (setlistId != NOW_PLAYING_SETLIST_ID) {
             store.playlist(sl.playlistId)?.let { store.markPlaylistPlayed(it.id) }
         }
-        val ctx = store.historyContext(setlistId)
-        when (val outcome = graph.playbackController.playSetlist(sl, ctx)) {
+        // The sequencer captures the History context + origin ONCE from the setlist id.
+        when (val outcome = graph.playbackController.playSetlist(sl)) {
             is QueueOutcome.Started -> {
                 lastSkippedSummary = if (outcome.skippedEntryCount == 0) {
                     null

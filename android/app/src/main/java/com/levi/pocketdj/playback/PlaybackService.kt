@@ -70,8 +70,10 @@ class PlaybackService : MediaSessionService() {
                                 ?: PlayContext.SOURCE_BROWSER,
                             contextId = extras?.getString(PlaybackContract.EXTRA_CONTEXT_ID),
                             contextName = extras?.getString(PlaybackContract.EXTRA_CONTEXT_NAME),
+                            runTag = extras?.getString(PlaybackContract.EXTRA_RUN_TAG),
                         ),
                         atMs = System.currentTimeMillis(),
+                        originCollectionId = extras?.getString(PlaybackContract.EXTRA_ORIGIN_COLLECTION_ID),
                     ),
                 )
             }
