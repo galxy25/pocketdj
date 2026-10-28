@@ -30,6 +30,7 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:launchMode="singleTask"
             android:label="@string/app_name"
             android:theme="@style/Theme.PocketDJ">
             <intent-filter>
@@ -97,6 +98,14 @@
                 <data android:pathPattern=".*\\..*\\.pdjcollection" />
                 <data android:pathPattern=".*\\.pocketdj\\.zip" />
                 <data android:pathPattern=".*\\..*\\.pocketdj\\.zip" />
+                <data android:pathPattern=".*\\..*\\..*\\.pdjcollection" />
+                <data android:pathPattern=".*\\..*\\..*\\.pocketdj\\.zip" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.pdjcollection" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\.pocketdj\\.zip" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\..*\\.pdjcollection" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\..*\\.pocketdj\\.zip" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\..*\\..*\\.pdjcollection" />
+                <data android:pathPattern=".*\\..*\\..*\\..*\\..*\\..*\\.pocketdj\\.zip" />
             </intent-filter>
             <!-- SURF-5: Assistant / adb voice search ("play my warmup pocket on PocketDJ"). -->
             <intent-filter>

@@ -261,6 +261,13 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
         }
     }
 
+    LaunchedEffect(Unit) {
+        NavRequestBus.notice.filterNotNull().collect { text ->
+            NavRequestBus.clearNotice()
+            launch { appSnackbar.showSnackbar(text) }
+        }
+    }
+
     val onDetail = currentTab == null && currentRoute != null
     val title = when (currentRoute) {
         SETTINGS_ROUTE -> "Settings"

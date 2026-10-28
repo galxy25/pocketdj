@@ -16,6 +16,12 @@ import com.levi.pocketdj.data.collections.io.PocketZip
 object CollectionShare {
     /** Archive MIME for exported zips (the system picker offers Drive/Downloads for it). */
     const val ZIP_MIME = "application/zip"
+    /**
+     * MIME handed to `CreateDocument` for `.pdjcollection` exports. DocumentsUI appends the MIME's own
+     * extension (`.zip`) to a name it does not recognise, which turned `X.pocket.pdjcollection` into
+     * `X.pocket.pdjcollection.zip`; an opaque type leaves the name untouched.
+     */
+    const val COLLECTION_MIME = "application/octet-stream"
     const val CSV_MIME = "text/csv"
     const val MAX_IMPORT_BYTES = 256L * 1024 * 1024
 

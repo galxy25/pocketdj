@@ -28,6 +28,18 @@ object NavRequestBus {
     private val _routeMessage = MutableStateFlow<String?>(null)
     val routeMessage: StateFlow<String?> = _routeMessage
 
+    /** Plain snackbar notice (no "Can't open that" prefix): export/import results. */
+    private val _notice = MutableStateFlow<String?>(null)
+    val notice: StateFlow<String?> = _notice
+
+    fun postNotice(text: String) {
+        _notice.value = text
+    }
+
+    fun clearNotice() {
+        _notice.value = null
+    }
+
     fun post(route: ShellRoute) {
         slot.set(route)
         _signal.value = route
@@ -62,5 +74,6 @@ object NavRequestBus {
         _signal.value = null
         _pendingBrowseQuery.value = null
         _routeMessage.value = null
+        _notice.value = null
     }
 }

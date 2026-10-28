@@ -20,7 +20,7 @@ class CollectionImportSeam(
     private val scope: CoroutineScope,
     private val read: (uri: String) -> ByteArray?,
     private val import: (ByteArray) -> ImportSummary,
-    private val postMessage: (String) -> Unit = NavRequestBus::postMessage,
+    private val postMessage: (String) -> Unit = NavRequestBus::postNotice,
     private val io: CoroutineDispatcher = Dispatchers.IO,
     /** Full-backup restore (collections + sources + favorites). iOS routes `.backup` here, never to `importAny`. */
     private val restoreBackup: ((ByteArray) -> String)? = null,

@@ -41,7 +41,11 @@ object IntentSink {
             }
             handlers
         }
-        return snapshot.any { runCatching { it.handle(intent) }.getOrDefault(false) }
+        return snapshot.any {
+            runCatching { it.handle(intent) }
+                .onFailure { e -> android.util.Log.e("PocketDJ", "[intent] handler failed for ${intent.action}", e) }
+                .getOrDefault(false)
+        }
     }
 
     internal fun reset() = synchronized(lock) {

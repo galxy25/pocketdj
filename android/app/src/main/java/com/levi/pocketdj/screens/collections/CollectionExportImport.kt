@@ -29,11 +29,11 @@ class ExportRequest(val fileName: String, val mime: String, val bytes: () -> Byt
 /** Builders for the per-item Export requests (pure: the store does the encoding). */
 object CollectionExportRequests {
     fun playlistZip(store: CollectionsStore, id: String, name: String) = ExportRequest(
-        CollectionShare.exportFilename(CollectionShare.Kind.PLAYLIST, name), CollectionShare.ZIP_MIME,
+        CollectionShare.exportFilename(CollectionShare.Kind.PLAYLIST, name), CollectionShare.COLLECTION_MIME,
     ) { store.exportPlaylistZip(id) }
 
     fun pocketZip(store: CollectionsStore, id: String, name: String) = ExportRequest(
-        CollectionShare.exportFilename(CollectionShare.Kind.POCKET, name), CollectionShare.ZIP_MIME,
+        CollectionShare.exportFilename(CollectionShare.Kind.POCKET, name), CollectionShare.COLLECTION_MIME,
     ) { store.exportPocketZip(id) }
 
     fun playlistCsv(store: CollectionsStore, id: String, name: String) = ExportRequest(
@@ -82,7 +82,7 @@ private fun finishExport(context: Context, scope: CoroutineScope, fileName: Stri
                 delete = { runCatching { android.provider.DocumentsContract.deleteDocument(context.contentResolver, uri) } },
             )
         }
-        NavRequestBus.postMessage(msg)
+        NavRequestBus.postNotice(msg)
     }
 }
 
@@ -100,7 +100,7 @@ fun rememberCollectionExporter(): CollectionExporter {
         pendingName = null; pendingBytes[0] = null
         if (uri != null) finishExport(context, scope, name ?: "export", bytes, uri)
     }
-    val zip = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(CollectionShare.ZIP_MIME), onPicked)
+    val zip = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(CollectionShare.COLLECTION_MIME), onPicked)
     val csv = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(CollectionShare.CSV_MIME), onPicked)
     return remember(zip, csv) {
         CollectionExporter { req ->
@@ -109,7 +109,7 @@ fun rememberCollectionExporter(): CollectionExporter {
             scope.launch {
                 val bytes = withContext(Dispatchers.IO) { req.bytes() }
                 if (bytes == null) {
-                    NavRequestBus.postMessage("Nothing to export")
+                    NavRequestBus.postNotice("Nothing to export")
                 } else {
                     pendingBytes[0] = bytes; pendingName = req.fileName
                     if (req.mime == CollectionShare.CSV_MIME) csv.launch(req.fileName) else zip.launch(req.fileName)
@@ -140,7 +140,7 @@ fun rememberCollectionImporter(): () -> Unit {
                     }
                 }.getOrElse { CollectionShare.failureMessage(it) }
             }
-            NavRequestBus.postMessage(msg)
+            NavRequestBus.postNotice(msg)
         }
     }
     return remember(launcher) { { launcher.launch(arrayOf("*/*")) } }
