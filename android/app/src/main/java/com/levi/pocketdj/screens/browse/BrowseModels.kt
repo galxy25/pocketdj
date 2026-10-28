@@ -2,6 +2,7 @@ package com.levi.pocketdj.screens.browse
 
 import com.levi.pocketdj.data.artists.Artist
 import com.levi.pocketdj.data.catalog.IndexAlbum
+import com.levi.pocketdj.data.favorites.FavoriteFilter
 import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.settings.AppSettingsStore
@@ -82,8 +83,25 @@ data class ArtistRow(val artist: Artist) : BrowseRow {
  * not counted. The helper accessors below back the quick Sources rail and the
  * legacy genre/bpm/key/source sheet by reading/writing the matching clause.
  */
-data class BrowseFilters(val clauses: List<Clause> = emptyList()) {
+data class BrowseFilters(
+    val clauses: List<Clause> = emptyList(),
+    /**
+     * Favorite tri-state (song mode only). TRANSIENT like iOS: never in [BrowseSnapshot] — its
+     * truth lives in FavoritesStore and moves independently. Applied by the engine at read
+     * time ([BrowseRows.filteredSongs]) against the live ♥ set, never memoized.
+     */
+    val favorite: FavoriteFilter = FavoriteFilter.ANY,
+) {
+    /** True when the favorite filter constrains anything. */
+    val favoriteActive: Boolean get() = favorite != FavoriteFilter.ANY
+
+    fun withFavorite(v: FavoriteFilter) = copy(favorite = v)
+
     val activeCount: Int get() = clauses.count { !it.isIncomplete }
+
+    /** Kind-gated count (iOS): the favorite constraint is song-mode only. */
+    fun activeCount(kind: BrowseKind): Int =
+        activeCount + if (kind == BrowseKind.SONGS && favoriteActive) 1 else 0
 
     /** Does the current sort/filter state read play counts (memo-key gate)? */
     fun usesPlayCounts(sortKeys: List<SortKey>): Boolean =
@@ -95,8 +113,8 @@ data class BrowseFilters(val clauses: List<Clause> = emptyList()) {
 
     private fun withList(field: String, values: Set<String>): BrowseFilters {
         val rest = clauses.filterNot { it.field == field && it.op == FilterOp.IN_LIST }
-        return if (values.isEmpty()) BrowseFilters(rest)
-        else BrowseFilters(rest + Clause(field, FilterOp.IN_LIST, values = values))
+        return if (values.isEmpty()) copy(clauses = rest)
+        else copy(clauses = rest + Clause(field, FilterOp.IN_LIST, values = values))
     }
 
     private fun between(field: String): Clause? =
@@ -113,8 +131,8 @@ data class BrowseFilters(val clauses: List<Clause> = emptyList()) {
     fun withSources(v: Set<String>) = withList("source", v)
     fun withBpm(min: Double?, max: Double?): BrowseFilters {
         val rest = clauses.filterNot { it.field == "bpm" && it.op == FilterOp.BETWEEN }
-        return if (min == null && max == null) BrowseFilters(rest)
-        else BrowseFilters(rest + Clause("bpm", FilterOp.BETWEEN, min = min, max = max))
+        return if (min == null && max == null) copy(clauses = rest)
+        else copy(clauses = rest + Clause("bpm", FilterOp.BETWEEN, min = min, max = max))
     }
 }
 
@@ -183,8 +201,12 @@ fun BrowseRows.filteredSongs(
     query: String,
     filters: BrowseFilters,
     playCounts: Map<String, Int> = emptyMap(),
-): List<SongRow> =
-    BrowseEngine.filterSort(songRows, songKeys, query, filters.clauses, emptyList(), playCounts)
+    /** The live ♥ set (FavoritesStore.favoriteIds); consulted only while the filter is active. */
+    favoriteIds: Set<String> = emptySet(),
+): List<SongRow> {
+    val rows = BrowseEngine.filterSort(songRows, songKeys, query, filters.clauses, emptyList(), playCounts)
+    return BrowseEngine.applyFavorites(rows, filters.favorite, favoriteIds)
+}
 
 /**
  * Process-retained browse UI state so kind/layout/filters/sort survive

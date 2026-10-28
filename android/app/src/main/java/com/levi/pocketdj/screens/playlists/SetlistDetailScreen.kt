@@ -424,6 +424,7 @@ private fun SetlistTrackRow(
             lengthMs = track.lengthMs,
             dimmed = dimmed,
             onClick = onTap,
+            favoriteSongId = song?.id, favoriteAppleMusicId = song?.appleMusicId,
             leading = {
                 Text(
                     rowNumber.toString(),

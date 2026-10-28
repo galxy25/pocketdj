@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.browse
 
+import com.levi.pocketdj.data.favorites.FavoriteFilter
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonNull
@@ -49,6 +50,17 @@ object BrowseEngine {
         }
         return BrowseSort.sorted(FilterEngine.apply(items, clauses, playCounts), sortKeys, playCounts)
     }
+
+    /**
+     * Read-time favorite layer: a cheap O(n) pass over the already filtered+sorted rows (never
+     * re-sorts, never memoized — the ♥ set changes independently of the results key).
+     */
+    fun applyFavorites(rows: List<SongRow>, filter: FavoriteFilter, favoriteIds: Set<String>): List<SongRow> =
+        when (filter) {
+            FavoriteFilter.ANY -> rows
+            FavoriteFilter.FAVORITE -> rows.filter { it.song.id in favoriteIds }
+            FavoriteFilter.NOT -> rows.filter { it.song.id !in favoriteIds }
+        }
 
     /** Per-row fallback: fold the row's own name/artist; [q] is pre-folded. */
     fun matchesFolded(row: BrowseRow, q: String): Boolean =

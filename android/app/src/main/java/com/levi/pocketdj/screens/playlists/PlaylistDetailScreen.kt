@@ -398,6 +398,7 @@ private fun NodeRow(
                     lengthMs = song.length,
                     dimmed = !manifestHit,
                     onClick = { onTapSong(song.id) },
+                    favoriteSongId = song.id, favoriteAppleMusicId = song.appleMusicId,
                     badges = {
                         node.repeatCount?.takeIf { it > 1 }?.let {
                             Spacer(Modifier.width(6.dp))

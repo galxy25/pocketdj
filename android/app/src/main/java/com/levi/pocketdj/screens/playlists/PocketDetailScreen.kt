@@ -299,6 +299,7 @@ fun PocketDetailScreen(
                                 lengthMs = song.length,
                                 dimmed = !manifest.containsKey(songId),
                                 onClick = { detailSongId = songId },
+                                favoriteSongId = songId, favoriteAppleMusicId = song.appleMusicId,
                                 badges = {
                                     pocket.songRepeats[songId]?.takeIf { it > 1 }?.let {
                                         Spacer(Modifier.width(6.dp))

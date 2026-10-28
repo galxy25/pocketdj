@@ -198,6 +198,7 @@ fun SourcePlaylistDetailScreen(
                             lengthMs = song.length,
                             dimmed = !manifest.containsKey(songId),
                             onClick = { detailSongId = songId },
+                            favoriteSongId = songId, favoriteAppleMusicId = song.appleMusicId,
                         )
                     }
                 }

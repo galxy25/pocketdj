@@ -41,6 +41,8 @@ class StorageService(
     private val clearPlayHistory: () -> Unit,
     /** Wired to `CollectionActivityStore.clear()` (keeps installId). */
     private val clearActivity: () -> Unit,
+    /** `filesDir/pocketdj-favorites.json` (COL-10, measured-only user content). */
+    private val favoritesFile: File? = null,
 ) {
     /** The five measured categories (specs/storage.md §2, ordered caches → docs). */
     enum class Category(val clearable: Boolean) {
@@ -49,6 +51,7 @@ class StorageService(
         COLLECTIONS(clearable = false), // user content — display-only (§2.3)
         PLAY_HISTORY(clearable = true),
         ACTIVITY(clearable = true),
+        FAVORITES(clearable = false), // per-profile ♥ + tombstones — display-only, user content
     }
 
     /** Categories that expose a Clear action (everything but Collections). */
@@ -62,6 +65,7 @@ class StorageService(
             Category.COLLECTIONS -> fileSize(collectionsFile)
             Category.PLAY_HISTORY -> fileSize(playHistoryFile)
             Category.ACTIVITY -> fileSize(activityFile)
+            Category.FAVORITES -> favoritesFile?.let(::fileSize) ?: 0L
         }
     }
 
@@ -84,7 +88,7 @@ class StorageService(
             Category.ARTWORK -> runCatching { artwork.clear() }
             Category.PLAY_HISTORY -> runCatching { clearPlayHistory() }
             Category.ACTIVITY -> runCatching { clearActivity() }
-            Category.COLLECTIONS -> Unit // unreachable — guarded above
+            Category.COLLECTIONS, Category.FAVORITES -> Unit // unreachable — guarded above
         }
         measure(category)
     }
