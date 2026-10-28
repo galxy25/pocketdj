@@ -135,6 +135,12 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
                 GamesPrefs.SCOREBOARD_FILE,
                 onPulled = { scoreboard.reloadFromDisk() },
             ),
+            // iOS: cloudSync "puzzle-decisions" (the recs training signal); pull merges by id.
+            SyncEntry(
+                PUZZLE_DECISIONS_SYNC_KEY,
+                PUZZLE_DECISIONS_FILE,
+                onPulled = { puzzleDecisions.reloadFromDisk() },
+            ),
         )
 
     override val deepLinkHandlers: List<DeepLinkHandler> = listOf(
@@ -148,6 +154,7 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
 
     companion object {
         const val PUZZLE_DECISIONS_FILE = "pocketdj-puzzle-decisions.json"
+        const val PUZZLE_DECISIONS_SYNC_KEY = "puzzle-decisions"
         const val PUZZLE_SETTINGS_KEY = "pdj.puzzle.settings.v1"
     }
 

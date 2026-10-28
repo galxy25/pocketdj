@@ -138,4 +138,115 @@ class GameRunPlayerContractTest {
         h.settle()
         assertEquals(listOf("am_only"), h.port.sounded, "the AM preview started through the ExoPlayer port")
     }
+
+    // ---- review fixes ------------------------------------------------------------------------------
+    private fun ownedRun(h: SequencerHarness, p: SequencerGameRunPlayer) {
+        p.playRun(items("a", "b", "c"), "puzzle_R1", "G")
+        h.settle()
+        assertTrue(p.ownsRun("puzzle_R1"))
+    }
+
+    @Test fun sequencer_browseAlbumQueue_abandonRun_isATakeover() = runTest {
+        val h = SequencerHarness(this, backgroundScope, setOf("a", "b", "c"))
+        val p = TestHarnessPlayer(h, backgroundScope, setOf("a", "b", "c"))
+        ownedRun(h, p)
+        // PlaybackController.setQueueAndPlay(multi-item): noteForeignPlay + abandonRun.
+        h.seq.noteForeignPlay()
+        h.seq.abandonRun()
+        h.settle()
+        assertFalse(h.seq.state.value.isRunning)
+        assertFalse(p.ownsRun("puzzle_R1"))
+        assertTrue(p.isRunning, "foreign audio is sounding, the engine must see a takeover not silence")
+        assertFalse(p.runningTag == "puzzle_R1")
+        assertFalse(p.skipNext("puzzle_R1"))
+        assertFalse(p.stopRun("puzzle_R1"))
+    }
+
+    @Test fun sequencer_browseSingle_retirePendingStart_isATakeover() = runTest {
+        val h = SequencerHarness(this, backgroundScope, setOf("a", "b", "c"))
+        val p = TestHarnessPlayer(h, backgroundScope, setOf("a", "b", "c"))
+        ownedRun(h, p)
+        h.seq.noteForeignPlay()
+        h.seq.retirePendingStart()
+        h.settle()
+        assertTrue(h.seq.state.value.isRunning, "the run is kept by a non-member single")
+        assertFalse(p.ownsRun("puzzle_R1"))
+        assertTrue(p.isRunning)
+        assertFalse(p.skipNext("puzzle_R1"))
+        assertFalse(p.appendRun(items("x"), "puzzle_R1"))
+        assertEquals(0, h.index, "the cursor never moved under the foreign single")
+    }
+
+    @Test fun sequencer_ourOwnStop_isNotATakeover() = runTest {
+        val h = SequencerHarness(this, backgroundScope, setOf("a", "b", "c"))
+        val p = TestHarnessPlayer(h, backgroundScope, setOf("a", "b", "c"))
+        ownedRun(h, p)
+        assertTrue(p.stopRun("puzzle_R1"))
+        h.settle()
+        assertFalse(p.isRunning)
+        // A fresh run after a takeover owns again.
+        h.seq.noteForeignPlay()
+        p.playRun(items("a"), "puzzle_R2", "G")
+        h.settle()
+        assertTrue(p.ownsRun("puzzle_R2"))
+    }
+
+    @Test fun ladder_cloudRungDoesNotRipGameRows_previewWins() = runTest {
+        val previews = GamePreviewResolver({ false }, { "9" }, { "https://p/9.m4a" })
+        val registry = com.levi.pocketdj.playback.sequencer.RowResolverRegistry(
+            initial = listOf(com.levi.pocketdj.playback.sequencer.CloudRowResolver(), GamePreviewRowResolver(previews)),
+            manifestHit = { false },
+            ripServerConfigured = { true },
+        )
+        val tagged = com.levi.pocketdj.playback.sequencer.QueueItem("am_only", runTag = "puzzle_R1")
+        assertTrue(registry.resolve(tagged, PlaybackMode.CLOUD) is com.levi.pocketdj.playback.sequencer.StreamSource)
+        val plain = com.levi.pocketdj.playback.sequencer.QueueItem("am_only")
+        assertTrue(registry.resolve(plain, PlaybackMode.CLOUD) is com.levi.pocketdj.playback.sequencer.RipOnDemandSource)
+    }
+
+    @Test fun probeTimeout_leavesUnansweredSongsOptimisticAndConsistent() = runTest {
+        val ids = (1..14).map { "am$it" }
+        val r = GamePreviewResolver(
+            localPlayable = { false }, appleMusicId = { "x$it" },
+            previewUrl = { kotlinx.coroutines.awaitCancellation() },
+            probeTimeoutMs = 100,
+        )
+        val out = r.canPlay(ids)
+        assertTrue(ids.all { out[it] == true }, "nothing answered: none are dropped, first chunk included")
+    }
+
+    @Test fun probe_answeredMissIsDropped_andNegativesAreCached() = runTest {
+        var calls = 0
+        val r = GamePreviewResolver({ false }, { "x$it" }, { calls++; null })
+        assertEquals(false, r.canPlay(listOf("am1"))["am1"])
+        r.warm(listOf("am1")); r.urlFor("am1")
+        assertEquals(1, calls, "a miss is never re-fetched this session")
+    }
+
+    @Test fun warm_isCursorRelativeLookahead() = runTest {
+        val looked = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+        val ids = (0 until 40).map { "am$it" }
+        val h = SequencerHarness(this, backgroundScope, emptySet())
+        val p = SequencerGameRunPlayer(
+            h.seq,
+            GamePreviewResolver({ false }, { "x$it" }, { looked += it; "https://p/$it" }),
+            backgroundScope,
+        )
+        p.playRun(items(*ids.toTypedArray()), "puzzle_R1", "G")
+        h.settle()
+        assertTrue(looked.size <= SequencerGameRunPlayer.LOOKAHEAD, "only the window ahead of the cursor: ${looked.size}")
+    }
+
+    @Test fun restore_stripsGhostPuzzleTag() = runTest {
+        val h = SequencerHarness(this, backgroundScope, setOf("a"))
+        h.seq.restoreHeld(
+            items = listOf(com.levi.pocketdj.playback.sequencer.QueueItem("a", runTag = "puzzle_R1")),
+            index = 0, sourceSetlistId = "puzzle_R1", context = PlayContext.game("puzzle_R1", "Gem Collector"),
+            origin = null, repeatMode = com.levi.pocketdj.playback.sequencer.RepeatMode.OFF, shuffle = false, resumeAtMs = null,
+        )
+        val st = h.seq.state.value
+        assertNull(st.sourceSetlistId)
+        assertNull(st.capturedContext?.runTag)
+        assertNull(st.queue.single().runTag)
+    }
 }

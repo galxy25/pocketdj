@@ -39,6 +39,8 @@ class CloudRowResolver : RowSourceResolver {
 
     override suspend fun resolve(item: QueueItem, ctx: ResolveContext): RowSource? {
         if (!ctx.ripServerConfigured) return null
+        // Game rows never queue a /rip (a 30 s preview rides the game rung; ripping fills the Mac queue).
+        if (item.runTag != null) return null
         if (PlayResolver.isStudioId(item.id) || PlayResolver.isStudioId(item.resolveId)) return null
         return RipOnDemandSource(item.resolveId)
     }

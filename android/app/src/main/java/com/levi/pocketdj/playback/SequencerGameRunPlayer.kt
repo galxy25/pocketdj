@@ -12,7 +12,12 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -29,30 +34,71 @@ class SequencerGameRunPlayer(
     private val scope: CoroutineScope,
 ) : GameRunPlayer {
 
-    override val runningTag: String?
-        get() = sequencer.state.value.let { if (it.isRunning) it.runTagOrSource() else null }
+    // ---- ownership ---------------------------------------------------------------------------
+    // Android foreign plays often never reach sequencer.play (Browse album -> abandonRun, a
+    // non-member single -> retirePendingStart), so the sequencer's state alone cannot say who is
+    // sounding. A takeover is: a different session is running, OR PlaybackController reported a
+    // sequencer-bypassing play since ours began (SetlistSequencer.foreignPlayCount). Latched until
+    // the next playRun so a foreign play that later ends is never mistaken for our run returning.
+    @Volatile private var ourTag: String? = null
+    @Volatile private var ourSession: String? = null
+    @Volatile private var foreignBase: Int = 0
+    @Volatile private var lost: Boolean = false
 
-    override val isRunning: Boolean get() = sequencer.state.value.isRunning
+    private fun taken(): Boolean {
+        if (ourSession == null) return false
+        if (lost) return true
+        val st = sequencer.state.value
+        if (sequencer.foreignPlayCount != foreignBase || (st.isRunning && st.sessionId != ourSession)) lost = true
+        return lost
+    }
+
+    override val runningTag: String?
+        get() {
+            val st = sequencer.state.value
+            return when {
+                taken() -> if (st.isRunning && st.sessionId != ourSession) st.runTagOrSource() ?: FOREIGN_TAG else FOREIGN_TAG
+                st.isRunning -> st.runTagOrSource()
+                else -> null
+            }
+        }
+
+    override val isRunning: Boolean get() = sequencer.state.value.isRunning || taken()
 
     override val position: Int get() = sequencer.state.value.index
+
+    override fun ownsRun(tag: String): Boolean =
+        !taken() && ourTag == tag && sequencer.state.value.let { it.isRunning && it.sessionId == ourSession }
 
     private fun com.levi.pocketdj.playback.sequencer.SequencerState.runTagOrSource(): String? =
         capturedContext?.contextId ?: sourceSetlistId
 
+    init {
+        // Keep the preview cache warm LOOKAHEAD rows ahead of wherever the cursor is.
+        scope.launch {
+            sequencer.state.map { it.sessionId to it.index }.distinctUntilChanged().collectLatest {
+                if (ourSession != null && !taken()) warmWindow()
+            }
+        }
+    }
+
     override fun playRun(items: List<RunItem>, tag: String, label: String) {
         if (items.isEmpty()) return
+        foreignBase = sequencer.foreignPlayCount
+        lost = false
+        ourTag = tag
         sequencer.play(
             items = items.map { it.toQueueItem(tag) },
             sourceSetlistId = tag,
             context = PlayContext.game(tag, label),
         )
-        warmAhead(items, fromIndex = 0)
+        ourSession = sequencer.state.value.sessionId
+        scope.launch { warmWindow() }
     }
 
     override fun appendRun(items: List<RunItem>, tag: String): Boolean {
         if (items.isEmpty() || !ownsRun(tag)) return false
         sequencer.appendRows(items.map { it.toQueueItem(tag) }, tag)
-        warmAhead(items, fromIndex = 0)
         return true
     }
 
@@ -65,6 +111,8 @@ class SequencerGameRunPlayer(
     override fun stopRun(tag: String): Boolean {
         if (!ownsRun(tag)) return false
         sequencer.stop()
+        ourSession = null
+        ourTag = null
         return true
     }
 
@@ -76,15 +124,19 @@ class SequencerGameRunPlayer(
     private fun RunItem.toQueueItem(tag: String) =
         QueueItem(id = songId, title = title, artist = artist, lengthMs = lengthMs, runTag = tag)
 
-    /** Warm the preview cache [LOOKAHEAD] rows at a time so the sequencer's resolve is a cache hit. */
-    private fun warmAhead(items: List<RunItem>, fromIndex: Int) {
-        val ids = items.drop(fromIndex).map { it.songId }
-        scope.launch { previews.warm(ids) }
+    /** Resolve previews for [cursor, cursor + LOOKAHEAD) so the sequencer's resolve is a cache hit. */
+    private suspend fun warmWindow() {
+        val st = sequencer.state.value
+        if (!st.isRunning) return
+        previews.warm(st.queue.drop(st.index).take(LOOKAHEAD).map { it.id })
     }
 
     companion object {
         /** Preview URLs are resolved this many rows ahead of the cursor. */
         const val LOOKAHEAD = 12
+
+        /** `runningTag` reported while a sequencer-bypassing foreign play sounds. */
+        const val FOREIGN_TAG = "foreign"
     }
 }
 
@@ -99,7 +151,27 @@ class GamePreviewResolver(
     private val previewUrl: suspend (String) -> String?,
     private val probeTimeoutMs: Long = 4_000,
 ) {
-    /** songId -> true (plays) / false (cannot). Chunks of [SequencerGameRunPlayer.LOOKAHEAD], first chunk awaited. */
+    /** AM ids whose lookup came back empty this session: never re-fetched (iTunes lookup is rate limited). */
+    private val misses = ConcurrentHashMap.newKeySet<String>()
+
+    private suspend fun lookup(amId: String): String? {
+        if (amId in misses) return null
+        val url = try {
+            previewUrl(amId)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        if (url == null) misses += amId
+        return url
+    }
+
+    /**
+     * songId -> true (plays) / false (cannot). The first chunk of [SequencerGameRunPlayer.LOOKAHEAD]
+     * network-bound songs is probed within the budget; anything not answered in time is UNKNOWN and
+     * treated like the rest of the unprobed tail (optimistic, skipped at its turn if it misses).
+     */
     suspend fun canPlay(songIds: List<String>): Map<String, Boolean> {
         val out = HashMap<String, Boolean>()
         val network = ArrayList<String>()
@@ -111,10 +183,13 @@ class GamePreviewResolver(
             }
         }
         val first = network.take(SequencerGameRunPlayer.LOOKAHEAD)
-        val probed = withTimeoutOrNull(probeTimeoutMs) { probe(first) } ?: emptyMap()
-        for (id in first) out[id] = probed[id] == true
-        // Beyond the first chunk: optimistic; resolved when the cursor gets near (the ladder rung
-        // returns null for a miss and the sequencer skips that row at its turn).
+        val answered = ConcurrentHashMap<String, Boolean>()
+        withTimeoutOrNull(probeTimeoutMs) {
+            coroutineScope {
+                first.map { id -> async { answered[id] = urlFor(id) != null } }.awaitAll()
+            }
+        }
+        for (id in first) out[id] = answered[id] ?: true
         for (id in network.drop(first.size)) out[id] = true
         return out
     }
@@ -123,18 +198,11 @@ class GamePreviewResolver(
     suspend fun warm(songIds: List<String>) {
         songIds.filter { !localPlayable(it) && appleMusicId(it) != null }
             .chunked(SequencerGameRunPlayer.LOOKAHEAD)
-            .forEach { probe(it) }
-    }
-
-    private suspend fun probe(ids: List<String>): Map<String, Boolean> = coroutineScope {
-        ids.map { id ->
-            async { id to (appleMusicId(id)?.let { runCatching { previewUrl(it) }.getOrNull() } != null) }
-        }.awaitAll().toMap()
+            .forEach { chunk -> coroutineScope { chunk.map { async { urlFor(it) } }.awaitAll() } }
     }
 
     /** The URL for the sequencer rung. */
-    suspend fun urlFor(songId: String): String? =
-        appleMusicId(songId)?.let { runCatching { previewUrl(it) }.getOrNull() }
+    suspend fun urlFor(songId: String): String? = appleMusicId(songId)?.let { lookup(it) }
 }
 
 /**

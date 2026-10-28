@@ -269,6 +269,32 @@ class CollectorsPuzzleEngine(
      */
     suspend fun startRound() {
         if (phase != PuzzleRoundState.Phase.IDLE && phase != PuzzleRoundState.Phase.FINISHED) return
+        try {
+            runStart()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // The caller's scope died (tab switch during the countdown): a half-started round must not
+            // wedge the engine in SAMPLING / COUNTDOWN forever (start only accepts IDLE / FINISHED).
+            if (phase == PuzzleRoundState.Phase.SAMPLING || phase == PuzzleRoundState.Phase.COUNTDOWN) {
+                countdown = 0
+                phase = PuzzleRoundState.Phase.IDLE
+                publish()
+            }
+            throw e
+        }
+    }
+
+    private var startJob: Job? = null
+
+    /**
+     * Start on the engine's own app-scoped [scope], single-flight: the start sequence (sampling,
+     * cloud call, 3-2-1) survives the screen that tapped Start being torn down.
+     */
+    fun startRoundDetached(): Job {
+        startJob?.takeIf { it.isActive }?.let { return it }
+        return scope.launch { startRound() }.also { startJob = it }
+    }
+
+    private suspend fun runStart() {
         lastError = null
         poolExhausted = false
         // A sheet the PREVIOUS round left open must never hold the new round's ticker hostage.

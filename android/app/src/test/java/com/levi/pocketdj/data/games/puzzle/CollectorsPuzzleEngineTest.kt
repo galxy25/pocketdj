@@ -164,6 +164,29 @@ class CollectorsPuzzleEngineTest {
         run.cancel()
     }
 
+    @Test fun cancelledStart_doesNotWedgeTheEngine() = runTest {
+        val s = stack { it.countdownEnabled = true }
+        val run = backgroundScope.launch { s.engine.startRound() }
+        runCurrent()
+        assertEquals(PuzzleRoundState.Phase.COUNTDOWN, s.engine.currentPhase)
+        run.cancel() // the screen's scope died mid-countdown
+        runCurrent()
+        assertEquals(PuzzleRoundState.Phase.IDLE, s.engine.currentPhase)
+        assertTrue(s.player.plays.isEmpty())
+        s.engine.countdownEnabled = false
+        s.engine.startRound()
+        assertEquals(PuzzleRoundState.Phase.RUNNING, s.engine.currentPhase)
+    }
+
+    @Test fun detachedStart_survivesTheCallersScope() = runTest {
+        val s = stack { it.countdownEnabled = true }
+        val caller = backgroundScope.launch { s.engine.startRoundDetached() }
+        runCurrent()
+        caller.cancel()
+        advanceTimeBy(3000); runCurrent()
+        assertEquals(PuzzleRoundState.Phase.RUNNING, s.engine.currentPhase)
+    }
+
     // ---- cloud budget ----------------------------------------------------------------------
     @Test fun cloudBudgetRace_slowProviderLosesAndRoundStartsLocalOnly() = runTest {
         var finished = false

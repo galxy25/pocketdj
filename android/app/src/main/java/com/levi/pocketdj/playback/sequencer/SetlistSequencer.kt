@@ -312,6 +312,16 @@ class SetlistSequencer(
     }
 
     /**
+     * A play that bypassed the sequencer (album queue, non-member single, full-track AM) took the
+     * audio over. Monotonic; game run players compare it to the value at their own play to detect
+     * a takeover even when the sequencer's run was merely kept (single) or abandoned (queue).
+     */
+    @Volatile var foreignPlayCount: Int = 0
+        private set
+
+    fun noteForeignPlay() { foreignPlayCount++ }
+
+    /**
      * End the run WITHOUT touching the player - a foreign play (an album queue) has taken the
      * engine over and must keep sounding.
      */
@@ -705,6 +715,13 @@ class SetlistSequencer(
         sessionId: String? = null,
     ) {
         if (items.isEmpty() || running) return
+        // iOS parity (SetlistPlayer restore): a `puzzle_` run tag is a ghost after relaunch - the game
+        // engine does not survive, so strip the tag from the source id, context and rows.
+        val ghost = sourceSetlistId?.startsWith(GHOST_RUN_PREFIX) == true ||
+            context?.runTag?.startsWith(GHOST_RUN_PREFIX) == true
+        val items = if (ghost) items.map { if (it.runTag != null) it.copy(runTag = null) else it } else items
+        val sourceSetlistId = if (ghost) null else sourceSetlistId
+        val context = if (ghost) context?.copy(runTag = null, contextId = null) else context
         this.sessionId = sessionId ?: ("pses_" + java.util.UUID.randomUUID().toString().uppercase())
         queue.clear()
         queue.addAll(items)
@@ -1311,3 +1328,5 @@ class SetlistSequencer(
     suspend fun resume() = port.resume()
     suspend fun seekTo(positionMs: Long) = port.seekTo(positionMs)
 }
+
+private const val GHOST_RUN_PREFIX = "puzzle_"
