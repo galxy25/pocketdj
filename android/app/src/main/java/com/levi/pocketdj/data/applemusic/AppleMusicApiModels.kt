@@ -54,7 +54,7 @@ data class AmTrackPage(
     val nextOffset: Int?,
 )
 
-data class AmPage<T>(val items: List<T>, val nextOffset: Int?) {
+data class AmPage<T>(val items: List<T>, val nextOffset: Int?, val hasCursor: Boolean = nextOffset != null) {
     val hasNext: Boolean get() = nextOffset != null
 }
 
@@ -131,7 +131,8 @@ object AppleMusicApiModels {
 
     private fun <T> page(container: JsonObject?, parse: (JsonElement) -> T?): AmPage<T> {
         val rows = container?.get("data").arr().orEmpty()
-        return AmPage(rows.mapNotNull(parse), nextOffset(container?.get("next").str()))
+        val next = container?.get("next").str()
+        return AmPage(rows.mapNotNull(parse), nextOffset(next), !next.isNullOrBlank())
     }
 
     /** `GET /v1/catalog/{sf}/search` -> songs and/or albums. Null when unreadable. */

@@ -18,7 +18,7 @@ interface AppleMusicTokens {
     suspend fun musicUserToken(): String?
 
     /** Drop a developer token the API rejected so the next call re-mints. Default no-op. */
-    fun invalidateDeveloperToken() {}
+    suspend fun invalidateDeveloperToken() {}
 }
 
 /** Production wiring over the existing token client + Settings-persisted MUT. */
@@ -28,7 +28,8 @@ class DefaultAppleMusicTokens(
 ) : AppleMusicTokens {
     override suspend fun developerToken(): String = devTokenClient.developerToken()
     override suspend fun musicUserToken(): String? =
-        settings.current().musicUserToken.takeIf { it.isNotBlank() }
+        settings.current().musicUserToken.trim().takeIf { it.isNotEmpty() }
+    override suspend fun invalidateDeveloperToken() = devTokenClient.invalidate()
 }
 
 /** Fixed tokens, for tests and tooling. */
@@ -37,5 +38,5 @@ class StaticAppleMusicTokens(
     private val user: String? = null,
 ) : AppleMusicTokens {
     override suspend fun developerToken(): String = dev
-    override suspend fun musicUserToken(): String? = user?.takeIf { it.isNotBlank() }
+    override suspend fun musicUserToken(): String? = user?.trim()?.takeIf { it.isNotEmpty() }
 }

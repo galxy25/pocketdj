@@ -61,6 +61,8 @@ class AppleMusicApi(
     private val maxAttempts: Int = 4,
     /** Injectable for tests; production sleeps. */
     private val sleeper: suspend (Long) -> Unit = { delay(it) },
+    /** Total 429 sleep budget per call; beyond it the call returns RateLimited at once. */
+    private val maxBackoffBudgetMs: Long = 15_000,
 ) {
     private val client: OkHttpClient = http.newBuilder()
         .callTimeout(20, java.util.concurrent.TimeUnit.SECONDS).build()
@@ -84,17 +86,27 @@ class AppleMusicApi(
         return call(get(url), userScoped = false) { AppleMusicApiModels.parseCatalogSearch(it) }
     }
 
-    /** `GET /v1/catalog/{sf}/artists?ids=&views=latest-release,similar-artists` (<= 50 ids). */
+    /**
+     * `GET /v1/catalog/{sf}/artists?ids=&views=latest-release,similar-artists`.
+     * Batched at [MAX_ARTIST_IDS]; any non-Ok batch fails the whole call so no id
+     * is ever silently dropped (an absent artist must mean "queried, none").
+     */
     suspend fun artistsLatestRelease(
         artistIds: List<String>,
         storefront: String = defaultStorefront,
     ): AmResult<List<AmArtist>> {
-        if (artistIds.isEmpty()) return AmResult.Ok(emptyList())
-        val url = url("v1", "catalog", storefront, "artists") {
-            addQueryParameter("ids", artistIds.take(MAX_ARTIST_IDS).joinToString(","))
-            addQueryParameter("views", "latest-release,similar-artists")
+        val out = ArrayList<AmArtist>()
+        for (chunk in batches(artistIds, MAX_ARTIST_IDS)) {
+            val url = url("v1", "catalog", storefront, "artists") {
+                addQueryParameter("ids", chunk.joinToString(","))
+                addQueryParameter("views", "latest-release,similar-artists")
+            }
+            when (val r = call(get(url), userScoped = false) { AppleMusicApiModels.parseArtists(it) }) {
+                is AmResult.Ok -> out += r.value
+                else -> return r.map { out }
+            }
         }
-        return call(get(url), userScoped = false) { AppleMusicApiModels.parseArtists(it) }
+        return AmResult.Ok(out)
     }
 
     // ---- User ----------------------------------------------------------------
@@ -117,7 +129,10 @@ class AppleMusicApi(
             when (val r = libraryPlaylists(offset, pageSize)) {
                 is AmResult.Ok -> {
                     out += r.value.items
-                    offset = r.value.nextOffset ?: return AmResult.Ok(out)
+                    // Unparsable cursor: fall back to offset arithmetic (iOS ends on a short page).
+                    offset = r.value.nextOffset
+                        ?: if (r.value.hasCursor) offset + r.value.items.size
+                        else return AmResult.Ok(out)
                 }
                 else -> return r.map { out }
             }
@@ -125,11 +140,43 @@ class AppleMusicApi(
         return AmResult.Ok(out)
     }
 
+    /**
+     * One page of a library playlist's tracks. Apple answers **404 for a playlist
+     * with NO tracks** (iOS `WebAPIPlaylistWriteBack` invariant), so a 404 is an
+     * empty page, never an error — otherwise the first add to a new playlist fails.
+     */
     suspend fun playlistTracks(playlistId: String, offset: Int = 0, limit: Int = 100): AmResult<AmTrackPage> =
         call(
             get(url("v1", "me", "library", "playlists", playlistId, "tracks") { paging(offset, limit) }),
             userScoped = true,
+            emptyOn404 = AmTrackPage(emptyList(), 0, false, null),
         ) { AppleMusicApiModels.parseTrackPage(it) }
+
+    /**
+     * Every catalog id in a library playlist (deduped, order kept). Ends on a short
+     * page (`rowCount < pageSize`) with no `next`, or an empty page; bounded by
+     * [maxPages]. First non-Ok page aborts. An empty playlist (404) -> empty list.
+     */
+    suspend fun allPlaylistTrackCatalogIds(
+        playlistId: String,
+        pageSize: Int = 100,
+        maxPages: Int = 200,
+    ): AmResult<List<String>> {
+        val out = LinkedHashSet<String>()
+        var offset = 0
+        repeat(maxPages) {
+            when (val r = playlistTracks(playlistId, offset, pageSize)) {
+                is AmResult.Ok -> {
+                    val p = r.value
+                    out += p.catalogIds
+                    if (p.rowCount == 0) return AmResult.Ok(out.toList())
+                    offset = p.nextOffset ?: if (p.rowCount < pageSize) return AmResult.Ok(out.toList()) else offset + p.rowCount
+                }
+                else -> return r.map { out.toList() }
+            }
+        }
+        return AmResult.Ok(out.toList())
+    }
 
     /** `POST /v1/me/library/playlists` -> the new playlist's library id. */
     suspend fun createPlaylist(
@@ -257,6 +304,7 @@ class AppleMusicApi(
     private suspend fun <T> call(
         base: Request,
         userScoped: Boolean,
+        emptyOn404: T? = null,
         parse: (String) -> T?,
     ): AmResult<T> {
         val mut = try { tokens.musicUserToken() } catch (e: CancellationException) { throw e } catch (_: Throwable) { null }
@@ -268,12 +316,18 @@ class AppleMusicApi(
         } catch (t: Throwable) {
             return AmResult.Failure(null, t.message ?: "No Apple Music developer token")
         }
-        val request = base.newBuilder()
-            .header("Authorization", "Bearer $dev")
-            .apply { if (mut != null) header("Music-User-Token", mut) }
-            .build()
+        val request = try {
+            base.newBuilder()
+                .header("Authorization", "Bearer ${dev.trim()}")
+                .apply { if (mut != null) header("Music-User-Token", mut.trim()) }
+                .build()
+        } catch (_: IllegalArgumentException) {
+            // Corrupt token (newline / non-ASCII) must not crash the caller.
+            return if (userScoped) AmResult.NeedsUserToken else AmResult.Failure(null, "Malformed Apple Music token")
+        }
 
         var lastRetryAfter: Long? = null
+        var slept = 0L
         for (attempt in 0 until maxAttempts) {
             val outcome = try {
                 withContext(Dispatchers.IO) {
@@ -289,17 +343,20 @@ class AppleMusicApi(
             when {
                 outcome.code == 429 -> {
                     lastRetryAfter = outcome.retryAfter
-                    if (attempt < maxAttempts - 1) {
-                        sleeper(backoffMs(attempt, outcome.retryAfter))
+                    val wait = backoffMs(attempt, outcome.retryAfter)
+                    if (attempt < maxAttempts - 1 && slept + wait <= maxBackoffBudgetMs) {
+                        slept += wait
+                        sleeper(wait)
                         continue
                     }
                     return AmResult.RateLimited(lastRetryAfter)
                 }
                 outcome.code == 401 || outcome.code == 403 -> {
                     if (userScoped) return AmResult.NeedsUserToken
-                    tokens.invalidateDeveloperToken()
+                    try { tokens.invalidateDeveloperToken() } catch (e: CancellationException) { throw e } catch (_: Throwable) {}
                     return AmResult.Failure(outcome.code, "Apple Music rejected the developer token")
                 }
+                outcome.code == 404 && emptyOn404 != null -> return AmResult.Ok(emptyOn404)
                 outcome.code !in 200..299 ->
                     return AmResult.Failure(outcome.code, "Apple Music API error (${outcome.code})")
                 else -> {

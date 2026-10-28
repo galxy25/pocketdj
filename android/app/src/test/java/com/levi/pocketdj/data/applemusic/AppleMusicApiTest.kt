@@ -56,9 +56,9 @@ class AppleMusicApiTest {
     }
 
     @Test fun search429ExhaustedIsRateLimited() = runTest {
-        repeat(4) { server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "7")) }
+        repeat(4) { server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "2")) }
         val r = api().searchCatalog("x")
-        assertEquals(AmResult.RateLimited(7L), r)
+        assertEquals(AmResult.RateLimited(2L), r)
         assertEquals(4, server.requestCount)
     }
 
@@ -219,5 +219,123 @@ class AppleMusicApiTest {
         assertEquals(30000L, AppleMusicApi.backoffMs(9, null))
         assertEquals(60000L, AppleMusicApi.backoffMs(0, 500))
         assertEquals(listOf(listOf("a", "b"), listOf("c")), AppleMusicApi.batches(listOf("a", "b", "c"), 2))
+    }
+
+    // ---- review fixes ----
+    @Test fun playlistTracks404IsEmptyPage() = runTest {
+        server.enqueue(MockResponse().setResponseCode(404))
+        val p = (api().playlistTracks("p.new") as AmResult.Ok).value
+        assertEquals(emptyList<String>(), p.catalogIds)
+        assertEquals(0, p.rowCount)
+        assertEquals(false, p.hasNext)
+    }
+
+    @Test fun allPlaylistTrackIdsEmptyPlaylist404() = runTest {
+        server.enqueue(MockResponse().setResponseCode(404))
+        assertEquals(emptyList<String>(), (api().allPlaylistTrackCatalogIds("p") as AmResult.Ok).value)
+    }
+
+    @Test fun allPlaylistTrackIdsWalksUntilShortPage() = runTest {
+        server.enqueue(ok("""{"data":[{"attributes":{"playParams":{"catalogId":"a"}}},{"attributes":{"playParams":{"catalogId":"b"}}}],"next":"/x?offset=2"}"""))
+        server.enqueue(ok("""{"data":[{"attributes":{"playParams":{"catalogId":"c"}}}]}"""))
+        val r = api().allPlaylistTrackCatalogIds("p", pageSize = 2) as AmResult.Ok
+        assertEquals(listOf("a", "b", "c"), r.value)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun allPlaylistTrackIdsFullPageUnparsableNextStillAdvances() = runTest {
+        server.enqueue(ok("""{"data":[{"attributes":{"playParams":{"catalogId":"a"}}},{"attributes":{"playParams":{"catalogId":"b"}}}],"next":"cursor-xyz"}"""))
+        server.enqueue(ok("""{"data":[]}"""))
+        val r = api().allPlaylistTrackCatalogIds("p", pageSize = 2) as AmResult.Ok
+        assertEquals(listOf("a", "b"), r.value)
+        assertEquals("/v1/me/library/playlists/p/tracks?limit=2&offset=2", server.takeRequest().let { server.takeRequest() }.path)
+    }
+
+    @Test fun allLibraryPlaylistsUnparsableNextFallsBackToOffset() = runTest {
+        server.enqueue(ok("""{"data":[{"id":"1"},{"id":"2"}],"next":"opaque"}"""))
+        server.enqueue(ok("""{"data":[{"id":"3"}]}"""))
+        val r = api().allLibraryPlaylists(pageSize = 2) as AmResult.Ok
+        assertEquals(3, r.value.size)
+    }
+
+    @Test fun artistsBatchedAt50NeverDropsIds() = runTest {
+        server.enqueue(ok("""{"data":[{"id":"a1","attributes":{"name":"A"}}]}"""))
+        server.enqueue(ok("""{"data":[{"id":"a2","attributes":{"name":"B"}}]}"""))
+        val r = api(user = null).artistsLatestRelease((1..60).map { "x$it" }) as AmResult.Ok
+        assertEquals(2, r.value.size)
+        assertEquals(2, server.requestCount)
+    }
+
+    @Test fun artistsBatchFailureFailsWholeCall() = runTest {
+        server.enqueue(ok("""{"data":[]}"""))
+        server.enqueue(MockResponse().setResponseCode(500))
+        assertTrue(api(user = null).artistsLatestRelease((1..60).map { "x$it" }) is AmResult.Failure)
+    }
+
+    @Test fun largeRetryAfterBeyondBudgetReturnsRateLimitedImmediately() = runTest {
+        server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "120"))
+        assertEquals(AmResult.RateLimited(120L), api().rateSong("1"))
+        assertEquals(1, server.requestCount)
+        assertTrue(sleeps.isEmpty())
+    }
+
+    @Test fun corruptTokenDoesNotThrow() = runTest {
+        val a = AppleMusicApi(OkHttpClient(), StaticAppleMusicTokens("dev\u00e9\nx", "mut"), baseUrl = server.url("/").toString().trimEnd('/'))
+        assertEquals(AmResult.NeedsUserToken, a.libraryPlaylists())
+    }
+
+    @Test fun invalidatesDeveloperTokenOn401() = runTest {
+        var invalidated = 0
+        val t = object : AppleMusicTokens {
+            override suspend fun developerToken() = "d"
+            override suspend fun musicUserToken(): String? = null
+            override suspend fun invalidateDeveloperToken() { invalidated++ }
+        }
+        server.enqueue(MockResponse().setResponseCode(401))
+        AppleMusicApi(OkHttpClient(), t, baseUrl = server.url("/").toString().trimEnd('/')).searchCatalog("x")
+        assertEquals(1, invalidated)
+    }
+
+    // ---- 401 / 429 over every user-scoped endpoint ----
+    private val userCalls: List<Pair<String, suspend (AppleMusicApi) -> AmResult<*>>> = listOf(
+        "userStorefront" to { a -> a.userStorefront() },
+        "libraryPlaylists" to { a -> a.libraryPlaylists() },
+        "allLibraryPlaylists" to { a -> a.allLibraryPlaylists() },
+        "playlistTracks" to { a -> a.playlistTracks("p") },
+        "allPlaylistTrackCatalogIds" to { a -> a.allPlaylistTrackCatalogIds("p") },
+        "createPlaylist" to { a -> a.createPlaylist("n") },
+        "addTracksToPlaylist" to { a -> a.addTracksToPlaylist("p", listOf("1")) },
+        "removeTracksFromPlaylist" to { a -> a.removeTracksFromPlaylist("p", listOf("1")) },
+        "addToLibrary" to { a -> a.addToLibrary(AmLibraryKind.SONGS, listOf("1")) },
+        "rateSong" to { a -> a.rateSong("1") },
+        "unrateSong" to { a -> a.unrateSong("1") },
+        "starSongs" to { a -> a.starSongs(listOf("1")) },
+        "lovedSongIds" to { a -> a.lovedSongIds(listOf("1")) },
+    )
+
+    @Test fun everyUserEndpoint401IsNeedsUserToken() = runTest {
+        for ((name, call) in userCalls) {
+            server.enqueue(MockResponse().setResponseCode(401))
+            assertEquals(name, AmResult.NeedsUserToken, call(api()))
+        }
+    }
+
+    @Test fun everyUserEndpoint429IsRateLimited() = runTest {
+        for ((name, call) in userCalls) {
+            repeat(4) { server.enqueue(MockResponse().setResponseCode(429).setHeader("Retry-After", "1")) }
+            assertTrue(name, call(api()) is AmResult.RateLimited)
+        }
+    }
+
+    @Test fun everyUserEndpointWithoutMutDoesNoNetwork() = runTest {
+        for ((name, call) in userCalls) assertEquals(name, AmResult.NeedsUserToken, call(api(user = null)))
+        assertEquals(0, server.requestCount)
+    }
+
+    @Test fun catalogEndpoints401And429() = runTest {
+        server.enqueue(MockResponse().setResponseCode(401))
+        assertEquals(401, ((api().artistsLatestRelease(listOf("1"))) as AmResult.Failure).status)
+        repeat(4) { server.enqueue(MockResponse().setResponseCode(429)) }
+        assertTrue(api().artistsLatestRelease(listOf("1")) is AmResult.RateLimited)
     }
 }

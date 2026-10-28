@@ -77,6 +77,12 @@ class MusicKitDeveloperTokenClient(
         return response.token
     }
 
+    /** Drop the in-memory AND persisted token (the API rejected it) so the next call re-mints. */
+    suspend fun invalidate() {
+        cached = null
+        settings?.setAppleMusicDeveloperToken("", 0L)
+    }
+
     /**
      * Best-effort pre-fetch for launch / sign-in. Never throws — a warm cache is
      * an optimization, and its absence simply defers the fetch to first AM play.
