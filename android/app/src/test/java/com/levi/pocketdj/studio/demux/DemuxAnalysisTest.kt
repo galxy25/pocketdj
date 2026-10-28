@@ -42,6 +42,19 @@ class DemuxAnalysisTest {
         assertNull(DemuxGridResolver.resolve("dmx_1", 8_000, BeatGridSidecar()) { StudioGrid(0.0) })
     }
 
+    @Test fun instrumentalGridIsThe120At0RuleEvenWhenBarsAreEstimated() {
+        // Custom audio at ~97 BPM: bars use the estimate, the instrumental grid must match DemuxTakeSwitch (120@0).
+        val all = DemuxGridResolver.resolveAll("dmx_1", 8_000, null) { StudioGrid(97.0, 310) }
+        assertEquals(DemuxInstrumental.Grid(120.0, 0, emptyList()), all.instrumentalGrid)
+        assertNotNull(all.bars); assertFalse(all.bars!!.measured)
+        assertEquals(DemuxInstrumental.Grid(120.0, 0, emptyList()), DemuxGridResolver.resolveAll("dmx_1", 8_000, null) { null }.instrumentalGrid)
+        val sc = BeatGridSidecar(beatGridBpm = 100.0, firstDownbeatMs = 400, beatsMs = listOf(400, 1_000))
+        val song = DemuxGridResolver.resolveAll("sng_1", 8_000, sc) { null }
+        assertEquals(DemuxTakeSwitch.gridFor(sc), song.instrumentalGrid)
+        assertEquals(DemuxInstrumental.Grid(100.0, 400, listOf(400, 1_000)), song.instrumentalGrid)
+        assertNull(song.forSource("sng_2"))
+    }
+
     @Test fun aResultForAnotherSourceIsNeverApplied() {
         val a = DemuxGridResolver.resolve("sng_A", 8_000, null) { StudioGrid(120.0) }!!
         assertNotNull(a.forSource("sng_A"))

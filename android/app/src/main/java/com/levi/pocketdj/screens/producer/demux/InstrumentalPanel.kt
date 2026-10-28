@@ -54,7 +54,7 @@ object InstrumentalMath {
 
     /** Rebuild identity: the content, grid and duration (a change rebuilds the events). */
     fun rebuildKey(content: DemuxInstrumentalContent, grid: DemuxInstrumental.Grid, durationMs: Int): String =
-        "${content.mode}#${content.elementCount}#${grid.bpm}#${grid.firstDownbeatMs}#${grid.beatsMs.size}#$durationMs"
+        "${content.mode}#${content.hashCode()}#${grid.bpm}#${grid.firstDownbeatMs}#${grid.beatsMs.size}#$durationMs"
 }
 
 /**

@@ -19,6 +19,8 @@ import com.levi.pocketdj.studio.store.StudioRoots
 import com.levi.pocketdj.studio.store.StudioStore
 import java.io.File
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 /** Lane order / labels for the pattern grid + sequencer export (kick at the top, bass at the bottom). */
 object DrumLanes {
@@ -101,6 +103,32 @@ object DemuxCutMath {
 
     fun sampleName(source: DemuxSource, stemMode: Boolean, enabled: Set<String>): String =
         source.displayName + if (stemMode) " · " + DemuxStore.STEM_NAMES.filter { it in enabled }.joinToString("+") else ""
+}
+
+/** Snapshot / apply / restore of the shared player's mutes + solo so the Cut sheet's audition never leaks into the Demuxer. */
+object StemAudition {
+    data class Snapshot(val audible: Set<String>, val soloed: String?)
+
+    private fun clearSolo(player: StemPlayer) { player.soloed?.let { player.solo(it) } }
+
+    fun snapshot(player: StemPlayer): Snapshot {
+        val solo = player.soloed
+        clearSolo(player)
+        val audible = DemuxStore.STEM_NAMES.filter { player.isAudible(it) }.toSet()
+        solo?.let { player.solo(it) }
+        return Snapshot(audible, solo)
+    }
+
+    /** Make exactly [audible] play: solo cleared first, then mutes set from the set (not toggled off isAudible while soloed). */
+    fun apply(player: StemPlayer, audible: Set<String>) {
+        clearSolo(player)
+        for (name in DemuxStore.STEM_NAMES) if (player.isAudible(name) != (name in audible)) player.toggleMute(name)
+    }
+
+    fun restore(player: StemPlayer, s: Snapshot) {
+        apply(player, s.audible)
+        s.soloed?.let { player.solo(it) }
+    }
 }
 
 /** Where "send stems to arrangement" lands. */
@@ -195,8 +223,10 @@ class DemuxExporter(
         if (!rendered) {
             val dest = StudioFiles.appFile(roots, StudioFamily.TAKES, fileName)
                 ?: return ExportOutcome(false, "Couldn’t save — the instrumentals folder isn’t reachable.")
-            dest.parentFile?.mkdirs()
-            runCatching { render.writeSilentPlaceholder(dest) }
+            withContext(Dispatchers.IO) {
+                dest.parentFile?.mkdirs()
+                runCatching { render.writeSilentPlaceholder(dest) }
+            }
         }
         store.addTakeRelocating(
             StudioTake(
@@ -221,6 +251,9 @@ class DemuxExporter(
             ExportOutcome(true, "Sample “$name” created.")
         } catch (e: CancellationException) {
             dest.delete(); throw e
+        } catch (_: OutOfMemoryError) {
+            dest.delete()
+            ExportOutcome(false, "Couldn’t carve this region. Try a slightly different in/out point.")
         } catch (_: Exception) {
             dest.delete()
             ExportOutcome(false, "Couldn’t carve this region. Try a slightly different in/out point.")

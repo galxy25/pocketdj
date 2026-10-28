@@ -110,14 +110,16 @@ fun DemuxPanels(graph: AppGraph, session: DemuxSession, source: DemuxSource, fol
     val stems by produceState<Map<String, File>?>(null, source.key, stemState) { value = withContext(Dispatchers.IO) { demuxStemsFor(graph, source.key) } }
 
     // Bars + instrumental grid, keyed by source (a stale result for another source is dropped by forSource).
-    val gridResult by produceState<com.levi.pocketdj.studio.demux.DemuxGridResult?>(null, source.key, audio, duration) {
+    val gridResult by produceState<com.levi.pocketdj.studio.demux.DemuxResolvedGrids?>(null, source.key, audio, duration) {
         val file = audio
         value = if (file == null || duration <= 0) null else withContext(Dispatchers.IO) {
             val sidecar = source.songId?.let { burns.localBeatGrid(it) ?: runCatching { burns.burnBeatGrid(it) }.getOrNull() }
-            DemuxGridResolver.resolve(source.key, duration, sidecar) { DrumPatternDetector.gridEstimate(file.path) }
+            DemuxGridResolver.resolveAll(source.key, duration, sidecar) { DrumPatternDetector.gridEstimate(file.path) }
         }
     }
-    val grid = gridResult?.forSource(source.key)
+    val resolved = gridResult?.forSource(source.key)   // null = still resolving (never "resolved to nothing")
+    val grid = resolved?.bars
+    val instGrid = resolved?.instrumentalGrid ?: DemuxInstrumental.Grid(120.0, 0)
 
     var cutOpen by remember(source.key) { mutableStateOf(false) }
     var sendOpen by remember(source.key) { mutableStateOf(false) }
@@ -145,14 +147,20 @@ fun DemuxPanels(graph: AppGraph, session: DemuxSession, source: DemuxSource, fol
             val hits = doc?.drumHits.orEmpty()
             when {
                 source.key in drumRuns -> Busy("Listening for drum hits…", "demux-drum-running")
-                doc?.drumStatus == DemuxArtifactStatus.DONE && hits.isNotEmpty() -> DrumPatternPanel(
+                resolved == null && doc?.drumStatus == DemuxArtifactStatus.DONE && hits.isNotEmpty() -> Busy("Aligning bars…", "demux-drum-aligning")
+                doc?.drumStatus == DemuxArtifactStatus.DONE && hits.isNotEmpty() -> {
+                  DrumPatternPanel(
                     source = source, hits = hits, bars = grid?.bars.orEmpty(), durationMs = duration, player = player,
                     follow = follow, onFollowChange = onFollowChange, onSeek = { session.seekMs(it) },
                     export = { plan, whole, bar ->
                         val s = withContext(Dispatchers.IO) { demuxStemsFor(graph, source.key) }
                         exporter.sendDrumPattern(source, hits, duration, plan, whole, bar, s?.get("drums")?.path, s?.get("bass")?.path)
                     },
-                )
+                  )
+                  stems?.get("drums")?.let { drums ->
+                    TextButton(onClick = { analyzers.analyzeDrums(source, drums.path, stems?.get("bass")?.path, duration, force = true) }, modifier = Modifier.testTag("demux-drum-rerun")) { Text("Re-run") }
+                  }
+                }
                 else -> {
                     val drums = stems?.get("drums")
                     if (doc?.drumStatus == DemuxArtifactStatus.FAILED) Muted("No clear drum hits were found.", "demux-drum-failed")
@@ -167,10 +175,10 @@ fun DemuxPanels(graph: AppGraph, session: DemuxSession, source: DemuxSource, fol
         // ---- chord-comping instrumental ----
         val chords = doc?.chords.orEmpty()
         if (chords.isNotEmpty()) Section("Instrumental", "demux-instrumental") {
-            InstrumentalPanel(
-                source = source, content = DemuxInstrumentalContent.Comping(chords), grid = grid?.grid ?: DemuxInstrumental.Grid(120.0, 0), durationMs = duration,
+            if (resolved == null) Busy("Aligning bars…", "demux-instrumental-aligning") else InstrumentalPanel(
+                source = source, content = DemuxInstrumentalContent.Comping(chords), grid = instGrid, durationMs = duration,
                 player = player, follow = follow, onFollowChange = onFollowChange, onSeek = { session.seekMs(it) },
-                onExtract = { exporter.saveInstrumental(source, DemuxInstrumentalContent.Comping(chords), grid?.grid ?: DemuxInstrumental.Grid(120.0, 0)) },
+                onExtract = { exporter.saveInstrumental(source, DemuxInstrumentalContent.Comping(chords), instGrid) },
             )
         }
 
@@ -180,11 +188,15 @@ fun DemuxPanels(graph: AppGraph, session: DemuxSession, source: DemuxSource, fol
             val stem = melodyStem(stems)
             when {
                 source.key in melodyRuns -> Busy("Tracking the melody…", "demux-melody-running")
-                doc?.melodyStatus == DemuxArtifactStatus.DONE && notes.isNotEmpty() -> InstrumentalPanel(
-                    source = source, content = DemuxInstrumentalContent.Melody(notes), grid = grid?.grid ?: DemuxInstrumental.Grid(120.0, 0), durationMs = duration,
+                resolved == null && doc?.melodyStatus == DemuxArtifactStatus.DONE && notes.isNotEmpty() -> Busy("Aligning bars…", "demux-melody-aligning")
+                doc?.melodyStatus == DemuxArtifactStatus.DONE && notes.isNotEmpty() -> {
+                  InstrumentalPanel(
+                    source = source, content = DemuxInstrumentalContent.Melody(notes), grid = instGrid, durationMs = duration,
                     player = player, follow = follow, onFollowChange = onFollowChange, onSeek = { session.seekMs(it) },
-                    onExtract = { exporter.saveInstrumental(source, DemuxInstrumentalContent.Melody(notes), grid?.grid ?: DemuxInstrumental.Grid(120.0, 0)) },
-                )
+                    onExtract = { exporter.saveInstrumental(source, DemuxInstrumentalContent.Melody(notes), instGrid) },
+                  )
+                  if (stem != null) TextButton(onClick = { analyzers.analyzeMelody(source, stem.path, force = true) }, modifier = Modifier.testTag("demux-melody-rerun")) { Text("Re-run") }
+                }
                 else -> {
                     if (doc?.melodyStatus == DemuxArtifactStatus.FAILED) Muted("No clear melody was found.", "demux-melody-failed")
                     if (stem == null) Muted("Needs the stems on this device — download or create them below.", "demux-melody-needs-stems")

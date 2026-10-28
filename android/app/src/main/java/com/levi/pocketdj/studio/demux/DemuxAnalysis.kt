@@ -29,7 +29,16 @@ data class DemuxGridResult(
     fun forSource(key: String): DemuxGridResult? = takeIf { sourceKey == key }
 }
 
+/** Everything the panels need once a source's grid work has FINISHED (a null bundle = still resolving). */
+data class DemuxResolvedGrids(val sourceKey: String, val bars: DemuxGridResult?, val instrumentalGrid: DemuxInstrumental.Grid) {
+    fun forSource(key: String): DemuxResolvedGrids? = takeIf { sourceKey == key }
+}
+
 object DemuxGridResolver {
+    /** Bars come from the measured/estimated lattice; the instrumental grid follows the Takes-switch rule so a take quantizes identically either way. */
+    fun resolveAll(sourceKey: String, durationMs: Int, sidecar: BeatGridSidecar?, estimate: () -> StudioGrid?): DemuxResolvedGrids =
+        DemuxResolvedGrids(sourceKey, resolve(sourceKey, durationMs, sidecar, estimate), DemuxTakeSwitch.gridFor(sidecar))
+
     /**
      * A catalog song's measured sidecar (real downbeats, tempo drift included) wins; else a constant grid estimated
      * from the audio ([estimate], run lazily and only when needed). Custom sources never hit the network.

@@ -140,7 +140,11 @@ object DemuxTakeSwitch {
     /** The take's grid: a catalog song's sidecar lattice, else a steady 120-BPM grid at 0 (custom audio, no network). */
     suspend fun resolveGrid(key: String, sidecar: suspend (String) -> com.levi.pocketdj.data.burns.BeatGridSidecar?): DemuxInstrumental.Grid {
         if (!DemuxSource.isSongKey(key)) return DemuxInstrumental.Grid(120.0, 0, emptyList())
-        val sc = sidecar(key)
+        return gridFor(sidecar(key))
+    }
+
+    /** THE instrumental-grid rule shared by Extract and the Takes switch: the sidecar lattice, else a steady 120 BPM at 0. */
+    fun gridFor(sc: com.levi.pocketdj.data.burns.BeatGridSidecar?): DemuxInstrumental.Grid {
         val bpm = sc?.beatGridBpm
         if (sc != null && bpm != null && bpm > 0) return DemuxInstrumental.Grid(bpm, sc.firstDownbeatMs ?: 0, sc.beatsMs)
         return DemuxInstrumental.Grid(120.0, 0, emptyList())

@@ -55,6 +55,13 @@ class DemuxPanelMathTest {
         assertEquals(0f, InstrumentalMath.scrollFraction(100, 0), 0f)
     }
 
+    @Test fun rebuildKeyChangesWhenContentChangesWithSameCount() {
+        val g = DemuxInstrumental.Grid(120.0, 0)
+        val a = DemuxInstrumentalContent.Melody(listOf(DemuxMelodyNote(0, 500, 60)))
+        val b = DemuxInstrumentalContent.Melody(listOf(DemuxMelodyNote(0, 500, 62)))
+        assertNotEquals(InstrumentalMath.rebuildKey(a, g, 1000), InstrumentalMath.rebuildKey(b, g, 1000))
+    }
+
     @Test fun rebuildKeyChangesWithModeContentAndGrid() {
         val g = DemuxInstrumental.Grid(120.0, 0)
         val mel = DemuxInstrumentalContent.Melody(listOf(DemuxMelodyNote(60, 0, 400)))

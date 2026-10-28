@@ -32,6 +32,37 @@ class DemuxExportsTest {
         override fun writeWav(pcm: PcmBuffer, file: File) { file.writeText("wav") }
     }
 
+    private class FakePlayer : StemPlayer {
+        val mix = StemMixState()
+        override val version = kotlinx.coroutines.flow.MutableStateFlow(0)
+        override val isPlaying = false; override val currentTimeSec = 0.0; override val durationSec = 0.0
+        override val soloed: String? get() = mix.soloed
+        override fun isAudible(name: String) = mix.isAudible(name)
+        override fun load(id: String, files: Map<String, File>) = true
+        override fun togglePlayPause() {}; override fun seek(sec: Double) {}; override fun stop() {}
+        override fun solo(name: String) = mix.solo(name)
+        override fun toggleMute(name: String) = mix.toggleMute(name)
+    }
+
+    @Test fun stemAuditionMatchesTheEnabledSetEvenWhenSoloedAndRestoresOnDismiss() {
+        val p = FakePlayer(); p.solo("vocals")
+        val snap = StemAudition.snapshot(p)
+        assertEquals("vocals", p.soloed)                       // snapshot leaves the player as it found it
+        assertEquals(DemuxStore.STEM_NAMES.toSet(), snap.audible)
+        StemAudition.apply(p, DemuxStore.STEM_NAMES.toSet())   // all chips on
+        assertNull(p.soloed)
+        assertTrue(DemuxStore.STEM_NAMES.all { p.isAudible(it) })   // drums must NOT end up muted
+        StemAudition.apply(p, setOf("drums", "bass"))
+        assertEquals(setOf("drums", "bass"), DemuxStore.STEM_NAMES.filter { p.isAudible(it) }.toSet())
+        StemAudition.restore(p, snap)
+        assertEquals("vocals", p.soloed)
+        val p2 = FakePlayer(); p2.toggleMute("drums")
+        val s2 = StemAudition.snapshot(p2)
+        StemAudition.apply(p2, setOf("vocals"))
+        StemAudition.restore(p2, s2)
+        assertFalse(p2.isAudible("drums")); assertTrue(p2.isAudible("bass"))
+    }
+
     private fun kick(ms: Int, s: Double = 1.0) = DemuxDrumHit(ms, DemuxDrumKind.KICK, s)
 
     // ---- pure plan ------------------------------------------------------------------------------

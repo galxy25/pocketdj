@@ -22,6 +22,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -40,6 +41,7 @@ import com.levi.pocketdj.studio.demux.DemuxCutMath
 import com.levi.pocketdj.studio.demux.DemuxSource
 import com.levi.pocketdj.studio.demux.DemuxStore
 import com.levi.pocketdj.studio.demux.ExportOutcome
+import com.levi.pocketdj.studio.demux.StemAudition
 import com.levi.pocketdj.studio.demux.StemPlayer
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -75,8 +77,10 @@ fun CutSampleSheet(
 
     LaunchedEffect(player) { while (true) { playhead = (player.currentTimeSec * 1000).toInt(); delay(100) } }
     // The chips drive the player's mutes so the audition IS the mix that gets carved.
+    val snapshot = remember(player) { StemAudition.snapshot(player) }
+    DisposableEffect(player) { onDispose { StemAudition.restore(player, snapshot) } }
     LaunchedEffect(stemModeOn, enabled) {
-        if (stemModeOn) for (name in DemuxStore.STEM_NAMES) if (player.isAudible(name) != (name in enabled)) player.toggleMute(name)
+        if (stemModeOn) StemAudition.apply(player, enabled)
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
