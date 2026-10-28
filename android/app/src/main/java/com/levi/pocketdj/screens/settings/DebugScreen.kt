@@ -236,6 +236,66 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }
     Text(ripStatus, style = MaterialTheme.typography.bodySmall)
 
+    // MIX-5 verify seeds (debug only): drive the MixEngine until the Mix screen (MIX-14) owns it.
+    var mixStatus by remember { mutableStateOf("Mix: idle") }
+    fun mixLine(): String {
+        val e = host.graph.mixGraph.mixEngine
+        return com.levi.pocketdj.mix.model.Deck.entries.joinToString(" | ") { d ->
+            "${d.label}:${e.loaded(d)?.songId?.takeLast(4) ?: "-"} play=${e.isPlaying(d)} pos=${"%.1f".format(e.position(d))}/${"%.1f".format(e.duration(d))} rate=${e.rate(d)} vol=${e.volume(d)}"
+        }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val e = host.graph.mixGraph.mixEngine
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val burned = host.graph.servicesGraph.burnStore.items.value.values.take(2)
+                burned.forEachIndexed { i, b ->
+                    val song = songs[b.songId]
+                    e.load(
+                        com.levi.pocketdj.mix.model.MixLoadable(b.songId, b.title, b.artist, b.bpm, b.camelot, b.musicalKey, song?.albumId, b.durationMs?.toInt()),
+                        if (i == 0) com.levi.pocketdj.mix.model.Deck.A else com.levi.pocketdj.mix.model.Deck.B,
+                    )
+                }
+                kotlinx.coroutines.delay(2000) // loads commit off-main
+                e.playBoth()
+                mixStatus = "Mix load: ${mixLine()}"
+            }
+        }) { Text("Mix: load 2 + play") }
+        OutlinedButton(onClick = {
+            val e = host.graph.mixGraph.mixEngine
+            val A = com.levi.pocketdj.mix.model.Deck.A; val B = com.levi.pocketdj.mix.model.Deck.B
+            e.setRate(1.05, A); e.setPitch(1.0, A); e.setVolume(0.8, A); e.setRate(0.97, B); e.setVolume(0.9, B); e.setCrossfader(0.3)
+            mixStatus = "Mix twist: ${mixLine()}"
+        }) { Text("Mix: twist") }
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = { mixStatus = "Mix status: ${mixLine()}" }) { Text("Mix: status") }
+        OutlinedButton(onClick = {
+            val e = host.graph.mixGraph.mixEngine
+            e.restorePersistedMixIfIdle(); e.materializePendingRestoreIfNeeded("debug")
+            mixStatus = "Mix restore: ${mixLine()}"
+        }) { Text("Mix: restore") }
+    }
+    Text(mixStatus, style = MaterialTheme.typography.bodySmall)
+
+    // COL-3 verify seed (debug only): a pocket holding one catalog twin pair (same artist/title/album, two ids).
+    var dupStatus by remember { mutableStateOf("Dup seed: idle") }
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            val pair = withContext(Dispatchers.IO) {
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs ?: emptyList()
+                songs.groupBy { Triple(it.artist.lowercase(), it.name.lowercase(), it.albumId) }
+                    .values.firstOrNull { g -> g.size >= 2 && g.map { it.id }.distinct().size >= 2 }?.take(2)?.map { it.id }
+            }
+            dupStatus = if (pair == null) "Dup seed: no twin pair in catalog" else {
+                host.graph.collections.createPocket("SeedDup", pair)
+                "Dup seed: pocket SeedDup with ${pair.joinToString(",")}"
+            }
+        }
+    }) { Text("Seed duplicate pocket") }
+    Text(dupStatus, style = MaterialTheme.typography.bodySmall)
+
     SettingsDivider()
     SettingsHeader("Capture")
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

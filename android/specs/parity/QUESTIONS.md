@@ -25,6 +25,11 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q14 [SVC-3]** Request POST_NOTIFICATIONS at runtime (Android 13+) so the "Downloading... n of m" foreground notification is visible, and wire the Burn Stop button to BurnStore.cancelTransfers (UI files owned by a later package)? -- *Default: no prompt, download still runs; Stop not wired.*
 - **Q15 [PB-2]** ResumptionSnapshot / onPlaybackResumption (resume last queue from notification/Bluetooth after process death) waits on PB-4's HeldQueue. OK to leave PARTIAL until PB-4? -- *Default: PARTIAL; latch + onHeldRestored hook in place.*
 - **Q16 [BRW-4]** Multi-select Share (ShareText.forSongs) has no consumer; add to History/Browse multi-select bars in a later UI package. -- *Default: song/album Share only.*
+- **Q17 [PB-3]** Rip-on-demand wait is capped at 10 minutes before the row fails (no iOS equivalent). Keep, shorten, or uncap? Also: the Settings Debug "Playback dead air" readout is not built (DeadAirMeter.summaryLine() is the data). -- *Default: 10 min cap; readout deferred.*
+- **Q18 [MIX-5]** Nothing calls MixEngine.restorePersistedMixIfIdle()/materializePendingRestoreIfNeeded() yet; the launch task or the Mix screen (MIX-14) must. -- *Default: only the Debug "Mix: restore" button calls them.* -- Without a caller the Mix does not come back after process death.
+- **Q19 [COL-3]** The on-device LLM tie-break of iOS's duplicate judge has no Android equivalent: borderline pairs count as NOT duplicates. Acceptable, or add a server-side tie-break? -- *Default: exact + same-release tiers only.*
+- **Q20 [SURF-10]** The Jukebox "Require access tokens by default" setting is not access-controlled today (server mints no guest token), and `JukeboxRepository.adopt(id)` has no UI caller (no sessions picker). Build a sessions picker? -- *Default: setting is an intent flag only; no picker.*
+- **Q21 [PB-3]** Duplicate `POST /rip` for one row: the log shows two `rip-post begin` lines ~20 ms apart for the same song (one from the run, one more resolver call). Harmless against a server that dedupes, but worth a look when the playback lane is next touched. -- *Default: left as is.*
 
 ## ANSWERED
 

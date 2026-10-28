@@ -79,3 +79,19 @@ Emulator-verified (emulator-5554) against the live catalog + public rips (debug 
 Bugs fixed: (1) burned rung wiring (PlaybackGraph.wire + `burnedLocalFile`), (2) wave-5 regression: `SetGatedPlayer.GatedListener` used `Player.Listener by d`, which Kotlin does not delegate for Java default methods, so the MediaSession controller saw IDLE and no row ever advanced; now explicit forwarding + regression test, (3) lane logs mirrored to logcat, engine state/error lines added.
 
 Note: a concurrent wave-5 session shares this emulator and worktree (the app was reinstalled/wiped twice mid-run; the wave-5 "PB-2/SVC-3/MIX-6 NOT RUN, playback does not start" results were this same bug).
+
+## Wave 6
+
+Merged: PB-3, PB-6, SVC-4, MIX-5, SURF-10, COL-3. Conflicts resolved: PlaybackController imports (PB-3), SetlistSequencer (PB-3 health vs PB-6 gate-halt: one `pausedByCascade` flag now serves both the cascade breaker and the autoAdvanceGate halt; `cascadeHalted` removed), SequencerState duplicate field, PlaybackGraph (SVC-4 shared `burnedFirst` resolver replaces the inline burned lookup). JVM suite: 1906 tests, 0 failures, 0 skipped (was 1620); assembleDebug green.
+
+Integration fixes: duplicate `pausedByCascade` declarations; RipOnDemandSession now remembers the real failure so Media3's retry reports it (was a misleading "rip resolve not in flight"; this exposed the CLEARTEXT cause when testing with an http:// server URL) + regression test; debug seeds added in Settings > Debug: "Seed duplicate pocket" (COL-3), "Mix: load 2 + play / twist / status / restore" (MIX-5).
+
+Emulator (emulator-5554, shots in pocketdj-parity/_shots/wave6/); no FATAL/ANR from com.levi.pocketdj:
+- PB-6: PASS. Playlist Play opens Now Playing; record frames change while playing, identical after pause (frozen), resume continues; landscape keeps transport usable; mini bar "Open Now Playing" returns to the deck; cascade banner "Playback paused - the last few tracks didn't play" shown, Play retries the row. Not verified: exact resume angle (frame-equality only).
+- PB-3: PASS. Unreachable https rip server: `resolve stalled 6s ... hop to on-device` logged; airplane mode: `silent` supervisor lines, 3 quick failed rows -> `cascade-stop`; `files/pocketdj-dead-air.json` has activeSeconds + byPair transitions. L1/L2/L3 escalation lines not seen (rows failed fast, before the 8 s/20 s watchdogs). Device-only: cellular dead zones, Apple Music lane.
+- SVC-4: PASS. Burned playlist plays offline from local files (`backend=burned`); device mode skips un-burned rows (`reason=NOT_ON_DEVICE`); burn bar (Rip/Burn/device-cloud toggle) on playlist and pocket detail. Not run: the "none burned -> banner once" case; mini-player glyph only confirmed via the "Playing from device" label.
+- MIX-5: PASS. Two burned tracks load and play, tempo/vol/crossfader setters take effect (positions advance at 1.05x/0.97x), `mixdiag` heartbeat render=1 sigAge~0 for both decks; after force-stop + relaunch the decks restore parked at 17.7 s / 16.8 s, silent (restore triggered by the Debug button, see Q18). Device-only: audible tempo/pitch quality, cue routing.
+- SURF-10: PASS. Live broker (funnel): session started, play/pause/resume/pause/skip leaves one Played row per track; Settings "Require access tokens by default" off -> create view shows off, back on -> on.
+- COL-3: PASS. Pocket menu > Remove duplicates -> "Removed 1 duplicate", pocket shows one row; Playlists sort menu > Remove duplicates in all collections -> confirm -> alert; second run "No duplicates found".
+
+Open: Q17-Q21 added. ARCHITECTURE-ANDROID.md ledger rows for wave-6 packages still to be updated.

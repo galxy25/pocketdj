@@ -63,6 +63,8 @@ class RipOnDemandSession(
     private val resolver: RipOnDemandResolver,
 ) {
     private val inflight = ConcurrentHashMap<String, Deferred<RipResolution>>()
+    /** Why the last resolution of a song failed: Media3 retries the load, and the retry must report the real cause. */
+    private val failures = ConcurrentHashMap<String, Throwable>()
 
     /** Start (or join) the resolution for [songId]; every other song's entry is dropped and cancelled. */
     fun begin(songId: String): Deferred<RipResolution> {
@@ -70,9 +72,15 @@ class RipOnDemandSession(
             inflight.remove(id, d)
             d.cancel()
         }
+        failures.remove(songId)
         return inflight.computeIfAbsent(songId) {
             val d = scope.async(start = CoroutineStart.LAZY) { resolver.resolve(songId) }
-            d.invokeOnCompletion { t -> if (t != null) inflight.remove(songId, d) }
+            d.invokeOnCompletion { t ->
+                if (t != null) {
+                    inflight.remove(songId, d)
+                    if (t !is CancellationException) failures[songId] = t
+                }
+            }
             d.start()
             d
         }
@@ -104,7 +112,8 @@ class RipOnDemandSession(
      */
     fun blockingDurable(songId: String, liveWaitMs: Long = LIVE_WAIT_MS): String {
         val r = try {
-            val d = join(songId) ?: throw IOException("rip resolve not in flight for $songId")
+            val d = join(songId)
+                ?: throw IOException(failures[songId]?.let { "rip failed: ${it.message}" } ?: "rip resolve not in flight for $songId", failures[songId])
             runBlocking { d.await() }
         } catch (e: CancellationException) {
             throw IOException("rip resolve cancelled", e)

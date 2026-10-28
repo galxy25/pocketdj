@@ -193,6 +193,20 @@ class CloudRowResolverTest {
     }
 
     @Test
+    fun session_failedResolution_retryReportsTheRealCause() = runTest {
+        val session = RipOnDemandSession(
+            kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.test.StandardTestDispatcher(testScheduler)),
+            RipOnDemandResolver(requestRip = { throw IOException("connection refused") }, awaitDurable = { "u" }, liveUrl = { it }),
+        )
+        session.begin("sng_a")
+        runCurrent()
+        // Media3 retries the load after the first failure: the retry must not say "not in flight".
+        try { session.blockingDurable("sng_a"); fail() } catch (e: IOException) {
+            assertTrue(e.message!!, e.message!!.contains("connection refused"))
+        }
+    }
+
+    @Test
     fun session_beginningAnotherSong_cancelsTheSkippedOne() = runTest {
         val gate = CompletableDeferred<RipJob>()
         val session = RipOnDemandSession(
