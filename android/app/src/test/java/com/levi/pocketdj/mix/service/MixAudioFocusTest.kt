@@ -15,6 +15,11 @@ class MixAudioFocusTest {
 
     private class FakeTransport : FocusTransport {
         override var isRunning = false
+        var wants: Boolean? = null
+        var audible: Boolean? = null
+        override var isOwner = true
+        override val mixWantsAudio get() = wants ?: isRunning
+        override val deckAudible get() = audible ?: isRunning
         val calls = mutableListOf<String>()
         override fun remotePause() { calls += "remotePause"; isRunning = false }
         override fun remotePlay() { calls += "remotePlay"; isRunning = true }
@@ -125,5 +130,57 @@ class MixAudioFocusTest {
         m.onAudioStarted()
         assertEquals(2, sys.requests)
         assertTrue(m.held)
+    }
+
+    @Test fun regainWhenMixNoLongerOwnsTheSessionDropsLatchAndDoesNotResume() {
+        startPlaying()
+        m.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+        tr.isOwner = false          // another engine claimed the session during the park
+        m.onFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertEquals(listOf("remotePause"), tr.calls)
+        assertFalse(m.interruptionParked)
+    }
+
+    @Test fun handoffClearsTheLatch() {
+        startPlaying()
+        m.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+        m.onHandoff()
+        assertFalse(m.interruptionParked)
+        m.onFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertEquals(listOf("remotePause"), tr.calls)
+    }
+
+    @Test fun autoDjGapPausesButOnlyLatchesWhenADeckIsAudible() {
+        startPlaying()
+        tr.wants = true; tr.audible = false; tr.isRunning = false   // Auto-DJ live, between decks
+        m.onFocusChange(AudioManager.AUDIOFOCUS_LOSS_TRANSIENT)
+        assertEquals(listOf("remotePause"), tr.calls)
+        assertFalse(m.interruptionParked)
+        m.onFocusChange(AudioManager.AUDIOFOCUS_GAIN)
+        assertEquals(listOf("remotePause"), tr.calls)
+    }
+
+    @Test fun deniedFocusPausesInsteadOfPlayingOverACall() {
+        sys.grant = false
+        startPlaying()
+        assertEquals(listOf("remotePause"), tr.calls)
+        assertFalse(tr.isRunning)
+    }
+
+    @Test fun liveAutoDjKeepsFocusBetweenDecks() {
+        startPlaying()
+        tr.isRunning = false; tr.wants = true      // gap between decks
+        m.onTransportIdle()
+        assertEquals(0, sys.abandons); assertTrue(m.held)
+        tr.wants = false
+        m.onTransportIdle()
+        assertEquals(1, sys.abandons)
+    }
+
+    @Test fun becomingNoisyPausesALiveAutoDjBetweenDecks() {
+        startPlaying()
+        tr.isRunning = false; tr.wants = true
+        m.onBecomingNoisy()
+        assertEquals(listOf("remotePause"), tr.calls)
     }
 }

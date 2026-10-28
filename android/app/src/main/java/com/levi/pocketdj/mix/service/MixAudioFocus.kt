@@ -10,6 +10,12 @@ import android.os.Looper
 interface FocusTransport {
     /** A deck has play intent (the mix is audibly running). */
     val isRunning: Boolean
+    /** The mix should be heard: a deck has play intent, or a live un-paused Auto-DJ is between decks. */
+    val mixWantsAudio: Boolean get() = isRunning
+    /** A running deck still has audio left (iOS `position < duration - 0.25`): only then does a park latch. */
+    val deckAudible: Boolean get() = isRunning
+    /** The Mix is still the switchboard owner right now (a regain must not steal the session back). */
+    val isOwner: Boolean get() = true
     /** Lock-screen style pause: suspends a running Auto-DJ and freezes its clocks. */
     fun remotePause()
     /** Resume exactly what the last pause silenced. */
@@ -51,15 +57,31 @@ class MixFocusMachine(
         if (!held) {
             held = system.request()
             log("focus: request gain granted=$held")
+            if (!held) {
+                // Denied (a call holds focus): never play over it. No regain will be delivered for a
+                // failed request, so this is a plain pause; the user's next play retries the request.
+                log("focus: denied - remotePause")
+                transport.remotePause()
+            }
+        }
+    }
+
+    /** Another owner took the session (pauseForHandoff): the park is moot. */
+    fun onHandoff() {
+        if (interruptionParked) {
+            interruptionParked = false
+            log("focus: handoff - latch cleared")
         }
     }
 
     fun onFocusChange(change: Int) {
         when (change) {
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
-                if (transport.isRunning) {
-                    interruptionParked = true
-                    log("focus: transient loss - parked")
+                if (transport.mixWantsAudio) {
+                    // Latch only when a deck is audible (iOS P0-4): an Auto-DJ gap pauses its clocks but
+                    // leaves nothing for the regain to resume.
+                    if (transport.deckAudible) interruptionParked = true
+                    log("focus: transient loss - ${if (interruptionParked) "parked" else "paused (nothing audible to latch)"}")
                     transport.remotePause()
                 } else log("focus: transient loss - idle")
             }
@@ -74,7 +96,9 @@ class MixFocusMachine(
                 held = true
                 if (interruptionParked) {
                     interruptionParked = false
-                    if (transport.isRunning) {
+                    if (!transport.isOwner) {
+                        log("focus: regain - not-owner, latch dropped")
+                    } else if (transport.isRunning) {
                         log("focus: regain - a deck is already playing, nothing to resume")
                     } else {
                         log("focus: regain - resuming parked")
@@ -87,7 +111,7 @@ class MixFocusMachine(
     }
 
     fun onBecomingNoisy() {
-        if (transport.isRunning) {
+        if (transport.mixWantsAudio) {
             log("focus: becoming noisy - remotePause")
             transport.remotePause()
         }
@@ -95,7 +119,7 @@ class MixFocusMachine(
 
     /** The transport went fully idle (user pause): release the focus unless a park is waiting for the regain. */
     fun onTransportIdle() {
-        if (!transport.isRunning && !interruptionParked && held) {
+        if (!transport.mixWantsAudio && !interruptionParked && held) {
             held = false
             system.abandon()
             log("focus: idle - abandoned")

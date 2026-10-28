@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-11 - Mix transport owner (MixSessionPlayer, focus, recovery, MixDiag)
 
@@ -25,3 +25,15 @@ Bluetooth route changes, phone-call focus, headset buttons, real lock screen. Th
 
 ## Questions for Levi
 - Should starting a Mix deck with no PlaybackService running start the service (foreground notification)? Defaulted to no (same as AM adapter).
+
+## Review
+fixes applied
+
+- MAJOR silent-playing used voice intent -> FIXED. RecoveryPort now carries tap signal age (`tapAgeSeconds(true)`), loop, gain, crossfader factor, all-stems-muted; suspect = playing, not held, not looping, gain>0.01, crossfader open, not stem-muted, audio left, mix running >3 s AND sigAge >3 s (or never); 3 strikes then log + pause unless recording. Re-kick only touches IDLE/UNDERRUN voices (also resolves the scheduled-start NIT). Tests: MixRecoveryTest drives the sigAge path (silent, never-signal, audible clears, young mix, recording, each expected-silence gate).
+- MAJOR no service/notification on Mix-only start -> FIXED. MixGraph binds a MediaController on first Mix audio (starts PlaybackService); PlaybackService seeds its MediaSession from `board.sessionPlayer(forwarding)` (one-line shared touchpoint in playback/PlaybackService.kt). Not device-verified (emulator off-limits); media3 foreground promotion on first play is assumed.
+- MINOR focus regain invariants -> FIXED. GAIN requires switchboard ownership (else latch dropped, "not-owner"); `onHandoff()` clears the latch (wired from pauseForHandoff); latch only when a deck is audible; transient loss / becoming-noisy act on mixWantsAudio (live Auto-DJ). Tests added.
+- MINOR denied focus / idle abandon -> FIXED. Denied request does remotePause (no regain is delivered for a failed request); onTransportIdle uses mixWantsAudio so a live Auto-DJ keeps focus between decks.
+- MINOR card ignores holds / AD gaps -> FIXED. MixCard.held -> STATE_BUFFERING with constant position; playWhenReady from mixWantsAudio.
+- MINOR no MixSessionPlayer tests -> FIXED within limits. No Robolectric in project, so the command mapping was extracted to Android-free `MixTransportRouter` (play/pause/stop/handoff/next/prev) which the player delegates to; tested against a fake port. Constructing the SimpleBasePlayer itself still needs a device/instrumented test.
+- MINOR docs ledger -> FIXED. MIX-11 row now PARTIAL; MIX-5 row notes the detector landed. Export control stays on Debug screen (DebugScreen not owned by this package): recorded as a deviation.
+- NIT reprime overwrites scheduled start -> FIXED (status gate). NIT SimpleDateFormat per call -> FIXED (ThreadLocal); export file write stays on the Debug button's thread (rejected: DebugScreen not owned, tiny file).

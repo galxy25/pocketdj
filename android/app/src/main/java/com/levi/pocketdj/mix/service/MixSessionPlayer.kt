@@ -24,6 +24,8 @@ data class MixCard(
     val positionMs: Long,
     /** Deck tempo (1.0 = unity): the card's position advances at this rate. */
     val rate: Float,
+    /** The deck waits for stream bytes (Buffering...): the position must not advance. */
+    val held: Boolean = false,
 )
 
 /** What the session adapter needs from the engine, so the mapping is testable with a fake. */
@@ -32,6 +34,8 @@ interface MixTransportPort {
     fun card(): MixCard?
     /** A deck has play intent. */
     val isRunning: Boolean
+    /** A live Auto-DJ that is not paused: the mix wants audio even between decks. */
+    val mixWantsAudio: Boolean get() = isRunning
     /** Next/previous mean something (a live Auto-DJ). */
     val canSkip: Boolean
     val skipFadeSeconds: Double
@@ -52,6 +56,7 @@ data class MixPlayerModel(
     val rate: Float,
     val canSkip: Boolean,
     val commands: Player.Commands,
+    val held: Boolean = false,
 )
 
 object MixPlayerStateMap {
@@ -77,15 +82,17 @@ object MixPlayerStateMap {
 
     fun model(card: MixCard?, running: Boolean, canSkip: Boolean): MixPlayerModel {
         val has = card != null
+        val held = has && card!!.held
         return MixPlayerModel(
             hasTrack = has,
-            playbackState = if (has) Player.STATE_READY else Player.STATE_IDLE,
+            playbackState = if (!has) Player.STATE_IDLE else if (held) Player.STATE_BUFFERING else Player.STATE_READY,
             playWhenReady = has && running,
             positionMs = (card?.positionMs ?: 0L).coerceAtLeast(0L),
             durationMs = card?.durationMs?.takeIf { it > 0 },
             rate = (card?.rate ?: 1f).coerceIn(0.25f, 4f),
             canSkip = has && canSkip,
             commands = commands(has, canSkip),
+            held = held,
         )
     }
 
@@ -118,6 +125,28 @@ object MixPlayerStateMap {
 }
 
 /**
+ * The Media3 command -> engine mapping of [MixSessionPlayer], free of Android types so a JVM test drives
+ * the exact code the player runs (no Robolectric in this project).
+ */
+class MixTransportRouter(
+    private val port: MixTransportPort,
+    private val onHandoff: () -> Unit = {},
+) {
+    fun setPlayWhenReady(playWhenReady: Boolean) { if (playWhenReady) port.remotePlay() else port.remotePause() }
+    fun stop() = port.remotePause()
+    /** Another owner started: silence both decks (not a remote pause) and drop the focus latch. */
+    fun handoff() { onHandoff(); port.pauseBoth() }
+    fun seek(mediaItemIndex: Int, seekCommand: Int) {
+        val m = MixPlayerStateMap.model(port.card(), port.mixWantsAudio, port.canSkip)
+        when (MixPlayerStateMap.route(mediaItemIndex, seekCommand, MixPlayerStateMap.currentIndex(m))) {
+            MixPlayerStateMap.Route.Next -> port.remoteSkip(MixPlayerStateMap.NEXT_FADE_SECONDS)
+            MixPlayerStateMap.Route.Previous -> port.remoteSkip(port.skipFadeSeconds)
+            MixPlayerStateMap.Route.None -> Unit   // decks are not seekable from the card
+        }
+    }
+}
+
+/**
  * While a Mix deck sounds, THIS is the MediaSession's player (decision D2, no MixService): the
  * notification / lock screen show the nowPlayingDeck track with a position that moves at the deck's
  * tempo; play/pause reach remotePlay/remotePause, next/previous reach remoteSkip. No heart. It is a
@@ -129,6 +158,8 @@ class MixSessionPlayer(
     looper: Looper,
     private val port: MixTransportPort,
     private val board: SessionSwitchboard = SessionSwitchboard.shared,
+    /** Another owner took the session (the focus latch is moot). */
+    private val onHandoff: () -> Unit = {},
 ) : SimpleBasePlayer(looper), TransportOwner {
 
     override val engine: String = "mix"
@@ -148,10 +179,13 @@ class MixSessionPlayer(
 
     override fun pauseForHandoff() {
         // Another owner started (a Browse song): silence both decks. Not a remote pause.
-        port.pauseBoth()
+        router.handoff()
     }
 
-    private fun model() = MixPlayerStateMap.model(port.card(), port.isRunning, port.canSkip)
+    private val router = MixTransportRouter(port, onHandoff)
+
+    // mixWantsAudio (not isRunning): a live Auto-DJ between decks is still "playing" on the card.
+    private fun model() = MixPlayerStateMap.model(port.card(), port.mixWantsAudio, port.canSkip)
 
     override fun getState(): State {
         val m = model()
@@ -174,28 +208,24 @@ class MixSessionPlayer(
         } else listOf(cur)
         b.setPlaylist(list).setCurrentMediaItemIndex(MixPlayerStateMap.currentIndex(m))
         b.setContentPositionMs(
-            if (m.playWhenReady) PositionSupplier.getExtrapolating(m.positionMs, m.rate)
+            if (m.playWhenReady && !m.held) PositionSupplier.getExtrapolating(m.positionMs, m.rate)
             else PositionSupplier.getConstant(m.positionMs),
         )
         return b.build()
     }
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
-        if (playWhenReady) port.remotePlay() else port.remotePause()
+        router.setPlayWhenReady(playWhenReady)
         return Futures.immediateVoidFuture()
     }
 
     override fun handleStop(): ListenableFuture<*> {
-        port.remotePause()
+        router.stop()
         return Futures.immediateVoidFuture()
     }
 
     override fun handleSeek(mediaItemIndex: Int, positionMs: Long, seekCommand: Int): ListenableFuture<*> {
-        when (MixPlayerStateMap.route(mediaItemIndex, seekCommand, MixPlayerStateMap.currentIndex(model()))) {
-            MixPlayerStateMap.Route.Next -> port.remoteSkip(MixPlayerStateMap.NEXT_FADE_SECONDS)
-            MixPlayerStateMap.Route.Previous -> port.remoteSkip(port.skipFadeSeconds)
-            MixPlayerStateMap.Route.None -> Unit   // decks are not seekable from the card
-        }
+        router.seek(mediaItemIndex, seekCommand)
         return Futures.immediateVoidFuture()
     }
 
@@ -220,9 +250,11 @@ class EngineMixTransportPort(
             durationMs = if (dur > 0) (dur * 1000).toLong() else null,
             positionMs = (engine.position(d) * 1000).toLong(),
             rate = engine.rate(d).toFloat(),
+            held = engine.streamHeld(d),
         )
     }
     override val isRunning get() = engine.isRunning
+    override val mixWantsAudio get() = engine.mixWantsAudio
     override val canSkip get() = dj.isMixing
     override val skipFadeSeconds get() = dj.skipFadeSeconds
     override val hasSounded get() = engine.hasSoundedThisProcess

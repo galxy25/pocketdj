@@ -120,4 +120,54 @@ class MixSessionPlayerTest {
         board.prefer(mix)
         assertSame(mix, board.remoteTarget())
     }
+
+    // ---- MixTransportRouter: the exact command mapping MixSessionPlayer runs
+
+    private class FakePort(var card: MixCard? = card0(), override var canSkip: Boolean = true) : MixTransportPort {
+        val calls = mutableListOf<String>()
+        override fun card() = card
+        override var isRunning = true
+        override var mixWantsAudio = true
+        override val skipFadeSeconds = 2.5
+        override val hasSounded = true
+        override fun remotePlay() { calls += "play" }
+        override fun remotePause() { calls += "pause" }
+        override fun remoteSkip(fadeSeconds: Double) { calls += "skip$fadeSeconds" }
+        override fun pauseBoth() { calls += "pauseBoth" }
+    }
+
+    @Test fun routerMapsPlayPauseStopAndHandoff() {
+        val port = FakePort(); var handoffs = 0
+        val r = MixTransportRouter(port) { handoffs++ }
+        r.setPlayWhenReady(true); r.setPlayWhenReady(false); r.stop(); r.handoff()
+        assertEquals(listOf("play", "pause", "pause", "pauseBoth"), port.calls)
+        assertEquals(1, handoffs)
+    }
+
+    @Test fun routerMapsNextPreviousThroughTheThreeItemPlaylist() {
+        val port = FakePort(); val r = MixTransportRouter(port)
+        r.seek(2, Player.COMMAND_SEEK_TO_NEXT)
+        r.seek(0, Player.COMMAND_SEEK_TO_PREVIOUS)
+        r.seek(1, Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
+        assertEquals(listOf("skip5.0", "skip2.5"), port.calls)
+    }
+
+    @Test fun cardIsBufferingAndFrozenWhileStreamHeld() {
+        val held = MixPlayerStateMap.model(card0().copy(held = true), running = true, canSkip = false)
+        assertEquals(Player.STATE_BUFFERING, held.playbackState)
+        assertTrue(held.held)
+        assertEquals(Player.STATE_READY, MixPlayerStateMap.model(card0(), true, false).playbackState)
+    }
+
+    @Test fun mixOwnershipViaBoardPausesOtherAndHandsOffBack() {
+        val board = SessionSwitchboard(log = {})
+        val port = FakePort(); var handoffs = 0
+        val router = MixTransportRouter(port) { handoffs++ }
+        val exo = Owner("exo")
+        val mix = Owner("mix") { router.handoff() }
+        board.setOwner(mix); board.setOwner(exo)
+        assertEquals(listOf("pauseBoth"), port.calls); assertEquals(1, handoffs)
+    }
 }
+
+private fun card0() = MixCard("s1", "Title", "Artist", null, 240_000, 30_000, 1.0f)

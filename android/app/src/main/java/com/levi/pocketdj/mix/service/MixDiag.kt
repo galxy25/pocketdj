@@ -53,5 +53,7 @@ object MixDiag {
         return File(dir, name).also { it.writeText(exportText(header)) }
     }
 
-    private fun stamp(ms: Long): String = SimpleDateFormat("HH:mm:ss.SSS", Locale.US).format(Date(ms))
+    // SimpleDateFormat is not thread-safe and diag lines come from the render thread too.
+    private val stampFmt = ThreadLocal.withInitial { SimpleDateFormat("HH:mm:ss.SSS", Locale.US) }
+    private fun stamp(ms: Long): String = stampFmt.get()!!.format(Date(ms))
 }

@@ -13,8 +13,16 @@ interface RecoveryPort {
     fun deckPlaying(deck: Deck): Boolean
     /** The deck is waiting for stream bytes: silence is expected. */
     fun deckHeld(deck: Deck): Boolean
-    /** The deck's voice is really producing frames (decoder-side truth). */
-    fun voicePlaying(deck: Deck): Boolean
+    /** The deck loops (a loop's silence-free by construction; iOS skips it). */
+    fun deckLooping(deck: Deck): Boolean
+    /** The deck's channel volume (0 = deliberately silent). */
+    fun deckGain(deck: Deck): Double
+    /** The crossfader's factor for the deck (0 = that side is closed). */
+    fun crossfadeFactor(deck: Deck): Double
+    /** Every stem of a stems-mode deck is muted (silence is the user's choice). */
+    fun allStemsMuted(deck: Deck): Boolean
+    /** Seconds since the render thread last produced an AUDIBLE block (the tap signal); -1 = never. */
+    fun signalAgeSeconds(): Double
     /** Seconds left on the deck (silence at the very end is the natural finish, not a fault). */
     fun remainingSeconds(deck: Deck): Double
     /** Park the Auto-DJ wall clocks (sink down). Idempotent. */
@@ -43,6 +51,7 @@ class MixRecovery(
     /** When the sink went down, or null while it renders. */
     var downAtMs: Long? = null; private set
     private val strikes = IntArray(Deck.entries.size)
+    private var runningSinceMs = -1L
     var silentPlayingEvents = 0; private set
 
     /** The sink finished a route rebuild ([rendering] = it works) or lost its track. */
@@ -69,18 +78,29 @@ class MixRecovery(
     }
 
     /**
-     * 1 Hz. A deck that has play intent, is not held, has audio left and a rendering sink but whose
-     * voice is not producing is SILENT-PLAYING. Strike 1-2 re-kick it; strike 3 logs it and pauses
-     * it unless a recording tap is open. Healthy / paused / held decks reset their strikes.
+     * 1 Hz (iOS silentPlayingCheck). A deck that is playing, not stream-held, not looping, audible by
+     * gain + crossfader + stems, with audio left, while the mix has run > 3 s and the render tap has
+     * seen no audible block for > 3 s (or never), is SILENT-PLAYING. Strike 1-2 re-kick it (only a
+     * voice that is IDLE/UNDERRUN is touched); strike 3 logs it and pauses it unless a recording tap is
+     * open. Anything else resets the deck's strikes. The decks share one tap, so a signal from either
+     * deck clears every suspect (as on iOS).
      */
     fun silentPlayingCheck() {
+        val now = port.nowMs()
+        val anyPlaying = Deck.entries.any { port.deckPlaying(it) }
+        if (!anyPlaying) runningSinceMs = -1L else if (runningSinceMs < 0) runningSinceMs = now
+        val runningLong = runningSinceMs >= 0 && now - runningSinceMs > SILENCE_S * 1000
+        val age = port.signalAgeSeconds()
+        val silent = age < 0 || age > SILENCE_S
         for (d in Deck.entries) {
-            val suspect = port.isRendering && port.deckPlaying(d) && !port.deckHeld(d) &&
-                port.remainingSeconds(d) > END_GRACE_S && !port.voicePlaying(d)
+            val suspect = runningLong && silent && port.isRendering && port.deckPlaying(d) &&
+                !port.deckHeld(d) && !port.deckLooping(d) &&
+                port.deckGain(d) > GAIN_FLOOR && port.crossfadeFactor(d) > GAIN_FLOOR &&
+                !port.allStemsMuted(d) && port.remainingSeconds(d) > END_GRACE_S
             if (!suspect) { strikes[d.ordinal] = 0; continue }
             val n = ++strikes[d.ordinal]
             if (n < STRIKES) {
-                log("recover: deck ${d.label} voice idle strike=$n - re-kick")
+                log("recover: deck ${d.label} silent strike=$n sigAge=$age - re-kick")
                 port.reprime(d)
             } else {
                 silentPlayingEvents++
@@ -100,6 +120,8 @@ class MixRecovery(
     companion object {
         const val STRIKES = 3
         const val END_GRACE_S = 1.0
+        const val SILENCE_S = 3.0
+        const val GAIN_FLOOR = 0.01
     }
 }
 
@@ -114,11 +136,27 @@ class EngineRecoveryPort(
     override val recording get() = engine.keepEngineAlive()
     override fun deckPlaying(deck: Deck) = engine.isPlaying(deck)
     override fun deckHeld(deck: Deck) = engine.streamHeld(deck)
-    override fun voicePlaying(deck: Deck) = engine.controller(deck).isVoicePlaying
+    override fun deckLooping(deck: Deck) = engine.deckState(deck).loopOn || engine.loopWindow(deck) != null
+    override fun deckGain(deck: Deck) = engine.volume(deck)
+    override fun crossfadeFactor(deck: Deck) =
+        com.levi.pocketdj.mix.model.MixMath.crossfadeFactor(deck, engine.crossfader.toFloat()).toDouble()
+    override fun allStemsMuted(deck: Deck): Boolean {
+        val st = engine.deckState(deck)
+        return st.stemMode && com.levi.pocketdj.data.burns.BurnFileNames.STEM_NAMES.all { it in st.stemMuted }
+    }
+    override fun signalAgeSeconds() = engine.tapAgeSeconds(true)
     override fun remainingSeconds(deck: Deck) = engine.duration(deck) - engine.position(deck)
     override fun parkClocks() = dj.parkEngineStall()
     override fun unparkClocks() = dj.unparkEngineStall()
     override fun restartSink() = engine.startEngineIfNeeded()
-    override fun reprime(deck: Deck) { if (!engine.streamHeld(deck)) engine.controller(deck).play() }
+    override fun reprime(deck: Deck) {
+        if (engine.streamHeld(deck)) return
+        val c = engine.controller(deck)
+        // Only a voice that stopped pulling needs the kick; play() on a live (or beat-scheduled) voice
+        // would reset its startAt to IMMEDIATE.
+        val status = if (c.onStems) c.stems?.voices?.get(0)?.status else c.voiceStatus
+        if (status == null || status == com.levi.pocketdj.audio.core.Voice.Status.IDLE ||
+            status == com.levi.pocketdj.audio.core.Voice.Status.UNDERRUN) c.play()
+    }
     override fun pauseDeck(deck: Deck) = engine.silence(deck)
 }
