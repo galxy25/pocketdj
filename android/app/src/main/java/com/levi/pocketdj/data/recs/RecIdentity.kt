@@ -237,13 +237,35 @@ object RecVersionIdentity {
             for (c in s) sb.append(if (c in 'A'..'Z') c + 32 else c)
             sb.toString()
         } else {
-            Normalizer.normalize(s, Normalizer.Form.NFD).replace(Regex("\\p{M}+"), "").lowercase(Locale.ROOT)
+            stripDiacritics(Normalizer.normalize(s, Normalizer.Form.NFD)).lowercase(Locale.ROOT).replace("ß", "ss")
         }
         if (t.indexOf('&') >= 0) t = t.replace("&", " and ")
         if (t.indexOf('"') >= 0 || t.contains("''") || t.contains("inch")) {
             t = inchRegex.replace(t, " inch ")
         }
         return t
+    }
+
+    /** Drop combining marks only after Latin/Greek/Cyrillic bases (accents), keeping Indic vowel signs etc. */
+    private fun stripDiacritics(nfd: String): String {
+        val sb = StringBuilder(nfd.length)
+        var base: Character.UnicodeScript? = null
+        var i = 0
+        while (i < nfd.length) {
+            val cp = nfd.codePointAt(i)
+            i += Character.charCount(cp)
+            val t = Character.getType(cp)
+            val isMark = t == Character.NON_SPACING_MARK.toInt() || t == Character.COMBINING_SPACING_MARK.toInt() ||
+                t == Character.ENCLOSING_MARK.toInt()
+            if (isMark) {
+                if (base == Character.UnicodeScript.LATIN || base == Character.UnicodeScript.GREEK ||
+                    base == Character.UnicodeScript.CYRILLIC) continue
+            } else {
+                base = Character.UnicodeScript.of(cp)
+            }
+            sb.appendCodePoint(cp)
+        }
+        return sb.toString()
     }
 
     private fun splitDashSuffix(s: String): Pair<String, String>? {
@@ -292,11 +314,13 @@ object RecVersionIdentity {
         if (cp < 128) return (cp in 97..122) || (cp in 48..57) || (cp in 65..90)
         if (Character.isLetterOrDigit(cp)) return true
         val t = Character.getType(cp)
-        return t == Character.LETTER_NUMBER.toInt() || t == Character.OTHER_NUMBER.toInt()
+        // Combining marks that survive fold() (non-Latin/Greek/Cyrillic) are part of the word.
+        return t == Character.LETTER_NUMBER.toInt() || t == Character.OTHER_NUMBER.toInt() ||
+            t == Character.NON_SPACING_MARK.toInt() || t == Character.COMBINING_SPACING_MARK.toInt()
     }
 
     private fun isNumeric(t: String): Boolean {
-        val digits = t.takeWhile { it.isDigit() }
+        val digits = t.takeWhile { Character.isDigit(it) || Character.getType(it) == Character.LETTER_NUMBER.toInt() || Character.getType(it) == Character.OTHER_NUMBER.toInt() }
         if (digits.isEmpty()) return false
         val rest = t.substring(digits.length)
         return rest.isEmpty() || rest in setOf("st", "nd", "rd", "th")

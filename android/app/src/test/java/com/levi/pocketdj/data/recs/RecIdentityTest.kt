@@ -190,4 +190,16 @@ class RecIdentityTest {
         assertTrue(RecRecordingIdentity.resolvesToStreamableAudio("123456"))
         assertFalse(RecRecordingIdentity.resolvesToStreamableAudio("12"))
     }
+
+    @Test fun eszettFoldsToSsAndEditionIsSuppressed() {
+        assertTrue(diff("Strasse (Remastered)", "Stra\u00dfe"))
+        assertEquals(RecVersionIdentity.parse("Stra\u00dfe").base, RecVersionIdentity.parse("Strasse").base)
+    }
+
+    @Test fun indicVowelSignsAreNotStripped() {
+        val a = RecVersionIdentity.parse("\u0915\u093f").base
+        val b = RecVersionIdentity.parse("\u0915\u0941").base
+        assertTrue(a != b)
+        assertEquals(RecVersionIdentity.parse("Caf\u00e9").base, RecVersionIdentity.parse("Cafe").base)
+    }
 }
