@@ -108,11 +108,16 @@ class MixGraph(val sampleRate: Int = 44_100, val maxBlock: Int = 2048) : BlockRe
      * (compare with `handover.landedGen`). A newer call supersedes an in-flight fade (the LAST
      * intent wins, starting from the current gains: no dip, no dead air).
      *
+     * [forceOutright]: the caller already decided the deck is not audible (paused / held / sink stopped):
+     * switch without a fade whatever the voices report.
+     *
      * The caller must have loaded the incoming voices and have enough decoded runway; if the
      * incoming side is not aligned when the fade starts the render thread aborts the plan
      * (`handover.abortedGen`) and the outgoing side keeps playing.
      */
-    fun crossfadeTo(d: Deck, toStems: Boolean, leadSeconds: Double = DEFAULT_HANDOVER_LEAD): Int {
+    fun crossfadeTo(
+        d: Deck, toStems: Boolean, leadSeconds: Double = DEFAULT_HANDOVER_LEAD, forceOutright: Boolean = false,
+    ): Int {
         val ch = deck(d)
         val h = ch.handover
         val m = ch.main; val g = ch.stems
@@ -121,7 +126,8 @@ class MixGraph(val sampleRate: Int = 44_100, val maxBlock: Int = 2048) : BlockRe
         // iOS only cross-fades an AUDIBLE deck. A paused / stream-held / empty outgoing side switches
         // outright, and the new side starts only if the deck's transport is playing.
         val outV = if (toStems) m else g?.voices?.getOrNull(0)
-        val audible = incomingLive || (outV != null && outV.isPlaying && outV.status == Voice.Status.PLAYING)
+        val audible = !forceOutright &&
+            (incomingLive || (outV != null && outV.isPlaying && outV.status == Voice.Status.PLAYING))
         val startAt = posBuf[0] + Math.round(leadSeconds * sampleRate)
         if (!audible) {
             val transportPlaying = outV?.isPlaying == true

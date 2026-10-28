@@ -92,10 +92,22 @@ class MixEngine(
     var autoDj: AutoDjHooks? = null
     /** A deck is waiting for stream bytes (MIX-10): its playhead freezes and its voice is not started. */
     var streamHeldProvider: ((Deck) -> Boolean)? = null
+    /** MIX-8's own stem Hold/Buffering flag, OR-ed into [streamHeld] independently so MIX-10 may freely (re)assign [streamHeldProvider]. */
+    var stemHeldProvider: ((Deck) -> Boolean)? = null
+    /** The deck's stem INTENT (on stems or loading them): the durable snapshot saves this, not the committed flag (iOS stemModeOn). */
+    var stemModeOnProvider: ((Deck) -> Boolean)? = null
     /** The deck's active loop window in source seconds (MIX-8), else null. */
     var loopWindowProvider: ((Deck) -> Pair<Double, Double>?)? = null
     /** A rewind/reset/load invalidated the deck's loop (MIX-8 drops its resolved window). */
     var onLoopInvalidated: ((Deck) -> Unit)? = null
+    /** A seek landed on [Deck] at the given source second (MIX-8: a looped deck's loop follows it). */
+    var onSeeked: ((Deck, Double) -> Unit)? = null
+    /** Per-tick, per-playing-deck, after the playhead advanced (MIX-8: stem underrun / handover checks). */
+    var onDeckTick: ((Deck, Double) -> Unit)? = null
+    /** A deck's transport really changed (play true / pause false) (MIX-8: deferred stem source, fade settle). */
+    var onTransport: ((Deck, Boolean) -> Unit)? = null
+    /** A track finished loading onto a deck (MIX-8: beat-grid hydrate). */
+    var onDeckLoaded: ((Deck, LoadedTrack) -> Unit)? = null
     /** A load/eject dropped the deck's stem intent (MIX-8). */
     var onStemsReset: ((Deck) -> Unit)? = null
     /** Not-on-disk loads: MIX-10 may open a growing-file stream instead. True = handled. */
@@ -181,7 +193,8 @@ class MixEngine(
     fun cueVolume(deck: Deck) = st(deck).cueVol
     val anyCued: Boolean get() = _ui.value.anyCued
     fun isLead(deck: Deck) = leadDeck == deck
-    fun streamHeld(deck: Deck): Boolean = streamHeldProvider?.invoke(deck) == true
+    fun streamHeld(deck: Deck): Boolean =
+        streamHeldProvider?.invoke(deck) == true || stemHeldProvider?.invoke(deck) == true
     fun loopWindow(deck: Deck): Pair<Double, Double>? = loopWindowProvider?.invoke(deck)
     fun deckExhaustedFromRestore(deck: Deck) = deck in deckExhaustedFromRestore
 
@@ -355,6 +368,7 @@ class MixEngine(
             )
         }
         onLoopInvalidated?.invoke(deck)
+        onDeckLoaded?.invoke(deck, meta)
         // Loading stopped this deck OUTSIDE setPlaying: keep the sticky card subject honest.
         stickyFromPlaying()
         setPosition(deck, 0.0)
@@ -371,6 +385,7 @@ class MixEngine(
         val was = st(deck).isPlaying
         updateDeck(deck) { it.copy(isPlaying = playing) }
         if (playing == was) return
+        onTransport?.invoke(deck, playing)
         if (playing) {
             if (!isRestoringMixSession) onAudioStarted?.invoke()
             rec(MixEventKind.Play, deck)
@@ -553,6 +568,7 @@ class MixEngine(
         if (!c.isOpen) return
         c.seekSeconds(clamped)
         setPosition(deck, clamped)
+        onSeeked?.invoke(deck, clamped)
         refreshTransport()
         tick.startIfNeeded()
         autoDj?.onSeek(deck)          // auto mix: re-time the crossfade to the NEW position
@@ -827,7 +843,10 @@ class MixEngine(
     )
 
     private fun deckSnapshot(d: Deck): DeckSnapshot? =
-        MixPersistence.deckSnapshot(st(d), (position(d) * 1000).toInt().coerceAtLeast(0))
+        MixPersistence.deckSnapshot(
+            st(d), (position(d) * 1000).toInt().coerceAtLeast(0),
+            stemModeOnProvider?.invoke(d) ?: st(d).stemMode,
+        )
 
     /** The decks' playheads -> the store's throttled position channel (immediate on a run/pause transition). */
     internal fun persistPositions() {
