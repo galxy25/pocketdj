@@ -104,6 +104,9 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q89 [COL-17]** (a) No Settings toggle for "Find my listening pockets": the only UI is the In the Pocket opt-in dialog, whose Turn on is disabled until Recommendations is ON. Add a Settings row? (b) Android has no location engine, so `ctx` is never sent and "Places & trips" does nothing. Build one (needs location permission + geocoding policy)? (c) Plays started from Browse songs record no listenedFraction/outcome (sent as `unknown`); only queue/setlist plays get skipped/fraction. Intended? (d) Auto flush is 25 s then every 600 s, so fresh plays reach the server on app-background or ~10 min. -- *Default: as built.* -- Product.
 - **Q90 [BRW-14]** resolveArtistId tries the whole credit before splitting (kept as an intentional extension over iOS). Keep? Real Apple Music playback of an unowned release is device-only. -- *Default: keep.* -- Parity.
 
+- **Q91 [COL-18]** (a) The Settings pockets toggle (not yet built, Q89a) must also set `LISTENING_POCKETS_ANSWERED` when it flips, otherwise the History tab keeps offering the opt-in after the user answered. (b) "Open Now Playing after Play" is not wired (no navigation seam from History). (c) With a location engine active the device label is the only authority and an unknown id reads "Earlier place" (as iOS); cloud label is fallback only when no engine is active. Confirm. -- *Default: as built.* -- Product.
+- **Q92 [COL-19]** `data_extraction_rules.xml` / `backup_rules.xml` exclude the listening-location store file; lines are not alphabetized, so a hand-merge is needed if another package touches them. COL-20 (location source) will need location permission + geocoding policy decision. -- *Default: as built.* -- Product.
+
 ## ANSWERED
 
 (none yet)
