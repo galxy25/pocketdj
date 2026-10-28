@@ -66,7 +66,9 @@ import java.util.UUID
 @Composable
 fun InThePocketScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     val games = graph.gamesGraph
-    val bridge = games.pocketsBridge   // read every composition: the real bridge is assigned asynchronously after launch
+    // The real bridge is assigned asynchronously after launch: observe it so an early open recomposes onto it.
+    val servicesBridge by games.servicesBridgeFlow.collectAsState()
+    val bridge = servicesBridge ?: games.pocketsBridge
     val enabled by bridge.isEnabled.collectAsState()
     if (!enabled && bridge === com.levi.pocketdj.data.pockets.NoPocketsBridge) {
         // No pockets service in this build (iOS third branch).

@@ -3,6 +3,7 @@ package com.levi.pocketdj.shell
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -14,6 +15,10 @@ class FlushOnStop(private val registry: FeatureModuleRegistry) : DefaultLifecycl
 
     override fun onStop(owner: LifecycleOwner) {
         // Bounded: a slow module flush (network diag upload, big documents) must not freeze the main looper.
-        runBlocking(Dispatchers.IO) { kotlinx.coroutines.withTimeoutOrNull(FLUSH_BUDGET_MS) { registry.flushAll() } }
+        // Final review recheck: the flush runs DETACHED and main only waits up to the budget for it. A timeout around
+        // flushAll() itself was no bound: blocking flushes ignore cancellation, and flushAll's runCatching swallows the
+        // CancellationException and runs every remaining flushable anyway. Past the budget the writes keep landing on IO.
+        val job = kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch { registry.flushAll() }
+        runBlocking { kotlinx.coroutines.withTimeoutOrNull(FLUSH_BUDGET_MS) { job.join() } }
     }
 }

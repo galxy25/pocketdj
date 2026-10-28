@@ -404,6 +404,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             file = File(app.appContext.filesDir, com.levi.pocketdj.data.credentials.SettingsCredentialsDocument.FILE_NAME),
             port = credentialsPort,
             log = { android.util.Log.i("PocketDJ", "[credsync] $it") },
+            secretsAvailable = { app.secrets.isAvailable },
         )
     }
 

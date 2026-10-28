@@ -211,6 +211,15 @@ class MixEnginePersistenceTest {
         assertEquals("a", h2.engine.loaded(A)!!.songId)
     }
 
+    @Test fun aLaterMixTabRequestMaterializesEvenBehindAHeldSetlist() {
+        val r = Rig(); populated(r); r.store.flush()
+        val h2 = r.relaunch()
+        h2.engine.setlistIsLive = { true }               // a held (durable) set list run stays live
+        h2.engine.restorePersistedMixIfIdle()            // launch read parks; nothing wanted yet
+        h2.engine.materializePendingRestoreIfNeeded()    // the user opens the Mix tab (iOS: always materializes)
+        assertEquals("a", h2.engine.loaded(A)!!.songId)
+    }
+
     @Test fun materializeRightAwayWhenTheTabAskedBeforeTheLaunchRead() {
         val r = Rig(); populated(r); r.store.flush()
         val h2 = r.relaunch()

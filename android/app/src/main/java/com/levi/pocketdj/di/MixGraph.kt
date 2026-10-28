@@ -582,7 +582,12 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         engine.onDisengaged = { player.released(); npFocus.onTransportIdle() }
         engine.onAudioStarted = { ensureMediaService(); player.onAudioStarted(); npFocus.onAudioStarted() }
         val chained = engine.onChanged
-        engine.onChanged = { chained?.invoke(); player.refresh(); npFocus.onTransportIdle() }
+        // Final review recheck: onAudioStarted fires once per engagement, so a resume after a user pause (which
+        // abandoned the focus) must re-request it here; idle otherwise.
+        engine.onChanged = {
+            chained?.invoke(); player.refresh()
+            if (engine.isPlaying) npFocus.onAudioStarted() else npFocus.onTransportIdle()
+        }
 
         com.levi.pocketdj.screens.nowplaying.NowPlayingSeams.dspSlot = {
             com.levi.pocketdj.screens.nowplaying.NowPlayingDspPanel(host)

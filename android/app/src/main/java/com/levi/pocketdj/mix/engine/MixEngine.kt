@@ -972,9 +972,12 @@ class MixEngine(
     /** Mix-surface entry: actually re-load the parked snapshot onto the decks. Idempotent. */
     fun materializePendingRestoreIfNeeded(trigger: String = "mixTab") {
         materializeWanted = true
-        // Nothing parks the launch restore for us: park from the store on first ask.
-        if (pendingRestore == null && !restoreSettled) restorePersistedMixIfIdle()
-        if (pendingRestore != null && setlistIsLive?.invoke() == true) { diag("materialize skipped setlistLive=1"); return }
+        // Nothing parks the launch restore for us: park from the store on first ask. That park is the launch
+        // read, so IT applies the live-set-list guard (and materializes when no set list is live).
+        if (pendingRestore == null && !restoreSettled) { restorePersistedMixIfIdle(); return }
+        // Final review recheck (iOS materializePendingRestoreIfNeeded): a LATER Mix-surface request always
+        // finishes the job. Only the launch read defers to a live set list; a held run (durable, can last
+        // across launches) must not hide the parked mix from the Mix tab forever.
         materializeNow(trigger)
     }
 

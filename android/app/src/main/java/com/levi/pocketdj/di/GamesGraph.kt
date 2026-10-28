@@ -167,10 +167,15 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
     @Volatile var servicesBridge: PocketsBridge? = null
         set(value) {
             field = value
+            servicesBridgeState.value = value
             // The store registered its rounds provider on whatever bridge existed at construction;
             // the real service needs it too.
             value?.roundsProvider = { installId -> inThePocket.uploadWires(installId) }
         }
+    /** Observable mirror of [servicesBridge] (Final review recheck): a screen opened before the async wiring recomposes onto it. */
+    private val servicesBridgeState = kotlinx.coroutines.flow.MutableStateFlow<PocketsBridge?>(null)
+    val servicesBridgeFlow: kotlinx.coroutines.flow.StateFlow<PocketsBridge?> get() = servicesBridgeState
+
     val pocketsBridge: PocketsBridge
         get() = servicesBridge ?: if (isDebuggable()) debugBridge else NoPocketsBridge
 

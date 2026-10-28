@@ -20,6 +20,8 @@ class CredentialsSync(
     private val file: File,
     private val port: CredentialsPort,
     private val log: (String) -> Unit = {},
+    /** False when the Keystore-backed secret store could not open this launch (Final review recheck). */
+    private val secretsAvailable: () -> Boolean = { true },
 ) {
     /** Set by [writePulled] until [applyPulled] runs: the watcher must not overwrite pulled bytes in the gap. */
     @Volatile private var pullPendingSince = 0L
@@ -54,6 +56,9 @@ class CredentialsSync(
     @Synchronized
     fun syncIfChanged(): Boolean {
         if (suspended) return false
+        // Final review recheck: a transient Keystore failure now keeps the secrets for the NEXT launch instead of
+        // wiping them; this launch reads every secret as "". Mirroring that would push a blank-token doc fleet-wide.
+        if (!secretsAvailable()) return false
         val pendingSince = pullPendingSince
         if (pendingSince != 0L && System.currentTimeMillis() - pendingSince < PULL_PENDING_MS) return false
         val existingBytes = runCatching { file.readBytes() }.getOrNull()

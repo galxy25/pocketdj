@@ -201,4 +201,11 @@ class CredentialsSyncTest {
         sync.applyPulled()
         assertEquals("C", port.live.ripToken)
     }
+
+    @Test fun neverMirrorsWhileTheSecretStoreIsUnavailable() {
+        val f = file()
+        val sync = CredentialsSync(f, FakePort(doc()), secretsAvailable = { false })
+        assertFalse(sync.syncIfChanged())
+        assertFalse(f.exists())
+    }
 }
