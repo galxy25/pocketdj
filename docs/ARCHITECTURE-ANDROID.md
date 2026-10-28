@@ -456,7 +456,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | MIX-11 — Mix transport owner: MixSessionPlayer (SimpleBasePlayer TransportOwner) into the ONE Medi… | 11 | PARTIAL | Bluetooth route changes, phone-call interruption, headset buttons, re… (device-only; export control lives on Debug screen, not Mix settings; cold-start service bind via MediaController unverified on device) |
 | MIX-14 — Mix screen shell: session header, Auto setup bar/banner/skip, crate menus A/B (scroll res… | 12 | PARTIAL (JVM-tested, routed, review fixes applied) | Emulator pass pending (integrator): crate-menu scroll while download bar ticks, skip single/double, Settings > Mix, MIX-13 slider/rotation carry-over. |
 | MIX-12 — Mix session audio recording (house tap → ADTS AAC) + MixRecorder + orphan recovery + Reco… | 13 | Planned | — |
-| MIX-15 — Sessions screen + replay timeline + recordings panel | 15 | Planned | — |
+| MIX-15 — Sessions screen + replay timeline + recordings panel | 15 | PARTIAL (JVM-tested, review fixes applied) | Omitted: CSV export, load-card song metadata sheet, tablet wrapped layout. Emulator pass pending (integrator): open Current session mid-mix (live counts), replay 2x + scrub, rotate, record take + delete. |
 | MIX-16 — Integrations: Jukebox ↔ Mix seams, MixPlayOutcomeBridge → History, MixFacade implementati… | 16 | Planned | — |
 | MIX-18 — Now Playing Mix mini-panel (F4: swap-on-touch ExoPlayer→DSP hand-off, stems/effects/tempo… | 17 | Planned | Audible seamless hand-off and route changes. |
 | MIX-17 — Slot modulation (LFO beat-locked + envelope follower) on the FX rack | 18 | Planned | Audible sweep |
