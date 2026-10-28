@@ -1,5 +1,6 @@
 package com.levi.pocketdj.shell
 
+import com.levi.pocketdj.navigation.PocketDjDestination
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.TestScope
@@ -53,24 +54,40 @@ class DeepLinkDispatcherTest {
         assertEquals(1, joined.size)
     }
 
-    @Test fun jukeboxWhenComplete_runsImmediately_defaultPostsRoute() = runTest {
+    @Test fun jukeboxWhenComplete_defaultLandsOnTabWithoutJoinListError() = runTest {
         val d = dispatcher(FakeGate(true))
         assertTrue(d.handle(join))
-        assertEquals(listOf<ShellRoute>(ShellRoute.JukeboxJoin("exmkrd5a")), routes)
+        assertEquals(listOf<ShellRoute>(ShellRoute.Tab(PocketDjDestination.Jukebox)), routes)
+        assertEquals(listOf("Joining jukeboxes is coming soon"), messages)
+    }
+
+    @Test fun playDefaultPlaylistOpensScreenAndSaysPlaybackNotWired() = runTest {
+        dispatcher(FakeGate(true)).handle(DeepLinkParser.parse("pocketdj://play/playlist/p1?shuffle=1"))
+        assertEquals(listOf<ShellRoute>(ShellRoute.Playlist("p1")), routes)
+        assertEquals(listOf("Playing from links is coming soon"), messages)
+    }
+
+    @Test fun newestLinkOfAKindWinsWhileParked() = runTest {
+        val gate = FakeGate(false)
+        val joined = mutableListOf<String>()
+        seams.joinJukebox = { id, _ -> joined += id }
+        val d = dispatcher(gate)
+        d.handle(DeepLink.JukeboxJoin("aaaa", null))
+        d.handle(DeepLink.JukeboxJoin("bbbb", null))
+        gate.finish(); runCurrent()
+        assertEquals(listOf("bbbb"), joined)
     }
 
     @Test fun mwfParkedForGamesConsumer() = runTest {
-        val d = dispatcher(FakeGate(false))
+        val gate = FakeGate(false)
+        val d = dispatcher(gate)
         val mwf = DeepLink.Mwf("abcd2345", null)
         d.handle(mwf)
         assertNull(d.pendingMwf.value)
-        (d.let { }).also { }
-        val gate = FakeGate(true)
-        val d2 = dispatcher(gate)
-        d2.handle(mwf)
-        assertEquals(mwf, d2.pendingMwf.value)
-        assertEquals(mwf, d2.takePendingMwf())
-        assertNull(d2.takePendingMwf())
+        gate.finish(); runCurrent()
+        assertEquals(mwf, d.pendingMwf.value)
+        assertEquals(mwf, d.takePendingMwf())
+        assertNull(d.takePendingMwf())
     }
 
     @Test fun mwfConsumerSeamReceivesLink() = runTest {

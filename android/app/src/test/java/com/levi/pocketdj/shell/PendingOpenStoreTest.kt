@@ -30,4 +30,10 @@ class PendingOpenStoreTest {
         assertEquals(1, s.drain().size)
         assertEquals(emptyList<DeepLink>(), s.drain())
     }
+
+    @Test fun newestOfAKindReplaces() {
+        val s = PendingOpenStore()
+        s.park(a); s.park(DeepLink.JukeboxJoin("bbbb", null))
+        assertEquals(listOf<DeepLink>(DeepLink.JukeboxJoin("bbbb", null)), s.drain())
+    }
 }

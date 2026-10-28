@@ -347,7 +347,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | SURF-1 — Shell foundation: adaptive scaffold, FeatureModule registry + area sidecar graphs, settin… | 1 | Planned | — |
 | SURF-2 — Application lifecycle + background work: PocketDjApplication, ProcessLifecycle flush funn… | 2 | PARTIAL | storage-prune measure-only (no soft-cap prune); jukebox onStart bootstrap deferred; emulator steps not run |
 | SURF-3 — Zero-to-hero onboarding (store, 3 stages, launch gate, mutating-intent veto, link-a-devic… | 3 | PARTIAL (veto wiring deferred to SURF-5; link probe stubbed until SVC-9; real AM sign-in device-only) | Real Apple Music sign-in completion in stage 2 (emulator verifies can… |
-| SURF-4 — Deep links + file opens: manifest filters, DeepLinkParser, pending-until-onboarding, disp… | 4 | Planned | App Links auto-verification (needs https://jukebox.pocket-dj.com/.wel… |
+| SURF-4 — Deep links + file opens: manifest filters, DeepLinkParser, pending-until-onboarding, disp… | 4 | PARTIAL (seams unassigned, defaults are visible placeholders: playItem SURF-5; joinJukebox JBX-2; importCollection SET-2/COL-15; mwf GM-10) | App Links auto-verification (needs https://jukebox.pocket-dj.com/.wel… |
 | SURF-10 — Jukebox host parity gaps: played-history dedup rule, require-token default toggle, sessio… | 6 | Planned | Apple Music catalog search stage (needs AM sign-in) — seam only in th… |
 | SURF-5 — ShellActions façade (IntentServices analogue) + MixFacade seam + Assistant media search +… | 7 | Planned | Real Google Assistant voice ('play my warmup pocket on PocketDJ') — t… |
 | SURF-6 — Settings shell rows: Profile name, Collections default recently-added count, Import serve… | 11 | Planned | — |

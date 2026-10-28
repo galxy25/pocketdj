@@ -68,7 +68,13 @@ object DeepLinkParser {
     }
 
     private fun segments(uri: URI): List<String> =
-        (uri.path ?: "").split('/').filter { it.isNotEmpty() }
+        (uri.rawPath ?: "").split('/').filter { it.isNotEmpty() }.map(::percentDecode)
+
+    /** Percent-decoding only: '+' stays '+' (not form decoding). */
+    private fun percentDecode(s: String): String {
+        if ('%' !in s) return s
+        return runCatching { URLDecoder.decode(s.replace("+", "%2B"), "UTF-8") }.getOrDefault(s)
+    }
 
     private fun host(uri: URI): String =
         (uri.host ?: uri.authority ?: "").lowercase()

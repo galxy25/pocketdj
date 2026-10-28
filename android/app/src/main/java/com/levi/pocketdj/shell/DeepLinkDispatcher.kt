@@ -2,7 +2,11 @@ package com.levi.pocketdj.shell
 
 import android.content.Intent
 import android.provider.OpenableColumns
+import com.levi.pocketdj.navigation.PocketDjDestination
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.getAndUpdate
@@ -19,8 +23,8 @@ interface OnboardingGate {
  * visible fallback (never a crash, never a silent drop):
  *  - [playItem]: SURF-5 `ShellActions.playPlaylist/...` — default opens the item's screen
  *    (the resolver reports the iOS-style message for an unknown id). Returns a failure message or null.
- *  - [joinJukebox]: JBX-2 `JoinedSessionsStore.addJoined` + open the join panel — default posts
- *    [ShellRoute.JukeboxJoin] (resolves only for already-joined sessions).
+ *  - [joinJukebox]: JBX-2 `JoinedSessionsStore.addJoined` + open the join panel — default opens the Jukebox tab with a
+ *    "coming soon" message (JBX-2 must assign this seam).
  *  - [importCollection]: SET-2/COL-15 collection import — default "Import coming soon".
  *  - [mwf]: Games MwF consumer — default parks the link in [DeepLinkDispatcher.pendingMwf].
  */
@@ -43,6 +47,7 @@ class DeepLinkDispatcher(
     private val postRoute: (ShellRoute) -> Unit = NavRequestBus::post,
     private val postMessage: (String) -> Unit = NavRequestBus::postMessage,
     private val displayName: (Intent) -> String? = { null },
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
 ) {
     private val _pendingMwf = MutableStateFlow<DeepLink.Mwf?>(null)
 
@@ -57,8 +62,16 @@ class DeepLinkDispatcher(
     fun handle(intent: Intent): Boolean {
         if (intent.action != Intent.ACTION_VIEW) return false
         val data = intent.data?.toString() ?: return false
-        val name = if (intent.data?.scheme == "content") displayName(intent) else null
-        return handle(DeepLinkParser.parse(data, name, intent.type))
+        if (intent.data?.scheme == "content") {
+            // The DISPLAY_NAME query can block on a remote provider: never on the main thread.
+            val type = intent.type
+            scope.launch {
+                val name = withContext(ioDispatcher) { displayName(intent) }
+                handle(DeepLinkParser.parse(data, name, type))
+            }
+            return true
+        }
+        return handle(DeepLinkParser.parse(data, null, intent.type))
     }
 
     /** @return true if the link is ours (executed or parked); false for None / diag keys. */
@@ -81,7 +94,13 @@ class DeepLinkDispatcher(
         when (link) {
             is DeepLink.JukeboxJoin -> {
                 val join = seams.joinJukebox
-                if (join != null) join(link.id, link.guestBase) else postRoute(ShellRoute.JukeboxJoin(link.id))
+                if (join != null) {
+                    join(link.id, link.guestBase)
+                } else {
+                    // JBX-2 not landed: land on the tab with an honest message, not a join-list error.
+                    postRoute(ShellRoute.Tab(PocketDjDestination.Jukebox))
+                    postMessage("Joining jukeboxes is coming soon")
+                }
             }
             is DeepLink.Mwf -> {
                 val consumer = seams.mwf
@@ -92,6 +111,7 @@ class DeepLinkDispatcher(
                 if (play != null) {
                     play(link.kind, link.id, link.shuffle)?.let(postMessage)
                 } else {
+                    // SURF-5 not landed: open the screen (setlist autoplays); say playback isn't wired.
                     postRoute(
                         when (link.kind) {
                             PlayKind.Playlist -> ShellRoute.Playlist(link.id)
@@ -100,6 +120,7 @@ class DeepLinkDispatcher(
                             PlayKind.Album -> ShellRoute.Album(link.id)
                         },
                     )
+                    if (link.kind != PlayKind.Setlist) postMessage("Playing from links is coming soon")
                 }
             }
             is DeepLink.Navigate -> postRoute(link.route)

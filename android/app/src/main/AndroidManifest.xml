@@ -78,7 +78,6 @@
                 <data android:scheme="content" />
                 <data android:scheme="file" />
                 <data android:mimeType="application/x-pocketdj-collection" />
-                <data android:mimeType="application/zip" />
             </intent-filter>
             <!-- ... and by extension (.pdjcollection / .pocketdj.zip) where the path carries a name. -->
             <intent-filter>

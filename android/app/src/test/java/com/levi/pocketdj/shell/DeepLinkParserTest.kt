@@ -20,6 +20,8 @@ class DeepLinkParserTest {
             "pocketdj://mwf/abcd2345" to DeepLink.Mwf("abcd2345", null),
             "pocketdj:///mwf/abcd2345" to DeepLink.Mwf("abcd2345", null),
             "$base/mwf/" to DeepLink.None,
+            "pocketdj://artist/AC%2FDC" to DeepLink.Navigate(ShellRoute.Artist("AC/DC")),
+            "pocketdj://artist/a+b" to DeepLink.Navigate(ShellRoute.Artist("a+b")),
             "pocketdj://jukebox/abc" to DeepLink.None,          // 3 chars
             "pocketdj://jukebox/${"a".repeat(33)}" to DeepLink.None,
             "pocketdj://jukebox/${"a".repeat(32)}" to DeepLink.JukeboxJoin("a".repeat(32), null),

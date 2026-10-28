@@ -1,25 +1,36 @@
 package com.levi.pocketdj.shell
 
 /**
- * Parks links that arrive before onboarding completes (iOS `pendingOpenURL` /
- * `pendingJukeboxLink` / `pendingMwFLink`). Insertion-ordered and de-duplicated: tapping the
- * same link twice parks it once, so it runs once on drain. [drain] is atomic — concurrent
- * drainers never see the same link twice.
+ * Parks links that arrive before onboarding completes. Like iOS (`pendingOpenURL` /
+ * `pendingJukeboxLink` / `pendingMwFLink`) there is one slot per link kind and the newest link
+ * of a kind wins. [drain] is atomic and returns slots in first-parked order.
  */
 class PendingOpenStore {
     private val lock = Any()
-    private val parked = LinkedHashSet<DeepLink>()
+    private val slots = LinkedHashMap<String, DeepLink>()
 
-    /** @return true if newly parked, false if an equal link was already waiting. */
+    private fun kind(link: DeepLink): String = when (link) {
+        is DeepLink.JukeboxJoin -> "jukebox"
+        is DeepLink.Mwf -> "mwf"
+        is DeepLink.CollectionFile -> "file"
+        else -> "open" // Play / Navigate share iOS's single pendingOpenURL
+    }
+
+    /** @return true if the slot changed, false if an equal link was already waiting. */
     fun park(link: DeepLink): Boolean = synchronized(lock) {
-        if (link is DeepLink.None) false else parked.add(link)
+        if (link is DeepLink.None || link is DeepLink.DiagKey) return false
+        val k = kind(link)
+        if (slots[k] == link) return false
+        slots.remove(k) // newest re-enters at the end
+        slots[k] = link
+        true
     }
 
-    /** Remove and return everything parked, oldest first. */
+    /** Remove and return everything parked, oldest slot first. */
     fun drain(): List<DeepLink> = synchronized(lock) {
-        parked.toList().also { parked.clear() }
+        slots.values.toList().also { slots.clear() }
     }
 
-    val size: Int get() = synchronized(lock) { parked.size }
+    val size: Int get() = synchronized(lock) { slots.size }
     fun isEmpty(): Boolean = size == 0
 }
