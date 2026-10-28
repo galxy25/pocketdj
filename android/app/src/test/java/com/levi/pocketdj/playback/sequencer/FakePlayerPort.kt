@@ -1,0 +1,61 @@
+package com.levi.pocketdj.playback.sequencer
+
+import kotlinx.coroutines.CompletableDeferred
+
+/** Records what the sequencer asked the engine to do; loads can be gated or made to fail per song. */
+class FakePlayerPort : PlayerPort {
+    val loads = mutableListOf<PlayRequest>()
+    val urls = mutableListOf<UrlRequest>()
+    var stops = 0
+    var pauses = 0
+    var resumes = 0
+
+    /** Songs whose load suspends until the deferred completes (complete exceptionally to fail it). */
+    val gates = mutableMapOf<String, CompletableDeferred<Unit>>()
+
+    /** Songs whose load throws immediately. */
+    val failing = mutableSetOf<String>()
+
+    /** Ids in load-COMPLETION order (the audio that actually "sounded"). */
+    val sounded = mutableListOf<String>()
+
+    override suspend fun load(request: PlayRequest) {
+        loads += request
+        val id = request.item.id
+        gates[id]?.await()
+        if (id in failing) error("dead source $id")
+        sounded += id
+    }
+
+    override suspend fun loadUrl(request: UrlRequest) {
+        urls += request
+    }
+
+    override suspend fun pause() { pauses++ }
+    override suspend fun resume() { resumes++ }
+    override suspend fun seekTo(positionMs: Long) = Unit
+    override suspend fun stop() { stops++ }
+
+    val loadedIds: List<String> get() = loads.map { it.item.id }
+}
+
+/** A resolver backed by a map; unmapped ids pass down the ladder. */
+class MapResolver(
+    override val id: String,
+    override val rung: Rung,
+    private val sources: Map<String, RowSource>,
+    private val gates: Map<String, CompletableDeferred<Unit>> = emptyMap(),
+) : RowSourceResolver {
+    val seenContexts = mutableListOf<ResolveContext>()
+    override suspend fun resolve(item: QueueItem, ctx: ResolveContext): RowSource? {
+        seenContexts += ctx
+        gates[item.id]?.await()
+        return sources[item.id]
+    }
+}
+
+fun stream(id: String) = StreamSource(
+    com.levi.pocketdj.data.rips.PlayAction.Stream("https://rips/$id.mp3"),
+)
+
+fun rows(vararg ids: String): List<QueueItem> = ids.map { QueueItem(id = it, title = it) }
