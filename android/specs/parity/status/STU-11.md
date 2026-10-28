@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-11 — Tracks arranger: model CRUD, home list + folders, lanes/clips UI, clip baker, artifacts browser
 

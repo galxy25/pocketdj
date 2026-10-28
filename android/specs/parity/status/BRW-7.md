@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # BRW-7 Collection timeline (F8) + cue store + History Collection tab
 - [x] CollectionTimeline.kt (pure builder, month dividers, album aggregation, jumpIndex)

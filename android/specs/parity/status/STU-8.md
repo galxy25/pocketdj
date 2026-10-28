@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-8 — Instrument packs + SF2 synth engine (native) + on-screen keys + takes (click/count-in)
 

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 COL-8 Apple Music write-back queue (Web API transport) + Apple Music settings.
 - [x] WriteBackMatcher (matchKey/bestMatch, conservative + deterministic) - WriteBackMatcherTest (12)

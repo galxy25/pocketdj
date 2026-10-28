@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-9 - S3CloudDocDatabase + enroll + link-a-device + onboarding stage-1 probe
 
