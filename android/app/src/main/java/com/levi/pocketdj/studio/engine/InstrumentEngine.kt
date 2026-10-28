@@ -98,6 +98,25 @@ class InstrumentEngine(
     val eventLog = InstrumentEventLog()
     private val click = ClickTrack.Voice()
 
+    /** Overdub mode (STU-10): while armed, played notes (hand, MIDI, arp) capture into a NEW staff INSTEAD of the live staff. */
+    val overdub = OverdubController(nanoClock, log)
+
+    /** The arpeggiator (STU-10): PROGRAM mode keys write nothing to any score; the transport strikes through [arpHost]. */
+    val arp: ArpeggiatorEngine by lazy {
+        ArpeggiatorEngine(scope, arpHost, nowMs = { nanoClock() / 1_000_000L }, onPlayingChanged = { lastActivityNanos = nanoClock(); if (it) ensurePump() })
+    }
+    private val arpHost = object : ArpHost {
+        override fun arpStrikeOn(note: Int) = strikeArpOn(note)
+        override fun arpStrikeOff(note: Int) = strikeArpOff(note)
+        override fun arpPreviewOn(note: Int, velocity: Int) {
+            lastActivityNanos = nanoClock(); ensurePump()
+            val v = primary ?: return
+            ensureRunning()
+            v.noteOn(note.coerceIn(0, 127), velocity.coerceIn(1, 127))
+        }
+        override fun arpPreviewOff(note: Int) { primary?.noteOff(note.coerceIn(0, 127)) }
+    }
+
     private val _state = MutableStateFlow(InstrumentEngineState())
     val state: StateFlow<InstrumentEngineState> = _state.asStateFlow()
 
@@ -128,6 +147,7 @@ class InstrumentEngine(
     private var replayAnchorNanos = 0L
     private var replayFromMs = 0
     private var parkedMs: Int? = null
+    private var replayLoop: Pair<Int, Int>? = null
 
     private val renderer = BlockRenderer { out, frames ->
         java.util.Arrays.fill(out, 0, frames * 2, 0f)
@@ -177,6 +197,7 @@ class InstrumentEngine(
         while (scope.isActive) {
             delay(tickMs)
             eventLog.drainHighlightsIfDirty()?.let { h -> _state.update { it.copy(pressedNotes = h) } }
+            overdub.tick(_state.value.isReplaying)
             eventLog.snapshotLiveIfDirty()?.let { l -> _state.update { it.copy(liveEvents = l, liveCaptureFull = eventLog.liveCaptureFull) } }
             val s = _state.value
             val now = nanoClock()
@@ -195,7 +216,7 @@ class InstrumentEngine(
 
     private fun isIdle(now: Long): Boolean {
         val s = _state.value
-        if (s.isRecordingTake || s.isReplaying || s.clickEnabled || s.pressedNotes.isNotEmpty()) return false
+        if (s.isRecordingTake || s.isReplaying || s.clickEnabled || s.pressedNotes.isNotEmpty() || arp.isPlaying || overdub.isActive) return false
         return now - lastActivityNanos > IDLE_NANOS
     }
 
@@ -206,6 +227,7 @@ class InstrumentEngine(
      * loading state. A newer load supersedes this one (the stale result is closed, never swapped in).
      */
     suspend fun loadInstrument(key: InstrumentKey, bank: File, program: Int = key.gmProgram): Boolean {
+        arp.stop()                                      // the arp's voice is about to reload
         val gen: Int
         synchronized(lock) { gen = ++loadGeneration }
         _state.update { it.copy(isLoadingInstrument = true, loadError = null) }
@@ -243,9 +265,12 @@ class InstrumentEngine(
     // ---- on-screen keys / MIDI (calling thread; no dispatcher hop)
 
     fun noteOn(note: Int, velocity: Int = 96) {
+        // Arp PROGRAM mode: keys SELECT notes and never fall through — programming writes NOTHING to any score.
+        if (arp.consumeKeyOn(note, velocity)) return
         val n = nanoClock()
         // Live capture BEFORE the audible guard: a free-play staff fills even with no instrument loaded.
-        eventLog.liveOn(note, velocity, n)
+        // While an overdub is armed the note belongs to the NEW staff ONLY (never both).
+        if (overdub.isActive) overdub.capture.on(note, velocity, n) else eventLog.liveOn(note, velocity, n)
         ensurePump()
         val v = primary ?: return
         ensureRunning()
@@ -255,8 +280,11 @@ class InstrumentEngine(
     }
 
     fun noteOff(note: Int) {
+        if (arp.consumeKeyOff()) return                  // program mode consumed the matching noteOn
         val n = nanoClock()
+        // liveOff stays unconditional: it closes a note pressed BEFORE the overdub armed so it never dangles.
         eventLog.liveOff(note, n)
+        if (overdub.isActive) overdub.capture.off(note, n)
         lastActivityNanos = n
         primary?.noteOff(note.coerceIn(0, 127))
         eventLog.noteOff(note, n)
@@ -275,6 +303,36 @@ class InstrumentEngine(
     }
 
     fun clearLive() { eventLog.clearLive(); _state.update { it.copy(liveEvents = emptyList(), liveCaptureFull = false) } }
+
+    // ---- arpeggiator strikes (the SAME write path a hand key takes)
+
+    /** One arp step ONSET: capture into the overdub staff while a pass is armed, else the live staff — NEVER both — then sound + highlight. */
+    private fun strikeArpOn(note: Int) {
+        val n = note.coerceIn(0, 127)
+        val t = nanoClock()
+        if (overdub.isActive) overdub.capture.on(n, ArpeggiatorEngine.VELOCITY, t) else eventLog.liveOn(n, ArpeggiatorEngine.VELOCITY, t)
+        lastActivityNanos = t; ensurePump()
+        val v = primary ?: return
+        ensureRunning()
+        v.noteOn(n, ArpeggiatorEngine.VELOCITY)
+        eventLog.noteOn(n, ArpeggiatorEngine.VELOCITY, nanoClock())
+    }
+
+    /** One arp step GATE-OFF: liveOff is unconditional (self-guards), the overdub close is gated on the armed pass. */
+    private fun strikeArpOff(note: Int) {
+        val n = note.coerceIn(0, 127)
+        val t = nanoClock()
+        eventLog.liveOff(n, t)
+        if (overdub.isActive) overdub.capture.off(n, t)
+        primary?.noteOff(n)
+        eventLog.noteOff(n, nanoClock())
+    }
+
+    /** Arp transport play at [bpm]. Outside an overdub the replay is stopped (old exclusivity); during one the replay IS the backing. */
+    fun startArp(bpm: Double): Boolean {
+        if (primary == null) return false
+        return arp.start(bpm) { if (!overdub.isActive) stopReplay() }
+    }
 
     // ---- click
 
@@ -365,7 +423,7 @@ class InstrumentEngine(
      * Replay [events] through the loaded synth from [fromMs], scheduled against the monotonic clock. [staffs]
      * adds extra voices (each its own bank/preset) for a multi-staff take. Stopping parks the position.
      */
-    fun replay(events: List<StudioNoteEvent>, fromMs: Int = 0, extraStaffs: List<Pair<SynthVoice, List<StudioNoteEvent>>> = emptyList()): Boolean {
+    fun replay(events: List<StudioNoteEvent>, fromMs: Int = 0, extraStaffs: List<Pair<SynthVoice, List<StudioNoteEvent>>> = emptyList(), loopRegion: Pair<Int, Int>? = null): Boolean {
         if (primary == null || _state.value.isRecordingTake) return false
         stopReplay()
         val all = ArrayList<Pair<SynthVoice?, List<NoteAction>>>()
@@ -375,6 +433,7 @@ class InstrumentEngine(
         synchronized(lock) { backing = extraStaffs.map { it.first } }
         ensureRunning()
         replayFromMs = fromMs; parkedMs = null
+        replayLoop = loopRegion?.takeIf { it.second > it.first }
         replayAnchorNanos = nanoClock()
         _state.update { it.copy(isReplaying = true) }
         val endMs = max(events.maxOfOrNull { max(it.onMs, it.offMs) } ?: 0, extraStaffs.maxOfOrNull { s -> s.second.maxOfOrNull { it.offMs } ?: 0 } ?: 0)
@@ -382,14 +441,27 @@ class InstrumentEngine(
         replayJob = scope.launch {
             val merged = all.flatMap { (v, acts) -> acts.map { v to it } }
                 .sortedWith(compareBy<Pair<SynthVoice?, NoteAction>>({ it.second.ms }, { it.second.on }))
-            for ((v, a) in merged) {
-                val dueNanos = anchor + (a.ms - fromMs).toLong() * 1_000_000L
-                val wait = (dueNanos - nanoClock()) / 1_000_000L
+            val loop = replayLoop
+            var iter = 0L
+            while (true) {
+                // A looping backing (overdub with Loop on) repeats [start, end): iteration i is anchored one region-length later.
+                val iterOffsetNanos = if (loop != null) iter * (loop.second - loop.first).toLong() * 1_000_000L else 0L
+                for ((v, a) in merged) {
+                    val dueNanos = anchor + iterOffsetNanos + (a.ms - fromMs).toLong() * 1_000_000L
+                    val wait = (dueNanos - nanoClock()) / 1_000_000L
+                    if (wait > 0) delay(wait)
+                    lastActivityNanos = nanoClock()
+                    val voice = v ?: primary ?: continue
+                    if (a.on) { voice.noteOn(a.note.coerceIn(0, 127), a.velocity.coerceIn(1, 127)); eventLog.noteOn(a.note, a.velocity, nanoClock()) }
+                    else { voice.noteOff(a.note.coerceIn(0, 127)); eventLog.noteOff(a.note, nanoClock()) }
+                }
+                if (loop == null) break
+                val wrapAt = anchor + (iter + 1) * (loop.second - loop.first).toLong() * 1_000_000L
+                val wait = (wrapAt - nanoClock()) / 1_000_000L
                 if (wait > 0) delay(wait)
-                lastActivityNanos = nanoClock()
-                val voice = v ?: primary ?: continue
-                if (a.on) { voice.noteOn(a.note.coerceIn(0, 127), a.velocity.coerceIn(1, 127)); eventLog.noteOn(a.note, a.velocity, nanoClock()) }
-                else { voice.noteOff(a.note.coerceIn(0, 127)); eventLog.noteOff(a.note, nanoClock()) }
+                primary?.allOff(); extraStaffs.forEach { it.first.allOff() }   // a note held across the wrap closes AT the boundary
+                iter++
+                kotlinx.coroutines.yield()
             }
             // let the last release ring a moment, then finish
             delay(300)
@@ -401,7 +473,7 @@ class InstrumentEngine(
 
     /** Current replay position on the score clock, or the parked position, or null. */
     fun replayPositionMs(): Int? {
-        if (_state.value.isReplaying) return replayFromMs + ((nanoClock() - replayAnchorNanos) / 1_000_000L).toInt()
+        if (_state.value.isReplaying) return OverdubMath.wrapIntoLoop(replayFromMs + ((nanoClock() - replayAnchorNanos) / 1_000_000L).toInt(), replayLoop)
         return parkedMs
     }
 
@@ -418,6 +490,7 @@ class InstrumentEngine(
         extra.forEach { it.allOff(); retire(it) }    // the engine owns replay voices once handed to replay()
         eventLog.clearHighlights()
         parkedMs = parkAtMs
+        replayLoop = null
         replayJob = null
         _state.update { it.copy(isReplaying = false) }
     }
@@ -425,6 +498,8 @@ class InstrumentEngine(
     // ---- teardown
 
     fun release() {
+        arp.stop()
+        overdub.stop()
         stopReplay()
         click.stop()
         pump?.cancel(); pump = null
