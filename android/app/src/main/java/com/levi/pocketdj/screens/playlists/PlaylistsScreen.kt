@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.SwapVert
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,6 +56,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.screens.collections.RemoveDuplicatesResultAlert
 import com.levi.pocketdj.data.catalog.SourcePlaylist
 import com.levi.pocketdj.data.collections.CollectionSortOrder
 import com.levi.pocketdj.data.collections.CollectionSortable
@@ -118,6 +120,8 @@ fun PlaylistsScreen(
     var deleteItem by remember { mutableStateOf<RowRef?>(null) }
     var moveItem by remember { mutableStateOf<RowRef?>(null) }
     var addPocketToPlaylist by remember { mutableStateOf<RowRef?>(null) }
+    var dedupeConfirm by remember { mutableStateOf(false) }
+    var dedupeResult by remember { mutableStateOf<Int?>(null) }
 
     Column(modifier = modifier.fillMaxSize()) {
         // Mode tabs + toolbar (§2.1, §2.5 — import deferred §13).
@@ -152,6 +156,11 @@ fun PlaylistsScreen(
                         },
                     )
                 }
+                HorizontalDivider()
+                DropdownMenuItem(
+                    text = { Text("Remove duplicates in all collections…") },
+                    onClick = { dismiss(); dedupeConfirm = true },
+                )
             }
             IconButton(onClick = { createDialog = CreateKind.FOLDER }) {
                 Icon(Icons.Filled.CreateNewFolder, contentDescription = "New folder")
@@ -313,6 +322,21 @@ fun PlaylistsScreen(
             },
         )
     }
+
+    if (dedupeConfirm) {
+        ConfirmDialog(
+            title = "Remove duplicates in all collections?",
+            text = "Collapses the same song on the same album listed twice in any pocket or " +
+                "playlist, keeping the copy that streams from Apple Music.",
+            confirmLabel = "Remove",
+            onDismiss = { dedupeConfirm = false },
+            onConfirm = {
+                dedupeConfirm = false
+                dedupeResult = store.removeDuplicatesEverywhere()
+            },
+        )
+    }
+    RemoveDuplicatesResultAlert(dedupeResult) { dedupeResult = null }
 
     addPocketToPlaylist?.let { ref ->
         // Pocket ▸ "Add to playlist…" — inserts a pocket-REF node into the

@@ -36,6 +36,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.screens.collections.RemoveDuplicatesResultAlert
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.PocketNote
 import com.levi.pocketdj.data.rips.PlayResolver
@@ -77,6 +78,7 @@ fun PocketDetailScreen(
     var detailSongId by remember { mutableStateOf<String?>(null) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
+    var dedupeResult by remember { mutableStateOf<Int?>(null) }
     var addNoteOpen by remember { mutableStateOf(false) }
     var editNote by remember { mutableStateOf<PocketNote?>(null) }
 
@@ -128,6 +130,10 @@ fun PocketDetailScreen(
                         DropdownMenuItem(
                             text = { Text("Rename…") },
                             onClick = { dismiss(); renameOpen = true },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Remove duplicates") },
+                            onClick = { dismiss(); dedupeResult = store.removeDuplicatesInPocket(pocketId) },
                         )
                         DropdownMenuItem(
                             text = { Text("Delete pocket") },
@@ -407,6 +413,7 @@ fun PocketDetailScreen(
         )
     }
 
+    RemoveDuplicatesResultAlert(dedupeResult) { dedupeResult = null }
     if (deleteOpen) {
         ConfirmDialog(
             title = "Delete this pocket?",
