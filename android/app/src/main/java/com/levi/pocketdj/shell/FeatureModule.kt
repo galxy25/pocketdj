@@ -84,8 +84,14 @@ fun interface ResetHook {
 data class SyncEntry(
     val key: String,
     val fileName: String,
-    /** Called after a pull rewrote [fileName] on disk (iOS `register(..) { reloadFromDisk() }` clobber guard). */
-    val onPulled: (() -> Unit)? = null,
+    /** Called after a pull rewrote [fileName] on disk (iOS `register(..) { reloadFromDisk() }` clobber guard).
+     * Return `true` when the reload merged and re-saved the file (the store's `reloadFromDisk(): Boolean`). */
+    val onPulled: (() -> Any?)? = null,
+    /**
+     * OPTIONAL write seam for the pulled bytes, for a store whose own writer runs off-thread (so the
+     * pull is ordered against queued stragglers). MUST write the payload to the file synchronously.
+     */
+    val applyPayload: ((ByteArray) -> Unit)? = null,
 )
 
 /** Resolves an item id with a given prefix (e.g. `amrec_`, `perf:`) to a displayable row. */
