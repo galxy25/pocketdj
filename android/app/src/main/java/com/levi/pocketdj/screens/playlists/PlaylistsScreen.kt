@@ -120,8 +120,8 @@ fun PlaylistsScreen(
     var deleteItem by remember { mutableStateOf<RowRef?>(null) }
     var moveItem by remember { mutableStateOf<RowRef?>(null) }
     var addPocketToPlaylist by remember { mutableStateOf<RowRef?>(null) }
-    var dedupeConfirm by remember { mutableStateOf(false) }
-    var dedupeResult by remember { mutableStateOf<Int?>(null) }
+    var dedupeConfirm by rememberSaveable { mutableStateOf(false) }
+    var dedupeResult by rememberSaveable { mutableStateOf<Int?>(null) }
 
     Column(modifier = modifier.fillMaxSize()) {
         // Mode tabs + toolbar (§2.1, §2.5 — import deferred §13).

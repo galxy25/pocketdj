@@ -23,7 +23,26 @@ object SongDuplicateJudge {
 
     private val quoteStrip = Regex("[’'\"“”\\[\\]{}]")
     private val ws = Regex("\\s+")
-    private val combiningMarks = Regex("\\p{Mn}+")
+    // Only true diacritics (Foundation .diacriticInsensitive): NOT every Mn, so Japanese
+    // dakuten and Indic vowel signs survive.
+    private val combiningMarks = Regex("[\\u0300-\\u036F\\u1AB0-\\u1AFF\\u1DC0-\\u1DFF\\u20D0-\\u20FF\\uFE20-\\uFE2F]+")
+
+    /** CharacterSet.alphanumerics analogue: any L*, M*, N* code point. */
+    private fun isAlnum(cp: Int): Boolean = when (Character.getType(cp).toByte()) {
+        Character.UPPERCASE_LETTER, Character.LOWERCASE_LETTER, Character.TITLECASE_LETTER,
+        Character.MODIFIER_LETTER, Character.OTHER_LETTER,
+        Character.NON_SPACING_MARK, Character.ENCLOSING_MARK, Character.COMBINING_SPACING_MARK,
+        Character.DECIMAL_DIGIT_NUMBER, Character.LETTER_NUMBER, Character.OTHER_NUMBER -> true
+        else -> false
+    }
+
+    private fun keepAlnum(s: String, allowSpace: Boolean): String {
+        val sb = StringBuilder()
+        s.codePoints().forEach { cp ->
+            if (isAlnum(cp) || (allowSpace && Character.isWhitespace(cp))) sb.appendCodePoint(cp)
+        }
+        return sb.toString()
+    }
 
     /** casefold + diacritic fold, quotes/brackets stripped, whitespace collapsed. Parens stay. */
     fun normalized(s: String): String =
@@ -62,7 +81,7 @@ object SongDuplicateJudge {
     /** `normalized` minus everything that isn't a letter, digit or space. Unicode-aware. */
     fun loose(s: String): String =
         normalized(s)
-            .filter { it.isLetterOrDigit() || it.isWhitespace() }
+            .let { keepAlnum(it, true) }
             .replace(ws, " ")
             .trim()
 
@@ -71,7 +90,7 @@ object SongDuplicateJudge {
 
     private fun tokens(s: String, sep: Regex): Set<String> =
         normalized(s).replace(sep, "\u0001").split('\u0001')
-            .map { part -> part.filter { it.isLetterOrDigit() } }
+            .map { part -> keepAlnum(part, false) }
             .filter { it.isNotEmpty() }
             .toSet()
 

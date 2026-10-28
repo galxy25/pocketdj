@@ -106,4 +106,19 @@ class SongDuplicateJudgeTest {
         val table = mapOf("a" to id("X", "A", "Alb"))
         assertTrue(J.collapsePlan(listOf("a", "a"), table::get).isEmpty)
     }
+
+    @Test fun romanNumeralsAreDistinct() {
+        assertFalse(J.isDuplicate(id("Suite \u2161", "Band", "LP"), id("Suite \u2162", "Band", "LP")))
+        assertNotEquals(J.loose("Part \u2161"), J.loose("Part \u2162"))
+    }
+
+    @Test fun devanagariVowelSignsAreDistinct() {
+        assertFalse(J.isDuplicate(id("\u0915\u093F\u0924\u093E\u092C", "A", "LP"), id("\u0915\u0924\u093E\u092C", "A", "LP")))
+    }
+
+    @Test fun dakutenIsKept() {
+        assertFalse(J.isDuplicate(id("\u304C", "A", "LP"), id("\u304B", "A", "LP")))
+        assertFalse(J.isExactDuplicate("\u304C", "A", "\u304B", "A"))
+        assertTrue(J.isExactDuplicate("Caf\u00E9", "A", "Cafe", "A"))
+    }
 }

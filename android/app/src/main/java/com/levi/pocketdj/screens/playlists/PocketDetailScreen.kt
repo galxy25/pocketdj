@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.playlists
 
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
@@ -78,7 +79,7 @@ fun PocketDetailScreen(
     var detailSongId by remember { mutableStateOf<String?>(null) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
-    var dedupeResult by remember { mutableStateOf<Int?>(null) }
+    var dedupeResult by rememberSaveable { mutableStateOf<Int?>(null) }
     var addNoteOpen by remember { mutableStateOf(false) }
     var editNote by remember { mutableStateOf<PocketNote?>(null) }
 
