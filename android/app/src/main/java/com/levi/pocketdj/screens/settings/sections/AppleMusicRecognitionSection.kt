@@ -28,10 +28,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.applemusic.MusicKitAuth
 import com.levi.pocketdj.di.AppGraph
-import com.levi.pocketdj.screens.shazam.AppleMusicAlbumRef
+import com.levi.pocketdj.data.burns.BurnState
+import com.levi.pocketdj.screens.shazam.RecognitionAddState
 import com.levi.pocketdj.screens.shazam.AppleMusicRecognition
 import com.levi.pocketdj.screens.shazam.AppleMusicRecognitionAction
-import com.levi.pocketdj.screens.shazam.AppleMusicResolution
+import com.levi.pocketdj.data.applemusic.AppleMusicResolution
 import com.levi.pocketdj.screens.shazam.ShazamHitInfo
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -60,27 +61,35 @@ fun AppleMusicRecognitionSection(
     val port = remember { graph.browseGraph.appleMusicRecognition }
     val scope = rememberCoroutineScope()
     val catalogState by graph.catalogRepository.state.collectAsState()
-    val manifest by graph.ripsRepository.manifest.collectAsState()
+    val burnItems by graph.servicesGraph.burnStore.items.collectAsState()
+    val adds by graph.browseGraph.recognitionAdds.states.collectAsState()
     val jobs by graph.ripJobTracker.jobs.collectAsState()
 
-    var linked by remember { mutableStateOf(false) }
+    // null = not yet known: show "Checking…" rather than flashing Connect for a signed-in user.
+    var linked by remember { mutableStateOf<Boolean?>(null) }
     var resolving by remember { mutableStateOf(true) }
     var resolution by remember { mutableStateOf<AppleMusicResolution?>(null) }
-    var adding by remember { mutableStateOf(false) }
-    var added by remember { mutableStateOf(false) }
-    var burnSongId by remember { mutableStateOf<String?>(null) }
     var errorText by remember { mutableStateOf<String?>(null) }
     var signingIn by remember { mutableStateOf(false) }
 
     suspend fun resolve() {
-        linked = port.canContribute()
-        if (!linked) { resolution = null; resolving = false; return }
+        val isLinked = port.canContribute()
+        linked = isLinked
+        if (!isLinked) { resolution = null; resolving = false; return }
         resolving = true
         resolution = port.resolve(info.appleMusicId, info.title, info.artist)
         resolving = false
     }
 
     LaunchedEffect(info) { resolve() }
+
+    // The add/rip/burn runs on the app scope; this is only its view. Keyed by the resolved store id.
+    val addKey = resolution?.songStoreId ?: info.appleMusicId
+    val addState = addKey?.let { adds[it] } ?: RecognitionAddState()
+    val added = addState.added
+    val adding = addState.adding
+    // A finished add flips the library probe; re-resolve once.
+    LaunchedEffect(added) { if (added) resolve() }
 
     val authLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         scope.launch {
@@ -94,8 +103,8 @@ fun AppleMusicRecognitionSection(
         catalog?.albumsById?.values?.let { AppleMusicRecognition.indexAlbum(ref, it)?.id }
     }
     val action = AppleMusicRecognition.action(
-        available = port.available, canContribute = linked, canAdd = port.canAdd,
-        resolving = if (adding) false else resolving, resolution = resolution, indexAlbumId = indexAlbumId,
+        available = port.available, canContribute = linked == true, canAdd = port.canAdd,
+        resolving = if (adding) false else (linked == null || resolving), resolution = resolution, indexAlbumId = indexAlbumId,
     )
     if (action is AppleMusicRecognitionAction.Unavailable || action is AppleMusicRecognitionAction.NotFound) return
 
@@ -106,14 +115,17 @@ fun AppleMusicRecognitionSection(
 
     @Composable
     fun BurnStatus() {
-        val id = burnSongId ?: return
+        val id = addState.burnSongId ?: return
         val job = jobs[id]
+        val item = burnItems[id]
         when {
-            manifest.containsKey(id) -> Text("Saved to device", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            item?.state == BurnState.READY -> Text("Saved to device", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            addState.burnError != null -> Text(addState.burnError, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             job?.phase == "error" -> Text(job.error ?: job.message ?: "Couldn’t prepare a copy", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-            job != null -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            item?.state == BurnState.ERROR -> Text("Couldn’t save to this device", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+            else -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
-                Text(recognitionPhaseLabel(job.phase), style = MaterialTheme.typography.bodySmall)
+                Text(recognitionPhaseLabel(job?.phase), style = MaterialTheme.typography.bodySmall)
             }
         }
     }
@@ -125,7 +137,8 @@ fun AppleMusicRecognitionSection(
         HorizontalDivider()
         Text("Apple Music", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         when (action) {
-            AppleMusicRecognitionAction.Connect -> TextButton(
+            AppleMusicRecognitionAction.Connect -> Column {
+              TextButton(
                 enabled = !signingIn,
                 onClick = {
                     scope.launch {
@@ -139,7 +152,9 @@ fun AppleMusicRecognitionSection(
                         }
                     }
                 },
-            ) { Text(if (signingIn) "Connecting…" else "Connect Apple Music") }
+              ) { Text(if (signingIn) "Connecting…" else "Connect Apple Music") }
+              errorText?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+            }
 
             AppleMusicRecognitionAction.Checking -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
@@ -174,32 +189,13 @@ fun AppleMusicRecognitionSection(
                     TextButton(
                         enabled = !adding,
                         onClick = {
-                            adding = true; errorText = null
-                            scope.launch {
-                                try {
-                                    if (port.addSongToLibrary(action.storeId)) {
-                                        added = true
-                                        val catalogId = catalog?.songsById?.values?.let {
-                                            AppleMusicRecognition.indexSong(action.storeId, action.title, action.artist, it)?.id
-                                        }
-                                        val id = AppleMusicRecognition.burnSongId(catalogId, action.storeId)
-                                        burnSongId = id
-                                        port.startRipAndBurn(id, action.title, action.artist, action.storeId)
-                                        resolve()
-                                    } else {
-                                        errorText = "Couldn’t add to Apple Music"
-                                    }
-                                } catch (e: CancellationException) {
-                                    throw e
-                                } catch (e: Throwable) {
-                                    errorText = e.message ?: "Couldn’t add to Apple Music"
-                                } finally {
-                                    adding = false
-                                }
+                            val catalogId = catalog?.songsById?.values?.let {
+                                AppleMusicRecognition.indexSong(action.storeId, action.title, action.artist, it)?.id
                             }
+                            graph.browseGraph.recognitionAdds.add(action.storeId, action.title, action.artist, catalogId)
                         },
                     ) { Text(if (adding) "Adding…" else "Add to Apple Music") }
-                    errorText?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
+                    (addState.addError ?: errorText)?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error) }
                 }
                 BurnStatus()
             }

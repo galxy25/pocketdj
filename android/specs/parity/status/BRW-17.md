@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # BRW-17 - '?♪?' recognizer + Apple Music actions
 
@@ -20,3 +20,18 @@ state: implemented
 
 ## Questions for Levi
 - Can you supply shazamkit-android.aar (+ developer token setup) so the live backend can be wired?
+
+## Review
+- MAJOR BrowseGraph add never burns -> fixed: port.startRipAndBurn registers BurnStore.burnWhenRipped first, drains immediately when already ripped / requestRip isReady (manifest refreshed), else tracker onRipReady drains. "Saved to device" now driven by BurnStore item READY, not the rips manifest; ready-but-unburned no longer spins forever. Tests: RecognitionAddControllerTest.
+- MAJOR Denied never recovers -> fixed: tap() re-checks MicPermission.isGrantedNow() before OPEN_SETTINGS; ON_RESUME observer clears Denied. Test: deniedThenGrantedInSettingsRecoversOnTap.
+- MAJOR backend unavailable still prompts for mic -> fixed: RecognitionBackend.isAvailable; recognizer fails before the permission prompt; Browse hides the button while unavailable. Package stays PARTIAL (AAR still not vendored). Test: unavailableBackendFailsBeforeAskingForTheMic.
+- MINOR add/rip tied to sheet scope + swallowed errors -> fixed: app-scoped RecognitionAddController (BrowseGraph.recognitionAdds) with per-song add/burn error state; no-server and request failures shown under "Added".
+- MINOR linked flash / Connect errors silent -> fixed: linked is nullable (Checking until known); errorText rendered in Connect branch.
+- MINOR row on Discover / right-aligned -> fixed: gated `!discover && !online`, centered.
+- MINOR ShakeIfDenied -> fixed (one-shot Animatable shake on Denied). Per-phase glyph animations remain unported (cosmetic).
+- MINOR AppleMusicApi layering / hard-coded 'us' -> fixed: DTOs + parsers moved to data/applemusic/AppleMusicRecognitionModels.kt (norm-based library matching stays in screens via libraryRowsContain); port resolves the user's storefront once via userStorefront() (cached, falls back to us).
+- NIT test file split -> fixed: ShazamRecognizerTest.kt separate.
+
+Tests: 4899 -> 4908 (0 failures); assembleDebug green.
+
+fixes applied

@@ -2,33 +2,10 @@ package com.levi.pocketdj.screens.shazam
 
 import com.levi.pocketdj.data.catalog.IndexAlbum
 import com.levi.pocketdj.data.catalog.IndexSong
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.contentOrNull
-
-/** A flattened Apple Music album reference (iOS AppleMusicAlbumRef). */
-data class AppleMusicAlbumRef(
-    val storeId: String,
-    val title: String,
-    val artist: String,
-    val year: Int? = null,
-    val artworkUrl: String? = null,
-    /** music.apple.com deep link. */
-    val url: String? = null,
-)
-
-/** A recognized track resolved against Apple Music (iOS AppleMusicResolution). */
-data class AppleMusicResolution(
-    val songStoreId: String,
-    val title: String,
-    val artist: String,
-    val inLibrary: Boolean,
-    val album: AppleMusicAlbumRef?,
-    val songUrl: String? = null,
-)
+import com.levi.pocketdj.data.applemusic.AppleMusicAlbumRef
+import com.levi.pocketdj.data.applemusic.AppleMusicResolution
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 
 /** What the Apple Music block of the result sheet offers (iOS AppleMusicRecognitionAction). */
 sealed interface AppleMusicRecognitionAction {
@@ -111,74 +88,76 @@ interface AppleMusicRecognitionPort {
     suspend fun resolve(storeId: String?, title: String?, artist: String?): AppleMusicResolution?
     /** Saves the song to the user's own Apple Music library; false = rejected. */
     suspend fun addSongToLibrary(storeId: String): Boolean
-    /** Asks the rip server to prepare + burn [songId]; the tracker reports progress. */
-    suspend fun startRipAndBurn(songId: String, title: String, artist: String, storeId: String)
+    /**
+     * Registers a burn-when-ripped intent for [songId], asks the rip server to prepare it and (once
+     * ready) burns it to this device (iOS BurnStore.startRipAndBurn). Throws when the request fails.
+     */
+    suspend fun startRipAndBurn(songId: String, title: String, artist: String, storeId: String): RipStart
 }
 
-/** Lenient parsers for the two Web-API payloads the resolver reads (pure, JVM-tested). */
-object AppleMusicRecognitionParsing {
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+enum class RipStart { REQUESTED, NO_SERVER }
 
-    private fun JsonElement?.obj() = this as? JsonObject
-    private fun JsonElement?.arr() = this as? JsonArray
-    private fun JsonElement?.str() = (this as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+/** Per-recognized-song add/burn progress (survives the result sheet being dismissed). */
+data class RecognitionAddState(
+    val adding: Boolean = false,
+    val added: Boolean = false,
+    val burnSongId: String? = null,
+    val addError: String? = null,
+    val burnError: String? = null,
+)
 
-    private fun albumRef(row: JsonElement?): AppleMusicAlbumRef? {
-        val o = row.obj() ?: return null
-        val id = o["id"].str() ?: return null
-        val a = o["attributes"].obj()
-        val year = a?.get("releaseDate").str()?.take(4)?.toIntOrNull()
-        return AppleMusicAlbumRef(
-            storeId = id,
-            title = a?.get("name").str().orEmpty(),
-            artist = a?.get("artistName").str().orEmpty(),
-            year = year,
-            artworkUrl = a?.get("artwork").obj()?.get("url").str()?.replace("{w}", "300")?.replace("{h}", "300"),
-            url = a?.get("url").str(),
-        )
-    }
+/**
+ * App-scoped add -> rip -> burn orchestration (iOS keeps this store-owned so dismissing the sheet
+ * never cancels it). [scope] must outlive the UI.
+ */
+class RecognitionAddController(
+    private val scope: kotlinx.coroutines.CoroutineScope,
+    private val port: AppleMusicRecognitionPort,
+) {
+    private val _states = kotlinx.coroutines.flow.MutableStateFlow<Map<String, RecognitionAddState>>(emptyMap())
+    val states: kotlinx.coroutines.flow.StateFlow<Map<String, RecognitionAddState>> = _states
 
-    /** `GET /v1/catalog/{sf}/songs/{id}?include=albums` or a search top result -> (song, first album). */
-    fun parseCatalogSong(body: String): AppleMusicResolution? {
-        val root = runCatching { json.parseToJsonElement(body).obj() }.getOrNull() ?: return null
-        val row = root["data"].arr()?.firstOrNull().obj() ?: return null
-        return resolutionOf(row, inLibrary = false)
-    }
+    private fun patch(storeId: String, f: (RecognitionAddState) -> RecognitionAddState) =
+        _states.update { it + (storeId to f(it[storeId] ?: RecognitionAddState())) }
 
-    /** Catalog `search?types=songs` body -> first song. */
-    fun parseSearchTopSong(body: String): AppleMusicResolution? {
-        val root = runCatching { json.parseToJsonElement(body).obj() }.getOrNull() ?: return null
-        val row = root["results"].obj()?.get("songs").obj()?.get("data").arr()?.firstOrNull().obj() ?: return null
-        return resolutionOf(row, inLibrary = false)
-    }
-
-    private fun resolutionOf(row: JsonObject, inLibrary: Boolean): AppleMusicResolution? {
-        val id = row["id"].str() ?: return null
-        val a = row["attributes"].obj()
-        val album = row["relationships"].obj()?.get("albums").obj()?.get("data").arr()?.firstOrNull()?.let(::albumRef)
-        return AppleMusicResolution(
-            songStoreId = id,
-            title = a?.get("name").str().orEmpty(),
-            artist = a?.get("artistName").str().orEmpty(),
-            inLibrary = inLibrary,
-            album = album,
-            songUrl = a?.get("url").str(),
-        )
-    }
-
-    /**
-     * `GET /v1/me/library/search?types=library-songs` body: true when a library song matches the
-     * resolved title + compatible artist (the iOS isInLibrary probe).
-     */
-    fun libraryContains(body: String, title: String, artist: String): Boolean {
-        val root = runCatching { json.parseToJsonElement(body).obj() }.getOrNull() ?: return false
-        val rows = root["results"].obj()?.get("library-songs").obj()?.get("data").arr() ?: return false
-        val nt = ShazamCatalogMatch.norm(title)
-        val na = ShazamCatalogMatch.norm(artist)
-        return rows.any { r ->
-            val a = r.obj()?.get("attributes").obj() ?: return@any false
-            ShazamCatalogMatch.norm(a["name"].str().orEmpty()) == nt &&
-                (na.isEmpty() || ShazamCatalogMatch.artistsCompatible(ShazamCatalogMatch.norm(a["artistName"].str().orEmpty()), na))
+    /** [catalogSongId] is the indexed id when the track is already in the catalog. */
+    fun add(storeId: String, title: String, artist: String, catalogSongId: String?): kotlinx.coroutines.Job? {
+        val cur = _states.value[storeId]
+        if (cur != null && (cur.adding || cur.added)) return null // latch: never invite a duplicate add
+        patch(storeId) { RecognitionAddState(adding = true) }
+        return scope.launch {
+            try {
+                if (!port.addSongToLibrary(storeId)) {
+                    patch(storeId) { it.copy(addError = "Couldn’t add to Apple Music") }
+                    return@launch
+                }
+                val id = AppleMusicRecognition.burnSongId(catalogSongId, storeId)
+                patch(storeId) { it.copy(added = true, burnSongId = id) }
+                try {
+                    if (port.startRipAndBurn(id, title, artist, storeId) == RipStart.NO_SERVER) {
+                        patch(storeId) { it.copy(burnError = "No rip server — can’t download a copy to this device") }
+                    }
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Throwable) {
+                    patch(storeId) { it.copy(burnError = e.message ?: "Couldn’t request a copy for this device") }
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                patch(storeId) { it.copy(addError = e.message ?: "Couldn’t add to Apple Music") }
+            } finally {
+                patch(storeId) { it.copy(adding = false) }
+            }
         }
+    }
+}
+
+/** Title + compatible artist match of Web-API library rows (the iOS isInLibrary probe). */
+fun libraryRowsContain(rows: List<Pair<String, String>>, title: String, artist: String): Boolean {
+    val nt = ShazamCatalogMatch.norm(title)
+    val na = ShazamCatalogMatch.norm(artist)
+    return rows.any { (n, a) ->
+        ShazamCatalogMatch.norm(n) == nt && (na.isEmpty() || ShazamCatalogMatch.artistsCompatible(ShazamCatalogMatch.norm(a), na))
     }
 }

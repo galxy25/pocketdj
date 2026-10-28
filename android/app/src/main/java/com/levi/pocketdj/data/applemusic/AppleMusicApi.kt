@@ -125,11 +125,11 @@ class AppleMusicApi(
     suspend fun recognizedSong(
         songId: String,
         storefront: String = defaultStorefront,
-    ): AmResult<com.levi.pocketdj.screens.shazam.AppleMusicResolution> {
+    ): AmResult<AppleMusicResolution> {
         if (songId.isBlank()) return AmResult.Failure(null, "Empty song id")
         val url = url("v1", "catalog", storefront, "songs", songId) { addQueryParameter("include", "albums") }
         return call(get(url), userScoped = false) {
-            com.levi.pocketdj.screens.shazam.AppleMusicRecognitionParsing.parseCatalogSong(it)
+            AppleMusicRecognitionParsing.parseCatalogSong(it)
         }
     }
 
@@ -137,7 +137,7 @@ class AppleMusicApi(
     suspend fun recognizedSongSearch(
         term: String,
         storefront: String = defaultStorefront,
-    ): AmResult<com.levi.pocketdj.screens.shazam.AppleMusicResolution> {
+    ): AmResult<AppleMusicResolution> {
         if (term.isBlank()) return AmResult.Failure(null, "Empty search term")
         val url = url("v1", "catalog", storefront, "search") {
             addQueryParameter("types", "songs")
@@ -146,20 +146,20 @@ class AppleMusicApi(
             addQueryParameter("include[songs]", "albums")
         }
         return call(get(url), userScoped = false) {
-            com.levi.pocketdj.screens.shazam.AppleMusicRecognitionParsing.parseSearchTopSong(it)
+            AppleMusicRecognitionParsing.parseSearchTopSong(it)
         }
     }
 
     /** `GET /v1/me/library/search?types=library-songs`: does the user's library hold title/artist? */
-    suspend fun librarySongsContain(term: String, title: String, artist: String): AmResult<Boolean> {
-        if (term.isBlank()) return AmResult.Ok(false)
+    suspend fun librarySongRows(term: String): AmResult<List<Pair<String, String>>> {
+        if (term.isBlank()) return AmResult.Ok(emptyList())
         val url = url("v1", "me", "library", "search") {
             addQueryParameter("types", "library-songs")
             addQueryParameter("term", term)
             addQueryParameter("limit", "25")
         }
         return call(get(url), userScoped = true) {
-            com.levi.pocketdj.screens.shazam.AppleMusicRecognitionParsing.libraryContains(it, title, artist)
+            AppleMusicRecognitionParsing.libraryRows(it)
         }
     }
 

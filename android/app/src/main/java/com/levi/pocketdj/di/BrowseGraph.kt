@@ -355,30 +355,57 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
             override suspend fun canContribute() = app.settings.current().hasAppleMusic
             override val canAdd get() = true
 
+            @Volatile private var storefront: String? = null
+            private suspend fun sf(): String {
+                storefront?.let { return it }
+                return (app.appleMusicApi.userStorefront().okOrNull() ?: "us").also { storefront = it }
+            }
+
             override suspend fun resolve(storeId: String?, title: String?, artist: String?):
-                com.levi.pocketdj.screens.shazam.AppleMusicResolution? {
+                com.levi.pocketdj.data.applemusic.AppleMusicResolution? {
                 val api = app.appleMusicApi
-                var song = if (!storeId.isNullOrBlank()) api.recognizedSong(storeId).okOrNull() else null
+                val front = sf()
+                var song = if (!storeId.isNullOrBlank()) api.recognizedSong(storeId, front).okOrNull() else null
                 if (song == null) {
                     val term = listOfNotNull(title, artist).joinToString(" ").trim()
-                    if (term.isNotEmpty()) song = api.recognizedSongSearch(term).okOrNull()
+                    if (term.isNotEmpty()) song = api.recognizedSongSearch(term, front).okOrNull()
                 }
                 song ?: return null
-                val inLib = api.librarySongsContain("${song.title} ${song.artist}".trim(), song.title, song.artist).okOrNull() ?: false
-                return song.copy(inLibrary = inLib)
+                val rows = api.librarySongRows("${song.title} ${song.artist}".trim()).okOrNull().orEmpty()
+                return song.copy(inLibrary = com.levi.pocketdj.screens.shazam.libraryRowsContain(rows, song.title, song.artist))
             }
 
             override suspend fun addSongToLibrary(storeId: String) =
                 app.appleMusicApi.addToLibrary(com.levi.pocketdj.data.applemusic.AmLibraryKind.SONGS, listOf(storeId)) is
                     com.levi.pocketdj.data.applemusic.AmResult.Ok
 
-            override suspend fun startRipAndBurn(songId: String, title: String, artist: String, storeId: String) {
-                if (!app.ripServerClient.isConfigured()) return
+            override suspend fun startRipAndBurn(songId: String, title: String, artist: String, storeId: String):
+                com.levi.pocketdj.screens.shazam.RipStart {
+                if (!app.ripServerClient.isConfigured()) return com.levi.pocketdj.screens.shazam.RipStart.NO_SERVER
+                val burns = app.servicesGraph.burnStore
+                // Intent first: whichever path sees the rip land (tracker onRipReady / launch drain) finishes the burn.
+                burns.burnWhenRipped(songId, title, artist)
+                if (app.ripsRepository.entry(songId) != null) {
+                    burns.drainPendingAfterRip()
+                    return com.levi.pocketdj.screens.shazam.RipStart.REQUESTED
+                }
                 val job = app.ripServerClient.requestRip(songId, title, artist, storeId, null)
                 app.ripJobTracker.adopt(songId, job)
-                job.jobId?.takeIf { !job.isReady }?.let { app.ripJobTracker.pollToReady(songId, it) }
+                if (job.isReady) {
+                    // Already ripped server-side: the tracker will never fire, so refresh + drain here.
+                    runCatching { app.ripsRepository.refresh() }
+                    burns.drainPendingAfterRip()
+                } else {
+                    job.jobId?.let { app.ripJobTracker.pollToReady(songId, it) }
+                }
+                return com.levi.pocketdj.screens.shazam.RipStart.REQUESTED
             }
         }
+    }
+
+    /** App-scoped add -> rip -> burn driver for the recognizer sheet (survives sheet dismissal). */
+    val recognitionAdds: com.levi.pocketdj.screens.shazam.RecognitionAddController by lazy {
+        com.levi.pocketdj.screens.shazam.RecognitionAddController(app.appScope + Dispatchers.IO, appleMusicRecognition)
     }
 
     /** On-demand lyrics (memory -> disk `filesDir/lyrics-cache` -> catalog CDN). */

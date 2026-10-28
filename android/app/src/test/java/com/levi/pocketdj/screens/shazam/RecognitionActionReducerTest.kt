@@ -1,5 +1,8 @@
 package com.levi.pocketdj.screens.shazam
 
+import com.levi.pocketdj.data.applemusic.AppleMusicAlbumRef
+import com.levi.pocketdj.data.applemusic.AppleMusicRecognitionParsing
+import com.levi.pocketdj.data.applemusic.AppleMusicResolution
 import com.levi.pocketdj.data.catalog.IndexAlbum
 import com.levi.pocketdj.data.catalog.IndexSong
 import org.junit.Test
@@ -90,8 +93,8 @@ class RecognitionActionReducerTest {
         val search = """{"results":{"songs":{"data":[{"id":"s2","attributes":{"name":"S","artistName":"A"}}]}}}"""
         assertEquals("s2", AppleMusicRecognitionParsing.parseSearchTopSong(search)?.songStoreId)
         val lib = """{"results":{"library-songs":{"data":[{"id":"l.1","attributes":{"name":"Café (Remastered)","artistName":"Artist feat. X"}}]}}}"""
-        assertTrue(AppleMusicRecognitionParsing.libraryContains(lib, "Cafe", "Artist"))
-        assertFalse(AppleMusicRecognitionParsing.libraryContains(lib, "Cafe", "Someone"))
-        assertFalse(AppleMusicRecognitionParsing.libraryContains("""{"results":{}}""", "Cafe", "Artist"))
+        assertTrue(libraryRowsContain(AppleMusicRecognitionParsing.libraryRows(lib), "Cafe", "Artist"))
+        assertFalse(libraryRowsContain(AppleMusicRecognitionParsing.libraryRows(lib), "Cafe", "Someone"))
+        assertFalse(libraryRowsContain(AppleMusicRecognitionParsing.libraryRows("""{"results":{}}"""), "Cafe", "Artist"))
     }
 }

@@ -39,11 +39,17 @@ sealed interface RecognitionResult {
  */
 fun interface RecognitionBackend {
     suspend fun recognize(): RecognitionResult
+
+    /** False when this build cannot recognize at all: the UI hides the button and never asks for the mic. */
+    val isAvailable: Boolean get() = true
 }
 
 /** Asked once per tap; the UI layer owns the runtime-permission prompt. */
 fun interface MicPermission {
     suspend fun ensureGranted(): Boolean
+
+    /** Non-prompting check: the permission is held right now (e.g. granted in system Settings after a denial). */
+    fun isGrantedNow(): Boolean = false
 }
 
 /** What a button tap should do next. */
@@ -71,7 +77,11 @@ class ShazamRecognizer(
 
     fun tap(): ShazamTap = when {
         _phase.value.isActive -> { stop(); ShazamTap.CANCELLED }
-        _phase.value is ShazamPhase.Denied -> ShazamTap.OPEN_SETTINGS
+        _phase.value is ShazamPhase.Denied -> {
+            // Granted in system Settings since the denial: recover instead of bouncing to Settings again.
+            if (permission.isGrantedNow() && !blocked()) { clearDenied(); start(); ShazamTap.STARTED }
+            else ShazamTap.OPEN_SETTINGS
+        }
         blocked() -> ShazamTap.BLOCKED
         else -> { start(); ShazamTap.STARTED }
     }
@@ -79,6 +89,8 @@ class ShazamRecognizer(
     fun start() {
         if (_phase.value.isActive) { stop(); return }
         if (blocked()) return
+        // No capture backend in this build: fail before the (sensitive) mic permission prompt.
+        if (!backend.isAvailable) { _phase.value = ShazamPhase.Failed(UNAVAILABLE_MESSAGE); return }
         _phase.value = ShazamPhase.Listening
         job = scope.launch { run() }
     }
@@ -128,7 +140,9 @@ class ShazamRecognizer(
  * distributed through Apple's developer portal and is not in the repo, so until it is dropped in
  * this reports the build as unsupported. The AudioRecord + StreamingSession adapter replaces it.
  */
+const val UNAVAILABLE_MESSAGE = "Song recognition isn’t available in this build."
+
 object UnavailableRecognitionBackend : RecognitionBackend {
-    override suspend fun recognize(): RecognitionResult =
-        RecognitionResult.Error("Song recognition isn’t available in this build.")
+    override val isAvailable: Boolean get() = false
+    override suspend fun recognize(): RecognitionResult = RecognitionResult.Error(UNAVAILABLE_MESSAGE)
 }

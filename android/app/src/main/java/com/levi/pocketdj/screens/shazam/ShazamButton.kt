@@ -35,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
@@ -90,15 +91,19 @@ fun ShazamButton(
         ShazamRecognizer(
             scope = scope,
             backend = graph.browseGraph.shazamBackend,
-            permission = MicPermission {
-                if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
-                    true
-                } else {
-                    val d = CompletableDeferred<Boolean>()
-                    pending = d
-                    launcher.launch(Manifest.permission.RECORD_AUDIO)
-                    d.await()
-                }
+            permission = object : MicPermission {
+                override fun isGrantedNow() =
+                    ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+
+                override suspend fun ensureGranted(): Boolean =
+                    if (isGrantedNow()) {
+                        true
+                    } else {
+                        val d = CompletableDeferred<Boolean>()
+                        pending = d
+                        launcher.launch(Manifest.permission.RECORD_AUDIO)
+                        d.await()
+                    }
             },
             songs = { graph.catalogRepository.state.value.catalog?.songsById?.values.orEmpty() },
             blocked = { graph.mixGraph.mixRecorder.isRecording },
@@ -106,11 +111,26 @@ fun ShazamButton(
     }
     val phase by recognizer.phase.collectAsState()
 
-    // Granted in system settings since the last denial -> a fresh tap should try again.
-    LaunchedEffect(phase) {
-        if (phase is ShazamPhase.Denied &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
-        ) recognizer.clearDenied()
+    // Granted in system Settings after a denial: Android does not relaunch the app on a grant, so re-check on resume.
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(lifecycleOwner, recognizer) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+            ) recognizer.clearDenied()
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // One-shot horizontal shake when the mic is denied (iOS ShakeIfDenied).
+    val shake = androidx.compose.runtime.remember { androidx.compose.animation.core.Animatable(0f) }
+    LaunchedEffect(phase is ShazamPhase.Denied) {
+        if (phase is ShazamPhase.Denied) {
+            for (x in floatArrayOf(10f, -10f, 7f, -7f, 3f, 0f)) {
+                shake.animateTo(x, tween(60))
+            }
+        } else shake.snapTo(0f)
     }
 
     val tint = when (phase) {
@@ -134,6 +154,7 @@ fun ShazamButton(
 
     Surface(
         modifier = modifier
+            .graphicsLayer { translationX = shake.value.dp.toPx() }
             .alpha(if (mixRecording) 0.4f else 1f)
             .scale(if (active) 1f + 0.05f * ring else 1f)
             .semantics {
