@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.browse
 
+import com.levi.pocketdj.data.artists.Artist
 import com.levi.pocketdj.data.catalog.IndexAlbum
 import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.data.catalog.MergedCatalog
@@ -33,63 +34,85 @@ enum class AlbumLayout { GRID, LIST }
  */
 enum class SearchMode { DEVICE, ONLINE }
 
+/** Any row the filter/sort engine can run over: album, song (incl. History) or artist. */
+sealed interface BrowseRow {
+    val browseKind: BrowseKind
+    val source: String?
+}
+
 /** One precomputed album row: source tag + collapsed genre + folded search key. */
 data class AlbumRow(
     val album: IndexAlbum,
-    val source: String?,
+    override val source: String?,
     val genreCategory: String,
     val searchKey: String,
-)
+) : BrowseRow {
+    override val browseKind: BrowseKind get() = BrowseKind.ALBUMS
+}
 
-/** One precomputed song row (genre = owning album's collapsed category, §3). */
+/**
+ * One precomputed song row (genre = owning album's collapsed category, §3).
+ * [dateAdded] (epoch ms) is null until the catalog carries it; [playedAt]
+ * (epoch ms) is set only on History rows (the `lastPlayedAt` field).
+ */
 data class SongRow(
     val song: IndexSong,
     val albumName: String?,
-    val source: String?,
+    override val source: String?,
     val genreCategory: String,
     val searchKey: String,
-)
+    val dateAdded: Double? = null,
+    val playedAt: Double? = null,
+) : BrowseRow {
+    override val browseKind: BrowseKind get() = BrowseKind.SONGS
+}
+
+/** An Artists-kind row wrapping the derived [Artist] (albumCount / songCount sortable). */
+data class ArtistRow(val artist: Artist) : BrowseRow {
+    override val browseKind: BrowseKind get() = BrowseKind.ARTISTS
+    override val source: String? get() = null
+    val searchKey: String get() = artist.searchKey
+}
 
 /**
- * The P1 filter set (task-locked cut of the full clause registry:
- * genre / bpm / key(Camelot) / source — specs/browse.md §6.5). Semantics follow
- * §6.2: clauses AND-compose; a clause whose field doesn't apply to the row's
- * kind passes the row; a missing bpm fails a between; between bounds are
- * inclusive with open ends.
+ * The live filter set: an AND-composed list of [Clause]s over the full field
+ * registry (iOS `BrowseState.clauses`). Incomplete clauses are no-ops and are
+ * not counted. The helper accessors below back the quick Sources rail and the
+ * legacy genre/bpm/key/source sheet by reading/writing the matching clause.
  */
-data class BrowseFilters(
-    val genres: Set<String> = emptySet(),
-    val bpmMin: Double? = null,
-    val bpmMax: Double? = null,
-    val camelots: Set<String> = emptySet(),
-    val sources: Set<String> = emptySet(),
-) {
-    val activeCount: Int
-        get() = (if (genres.isNotEmpty()) 1 else 0) +
-            (if (bpmMin != null || bpmMax != null) 1 else 0) +
-            (if (camelots.isNotEmpty()) 1 else 0) +
-            (if (sources.isNotEmpty()) 1 else 0)
+data class BrowseFilters(val clauses: List<Clause> = emptyList()) {
+    val activeCount: Int get() = clauses.count { !it.isIncomplete }
 
-    fun matchesAlbum(row: AlbumRow): Boolean {
-        if (genres.isNotEmpty() && row.genreCategory !in genres) return false
-        if (sources.isNotEmpty() && (row.source == null || row.source !in sources)) return false
-        // bpm/camelot are song fields — they pass album rows (§6.2).
-        return true
+    /** Does the current sort/filter state read play counts (memo-key gate)? */
+    fun usesPlayCounts(sortKeys: List<SortKey>): Boolean =
+        sortKeys.any { it.field == SortField.PLAY_COUNT } ||
+            clauses.any { !it.isIncomplete && it.field == "playCount" }
+
+    private fun listValues(field: String): Set<String> =
+        clauses.firstOrNull { it.field == field && it.op == FilterOp.IN_LIST }?.values.orEmpty()
+
+    private fun withList(field: String, values: Set<String>): BrowseFilters {
+        val rest = clauses.filterNot { it.field == field && it.op == FilterOp.IN_LIST }
+        return if (values.isEmpty()) BrowseFilters(rest)
+        else BrowseFilters(rest + Clause(field, FilterOp.IN_LIST, values = values))
     }
 
-    fun matchesSong(row: SongRow): Boolean {
-        if (genres.isNotEmpty() && row.genreCategory !in genres) return false
-        if (sources.isNotEmpty() && (row.source == null || row.source !in sources)) return false
-        if (camelots.isNotEmpty()) {
-            val code = row.song.camelot?.trim()?.uppercase(Locale.ROOT)
-            if (code == null || code !in camelots) return false
-        }
-        if (bpmMin != null || bpmMax != null) {
-            val bpm = row.song.bpm ?: return false // missing value fails between
-            if (bpm < (bpmMin ?: Double.NEGATIVE_INFINITY)) return false
-            if (bpm > (bpmMax ?: Double.POSITIVE_INFINITY)) return false
-        }
-        return true
+    private fun between(field: String): Clause? =
+        clauses.firstOrNull { it.field == field && it.op == FilterOp.BETWEEN }
+
+    val genres: Set<String> get() = listValues("genre")
+    val camelots: Set<String> get() = listValues("camelot")
+    val sources: Set<String> get() = listValues("source")
+    val bpmMin: Double? get() = between("bpm")?.min
+    val bpmMax: Double? get() = between("bpm")?.max
+
+    fun withGenres(v: Set<String>) = withList("genre", v)
+    fun withCamelots(v: Set<String>) = withList("camelot", v)
+    fun withSources(v: Set<String>) = withList("source", v)
+    fun withBpm(min: Double?, max: Double?): BrowseFilters {
+        val rest = clauses.filterNot { it.field == "bpm" && it.op == FilterOp.BETWEEN }
+        return if (min == null && max == null) BrowseFilters(rest)
+        else BrowseFilters(rest + Clause("bpm", FilterOp.BETWEEN, min = min, max = max))
     }
 }
 
@@ -120,6 +143,10 @@ class BrowseRows(catalog: MergedCatalog) {
         )
     }
 
+    /** Parallel search-key arrays for [BrowseEngine.filterSort] (built once per catalog). */
+    val albumKeys: List<String> = albumRows.map { it.searchKey }
+    val songKeys: List<String> = songRows.map { it.searchKey }
+
     /** Distinct collapsed genres over both kinds, category-priority order (§6.1). */
     val genreOptions: List<String> =
         (albumRows.asSequence().map { it.genreCategory } +
@@ -146,21 +173,16 @@ class BrowseRows(catalog: MergedCatalog) {
 }
 
 /** Filtered album results for (query, filters) — run on Dispatchers.Default. */
-fun BrowseRows.filteredAlbums(query: String, filters: BrowseFilters): List<AlbumRow> {
-    // Strip newlines from the query so it can't match across field boundaries (§4.1).
-    val folded = Fmt.fold(query).replace("\n", "")
-    return albumRows.filter { row ->
-        (folded.isEmpty() || row.searchKey.contains(folded)) && filters.matchesAlbum(row)
-    }
-}
+fun BrowseRows.filteredAlbums(query: String, filters: BrowseFilters): List<AlbumRow> =
+    BrowseEngine.filterSort(albumRows, albumKeys, query, filters.clauses, emptyList())
 
 /** Filtered song results for (query, filters) — run on Dispatchers.Default. */
-fun BrowseRows.filteredSongs(query: String, filters: BrowseFilters): List<SongRow> {
-    val folded = Fmt.fold(query).replace("\n", "")
-    return songRows.filter { row ->
-        (folded.isEmpty() || row.searchKey.contains(folded)) && filters.matchesSong(row)
-    }
-}
+fun BrowseRows.filteredSongs(
+    query: String,
+    filters: BrowseFilters,
+    playCounts: Map<String, Int> = emptyMap(),
+): List<SongRow> =
+    BrowseEngine.filterSort(songRows, songKeys, query, filters.clauses, emptyList(), playCounts)
 
 /**
  * Process-retained browse UI state so kind/layout/filters/sort survive

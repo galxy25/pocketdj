@@ -65,6 +65,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.artists.Artist
 import com.levi.pocketdj.data.artists.ArtistCatalog
+import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.di.AppGraph
@@ -248,34 +249,60 @@ private fun BrowseContent(
         }
     }
 
-    // Filter + search off the main thread; a new result set carries a new
+    // Lifetime play counts are the one pipeline input living outside the catalog
+    // (device-local store): snapshot them, and fold the revision into the key
+    // ONLY while a clause/sort actually reads them.
+    val context = LocalContext.current
+    val history = remember { PlayHistoryStore.get(context) }
+    val usesPlayCounts = filters.usesPlayCounts(sortKeys)
+    val historyRevision = if (usesPlayCounts) history.state.collectAsState().value.revision else -1
+    val resultsKey = BrowseEngine.resultsKey(
+        catalogIdentity = System.identityHashCode(catalog).toLong(),
+        kind = kind,
+        query = debouncedQuery,
+        clauses = filters.clauses,
+        sortKeys = sortKeys,
+        playCountsRevision = historyRevision,
+    )
+
+    // Filter + search + sort off the main thread; a new result set carries a new
     // version so the paging budget resets in the same frame (§13).
     var resultVersion by remember { mutableIntStateOf(0) }
-    val results by produceState(
-        initialValue = BrowseResults(),
-        catalog, kind, debouncedQuery, filters, sortKeys,
-    ) {
+    val results by produceState(initialValue = BrowseResults(), resultsKey) {
         value = withContext(Dispatchers.Default) {
-            // Pipeline (§4.1): base rows → text query → filter clauses → sort.
-            // Filter AND sort both run here off the main thread; a ~90k-row
-            // locale-aware pass on the UI thread was a shipped runloop hang (§13).
+            // Pipeline (§4.1): base rows → text query → filter clauses → sort,
+            // all in BrowseEngine.filterSort. A ~90k-row locale-aware pass on
+            // the UI thread was a shipped runloop hang (§13).
             val rows = BrowseRows.of(catalog)
+            val playCounts = if (usesPlayCounts) {
+                history.events.groupingBy { it.songId }.eachCount()
+            } else {
+                emptyMap()
+            }
+            val clauses = filters.clauses
             when (kind) {
                 BrowseKind.ALBUMS -> BrowseResults(
-                    albums = BrowseSort.albums(rows.filteredAlbums(debouncedQuery, filters), sortKeys),
+                    albums = BrowseEngine.filterSort(
+                        rows.albumRows, rows.albumKeys, debouncedQuery, clauses, sortKeys,
+                    ),
                     version = ++resultVersion,
                 )
                 BrowseKind.SONGS -> BrowseResults(
-                    songs = BrowseSort.songs(rows.filteredSongs(debouncedQuery, filters), sortKeys),
+                    songs = BrowseEngine.filterSort(
+                        rows.songRows, rows.songKeys, debouncedQuery, clauses, sortKeys, playCounts,
+                    ),
                     version = ++resultVersion,
                 )
-                // Artists: name-scoped filter over the FULL catalog (filters/sort
-                // are inert on artist rows, specs/artists.md §3.3). Derived +
-                // memoized off-main like the other kinds.
-                BrowseKind.ARTISTS -> BrowseResults(
-                    artists = ArtistCatalog.of(catalog).filtered(debouncedQuery),
-                    version = ++resultVersion,
-                )
+                BrowseKind.ARTISTS -> {
+                    val artistRows = ArtistCatalog.of(catalog).artists.map(::ArtistRow)
+                    BrowseResults(
+                        artists = BrowseEngine.filterSort(
+                            artistRows, artistRows.map { it.searchKey },
+                            debouncedQuery, clauses, sortKeys,
+                        ).map { it.artist },
+                        version = ++resultVersion,
+                    )
+                }
             }
         }
     }
@@ -284,7 +311,7 @@ private fun BrowseContent(
         SourcesRail(
             sources = catalog.availableSources,
             selected = filters.sources,
-            onSelect = { selection -> onFilters(filters.copy(sources = selection)) },
+            onSelect = { selection -> onFilters(filters.withSources(selection)) },
         )
 
         Row(
