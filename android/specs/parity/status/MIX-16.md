@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-16 Integrations: Jukebox <-> Mix, MixPlayOutcomeBridge, MixFacadeImpl
 - [x] MixPlayOutcomeBridge (deck-keyed, async event resolution, verdict table)
@@ -17,3 +17,14 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+fixes applied
+- Snapshot gate (MINOR) -> fixed: MixJukeboxPort.isRunning (engine.isRunning); snapshot()/isLive use isRunning || autoMixing; place() stays autoMixing-only. Tests: handDrivenMixBroadcastsButIsNotAnAutoQueueOwner.
+- Un-ripped match (MINOR) -> fixed (partial): decide() offers any placement match to a live auto mix; requestBurn burns a ripped song or records burnWhenRipped (AppGraph drains it) for an un-ripped one. Android has no stream-through-rip trigger, documented in the ARCHITECTURE ledger row.
+- Exception falls back to sequencer (MINOR) -> fixed: once the auto mix owns the setlist an error surfaces in transientError, never the ExoPlayer path; requestBurn is launched on appScope (not awaited under runLock). Test: throwingBurnKickDoesNotUnparkTheRequest.
+- drainPending drops ended-mix inserts (MINOR) -> fixed: returns Landed items; repository routes them via applyPlacement when the sequencer is running. Test: parkedInsertIsHandedBackWhenTheMixEnded.
+- History context (MINOR) -> fixed: contextLabel = auto sourceLabel ?: mixSessions.currentName; new contextId = mixSessions.currentId. Test: mixSessionIdRidesTheContext.
+- ARCHITECTURE-ANDROID.md (MINOR) -> fixed: Mix ledger row updated (PARTIAL, device-only notes, new files). Open question #1 was already marked RESOLVED. Emulator acceptance still not run (integrator owns the emulator).
+- NIT: removed unused playedTracks; kick() after a successful mix place. Not done: catalog length for streaming-deck durationMs, onAirBuffering in the payload (iOS parity unverified).
+- Suite: 4206 tests, 0 failures; assembleDebug green.

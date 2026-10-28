@@ -19,6 +19,7 @@ class MixPlayOutcomeBridgeTest {
         val skipCounts = ArrayList<String>()
         val alreadySkipped = HashSet<String>()
         var label: String? = "Warmup"
+        var sessionId: String? = null
         var now = 1_000L
         var latest: String? = null                      // fallback (collapsed) event
         var deferred = ArrayList<(Boolean) -> Boolean>()
@@ -33,6 +34,7 @@ class MixPlayOutcomeBridgeTest {
             noteSkip = { skipCounts += it },
             trackInfo = { d -> "Title-$d" to "Artist" },
             contextLabel = { label },
+            contextId = { sessionId },
             nowMs = { now },
             resolveAsync = { attempt -> if (async) deferred += attempt else { attempt(false) || attempt(true) } },
         )
@@ -54,6 +56,12 @@ class MixPlayOutcomeBridgeTest {
         assertNull(e.context.contextId)
         assertEquals("Title-A", e.title)
         assertEquals(1_000L, e.atMs)
+    }
+
+    @Test fun mixSessionIdRidesTheContext() {
+        val r = Rig(); r.sessionId = "sess-1"
+        r.play("s1", Deck.A)
+        assertEquals("sess-1", r.emitted.single().context.contextId)
     }
 
     @Test fun handDrivenMixHasNoContextName() {

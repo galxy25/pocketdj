@@ -460,7 +460,8 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                 }
             },
             trackInfo = { d -> e.loaded(d)?.let { t -> t.title to t.artist } },
-            contextLabel = { autoDjInst?.sourceLabel },
+            contextLabel = { autoDjInst?.takeIf { it.isMixing }?.sourceLabel ?: mixSessions.currentName },
+            contextId = { mixSessions.currentId },
             // The store records off the bus asynchronously: poll briefly, then fall back to the collapsed row.
             resolveAsync = { attempt ->
                 mainScope.launch {
@@ -477,6 +478,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     private val jukeboxPort = object : com.levi.pocketdj.data.jukebox.MixJukeboxPort {
         private val dj get() = autoDjInst
         override val autoMixing: Boolean get() = dj?.isMixing == true
+        override val isRunning: Boolean get() = dj?.engine?.isRunning == true
         override val onAir: com.levi.pocketdj.data.jukebox.MixJukeboxPort.OnAir?
             get() {
                 val d = dj ?: return null
@@ -522,10 +524,19 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         com.levi.pocketdj.data.jukebox.MixJukeboxSeam.source = com.levi.pocketdj.data.jukebox.MixJukeboxSource(
             port = { jukeboxPort },
             isLoadable = { id -> app.servicesGraph.burnStore.localUrl(id) != null || mixStreamLoader.canStream(id) },
+            // Fire-and-forget (never awaited under BurnStore's runLock). A ripped song burns now; an un-ripped
+            // one records the durable burn-when-ripped intent (AppGraph drains it once the rip lands).
             requestBurn = { song ->
-                app.servicesGraph.burnStore.burn(
-                    listOf(com.levi.pocketdj.data.burns.BurnSong(song.id, song.name, song.artist)),
-                )
+                app.appScope.launch(Dispatchers.IO) {
+                    runCatching {
+                        val bs = app.servicesGraph.burnStore
+                        if (app.ripsRepository.entry(song.id) != null) {
+                            bs.burn(listOf(com.levi.pocketdj.data.burns.BurnSong(song.id, song.name, song.artist)))
+                        } else {
+                            bs.burnWhenRipped(song.id, song.name, song.artist)
+                        }
+                    }
+                }
             },
         )
     }

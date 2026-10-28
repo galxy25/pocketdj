@@ -13,6 +13,7 @@ import org.junit.Test
 class MixJukeboxSourceTest {
     private class FakeMix : MixJukeboxPort {
         override var autoMixing = true
+        override var isRunning = true
         override var onAir: MixJukeboxPort.OnAir? = MixJukeboxPort.OnAir("on", "On Air", "Band", 12_000, 200_000, false)
         override var upcoming: List<MixLoadable> = listOf(MixLoadable("u1", "Up One", "A1"), MixLoadable("u2", "Up Two", "A2"))
         override var played: List<MixLoadable> = listOf(MixLoadable("p1", "Prev", "P"))
@@ -47,7 +48,7 @@ class MixJukeboxSourceTest {
 
     @Test fun noSnapshotWithoutAMixOrWhenNotAutoMixing() {
         assertNull(Rig(mix = null).source.snapshot())
-        val r = Rig().also { it.mix!!.autoMixing = false }
+        val r = Rig().also { it.mix!!.autoMixing = false; it.mix.isRunning = false }
         assertNull(r.source.snapshot())
         assertFalse(r.source.isLive)
         val silent = Rig().also { it.mix!!.onAir = null }
@@ -59,8 +60,20 @@ class MixJukeboxSourceTest {
         assertTrue(r.source.snapshot()!!.buffering)
     }
 
-    @Test fun playedTracksAreNewestFirstFromTheMix() {
-        assertEquals(listOf("Prev"), Rig().source.playedTracks().map { it.title })
+    @Test fun handDrivenMixBroadcastsButIsNotAnAutoQueueOwner() = runTest {
+        val r = Rig().also { it.mix!!.autoMixing = false; it.mix.isRunning = true }
+        assertEquals("On Air", r.source.snapshot()!!.title)
+        assertTrue(r.source.isLive)
+        assertFalse(r.source.place(song("x"), JukeboxDecisionAction.NEXT))
+        r.mix!!.isRunning = false
+        assertNull(r.source.snapshot())
+    }
+
+    @Test fun throwingBurnKickDoesNotUnparkTheRequest() = runTest {
+        val mix = FakeMix()
+        val src = MixJukeboxSource(port = { mix }, isLoadable = { false }, requestBurn = { error("io") })
+        assertTrue(src.place(song("x"), JukeboxDecisionAction.NEXT))
+        assertEquals(1, src.pendingCount)
     }
 
     @Test fun placementInsertsLoadableSongForEachPlacementKind() = runTest {
@@ -116,13 +129,14 @@ class MixJukeboxSourceTest {
         assertTrue(r.mix!!.inserts.isEmpty())
     }
 
-    @Test fun parkedInsertIsLetGoWhenTheMixEnded() = runTest {
+    @Test fun parkedInsertIsHandedBackWhenTheMixEnded() = runTest {
         val r = Rig()
         r.source.place(song("x"), JukeboxDecisionAction.END)
         r.mix!!.autoMixing = false
         r.loadable += "x"
-        r.source.drainPending()
+        val landed = r.source.drainPending()
         assertTrue(r.mix.inserts.isEmpty())
         assertEquals(0, r.source.pendingCount)
+        assertEquals(listOf("x" to JukeboxDecisionAction.END), landed.map { it.song.id to it.action })
     }
 }

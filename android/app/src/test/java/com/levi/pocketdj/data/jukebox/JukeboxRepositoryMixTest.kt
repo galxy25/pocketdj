@@ -43,6 +43,7 @@ class JukeboxRepositoryMixTest {
 
     private class FakeMix : MixJukeboxPort {
         override var autoMixing = true
+        override var isRunning = true
         override var onAir: MixJukeboxPort.OnAir? = MixJukeboxPort.OnAir("on", "Deck Song", "Deck Artist", 5_000, 180_000, false)
         override var upcoming = listOf(MixLoadable("u1", "Tail One", "T1"))
         override var played = emptyList<MixLoadable>()

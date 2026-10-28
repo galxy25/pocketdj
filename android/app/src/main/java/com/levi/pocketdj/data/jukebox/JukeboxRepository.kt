@@ -265,20 +265,34 @@ class JukeboxRepository(
         }
         scope.launch { runCatching { client.decide(session, requestId, action) } }
         if (action.isPlacement) {
-            val found = row.match as? Match.Found
-            if (found?.playable == true) {
-                scope.launch {
-                    val handled = try {
-                        // A live auto mix owns the setlist: the request joins ITS queue (MIX-16).
-                        onMain { mixSource()?.place(found.song, action) } == true ||
-                            placementSink.place(found.song, action)
+            val found = row.match as? Match.Found ?: return
+            // A live auto mix owns the setlist: even an un-ripped match joins ITS queue (parked behind a
+            // burn-when-ripped intent); the sequencer path below still needs a playable match.
+            scope.launch {
+                val mixOwns = runCatching { onMain { mixSource()?.autoMixing } == true }.getOrDefault(false)
+                if (mixOwns) {
+                    try {
+                        if (onMain { mixSource()?.place(found.song, action) } == true) {
+                            kick()
+                            return@launch
+                        }
                     } catch (c: CancellationException) {
                         throw c
                     } catch (e: Exception) {
-                        false
+                        // Never fall back to the sequencer: it would sound on top of the live mix.
+                        _state.update { it.copy(transientError = e.message ?: "Couldn't add to the mix") }
+                        return@launch
                     }
-                    if (!handled) applyPlacement(found.song, action)
                 }
+                if (!found.playable) return@launch
+                val handled = try {
+                    placementSink.place(found.song, action)
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (e: Exception) {
+                    false
+                }
+                if (!handled) applyPlacement(found.song, action)
             }
         }
     }
@@ -309,7 +323,10 @@ class JukeboxRepository(
             // state POST for this tick — posting nowPlaying=null would make the
             // broker log the still-playing song as played and flash guests
             // "Nothing playing" over a transient binder hiccup.
-            runCatching { onMain { mixSource()?.drainPending() } } // parked broadcast inserts whose burn landed
+            // Parked broadcast inserts whose burn landed; ones whose mix ended go to a running sequencer.
+            runCatching { onMain { mixSource()?.drainPending() } }.getOrNull()?.forEach { landed ->
+                if (queue?.isRunning == true) applyPlacement(landed.song, landed.action)
+            }
             val snapshotResult = runCatching { readPlayer() }
             snapshotResult.exceptionOrNull()?.let { if (it is CancellationException) throw it }
             if (snapshotResult.isSuccess) {

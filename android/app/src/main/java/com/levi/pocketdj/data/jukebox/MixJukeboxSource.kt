@@ -11,6 +11,8 @@ import com.levi.pocketdj.mix.model.MixLoadable
 interface MixJukeboxPort {
     /** An auto mix is running (iOS `mix.isRunning || mix.autoMixing`, narrowed to the auto-queue owner). */
     val autoMixing: Boolean
+    /** The Mix engine has a deck sounding (iOS `mix.isRunning`): a hand-driven mix broadcasts too. */
+    val isRunning: Boolean get() = autoMixing
     val onAir: OnAir?
     /** The auto queue's not-yet-reached tail (guests' "up next"). */
     val upcoming: List<MixLoadable>
@@ -45,7 +47,7 @@ data class MixJukeboxSnapshot(
  * guests see the on-air deck track and the queue's tail, and accepted requests are INSERTED into the auto
  * queue (never before the first uncommitted slot - in-mix actions take precedence). A Mix deck can only
  * load a burned (or streamable) file, so an unloadable match kicks the burn and PARKS the insert until
- * the file lands (15 min deadline); a mix that ended meanwhile lets the insert go.
+ * the file lands (15 min deadline); a mix that ended meanwhile hands the insert back to the repository (sequencer).
  *
  * Hear mode is unaffected: the repository still gates `streamUrl` on a public rip.
  */
@@ -57,17 +59,20 @@ class MixJukeboxSource(
     private val requestBurn: suspend (IndexSong) -> Unit = {},
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
-    private class Pending(val loadable: MixLoadable, val durationMs: Int, val action: JukeboxDecisionAction, val deadlineMs: Long)
+    private class Pending(val song: IndexSong, val loadable: MixLoadable, val durationMs: Int, val action: JukeboxDecisionAction, val deadlineMs: Long)
 
     private val pending = ArrayList<Pending>()
 
-    /** The Mix owns the audio and is auto-mixing with a track on air. */
-    val isLive: Boolean get() = port()?.let { it.autoMixing && it.onAir != null } == true
+    /** The Mix owns the audio: running or auto-mixing, with a track on air (iOS `isRunning || autoMixing`). */
+    val isLive: Boolean get() = port()?.let { (it.isRunning || it.autoMixing) && it.onAir != null } == true
+
+    /** An auto mix is running: it owns the setlist, so a request is the Mix's (never the sequencer's). */
+    val autoMixing: Boolean get() = port()?.autoMixing == true
 
     /** Null unless [isLive]. */
     fun snapshot(): MixJukeboxSnapshot? {
         val p = port() ?: return null
-        if (!p.autoMixing) return null
+        if (!(p.isRunning || p.autoMixing)) return null
         val on = p.onAir ?: return null
         return MixJukeboxSnapshot(
             songId = on.songId, title = on.title, artist = on.artist,
@@ -75,10 +80,6 @@ class MixJukeboxSource(
             upNext = p.upcoming.map { JukeboxStatePayload.Track(it.title, it.artist) },
         )
     }
-
-    /** Titles/artists of the consumed head, newest first (feeds the played-history mirror when wanted). */
-    fun playedTracks(): List<JukeboxStatePayload.Track> =
-        port()?.takeIf { it.autoMixing }?.played.orEmpty().map { JukeboxStatePayload.Track(it.title, it.artist) }
 
     /**
      * Offer an accepted request to the Mix. false = the Mix is not auto-mixing (caller falls back to the
@@ -95,17 +96,23 @@ class MixJukeboxSource(
         if (isLoadable(song.id)) {
             p.insert(AutoMixItem(loadable, duration), action)
         } else {
-            synchronized(pending) { pending += Pending(loadable, duration, action, nowMs() + PENDING_TTL_MS) }
-            requestBurn(song)
+            synchronized(pending) { pending += Pending(song, loadable, duration, action, nowMs() + PENDING_TTL_MS) }
+            runCatching { requestBurn(song) } // fire-and-forget by contract; a failing kick must not unpark the request
         }
         return true
     }
 
-    /** Loop tick: land parked inserts whose file arrived. Expired ones and ones whose mix ended are dropped. */
-    fun drainPending() {
+    /** A parked request whose file landed after the auto mix ended (iOS `placeInSequencer`). */
+    data class Landed(val song: IndexSong, val action: JukeboxDecisionAction)
+
+    /**
+     * Loop tick: land parked inserts whose file arrived. Expired ones are dropped; ones whose mix ended are
+     * RETURNED so the repository can queue them in a running sequencer (iOS drops them only if nothing plays).
+     */
+    fun drainPending(): List<Landed> {
         val due: List<Pending>
         synchronized(pending) {
-            if (pending.isEmpty()) return
+            if (pending.isEmpty()) return emptyList()
             val now = nowMs()
             val keep = ArrayList<Pending>()
             val land = ArrayList<Pending>()
@@ -119,8 +126,9 @@ class MixJukeboxSource(
             pending.clear(); pending.addAll(keep)
             due = land
         }
-        val p = port()?.takeIf { it.autoMixing } ?: return // mix ended while the burn ran: let it go
+        val p = port()?.takeIf { it.autoMixing } ?: return due.map { Landed(it.song, it.action) } // mix ended
         due.forEach { p.insert(AutoMixItem(it.loadable, it.durationMs), it.action) }
+        return emptyList()
     }
 
     val pendingCount: Int get() = synchronized(pending) { pending.size }
