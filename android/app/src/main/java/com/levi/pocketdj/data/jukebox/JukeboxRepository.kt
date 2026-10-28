@@ -59,6 +59,8 @@ class JukeboxRepository(
     @Volatile var externalMatch: JukeboxExternalMatch = JukeboxExternalMatch.None,
     /** Where accepted requests land: the sequencer (null in tests that never place). */
     @Volatile var queue: JukeboxQueue? = null,
+    /** Seam: the live Mix (MIX-16). Consulted per call so a mix started after construction is picked up. */
+    private val mixSource: () -> MixJukeboxSource? = { MixJukeboxSeam.source },
 ) {
     private val appContext by lazy { context.applicationContext }
 
@@ -263,18 +265,34 @@ class JukeboxRepository(
         }
         scope.launch { runCatching { client.decide(session, requestId, action) } }
         if (action.isPlacement) {
-            val found = row.match as? Match.Found
-            if (found?.playable == true) {
-                scope.launch {
-                    val handled = try {
-                        placementSink.place(found.song, action)
+            val found = row.match as? Match.Found ?: return
+            // A live auto mix owns the setlist: even an un-ripped match joins ITS queue (parked behind a
+            // burn-when-ripped intent); the sequencer path below still needs a playable match.
+            scope.launch {
+                val mixOwns = runCatching { onMain { mixSource()?.autoMixing } == true }.getOrDefault(false)
+                if (mixOwns) {
+                    try {
+                        if (onMain { mixSource()?.place(found.song, action) } == true) {
+                            kick()
+                            return@launch
+                        }
                     } catch (c: CancellationException) {
                         throw c
                     } catch (e: Exception) {
-                        false
+                        // Never fall back to the sequencer: it would sound on top of the live mix.
+                        _state.update { it.copy(transientError = e.message ?: "Couldn't add to the mix") }
+                        return@launch
                     }
-                    if (!handled) applyPlacement(found.song, action)
                 }
+                if (!found.playable) return@launch
+                val handled = try {
+                    placementSink.place(found.song, action)
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (e: Exception) {
+                    false
+                }
+                if (!handled) applyPlacement(found.song, action)
             }
         }
     }
@@ -305,6 +323,10 @@ class JukeboxRepository(
             // state POST for this tick — posting nowPlaying=null would make the
             // broker log the still-playing song as played and flash guests
             // "Nothing playing" over a transient binder hiccup.
+            // Parked broadcast inserts whose burn landed; ones whose mix ended go to a running sequencer.
+            runCatching { onMain { mixSource()?.drainPending() } }.getOrNull()?.forEach { landed ->
+                if (queue?.isRunning == true) applyPlacement(landed.song, landed.action)
+            }
             val snapshotResult = runCatching { readPlayer() }
             snapshotResult.exceptionOrNull()?.let { if (it is CancellationException) throw it }
             if (snapshotResult.isSuccess) {
@@ -493,8 +515,20 @@ class JukeboxRepository(
         }
     }
 
+    /** Mix state is Main-confined; with no mix wired (tests, no Mix built) there is nothing to hop for. */
+    private suspend fun <T> onMain(block: suspend () -> T?): T? =
+        if (mixSource() == null) null else withContext(Dispatchers.Main) { block() }
+
     /** One read of now-playing + the upcoming queue tail, from the sequencer (never the MediaController). */
     private suspend fun readPlayer(): PlayerSnapshot {
+        // BROADCAST mode (iOS stateSnapshot): a live auto mix owns the audio - the on-air deck + the queue tail.
+        onMain { mixSource()?.snapshot() }?.let { mix ->
+            return PlayerSnapshot(
+                songId = mix.songId, title = mix.title, artist = mix.artist,
+                durationMs = mix.durationMs, positionMs = mix.positionMs ?: 0L,
+                upNext = mix.upNext,
+            )
+        }
         val seq = queue?.snapshot()
         val current = seq?.current
         val np = playback.nowPlaying.value
