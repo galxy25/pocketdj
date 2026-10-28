@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.plus
@@ -223,29 +224,24 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
             try {
                 val index = com.levi.pocketdj.data.recs.OwnedCatalogIndex(catalog, app.catalogRepository.indexArtists())
                 ownedIndexMemo = catalog to index
+                // The feed's filter just changed from "owns nothing" to the real answer: recompute the UI.
+                releaseFeedIfReady()?.ownershipChanged()
             } finally {
                 ownedIndexBuilding.set(false)
             }
+            // The catalog may have been swapped while building: build for the new one too.
+            val now = app.catalogRepository.state.value.catalog
+            if (now != null && ownedIndexMemo?.first !== now) scheduleOwnedIndexBuild(now)
         }
     }
 
     /** Catalog song id that already claims this Apple Music track id (so a New queue plays it as the owned song). */
     fun catalogSongIdForAppleMusicId(appleMusicId: String): String? = ownedCatalogIndexOrNull()?.songId(appleMusicId)
 
-    @Volatile private var artistIdByKey: Pair<List<com.levi.pocketdj.data.catalog.IndexArtist>, Map<String, Int>>? = null
+    private val artistIdResolver = com.levi.pocketdj.data.recs.ArtistIdResolver { app.catalogRepository.indexArtists() }
 
     /** Apple Music artist id for a played artist name (indexed name join); null when the index has none. */
-    private fun releaseArtistId(name: String): Int? {
-        val artists = app.catalogRepository.indexArtists()
-        if (artists.isEmpty()) return null
-        val memo = artistIdByKey
-        val map = if (memo != null && memo.first === artists) memo.second else {
-            val m = HashMap<String, Int>()
-            for (a in artists) if (a.valid) a.id?.toInt()?.let { m.putIfAbsent(com.levi.pocketdj.data.catalog.IndexArtist.normalize(a.key), it) }
-            m
-        }
-        return com.levi.pocketdj.data.recs.ReleaseFeedWiring.resolveArtistId(name, map)
-    }
+    private fun releaseArtistId(name: String): Int? = artistIdResolver.resolve(name)
 
     private val releaseArtistNames = java.util.concurrent.ConcurrentHashMap<Int, String>()
 
@@ -264,12 +260,16 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
     private fun startReleaseFeed() {
         app.appScope.launch(Dispatchers.IO) {
             val feed = releaseFeed
-            launch { app.settings.settings.collect { amSignedIn.set(it.hasAppleMusic) } }
+            // Mirror the sign-in from the SAME stream the seed combines on (set before the combine sees it).
+            val signedInFlow = app.settings.settings.map { it.hasAppleMusic }
+                .onEach { amSignedIn.set(it) }.distinctUntilChanged()
+            // Build the ownership index as soon as a catalog lands (not on the first render-path read).
+            launch { app.catalogRepository.catalogFlow.collect { c -> if (c != null) ownedCatalogIndexOrNull() } }
             // Seed: needs the artist-id table (catalog) and a signed-in account; retried when either arrives.
             launch {
                 kotlinx.coroutines.flow.combine(
                     app.catalogRepository.catalogFlow,
-                    app.settings.settings.map { it.hasAppleMusic }.distinctUntilChanged(),
+                    signedInFlow,
                 ) { catalog, signedIn -> catalog != null && signedIn }.collect { ready ->
                     if (!ready || !feed.needsSeed) return@collect
                     val now = System.currentTimeMillis().toDouble()
@@ -291,7 +291,9 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
                     val now = System.currentTimeMillis().toDouble()
                     for (e in events.subList(from, events.size)) {
                         if (now - e.playedAt > 120_000.0) continue
-                        val name = e.artist?.takeIf { it.isNotBlank() } ?: continue
+                        val name = e.artist?.takeIf { it.isNotBlank() }
+                            ?: e.songId.let { sid -> app.catalogRepository.state.value.catalog?.songsById?.get(sid)?.artist }?.takeIf { it.isNotBlank() }
+                            ?: continue
                         val id = releaseArtistId(name) ?: continue
                         releaseArtistNames[id] = name
                         feed.noteArtistPlayed(id, name, now)

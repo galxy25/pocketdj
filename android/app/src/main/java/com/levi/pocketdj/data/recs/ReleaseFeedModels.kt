@@ -7,6 +7,8 @@ import kotlin.math.exp
 import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -116,12 +118,14 @@ enum class ReleaseStatus(val raw: String, val title: String) {
 }
 
 /** One artist's cached release answer. PERSONAL (derived from play history); never the shared index. */
+@OptIn(ExperimentalSerializationApi::class)
 @Serializable
 data class ArtistReleaseEntry(
     val artistId: Int,
-    val artistName: String = "",
+    /** Always encoded: iOS decodes these as non-optional, one missing key empties its whole cache. */
+    @EncodeDefault val artistName: String = "",
     /** Epoch ms of the last successful check - the TTL clock. */
-    val checkedAtMs: Double = 0.0,
+    @EncodeDefault val checkedAtMs: Double = 0.0,
     val releaseId: String? = null,
     val releaseName: String? = null,
     /** Epoch ms of the release date; null when Apple returned no parsable full date. */
@@ -271,7 +275,9 @@ object ArtistsCatalogResponse {
 object ReleaseFeedWiring {
     private val creditSplit = Regex("""\s*[,&;/]\s*|\s+(?:feat\.?|ft\.?|featuring|with|x)\s+""", RegexOption.IGNORE_CASE)
 
-    private fun norm(raw: String): String = raw.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+    private val ws = Regex("\\s+")
+
+    private fun norm(raw: String): String = raw.trim().lowercase().split(ws).filter { it.isNotEmpty() }.joinToString(" ")
 
     /**
      * Apple Music artist id for a played artist name from the indexed name table (keys already normalised):
@@ -294,5 +300,31 @@ object ReleaseFeedWiring {
         if (seenLastId == null) return 0
         val i = ids.lastIndexOf(seenLastId)
         return if (i < 0) ids.size else i + 1
+    }
+}
+
+/**
+ * Played-artist-name -> Apple Music artist id, memoised against the IDENTITY of the source list so the
+ * name table (12k+ rows) is normalised once per catalog, not once per lookup.
+ */
+class ArtistIdResolver(private val source: () -> List<com.levi.pocketdj.data.catalog.IndexArtist>) {
+    @Volatile private var memo: Pair<List<com.levi.pocketdj.data.catalog.IndexArtist>, Map<String, Int>>? = null
+
+    /** Test seam: how many times the map was (re)built. */
+    @Volatile var buildCount = 0
+        private set
+
+    fun resolve(name: String): Int? {
+        val artists = source()
+        if (artists.isEmpty()) return null
+        val cur = memo
+        val map = if (cur != null && cur.first === artists) cur.second else {
+            val m = HashMap<String, Int>()
+            for (a in artists) if (a.valid) a.id?.toInt()?.let { m.putIfAbsent(com.levi.pocketdj.data.catalog.IndexArtist.normalize(a.key), it) }
+            buildCount++
+            memo = artists to m
+            m
+        }
+        return ReleaseFeedWiring.resolveArtistId(name, map)
     }
 }

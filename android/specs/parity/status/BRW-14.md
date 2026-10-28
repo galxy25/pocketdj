@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # BRW-14 New releases feed + screen + release streaming
 
@@ -27,3 +27,16 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+fixes applied
+
+- MAJOR ownership index async, UI not told -> fixed: `ReleaseFeedService.ownershipChanged()` bumps `revisionFlow` when the index build lands (both screens already key on it); index now built eagerly on each catalog emission and rebuilt if the catalog swapped mid-build.
+- MAJOR releaseArtistId memo never worked -> fixed: `ArtistIdResolver` memoises the normalised map on list identity; `CatalogRepository.indexArtists()` now memoised on `lastRealDocs` identity; `IndexArtist.normalize` regex hoisted. Test: resolver builds once.
+- MINOR isFetching/lastError not bumping -> fixed: bump at drain start, drain finish, batch failure, save failure.
+- MINOR seed vs sign-in race -> fixed: `amSignedIn` is set in an `onEach` on the same flow the seed combine consumes, before the combine sees it.
+- MINOR save() under lock -> fixed: snapshot under lock, encode + write under a separate write mutex.
+- MINOR play trigger artist fallback -> fixed: falls back to catalog `songsById[songId].artist`.
+- MINOR encodeDefaults drops artistName/checkedAtMs -> fixed with `@EncodeDefault`; test added.
+- NIT credit splitting -> rejected: intentional documented extension (kept; whole credit still tried first).
+- NIT ledger row -> left for the integrator (per instruction).

@@ -79,7 +79,8 @@ sealed interface ReleaseEmptyReason {
  *    and re-queues its ids; it does not re-arm itself (that would spin against an outage).
  *  - Persisted to [file] (`pocketdj-release-feed.json`), atomic tmp+rename.
  *
- * Thread-safety: all mutable state is guarded by [lock]; nothing suspends inside it.
+ * Thread-safety: all mutable state is guarded by [lock]; nothing suspends inside it and no disk IO happens under it
+ * (state is snapshotted under the lock, then encoded + written under a separate write mutex).
  */
 class ReleaseFeedService(
     private val transport: ReleaseFeedTransport?,
@@ -183,16 +184,20 @@ class ReleaseFeedService(
      * to seed the moment Apple Music is turned on). Returns whether a fetch was queued.
      */
     fun seedFromRecentListening(artists: List<Pair<Int, String>>, nowMs: Double = clock()): Boolean {
+        val doc: ReleaseFeedDocument
+        val queued: Boolean
         synchronized(lock) {
             if (!(seededAtMs == null && entries.isEmpty())) return false
             if (!canSync) return false
             seededAtMs = nowMs
             for ((id, name) in artists) if (entries[id] == null) pending[id] = name
-            save()
-            if (pending.isEmpty()) return false
-            isSeeding = true
+            if (pending.isNotEmpty()) isSeeding = true
             bump()
+            doc = snapshotLocked()
+            queued = pending.isNotEmpty()
         }
+        write(doc)
+        if (!queued) return false
         scheduleDrain()
         return true
     }
@@ -280,6 +285,7 @@ class ReleaseFeedService(
             due = LinkedHashMap(pending)
             pending.clear()
             isFetching = true
+            bump() // UI: "Checking…"
             batches = due.keys.toList().chunked(ReleaseFeedPolicy.IDS_PER_REQUEST)
         }
         var allSucceeded = true
@@ -297,10 +303,13 @@ class ReleaseFeedService(
                 }.awaitAll()
             }
         } finally {
-            synchronized(lock) {
-                save()
+            val doc = synchronized(lock) {
                 isFetching = false
+                bump()
+                snapshotLocked()
             }
+            // Encode + disk write OUTSIDE [lock]: render-path readers on Main take it.
+            write(doc)
         }
         val rearm = synchronized(lock) {
             finishSeedingLocked(allSucceeded, pass = true)
@@ -362,6 +371,7 @@ class ReleaseFeedService(
         if (!outcome.succeeded) {
             for (id in outcome.ids) pending[id] = fallbackNames[id] ?: entries[id]?.artistName ?: ""
             lastError = "Couldn't check ${outcome.ids.size} artists for new releases."
+            bump()
             return
         }
         lastError = null
@@ -392,6 +402,9 @@ class ReleaseFeedService(
 
     // ---- durability ---------------------------------------------------------------------------
 
+    /** The ownership index (an input to [feed]'s filter) changed: tell collectors to recompute. */
+    fun ownershipChanged() = synchronized(lock) { bump() }
+
     private fun bump() {
         revision++
         _revisionFlow.value = revision
@@ -404,17 +417,25 @@ class ReleaseFeedService(
         seededAtMs = doc.seededAtMs
     }
 
-    private fun save() {
+    private fun snapshotLocked() = ReleaseFeedDocument(entries.values.toList(), seededAtMs)
+
+    private val writeLock = Any()
+
+    /** Encode + atomic write; never called holding [lock] (a failure takes it briefly to record the error). */
+    private fun write(doc: ReleaseFeedDocument) {
         val f = file ?: return
-        runCatching {
-            val text = ReleaseFeedDocumentCodec.encode(ReleaseFeedDocument(entries.values.toList(), seededAtMs))
-            val tmp = File(f.parentFile, f.name + ".tmp")
-            tmp.writeText(text)
-            if (!tmp.renameTo(f)) {
-                f.delete()
-                if (!tmp.renameTo(f)) lastError = "Couldn't save the release feed."
-            }
-        }.onFailure { lastError = it.message }
+        val err = synchronized(writeLock) {
+            runCatching {
+                val text = ReleaseFeedDocumentCodec.encode(doc)
+                val tmp = File(f.parentFile, f.name + ".tmp")
+                tmp.writeText(text)
+                if (!tmp.renameTo(f)) {
+                    f.delete()
+                    if (!tmp.renameTo(f)) "Couldn't save the release feed." else null
+                } else null
+            }.getOrElse { it.message ?: "Couldn't save the release feed." }
+        }
+        if (err != null) synchronized(lock) { lastError = err; bump() }
     }
 
     // ---- test seams ----------------------------------------------------------------------------
