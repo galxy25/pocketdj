@@ -64,6 +64,8 @@ class FavoritesSyncService(
     private val catalogPairs: () -> List<Pair<String, String>>,
     private val fetchSeed: suspend () -> String,
     private val clock: () -> Double = { System.currentTimeMillis().toDouble() },
+    /** iOS `syncFavoritesIfReady` gate: onboarding complete AND catalog loaded (automatic triggers only). */
+    private val ready: () -> Boolean = { true },
     private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true },
 ) {
     data class State(
@@ -76,15 +78,21 @@ class FavoritesSyncService(
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
 
-    /** Launch / foreground / Settings button. Never throws (except cancellation). */
+    /** Launch / foreground / catalog-arrival trigger: no-op until onboarding is done and the catalog is loaded. */
+    suspend fun runIfReady() {
+        if (!ready()) return
+        run()
+    }
+
+    /** Settings button / toggle-ON. Never throws (except cancellation). */
     suspend fun run() {
         if (!running.compareAndSet(false, true)) return
         _state.value = _state.value.copy(isSyncing = true)
         try {
             if (twoWayEnabled()) {
                 push(null)
-                pull()
-                _state.value = _state.value.copy(lastSyncedAtMs = clock())
+                // Only claim "last synced" when the pull actually reconciled something.
+                if (pull()) _state.value = _state.value.copy(lastSyncedAtMs = clock())
             } else {
                 applySeedIfNeeded()
             }
@@ -118,20 +126,31 @@ class FavoritesSyncService(
 
         val starIds = pending.filter { it.favorited }.mapNotNull { it.appleMusicId }
         // Best-effort: the ★ is cosmetic next to the rating and must never block it.
-        if (starIds.isNotEmpty()) runCatching { remote.star(starIds) }
+        // Chunked here (not inside the API) so one failed chunk never skips the rest (iOS try? per chunk).
+        for (chunk in starIds.chunked(STAR_CHUNK)) runCatching { remote.star(chunk) }
 
+        var firstError: String? = null
         for (entry in pending) {
             val amId = entry.appleMusicId ?: continue
             val r = if (entry.favorited) remote.love(amId) else remote.unlove(amId)
-            if (r !is AmResult.Ok) throw SyncFailure("Apple Music rejected the rating write: ${describe(r)}")
-            favorites.markPushed(entry.songId, entry.atMs)
+            // A DELETE of a rating that is already gone (404) is the desired end state.
+            val gone = !entry.favorited && r is AmResult.Failure && r.status == 404
+            if (r is AmResult.Ok || gone) {
+                favorites.markPushed(entry.songId, entry.atMs)
+                continue
+            }
+            if (firstError == null) firstError = "Apple Music rejected the rating write: ${describe(r)}"
+            // Account-level problems affect every entry: stop. A per-entry rejection must not block the queue.
+            if (r is AmResult.NeedsUserToken || r is AmResult.RateLimited) break
         }
+        firstError?.let { throw SyncFailure(it) }
     }
 
-    private suspend fun pull() {
-        if (!remote.canSync()) return
+    /** True when the reconcile actually ran. */
+    private suspend fun pull(): Boolean {
+        if (!remote.canSync()) return false
         val pairs = catalogPairs()
-        if (pairs.isEmpty()) return
+        if (pairs.isEmpty()) return false
         val now = clock()
         val loved = when (val r = remote.lovedIds(pairs.map { it.second })) {
             is AmResult.Ok -> r.value
@@ -147,6 +166,7 @@ class FavoritesSyncService(
                 }
             }
         }
+        return true
     }
 
     private suspend fun applySeedIfNeeded() {
@@ -165,6 +185,8 @@ class FavoritesSyncService(
             shareable.associate { it.songId to it.appleMusicId!! },
         )
     }
+
+    private companion object { const val STAR_CHUNK = 250 }
 
     private class SyncFailure(message: String) : Exception(message)
 

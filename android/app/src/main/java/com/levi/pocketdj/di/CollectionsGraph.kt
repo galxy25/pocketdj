@@ -66,6 +66,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 app.catalogRepository.state.value.catalog?.songsById?.values
                     ?.mapNotNull { s -> s.appleMusicId?.let { s.id to it } }.orEmpty()
             },
+            ready = { app.onboarding.isComplete && app.catalogRepository.state.value.catalog != null },
             fetchSeed = {
                 kotlinx.coroutines.withContext(Dispatchers.IO) {
                     app.httpClient.newCall(
@@ -357,12 +358,19 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             }
         }
         // COL-11: launch + every foreground, drain/reconcile favorites (no-op while opted out).
-        app.appScope.launch(Dispatchers.IO) { runCatching { favoritesSync.run() } }
+        // Launch pass = the ON_START observer below (fires on add) + the first loaded catalog; both are
+        // gated on onboarding + catalog (iOS syncFavoritesIfReady) so an empty catalog never "syncs".
+        app.appScope.launch(Dispatchers.IO) {
+            app.catalogRepository.state
+                .map { it.catalog }
+                .distinctUntilChanged { a, b -> (a == null) == (b == null) }
+                .collect { c -> if (c != null) runCatching { favoritesSync.runIfReady() } }
+        }
         app.appScope.launch(Dispatchers.Main) {
             runCatching {
                 androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
                     com.levi.pocketdj.data.applemusic.WriteBackForegroundDrain {
-                        app.appScope.launch(Dispatchers.IO) { runCatching { favoritesSync.run() } }
+                        app.appScope.launch(Dispatchers.IO) { runCatching { favoritesSync.runIfReady() } }
                     },
                 )
             }

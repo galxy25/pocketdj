@@ -307,9 +307,10 @@ fun appleMusicFavoritesSection() = SettingsSection("appleMusicFavorites", 406) {
         Switch(
             checked = twoWay,
             onCheckedChange = { v ->
-                host.scope.launch {
+                // App scope: leaving Settings must not cancel the pass mid-flight (iOS unstructured Task).
+                graph.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
                     graph.settings.set(com.levi.pocketdj.data.favorites.FavoritesSyncSettings.TWO_WAY, v)
-                    if (v) sync.run()
+                    if (v) runCatching { sync.run() }
                 }
             },
             modifier = Modifier.testTag("favorites-sync-gate"),
@@ -323,7 +324,7 @@ fun appleMusicFavoritesSection() = SettingsSection("appleMusicFavorites", 406) {
     }
     OutlinedButton(
         enabled = twoWay && !st.isSyncing,
-        onClick = { host.scope.launch { sync.run() } },
+        onClick = { graph.appScope.launch(kotlinx.coroutines.Dispatchers.IO) { runCatching { sync.run() } } },
         modifier = Modifier.testTag("favorites-sync-now"),
     ) {
         if (st.isSyncing) CircularProgressIndicator(modifier = Modifier.height(16.dp)) else Text("Sync favorites now")

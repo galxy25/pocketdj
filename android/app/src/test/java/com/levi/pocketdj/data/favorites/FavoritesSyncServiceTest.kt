@@ -29,15 +29,21 @@ class FavoritesSyncServiceTest {
     private var ratingsBody = """{"data":[]}"""
     private var ratingPutStatus = 200
     private var now = 1_000.0
+    private var failPutPath: String? = null
+    private var deleteStatus = 204
+    private var failFirstStar = false
+    private var starPosts = 0
 
     @Before fun setUp() {
         server = MockWebServer()
         server.dispatcher = object : Dispatcher() {
             override fun dispatch(request: RecordedRequest): MockResponse = when {
                 request.method == "GET" -> MockResponse().setResponseCode(200).setBody(ratingsBody)
-                request.method == "PUT" -> MockResponse().setResponseCode(ratingPutStatus).setBody("{}")
-                request.method == "DELETE" -> MockResponse().setResponseCode(204)
-                else -> MockResponse().setResponseCode(202)
+                request.method == "PUT" -> MockResponse().setResponseCode(
+                    if (failPutPath != null && request.path == failPutPath) 400 else ratingPutStatus,
+                ).setBody("{}")
+                request.method == "DELETE" -> MockResponse().setResponseCode(deleteStatus)
+                else -> MockResponse().setResponseCode(if (failFirstStar && starPosts++ == 0) 500 else 202)
             }
         }
         server.start()
@@ -57,6 +63,7 @@ class FavoritesSyncServiceTest {
         user: String? = "mut",
         seedOpt: Boolean = false,
         seed: String = "{}",
+        ready: () -> Boolean = { true },
     ): FavoritesSyncService {
         val tokens = StaticAppleMusicTokens("dev", user)
         val api = AppleMusicApi(
@@ -66,7 +73,7 @@ class FavoritesSyncServiceTest {
         return FavoritesSyncService(
             s, ApiFavoritesRemote(api, tokens),
             twoWayEnabled = { twoWay }, seedOptIn = { seedOpt },
-            catalogPairs = { pairs }, fetchSeed = { seed }, clock = { 50_000.0 },
+            catalogPairs = { pairs }, fetchSeed = { seed }, clock = { 50_000.0 }, ready = ready,
         )
     }
 
@@ -221,4 +228,53 @@ class FavoritesSyncServiceTest {
         assertEquals(4, seed.version)
     }
 
+    @Test fun runIfReadyNotReadyMakesNoRequestsAndNoStamp() = runTest {
+        val s = store()
+        s.set("a", true, "am1")
+        var ready = false
+        val svc = service(s, pairs = listOf("a" to "am1"), ready = { ready })
+        svc.runIfReady()
+        assertEquals(0, server.requestCount)
+        assertNull(svc.state.value.lastSyncedAtMs)
+        ready = true
+        svc.runIfReady()
+        assertTrue(server.requestCount > 0)
+        assertNotNull(svc.state.value.lastSyncedAtMs)
+    }
+
+    @Test fun emptyCatalogPullDoesNotStampLastSynced() = runTest {
+        val s = store()
+        val svc = service(s, pairs = emptyList())
+        svc.run()
+        assertNull(svc.state.value.lastSyncedAtMs)
+    }
+
+    @Test fun delete404CountsAsPushed() = runTest {
+        val s = store()
+        s.set("a", true, "am1"); s.set("a", false, "am1")
+        deleteStatus = 404
+        val svc = service(s)
+        svc.run()
+        assertTrue(s.pendingPushes.isEmpty())
+        assertNull(svc.state.value.lastError)
+    }
+
+    @Test fun oneRejectedEntryDoesNotBlockTheQueue() = runTest {
+        val s = store()
+        s.set("bad", true, "amBad"); s.set("good", true, "amGood")
+        failPutPath = "/v1/me/ratings/songs/amBad"
+        val svc = service(s)
+        svc.run()
+        assertEquals(listOf("bad"), s.pendingPushes.map { it.songId })
+        assertNotNull(svc.state.value.lastError)
+    }
+
+    @Test fun failedStarChunkDoesNotSkipLaterChunks() = runTest {
+        val s = store()
+        for (i in 1..260) s.set("s$i", true, "am$i")
+        failFirstStar = true
+        service(s).run()
+        assertEquals(2, starPosts)
+        assertTrue(s.pendingPushes.isEmpty())
+    }
 }

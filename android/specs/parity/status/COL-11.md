@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # COL-11 Favorites two-way Apple Music sync (opt-in) + owner-seed opt-in
 
@@ -16,3 +16,14 @@ state: implemented
 
 ## Questions for Levi
 - Android has no owner gate; two-way sync is purely opt-in (default OFF). OK?
+
+## Review
+fixes applied
+
+- MAJOR launch/foreground sync ungated -> fixed: `FavoritesSyncService.runIfReady()` + `ready` gate (onboarding complete && catalog loaded) on launch/foreground triggers; extra run when catalog first becomes non-null; `lastSyncedAtMs` only stamped when pull actually ran. Tests: runIfReadyNotReadyMakesNoRequestsAndNoStamp, emptyCatalogPullDoesNotStampLastSynced.
+- MINOR Settings run cancelled on leaving screen -> fixed: toggle-ON and "Sync now" run on app.appScope (IO).
+- MINOR star not best-effort per chunk -> fixed: push() chunks at 250, runCatching per chunk. Test: failedStarChunkDoesNotSkipLaterChunks.
+- MINOR one rejected rating blocks queue -> fixed: DELETE 404 = pushed; per-entry failures continue (error reported at end); NeedsUserToken/RateLimited stop the pass. Tests: delete404CountsAsPushed, oneRejectedEntryDoesNotBlockTheQueue.
+- MINOR ledger row -> fixed: docs/ARCHITECTURE-ANDROID.md COL-11 row now PARTIAL (JVM).
+- NIT duplicate launch pass -> fixed: removed the unconditional launch run; ON_START observer + first-catalog trigger remain.
+- Build/test: 4894 tests, 0 failures (+5); assembleDebug OK.
