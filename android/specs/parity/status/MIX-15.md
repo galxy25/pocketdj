@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # MIX-15 Sessions screen + replay timeline + recordings panel
 - [x] MixEventSentences.kt (pure port of iOS MixEventDisplay; unknown kind shows raw string)

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SURF-8 - Android Auto: MediaLibraryService browse tree
 

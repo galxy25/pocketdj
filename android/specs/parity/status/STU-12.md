@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-12 — MultitrackPlayer, render context, clock, master FX grid, looper, transport
 

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-13 Reset everything + account deletion
 
