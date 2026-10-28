@@ -48,6 +48,19 @@ class CredentialsSyncTest {
         assertEquals("", SettingsCredentialsDocument.decode(file().readBytes())!!.ripToken)
     }
 
+    @Test fun afterResetSuspend_noBlankDocIsEverWritten() {
+        val port = FakePort(doc())
+        val sync = CredentialsSync(file(), port)
+        sync.syncIfChanged()
+        file().delete()                      // reset deletes the mirror ...
+        sync.suspendUntilRelaunch()
+        port.live = doc(tok = "")            // ... then the secrets wipe fires the watcher
+        assertFalse(sync.syncIfChanged())
+        port.live = SettingsCredentialsDocument()
+        assertFalse(sync.syncIfChanged())
+        assertFalse(file().exists())
+    }
+
     @Test fun encode_isSortedKeys_dropsNulls_andIosShaped() {
         val text = SettingsCredentialsDocument.encode(doc()).toString(Charsets.UTF_8)
         assertEquals(

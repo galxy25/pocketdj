@@ -24,6 +24,14 @@ class CredentialsSync(
     /** Set by [writePulled] until [applyPulled] runs: the watcher must not overwrite pulled bytes in the gap. */
     @Volatile private var pullPendingSince = 0L
 
+    /**
+     * Reset / account deletion: stop materializing for the rest of this process. The reactive watcher fires on every
+     * secret/settings wipe step and would otherwise write a half-blank doc that later wins last-writer and blanks the
+     * rip / jukebox / search config on every linked device. Cleared only by the relaunch.
+     */
+    @Volatile private var suspended = false
+    fun suspendUntilRelaunch() { suspended = true }
+
     /** SyncEntry.applyPayload seam: write the pulled bytes atomically under the same lock as [syncIfChanged]. */
     @Synchronized
     fun writePulled(bytes: ByteArray) {
@@ -45,6 +53,7 @@ class CredentialsSync(
      */
     @Synchronized
     fun syncIfChanged(): Boolean {
+        if (suspended) return false
         val pendingSince = pullPendingSince
         if (pendingSince != 0L && System.currentTimeMillis() - pendingSince < PULL_PENDING_MS) return false
         val existingBytes = runCatching { file.readBytes() }.getOrNull()

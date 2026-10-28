@@ -490,6 +490,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             clearCollections = { app.collections.clear() },
             deleteCatalogCache = { app.catalogService.clearCache() },
             deleteCredentialsMirror = {
+                credentialsSync.suspendUntilRelaunch()
                 File(files, com.levi.pocketdj.data.credentials.SettingsCredentialsDocument.FILE_NAME).delete()
             },
             clearArtwork = { com.levi.pocketdj.data.storage.CoilArtworkCache(app.appContext).clear() },
