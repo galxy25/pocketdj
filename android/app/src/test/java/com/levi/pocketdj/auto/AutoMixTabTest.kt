@@ -40,11 +40,12 @@ class AutoMixTabTest {
     private class FakeExtras : AutoMixExtras {
         var crates = listOf(
             AutoCrate(MixSource.Pocket("p1"), "Warmup", AutoCrateGroup.POCKETS),
-            AutoCrate(MixSource.Playlist("l1"), "Gym", AutoCrateGroup.PLAYLISTS),
             AutoCrate(MixSource.Playlist("l2"), "Brunch", AutoCrateGroup.PLAYLISTS),
+            AutoCrate(MixSource.Playlist("l1"), "Gym", AutoCrateGroup.PLAYLISTS),
             AutoCrate(MixSource.Setlist("s1"), "Friday Set", AutoCrateGroup.SETLISTS),
         )
         var live: AutoMixLive? = null
+        var dl: Pair<Int, Int>? = null
         override var slowSkipSeconds = 15.0
         val calls = mutableListOf<String>()
         var sessions: List<AutoJukeSession>? = emptyList()
@@ -52,6 +53,7 @@ class AutoMixTabTest {
         val flow = MutableSharedFlow<String>(extraBufferCapacity = 8)
         override fun crates() = crates
         override fun live() = live
+        override fun downloadState() = dl
         override fun skipFast() { calls += "fast" }
         override fun skipSlow() { calls += "slow" }
         override fun stop() { calls += "stop" }
@@ -72,6 +74,37 @@ class AutoMixTabTest {
     }
 
     private fun tree(rig: Rig?) = AutoBrowseTree(FakeAutoData(), mix = rig?.tab)
+
+    @Test fun setup_showsDownloadingRowWhileZeroStartPulls() {
+        val r = Rig()
+        assertTrue(r.kids().none { it.id.startsWith("mix:dl") })
+        r.extras.dl = 1 to 7
+        val row = r.kids().first { it.id.startsWith("mix:dl") }
+        assertEquals("Downloading 1 of 7", row.title)
+    }
+
+    @Test fun crateSelect_renotifiesOldAndNewGroups() {
+        val r = Rig()
+        r.sel(AutoMixKind.CRATE, "a", "playlist:l1")
+        r.notified.clear()
+        r.sel(AutoMixKind.CRATE, "a", "pocket:p1")
+        val ids = r.notified.map { it.first }
+        assertTrue(ids.contains(r.mixId(AutoMixKind.GROUP, "a", "playlists").encoded))
+        assertTrue(ids.contains(r.mixId(AutoMixKind.GROUP, "a", "pockets").encoded))
+    }
+
+    @Test fun groupKeepsExtrasOrder_andStatusRowIsPlayable() {
+        val r = Rig()
+        r.extras.crates = listOf(
+            AutoCrate(MixSource.Playlist("1"), "Mix 2", AutoCrateGroup.PLAYLISTS),
+            AutoCrate(MixSource.Playlist("2"), "Mix 10", AutoCrateGroup.PLAYLISTS),
+            AutoCrate(MixSource.Playlist("3"), "alpha", AutoCrateGroup.PLAYLISTS),
+        )
+        assertEquals(listOf("Mix 2", "Mix 10", "alpha"), r.kids(r.mixId(AutoMixKind.GROUP, "a", "playlists")).map { it.title })
+        r.facade.autoMixing = true
+        assertTrue(r.kids().first { it.id.startsWith("mix:status") }.playable)
+        assertNull(r.sel(AutoMixKind.STATUS))
+    }
 
     @Test fun hiddenWithoutFacade() {
         val ids = tree(null).children(AutoId.Root.encoded)!!.map { it.id }
@@ -158,7 +191,7 @@ class AutoMixTabTest {
             k.map { it.title },
         )
         assertEquals("3 / 12 · Deck A", k[0].subtitle)
-        assertFalse(k[0].playable)
+        assertTrue(k[0].playable)
         assertEquals("5 second sweep", k[3].subtitle)
         assertEquals("15 second crossfade", k[4].subtitle)
         rig.facade.autoPaused = true

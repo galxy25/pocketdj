@@ -117,6 +117,7 @@ class AutoMixTab(
         data object Unreachable : Juke
     }
     @Volatile private var juke: Juke = Juke.Idle
+    @Volatile private var lastSessions: List<AutoJukeSession> = emptyList()
     @Volatile private var jukeFetchedAt = 0L
 
     /** Wire change notifications and start observing the facade/engine state (called once by the callback). */
@@ -194,6 +195,7 @@ class AutoMixTab(
             mix(AutoMixKind.STATUS),
             title = statusTitle(live),
             subtitle = statusText(live, paused),
+            playable = true,
         )
         out += AutoNode(mix(AutoMixKind.NEW_MIX), "🔀 New Mix", subtitle = "Pick a different collection", playable = true)
         out += AutoNode(mix(AutoMixKind.TOGGLE), if (paused) "▶ Resume Mix" else "⏸ Pause Mix", playable = true)
@@ -226,7 +228,7 @@ class AutoMixTab(
             )
         }
         if (out.none { it.id.startsWith("mix:grp:") }) {
-            out += AutoNode(mix(AutoMixKind.NOTE, "empty"), "No pockets or playlists yet", subtitle = "Create one in the app")
+            out += AutoNode(mix(AutoMixKind.NOTE, "empty"), "No pockets, playlists, or set lists yet", subtitle = "Create one in the app")
         }
         return out
     }
@@ -235,7 +237,7 @@ class AutoMixTab(
         val g = AutoCrateGroup.fromToken(groupToken) ?: return null
         if (deck != "a" && deck != "b") return null
         val chosen = if (deck == "a") deckA else deckB
-        return extras.crates().filter { it.group == g }.sortedBy { it.name.lowercase() }.map {
+        return extras.crates().filter { it.group == g }.map {
             AutoNode(
                 mix(AutoMixKind.CRATE, deck, it.key), it.name,
                 subtitle = if (chosen?.key == it.key) "Selected · ${g.label}" else g.label,
@@ -266,7 +268,7 @@ class AutoMixTab(
     }
 
     private fun sessionChildren(id: String): List<AutoNode>? {
-        val s = (juke as? Juke.Loaded)?.sessions?.firstOrNull { it.id == id } ?: return null
+        val s = ((juke as? Juke.Loaded)?.sessions ?: lastSessions).firstOrNull { it.id == id } ?: return null
         return listOf(AutoNode(mix(AutoMixKind.SESSION_URL, id), s.url, subtitle = "Join link — open it on your phone"))
     }
 
@@ -289,6 +291,7 @@ class AutoMixTab(
             }
             val changed = next != juke
             juke = next
+            (next as? Juke.Loaded)?.let { lastSessions = it.sessions }
             if (changed || before == Juke.Idle) notifyMix(AutoId.Mix(AutoMixKind.JUKEBOX))
         }
     }
@@ -304,11 +307,15 @@ class AutoMixTab(
             AutoMixKind.CRATE -> {
                 val crate = if (id.b.isEmpty()) null else extras.crates().firstOrNull { it.key == id.b }
                 if (id.b.isNotEmpty() && crate == null) throw AutoPlayException("That crate is gone")
+                val old = if (id.a == "a") deckA else deckB
                 if (id.a == "a") deckA = crate else deckB = crate
-                notifyMix(AutoId.Mix(AutoMixKind.DECK, id.a))
+                val groups = listOfNotNull(old?.group, crate?.group).distinct()
+                    .map { AutoId.Mix(AutoMixKind.GROUP, id.a, it.token) }
+                notifyMix(AutoId.Mix(AutoMixKind.DECK, id.a), *groups.toTypedArray())
                 return "${if (id.a == "a") "Deck A" else "Deck B"}: ${crate?.name ?: "Same as Deck A"}"
             }
             AutoMixKind.START -> return start()
+            AutoMixKind.STATUS -> return null
             AutoMixKind.NEW_MIX -> extras.stop()
             AutoMixKind.STOP -> extras.stop()
             AutoMixKind.TOGGLE -> {
@@ -334,6 +341,7 @@ class AutoMixTab(
             throw AutoPlayException(e.message ?: "Couldn't start the mix")
         }
         notifyMix()
+        // Visible in the car: the Downloading row (downloadState) plus this toast on the phone.
         return if (result.count == 0) "Downloading — the mix starts when the first track lands" else null
     }
 
@@ -343,7 +351,7 @@ class AutoMixTab(
         const val JUKE_REFRESH_MS = 10_000L
         const val JUKE_UNREACHABLE = "Couldn't reach the jukebox server"
         const val JUKE_NONE = "No live sessions"
-        const val JUKE_HINT = "Host one from your phone or the TV"
+        const val JUKE_HINT = "Host one from iPhone or the TV"
 
         fun keyOf(s: MixSource): String = when (s) {
             is MixSource.Pocket -> "pocket:${s.id}"

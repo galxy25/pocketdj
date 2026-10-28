@@ -223,14 +223,25 @@ class AppAutoMixExtras(
 
     override fun crates(): List<AutoCrate> {
         val s = app.collections
-        return s.pockets.map { AutoCrate(com.levi.pocketdj.shell.MixSource.Pocket(it.id), it.name, AutoCrateGroup.POCKETS) } +
-            s.playlists.filter { it.id != NOW_PLAYING_PLAYLIST_ID }
-                .map { AutoCrate(com.levi.pocketdj.shell.MixSource.Playlist(it.id), it.name, AutoCrateGroup.PLAYLISTS) } +
-            s.setlists.filter { it.id != NOW_PLAYING_SETLIST_ID }.mapNotNull { sl ->
-                val n = sl.name?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-                AutoCrate(com.levi.pocketdj.shell.MixSource.Setlist(sl.id), n, AutoCrateGroup.SETLISTS)
+        return com.levi.pocketdj.screens.mix.MixCrateMenuState.entries(
+            s.pockets, s.playlists.filter { it.id != NOW_PLAYING_PLAYLIST_ID }, s.setlists,
+        ).map { e ->
+            val g = when (e.section) {
+                com.levi.pocketdj.screens.mix.MixCrateMenuState.POCKETS -> AutoCrateGroup.POCKETS
+                com.levi.pocketdj.screens.mix.MixCrateMenuState.PLAYLISTS -> AutoCrateGroup.PLAYLISTS
+                else -> AutoCrateGroup.SETLISTS
             }
+            val src = when (val m = e.source) {
+                is com.levi.pocketdj.mix.model.MixSource.Pocket -> com.levi.pocketdj.shell.MixSource.Pocket(m.value)
+                is com.levi.pocketdj.mix.model.MixSource.Playlist -> com.levi.pocketdj.shell.MixSource.Playlist(m.value)
+                is com.levi.pocketdj.mix.model.MixSource.Setlist -> com.levi.pocketdj.shell.MixSource.Setlist(m.value)
+            }
+            AutoCrate(src, e.name, g)
+        }
     }
+
+    override fun downloadState(): Pair<Int, Int>? =
+        app.mixGraph.downloadStateIfBuilt()?.takeIf { it.isActive }?.let { it.downloadedCount to it.totalCount }
 
     override fun live(): AutoMixLive? {
         if (!facade.autoMixing) return null
@@ -251,15 +262,16 @@ class AppAutoMixExtras(
     override fun skipSlow() { main.launch { val dj = app.mixGraph.autoDj; dj.remoteSkip(dj.skipFadeSeconds) } }
     override fun stop() { main.launch { if (facade.autoMixing) app.mixGraph.autoDj.stopAutoMix() } }
 
-    /** Light poll (only while a car browse session is bound): signature-filtered, never builds the engine. */
+    /** Light 1.5 s poll while the auto scope lives (signature-filtered, never builds the engine). */
     override val changes: kotlinx.coroutines.flow.Flow<String> = kotlinx.coroutines.flow.flow {
         while (true) {
             val sig = if (facade.autoMixing) {
                 val l = live()
                 "1|${facade.autoPaused}|${l?.title}|${l?.position}|${l?.count}|${l?.deck}|${l?.buffering}"
             } else "0"
-            emit(sig)
-            kotlinx.coroutines.delay(1500)
+            emit(sig + "|dl=" + downloadState())
+            // Idle (no mix, no pull): back off; the loop only has something to say when state is live.
+            kotlinx.coroutines.delay(if (sig == "0" && downloadState() == null) 5000 else 1500)
         }
     }
 
