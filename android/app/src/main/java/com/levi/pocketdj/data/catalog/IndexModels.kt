@@ -19,7 +19,32 @@ data class IndexJson(
     val songs: List<IndexSong> = emptyList(),
     /** Apple Music user-playlist mirrors; absent on vinyl/digital documents. */
     val playlists: List<IndexPlaylist>? = null,
+    /** Apple Music name->artist-id join table; absent elsewhere. */
+    val artists: List<IndexArtist>? = null,
 )
+
+/**
+ * Artist-name -> Apple Music artist id table row. Lenient: every field defaulted so a
+ * malformed row never fails the whole document. [key] is [normalize]d name.
+ */
+@Serializable
+data class IndexArtist(
+    val key: String = "",
+    val name: String = "",
+    val id: Long? = null,
+    /** Advisory only — never branch on it. */
+    val songs: Int? = null,
+    val alt: List<Long>? = null,
+) {
+    /** Usable for the name join: non-blank key and a real id (iOS requires key/name/id). */
+    val valid: Boolean get() = key.isNotBlank() && id != null
+
+    companion object {
+        /** trim, lowercase, collapse whitespace runs — must match the indexer's norm(). */
+        fun normalize(raw: String): String =
+            raw.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+    }
+}
 
 @Serializable
 data class IndexManifest(
@@ -85,6 +110,9 @@ data class IndexAlbum(
     val audioTracks: List<AudioTrack>? = null,
     val audioDurationSec: Double? = null,
     val appleMusicId: String? = null,
+    val appleMusicUrl: String? = null,
+    val spotifyUrl: String? = null,
+    val youtubeUrl: String? = null,
 ) {
     /**
      * Ordered candidate art URLs, resolved and ready for Coil — every
@@ -117,4 +145,20 @@ data class IndexSong(
     val lyricsStatus: String? = null,
     /** Metadata/join-key only on Android — never a playback path (no MusicKit). */
     val appleMusicId: String? = null,
-)
+    val appleMusicUrl: String? = null,
+    val spotifyUrl: String? = null,
+    val youtubeUrl: String? = null,
+    /** Sibling edition catalog ids (resolve-explicit-variants); the primary is never rewritten. */
+    val appleMusicIdExplicit: String? = null,
+    val appleMusicIdClean: String? = null,
+    /** Epoch ms the track was added to the source library. */
+    val dateAdded: Double? = null,
+) {
+    /** Catalog id of the given edition, falling back to the primary when its explicitness matches. */
+    fun appleMusicId(edition: com.levi.pocketdj.data.edition.SongVariant): String? = when (edition) {
+        com.levi.pocketdj.data.edition.SongVariant.CLEAN ->
+            appleMusicIdClean ?: if (explicit == false) appleMusicId else null
+        com.levi.pocketdj.data.edition.SongVariant.EXPLICIT ->
+            appleMusicIdExplicit ?: if (explicit == true) appleMusicId else null
+    }
+}

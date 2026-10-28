@@ -1,8 +1,10 @@
 package com.levi.pocketdj.di
 
 import com.levi.pocketdj.screens.browse.BrowseSessionFlushable
+import com.levi.pocketdj.screens.settings.sections.editionSection
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
+import com.levi.pocketdj.shell.SettingsSection
 
 /**
  * Sidecar graph for the browse area (decision D3). Packages in this area override the
@@ -13,4 +15,6 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     override val flushables: List<Flushable> =
         listOf(BrowseSessionFlushable { app.settings.setBrowseSnapshot(it) })
+
+    override val settingsSections: List<SettingsSection> by lazy { listOf(editionSection()) }
 }
