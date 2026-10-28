@@ -43,6 +43,11 @@ class AutoLibraryCallback(
     private val warmUp: () -> Unit = {},
     private val catalogReady: () -> Boolean = { true },
 ) {
+    init {
+        // SURF-9: the Mix tab rebuilds on facade state changes through the same notify channel.
+        tree.mix?.bind(scope) { parent, count -> notifyChildrenChanged(parent, count) }
+    }
+
     private var warmed = false
     private var notifiedReady = false
 
@@ -100,6 +105,10 @@ class AutoLibraryCallback(
             is AutoId.PlayAll -> run { player.playCollection(id.ref, shuffle = false) }
             is AutoId.ShuffleAll -> run { player.playCollection(id.ref, shuffle = true) }
             AutoId.Continue -> run { player.resumeHeld() }
+            is AutoId.Mix -> {
+                val mix = tree.mix
+                if (mix == null) done() else run { mix.select(id)?.let(toast) }
+            }
             is AutoId.Song -> guardPlayable(mediaId) { player.playSong(id.ref, id.songId) }
             is AutoId.Solo -> guardPlayable(mediaId) { player.playSolo(id.songId) }
             is AutoId.AddTarget -> run {

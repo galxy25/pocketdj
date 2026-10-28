@@ -622,7 +622,13 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     }
 
     /** MIX-7: app-scoped collection pull for the Mix tab (survives leaving the tab). */
-    val collectionMixDownloader: CollectionMixDownloader by lazy {
+    val collectionMixDownloader: CollectionMixDownloader get() = downloaderLazy.value
+
+    /** The pull state if the downloader already exists; never builds it (car connect must not materialize Mix). */
+    fun downloadStateIfBuilt(): com.levi.pocketdj.mix.download.MixDownloadState? =
+        if (downloaderLazy.isInitialized()) downloaderLazy.value.state.value else null
+
+    private val downloaderLazy = lazy {
         val burns = app.servicesGraph.burnStore
         val ripsRepo = app.ripsRepository
         val catalog = { app.catalogRepository.state.value.catalog }

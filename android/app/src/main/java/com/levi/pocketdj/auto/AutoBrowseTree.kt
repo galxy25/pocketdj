@@ -50,6 +50,11 @@ sealed interface AutoId {
         override val encoded get() = "addt:${enc(songId)}:${targetKind.token}:${enc(targetId)}"
     }
 
+    /** A Mix-tab node (SURF-9). [a]/[b] are kind-specific payloads (deck, crate key, session id). */
+    data class Mix(val kind: AutoMixKind, val a: String = "", val b: String = "") : AutoId {
+        override val encoded get() = "mix:${kind.token}:${enc(a)}:${enc(b)}"
+    }
+
     companion object {
         internal fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
         internal fun dec(s: String): String = URLDecoder.decode(s, "UTF-8")
@@ -75,6 +80,9 @@ sealed interface AutoId {
                 "all" -> if (p.size == 4) decRef(p[1], p[2], p[3])?.let(::PlayAll) else null
                 "shuf" -> if (p.size == 4) decRef(p[1], p[2], p[3])?.let(::ShuffleAll) else null
                 "song" -> if (p.size == 5) decRef(p[1], p[2], p[3])?.let { Song(it, dec(p[4])) } else null
+                "mix" -> if (p.size == 4) {
+                    AutoMixKind.fromToken(p[1])?.let { Mix(it, dec(p[2]), dec(p[3])) }
+                } else null
                 "solo" -> if (p.size == 2) Solo(dec(p[1])) else null
                 "addto" -> if (p.size == 2) AddTo(dec(p[1])) else null
                 "addt" -> if (p.size == 4) {
@@ -152,6 +160,8 @@ interface AutoLibraryData {
 class AutoBrowseTree(
     private val data: AutoLibraryData,
     private val maxSongs: Int = MAX_SONGS,
+    /** The Mix tab (SURF-9). Null until a MixFacade is wired: the tab is then hidden entirely. */
+    val mix: AutoMixTab? = null,
 ) {
     fun root(): AutoNode = AutoNode(
         id = AutoId.Root.encoded,
@@ -172,6 +182,7 @@ class AutoBrowseTree(
             AutoId.Root -> rootChildren()
             is AutoId.Tab -> if (!data.catalogReady) listOf(loadingNode()) else tabChildren(id.tab)
             is AutoId.Collection -> collectionChildren(id.ref)
+            is AutoId.Mix -> mix?.children(id)
             is AutoId.AddTo -> null // resolved by AutoLibraryCallback (needs AutoAddTargets)
             else -> null
         }
@@ -199,6 +210,7 @@ class AutoBrowseTree(
             AutoId.Tab(AutoId.Tab.Which.POCKETS).encoded, "Pockets",
             browsable = true, childBrowsableStyle = AutoStyle.LIST,
         )
+        mix?.let { out += it.tabNode() }
         return out
     }
 
@@ -271,6 +283,7 @@ class AutoBrowseTree(
             is AutoId.ShuffleAll -> data.collection(id.ref)?.let { AutoNode(id.encoded, "Shuffle all", it.name, playable = true) }
             is AutoId.Song -> data.song(id.songId)?.let { songNode(id.encoded, it) }
             is AutoId.Solo -> data.song(id.songId)?.let { songNode(id.encoded, it) }
+            is AutoId.Mix -> mix?.item(id)
             is AutoId.Empty, is AutoId.AddTo, is AutoId.AddTarget -> null
         }
     }
