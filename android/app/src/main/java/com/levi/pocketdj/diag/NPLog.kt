@@ -35,6 +35,8 @@ object NPLog {
 
     /** A lane line (e.g. `NPLog.lane(NPLog.DEADAIR, "…")`). */
     fun lane(lane: String, message: String) {
+        // Mirror to logcat too (verification + adb triage); the DiagLog line stays the durable copy.
+        logd("PocketDJ.$lane", message)
         DiagLog.shared?.log(lane, message)
     }
 }

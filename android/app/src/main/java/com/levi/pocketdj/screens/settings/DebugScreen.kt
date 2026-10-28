@@ -191,6 +191,51 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         Text(seedStatus, style = MaterialTheme.typography.bodySmall)
     }
 
+    // Wave-4 verify seeds (debug only): a short-rip queue with a metadata-only row between playables.
+    var ripStatus by remember { mutableStateOf("Rip seed: idle") }
+    var seedIds by remember { mutableStateOf<List<String>>(emptyList()) }
+    suspend fun pickSeed(): List<String> = withContext(Dispatchers.IO) {
+        val songs = host.graph.catalogRepository.catalogFlow.first()?.songs ?: emptyList()
+        val manifest = host.graph.ripsRepository.manifest.value
+        val ripped = songs.filter { s ->
+            val e = manifest[s.id]
+            e != null && e.source == "digital" && (e.durationMs ?: Long.MAX_VALUE) in 20_000L..90_000L
+        }.sortedBy { manifest[it.id]?.durationMs }.take(12)
+        val meta = songs.firstOrNull { manifest[it.id] == null }
+        val ids = ripped.map { it.id }.toMutableList()
+        if (meta != null && ids.size >= 2) ids.add(1, meta.id)
+        ids
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = pickSeed(); seedIds = ids
+                val store = host.graph.collections
+                val pl = store.playlists.firstOrNull { it.name == "SeedRip" } ?: store.createPlaylist("SeedRip")
+                store.addSongs(ids, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, pl.id))
+                ripStatus = "Rip seed: ${ids.size} ids ${ids.joinToString(",")}"
+                android.util.Log.d("PdjVerify", ripStatus)
+            }
+        }) { Text("Seed rip playlist") }
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = seedIds.ifEmpty { pickSeed().also { seedIds = it } }
+                val out = host.graph.playbackController.playQueue(ids.map { com.levi.pocketdj.playback.QueuePlan.QueueEntry(it) })
+                ripStatus = "Rip seed: play -> $out"
+            }
+        }) { Text("Play seed queue") }
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = seedIds.ifEmpty { pickSeed().also { seedIds = it } }
+                val songs = host.graph.catalogRepository.catalogFlow.first()?.songs?.associateBy { it.id } ?: emptyMap()
+                val r = host.graph.servicesGraph.burnStore.burn(ids.take(3).map { com.levi.pocketdj.data.burns.BurnSong(it, songs[it]?.name ?: it, songs[it]?.artist ?: "") })
+                ripStatus = "Rip seed: burn -> $r"
+                android.util.Log.d("PdjVerify", ripStatus)
+            }
+        }) { Text("Burn first 3") }
+    }
+    Text(ripStatus, style = MaterialTheme.typography.bodySmall)
+
     SettingsDivider()
     SettingsHeader("Capture")
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

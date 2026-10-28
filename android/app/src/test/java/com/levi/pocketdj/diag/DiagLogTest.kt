@@ -256,7 +256,7 @@ class DiagLogTest {
             NPLog.lane(NPLog.DEADAIR, "gap 1200ms")
             r.log.flushOnBackground(); advanceUntilIdle()
         } finally { DiagLog.shared = null }
-        assertEquals(listOf("PocketDJ.np|[app] card write"), seen)
+        assertEquals(listOf("PocketDJ.np|[app] card write", "PocketDJ.deadair|gap 1200ms"), seen)
         val body = r.up.puts.last().second
         assertTrue(body.contains("[np] [app] card write"))
         assertTrue(body.contains("[deadair] gap 1200ms"))

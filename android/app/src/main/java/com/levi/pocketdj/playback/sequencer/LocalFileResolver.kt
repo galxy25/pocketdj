@@ -19,3 +19,13 @@ fun interface LocalFileResolver {
         val None = LocalFileResolver { null }
     }
 }
+
+/**
+ * Maps a burn-store hit to a playable [LocalFile]: a per-song cut plays from 0:00 (no window);
+ * a shared analog album file plays the song's `[startMs, startMs + durationMs)` window.
+ */
+fun burnedLocalFile(file: java.io.File, isCut: Boolean, startMs: Long?, durationMs: Long?): LocalFile {
+    val start = if (isCut) null else startMs
+    val end = if (start != null && durationMs != null) start + durationMs else null
+    return LocalFile(file.toURI().toString(), start, end)
+}
