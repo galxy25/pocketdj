@@ -3,6 +3,15 @@ package com.levi.pocketdj.di
 import android.content.Intent
 import com.levi.pocketdj.data.games.GameScoreboardStore
 import com.levi.pocketdj.data.games.GamesPrefs
+import com.levi.pocketdj.data.games.friends.MusicWithFriendsStore
+import com.levi.pocketdj.data.games.friends.MwFClient
+import com.levi.pocketdj.data.games.friends.MwFHost
+import com.levi.pocketdj.data.games.friends.MwFJoinSecret
+import com.levi.pocketdj.data.games.friends.MwFKeyValue
+import com.levi.pocketdj.data.games.friends.MwFQueueSink
+import com.levi.pocketdj.data.games.friends.MwFSessionFile
+import com.levi.pocketdj.playback.RunItem
+import com.levi.pocketdj.playback.sequencer.QueueItem
 import com.levi.pocketdj.shell.DeepLinkHandler
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.ResetHook
@@ -225,6 +234,65 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
         }
     }
 
+    // ---- Music with Friends (GM-9) ----
+
+    private val mwfKeyValue = object : MwFKeyValue {
+        private val prefs get() = app.appContext.getSharedPreferences("pdj-mwf", android.content.Context.MODE_PRIVATE)
+        override fun getString(key: String): String? = runCatching { prefs.getString(key, null) }.getOrNull()
+        override fun putString(key: String, value: String?) {
+            runCatching { prefs.edit().apply { if (value == null) remove(key) else putString(key, value) }.apply() }
+        }
+    }
+
+    /** Per-install re-join credential (never the broadcast install id). */
+    val mwfJoinSecret: MwFJoinSecret by lazy { MwFJoinSecret(mwfKeyValue) }
+
+    val mwfClient: MwFClient by lazy {
+        MwFClient(http = app.httpClient, json = app.json, configProvider = {
+            val current = app.settings.current()
+            MwFClient.Config(current.jukeboxServerUrl, current.jukeboxToken, app.settings.ensureInstallId())
+        })
+    }
+
+    private val mwfHost = object : MwFHost {
+        private val catalog get() = app.catalogRepository.state.value.catalog
+        override fun songs(): List<IndexSong> = catalog?.songs.orEmpty()
+        override fun songExists(songId: String): Boolean = catalog?.songsById?.containsKey(songId) == true
+        override fun songIdForAppleMusicId(appleMusicId: String): String? =
+            catalog?.songs?.firstOrNull { it.appleMusicId == appleMusicId }?.id
+        override fun profileName(): String = ""
+        override val queue: MwFQueueSink = object : MwFQueueSink {
+            private val seq get() = app.playbackGraph.sequencer
+            override val runningSourceTag: String? get() = seq.state.value.sourceSetlistId
+            override val isRunning: Boolean get() = seq.state.value.isRunning
+            override fun append(item: RunItem) {
+                mainScope.launch { seq.appendToQueue(listOf(item.toQueueItem())) }
+            }
+            override fun play(item: RunItem) {
+                mainScope.launch { seq.play(listOf(item.toQueueItem())) }
+            }
+            private fun RunItem.toQueueItem() = QueueItem(id = songId, title = title, artist = artist, lengthMs = lengthMs)
+        }
+        override fun createPocket(name: String, songIds: List<String>, description: String?): String =
+            app.collections.createPocket(name, songIds, description).id
+        override fun pocketExists(pocketId: String): Boolean = app.collections.pocket(pocketId) != null
+        override fun addSongToPocket(songId: String, pocketId: String) =
+            app.collections.addSongToPocket(songId, pocketId)
+    }
+
+    /** App-scoped Music with Friends store (sessions persisted to `pocketdj-mwf-sessions.json`). */
+    val friends: MusicWithFriendsStore by lazy {
+        MusicWithFriendsStore(
+            client = mwfClient,
+            sessionFile = MwFSessionFile(File(app.appContext.filesDir, MwFSessionFile.FILE_NAME)),
+            kv = mwfKeyValue,
+            joinSecret = mwfJoinSecret,
+            scoreboard = scoreboard,
+            host = mwfHost,
+            clientId = { app.settings.ensureInstallId() },
+        ).also { it.loadPersisted() }
+    }
+
     init {
         // Warm the store off the main thread so the first Games-tab composition never does disk IO.
         app.appScope.launch(Dispatchers.IO) { runCatching { scoreboard } }
@@ -235,6 +303,7 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
     override val resetHooks: List<ResetHook> = listOf(
         ResetHook { scoreboard.clear() },
         ResetHook { inThePocket.clearLocal() },
+        ResetHook { friends.eraseAll(); mwfJoinSecret.reset() },
     )
 
     override val syncEntries: List<SyncEntry> =
