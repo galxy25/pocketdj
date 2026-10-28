@@ -1,0 +1,236 @@
+[
+ {
+  "title": "Rumours",
+  "base": "rumours",
+  "signature": "",
+  "klass": "STANDARD"
+ },
+ {
+  "title": "Rumours (Deluxe Edition)",
+  "base": "rumours",
+  "signature": "deluxe edition",
+  "klass": "COSMETIC"
+ },
+ {
+  "title": "Rumours (Deluxe) (Remastered)",
+  "base": "rumours",
+  "signature": "deluxe remastered",
+  "klass": "COSMETIC"
+ },
+ {
+  "title": "Rumours (Remastered) (Deluxe)",
+  "base": "rumours",
+  "signature": "deluxe remastered",
+  "klass": "COSMETIC"
+ },
+ {
+  "title": "Song (Extended Mix)",
+  "base": "song",
+  "signature": "extended mix",
+  "klass": "DERIVATIVE"
+ },
+ {
+  "title": "Song - Radio Edit",
+  "base": "song",
+  "signature": "edit radio",
+  "klass": "DERIVATIVE"
+ },
+ {
+  "title": "Song (Live)",
+  "base": "song",
+  "signature": "live",
+  "klass": "DISTINCT"
+ },
+ {
+  "title": "Song (Live Extended Mix)",
+  "base": "song",
+  "signature": "extended live mix",
+  "klass": "DISTINCT"
+ },
+ {
+  "title": "Song (feat. Chris Brown)",
+  "base": "song",
+  "signature": "",
+  "klass": "STANDARD"
+ },
+ {
+  "title": "Song feat. Chris Brown",
+  "base": "song",
+  "signature": "",
+  "klass": "STANDARD"
+ },
+ {
+  "title": "Song (Original Mix)",
+  "base": "song",
+  "signature": "mix original",
+  "klass": "COSMETIC"
+ },
+ {
+  "title": "Song - Part Two",
+  "base": "song part two",
+  "signature": "",
+  "klass": "STANDARD"
+ },
+ {
+  "title": "Song - Live at Wembley",
+  "base": "song live at wembley",
+  "signature": "",
+  "klass": "STANDARD"
+ },
+ {
+  "title": "Ultimate Aaliyah [Disc 1]",
+  "base": "ultimate aaliyah",
+  "signature": "1 disc",
+  "klass": "DISTINCT"
+ },
+ {
+  "title": "Song (Acoustic)",
+  "base": "song",
+  "signature": "acoustic",
+  "klass": "DISTINCT"
+ },
+ {
+  "title": "Song (Instrumental)",
+  "base": "song",
+  "signature": "instrumental",
+  "klass": "DISTINCT"
+ },
+ {
+  "title": "Song (Rick Rubin Sessions)",
+  "base": "song",
+  "signature": "rick rubin sessions",
+  "klass": "DISTINCT"
+ },
+ {
+  "title": "Song (Taylor's Version)",
+  "base": "song",
+  "signature": "s taylor version",
+  "klass": "DISTINCT"
+ },
+ {
+  "title": "Album - Single",
+  "base": "album",
+  "signature": "single",
+  "klass": "DERIVATIVE"
+ },
+ {
+  "title": "Song - 2011 Remaster",
+  "base": "song",
+  "signature": "2011 remaster",
+  "klass": "COSMETIC"
+ },
+ {
+  "title": "Song (35th Anniversary Edition)",
+  "base": "song",
+  "signature": "35th anniversary edition",
+  "klass": "COSMETIC"
+ },
+ {
+  "title": "Song (12\" Version)",
+  "base": "song",
+  "signature": "inch version",
+  "klass": "DERIVATIVE"
+ },
+ {
+  "title": "Song (Club Mix)",
+  "base": "song",
+  "signature": "club mix",
+  "klass": "DERIVATIVE"
+ },
+ {
+  "title": "Song (Remix)",
+  "base": "song",
+  "signature": "remix",
+  "klass": "DERIVATIVE"
+ },
+ {
+  "title": "Song (Explicit)",
+  "base": "song",
+  "signature": "explicit",
+  "klass": "COSMETIC"
+ },
+ {
+  "title": "Song (Clean)",
+  "base": "song",
+  "signature": "clean",
+  "klass": "COSMETIC"
+ },
+ {
+  "title": "Song (Demo)",
+  "base": "song",
+  "signature": "demo",
+  "klass": "DISTINCT"
+ },
+ {
+  "title": "Song (Extended Mix",
+  "base": "song",
+  "signature": "extended mix",
+  "klass": "DERIVATIVE"
+ },
+ {
+  "title": "Tom & Jerry's Song",
+  "base": "tom and jerry s song",
+  "signature": "",
+  "klass": "STANDARD"
+ },
+ {
+  "title": "Café del Mar (Remastered)",
+  "base": "cafe del mar",
+  "signature": "remastered",
+  "klass": "COSMETIC"
+ },
+ {
+  "title": "Song (Bonus Track Version)",
+  "base": "song",
+  "signature": "bonus track version",
+  "klass": "COSMETIC"
+ },
+ {
+  "title": "Song (Mono)",
+  "base": "song",
+  "signature": "mono",
+  "klass": "COSMETIC"
+ },
+ {
+  "title": "Song (Dub Mix)",
+  "base": "song",
+  "signature": "dub mix",
+  "klass": "DERIVATIVE"
+ },
+ {
+  "title": "Song (Disc II)",
+  "base": "song",
+  "signature": "disc ii",
+  "klass": "DISTINCT"
+ },
+ {
+  "title": "Song (CD Edition)",
+  "base": "song",
+  "signature": "cd edition",
+  "klass": "COSMETIC"
+ },
+ {
+  "title": "Song (Radio Edit) [feat. X]",
+  "base": "song",
+  "signature": "edit radio",
+  "klass": "DERIVATIVE"
+ },
+ {
+  "title": "Featuring",
+  "base": "featuring",
+  "signature": "",
+  "klass": "STANDARD"
+ },
+ {
+  "title": "Song ()",
+  "base": "song",
+  "signature": "",
+  "klass": "STANDARD"
+ },
+ {
+  "title": "Song (Extended Mix with Bob)",
+  "base": "song",
+  "signature": "bob extended mix with",
+  "klass": "DERIVATIVE"
+ }
+]
