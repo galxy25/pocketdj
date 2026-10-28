@@ -55,6 +55,10 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q43 [GM-4]** Gem Collector opens as an in-tab overlay in Games (no nav route; changed GamesRoutes.kt from GM-1). Add a `games/puzzle` NavHost route later for deep links? -- *Default: overlay.* -- Deep links / predictive back.
 - **Q44 [SVC-6]** Delete-by-collection covers pockets and playlists only (not setlists); protected-set lookup can construct the Mix engine from the prune worker; play-stats file is not synced across devices (belongs to profile sync); no tvOS-style auto-manage toggle. OK as-is? -- *Default: as-is.* -- Storage parity.
 - **Q45 [COL-7]** cancelPendingWriteBacks on re-link has no Android write-back queue to hook until the write-back package lands. -- *Default: no-op.* -- Tracking only.
+- **Q46 [MIX-11]** Starting a Mix deck with no PlaybackService running binds a MediaController (starts the service + foreground notification). Keep, or leave Mix-only starts without a notification? -- *Default: bind (notification + lock-screen card on first Mix audio).* -- Lock-screen/BT transport for a Mix-only session.
+- **Q47 [SURF-6]** Confirm iOS numbers for the recently-added count (3650 days, 1..100000) rather than the roadmap's 50 / 1..500. -- *Default: iOS numbers.* -- Collections default.
+- **Q48 [GM-7]** The In the Pocket round upload orders plays before rounds only once the services bridge sets `PocketsBridge.flushesRounds = true`; the Games fallback timer stays on until then. Same wave as the services bridge (cloud mode needs real pockets results). -- *Default: fallback timer.* -- Round/plays ordering.
+- **Q49 [BRW-10]** In Da Zone ranking took 6.5 s over the full 110k-song catalog on the emulator (debug "Zone: rank now"). Acceptable off-main, or precompute/narrow the candidate pool before REC-5 renders it? -- *Default: run off-main, no narrowing.* -- Cold-start Zone latency on phones.
 
 ## ANSWERED
 

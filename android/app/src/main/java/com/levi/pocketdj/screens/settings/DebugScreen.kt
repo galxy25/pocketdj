@@ -394,6 +394,43 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     }
     Text(autoStatus, style = MaterialTheme.typography.bodySmall)
 
+    // GM-7 verify probes (debug only): the In the Pocket game screen (GAMES-8) has no UI yet.
+    var pocketStatus by remember { mutableStateOf("Pocket: idle") }
+    fun pocketLine(): String {
+        val st = host.graph.gamesGraph.inThePocket.state.value
+        val c = st.current
+        return "Pocket bridge=${host.graph.gamesGraph.pocketsBridge.isEnabled.value} build=${st.buildState} songs=${c?.songs?.size} idx=${st.currentSongIndex} outcome=${c?.outcome?.token} states=${c?.songs?.joinToString(",") { it.state.name }} runs=${host.graph.gamesGraph.scoreboard.let { sb -> sb.inThePocketStats() }}"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch { host.graph.gamesGraph.inThePocket.buildRound(); host.graph.gamesGraph.inThePocket.start(); pocketStatus = pocketLine() }
+        }) { Text("Pocket: build+start") }
+        OutlinedButton(onClick = { pocketStatus = pocketLine() }) { Text("Pocket: status") }
+        OutlinedButton(onClick = { host.graph.gamesGraph.inThePocket.endActiveRound(); pocketStatus = pocketLine() }) { Text("Pocket: end") }
+    }
+    Text(pocketStatus, style = MaterialTheme.typography.bodySmall)
+
+    // BRW-10 verify probe (debug only): In Da Zone has no renderer yet (REC-5); log the queue it would build.
+    var zoneStatus by remember { mutableStateOf("Zone: idle") }
+    OutlinedButton(onClick = {
+        host.scope.launch {
+            val songs = host.graph.catalogRepository.catalogFlow.first()?.songs.orEmpty()
+            val hist = com.levi.pocketdj.data.history.PlayHistoryStore.get(host.graph.appContext)
+            val t0 = System.currentTimeMillis()
+            val q = withContext(Dispatchers.Default) {
+                com.levi.pocketdj.data.recs.ZoneEngine.inDaZone(
+                    songs = songs,
+                    plays = hist.events.map { com.levi.pocketdj.data.recs.ZoneEngine.Play(it.songId, it.playedAt) },
+                    playCount = { hist.playCount(it) },
+                    nowMs = System.currentTimeMillis().toDouble(),
+                )
+            }
+            zoneStatus = "Zone: songs=${songs.size} queue=${q.count} familiar=${q.count(com.levi.pocketdj.data.recs.ZoneEngine.Pool.FAMILIAR)} buried(rediscovery)=${q.count(com.levi.pocketdj.data.recs.ZoneEngine.Pool.REDISCOVERY)} in ${System.currentTimeMillis() - t0}ms"
+            com.levi.pocketdj.diag.NPLog.lane("zone", zoneStatus)
+        }
+    }) { Text("Zone: rank now") }
+    Text(zoneStatus, style = MaterialTheme.typography.bodySmall)
+
     // GM-3 verify probes (debug only): the Gem Collector round engine has no screen yet.
     var gemStatus by remember { mutableStateOf("Gem: idle") }
     fun gemLine(): String {

@@ -171,3 +171,19 @@ Emulator (emulator-5554), screenshots in pocketdj-parity/_shots/wave10:
 No FATAL EXCEPTION / ANR from com.levi.pocketdj in logcat.
 
 Open: Q41-Q45.
+
+## Wave 11
+
+Merged: MIX-11, STU-6, BRW-10, STU-5, GM-7, SURF-6. One conflict (screens/producer/ProducerScreen.kt: STU-6 Cues + STU-5 Sequencer branches) resolved keeping both. JVM: 3128 tests, 0 failures after merge + fix (the wave-10 2880 baseline moved by each package's new tests plus 2 integration tests). assembleDebug green.
+
+Emulator (emulator-5554), screenshots in pocketdj-parity/_shots/wave11:
+- STU-5 PASS: seeded pattern, toggled 4 steps, Play logs `pattern start ... armed slots` rolling horizon and stopPattern parks the cursor; looper on with 2 bars logs loop=2; Bounce wrote files/studio/sequences/pattern-<id>.m4a (60 KB, "Bounced" notice). Timing/choke audibility device-only.
+- STU-6 PASS: Cues tab, burned song picked, cue set at 13.084 s, tapping it plays; media session position=13084 ms. Apple Music play-then-seek device-only.
+- SURF-6 PASS: profile name, recently-added count (77) and Rip-from-cloud toggle all restored after force-stop + relaunch.
+- MIX-11 PASS after a fix: Auto-DJ over burned songs shows the Mix as the media session (title/position); `cmd media_session dispatch pause/play/next` reach remotePause/remotePlay/skip (log `mix remotePause`, `mixadvance skip`), audio focus acquired/abandoned. BUG FIXED: a Browse/setlist play while the Mix owned the session was silently dropped (the Mix SimpleBasePlayer cannot take media items; the Mix kept playing and the new run never started). Added SessionSwitchboard.yieldMixToExo() called before every controller setMediaItems; verified the handoff (`switchboard yield mix->exo`, `owner=exo`, Mix paused, song plays); 2 regression tests. NOT run: the route-change `recover: sink restarted` step - the emulator console headphone-insert event produced no wired-device connection, so no route change reaches the app (covered by MixRecoveryTest; Bluetooth/phone-call/headset buttons device-only).
+- GM-7 PASS (via new Settings > Debug "Pocket: build+start/status/end", launch with `-e pdj.pocketsStub true`, because the GAMES-8 screen does not exist): bridge enabled, 3-song round built and played through -> outcome `pocket`; a second round with song 2 skipped -> `broke`, SKIPPED state at index 2; scoreboard stats 2 rounds / 1 pocket / 50%. The UI-only parts (opt-in/unavailable screen, scoreboard card) wait for GAMES-8; cloud mode needs the services bridge.
+- BRW-10 PASS (new Debug "Zone: rank now"): 110833 songs -> queue of 78, logged to PocketDJ.zone (familiar=0 / rediscovery=78 with this device's short history), 6.5 s.
+
+No FATAL EXCEPTION / ANR from com.levi.pocketdj (two crashes in logcat are the uiautomator dump process itself).
+
+Open: Q46-Q49.
