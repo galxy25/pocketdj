@@ -179,6 +179,60 @@ object ZoneEngine {
         if (c != 0) c else a.id.compareTo(b.id)
     }
 
+    /**
+     * The similarity-free half of the rediscovery score: dormancy + buried-favourite familiarity +
+     * ARTIST novelty, renormalised over whichever of the three this run can speak (a device with no
+     * last-played data does not silently deflate every score). Also the bounded skip multiplier.
+     */
+    private class ZoneSignals(
+        private val tuning: Tuning,
+        private val playCount: (String) -> Int,
+        private val maxPlays: Int,
+        private val feedback: Feedback,
+        private val lastPlayedMs: Map<String, Double>,
+        private val nowMs: Double,
+        private val artistFam: RecNovelty.ArtistFamiliarity,
+    ) {
+        private val famDenom = log2(1.0 + max(maxPlays, 1))
+        private val hasDormancy = lastPlayedMs.isNotEmpty()
+        private val hasFamiliarity = maxPlays > 0
+        private val hasNovelty = artistFam.isLive
+
+        val auxBaseDen: Double = tuning.dormancyWeight * (if (hasDormancy) 1 else 0) +
+            tuning.auxFamiliarityWeight * (if (hasFamiliarity) 1 else 0) +
+            tuning.auxNoveltyWeight * (if (hasNovelty) 1 else 0)
+
+        fun familiarity(id: String): Double {
+            val n = playCount(id)
+            if (n <= 0 || famDenom <= 0 || maxPlays <= 0) return 0.0
+            return log2(1.0 + n) / famDenom
+        }
+
+        /** 1.0 for a never-skipped song; clamped so a malformed penalty can neither zero nor lift. */
+        fun skipFactor(id: String): Double {
+            val p = feedback.skipPenalty[id] ?: return 1.0
+            return 1 - tuning.skipPenaltyWeight * min(1.0, max(0.0, p))
+        }
+
+        fun auxOnly(id: String, capKey: String): Double {
+            var num = 0.0
+            var den = 0.0
+            if (hasDormancy) {
+                num += tuning.dormancyWeight * (1 - PlayRecency.score(lastPlayedMs[id], nowMs))
+                den += tuning.dormancyWeight
+            }
+            if (hasFamiliarity) {
+                num += tuning.auxFamiliarityWeight * familiarity(id)
+                den += tuning.auxFamiliarityWeight
+            }
+            if (hasNovelty) {
+                num += tuning.auxNoveltyWeight * artistFam.novelty(capKey)
+                den += tuning.auxNoveltyWeight
+            }
+            return if (den > 0) num / den else 0.0
+        }
+    }
+
     // ── In Da Zone ──────────────────────────────────────────────────────────────────────
 
     /**
@@ -273,44 +327,15 @@ object ZoneEngine {
             val cap = capKeyByArtist.getOrPut(ak) { RecNovelty.primaryArtistKey(s.artist) }
             if (n > 0) artistPlays.merge(cap, n, Int::plus)
         }
-        val famDenom = log2(1.0 + max(maxPlays, 1))
-        fun familiarity(id: String): Double {
-            val n = playCount(id)
-            if (n <= 0 || famDenom <= 0 || maxPlays <= 0) return 0.0
-            return log2(1.0 + n) / famDenom
-        }
-        fun skipFactor(id: String): Double {
-            val p = feedback.skipPenalty[id] ?: return 1.0
-            return 1 - tuning.skipPenaltyWeight * min(1.0, max(0.0, p))
-        }
-
-        val hasDormancy = lastPlayedMs.isNotEmpty()
-        val hasFamiliarity = maxPlays > 0
-        val artistFam = RecNovelty.ArtistFamiliarity.of(artistPlays)
-        val hasNovelty = artistFam.isLive
+        val sig = ZoneSignals(
+            tuning = tuning, playCount = playCount, maxPlays = maxPlays, feedback = feedback,
+            lastPlayedMs = lastPlayedMs, nowMs = nowMs, artistFam = RecNovelty.ArtistFamiliarity.of(artistPlays),
+        )
 
         // 4. Partition + score.
         val familiarPool = ArrayList<Cand>()
         val rediscoveryPool = ArrayList<Cand>()
         val fallbackPool = ArrayList<Cand>()
-
-        fun auxOnly(id: String, capKey: String): Double {
-            var num = 0.0
-            var den = 0.0
-            if (hasDormancy) {
-                num += tuning.dormancyWeight * (1 - PlayRecency.score(lastPlayedMs[id], nowMs))
-                den += tuning.dormancyWeight
-            }
-            if (hasFamiliarity) {
-                num += tuning.auxFamiliarityWeight * familiarity(id)
-                den += tuning.auxFamiliarityWeight
-            }
-            if (hasNovelty) {
-                num += tuning.auxNoveltyWeight * artistFam.novelty(capKey)
-                den += tuning.auxNoveltyWeight
-            }
-            return if (den > 0) num / den else 0.0
-        }
 
         class Pre(val idx: Int, val capKey: String, val pre: Double)
         var prescored = ArrayList<Pre>()
@@ -324,7 +349,7 @@ object ZoneEngine {
 
             val w = seedWeight[id]
             if (w != null) {
-                familiarPool.add(Cand(id, cap, (w + familiarity(id) * tuning.familiarityWeight) * skipFactor(id)))
+                familiarPool.add(Cand(id, cap, (w + sig.familiarity(id) * tuning.familiarityWeight) * sig.skipFactor(id)))
                 continue
             }
             // Played recently OUTSIDE this app ⇒ not dormant ⇒ sits this queue out.
@@ -336,10 +361,10 @@ object ZoneEngine {
             val genreHit = genre?.let { taste.genreShare[it] != null } ?: false
             val related = artistHit || genreHit || id in taste.coMemberIds
             if (!taste.isEmpty && !related) {
-                fallbackPool.add(Cand(id, cap, auxOnly(id, cap)))
+                fallbackPool.add(Cand(id, cap, sig.auxOnly(id, cap)))
                 continue
             }
-            prescored.add(Pre(idx, cap, (if (artistHit) 2 else 0) + (if (genreHit) 1 else 0) + auxOnly(id, cap)))
+            prescored.add(Pre(idx, cap, (if (artistHit) 2 else 0) + (if (genreHit) 1 else 0) + sig.auxOnly(id, cap)))
         }
 
         // PASS 2: bounded expensive scoring over an ARTIST-DIVERSE shortlist.
@@ -359,9 +384,7 @@ object ZoneEngine {
         }
         prescored = shortlist
 
-        val auxBaseDen = tuning.dormancyWeight * (if (hasDormancy) 1 else 0) +
-            tuning.auxFamiliarityWeight * (if (hasFamiliarity) 1 else 0) +
-            tuning.auxNoveltyWeight * (if (hasNovelty) 1 else 0)
+        val auxBaseDen = sig.auxBaseDen
         for (c in prescored) {
             val song = songs[c.idx]
             val id = song.id
@@ -373,7 +396,7 @@ object ZoneEngine {
             val net = max(0.0, sim - penalty)
             if (!(net > 0)) continue
 
-            val aux = if (auxBaseDen > 0) auxOnly(id, c.capKey) else 0.0
+            val aux = if (auxBaseDen > 0) sig.auxOnly(id, c.capKey) else 0.0
             var lifted = net * (1 + tuning.auxGain * aux)
             if (timbreProfile != null && timbreCal != null) {
                 val fit = SimilarityFamilies.timbreFit(
@@ -381,7 +404,7 @@ object ZoneEngine {
                 )
                 lifted *= 1 + tuning.timbreGain * fit
             }
-            lifted *= skipFactor(id)
+            lifted *= sig.skipFactor(id)
             rediscoveryPool.add(Cand(id, c.capKey, lifted))
         }
 
