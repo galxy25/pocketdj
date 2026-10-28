@@ -1,5 +1,7 @@
 package com.levi.pocketdj.shell
 
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.sp
 import android.net.Uri
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
@@ -275,7 +277,11 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
                     icon = { Icon(dest.icon, contentDescription = dest.label) },
                     // Compact bar: label on the SELECTED item only, so seven destinations
                     // fit a 360 dp phone without wrapping. The rail has room for all.
-                    label = { Text(dest.label, maxLines = 1, softWrap = false) },
+                    label = {
+                        // 10.sp + Visible overflow: "Collections" (11 ch) is wider than a 7-up
+                        // bar slot at 411 dp; neighbours' labels are hidden, so it may overhang.
+                        Text(dest.label, maxLines = 1, softWrap = false, fontSize = 10.sp, overflow = TextOverflow.Visible)
+                    },
                     alwaysShowLabel = layout == ShellNavLayout.Rail,
                 )
             }
