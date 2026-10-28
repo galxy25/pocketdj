@@ -264,3 +264,16 @@ Emulator results (shots in pocketdj-parity/_shots/wave16/):
 - COL-14 / COL-16: pure JVM packages, no emulator steps (IO-2 / LP-2/3 cover them).
 Debug-only cleartext network config added so the emulator can reach a local broker (Q74).
 No FATAL EXCEPTION / ANR in logcat. Open: Q69-Q74.
+
+## Wave 17
+
+Merged (no conflicts): BRW-15, MIX-18, COL-15, STU-15, COL-13, PB-10. JVM suite 4700 tests, 0 failures (4698 right after the merge; +2 integration regression tests); assembleDebug green.
+
+Emulator results (shots in pocketdj-parity/_shots/wave17/):
+- BRW-15 PASS: against a local mock import server, Discover Songs lists hits, the artist refine narrows ("Other" leaves one hit), Albums scope lists the album and tapping it expands the /album-tracks list. No server -> "Discover unavailable".
+- COL-13 PASS: SeedRip playlist sorted by Title via Sort...; relaunch -> menu shows "Sort (1)..." and rows still sorted; Clear all -> stored order back. (Playlist detail; pocket detail shares the code.)
+- COL-15 PASS after 3 fixes: export wrote `W17Pocket.pocket.pdjcollection`; delete pocket; open the file -> "Imported 1 pocket" and the pocket is back; repeat -> "Already up to date". Bugs fixed: (a) DocumentsUI appended `.zip` (MIME application/zip) -> octet-stream; (b) results showed as "Can't open that - Exported ..." (wrong NavRequestBus channel) -> new plain notice channel; (c) a warm VIEW intent / pocketdj:// link was silently dropped -> MainActivity singleTask; (d) pathPatterns did not match paths with many dots. file:// reads of /sdcard/Download are denied by scoped storage (expected; the Files app hands out content://), so the VIEW step used a file under the app's own external dir.
+- MIX-18 PASS: Now Playing > Mix panel > Stems switch -> npdsp owns the session, "full mix -> stems" handover logged; mute drums + Lock on -> "Stem Lock: stems on"; skip -> "stemlock carry ... stems=on muted=drums -> full mix first, stems loading" then handover on the next track; kill + relaunch -> Stem Lock indicator restored ("Stem Lock: full mix", idle). Audible seamlessness and route changes: device-only, not verifiable.
+- PB-10 PASS: SeedRip burned rows play with `[deadair] gap=0.00s from=burned to=burned cause=advance` and `track start ... preloaded=true`; Up Next > Play next on a later row logs "preload cleared" + a new preload and that row plays next, preloaded, gap 0.00s. (The setlist detail screen intentionally locks reorder while its run is loaded; the Now Playing Up Next list is the live edit surface.)
+- STU-15 PASS: Intro (stemmed) -> Extract drum pattern -> 13 bars + Kick/Snare/Bass lanes -> Send bar 6 -> Sequencer lists "Donnie McClurkin - Intro - bar 6 (1 row)" and opens it (bar 1 has no hits so Send is disabled); Extract instrumental -> "Saved to Instruments > Instrumentals" (take file written); Cut sample with stem subset Drums+Bass -> new smp_ sample m4a. Real-stem detection quality: device-only.
+No FATAL EXCEPTION / ANR in logcat. Open: Q75-Q78.
