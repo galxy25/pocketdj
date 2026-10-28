@@ -1,6 +1,7 @@
 package com.levi.pocketdj.data.rips
 
 import com.levi.pocketdj.data.PdjJson
+import com.levi.pocketdj.data.credentials.ProfileHeader
 import com.levi.pocketdj.data.stems.BatchStemItem
 import com.levi.pocketdj.data.stems.BatchStemResponse
 import com.levi.pocketdj.data.stems.BatchStemResult
@@ -32,7 +33,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
  * Auth contract (load-bearing): `Authorization: Bearer <token>` is OMITTED
  * ENTIRELY when the token is empty — a tokened server 401s a bare "Bearer ",
  * and a tokenless server needs no header. `X-PocketDJ-Device` rides every call;
- * `X-PocketDJ-Profile` is omitted on Android P1 (no profiles).
+ * `X-PocketDJ-Profile` rides only when an enrolled profile id exists (Config.profileId).
  */
 class RipServerClient(
     http: OkHttpClient,
@@ -46,6 +47,8 @@ class RipServerClient(
         val installId: String,
         /** Settings ▸ "Rip from cloud source": adds `ripFromCloud:true` to POST /rip bodies. */
         val ripFromCloud: Boolean = false,
+        /** Enrolled profile id; empty => `X-PocketDJ-Profile` omitted. */
+        val profileId: String = "",
     ) {
         /** Trim whitespace and ONE trailing slash before concatenating paths. */
         val normalizedBase: String get() = baseUrl.trim().removeSuffix("/")
@@ -71,10 +74,12 @@ class RipServerClient(
      */
     suspend fun health(candidateUrl: String? = null, candidateToken: String? = null): RipServerHealth {
         val config = if (candidateUrl != null) {
+            val live = configProvider()
             Config(
                 baseUrl = candidateUrl,
                 token = candidateToken.orEmpty().trim(),
-                installId = configProvider().installId,
+                installId = live.installId,
+                profileId = live.profileId,
             ).also {
                 if (!it.configured) throw RipServerException(null, "No import server configured (Settings)")
             }
@@ -439,6 +444,7 @@ class RipServerClient(
         val builder = Request.Builder()
             .url(url)
             .header("X-PocketDJ-Device", config.installId)
+        ProfileHeader.apply(builder, config.profileId)
         if (config.token.isNotEmpty()) {
             builder.header("Authorization", "Bearer ${config.token}")
         }

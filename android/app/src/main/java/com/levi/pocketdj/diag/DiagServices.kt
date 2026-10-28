@@ -43,13 +43,16 @@ class DiagServices private constructor(private val app: AppGraph) {
         }
     }
 
+    /** SVC-10: set by the services graph; fires after a key import/removal so the synced doc materializes + pushes. */
+    @Volatile var onKeyImported: (() -> Unit)? = null
+
     val importer: DiagKeyImporter by lazy {
         DiagKeyImporter(
             store = credentials,
             logsBase = { RemoteEndpoints.url(EndpointKey.DIAG_LOGS_BASE) },
             activeEnv = { RemoteEndpoints.current.env },
             log = { log.log("diag", it) },
-            reloadCredentials = { log.reloadCredentials() },
+            reloadCredentials = { log.reloadCredentials(); onKeyImported?.invoke() },
         )
     }
 

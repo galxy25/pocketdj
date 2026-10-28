@@ -186,6 +186,13 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         }
     }
 
+    /** SVC-10: the profile id the server holds our secret for, or "" (=> no `X-PocketDJ-Profile`). Keystore read: off-main. */
+    suspend fun enrolledProfileId(): String = withContext(Dispatchers.IO) {
+        val enrolled = profileSecrets.enrolledProfileId()
+        // iOS sends profile.id as stored; the enrolled copy is lowercased. Gate on enrollment, send the stored spelling.
+        if (enrolled.isNotEmpty() && profile.id.lowercase() == enrolled) profile.id else enrolled
+    }
+
     // ---- SVC-9 S3 backend, enrollment, device linking ------------------------------------------
 
     /** The profile sync secret (Keystore SecretStore only). */
@@ -300,6 +307,14 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         if (!syncStarted.compareAndSet(false, true)) return
         app.appScope.launch(Dispatchers.IO) {
             launch { app.settings.flow(SyncSettings.CLOUD_SYNC_ENABLED).collect { userSyncEnabled = it } }
+            launch { watchCredentialDocs() } // SVC-10
+            // iOS DiagKeyImporter: materialize + push immediately after a .pdjdiagkey import.
+            diag.onKeyImported = {
+                app.appScope.launch(Dispatchers.IO) {
+                    runCatching { diagKeySync.materialize() }
+                    runCatching { cloudSync.pushDirty() }
+                }
+            }
             if (isDebuggableBuild() && app.settings.get(SyncSettings.DEBUG_IN_MEMORY_DB) &&
                 cloudDocDatabase === s3Database
             ) {
@@ -336,6 +351,62 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     private fun isDebuggableBuild(): Boolean =
         (app.appContext.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
 
+    // ---- SVC-10 synced connection credentials + diag key ---------------------------------------
+
+    /** Live <-> doc adapter over the settings store (+ SecretStore for the search key pair). Off-main only. */
+    private val credentialsPort = object : com.levi.pocketdj.data.credentials.CredentialsPort {
+        override fun read() = kotlinx.coroutines.runBlocking {
+            val cur = app.settings.current()
+            com.levi.pocketdj.data.credentials.SettingsCredentialsDocument(
+                ripServerURL = cur.ripServerUrl,
+                ripToken = cur.ripToken,
+                jukeboxServerURL = cur.jukeboxServerUrl,
+                jukeboxToken = cur.jukeboxToken,
+                jukeboxTokensRequiredByDefault = cur.jukeboxTokensRequiredByDefault,
+                searchAccessKeyID = app.secrets.get(com.levi.pocketdj.data.search.SearchSettings.ACCESS_KEY_ID),
+                searchSecretKey = app.secrets.get(com.levi.pocketdj.data.search.SearchSettings.SECRET_KEY),
+                searchEndpoint = com.levi.pocketdj.data.search.SearchSettings.endpoint(app.settings),
+            )
+        }
+
+        override fun apply(doc: com.levi.pocketdj.data.credentials.SettingsCredentialsDocument) {
+            kotlinx.coroutines.runBlocking {
+                app.settings.setRipServer(doc.ripServerURL, doc.ripToken)
+                app.settings.setJukeboxServer(doc.jukeboxServerURL, doc.jukeboxToken)
+                app.settings.setJukeboxTokensRequiredByDefault(doc.jukeboxTokensRequiredByDefault)
+                com.levi.pocketdj.data.search.SearchSettings.saveCreds(app.secrets, doc.searchAccessKeyID, doc.searchSecretKey)
+                com.levi.pocketdj.data.search.SearchSettings.setEndpoint(app.settings, doc.searchEndpoint)
+            }
+        }
+    }
+
+    val credentialsSync: com.levi.pocketdj.data.credentials.CredentialsSync by lazy {
+        com.levi.pocketdj.data.credentials.CredentialsSync(
+            file = File(app.appContext.filesDir, com.levi.pocketdj.data.credentials.SettingsCredentialsDocument.FILE_NAME),
+            port = credentialsPort,
+            log = { android.util.Log.i("PocketDJ", "[credsync] $it") },
+        )
+    }
+
+    val diagKeySync: com.levi.pocketdj.data.credentials.DiagKeySync by lazy {
+        com.levi.pocketdj.data.credentials.DiagKeySync(
+            file = File(app.appContext.filesDir, com.levi.pocketdj.data.credentials.DiagKeySync.FILE_NAME),
+            store = diag.credentials,
+        )
+    }
+
+    /** Mirrors credential edits into the synced docs (content-compare, blank-install guard inside). Off-main. */
+    private suspend fun watchCredentialDocs() {
+        kotlinx.coroutines.flow.combine(
+            app.settings.settings,
+            app.settings.flow(com.levi.pocketdj.data.search.SearchSettings.ENDPOINT),
+            app.secrets.revision,
+        ) { _, _, _ -> }.collect {
+            runCatching { credentialsSync.syncIfChanged() }
+            runCatching { diagKeySync.materialize() }
+        }
+    }
+
     /** The core synced documents (iOS names). Reload seams re-decode / merge the pulled file. */
     override val syncEntries: List<SyncEntry> = listOf(
         SyncEntry(SyncRegistry.KEY_PROFILE, ProfileStore.FILE_NAME, onPulled = { profile.reloadFromDisk(); false }),
@@ -350,6 +421,18 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
             onPulled = { playStats.reloadFromDisk(); false }),
         SyncEntry(SyncRegistry.KEY_TIMELINE_CUES, com.levi.pocketdj.data.timeline.TimelineCueStore.FILE_NAME,
             onPulled = { timelineCues.reloadFromDisk() }),
+        // SVC-10: empty-secret-guarded credentials doc + the diag-key doc (empty never wins).
+        SyncEntry(com.levi.pocketdj.data.credentials.SettingsCredentialsDocument.KEY,
+            com.levi.pocketdj.data.credentials.SettingsCredentialsDocument.FILE_NAME,
+            onPulled = { credentialsSync.applyPulled() },
+            applyPayload = { credentialsSync.writePulled(it) }),
+        SyncEntry(com.levi.pocketdj.data.credentials.DiagKeySync.KEY,
+            com.levi.pocketdj.data.credentials.DiagKeySync.FILE_NAME,
+            onPulled = {
+                val r = diagKeySync.applyPulled()
+                if (r == com.levi.pocketdj.data.credentials.DiagKeySync.PullResult.ADOPTED && diag.channel) diag.log.reloadCredentials()
+                false
+            }),
     )
 
     override val resetHooks: List<ResetHook> = listOf(
