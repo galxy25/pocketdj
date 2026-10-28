@@ -6,6 +6,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class DiagKeyFileTest {
     private fun json(
@@ -79,5 +80,39 @@ class DiagKeyFileTest {
         r.importer.remove()
         assertNull(r.store.load())
         assertEquals(2, r.reloads)
+    }
+
+    @Test fun saveThatDoesNotPersistIsReportedNotImported() {
+        val dead = object : com.levi.pocketdj.data.credentials.SecretStore by InMemorySecretStore() {
+            override val isAvailable = false
+            override fun put(name: String, value: String) {}
+        }
+        val logs = mutableListOf<String>()
+        val importer = DiagKeyImporter(DiagCredentialStore(dead), { "https://pocketdj-logs-623170744161.s3.us-west-2.amazonaws.com" }, { "green" }, { logs += it }, {})
+        val o = importer.importText(json())
+        assertTrue(o is DiagKeyImporter.Outcome.Invalid)
+        assertTrue(logs.any { it.startsWith("key import failed") })
+        assertFalse(logs.any { it.contains("SUPERSECRETVALUE") })
+    }
+
+    @Test fun captureBufferIsCapped() {
+        val dir = java.nio.file.Files.createTempDirectory("cap").toFile()
+        val c = CaptureSessions(dir)
+        c.start()
+        repeat(CaptureSessions.MAX_LINES + 50) { c.append("l$it") }
+        val lines = c.stop()!!.readLines()
+        assertEquals(CaptureSessions.MAX_LINES, lines.size)
+        assertEquals("l${CaptureSessions.MAX_LINES + 49}", lines.last())
+    }
+
+    /** Files/Downloads hand out opaque content:// URIs: a VIEW filter must not rely on a path pattern. */
+    @Test fun manifestHasContentViewFilterWithoutPathPattern() {
+        val f = listOf("src/main/AndroidManifest.xml", "app/src/main/AndroidManifest.xml").map(::File).first { it.exists() }
+        val filters = Regex("<intent-filter>.*?</intent-filter>", RegexOption.DOT_MATCHES_ALL)
+            .findAll(f.readText().replace(Regex("<!--.*?-->", RegexOption.DOT_MATCHES_ALL), "")).map { it.value }.toList()
+        assertTrue(filters.any {
+            "android.intent.action.VIEW" in it && "android:scheme=\"content\"" in it &&
+                "android:mimeType=\"application/octet-stream\"" in it && "pathPattern" !in it
+        })
     }
 }

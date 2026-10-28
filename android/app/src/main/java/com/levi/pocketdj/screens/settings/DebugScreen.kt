@@ -49,6 +49,7 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     val diag = DiagServices.get(host.graph)
     val context = LocalContext.current
     val status by diag.log.uploadStatus.collectAsState()
+    val fromFiles by diag.pendingImport.collectAsState()
     val capturing = androidx.compose.runtime.remember { mutableStateOf(diag.capture.active) }
     var sessions by remember { mutableStateOf(diag.capture.sessions()) }
     var keyText by remember { mutableStateOf("") }
@@ -56,14 +57,14 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     var pendingText by remember { mutableStateOf<String?>(null) }
     var enabled by remember { mutableStateOf(diag.log.isEnabled()) }
     var telemetry by remember { mutableStateOf(diag.settings.telemetryEnabled) }
-    var keyId by remember { mutableStateOf(diag.keyId()) }
+    var keyId by remember { mutableStateOf<String?>(null) }
+    androidx.compose.runtime.LaunchedEffect(Unit) { keyId = withContext(Dispatchers.IO) { diag.keyId() } }
     val now = System.currentTimeMillis()
 
     fun report(outcome: DiagKeyImporter.Outcome) {
-        keyId = diag.keyId()
         when (outcome) {
             is DiagKeyImporter.Outcome.Imported -> {
-                pendingMismatch = null; pendingText = null; keyText = ""
+                pendingMismatch = null; pendingText = null; keyText = ""; diag.pendingImport.value = null
                 host.scope.launch { host.snackbar.showSnackbar("Diag key imported (${outcome.keyId})") }
             }
             is DiagKeyImporter.Outcome.NeedsConfirmation -> {
@@ -74,6 +75,19 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         }
     }
 
+    // A key opened from Files that needed confirmation: surface it here.
+    androidx.compose.runtime.LaunchedEffect(fromFiles) {
+        fromFiles?.let { pendingText = it.text; pendingMismatch = it.warning }
+    }
+
+    fun importNow(text: String, force: Boolean = false) {
+        host.scope.launch {
+            val outcome = withContext(Dispatchers.IO) { diag.importer.importText(text, force) }
+            keyId = withContext(Dispatchers.IO) { diag.keyId() }
+            report(outcome)
+        }
+    }
+
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) host.scope.launch {
             val text = withContext(Dispatchers.IO) {
@@ -81,7 +95,7 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             }
             if (text == null) host.snackbar.showSnackbar("Couldn't read the file") else {
                 pendingText = text
-                report(diag.importer.importText(text))
+                importNow(text)
             }
         }
     }
@@ -111,13 +125,13 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         modifier = Modifier.fillMaxWidth(), minLines = 2, maxLines = 4,
     )
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Button(enabled = keyText.isNotBlank(), onClick = { pendingText = keyText; report(diag.importer.importText(keyText)) }) { Text("Import key") }
+        Button(enabled = keyText.isNotBlank(), onClick = { pendingText = keyText; importNow(keyText) }) { Text("Import key") }
         OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text("From file…") }
-        OutlinedButton(enabled = keyId != null, onClick = { diag.importer.remove(); keyId = diag.keyId() }) { Text("Remove diag key") }
+        OutlinedButton(enabled = keyId != null, onClick = { host.scope.launch { keyId = withContext(Dispatchers.IO) { diag.importer.remove(); diag.keyId() } } }) { Text("Remove diag key") }
     }
     pendingMismatch?.let { warn ->
         SettingsCaption(warn)
-        Button(onClick = { pendingText?.let { report(diag.importer.importText(it, force = true)) } }) { Text("Import anyway") }
+        Button(onClick = { pendingText?.let { importNow(it, force = true) } }) { Text("Import anyway") }
     }
 
     SettingsDivider()
@@ -133,10 +147,17 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Text(f.name, style = MaterialTheme.typography.bodySmall, modifier = Modifier.weight(1f))
             OutlinedButton(onClick = {
-                val send = Intent(Intent.ACTION_SEND).apply {
-                    type = "text/plain"; putExtra(Intent.EXTRA_TEXT, runCatching { f.readText() }.getOrDefault(""))
+                // Stream the file via FileProvider: EXTRA_TEXT would blow the Binder limit on big captures.
+                val uri = runCatching {
+                    androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", f)
+                }.getOrNull()
+                if (uri == null) host.scope.launch { host.snackbar.showSnackbar("Couldn't share the capture") } else {
+                    val send = Intent(Intent.ACTION_SEND).apply {
+                        type = "text/plain"; putExtra(Intent.EXTRA_STREAM, uri)
+                        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    }
+                    context.startActivity(Intent.createChooser(send, "Share capture").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
                 }
-                context.startActivity(Intent.createChooser(send, "Share capture").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             }) { Text("Share") }
             OutlinedButton(onClick = { diag.capture.delete(f); sessions = diag.capture.sessions() }) { Text("Delete") }
         }

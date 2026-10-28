@@ -6,6 +6,8 @@ import com.levi.pocketdj.shell.DeepLinkHandler
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
 import com.levi.pocketdj.shell.SettingsSection
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 /**
  * Sidecar graph for the services area (decision D3). Packages in this area override the
@@ -21,7 +23,11 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         if (diag.channel) listOf(debugSection()) else emptyList()
     }
 
-    override val deepLinkHandlers: List<DeepLinkHandler> by lazy { diag.start(); listOf(diag.deepLink) }
+    override val deepLinkHandlers: List<DeepLinkHandler> by lazy {
+        // Keystore/prefs work must not run on the registry (main) path: start on IO.
+        if (diag.channel) app.appScope.launch(Dispatchers.IO) { diag.start() }
+        listOf(diag.deepLink)
+    }
 
     override val flushables: List<Flushable> by lazy { listOf(diag.flushable) }
 }

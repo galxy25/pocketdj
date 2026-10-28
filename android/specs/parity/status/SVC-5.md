@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 SVC-5 Diagnostics. Tests: 660 total, 0 failed (baseline 626; +34 new: SigV4Test 6, DiagKeyFileTest 7, DiagLogTest 17, DiagUploaderTest 4).
 

@@ -49,8 +49,8 @@ class DiagLog(
     private val keyBase: String,
     /** Why uploads are off when [enabled] is false (Settings readout). */
     private val offReason: String = "release build (uploads disabled by design)",
-    launchLine: String? = null,
-    endpointsLine: String? = null,
+    private val launchLine: String? = null,
+    private val endpointsLine: String? = null,
 ) {
     private val lock = Any()
     @Volatile private var enabled: Boolean = enabled
@@ -100,7 +100,12 @@ class DiagLog(
             credentials = if (on) credentialStore.load() else null
             _status.value = _status.value.copy(channelEnabled = on, keyPresent = credentials != null)
         }
-        if (on) log("diag", "remote diagnostics ON") else cancelFlushLocked()
+        if (on) {
+            log("diag", "remote diagnostics ON")
+            launchLine?.let { log("launch", it) }
+            endpointsLine?.let { log("endpoints", it) }
+            log("diag", "status ${statusLine()}")
+        } else cancelFlushLocked()
     }
 
     private fun cancelFlushLocked() = synchronized(lock) { cancelFlush?.invoke(); cancelFlush = null }

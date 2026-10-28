@@ -32,9 +32,9 @@ class DiagServices private constructor(private val app: AppGraph) {
             scope = app.appScope,
             scheduler = DiagScheduler.system(),
             clock = System::currentTimeMillis,
-            keyBase = DiagLog.keyBase(settings.installId, now, versionCode),
+            keyBase = if (channel) DiagLog.keyBase(settings.installId, now, versionCode) else "release-disabled",
             offReason = if (channel) "turned off in Settings ▸ Debug" else "release build (uploads disabled by design)",
-            launchLine = "build=$versionCode name=${BuildConfig.VERSION_NAME} sha=${BuildConfig.GIT_SHA} platform=android device=${settings.installId.take(8)}",
+            launchLine = "build=$versionCode name=${BuildConfig.VERSION_NAME} sha=${BuildConfig.GIT_SHA} platform=android device=${if (channel) settings.installId.take(8) else "-"}",
             endpointsLine = "launch ${RemoteEndpoints.summary}",
         ).also {
             it.capture = capture
@@ -53,31 +53,38 @@ class DiagServices private constructor(private val app: AppGraph) {
         )
     }
 
+    /** A key opened from Files that needs the owner's confirmation (shown in Settings ▸ Debug). */
+    data class PendingImport(val text: String, val warning: String)
+    val pendingImport = kotlinx.coroutines.flow.MutableStateFlow<PendingImport?>(null)
+
     /** Access key id of the stored key (an id, not a secret), or null. */
     fun keyId(): String? = credentials.load()?.accessKeyId
 
     /** Materialize the log and hook the process lifecycle (jank watchdog + background flush). */
     fun start() {
-        if (!log.isEnabled()) return
+        if (!channel) return
+        log // materialize off-main (caller launches us on IO); lines for launch/endpoints/status
         android.os.Handler(android.os.Looper.getMainLooper()).post {
             androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
                 object : androidx.lifecycle.DefaultLifecycleObserver {
-                    override fun onStart(owner: androidx.lifecycle.LifecycleOwner) = jank.start()
+                    override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
+                        if (log.isEnabled()) jank.start()
+                    }
                     override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
                         jank.stop()
-                        log.flushOnBackground()
+                        if (log.isEnabled()) log.flushOnBackground()
                     }
                 },
             )
         }
     }
 
-    val flushable = Flushable { log.flushAndWait() }
+    val flushable = Flushable { if (channel) log.flushAndWait() }
 
     /** Opening a `.pdjdiagkey` from Files: import (or surface the pairing warning in Debug). */
     val deepLink = DeepLinkHandler { intent ->
         val uri = intent.data
-        if (intent.action != Intent.ACTION_VIEW || uri == null) return@DeepLinkHandler false
+        if (!channel || intent.action != Intent.ACTION_VIEW || uri == null) return@DeepLinkHandler false
         val ctx = app.appContext
         val name = runCatching {
             ctx.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
@@ -89,7 +96,10 @@ class DiagServices private constructor(private val app: AppGraph) {
             val text = runCatching { ctx.contentResolver.openInputStream(uri)?.bufferedReader()?.readText() }.getOrNull()
             val msg = if (text == null) "Couldn't read the key file" else when (val o = importer.importText(text)) {
                 is DiagKeyImporter.Outcome.Imported -> "Diag key imported (${o.keyId})"
-                is DiagKeyImporter.Outcome.NeedsConfirmation -> "Key is for another AWS account — open Settings ▸ Debug to import anyway"
+                is DiagKeyImporter.Outcome.NeedsConfirmation -> {
+                    pendingImport.value = PendingImport(text, o.mismatch.warning)
+                    "Key is for another AWS account — open Settings ▸ Debug to import anyway"
+                }
                 is DiagKeyImporter.Outcome.Invalid -> "Key rejected: ${o.reason}"
             }
             kotlinx.coroutines.withContext(Dispatchers.Main) { Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show() }

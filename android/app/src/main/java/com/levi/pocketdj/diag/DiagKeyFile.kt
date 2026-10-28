@@ -103,6 +103,10 @@ class DiagKeyImporter(
             return Outcome.NeedsConfirmation(mismatch)
         }
         store.save(file.accessKeyID, file.secret)
+        if (store.load()?.accessKeyId != file.accessKeyID) {
+            log("key import failed: secure storage unavailable (key not persisted)")
+            return Outcome.Invalid("couldn't store the key (secure storage unavailable)")
+        }
         reloadCredentials()
         log("key imported env=${file.env} account=${file.account} activeEnv=$env paired=${mismatch == null}")
         return Outcome.Imported(file.env, file.account, file.accessKeyID, mismatch)

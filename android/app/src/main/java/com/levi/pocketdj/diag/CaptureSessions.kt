@@ -27,7 +27,17 @@ class CaptureSessions(private val dir: File, private val clock: () -> Long = Sys
 
     fun append(line: String) {
         if (!active) return
-        synchronized(lock) { if (active) buffer.add(line) }
+        synchronized(lock) {
+            if (active) {
+                buffer.add(line)
+                if (buffer.size > MAX_LINES) buffer.subList(0, buffer.size - MAX_LINES).clear()
+            }
+        }
+    }
+
+    companion object {
+        /** Ring cap so a long capture can't grow without bound (newest lines kept). */
+        const val MAX_LINES = 20_000
     }
 
     fun sessions(): List<File> =
