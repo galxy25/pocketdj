@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-8 — pocketdj-profile-sync Lambda (S3 document store)
 

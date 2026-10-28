@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 COL-7 Source-sync completion.
 - [x] syncConvertedCollections gated by amSyncDir.allowsPull (pockets + playlists)

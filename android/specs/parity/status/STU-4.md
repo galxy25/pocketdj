@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-4 — Loops tab + slice editor (performance pads)
 

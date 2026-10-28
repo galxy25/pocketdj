@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # GM-4 Gem Collector screens
 

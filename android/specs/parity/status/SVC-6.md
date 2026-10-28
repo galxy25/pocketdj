@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-6 PlayStatsStore + StorageManager prune + StoragePruneWorker + Storage screen sections
 

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # MIX-13 Deck UI: DeckView + controls, seek slider, FX chips, stem pads, VU, loop, cue, beat pulse, waveform, crossfader, master transport
 
