@@ -163,6 +163,9 @@ class PlaybackController(
             )
         }
 
+    /** True while the Apple Music engine owns audio (Now Playing transport ladder). */
+    val isAppleMusicActive: Boolean get() = activeBackend == ActiveBackend.APPLE_MUSIC
+
     private val _nowPlaying = MutableStateFlow<NowPlayingInfo?>(null)
     val nowPlaying: StateFlow<NowPlayingInfo?> = _nowPlaying.asStateFlow()
 

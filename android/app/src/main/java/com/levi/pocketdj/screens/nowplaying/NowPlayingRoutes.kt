@@ -1,11 +1,16 @@
 package com.levi.pocketdj.screens.nowplaying
 
+import androidx.navigation.compose.composable
 import com.levi.pocketdj.shell.NavEntry
 
-/**
- * The Now Playing nav-entry list `PlaybackGraph` consumes. Empty by design in PB-1: PB-6 adds the
- * `nowplaying` route here (and nowhere else), so it never edits the playback sidecar.
- */
+/** The pushed Now Playing route (the iOS home deck). */
+const val NOW_PLAYING_ROUTE = "nowplaying"
+
+/** The Now Playing nav-entry list `PlaybackGraph` consumes. */
 object NowPlayingRoutes {
-    val entries: List<NavEntry> = emptyList()
+    val entries: List<NavEntry> = listOf(
+        NavEntry(NOW_PLAYING_ROUTE) { _ ->
+            composable(NOW_PLAYING_ROUTE) { NowPlayingScreen() }
+        },
+    )
 }

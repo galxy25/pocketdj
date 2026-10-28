@@ -353,6 +353,7 @@ class SetlistSequencer(
     // ---- the ONE start funnel -----------------------------------------------------------
 
     private fun startPlayCurrent(fresh: Boolean = true, resumeAtMs: Long? = null, inPlace: Boolean = false) {
+        if (pausedByCascade) { pausedByCascade = false; publish() }
         resetTrackAudible()
         reconcileRipWindow() // the playhead (may have) moved: rips outside the window go
         ensureHealthTicker()
@@ -582,7 +583,13 @@ class SetlistSequencer(
             AdvanceCause.UNPLAYABLE_HERE -> Unit
             AdvanceCause.AUTO -> {
                 // Halted: nothing advances by itself until the listener acts.
-                if (pausedByCascade || !autoAdvanceGate()) return
+                if (pausedByCascade) return
+                if (!autoAdvanceGate()) {
+                    // Gate halt: the deck sits on a stale/ended row until ▶ (same flag as the cascade breaker).
+                    pausedByCascade = true
+                    publish()
+                    return
+                }
                 if (engine != null && breaker.shouldHalt(trackAudibleSeconds)) {
                     haltCascade()
                     return
