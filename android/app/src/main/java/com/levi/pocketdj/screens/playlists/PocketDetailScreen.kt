@@ -80,12 +80,17 @@ fun PocketDetailScreen(
     val catalog = catalogState.catalog
 
     val pocket = state.pockets.firstOrNull { it.id == pocketId }
+    val linkable = remember(catalog) {
+        com.levi.pocketdj.data.collections.SourceSyncSettings.linkableSources(catalog?.playlists.orEmpty())
+    }
 
     var detailSongId by remember { mutableStateOf<String?>(null) }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
     var dedupeResult by rememberSaveable { mutableStateOf<Int?>(null) }
     var addNoteOpen by remember { mutableStateOf(false) }
+    var linkOpen by remember { mutableStateOf(false) }
+    var syncMessage by remember { mutableStateOf<String?>(null) }
     var editNote by remember { mutableStateOf<PocketNote?>(null) }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -160,6 +165,22 @@ fun PocketDetailScreen(
                         DropdownMenuItem(
                             text = { Text("Remove duplicates") },
                             onClick = { dismiss(); dedupeResult = store.removeDuplicatesInPocket(pocketId) },
+                        )
+                        SourceSyncMenuItems(
+                            dismiss = dismiss,
+                            hasSource = pocket.hasSource,
+                            syncEnabled = pocket.syncsWithSource,
+                            direction = pocket.amSyncDir,
+                            onToggle = { store.setPocketSourceSyncEnabled(it, pocketId) },
+                            onSyncNow = {
+                                syncMessage = if (store.syncPocketFromSourceNow(pocketId)) {
+                                    "Pocket updated from its source."
+                                } else {
+                                    "Already in sync (or the source isn't available)."
+                                }
+                            },
+                            onDirection = { store.setAMSyncDirectionForPocket(it, pocketId) },
+                            onLink = if (linkable.isNotEmpty()) ({ linkOpen = true }) else null,
                         )
                         DropdownMenuItem(
                             text = { Text("Delete pocket") },
@@ -442,6 +463,18 @@ fun PocketDetailScreen(
     }
 
     RemoveDuplicatesResultAlert(dedupeResult) { dedupeResult = null }
+    SourceSyncMessageAlert(syncMessage) { syncMessage = null }
+    if (linkOpen) {
+        LinkSourceSheet(
+            sources = linkable,
+            onDismiss = { linkOpen = false },
+            onPick = { sp ->
+                linkOpen = false
+                store.linkPocketToSource(pocketId, sp)
+                syncMessage = "Linked to \u201c${sp.playlist.name}\u201d. Its songs now follow that playlist."
+            },
+        )
+    }
     if (deleteOpen) {
         ConfirmDialog(
             title = "Delete this pocket?",

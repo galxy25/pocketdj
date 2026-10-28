@@ -90,6 +90,7 @@ fun PlaylistDetailScreen(
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
     var dedupeResult by rememberSaveable { mutableStateOf<Int?>(null) }
+    var syncMessage by remember { mutableStateOf<String?>(null) }
     var addChapterOpen by remember { mutableStateOf(false) }
     var noteChapterId by remember { mutableStateOf<String?>(null) }
     var renameChapter by remember { mutableStateOf<PlaylistNode?>(null) }
@@ -206,6 +207,24 @@ fun PlaylistDetailScreen(
                             text = { Text("Remove duplicates") },
                             onClick = { dismiss(); dedupeResult = store.removeDuplicatesInPlaylist(playlistId) },
                         )
+                        playlist?.let { pl ->
+                            SourceSyncMenuItems(
+                                dismiss = dismiss,
+                                hasSource = pl.hasSource,
+                                syncEnabled = pl.syncsWithSource,
+                                direction = pl.amSyncDir,
+                                onToggle = { store.setPlaylistSourceSyncEnabled(it, playlistId) },
+                                onSyncNow = {
+                                    syncMessage = if (store.syncPlaylistFromSourceNow(playlistId)) {
+                                        "Playlist updated from its source."
+                                    } else {
+                                        "Already in sync (or the source isn't available)."
+                                    }
+                                },
+                                onDirection = { store.setAMSyncDirectionForPlaylist(it, playlistId) },
+                                onLink = null,
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("Delete playlist") },
                             onClick = { dismiss(); deleteOpen = true },
@@ -402,6 +421,7 @@ fun PlaylistDetailScreen(
     }
 
     RemoveDuplicatesResultAlert(dedupeResult) { dedupeResult = null }
+    SourceSyncMessageAlert(syncMessage) { syncMessage = null }
     if (deleteOpen) {
         ConfirmDialog(
             title = "Delete this playlist?",
