@@ -154,7 +154,10 @@ sealed class InThePocketOutcome {
             val o = e as? JsonObject ?: return Abandoned
             return when ((o["outcome"] as? JsonPrimitive)?.takeIf { it.isString }?.content) {
                 "pocket" -> Pocket
-                "broke" -> Broke(((o["brokeAt"] as? JsonPrimitive)?.content?.toDoubleOrNull()?.toInt()) ?: 1)
+                "broke" -> Broke(
+                    (o["brokeAt"] as? JsonPrimitive)?.takeIf { !it.isString }?.content?.toDoubleOrNull()
+                        ?.takeIf { it == Math.floor(it) && it >= Int.MIN_VALUE && it <= Int.MAX_VALUE }?.toInt() ?: 1,
+                )
                 else -> Abandoned
             }
         }

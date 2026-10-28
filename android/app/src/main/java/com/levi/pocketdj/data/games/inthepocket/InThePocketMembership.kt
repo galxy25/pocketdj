@@ -1,5 +1,6 @@
 package com.levi.pocketdj.data.games.inthepocket
 
+import com.levi.pocketdj.data.recs.RecAudioShortlist
 import com.levi.pocketdj.data.games.inthepocket.InThePocketScorer.CollectionInfo
 import com.levi.pocketdj.data.games.inthepocket.InThePocketScorer.Input
 import com.levi.pocketdj.data.games.inthepocket.InThePocketScorer.Profile
@@ -279,22 +280,5 @@ object InThePocketMembership {
         return sum / wsum
     }
 
-    /** Camelot neighbours: same number other mode, or ±1 (mod 12) same mode (RecAudioShortlist). */
-    fun camelotAdjacent(a: String, b: String): Boolean {
-        val x = parseCamelot(a) ?: return false
-        val y = parseCamelot(b) ?: return false
-        if (x.first == y.first && x.second != y.second) return true
-        if (x.second != y.second) return false
-        val d = abs(x.first - y.first)
-        return d == 1 || d == 11
-    }
-
-    private fun parseCamelot(s: String): Pair<Int, Char>? {
-        val t = s.trim().uppercase()
-        val mode = t.lastOrNull() ?: return null
-        if (mode != 'A' && mode != 'B') return null
-        val n = t.dropLast(1).toIntOrNull() ?: return null
-        if (n !in 1..12) return null
-        return n to mode
-    }
+    fun camelotAdjacent(a: String, b: String): Boolean = RecAudioShortlist.camelotAdjacent(a, b)
 }

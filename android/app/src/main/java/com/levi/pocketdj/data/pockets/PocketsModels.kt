@@ -431,7 +431,9 @@ internal fun JsonObject.lpIntStrict(k: String): Int? {
     val p = this[k] as? JsonPrimitive ?: return null
     if (p is JsonNull || p.isString) return null
     p.longOrNull?.let { return if (it in Int.MIN_VALUE..Int.MAX_VALUE) it.toInt() else null }
-    return null
+    val d = p.doubleOrNull ?: return null
+    if (d.isNaN() || d.isInfinite() || d != Math.floor(d) || d < Int.MIN_VALUE || d > Int.MAX_VALUE) return null
+    return d.toInt()
 }
 
 internal fun JsonObject.lpBool(k: String): Boolean? {

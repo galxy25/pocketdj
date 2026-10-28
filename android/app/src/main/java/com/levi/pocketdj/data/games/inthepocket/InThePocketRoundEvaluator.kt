@@ -1,5 +1,6 @@
 package com.levi.pocketdj.data.games.inthepocket
 
+import com.levi.pocketdj.data.edition.SongVariant
 import java.util.UUID
 
 /**
@@ -47,23 +48,7 @@ object InThePocketRoundEvaluator {
     /** ▶ is pressed a beat before the first `record` — events this close before it still count. */
     const val START_TOLERANCE_MS = 2_000.0
 
-    private val VARIANT_SUFFIXES = listOf("_clean", "_explicit")
-
-    /**
-     * The base (catalog) song id behind a possibly-variant id (`sng_<12 lowercase hex>_clean|explicit`);
-     * identity for plain ids (SongVariant.baseId).
-     */
-    fun baseId(id: String): String {
-        for (suffix in VARIANT_SUFFIXES) {
-            if (!id.endsWith(suffix)) continue
-            val base = id.dropLast(suffix.length)
-            if (!base.startsWith("sng_")) return id
-            val hex = base.drop(4)
-            if (hex.length != 12 || !hex.all { it in '0'..'9' || it in 'a'..'f' }) return id
-            return base
-        }
-        return id
-    }
+    fun baseId(id: String): String = SongVariant.baseId(id)
 
     /**
      * @param songIds the round's songs, in order.
