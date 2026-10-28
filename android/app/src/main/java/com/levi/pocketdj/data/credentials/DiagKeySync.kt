@@ -31,7 +31,9 @@ class DiagKeySync(
         if (runCatching { file.readBytes() }.getOrNull()?.contentEquals(data) == true) return false
         return runCatching {
             file.parentFile?.mkdirs()
-            file.writeBytes(data)
+            val tmp = File(file.parentFile, file.name + ".tmp")
+            tmp.writeBytes(data)
+            if (!tmp.renameTo(file)) { file.writeBytes(data); tmp.delete() }
         }.isSuccess
     }
 

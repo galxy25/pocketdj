@@ -187,7 +187,11 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     }
 
     /** SVC-10: the profile id the server holds our secret for, or "" (=> no `X-PocketDJ-Profile`). Keystore read: off-main. */
-    suspend fun enrolledProfileId(): String = withContext(Dispatchers.IO) { profileSecrets.enrolledProfileId() }
+    suspend fun enrolledProfileId(): String = withContext(Dispatchers.IO) {
+        val enrolled = profileSecrets.enrolledProfileId()
+        // iOS sends profile.id as stored; the enrolled copy is lowercased. Gate on enrollment, send the stored spelling.
+        if (enrolled.isNotEmpty() && profile.id.lowercase() == enrolled) profile.id else enrolled
+    }
 
     // ---- SVC-9 S3 backend, enrollment, device linking ------------------------------------------
 
@@ -304,6 +308,13 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         app.appScope.launch(Dispatchers.IO) {
             launch { app.settings.flow(SyncSettings.CLOUD_SYNC_ENABLED).collect { userSyncEnabled = it } }
             launch { watchCredentialDocs() } // SVC-10
+            // iOS DiagKeyImporter: materialize + push immediately after a .pdjdiagkey import.
+            diag.onKeyImported = {
+                app.appScope.launch(Dispatchers.IO) {
+                    runCatching { diagKeySync.materialize() }
+                    runCatching { cloudSync.pushDirty() }
+                }
+            }
             if (isDebuggableBuild() && app.settings.get(SyncSettings.DEBUG_IN_MEMORY_DB) &&
                 cloudDocDatabase === s3Database
             ) {
@@ -413,7 +424,8 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         // SVC-10: empty-secret-guarded credentials doc + the diag-key doc (empty never wins).
         SyncEntry(com.levi.pocketdj.data.credentials.SettingsCredentialsDocument.KEY,
             com.levi.pocketdj.data.credentials.SettingsCredentialsDocument.FILE_NAME,
-            onPulled = { credentialsSync.applyPulled() }),
+            onPulled = { credentialsSync.applyPulled() },
+            applyPayload = { credentialsSync.writePulled(it) }),
         SyncEntry(com.levi.pocketdj.data.credentials.DiagKeySync.KEY,
             com.levi.pocketdj.data.credentials.DiagKeySync.FILE_NAME,
             onPulled = {

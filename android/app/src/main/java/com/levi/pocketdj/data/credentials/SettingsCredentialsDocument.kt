@@ -7,22 +7,13 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 
-/** iOS `SourceConfig` wire shape (`urlString`, UUID `id`). Decoded for compat; Android neither pushes nor applies it. */
-@Serializable
-data class SyncedSource(
-    val id: String = "",
-    val name: String = "",
-    val urlString: String = "",
-    val enabled: Boolean = true,
-)
-
 /**
  * The iCloud/S3-synced connection subset ("settings-credentials" doc, file
  * `pocketdj-settings-credentials.json`). Field names are the iOS Codable keys so the document is
  * wire-compatible. Optional fields are omitted when null (Swift's synthesized encode does the same).
  *
- * Android never pushes [sources] (its source ids are not UUIDs, which would fail the iOS decode of
- * the whole document) and never applies a pulled list; [appleMusicPrivateSync] is not an Android setting.
+ * Android never adopts [sources] / [appleMusicPrivateSync] but RE-EMITS whatever was last pulled or on disk
+ * (as raw JSON), so an iOS doc round-trips through Android without losing its catalog.
  */
 @Serializable
 data class SettingsCredentialsDocument(
@@ -35,9 +26,20 @@ data class SettingsCredentialsDocument(
     val searchAccessKeyID: String = "",
     val searchSecretKey: String = "",
     val searchEndpoint: String = "",
-    val appleMusicPrivateSync: Boolean? = null,
-    val sources: List<SyncedSource>? = null,
+    /** Pass-through (raw JSON, never interpreted): re-emitted exactly as pulled so iOS keeps its catalog. */
+    val appleMusicPrivateSync: JsonElement? = null,
+    /** Pass-through (raw JSON, unknown SourceConfig fields survive): Android never adopts or edits it. */
+    val sources: JsonElement? = null,
 ) {
+    /** Strings trimmed (the settings setters trim) and pass-through dropped: the CONTENT used for change detection. */
+    fun normalized(): SettingsCredentialsDocument = copy(
+        ripServerURL = ripServerURL.trim(), ripToken = ripToken.trim(),
+        jukeboxServerURL = jukeboxServerURL.trim(), jukeboxToken = jukeboxToken.trim(),
+        searchAccessKeyID = searchAccessKeyID.trim(), searchSecretKey = searchSecretKey.trim(),
+        searchEndpoint = searchEndpoint.trim(),
+        appleMusicPrivateSync = null, sources = null,
+    )
+
     /**
      * Every user-entered synced field at its fresh-install value => the doc must not materialize.
      * (sources / appleMusicPrivateSync are deliberately ignored, as on iOS.)
@@ -55,9 +57,8 @@ data class SettingsCredentialsDocument(
         private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
         /**
-         * Deterministic bytes (recursively sorted keys, nulls dropped) so equal content encodes
-         * identically on every device: the content compare and the pull -> re-persist round trip depend
-         * on it, or every pull would re-dirty the file and LWW would ping-pong.
+         * Deterministic bytes (recursively sorted keys, nulls dropped). NOT byte-identical to Swift (which
+         * escapes `/`), so change detection is by decoded CONTENT ([normalized]), never by bytes.
          */
         fun encode(doc: SettingsCredentialsDocument): ByteArray =
             canonical(json.encodeToJsonElement(serializer(), doc)).toString().toByteArray(Charsets.UTF_8)

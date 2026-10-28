@@ -67,8 +67,8 @@ class CredentialsSyncTest {
         val d = SettingsCredentialsDocument.decode(ios.toByteArray())!!
         assertEquals("t", d.ripToken)
         assertEquals(false, d.jukeboxTokensRequiredByDefault)
-        assertEquals(true, d.appleMusicPrivateSync)
-        assertEquals("https://x", d.sources!!.single().urlString)
+        assertEquals("true", d.appleMusicPrivateSync.toString())
+        assertTrue(d.sources.toString().contains("My Vinyl"))
         assertNull(SettingsCredentialsDocument.decode("not json".toByteArray()))
     }
 
@@ -146,5 +146,46 @@ class CredentialsSyncTest {
         file().writeText("garbage")
         assertFalse(CredentialsSync(file(), port).applyPulled())
         assertEquals(0, port.applied)
+    }
+
+    // A real Swift JSONEncoder(.sortedKeys) doc: escaped slashes, untrimmed value, sources + unknown source field.
+    private val iosDoc = """{"appleMusicPrivateSync":true,"jukeboxServerURL":"https:\/\/host\/jb","jukeboxToken":"j",""" +
+        """"jukeboxTokensRequiredByDefault":true,"ripServerURL":"https:\/\/host\/rip ","ripToken":"t","schemaVersion":1,""" +
+        """"searchAccessKeyID":"","searchEndpoint":"","searchSecretKey":"",""" +
+        """"sources":[{"enabled":true,"future":"x","id":"9B2E0F5A-0000-0000-0000-000000000001","name":"V","urlString":"https:\/\/x"}]}"""
+
+    @Test fun iosEncodedDoc_cleanPull_doesNotResave() {
+        val port = FakePort(SettingsCredentialsDocument(
+            ripServerURL = "https://host/rip", ripToken = "t", jukeboxServerURL = "https://host/jb", jukeboxToken = "j"))
+        file().writeText(iosDoc)
+        val mtime = file().lastModified()
+        assertFalse(CredentialsSync(file(), port).applyPulled())
+        assertEquals(iosDoc, file().readText())
+        assertEquals(mtime, file().lastModified())
+    }
+
+    @Test fun pulledSources_surviveAndroidResave() {
+        val port = FakePort(doc("https://old", "t"))
+        val sync = CredentialsSync(file(), port)
+        file().writeText(iosDoc.replace("\"t\",\"schemaVersion", "\"\",\"schemaVersion")) // empty rip token, differing URL => adopt, rewrite
+        sync.applyPulled()
+        port.live = port.live.copy(jukeboxToken = "changed")
+        assertTrue(sync.syncIfChanged())
+        val out = SettingsCredentialsDocument.decode(file().readBytes())!!
+        assertEquals("changed", out.jukeboxToken)
+        assertTrue(out.sources.toString().contains("\"future\":\"x\""))
+        assertEquals("true", out.appleMusicPrivateSync.toString())
+    }
+
+    @Test fun watcherDuringPullGap_doesNotOverwritePulledBytes() {
+        val port = FakePort(doc("https://local", "L"))
+        val sync = CredentialsSync(file(), port)
+        sync.syncIfChanged()
+        val pulled = SettingsCredentialsDocument.encode(doc("https://cloud", "C"))
+        sync.writePulled(pulled)
+        assertFalse(sync.syncIfChanged()) // watcher fires between write and apply
+        assertTrue(pulled.contentEquals(file().readBytes()))
+        sync.applyPulled()
+        assertEquals("C", port.live.ripToken)
     }
 }
