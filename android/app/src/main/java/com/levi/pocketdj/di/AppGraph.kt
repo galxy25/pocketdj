@@ -53,7 +53,7 @@ import okhttp3.OkHttpClient
  */
 class AppGraph private constructor(context: Context) {
 
-    private val appContext = context.applicationContext
+    internal val appContext = context.applicationContext
 
     /** App-lifetime work scope (repositories, background polls). */
     val appScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)

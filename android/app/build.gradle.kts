@@ -21,6 +21,13 @@ android {
         // Diagnostics upload channel gate (decision D8): DEBUG || DIAG_CHANNEL.
         // Release builds stay false; a TestFlight-style internal channel flips it.
         buildConfigField("boolean", "DIAG_CHANNEL", "false")
+        // Build identity for Settings ▸ Debug (SVC-5); "unknown" outside a git checkout.
+        val gitSha = runCatching {
+            val p = ProcessBuilder("git", "rev-parse", "--short", "HEAD").directory(projectDir)
+                .redirectErrorStream(true).start()
+            p.inputStream.bufferedReader().readText().trim().also { p.waitFor() }
+        }.getOrNull()?.takeIf { it.matches(Regex("[0-9a-f]{4,40}")) } ?: "unknown"
+        buildConfigField("String", "GIT_SHA", "\"$gitSha\"")
     }
 
     buildTypes {

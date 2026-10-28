@@ -53,6 +53,7 @@ object SettingsSections {
     const val HISTORY = "history"
     const val STORAGE = "storage"
     const val ABOUT = "about"
+    const val DEBUG = "debug"
 }
 
 // ---- Shared building blocks for sections -------------------------------------

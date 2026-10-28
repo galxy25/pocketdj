@@ -163,6 +163,11 @@ object RemoteEndpoints {
 
     fun url(key: EndpointKey): String = current.url(key)
 
+    /** Logs bucket name (host label before `.s3.`), e.g. `pocketdj-logs-623170744161`. */
+    val diagBucket: String
+        get() = runCatching { URI(url(EndpointKey.DIAG_LOGS_BASE)).host.substringBefore(".s3.") }
+            .getOrDefault("pocketdj-logs-623170744161")
+
     /** Load the persisted last-good doc (if any, and still valid) from [file]. */
     fun install(file: File) = synchronized(lock) {
         cacheFile = file

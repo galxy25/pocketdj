@@ -30,6 +30,16 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- SVC-5: open a .pdjdiagkey file from Files (diag-writer key import). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:scheme="file" />
+                <data android:mimeType="*/*" />
+                <data android:host="*" />
+                <data android:pathPattern=".*\\.pdjdiagkey" />
+            </intent-filter>
             <!-- Static shortcuts (filled by SURF-9); empty today. -->
             <meta-data
                 android:name="android.app.shortcuts"
