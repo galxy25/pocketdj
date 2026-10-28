@@ -5,6 +5,10 @@ import com.levi.pocketdj.data.burns.BurnStore
 import com.levi.pocketdj.data.burns.HttpBurnRips
 import com.levi.pocketdj.data.config.Endpoints
 import com.levi.pocketdj.data.store.VersionedJsonWriter
+import com.levi.pocketdj.data.transfers.BearerPolicy
+import com.levi.pocketdj.data.transfers.TransferCoordinator
+import com.levi.pocketdj.data.transfers.TransferRuntime
+import com.levi.pocketdj.data.transfers.WorkManagerTransferWork
 import com.levi.pocketdj.diag.DiagServices
 import java.io.File
 import com.levi.pocketdj.screens.settings.sections.debugSection
@@ -34,6 +38,34 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
      * SVC-2 the ONE offline store: ledger `filesDir/pocketdj-burns.json`, media `filesDir/burns/`.
      * The download client is the plain app client — it never attaches the rip bearer to S3.
      */
+    /**
+     * SVC-3 the ONE background-transfer owner (WorkManager). Records persist in
+     * `filesDir/pocketdj-transfers.json`; the rip token is read only to decide the bearer flag.
+     */
+    val transfers: TransferCoordinator by lazy {
+        TransferCoordinator(
+            file = File(app.appContext.filesDir, "pocketdj-transfers.json"),
+            work = WorkManagerTransferWork(app.appContext),
+            tokenProvider = { app.settings.current().ripToken },
+            ripsHost = { BearerPolicy.hostOf(Endpoints.RIPS_BASE) },
+        )
+    }
+
+    /**
+     * What a (possibly cold-started) BurnDownloadWorker needs. Touching [burnStore] first wires the
+     * coordinator's finalize/fail hooks so the ledger flips even when the process was woken by
+     * WorkManager alone. The plain client never attaches auth on its own.
+     */
+    fun transferRuntime(): TransferRuntime {
+        burnStore
+        val burnsDir = File(app.appContext.filesDir, "burns")
+        return TransferRuntime(
+            transfers, app.httpClient,
+            destDir = { _ -> burnsDir.also { it.mkdirs() } },
+            refreshUrl = { rec -> app.ripServerClient.presign(rec.songId, 21_600) },
+        )
+    }
+
     private val burnStoreLazy: Lazy<BurnStore> = lazy {
         val rips = HttpBurnRips(
             http = app.httpClient,
@@ -52,6 +84,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 song to song?.albumId?.let { cat.albumsById[it] }
             },
             writerExecutor = VersionedJsonWriter.backgroundExecutor("pdj-burns-writer"),
+            transfers = transfers,
         )
     }
     val burnStore: BurnStore get() = burnStoreLazy.value

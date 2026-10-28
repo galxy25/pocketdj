@@ -148,9 +148,12 @@ private fun WorkOutcome.toResult() =
     if (this == WorkOutcome.SUCCESS) androidx.work.ListenableWorker.Result.success()
     else androidx.work.ListenableWorker.Result.retry()
 
-class RipReconcileWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
-    override suspend fun doWork() = runWorkBody { WorkSeams.ripReconcile(applicationContext) }.toResult()
-}
+/**
+ * SVC-3: the body lives in the transfers package, but WorkManager persists this FQN for the
+ * already-scheduled periodic request (KEEP), so a real class must remain here.
+ */
+class RipReconcileWorker(ctx: Context, params: WorkerParameters) :
+    com.levi.pocketdj.data.transfers.RipReconcileWorker(ctx, params)
 
 class StoragePruneWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork() = runWorkBody { WorkSeams.storagePrune(applicationContext) }.toResult()

@@ -364,7 +364,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | SVC-5 — Diagnostics: DiagLog + NPLog lanes, shared SigV4 S3 uploader, .pdjdiagkey import, jank wa… | 2 | Planned | — |
 | SVC-1 — Rip client parity: presign + prefetch, 20 s bounded interactive wait + StillRipping, job … | 3 | PARTIAL | emulator-verified 2026-10-27 with a mock rip server (presign, bounded wait + tracker hand-off); not verified: presigned playback on a private bucket, "Still ripping" flow, mid-queue URL refresh) |
 | SVC-2 — BurnStore core (ONE offline store): ledger, byte-identical file names, sidecar, stems + b… | 4 | Planned | — |
-| SVC-3 — TransferCoordinator over WorkManager: background burn downloads surviving process death, … | 5 | Planned | Doze-deferred periodic timing is only observable on hardware; the emu… |
+| SVC-3 — TransferCoordinator over WorkManager: background burn downloads surviving process death, … | 5 | PARTIAL (device-only: force-stop survival, notification, periodic jobscheduler run, Doze timing) | Doze-deferred periodic timing is only observable on hardware; the emu… |
 | SVC-4 — Burned-first row resolver + device/cloud PlaybackMode + collection Rip/Burn bar with Stop… | 6 | Planned | — |
 | SVC-11 — Cloud stems client (stemify/stem jobs) + burned stems/beat-grids pull + Stemify action on… | 7 | Planned | — |
 | SVC-15 — Apple Music Web API client: catalog search, library playlists CRUD, favorites, artists la… | 7 | Planned | Library (write) endpoints need a real Music-User-Token from the vendo… |

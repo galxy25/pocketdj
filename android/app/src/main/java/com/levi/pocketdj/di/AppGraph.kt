@@ -356,6 +356,9 @@ class AppGraph private constructor(context: Context) {
             runCatching {
                 onboarding.waitUntilComplete()
                 servicesGraph.burnStore.reconcileOnLaunch()
+                // SVC-3: drop transfer records whose unique work is gone, then heal their ledger rows.
+                servicesGraph.transfers.reconcileOnLaunch()
+                servicesGraph.burnStore.healStrandedDownloads()
                 // A rip that finished while the app was closed still burns (iOS launch drain).
                 servicesGraph.burnStore.drainPendingAfterRip()
             }.onFailure { android.util.Log.e("PocketDJ", "[burns] reconcile failed", it) }
