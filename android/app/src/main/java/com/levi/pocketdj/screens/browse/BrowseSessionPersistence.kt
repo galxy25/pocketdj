@@ -90,3 +90,17 @@ internal fun ClauseDoc.toClause(): Clause? {
         id = id.ifEmpty { java.util.UUID.randomUUID().toString() },
     )
 }
+
+/**
+ * Lifecycle flush: writes the live session immediately so a change inside the 400 ms debounce
+ * window survives a background + kill. Skipped until the restore has run (never clobber the
+ * persisted doc with defaults). Contributed via BrowseGraph.flushables.
+ */
+class BrowseSessionFlushable(
+    private val write: suspend (BrowseSnapshot) -> Unit,
+) : com.levi.pocketdj.shell.Flushable {
+    override suspend fun flush() {
+        if (!BrowseSession.restored) return
+        BrowseSession.persist(write)
+    }
+}

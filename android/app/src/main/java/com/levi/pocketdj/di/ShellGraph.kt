@@ -14,5 +14,7 @@ class ShellGraph(@Suppress("unused") private val app: AppGraph) : FeatureModule 
     override val area: String = "shell"
 
     /** The pre-existing Settings blocks (Data sources … About), in shipped order. */
+    override val periodicWork = com.levi.pocketdj.work.ShellWork.specs
+
     override val settingsSections: List<SettingsSection> = SettingsSections.builtin()
 }

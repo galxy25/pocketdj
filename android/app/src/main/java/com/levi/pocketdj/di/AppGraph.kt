@@ -35,6 +35,7 @@ import com.levi.pocketdj.shell.LastSectionStore
 import java.io.File
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
@@ -114,6 +115,21 @@ class AppGraph private constructor(context: Context) {
     val browseGraph: BrowseGraph by lazy { BrowseGraph(this) }
     val servicesGraph: ServicesGraph by lazy { ServicesGraph(this) }
     val shellGraph: ShellGraph by lazy { ShellGraph(this) }
+
+    /** ON_STOP flush funnel (SURF-2). */
+    val flushRegistry: com.levi.pocketdj.shell.FlushRegistry = com.levi.pocketdj.shell.FlushRegistry()
+
+    private val flushLock = kotlinx.coroutines.sync.Mutex()
+
+    /** Serialized (idempotent) flush of every registered + module flushable. */
+    suspend fun flushNow() {
+        flushLock.withLock { runCatching { flushRegistry.flushAll(features.flushables) } }
+    }
+
+    /** Fire-and-forget [flushNow]; safe to call from Activity onPause/onStop. */
+    fun flushAsync() {
+        appScope.launch { flushNow() }
+    }
 
     val features: FeatureModuleRegistry by lazy {
         FeatureModuleRegistry(
@@ -272,7 +288,8 @@ class AppGraph private constructor(context: Context) {
         // fetch the latest in the background — never blocking launch.
         RemoteEndpoints.install(File(appContext.filesDir, "pocketdj-endpoints.json"))
         android.util.Log.i("PocketDJ", "[endpoints] launch ${RemoteEndpoints.summary}")
-        refreshEndpoints(force = true)
+        // The forced launch fetch is issued by the foreground hook (PocketDjApplication) so a
+        // WorkManager cold start does not pay for it.
         // Restore + persist the Browse view-state (kind/filters/sort/layout/mode,
         // browse.md §7). Wired here (once, app-scoped) so it survives regardless
         // of which screen renders first.
