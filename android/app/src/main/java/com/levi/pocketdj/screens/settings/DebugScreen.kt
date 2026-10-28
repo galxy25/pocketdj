@@ -282,6 +282,7 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
 
     // MIX-5 verify seeds (debug only): drive the MixEngine until the Mix screen (MIX-14) owns it.
     var mixStatus by remember { mutableStateOf("Mix: idle") }
+    var showDeckHarness by remember { mutableStateOf(false) }
     fun mixLine(): String {
         val e = host.graph.mixGraph.mixEngine
         return com.levi.pocketdj.mix.model.Deck.entries.joinToString(" | ") { d ->
@@ -312,7 +313,9 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
             e.setRate(1.05, A); e.setPitch(1.0, A); e.setVolume(0.8, A); e.setRate(0.97, B); e.setVolume(0.9, B); e.setCrossfader(0.3)
             mixStatus = "Mix twist: ${mixLine()}"
         }) { Text("Mix: twist") }
+        OutlinedButton(onClick = { showDeckHarness = true }) { Text("Mix: deck UI") }
     }
+    if (showDeckHarness) com.levi.pocketdj.screens.mix.DebugDeckHarness(host.graph) { showDeckHarness = false }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedButton(onClick = { mixStatus = "Mix status: ${mixLine()}" }) { Text("Mix: status") }
         OutlinedButton(onClick = {
