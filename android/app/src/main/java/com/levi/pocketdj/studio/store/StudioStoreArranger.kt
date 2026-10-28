@@ -174,6 +174,24 @@ object ArrangerMath {
     fun summary(a: StudioArrangement): String =
         "${a.tracks.size} track${if (a.tracks.size == 1) "" else "s"} · ${mmss(a.lengthMs / 1000.0)}"
 
+    /** Pan-dial sweep: the indicator travels +-135 degrees over pan -1..+1. */
+    private const val PAN_MAX_ANGLE = 135.0 * Math.PI / 180
+
+    /**
+     * Pan (-1..+1) for a touch at ([dx], [dy]) from the dial centre (0 deg = straight up, clockwise
+     * positive), snapping to dead centre within 6%. Null when the touch is on the hub (no direction).
+     */
+    fun panForPoint(dx: Float, dy: Float): Double? {
+        if (kotlin.math.abs(dx) + kotlin.math.abs(dy) <= 1f) return null
+        val ang = kotlin.math.atan2(dx.toDouble(), -dy.toDouble()).coerceIn(-PAN_MAX_ANGLE, PAN_MAX_ANGLE)
+        val p = ang / PAN_MAX_ANGLE
+        return if (kotlin.math.abs(p) < 0.06) 0.0 else p
+    }
+
+    /** "Center" / "Left 40%" / "Right 100%". */
+    fun panText(p: Double): String =
+        if (kotlin.math.abs(p) < 0.02) "Center" else if (p < 0) "Left ${(-p * 100).toInt()}%" else "Right ${(p * 100).toInt()}%"
+
     /** Where a new clip lands on [track]: appended after its last clip. */
     fun appendStartMs(track: StudioTrack?) = track?.lengthMs ?: 0
 }

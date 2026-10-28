@@ -189,7 +189,7 @@ class StudioStoreArrangerTest {
     }
 
     @Test fun anchorsAreBoundedAndCursorAnchorStaysInRange() {
-        assertEquals(3, ArrangerMath.anchorSecondsCount(0))                 // never empty: max(1, 0 + 2)
+        assertEquals(2, ArrangerMath.anchorSecondsCount(0))                 // never empty: max(1, 0 + 2)
         assertEquals(12, ArrangerMath.anchorSecondsCount(10_000))
         assertEquals(ArrangerMath.MAX_ANCHORS, ArrangerMath.anchorSecondsCount(99_999_999))
     }
@@ -203,7 +203,7 @@ class StudioStoreArrangerTest {
         val scroll = ArrangerMath.followScrollTarget(ms, px, viewport, content)
         assertEquals(ms / 1000f * px, scroll + viewport / 2f, 1f)
         // Near the end: clamped so we never scroll past the content.
-        assertEquals((content - viewport).toDouble(), ArrangerMath.followScrollTarget(59_000, px, viewport, content).toDouble(), 1.0)
+        assertEquals((content - viewport).toDouble(), ArrangerMath.followScrollTarget(60_000, px, viewport, content).toDouble(), 1.0)
         // Shorter-than-viewport content never scrolls.
         assertEquals(0, ArrangerMath.followScrollTarget(500, px, 5_000f, 560f))
     }

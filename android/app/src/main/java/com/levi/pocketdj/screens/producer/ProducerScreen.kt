@@ -70,7 +70,7 @@ fun ProducerScreen(graph: AppGraph, modifier: Modifier = Modifier, hideTabs: Boo
     val iconOnly = StudioSubTab.iconOnly(widthDp)
 
     Column(modifier.fillMaxSize().testTag("producer-screen")) {
-        if (!hideTabs) {
+        if (!hideTabs && !com.levi.pocketdj.screens.producer.tracks.TracksNav.arrangerFullscreen) {
             SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
                 val all = StudioSubTab.entries
                 all.forEachIndexed { i, t ->
@@ -94,6 +94,7 @@ fun ProducerScreen(graph: AppGraph, modifier: Modifier = Modifier, hideTabs: Boo
                 StudioSubTab.Loops -> LoopsScreen(graph)
                 StudioSubTab.Cues -> com.levi.pocketdj.screens.producer.cues.CuesScreen(graph)
                 StudioSubTab.Sequencer -> SequencerScreen(graph)
+                StudioSubTab.Tracks -> com.levi.pocketdj.screens.producer.tracks.TracksHomeScreen(graph)
                 else -> ComingSoon(tab)
             }
         }
