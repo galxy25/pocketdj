@@ -68,7 +68,13 @@ class StorageService(
     interface StudioStorageOps {
         fun usageBytes(family: com.levi.pocketdj.studio.store.StudioFamily): Long
         fun deleteAll(family: com.levi.pocketdj.studio.store.StudioFamily)
+        /** Records of the family (iOS enables delete when count > 0 OR bytes > 0: a record with zero bytes is removable). */
+        fun recordCount(family: com.levi.pocketdj.studio.store.StudioFamily): Int = 0
     }
+
+    /** Studio record count for a STUDIO_* category (0 for others / unwired). Off-main callers only. */
+    fun studioRecordCount(category: Category): Int =
+        runCatching { category.studioFamily?.let { studioOps?.recordCount(it) } }.getOrNull() ?: 0
 
     /** The slice of BurnStore the Storage screen's targeted deletes use (a port for JVM tests). */
     interface BurnStorageOps {

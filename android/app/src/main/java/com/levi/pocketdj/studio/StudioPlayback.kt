@@ -16,6 +16,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+/** A written pattern bounce: bare file name + whether it landed in the user-chosen Sequences folder. */
+data class BouncedFile(val fileName: String, val wasUserFolder: Boolean)
+
 /**
  * Ports [StudioPlayback] needs from the audio stack; implemented over the real
  * [com.levi.pocketdj.studio.audio.StudioRender] / [com.levi.pocketdj.studio.engine.SampleRenderCache]
@@ -31,11 +34,14 @@ interface StudioPrepareBackend {
     /** Pre-stretch the span variants (degraded fallback: absent key = natural buffer). */
     suspend fun stretchSpans(pattern: StudioPattern, natural: Map<String, PcmBuffer>): Map<com.levi.pocketdj.studio.engine.StudioStretchKey, PcmBuffer>
 
-    /** Write the pattern bounce into the app-managed sequences root. Returns the written file name, or null if no writable root. */
+    /**
+     * Write the pattern bounce into the family's ACTIVE sequences root (the user folder when configured,
+     * reachable and writable, else the app root). Returns the file name + which root took it, or null if none.
+     */
     suspend fun bouncePattern(
         pattern: StudioPattern, buffers: Map<String, PcmBuffer>,
         spans: Map<com.levi.pocketdj.studio.engine.StudioStretchKey, PcmBuffer>,
-    ): String?
+    ): BouncedFile?
 
     /**
      * Render a stale instrumental take (notes -> audio). Android has no instrument synth in this build:
@@ -59,13 +65,20 @@ class StudioPlayback(
     /** No-prepare resolution (cheap; used by the "is this row on the device" probe). */
     fun playableNow(id: String): StudioPlayable? = store.localUrlForPlayback(id)
 
-    /** True when [id] can play now OR could after [prepare] (record exists with something to render). */
+    /**
+     * Cheap, no-prepare "is this row on the device RIGHT NOW" probe (the sequencer's `rowOnDevice`, used by the
+     * resolve-stall hop): the file must exist and a pattern must not still need a bounce. Never decodes/renders.
+     */
+    fun isOnDeviceNow(id: String): Boolean {
+        if (playableNow(id) == null) return false
+        return !id.startsWith("ptn_") || !needsPrepare(id)
+    }
+
+    /** True when [id] can play now OR could after [prepare] (record exists with something to render). Add-time only. */
     fun isPlayable(id: String): Boolean {
         if (playableNow(id) != null) return true
         return when {
             id.startsWith("ptn_") -> store.pattern(id)?.let { it.hasSoundingSteps } == true
-            id.startsWith("smp_") -> store.sample(id) != null
-            id.startsWith("tk_") -> store.take(id) != null
             else -> false
         }
     }
@@ -114,7 +127,7 @@ class StudioPlayback(
         } ?: return
         // Bless the bounce only if the pattern still matches what was rendered (an edit mid-render left it stale).
         val now = store.pattern(patternId)
-        if (now != null && now.rows == pattern.rows && now.bpm == pattern.bpm) store.setPatternBounced(patternId, name, false)
+        if (now != null && now.rows == pattern.rows && now.bpm == pattern.bpm) store.setPatternBounced(patternId, name.fileName, name.wasUserFolder)
     }
 
     /** The Collections lookup: title + REAL length (+ bpm/key) for a studio id, or null. */

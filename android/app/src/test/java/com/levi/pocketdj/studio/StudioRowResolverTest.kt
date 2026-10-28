@@ -36,10 +36,10 @@ class StudioRowResolverTest {
         override suspend fun ensureSampleRendered(sampleId: String) = true
         override suspend fun targetBuffer(targetId: String) = PcmBuffer(44100, 2, FloatArray(8) { 0.1f })
         override suspend fun stretchSpans(pattern: StudioPattern, natural: Map<String, PcmBuffer>) = emptyMap<StudioStretchKey, PcmBuffer>()
-        override suspend fun bouncePattern(pattern: StudioPattern, buffers: Map<String, PcmBuffer>, spans: Map<StudioStretchKey, PcmBuffer>): String {
+        override suspend fun bouncePattern(pattern: StudioPattern, buffers: Map<String, PcmBuffer>, spans: Map<StudioStretchKey, PcmBuffer>): BouncedFile {
             bounces++
             onBounce()
-            return env.write(StudioFamily.SEQUENCES, pattern.id)
+            return BouncedFile(env.write(StudioFamily.SEQUENCES, pattern.id), false)
         }
     }
 
@@ -138,5 +138,41 @@ class StudioRowResolverTest {
         assertEquals("8B", store.camelot("tk_a"))
         store.setCamelot("1A", "tk_a"); an.ensureKey("tk_a")
         assertEquals("1A", store.camelot("tk_a"))   // idempotent
+    }
+
+    @Test fun rowOnDeviceProbeIsCheapAndHonest() = runTest {
+        // A record whose file was deleted outside the app is NOT on the device (no hop target).
+        val n = env.write(StudioFamily.SAMPLES, "smp_gone")
+        store.addSample(StudioSample("smp_gone", "Gone", n, durationMs = 500))
+        java.io.File(tmp.root, "studio").walkTopDown().filter { it.name == n }.forEach { it.delete() }
+        addSample("smp_here"); addSample("smp_t"); dirtyPattern("ptn_d", "smp_t")
+        val be = FakeBackend(env)
+        val pb = StudioPlayback(store, be)
+        assertFalse(pb.isOnDeviceNow("smp_gone"))
+        assertTrue(pb.isOnDeviceNow("smp_here"))
+        assertFalse(pb.isOnDeviceNow("ptn_d"))   // dirty pattern would block on a bounce: never a stall-hop target
+        assertEquals(0, be.bounces)              // the probe never prepares
+        pb.prepare("ptn_d")
+        assertTrue(pb.isOnDeviceNow("ptn_d"))
+    }
+
+    @Test fun addingAStudioIdFiresTheAnalyzerSeamOncePerStudioId() {
+        val f = tmp.newFile("c.json")
+        val cs = com.levi.pocketdj.data.collections.CollectionsStore(f)
+        val p = cs.createPocket("P")
+        val seen = ArrayList<List<String>>()
+        cs.onStudioIdsAdded = { seen += it }
+        val t = com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.POCKET, p.id)
+        cs.addSong("smp_a", t)
+        cs.addSongs(listOf("sng_1", "lp_b", "lp_b"), t)
+        assertEquals(listOf(listOf("smp_a"), listOf("lp_b")), seen)
+    }
+
+    @Test fun analyzerPrepareStoresAKeyForATake() = runTest {
+        val n = env.write(StudioFamily.TAKES, "tk_k")
+        val ev = listOf(60, 64, 67).map { StudioNoteEvent(0, 500, it, 90) }
+        store.addTake(com.levi.pocketdj.studio.model.StudioTake("tk_k", "T", fileName = n, events = ev, durationMs = 500))
+        StudioAnalyzer(store, StudioPlayback(store, FakeBackend(env))) { null }.prepare("tk_k")
+        assertEquals("8B", store.camelot("tk_k"))
     }
 }

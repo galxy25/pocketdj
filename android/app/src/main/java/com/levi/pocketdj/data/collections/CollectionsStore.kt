@@ -103,6 +103,26 @@ class CollectionsStore(
     /** Performer label on synthesized studio rows (the profile's "PocketDJ name"), "Studio" when unset. */
     @Volatile var studioArtist: () -> String = { STUDIO_ARTIST }
 
+    /**
+     * iOS `StudioAnalyzer.prepare(forStudioId:)` seam: fired (outside the store lock's critical work, once per
+     * studio id) from the add choke points so an item gets its Camelot key + pre-bounce/render at ADD time,
+     * not at its turn in a set. Wired in AppGraph; null in tests that don't care.
+     */
+    @Volatile var onStudioIdsAdded: ((List<String>) -> Unit)? = null
+
+    /** True when any pocket / playlist holds a studio id (AppGraph warms the studio store off-main for it). */
+    fun hasStudioItems(): Boolean {
+        val st = state.value
+        return st.pockets.any { p -> p.songIds.any(PlayResolver::isStudioId) } ||
+            st.playlists.any { pl -> songIdsInNodes(pl.sequences).any(PlayResolver::isStudioId) }
+    }
+
+    private fun notifyStudioAdded(ids: Collection<String>) {
+        val studio = ids.filter { PlayResolver.isStudioId(it) }.distinct()
+        if (studio.isEmpty()) return
+        runCatching { onStudioIdsAdded?.invoke(studio) }
+    }
+
     /** Display info for a studio id (the row UI), or null for a non-studio / unknown id. */
     fun studioInfo(id: String): StudioItemInfo? =
         if (PlayResolver.isStudioId(id)) studioLookup?.info(id) else null
@@ -1129,6 +1149,7 @@ class CollectionsStore(
         publish { it.copy(lastAddTarget = target) }
         save()
         emitAddActivity(itemId = songId, target = target)
+        notifyStudioAdded(listOf(songId))
     }
 
     fun addAlbum(albumId: String, target: AddTarget) = synchronized(lock) {
@@ -1208,6 +1229,7 @@ class CollectionsStore(
         publish { it.copy(lastAddTarget = target) }
         save()
         emitBatch(added.map { addHook(it, target) })
+        notifyStudioAdded(added)
         added.size
     }
 

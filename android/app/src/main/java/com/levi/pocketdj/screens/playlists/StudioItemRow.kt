@@ -4,19 +4,30 @@ import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.collections.StudioItemInfo
 import com.levi.pocketdj.di.AppGraph
 
-/** The studio display info for [id] (null for a catalog / unknown id). Remembered per id. */
+/**
+ * The studio display info for [id] (null for a catalog / unknown id). Computed OFF-main and re-derived on every
+ * studio-document change (rename, bounce length, detected key, delete), so a row never goes stale.
+ */
 @Composable
 fun rememberStudioInfo(id: String?): StudioItemInfo? {
     if (id == null || !com.levi.pocketdj.data.rips.PlayResolver.isStudioId(id)) return null
     val context = LocalContext.current
-    return remember(id) { AppGraph.get(context).collections.studioInfo(id) }
+    val info by produceState<StudioItemInfo?>(initialValue = null, id) {
+        val graph = AppGraph.get(context)
+        val flow = withContext(Dispatchers.IO) { graph.studioGraph.studioStore.state }
+        flow.collect { withContext(Dispatchers.IO) { value = graph.collections.studioInfo(id) } }
+    }
+    return info
 }
 
 /**

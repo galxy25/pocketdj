@@ -37,7 +37,9 @@ import com.levi.pocketdj.studio.StudioAnalyzer
 import com.levi.pocketdj.studio.StudioFiles
 import com.levi.pocketdj.studio.StudioPlayback
 import com.levi.pocketdj.studio.StudioPrepareBackend
+import com.levi.pocketdj.studio.BouncedFile
 import com.levi.pocketdj.studio.StudioRowResolver
+import com.levi.pocketdj.studio.store.FileStudioDir
 import com.levi.pocketdj.studio.engine.PatternBouncer
 import com.levi.pocketdj.studio.engine.StudioStretchKey
 import com.levi.pocketdj.studio.engine.AudioFocusPolicy
@@ -260,11 +262,23 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
 
             override suspend fun bouncePattern(
                 pattern: StudioPattern, buffers: Map<String, PcmBuffer>, spans: Map<StudioStretchKey, PcmBuffer>,
-            ): String? {
+            ): BouncedFile? {
                 val name = StudioPlayback.patternFileName(pattern.id)
-                val dest = StudioFiles.appFile(studioRoots, StudioFamily.SEQUENCES, name) ?: return null
-                PatternBouncer.bounce(pattern, buffers, spans, dest)
-                return name
+                // iOS ensureBounced: the ACTIVE sequences folder (user root when configured + writable, else app root).
+                val (dir, isUser) = StudioFolders.writeFolder(studioRoots, StudioFamily.SEQUENCES)
+                val direct = (dir as? FileStudioDir)?.dir?.let { File(it, name) }
+                if (direct != null) {
+                    PatternBouncer.bounce(pattern, buffers, spans, direct)
+                } else {
+                    // SAF tree: bounce to an app-private temp file, then stream it into the chosen folder.
+                    val tmp = StudioFiles.appFile(studioRoots, StudioFamily.SEQUENCES, ".tmp-$name") ?: return null
+                    try {
+                        PatternBouncer.bounce(pattern, buffers, spans, tmp)
+                        val out = dir.openOutput(name) ?: return null
+                        out.use { o -> tmp.inputStream().use { it.copyTo(o) } }
+                    } finally { tmp.delete() }
+                }
+                return BouncedFile(name, isUser)
             }
         }
     }
@@ -284,6 +298,15 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
     val storageOps: StorageService.StudioStorageOps = object : StorageService.StudioStorageOps {
         override fun usageBytes(family: StudioFamily): Long = studioStore.usageBytes(family)
         override fun deleteAll(family: StudioFamily) { studioStore.deleteAll(family); studioStore.flush() }
+        override fun recordCount(family: StudioFamily): Int = studioStore.state.value.let {
+            when (family) {
+                StudioFamily.SAMPLES -> it.samples.size
+                StudioFamily.LOOPS -> it.loops.size
+                StudioFamily.SEQUENCES -> it.patterns.size
+                StudioFamily.TAKES -> it.takes.size
+                StudioFamily.INSTRUMENTS -> 0
+            }
+        }
     }
 
     /**
@@ -295,7 +318,7 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         ctl.rowResolvers.register(StudioRowResolver(prepare = { id -> studioPlayback.prepare(id) }))
         val prevOnDevice = ctl.sequencer.rowOnDevice
         ctl.sequencer.rowOnDevice = { item ->
-            prevOnDevice(item) || StudioRowResolver.studioIdOf(item)?.let { studioPlayback.isPlayable(it) } == true
+            prevOnDevice(item) || StudioRowResolver.studioIdOf(item)?.let { studioPlayback.isOnDeviceNow(it) } == true
         }
     }
 

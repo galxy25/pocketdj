@@ -331,6 +331,12 @@ class AppGraph private constructor(context: Context) {
             store.catalogProvider = { catalogRepository.state.value.catalog }
             // STU-7: studio items count/realize/play with their real lengths (lazy; never builds the studio store for catalog ids).
             store.studioLookup = studioGraph.collectionsLookup
+            // Warm the studio store on IO so statsForPocket/rows never do its first JSON read on main.
+            appScope.launch(kotlinx.coroutines.Dispatchers.IO) { runCatching { if (store.hasStudioItems()) studioGraph.studioStore } }
+            // STU-7 review: key detection + pre-bounce/render at ADD time (iOS StudioAnalyzer.prepare on Add-to).
+            store.onStudioIdsAdded = { ids ->
+                appScope.launch(kotlinx.coroutines.Dispatchers.IO) { ids.forEach { studioGraph.studioAnalyzer.prepare(it) } }
+            }
             store.onActivityBatch = { hooks ->
                 collectionActivity.recordAll(
                     ActivityKind.ADD.takeIf { hooks.first().kind == CollectionsStore.ActivityHook.Kind.ADD }

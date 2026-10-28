@@ -1,5 +1,7 @@
 package com.levi.pocketdj.screens.producer.samples
 
+import com.levi.pocketdj.screens.collections.AddToCollectionSheet
+import com.levi.pocketdj.screens.collections.AddToItem
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -195,6 +197,7 @@ private fun SampleRow(
     onOpen: () -> Unit, onRename: () -> Unit, onMove: (String?) -> Unit, onNewFolderForMove: () -> Unit, onDelete: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
+    var addTo by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().clickable(onClick = onOpen).padding(start = 16.dp, top = 8.dp, bottom = 8.dp).testTag("sample-${s.id}"), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text(s.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodyLarge)
@@ -205,7 +208,9 @@ private fun SampleRow(
         }
         Box {
             IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, "Sample actions") }
+            if (addTo) AddToCollectionSheet(item = AddToItem.Song(s.id), onDismiss = { addTo = false })
             DropdownMenu(menu, { menu = false }) {
+                DropdownMenuItem(text = { Text("Add to…") }, onClick = { menu = false; addTo = true }, modifier = Modifier.testTag("sample-add-to-${s.id}"))
                 DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onRename() })
                 MoveToItems(folders, s.folderId, onMove = { menu = false; onMove(it) }, onNewFolder = { menu = false; onNewFolderForMove() })
                 DropdownMenuItem(text = { Text("Delete") }, onClick = { menu = false; onDelete() })

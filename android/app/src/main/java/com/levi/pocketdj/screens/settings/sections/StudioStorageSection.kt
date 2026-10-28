@@ -20,6 +20,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,18 +63,32 @@ internal fun studioStorageSection(order: Int = 710) = SettingsSection("studioSto
     StudioStorageContent(host)
 }
 
+/** Drop the persisted SAF grant of a replaced/reset folder (never the one still in use). */
+private fun releaseUri(context: android.content.Context, old: String?, stillUsed: Boolean) {
+    if (old.isNullOrEmpty() || stillUsed) return
+    runCatching {
+        context.contentResolver.releasePersistableUriPermission(
+            Uri.parse(old), Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+        )
+    }
+}
+
 @Composable
 private fun StudioStorageContent(host: SettingsHost) {
     val context = LocalContext.current
     val sg = remember { host.graph.studioGraph }
     var tick by remember { mutableStateOf(0) }
     val usage = remember { mutableStateOf<Map<StudioFamily, Long>>(emptyMap()) }
+    val counts = remember { mutableStateOf<Map<StudioFamily, Int>>(emptyMap()) }
     var confirm by remember { mutableStateOf<StudioFamily?>(null) }
-    var picking by remember { mutableStateOf<StudioFamily?>(null) }
+    var picking by rememberSaveable { mutableStateOf<StudioFamily?>(null) }
 
     LaunchedEffect(tick) {
         usage.value = withContext(Dispatchers.IO) {
             StudioFamily.entries.associateWith { runCatching { sg.studioStore.usageBytes(it) }.getOrDefault(0L) }
+        }
+        counts.value = withContext(Dispatchers.IO) {
+            StudioFamily.entries.associateWith { runCatching { sg.storageOps.recordCount(it) }.getOrDefault(0) }
         }
     }
 
@@ -86,7 +101,9 @@ private fun StudioStorageContent(host: SettingsHost) {
                     uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
                 )
             }
+            val old = sg.userFolderTreeUri(family)
             sg.setUserFolder(family, uri.toString())
+            releaseUri(context, old, stillUsed = old == uri.toString() || STUDIO_FOLDER_FAMILIES.any { sg.userFolderTreeUri(it) == old })
             tick++
         }
     }
@@ -117,10 +134,15 @@ private fun StudioStorageContent(host: SettingsHost) {
                 if (family.supportsUserFolder) {
                     OutlinedButton(onClick = { picking = family; launcher.launch(null) }) { Text("Choose folder") }
                     if (folder != null) {
-                        OutlinedButton(onClick = { sg.setUserFolder(family, null); tick++ }) { Text("Use app storage") }
+                        OutlinedButton(onClick = {
+                            val old = sg.userFolderTreeUri(family)
+                            sg.setUserFolder(family, null)
+                            releaseUri(context, old, stillUsed = STUDIO_FOLDER_FAMILIES.any { sg.userFolderTreeUri(it) == old })
+                            tick++
+                        }) { Text("Use app storage") }
                     }
                 }
-                OutlinedButton(onClick = { confirm = family }, enabled = (bytes ?: 0L) > 0L) { Text("Delete all") }
+                OutlinedButton(onClick = { confirm = family }, enabled = (bytes ?: 0L) > 0L || (counts.value[family] ?: 0) > 0) { Text("Delete all") }
             }
         }
     }

@@ -1,5 +1,8 @@
 package com.levi.pocketdj.screens.settings
 
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import androidx.compose.material3.ButtonDefaults
 import android.text.format.Formatter
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -70,6 +73,7 @@ fun StorageScreen(modifier: Modifier = Modifier) {
 
     // null == not yet measured → render the "—" placeholder (spec §1, iOS parity).
     val sizes = remember { mutableStateMapOf<Category, Long?>() }
+    val studioCounts = remember { mutableStateMapOf<Category, Int>() }
     var measuring by remember { mutableStateOf(true) }
     var pendingClear by remember { mutableStateOf<Category?>(null) }
 
@@ -77,6 +81,9 @@ fun StorageScreen(modifier: Modifier = Modifier) {
         measuring = true
         val measured = storage.measureAll() // off-main inside the service
         sizes.putAll(measured)
+        withContext(Dispatchers.IO) {
+            Category.entries.filter { it.studioFamily != null }.forEach { studioCounts[it] = storage.studioRecordCount(it) }
+        }
         measuring = false
     }
 
@@ -111,7 +118,7 @@ fun StorageScreen(modifier: Modifier = Modifier) {
 
             Spacer(Modifier.height(8.dp))
 
-            Category.entries.forEach { category ->
+            Category.entries.filter { it.studioFamily == null }.forEach { category ->
                 val meta = storageCategoryMeta(category)
                 val bytes = sizes[category]
                 StorageRow(
@@ -121,6 +128,37 @@ fun StorageScreen(modifier: Modifier = Modifier) {
                     // Enable a Clear while any bytes remain, even if the logical
                     // count is 0 (reclaim orphaned bytes) — spec §1, iOS parity.
                     clearable = category.clearable && (bytes ?: 0L) > 0L,
+                    onClear = if (category.clearable) {
+                        { pendingClear = category }
+                    } else {
+                        null
+                    },
+                )
+                Spacer(Modifier.height(4.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(4.dp))
+            }
+
+            Spacer(Modifier.height(12.dp))
+            SectionHeader("Producer studio")
+            Caption(
+                "These are things you made (recordings, loops, sequences, takes). PocketDJ never deletes them on its " +
+                    "own. Deleting a family is permanent: loops already playing keep playing, but sequencer rows that " +
+                    "use a deleted sample or loop fall silent, and any pocket or playlist entry for a deleted item is " +
+                    "left unplayable. Instruments are downloaded packs and can be fetched again.",
+            )
+            Spacer(Modifier.height(8.dp))
+            Category.entries.filter { it.studioFamily != null }.forEach { category ->
+                val meta = storageCategoryMeta(category)
+                val bytes = sizes[category]
+                StorageRow(
+                    title = meta.title,
+                    description = meta.description,
+                    sizeLabel = bytes?.let { Formatter.formatFileSize(context, it) } ?: "—",
+                    // Enable a Clear while any bytes remain, even if the logical
+                    // count is 0 (reclaim orphaned bytes) — spec §1, iOS parity.
+                    clearable = (bytes ?: 0L) > 0L || (studioCounts[category] ?: 0) > 0,
+                    destructive = true,
                     onClear = if (category.clearable) {
                         { pendingClear = category }
                     } else {
@@ -175,11 +213,14 @@ fun StorageScreen(modifier: Modifier = Modifier) {
                         scope.launch {
                             val remaining = storage.clear(category) // off-main + re-measure
                             sizes[category] = remaining
-                            snackbar.showSnackbar("${meta.title} cleared")
+                            if (category.studioFamily != null) {
+                                studioCounts[category] = withContext(Dispatchers.IO) { storage.studioRecordCount(category) }
+                            }
+                            snackbar.showSnackbar(if (category.studioFamily != null) "${meta.title} deleted" else "${meta.title} cleared")
                         }
                     },
                 ) {
-                    Text("Clear")
+                    Text(if (category.studioFamily != null) "Delete" else "Clear")
                 }
             },
             dismissButton = {
@@ -196,6 +237,7 @@ private fun StorageRow(
     sizeLabel: String,
     clearable: Boolean,
     onClear: (() -> Unit)?,
+    destructive: Boolean = false,
 ) {
     Row(
         modifier = Modifier
@@ -224,8 +266,12 @@ private fun StorageRow(
             )
             if (onClear != null) {
                 Spacer(Modifier.height(6.dp))
-                OutlinedButton(onClick = onClear, enabled = clearable) {
-                    Text("Clear")
+                OutlinedButton(
+                    onClick = onClear, enabled = clearable,
+                    colors = if (destructive) ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    else ButtonDefaults.outlinedButtonColors(),
+                ) {
+                    Text(if (destructive) "Delete" else "Clear")
                 }
             }
         }

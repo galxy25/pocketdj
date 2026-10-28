@@ -30,6 +30,7 @@ class StorageServiceStudioTest {
             studioOps = object : StorageService.StudioStorageOps {
                 override fun usageBytes(family: StudioFamily) = store.usageBytes(family)
                 override fun deleteAll(family: StudioFamily) { store.deleteAll(family) }
+                override fun recordCount(family: StudioFamily) = if (family == StudioFamily.SAMPLES) store.samples.size else 0
             },
         )
     }
@@ -84,5 +85,12 @@ class StorageServiceStudioTest {
         val s = StorageService(f, f, f, f, object : ArtworkCache { override fun diskSizeBytes() = 0L; override fun clear() {} }, {}, {}, {})
         assertEquals(0L, s.measure(Category.STUDIO_LOOPS))
         assertFalse(s.clear(Category.STUDIO_LOOPS) > 0)
+    }
+
+    @Test fun studioRecordCountReflectsRecordsEvenWhenBytesAreZero() {
+        seed()
+        assertTrue(service().studioRecordCount(StorageService.Category.STUDIO_SAMPLES) > 0)
+        assertEquals(0, service().studioRecordCount(StorageService.Category.STUDIO_LOOPS))
+        assertEquals(0, service().studioRecordCount(StorageService.Category.ACTIVITY))
     }
 }
