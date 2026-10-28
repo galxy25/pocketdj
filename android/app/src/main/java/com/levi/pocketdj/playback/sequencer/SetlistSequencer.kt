@@ -1204,6 +1204,16 @@ class SetlistSequencer(
             } catch (e: Exception) {
                 false
             }
+            if (ok && (token != preloadToken || !owns(gen))) {
+                // The engine now holds slot 1 but this pass was superseded: never leave it untracked.
+                if (owns(gen)) {
+                    preloader.noteInstalled(target.item, source) // a newer reconcile will keep or replace it
+                } else {
+                    try { port.preloadNext(null) } catch (e: CancellationException) { throw e } catch (e: Exception) { }
+                    preloader.noteCleared()
+                }
+                return@launch
+            }
             if (token != preloadToken || !owns(gen)) return@launch
             if (ok) {
                 preloader.noteInstalled(target.item, source)
@@ -1220,8 +1230,10 @@ class SetlistSequencer(
      * per-track start bookkeeping once, and close the dead-air transition at ~0. Returns false when
      * [songId] is not the preloaded row (the caller treats it as a stray engine event).
      */
-    fun handlePreloadedTransition(songId: String): Boolean {
+    fun handlePreloadedTransition(songId: String, rendering: Boolean = true): Boolean {
         if (!running || held) return false
+        // A skip/jump already moved the cursor and its load is pending: that load owns the engine, not this event.
+        if (playJob?.isActive == true) return false
         val slot = preloader.consumeAutoTransition(songId) ?: return false
         val from = queue.getOrNull(index)
         val pos = queue.indexOfFirst { it.uid == slot.uid }
@@ -1230,14 +1242,16 @@ class SetlistSequencer(
         preloadJob = null
         if (from == null || pos < 0) {
             // The row left the queue after the engine had already committed to it: realign by reloading the cursor row.
-            log("[playback] preload transition for song=$songId lost its row; reloading cursor")
-            startPlayCurrent(fresh = true)
+            log("[playback] preload transition for song=$songId lost its row; advancing normally")
+            if (from != null) {
+                outcomes?.emit(from.id, false, 1.0)
+                skipTracker?.noteNaturalEnd(from.id)
+            }
+            unplayableStreak = 0
+            advanceToNext(AdvanceCause.AUTO)
             return true
         }
-        outcomes?.emit(from.id, false, 1.0)
-        skipTracker?.noteNaturalEnd(from.id)
-        unplayableStreak = 0
-        index = pos
+        // Gate + breaker run BEFORE the cursor moves: a halt sits on the ENDED row (PB-3 / iOS), never the new one.
         if (!autoAdvanceGate()) {
             pausedByCascade = true
             scope.launch { runCatching { port.pause() } }
@@ -1249,6 +1263,10 @@ class SetlistSequencer(
             haltCascade()
             return true
         }
+        outcomes?.emit(from.id, false, 1.0)
+        skipTracker?.noteNaturalEnd(from.id)
+        unplayableStreak = 0
+        index = pos
         val item = queue[pos]
         meter?.transitionBegan("advance")
         log("[playback] advance from=${from.id} index=$pos/${queue.size} cause=${AdvanceCause.AUTO} preloaded=true")
@@ -1266,7 +1284,12 @@ class SetlistSequencer(
         beginStartWindow(item, gen)
         log("[playback] track start song=${item.id} index=${pos + 1}/${queue.size} backend=${slot.source.backend} preloaded=true")
         publish()
-        handleFirstAudio("preload") // the engine is already rendering it: gap ~0
+        if (rendering) {
+            handleFirstAudio("preload") // the engine is already rendering it: gap ~0
+        } else {
+            // Still buffering: the real gap closes on the first onIsPlayingChanged(true); the stall watchdog covers it.
+            armStartStall(gen, item.id)
+        }
         return true
     }
 

@@ -437,7 +437,8 @@ class PlaybackController(
             // that row's uid; everything else (setMediaItems, seeks) is the sequencer's own load.
             if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_AUTO || mediaItem == null) return
             if (activeBackend != ActiveBackend.EXO || !sequencerOwnsPlayer) return
-            if (!sequencer.handlePreloadedTransition(mediaItem.mediaId)) return
+            val rendering = controller?.let { it.isPlaying && it.playbackState == Player.STATE_READY } ?: false
+            if (!sequencer.handlePreloadedTransition(mediaItem.mediaId, rendering)) return
             urlRetriedFor = null
             playGeneration.incrementAndGet()
             scope.launch {
