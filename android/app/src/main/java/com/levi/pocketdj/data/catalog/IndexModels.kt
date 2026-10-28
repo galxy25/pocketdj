@@ -36,6 +36,9 @@ data class IndexArtist(
     val songs: Int? = null,
     val alt: List<Long>? = null,
 ) {
+    /** Usable for the name join: non-blank key and a real id (iOS requires key/name/id). */
+    val valid: Boolean get() = key.isNotBlank() && id != null
+
     companion object {
         /** trim, lowercase, collapse whitespace runs — must match the indexer's norm(). */
         fun normalize(raw: String): String =
