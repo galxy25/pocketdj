@@ -69,7 +69,11 @@ import com.levi.pocketdj.data.history.PlayHistoryStore
 import com.levi.pocketdj.data.catalog.CatalogRepository
 import com.levi.pocketdj.data.catalog.MergedCatalog
 import com.levi.pocketdj.data.favorites.FavoriteFilter
+import com.levi.pocketdj.data.search.OnlineSearchModel
+import com.levi.pocketdj.data.search.SearchSettings
 import com.levi.pocketdj.di.AppGraph
+import androidx.compose.material.icons.filled.Cloud
+import androidx.compose.material.icons.filled.CloudQueue
 import com.levi.pocketdj.ui.FavoriteToggle
 import com.levi.pocketdj.screens.collections.AddToCollectionSheet
 import com.levi.pocketdj.screens.collections.AddToItem
@@ -121,6 +125,7 @@ fun BrowseScreen(
     val query by BrowseSession.query.collectAsState()
     val filters by BrowseSession.filters.collectAsState()
     val sortKeys by BrowseSession.sortKeys.collectAsState()
+    val searchMode by BrowseSession.searchMode.collectAsState()
 
     var showFilterSheet by remember { mutableStateOf(false) }
     var showSortSheet by remember { mutableStateOf(false) }
@@ -154,6 +159,8 @@ fun BrowseScreen(
                     query = query,
                     filters = filters,
                     sortKeys = sortKeys,
+                    searchMode = searchMode,
+                    onSearchMode = { BrowseSession.searchMode.value = it },
                     isRefreshing = catalogState.isRefreshing,
                     onKind = { BrowseSession.kind.value = it },
                     onLayout = { BrowseSession.layout.value = it },
@@ -229,6 +236,8 @@ private fun BrowseContent(
     query: String,
     filters: BrowseFilters,
     sortKeys: List<SortKey>,
+    searchMode: SearchMode,
+    onSearchMode: (SearchMode) -> Unit,
     isRefreshing: Boolean,
     onKind: (BrowseKind) -> Unit,
     onLayout: (AlbumLayout) -> Unit,
@@ -281,6 +290,26 @@ private fun BrowseContent(
     } else {
         -1
     }
+    // ---- Online (OpenSearch) mode: Albums/Songs only; Artists is always on-device. ----
+    val online = searchMode == SearchMode.ONLINE && kind != BrowseKind.ARTISTS
+    val onlineGraph = remember { AppGraph.get(context) }
+    val onlineScope = rememberCoroutineScope()
+    val onlineModel = remember { OnlineSearchModel(onlineGraph.browseGraph.searchService, onlineScope) }
+    val secretsRev by onlineGraph.secrets.revision.collectAsState(initial = 0L)
+    val onlineCreds by produceState<com.levi.pocketdj.net.SigV4.Creds?>(null, secretsRev) {
+        value = withContext(Dispatchers.IO) { SearchSettings.creds(onlineGraph.secrets) }
+    }
+    val onlineUi by onlineModel.ui.collectAsState()
+    // Any query/kind/filter/SORT change (or creds change) RESETS and reloads page 1 (300 ms debounce
+    // lives in the model); leaving online mode cancels in-flight work.
+    LaunchedEffect(online, kind, query, filters.clauses, sortKeys, onlineCreds) {
+        if (online) {
+            onlineModel.searchDebounced(query, kind, filters.clauses, sortKeys, onlineCreds)
+        } else {
+            onlineModel.cancel()
+        }
+    }
+
     val results by produceState(initialValue = BrowseResults(), resultsKey, favoriteFilter, favRevision) {
         value = withContext(Dispatchers.Default) {
             // Pipeline (§4.1): base rows → text query → filter clauses → sort,
@@ -370,6 +399,19 @@ private fun BrowseContent(
                     )
                 }
             }
+            if (kind != BrowseKind.ARTISTS) {
+                IconButton(
+                    onClick = {
+                        onSearchMode(if (online) SearchMode.DEVICE else SearchMode.ONLINE)
+                    },
+                ) {
+                    Icon(
+                        if (online) Icons.Filled.Cloud else Icons.Filled.CloudQueue,
+                        contentDescription = if (online) "Searching online — switch to this device" else "Search online",
+                        tint = if (online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
             IconButton(onClick = onShowSort) {
                 Icon(
                     Icons.Filled.SwapVert,
@@ -444,7 +486,7 @@ private fun BrowseContent(
                 BrowseKind.ARTISTS -> "artists"
             }
             Text(
-                text = "$count $noun",
+                text = if (online) onlineCountLabel(onlineUi, kind) else "$count $noun",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -468,7 +510,7 @@ private fun BrowseContent(
                 )
             }
             Spacer(Modifier.weight(1f))
-            if (isRefreshing) {
+            if (online && (onlineUi.isLoadingPage || onlineUi.state == OnlineSearchModel.State.Loading) || isRefreshing) {
                 CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
             }
         }
@@ -481,7 +523,20 @@ private fun BrowseContent(
             else -> "Nothing here yet — pull the catalog from Settings"
         }
 
-        when (kind) {
+        if (online) {
+            OnlineResults(
+                ui = onlineUi,
+                kind = kind,
+                layout = layout,
+                catalog = catalog,
+                onLoadMore = { onlineScope.launch { onlineModel.loadMore() } },
+                onOpenAlbum = onOpenAlbum,
+                onOpenSong = onOpenSong,
+                onAddSong = onAddSong,
+                onAddAlbum = onAddAlbum,
+                onPlaySong = onPlaySong,
+            )
+        } else when (kind) {
             BrowseKind.ALBUMS -> {
                 val visible = results.albums.take(pageCount * PAGE_SIZE)
                 if (results.albums.isEmpty()) {
@@ -625,7 +680,7 @@ private fun PagingTrigger(visibleCount: Int, onGrow: () -> Unit) {
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AlbumGridCard(
+internal fun AlbumGridCard(
     row: AlbumRow,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
@@ -665,7 +720,7 @@ private fun AlbumGridCard(
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AlbumListRow(
+internal fun AlbumListRow(
     row: AlbumRow,
     onClick: () -> Unit,
     onLongClick: (() -> Unit)? = null,
@@ -880,7 +935,7 @@ private fun ErrorState(message: String, onRetry: () -> Unit, modifier: Modifier 
 }
 
 @Composable
-private fun EmptyState(message: String) {
+internal fun EmptyState(message: String) {
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text(
             message,
