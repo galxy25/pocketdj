@@ -146,3 +146,51 @@ class StorageServiceTest {
         assertTrue(settingsBytes.contentEquals(settingsFile.readBytes()))
     }
 }
+
+/** SVC-2: BURNS / STEMS categories measure the burn store and clear only what they own. */
+class StorageServiceBurnsTest {
+    private val filesDir = Files.createTempDirectory("pdj-storage-burns").toFile()
+
+    private class NoArt : ArtworkCache {
+        override fun diskSizeBytes() = 0L
+        override fun clear() = Unit
+    }
+
+    private fun service(burns: Long = 0, stems: Long = 0, onBurns: () -> Unit = {}, onStems: () -> Unit = {}) = StorageService(
+        catalogCacheDir = File(filesDir, "catalog-cache"),
+        collectionsFile = File(filesDir, "c.json"),
+        playHistoryFile = File(filesDir, "h.json"),
+        activityFile = File(filesDir, "a.json"),
+        artwork = NoArt(),
+        clearCatalogCache = {}, clearPlayHistory = {}, clearActivity = {},
+        burnsUsageBytes = { burns }, stemsUsageBytes = { stems },
+        clearBurns = onBurns, clearStems = onStems,
+    )
+
+    @Test
+    fun burnsAndStemsAreMeasuredAndClearable() = runTest {
+        val s = service(burns = 900, stems = 40)
+        val sizes = s.measureAll()
+        assertEquals(900L, sizes[StorageService.Category.BURNS])
+        assertEquals(40L, sizes[StorageService.Category.STEMS])
+        assertTrue(StorageService.Category.BURNS in s.clearableCategories)
+        assertTrue(StorageService.Category.STEMS in s.clearableCategories)
+    }
+
+    @Test
+    fun clearingStemsDoesNotClearBurnsAndViceVersa() = runTest {
+        var burnsCleared = 0; var stemsCleared = 0
+        val s = service(onBurns = { burnsCleared++ }, onStems = { stemsCleared++ })
+        s.clear(StorageService.Category.STEMS)
+        assertEquals(0, burnsCleared); assertEquals(1, stemsCleared)
+        s.clear(StorageService.Category.BURNS)
+        assertEquals(1, burnsCleared)
+    }
+
+    @Test
+    fun unwiredBurnsMeasureZeroAndClearIsANoOp() = runTest {
+        val s = StorageService(File(filesDir, "x"), File(filesDir, "c"), File(filesDir, "h"), File(filesDir, "a"), NoArt(), {}, {}, {})
+        assertEquals(0L, s.measure(StorageService.Category.BURNS))
+        assertEquals(0L, s.clear(StorageService.Category.STEMS))
+    }
+}

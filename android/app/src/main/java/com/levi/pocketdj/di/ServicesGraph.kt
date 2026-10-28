@@ -1,6 +1,12 @@
 package com.levi.pocketdj.di
 
+import com.levi.pocketdj.data.burns.AppPrivateBurnFolder
+import com.levi.pocketdj.data.burns.BurnStore
+import com.levi.pocketdj.data.burns.HttpBurnRips
+import com.levi.pocketdj.data.config.Endpoints
+import com.levi.pocketdj.data.store.VersionedJsonWriter
 import com.levi.pocketdj.diag.DiagServices
+import java.io.File
 import com.levi.pocketdj.screens.settings.sections.debugSection
 import com.levi.pocketdj.shell.DeepLinkHandler
 import com.levi.pocketdj.shell.FeatureModule
@@ -24,6 +30,32 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     val presignCache get() = app.presignCache
     val ripJobTracker get() = app.ripJobTracker
 
+    /**
+     * SVC-2 the ONE offline store: ledger `filesDir/pocketdj-burns.json`, media `filesDir/burns/`.
+     * The download client is the plain app client — it never attaches the rip bearer to S3.
+     */
+    private val burnStoreLazy: Lazy<BurnStore> = lazy {
+        val rips = HttpBurnRips(
+            http = app.httpClient,
+            manifestEntry = { app.ripsRepository.entry(it) },
+            serverConfigured = { app.ripServerClient.isConfigured() },
+            presign = { id, ttl -> app.ripServerClient.presign(id, ttl) },
+            ripsBase = { Endpoints.RIPS_BASE },
+        )
+        BurnStore(
+            ledgerFile = File(app.appContext.filesDir, "pocketdj-burns.json"),
+            folder = AppPrivateBurnFolder(File(app.appContext.filesDir, "burns")),
+            rips = rips,
+            lookup = { id ->
+                val cat = app.catalogRepository.state.value.catalog
+                val song = cat?.songsById?.get(id)
+                song to song?.albumId?.let { cat.albumsById[it] }
+            },
+            writerExecutor = VersionedJsonWriter.backgroundExecutor("pdj-burns-writer"),
+        )
+    }
+    val burnStore: BurnStore get() = burnStoreLazy.value
+
     override val settingsSections: List<SettingsSection> by lazy {
         if (diag.channel) listOf(debugSection()) else emptyList()
     }
@@ -34,5 +66,7 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
         listOf(diag.deepLink)
     }
 
-    override val flushables: List<Flushable> by lazy { listOf(diag.flushable) }
+    override val flushables: List<Flushable> by lazy {
+        listOf(diag.flushable, Flushable { if (burnStoreLazy.isInitialized()) burnStore.flush() })
+    }
 }

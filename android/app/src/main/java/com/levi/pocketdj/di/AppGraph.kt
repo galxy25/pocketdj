@@ -206,7 +206,16 @@ class AppGraph private constructor(context: Context) {
         scope = appScope,
         fetchJob = { ripServerClient.job(it) },
         refreshManifest = { ripsRepository.refresh() },
-    )
+    ).also { t ->
+        // SVC-2: a rip that lands while the app is open drains burn-when-ripped intents.
+        val prev = t.onRipReady
+        t.onRipReady = { id ->
+            prev?.invoke(id)
+            appScope.launch(Dispatchers.IO) {
+                runCatching { servicesGraph.burnStore.drainPendingAfterRip() }
+            }
+        }
+    }
 
     /** Apple Music developer-token client (fetch + cache from the rip server). */
     val musicKitDevTokenClient: MusicKitDeveloperTokenClient = MusicKitDeveloperTokenClient(
@@ -260,6 +269,11 @@ class AppGraph private constructor(context: Context) {
             clearPlayHistory = { PlayHistoryStore.get(appContext).clear() },
             clearActivity = { collectionActivity.clear() },
             favoritesFile = File(appContext.filesDir, com.levi.pocketdj.data.favorites.FavoritesStore.FILE_NAME),
+            // SVC-2: burns/stems measure + clear (BURNS excludes stems so the total never double-counts).
+            burnsUsageBytes = { (servicesGraph.burnStore.burnedUsageBytes() - servicesGraph.burnStore.stemUsageBytes()).coerceAtLeast(0L) },
+            stemsUsageBytes = { servicesGraph.burnStore.stemUsageBytes() },
+            clearBurns = { servicesGraph.burnStore.removeAllBurns() },
+            clearStems = { servicesGraph.burnStore.removeAllStems() },
         )
     }
 
@@ -336,6 +350,15 @@ class AppGraph private constructor(context: Context) {
         appScope.launch(Dispatchers.IO) {
             runCatching { SecretMigration.run(settingsDataStore, secrets) }
                 .onFailure { android.util.Log.e("PocketDJ", "[secrets] migration failed", it) }
+        }
+        // SVC-2: drop ledger items whose file vanished / were poisoned (after the onboarding gate).
+        appScope.launch(Dispatchers.IO) {
+            runCatching {
+                onboarding.waitUntilComplete()
+                servicesGraph.burnStore.reconcileOnLaunch()
+                // A rip that finished while the app was closed still burns (iOS launch drain).
+                servicesGraph.burnStore.drainPendingAfterRip()
+            }.onFailure { android.util.Log.e("PocketDJ", "[burns] reconcile failed", it) }
         }
         // MainActivity forwards every intent to IntentSink; the modules' handlers answer.
         appScope.launch { IntentSink.install(features.deepLinkHandlers) }
