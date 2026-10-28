@@ -1,6 +1,7 @@
 package com.levi.pocketdj.mix.graph
 
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 
 /**
@@ -22,7 +23,8 @@ class Handover(val fadeFrames: Int) {
     private val genCounter = AtomicInteger(0)
 
     /** Control-side intent: where the deck is heading (or sits). */
-    @Volatile var intentStems = false; private set
+    private val intentRef = AtomicLong(0L) // (gen shl 1) | toStems: abort() can flip it only if no newer plan exists
+    val intentStems: Boolean get() = (intentRef.get() and 1L) != 0L
     /** Generation of the last plan that completed (render thread writes). */
     @Volatile var landedGen = 0; private set
     /** True side of the last landed plan. */
@@ -57,7 +59,7 @@ class Handover(val fadeFrames: Int) {
     /** Fade to [toStems] starting at input-clock frame [startFrame]. Returns the plan generation. */
     fun schedule(toStems: Boolean, startFrame: Long, frames: Int = fadeFrames): Int {
         val g = genCounter.incrementAndGet()
-        intentStems = toStems
+        intentRef.set((g.toLong() shl 1) or (if (toStems) 1L else 0L))
         planRef.set(Plan(g, toStems, startFrame, maxOf(1, frames), false))
         return g
     }
@@ -65,7 +67,7 @@ class Handover(val fadeFrames: Int) {
     /** Land the intent (or [toStems]) at the next block with no fade: "settle before transport". */
     fun settle(toStems: Boolean = intentStems): Int {
         val g = genCounter.incrementAndGet()
-        intentStems = toStems
+        intentRef.set((g.toLong() shl 1) or (if (toStems) 1L else 0L))
         planRef.set(Plan(g, toStems, Long.MIN_VALUE, 1, true))
         return g
     }
@@ -95,8 +97,10 @@ class Handover(val fadeFrames: Int) {
         mainGain = mainG1; stemGain = stemG1
         publishedMain = mainGain; publishedStem = stemGain
         if (t >= 1f) {
-            if (planRef.compareAndSet(p, null)) { landedToStems = p.toStems; landedGen = p.gen }
-            return true
+            // A newer plan published between get() and the CAS owns the deck: report nothing landed
+            // and let it take over from the current gains on the next chunk.
+            if (planRef.compareAndSet(p, null)) { landedToStems = p.toStems; landedGen = p.gen; return true }
+            return false
         }
         return false
     }
@@ -118,9 +122,12 @@ class Handover(val fadeFrames: Int) {
         val p = planRef.get() ?: return
         if (p.gen != activeGen) return
         if (planRef.compareAndSet(p, null)) {
-            mainGain = fromM; stemGain = fromS
+            // The outgoing side kept playing (the incoming one is paused): it carries the deck at full level.
+            mainGain = if (p.toStems) 1f else 0f; stemGain = 1f - mainGain
             publishedMain = mainGain; publishedStem = stemGain
-            intentStems = !p.toStems
+            // Only revert the intent if no newer plan was published meanwhile (single atomic compare).
+            val was = (p.gen.toLong() shl 1) or (if (p.toStems) 1L else 0L)
+            intentRef.compareAndSet(was, (p.gen.toLong() shl 1) or (if (p.toStems) 0L else 1L))
             abortedGen = p.gen
         }
     }

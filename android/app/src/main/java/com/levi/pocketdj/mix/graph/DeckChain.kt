@@ -199,7 +199,7 @@ class DeckChain(val deck: Deck, val sampleRate: Int = 44_100, val maxBlock: Int 
 
     companion object {
         const val MAX_ITER = 8
-        const val ALIGN_TOLERANCE = 64L
+        const val ALIGN_TOLERANCE = 1L
     }
 }
 

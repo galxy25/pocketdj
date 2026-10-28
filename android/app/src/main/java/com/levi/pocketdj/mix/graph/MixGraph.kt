@@ -115,13 +115,26 @@ class MixGraph(val sampleRate: Int = 44_100, val maxBlock: Int = 2048) : BlockRe
     fun crossfadeTo(d: Deck, toStems: Boolean, leadSeconds: Double = DEFAULT_HANDOVER_LEAD): Int {
         val ch = deck(d)
         val h = ch.handover
+        val m = ch.main; val g = ch.stems
         val incomingLive = if (toStems) h.publishedStem > 0f else h.publishedMain > 0f
         ch.stamp.read(posBuf)
+        // iOS only cross-fades an AUDIBLE deck. A paused / stream-held / empty outgoing side switches
+        // outright, and the new side starts only if the deck's transport is playing.
+        val outV = if (toStems) m else g?.voices?.getOrNull(0)
+        val audible = incomingLive || (outV != null && outV.isPlaying && outV.status == Voice.Status.PLAYING)
         val startAt = posBuf[0] + Math.round(leadSeconds * sampleRate)
+        if (!audible) {
+            val transportPlaying = outV?.isPlaying == true
+            val pos = if (toStems) posBuf[1] else posBuf[2]
+            if (toStems) { g?.seekAll(pos); g?.pauseAll() } else { m?.seek(pos); m?.pause() }
+            // outright switch: pause the outgoing side, land the gains at the next block
+            if (toStems) m?.pause() else g?.pauseAll()
+            if (transportPlaying) { if (toStems) g?.startAt(-1) else m?.play(-1) }
+            return h.settle(toStems)
+        }
         if (!incomingLive) {
             val outPos = if (toStems) posBuf[1] else posBuf[2]
             val pos = outPos + (startAt - posBuf[0])
-            val m = ch.main; val g = ch.stems
             if (toStems) { g?.seekAll(pos); g?.startAt(startAt) } else { m?.seek(pos); m?.play(startAt) }
         }
         return h.schedule(toStems, startAt)

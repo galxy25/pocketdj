@@ -103,6 +103,29 @@ class HandoverTest {
         assertFalse(h.inFlight)
     }
 
+    @Test fun abortOfAPlanThatSupersededAHalfFadeSnapsTheStillPlayingSideToFull() {
+        val h = Handover(1000)
+        h.schedule(true, 0); h.advance(0, 1000)               // on the stems
+        h.schedule(false, 0); h.advance(1000, 500)            // half way back: 0.5 / 0.5
+        assertEquals(0.5f, h.mainGain, 1e-4f)
+        h.schedule(true, 0); h.advance(1500, 100)
+        assertTrue(h.alignmentDue(1500, 100))
+        h.abort()
+        assertEquals("main keeps playing at full level, not the partial -6 dB", 1f, h.mainGain, 0f)
+        assertEquals(0f, h.stemGain, 0f)
+    }
+
+    @Test fun abortNeverOverwritesANewerIntent() {
+        val h = Handover(1000)
+        val g1 = h.schedule(true, 0); h.advance(0, 100)
+        assertTrue(h.alignmentDue(0, 100))
+        h.schedule(true, 5000)                                 // newer plan (same side) published
+        h.abort()                                              // stale abort: plan gen mismatch, nothing changes
+        assertTrue(h.intentStems)
+        assertEquals(0, h.abortedGen)
+        assertTrue(g1 < h.latestGen)
+    }
+
     // ---------------------------------------------------------------- the real graph
 
     @Test fun cutToStemsHasNoDeadAirAndTheSummedLevelNeverMoves() {
@@ -242,5 +265,48 @@ class HandoverTest {
         h.graph.crossfadeTo(Deck.A, true)
         h.render(20000)
         assertFalse(main.isPlaying)
+    }
+
+    @Test fun togglingStemsOnAPausedDeckStaysSilent() {
+        val (h, main, stems) = rig()
+        main.pause()
+        h.render(2048)
+        val gen = h.graph.crossfadeTo(Deck.A, true)
+        val out = h.render(30000)
+        val hd = h.graph.a.handover
+        assertEquals(gen, hd.landedGen)
+        assertTrue(hd.landedToStems)
+        assertTrue(h.graph.isOnStems(Deck.A))
+        assertTrue("paused deck must stay silent, peak ${GraphHarness.peak(out)}", GraphHarness.peak(out) < 1e-3f)
+        assertTrue(stems.voices.none { it.isPlaying })
+        assertFalse(main.isPlaying)
+        // and back
+        h.graph.crossfadeTo(Deck.A, false)
+        val back = h.render(30000)
+        assertTrue(GraphHarness.peak(back) < 1e-3f)
+        assertFalse(main.isPlaying)
+    }
+
+    @Test fun togglingStemsOnAPlayingDeckStillStartsTheNewSideAudibly() {
+        val (h, _, stems) = rig()
+        h.graph.crossfadeTo(Deck.A, true)
+        val out = h.render(30000)
+        assertTrue(GraphHarness.peak(out, 20000) > 0.3f)
+        assertTrue(stems.voices.all { it.isPlaying })
+    }
+
+    @Test fun anIncomingSideOffByAnyNumberOfFramesAborts() {
+        for (k in intArrayOf(2, 16, 64)) {
+            val (h, main, stems) = rig()
+            val buf = LongArray(3)
+            h.graph.crossfadeTo(Deck.A, true)
+            h.graph.a.stamp.read(buf)
+            val lead = Math.round(MixGraph.DEFAULT_HANDOVER_LEAD * h.sr)
+            stems.seekAll(buf[1] + lead + k)              // late/early by k frames
+            h.render(30000)
+            assertTrue("offset $k must abort", h.graph.a.handover.abortedGen > 0)
+            assertFalse(h.graph.isOnStems(Deck.A))
+            assertTrue(main.isPlaying)
+        }
     }
 }

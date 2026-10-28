@@ -100,7 +100,6 @@ class MixGraphRenderTest {
         h2.composer.setSlots(Deck.A, listOf(SlotParams(FXSlot(Effect.FILTER, enabled = false), 0.5), null, null, null))
         h2.render(4096)
         val withBypassed = h2.render(8192)
-        // same tone phase (both render the same absolute positions after the same warm-up)
         assertEquals(plain.size, withBypassed.size)
         // swap through every family on slot 0: nodes are the same instances, <=1 active
         for (e in listOf(Effect.COMPRESSOR, Effect.REVERB, Effect.FLANGER, Effect.FILTER)) {
@@ -169,6 +168,9 @@ class MixGraphRenderTest {
         h.graph.deckCapture = null
         h.composer.setCrossfader(0.5f)
         h.composer.setSlots(Deck.A, listOf(SlotParams(FXSlot(Effect.FILTER, enabled = true, strength = 0.5), 0.5), null, null, null))
+        // a stems deck, a cued deck and periodic handovers are part of the measured loop
+        h.graph.setStems(Deck.B, h.stemGroup(882.0, 0.5f))
+        h.composer.setCued(Deck.B, true)
         val bean = Class.forName("java.lang.management.ManagementFactory").getMethod("getThreadMXBean").invoke(null)
         val getAlloc = Class.forName("com.sun.management.ThreadMXBean").getMethod("getThreadAllocatedBytes", Long::class.javaPrimitiveType)
         val tid = Thread.currentThread().id
@@ -185,6 +187,7 @@ class MixGraphRenderTest {
         var i = 0
         while (i < blocks) {
             h.pumpAll()
+            if (i % 1500 == 0) h.graph.crossfadeTo(Deck.B, (i / 1500) % 2 == 0) // control-side, outside the probe
             val a0 = now()
             h.graph.render(buf, 256)
             val d = maxOf(0L, now() - a0 - overhead)

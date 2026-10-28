@@ -33,9 +33,11 @@ class VoiceGroup(val voices: List<Voice>) {
      * block, every voice outputs silence and none advances. Returns true when the block played.
      */
     fun read(outs: List<FloatArray>, frames: Int, blockStart: Long): Boolean {
-        val ok = voices.all { it.canFill(frames, blockStart) }
-        if (ok) { for ((i, v) in voices.withIndex()) v.read(outs[i], frames, blockStart) }
-        else { for ((i, v) in voices.withIndex()) v.hold(outs[i], frames); holdCount++ }
+        // indexed loops: no iterator allocation per block on ART
+        var ok = true
+        for (i in voices.indices) if (!voices[i].canFill(frames, blockStart)) { ok = false; break }
+        if (ok) { for (i in voices.indices) voices[i].read(outs[i], frames, blockStart) }
+        else { for (i in voices.indices) voices[i].hold(outs[i], frames); holdCount++ }
         holding = !ok
         return ok
     }
