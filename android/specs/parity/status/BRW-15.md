@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # BRW-15 Discover tab (Apple Music catalog search ∥ rip-server /search)
 - [x] DiscoverModels.kt (DiscoverHit/AlbumHit/AlbumTrack, DiscoverMerge: term/merge/refine/mapping, DiscoverAddWording)
@@ -22,3 +22,16 @@ JVM tests 4493 total, 0 failures; assembleDebug green.
 
 ## Questions for Levi
 - None.
+
+## Review
+fixes applied
+- MAJOR BrowseGraph requestRip without metadata -> fixed: new `RipServerClient.requestRip(songId,title,artist,appleMusicId,lengthMs)` + extended `ripBody`; discoverAddSong uses it. Tests: RipServerClientTest (body carries title/artist/appleMusicId/lengthMs; empty metadata omitted).
+- MAJOR ripped rows show Added, no play -> PARTIAL: ripped rows now show a distinct "Ripped" check (no longer "Added"). Play/Play Next/Last from Discover is NOT wired (no Discover-row play path in this package); left for DISC-2/integrator.
+- MINOR album add / no feedback -> fixed: album ＋ disabled with "Sign in to Apple Music" help when no MUT; failed adds (song and album) show iOS "Add failed — the import server didn’t accept the request."
+- MINOR explicit re-rank -> fixed: `DiscoverExplicitRanking` (pure, stable) applied at display using EditionSettings (null -> clean first); DiscoverExplicitRankingTest.
+- MINOR stale canAdd -> fixed: derived from `settings.settings` flow.
+- MINOR NoSources on transient REST failure -> fixed: `DiscoverRestResult.failure`; missing dev token stays NoSources, network/429/etc. -> Unavailable with the failure text. Tests added.
+- NIT 2xx decode "Search failed (200)." -> fixed ("Search failed."), test added.
+- NIT immediate submit not wired -> not done (optional): Browse field has no IME-search hook; debounce stays 400 ms. BrowseSessionPersistence.kt edit flagged for the integrator (only the "discover" mode token + its test sample).
+
+JVM tests 4502 total (+9), 0 failures; assembleDebug green.

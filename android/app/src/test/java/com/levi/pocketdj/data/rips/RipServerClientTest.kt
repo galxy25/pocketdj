@@ -81,6 +81,24 @@ class RipServerClientTest {
     }
 
     @Test
+    fun requestRip_withMetadata_carriesTitleArtistAppleMusicIdAndLength() = runTest {
+        server.enqueue(MockResponse().setBody("""{"jobId":"job_2","songId":"amrec_99","phase":"queued"}"""))
+        client().requestRip("amrec_99", "Pulse", "Aria", "99", 215000)
+        val body = server.takeRequest().body.readUtf8()
+        assertTrue(body, body.contains("\"songId\":\"amrec_99\""))
+        assertTrue(body, body.contains("\"title\":\"Pulse\""))
+        assertTrue(body, body.contains("\"artist\":\"Aria\""))
+        assertTrue(body, body.contains("\"appleMusicId\":\"99\""))
+        assertTrue(body, body.contains("\"lengthMs\":215000"))
+    }
+
+    @Test
+    fun ripBody_omitsEmptyMetadata() {
+        val body = ripBody("amrec_1", false, "", null, " ", 0)
+        assertEquals("""{"songId":"amrec_1"}""", body)
+    }
+
+    @Test
     fun studioIds_neverReachTheNetwork() = runTest {
         val result = runCatching { client().requestRip("smp_localSample") }
         assertTrue(result.exceptionOrNull() is IllegalArgumentException)

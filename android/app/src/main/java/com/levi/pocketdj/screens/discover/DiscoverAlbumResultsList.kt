@@ -74,6 +74,7 @@ private fun DiscoverAlbumRow(
     val scope = rememberCoroutineScope()
     var busy by remember(hit.id) { mutableStateOf(false) }
     var added by rememberSaveable(hit.id) { mutableStateOf(false) }
+    var failed by remember(hit.id) { mutableStateOf(false) }
     var tracks by remember(hit.id) { mutableStateOf<DiscoverAlbumExpansion?>(null) }
     LaunchedEffect(expanded, hit.id) {
         if (expanded && tracks == null) tracks = loadTracks(hit.appleMusicId)
@@ -97,18 +98,31 @@ private fun DiscoverAlbumRow(
                     maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
-            val help = DiscoverAddWording.addHelp("album", canAddToLibrary, opensInMusic = false)
+            // Album add only writes the library (no per-track rips yet): without a Music-User-Token it
+            // cannot do anything, so the button is disabled and says why instead of promising a copy.
+            val help = if (canAddToLibrary) DiscoverAddWording.addHelp("album", true) else DiscoverAddWording.ALBUM_NEEDS_SIGN_IN
             when {
                 busy -> CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
                 added -> Icon(Icons.Filled.Check, "Added", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.padding(12.dp))
                 else -> IconButton(
                     onClick = {
                         busy = true
-                        scope.launch { added = try { onAdd(hit) } finally { busy = false } }
+                        failed = false
+                        scope.launch {
+                            added = try { onAdd(hit) } finally { busy = false }
+                            failed = !added
+                        }
                     },
+                    enabled = canAddToLibrary,
                     modifier = Modifier.semantics { contentDescription = help },
                 ) { Icon(Icons.Filled.Add, contentDescription = help) }
             }
+        }
+        if (failed) {
+            Text(
+                DiscoverAddWording.ADD_FAILED, style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(start = 80.dp, end = 16.dp),
+            )
         }
         if (expanded) {
             val t = tracks

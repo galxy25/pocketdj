@@ -97,6 +97,25 @@ class DiscoverSearchModelTest {
         assertEquals(DiscoverState.NoSources, r.ui.value.state)
     }
 
+    @Test fun noServer_transientRestFailure_isUnavailable_notNoSources() = runTest {
+        val r = runner(this, rest = { DiscoverRestResult(emptyList(), false, "Network error") }, configured = false)
+        r.run("q", "")
+        val s = r.ui.value.state as DiscoverState.Unavailable
+        assertEquals("Network error", s.message)
+    }
+
+    @Test fun missingDeveloperToken_isConfiguration_notFailure() {
+        val r = DiscoverQueryRunner.restFailure(com.levi.pocketdj.data.applemusic.AmResult.Failure(null, "No Apple Music developer token"))
+        assertEquals(null, r.failure)
+        val n = DiscoverQueryRunner.restFailure(com.levi.pocketdj.data.applemusic.AmResult.Failure(null, "Network error"))
+        assertEquals("Network error", n.failure)
+    }
+
+    @Test fun decodeFailure2xx_readsAsGenericSearchFailed() {
+        val e = com.levi.pocketdj.data.rips.RipServerClient.RipServerException(200, "Undecodable server response")
+        assertEquals("Search failed.", DiscoverQueryRunner.failureMessage(e))
+    }
+
     @Test fun noServer_butRestAvailable_isLoadedEvenWhenEmpty() = runTest {
         val r = runner(this, configured = false)
         r.run("q", "")

@@ -80,10 +80,28 @@ enum class DiscoverScope { SONGS, ALBUMS }
 
 /** Capability-aware help text for a Discover ＋ Add (iOS `DiscoverAddWording`). */
 object DiscoverAddWording {
+    /** iOS `discoverError` for a rejected add. */
+    const val ADD_FAILED = "Add failed — the import server didn’t accept the request."
+    const val ALBUM_NEEDS_SIGN_IN = "Sign in to Apple Music (Settings) to add albums"
+
     fun addHelp(noun: String, canAddToLibrary: Boolean, opensInMusic: Boolean = false): String = when {
         canAddToLibrary -> "Save this $noun to your Apple Music library and prepare your copy"
         opensInMusic -> "Open this $noun in Music and prepare your copy"
         else -> "Prepare your copy"
+    }
+}
+
+/**
+ * iOS `DiscoverExplicitRanking`: stable re-rank by edition. Same title+artist groups anchor at first
+ * appearance; within a group the preferred edition leads (null `explicit` is never preferred).
+ */
+object DiscoverExplicitRanking {
+    fun rank(hits: List<DiscoverHit>, preferExplicit: Boolean): List<DiscoverHit> {
+        val groups = LinkedHashMap<String, MutableList<DiscoverHit>>()
+        for (h in hits) {
+            groups.getOrPut(DiscoverMerge.normalize(h.title) + "\u0000" + DiscoverMerge.normalize(h.artist)) { mutableListOf() } += h
+        }
+        return groups.values.flatMap { g -> g.filter { it.explicit == preferExplicit } + g.filter { it.explicit != preferExplicit } }
     }
 }
 

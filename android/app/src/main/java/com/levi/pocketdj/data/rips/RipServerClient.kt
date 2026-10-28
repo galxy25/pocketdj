@@ -106,6 +106,28 @@ class RipServerClient(
         return execute(request) { text -> json.decodeFromString<RipJob>(text) }
     }
 
+    /**
+     * `POST /rip` with the metadata the server needs to mint an ad-hoc row for an `amrec_<id>` that is
+     * not in its manifest (iOS `requestRip(songId:title:artist:appleMusicId:lengthMs:)`). Without
+     * title + artist the server answers 404 "unknown songId" for a Discover song.
+     */
+    suspend fun requestRip(
+        songId: String,
+        title: String,
+        artist: String,
+        appleMusicId: String? = null,
+        lengthMs: Int? = null,
+    ): RipJob {
+        require(!PlayResolver.isStudioId(songId)) {
+            "Studio ids are device-local (not rippable): $songId"
+        }
+        val config = requireConfig()
+        val body = ripBody(songId, config.ripFromCloud, title, artist, appleMusicId, lengthMs)
+            .toRequestBody("application/json".toMediaType())
+        val request = builder(config, url(config, "rip")).post(body).build()
+        return execute(request) { text -> json.decodeFromString<RipJob>(text) }
+    }
+
     /** `GET /jobs/<jobId>` — poll a rip. The id is percent-encoded in the path. */
     suspend fun job(jobId: String): RipJob {
         val config = requireConfig()
@@ -525,7 +547,18 @@ class RipServerClient(
  * The POST /rip body (iOS RipsStore): `{"songId":…}` plus `"ripFromCloud":true` ONLY when the
  * toggle is on — the key is omitted (not false) when off, for older-server compat.
  */
-internal fun ripBody(songId: String, ripFromCloud: Boolean): String = buildJsonObject {
+internal fun ripBody(
+    songId: String,
+    ripFromCloud: Boolean,
+    title: String? = null,
+    artist: String? = null,
+    appleMusicId: String? = null,
+    lengthMs: Int? = null,
+): String = buildJsonObject {
     put("songId", songId)
+    if (!title.isNullOrBlank()) put("title", title)
+    if (!artist.isNullOrBlank()) put("artist", artist)
+    if (!appleMusicId.isNullOrBlank()) put("appleMusicId", appleMusicId)
+    if (lengthMs != null && lengthMs > 0) put("lengthMs", lengthMs)
     if (ripFromCloud) put("ripFromCloud", true)
 }.toString()

@@ -213,7 +213,8 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
             false
         }
         val ripped = runCatching {
-            app.ripServerClient.isConfigured() && hit.id.isNotEmpty() && app.ripServerClient.requestRip(hit.id) != null
+            app.ripServerClient.isConfigured() && hit.id.isNotEmpty() &&
+                app.ripServerClient.requestRip(hit.id, hit.title, hit.artist, hit.appleMusicId, hit.durationMs) != null
         }.getOrDefault(false)
         library || ripped
     }

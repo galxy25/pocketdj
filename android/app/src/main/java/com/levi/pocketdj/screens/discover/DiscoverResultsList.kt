@@ -30,7 +30,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +48,8 @@ import coil.compose.AsyncImage
 import com.levi.pocketdj.screens.browse.EmptyState
 import com.levi.pocketdj.screens.browse.ExplicitBadge
 import com.levi.pocketdj.screens.browse.Fmt
+import com.levi.pocketdj.data.edition.EditionSettings
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /** Square artwork with a neutral placeholder (no catalog album row exists for a Discover hit). */
@@ -130,7 +131,10 @@ fun DiscoverResultsList(
 private fun DiscoverSongRow(hit: DiscoverHit, canAddToLibrary: Boolean, onAdd: suspend (DiscoverHit) -> Boolean) {
     val scope = rememberCoroutineScope()
     var busy by remember(hit.id) { mutableStateOf(false) }
-    var added by rememberSaveable(hit.id) { mutableStateOf(hit.ripped == true) }
+    // Ripped is NOT "added": show a distinct "Ripped" state (play from Discover is PARTIAL, see status).
+    val ripped = hit.ripped == true
+    var added by rememberSaveable(hit.id) { mutableStateOf(false) }
+    var failed by remember(hit.id) { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp),
@@ -164,6 +168,10 @@ private fun DiscoverSongRow(hit: DiscoverHit, canAddToLibrary: Boolean, onAdd: s
         val help = DiscoverAddWording.addHelp("song", canAddToLibrary, opensInMusic = false)
         when {
             busy -> CircularProgressIndicator(Modifier.padding(12.dp).size(20.dp), strokeWidth = 2.dp)
+            ripped -> Icon(
+                Icons.Filled.Check, "Ripped", tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(12.dp),
+            )
             added -> Icon(
                 Icons.Filled.Check, "Added", tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(12.dp),
@@ -171,13 +179,23 @@ private fun DiscoverSongRow(hit: DiscoverHit, canAddToLibrary: Boolean, onAdd: s
             else -> IconButton(
                 onClick = {
                     busy = true
+                    failed = false
                     scope.launch {
                         added = try { onAdd(hit) } finally { busy = false }
+                        failed = !added
                     }
                 },
                 modifier = Modifier.semantics { contentDescription = help },
             ) { Icon(Icons.Filled.Add, contentDescription = help) }
         }
+    }
+    if (failed) {
+        Text(
+            DiscoverAddWording.ADD_FAILED,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.error,
+            modifier = Modifier.padding(start = 72.dp, end = 16.dp),
+        )
     }
 }
 
@@ -196,7 +214,11 @@ fun DiscoverPane(query: String, modifier: Modifier = Modifier) {
     val albumModel = remember { DiscoverSearchModel.albums(scope, graph.appleMusicApi, graph.ripServerClient) }
     val songUi by songModel.ui.collectAsState()
     val albumUi by albumModel.ui.collectAsState()
-    val canAdd by produceState(false) { value = graph.browseGraph.hasMusicUserToken() }
+    val canAdd by remember { graph.settings.settings.map { it.hasAppleMusic } }.collectAsState(false)
+    val preferExplicit by remember { EditionSettings.flow(graph.settings) }.collectAsState(null)
+    val rankedSongUi = remember(songUi, preferExplicit) {
+        songUi.copy(hits = DiscoverExplicitRanking.rank(songUi.hits, preferExplicit ?: false))
+    }
 
     LaunchedEffect(query, refine, discoverScope) {
         when (discoverScope) {
@@ -227,7 +249,7 @@ fun DiscoverPane(query: String, modifier: Modifier = Modifier) {
         )
         when (discoverScope) {
             DiscoverScope.SONGS -> DiscoverResultsList(
-                ui = songUi, canAddToLibrary = canAdd, onAdd = { graph.browseGraph.discoverAddSong(it) },
+                ui = rankedSongUi, canAddToLibrary = canAdd, onAdd = { graph.browseGraph.discoverAddSong(it) },
             )
             DiscoverScope.ALBUMS -> DiscoverAlbumResultsList(
                 ui = albumUi, canAddToLibrary = canAdd,

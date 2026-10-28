@@ -16,7 +16,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 /** Outcome of the catalog REST source: [available] false = no dev token / API failure (not "zero hits"). */
-data class DiscoverRestResult<T>(val hits: List<T>, val available: Boolean)
+data class DiscoverRestResult<out T>(val hits: List<T>, val available: Boolean, val failure: String? = null)
 
 sealed interface DiscoverState {
     data object Idle : DiscoverState
@@ -73,7 +73,7 @@ class DiscoverQueryRunner<T>(
     /** Non-debounced run (deterministic for tests). */
     suspend fun run(term: String, artist: String) {
         val result = coroutineScope {
-            val restJob = async { runCatchingNonCancel { rest(term) } ?: DiscoverRestResult(emptyList(), false) }
+            val restJob = async { runCatchingNonCancel { rest(term) } ?: DiscoverRestResult(emptyList(), false, "Search failed.") }
             val configured = serverConfigured()
             val serverJob = async {
                 if (!configured) ServerOutcome(emptyList(), null)
@@ -90,7 +90,8 @@ class DiscoverQueryRunner<T>(
         val (restRes, serverRes, configured) = result
         val hits = refine(merge(restRes.hits, serverRes.hits), artist.trim())
         val state = when {
-            !configured && !restRes.available -> DiscoverState.NoSources
+            !configured && !restRes.available && restRes.failure == null -> DiscoverState.NoSources
+            !configured && !restRes.available && hits.isEmpty() -> DiscoverState.Unavailable(restRes.failure ?: "Search failed.")
             serverRes.error != null && hits.isEmpty() && restRes.hits.isEmpty() -> DiscoverState.Unavailable(serverRes.error)
             else -> DiscoverState.Loaded
         }
@@ -118,10 +119,23 @@ class DiscoverQueryRunner<T>(
         const val DEFAULT_LIMIT = 25
         const val UNAVAILABLE = "Discover unavailable"
 
+        /** Maps a failed catalog call: a missing developer token is configuration (null), the rest are transient. */
+        fun restFailure(r: AmResult<*>): DiscoverRestResult<Nothing> = DiscoverRestResult(
+            emptyList(), false,
+            when (r) {
+                is AmResult.Failure ->
+                    if (r.status == null && r.message.contains("developer token", ignoreCase = true)) null
+                    else r.message
+                is AmResult.RateLimited -> "Apple Music is rate limiting requests — try again shortly."
+                else -> null
+            },
+        )
+
         /** iOS `discoverError` strings. */
         fun failureMessage(e: Exception): String = when {
             e is RipServerClient.RipServerException && (e.code == 401 || e.code == 403) ->
                 "The import server rejected the request — check Settings ▸ Import server token."
+            e is RipServerClient.RipServerException && e.code != null && e.code in 200..299 -> "Search failed."
             e is RipServerClient.RipServerException && e.code != null -> "Search failed (${e.code})."
             e is RipServerClient.RipServerException -> e.message ?: "Search failed."
             e is IOException -> "Import server unreachable (Settings ▸ Import server)."
@@ -144,7 +158,7 @@ object DiscoverSearchModel {
                 is AmResult.Ok -> DiscoverRestResult(
                     r.value.songs.items.map { DiscoverMerge.hit(it, ripUrl("amrec_${it.id}")) }, true,
                 )
-                else -> DiscoverRestResult(emptyList(), false)
+                else -> DiscoverQueryRunner.restFailure(r)
             }
         },
         server = { rips.searchSongs(it, DiscoverQueryRunner.DEFAULT_LIMIT) },
@@ -162,7 +176,7 @@ object DiscoverSearchModel {
         rest = { term ->
             when (val r = api.searchCatalog(term, setOf(AmSearchType.ALBUMS), DiscoverQueryRunner.DEFAULT_LIMIT)) {
                 is AmResult.Ok -> DiscoverRestResult(r.value.albums.items.map(DiscoverMerge::hit), true)
-                else -> DiscoverRestResult(emptyList(), false)
+                else -> DiscoverQueryRunner.restFailure(r)
             }
         },
         server = { rips.searchAlbums(it, DiscoverQueryRunner.DEFAULT_LIMIT) },
