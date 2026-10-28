@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-9 — Score: quantizer, layout, editor (Enter/Select/Move/Edit, undo/cancel), live staff, PDF + MIDI + audio export
 

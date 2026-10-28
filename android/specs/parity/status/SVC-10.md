@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SVC-10 status
 - [x] SettingsCredentialsDocument (iOS keys, sorted-key canonical encode, credentialsAreBlank)

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # GM-8 In the Pocket screen + on-device feedback dictation
 

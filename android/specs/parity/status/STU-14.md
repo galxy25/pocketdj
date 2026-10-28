@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-14 Demuxer core (sources, DemuxStore, chords, timeline, chord detail, stems)
 

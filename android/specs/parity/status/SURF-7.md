@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SURF-7 - Glance Now Playing widget
 Tests: 3702 total, 0 failed (+19 new in the implementation pass... JVM). assembleDebug green.

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # BRW-11 For You feed store, feedback store, refresh schedule, tiles/grid, collection recs
 
