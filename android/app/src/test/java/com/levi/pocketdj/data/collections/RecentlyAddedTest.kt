@@ -108,4 +108,39 @@ class RecentlyAddedTest {
         assertEquals("Recently added", sp.sourceName)
         assertEquals(listOf("a"), sp.playlist.songIds)
     }
+
+    private fun remove(id: String, at: Double) =
+        ActivityEvent(id = "r-$id-$at", at = at, kind = ActivityKind.CATALOG_REMOVE, itemId = id)
+
+    @Test
+    fun newerRemoveCancelsAdd() {
+        val c = catalog(song("a"), song("b", 1.0))
+        val b = RecentlyAddedBuilder()
+        assertEquals(listOf("a", "b"), b.songIds(c, listOf(add("a", 50.0)), 10))
+        assertEquals(listOf("b"), b.songIds(c, listOf(add("a", 50.0), remove("a", 60.0)), 10))
+        // a re-add after the remove brings it back
+        assertEquals(listOf("a", "b"), b.songIds(c, listOf(add("a", 50.0), remove("a", 60.0), add("a", 70.0)), 10))
+    }
+
+    @Test
+    fun ownLibraryScopeFiltersCatalogDates() {
+        val c = catalog(song("mine", 5.0), song("curator", 9.0))
+        val own = { s: com.levi.pocketdj.data.catalog.IndexSong -> s.id == "mine" }
+        val b = RecentlyAddedBuilder()
+        assertEquals(listOf("curator", "mine"), b.songIds(c, emptyList(), 10))
+        assertEquals(listOf("mine"), b.songIds(c, emptyList(), 10, filterToOwnLibrary = true, isOwnLibrary = own))
+        assertTrue(b.hasItems(c, emptyList(), 10, filterToOwnLibrary = true, isOwnLibrary = own))
+        assertFalse(RecentlyAddedBuilder().hasItems(c, emptyList(), 10, filterToOwnLibrary = true, isOwnLibrary = { false }))
+    }
+
+    @Test
+    fun memoDoesNotPinOldCatalog() {
+        var c: MergedCatalog? = catalog(song("a", 1.0))
+        val b = RecentlyAddedBuilder()
+        b.songIds(c!!, emptyList(), 10)
+        val ref = java.lang.ref.WeakReference(c)
+        c = null
+        repeat(20) { System.gc(); if (ref.get() == null) return@repeat }
+        assertNull(ref.get())
+    }
 }

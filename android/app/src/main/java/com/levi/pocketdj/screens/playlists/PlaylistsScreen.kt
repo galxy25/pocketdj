@@ -23,6 +23,8 @@ import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.History
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LibraryMusic
@@ -219,7 +221,7 @@ fun PlaylistsScreen(
                     sort = sort,
                     query = trimmedQuery,
                     collapsedFolders = collapsedFolders,
-                    recentlyAddedCount = recentlyAddedCount ?: 0,
+                    recentlyAddedCount = recentlyAddedCount,
                     onOpenRecentlyAdded = {
                         onOpenSourcePlaylist(
                             com.levi.pocketdj.data.collections.RecentlyAdded.PLAYLIST_ID,
@@ -406,7 +408,7 @@ private fun LazyListScope.userTab(
     sort: CollectionSortOrder,
     query: String,
     collapsedFolders: Set<String>,
-    recentlyAddedCount: Int,
+    recentlyAddedCount: Int?,
     onOpenRecentlyAdded: () -> Unit,
     onToggleFolder: (id: String, collapsed: Boolean) -> Unit,
     onOpenPlaylist: (String) -> Unit,
@@ -500,16 +502,18 @@ private fun LazyListScope.userTab(
     }
 
     // 0. Pinned virtual "Recently added" row (hidden when there are no adds).
-    if (recentlyAddedCount > 0) {
+    if (recentlyAddedCount != null && recentlyAddedCount > 0) {
         item(key = "hdr-recent") { SectionHeader("Recently added") }
         item(key = "row-recent") {
-            Text(
-                "$recentlyAddedCount songs — newest first",
-                style = MaterialTheme.typography.bodyLarge,
+            androidx.compose.material3.ListItem(
+                headlineContent = { Text("$recentlyAddedCount songs — newest first") },
+                leadingContent = {
+                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.History, contentDescription = null)
+                },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable(onClick = onOpenRecentlyAdded)
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                    .testTag("recently-added-row")
+                    .clickable(onClick = onOpenRecentlyAdded),
             )
         }
     }

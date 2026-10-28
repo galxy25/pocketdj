@@ -96,13 +96,18 @@ fun SourcePlaylistDetailScreen(
     }.collectAsState(initial = com.levi.pocketdj.data.settings.ShellSettings.RECENTLY_ADDED_DEFAULT)
     val activityState by graph.collectionActivity.state.collectAsState()
     // The virtual "Recently added" playlist is derived off-main (memoized), never in the body.
+    // `derived` distinguishes "still deriving" from "derived, empty" so we never flash "not found".
+    var virtualDerived by remember { mutableStateOf(false) }
     val virtualSource by produceState<com.levi.pocketdj.data.catalog.SourcePlaylist?>(
         initialValue = null, catalog, activityState.revision, recentlyLimit, isRecentlyAdded,
     ) {
+        virtualDerived = false
         value = if (!isRecentlyAdded || catalog == null) null else withContext(Dispatchers.Default) {
             graph.collectionsGraph.recentlyAdded.playlist(catalog, activityState.events, recentlyLimit)
         }
+        virtualDerived = true
     }
+    val virtualLoading = isRecentlyAdded && catalog != null && !virtualDerived
     val source = if (isRecentlyAdded) virtualSource else catalog?.playlists?.firstOrNull {
         it.playlist.id == playlistId && it.sourceName == sourceName
     }
@@ -112,7 +117,7 @@ fun SourcePlaylistDetailScreen(
     Box(modifier = modifier.fillMaxSize()) {
         if (source == null || catalog == null) {
             Text(
-                if (catalog == null) "Loading catalog…" else "Source playlist not found",
+                if (catalog == null) "Loading catalog…" else if (virtualLoading) "Loading…" else "Source playlist not found",
                 style = MaterialTheme.typography.bodyLarge,
                 modifier = Modifier.align(Alignment.Center),
             )
