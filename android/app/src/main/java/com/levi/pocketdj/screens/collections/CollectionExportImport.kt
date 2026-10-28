@@ -5,11 +5,17 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import com.levi.pocketdj.data.backup.CollectionShare
 import com.levi.pocketdj.data.collections.CollectionsStore
+import com.levi.pocketdj.data.collections.io.CollectionFile
+import com.levi.pocketdj.data.collections.io.ImportKind
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.shell.NavRequestBus
 import kotlinx.coroutines.CoroutineScope
@@ -54,20 +60,29 @@ class CollectionExporter internal constructor(
     fun export(request: ExportRequest) = start(request)
 }
 
-private fun finishExport(context: Context, scope: CoroutineScope, request: ExportRequest, uri: Uri?) {
-    if (uri == null) return
+/**
+ * Pure completion of an export once the picker returned a created document: write [bytes] or, when they are
+ * gone (activity recreated while the picker was open) / unwritable, [delete] the empty document SAF already
+ * created so no 0-byte file is left behind. Returns the snackbar message.
+ */
+internal fun completeExport(fileName: String, bytes: ByteArray?, write: (ByteArray) -> Boolean, delete: () -> Unit): String {
+    if (bytes == null) {
+        delete()
+        return "Export was interrupted - please try again"
+    }
+    return if (write(bytes)) "Exported $fileName" else { delete(); "Couldn't write the file" }
+}
+
+private fun finishExport(context: Context, scope: CoroutineScope, fileName: String, bytes: ByteArray?, uri: Uri) {
     scope.launch {
-        val ok = withContext(Dispatchers.IO) {
-            val data = request.bytes() ?: return@withContext null
-            CollectionShare.writeUri(context.contentResolver, uri, data)
+        val msg = withContext(Dispatchers.IO) {
+            completeExport(
+                fileName, bytes,
+                write = { CollectionShare.writeUri(context.contentResolver, uri, it) },
+                delete = { runCatching { android.provider.DocumentsContract.deleteDocument(context.contentResolver, uri) } },
+            )
         }
-        NavRequestBus.postMessage(
-            when (ok) {
-                null -> "Nothing to export"
-                true -> "Exported ${request.fileName}"
-                false -> "Couldn't write the file"
-            },
-        )
+        NavRequestBus.postMessage(msg)
     }
 }
 
@@ -75,17 +90,31 @@ private fun finishExport(context: Context, scope: CoroutineScope, request: Expor
 fun rememberCollectionExporter(): CollectionExporter {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val pending = remember { arrayOfNulls<ExportRequest>(1) }
-    val zip = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(CollectionShare.ZIP_MIME)) { uri ->
-        pending[0]?.let { finishExport(context, scope, it, uri) }; pending[0] = null
+    // The file name survives activity recreation (rotation / process death while the picker is open); the
+    // bytes do not, and finishExport then deletes the created document instead of leaving it empty.
+    var pendingName by rememberSaveable { mutableStateOf<String?>(null) }
+    val pendingBytes = remember { arrayOfNulls<ByteArray>(1) }
+    val onPicked: (Uri?) -> Unit = { uri ->
+        val name = pendingName
+        val bytes = pendingBytes[0]
+        pendingName = null; pendingBytes[0] = null
+        if (uri != null) finishExport(context, scope, name ?: "export", bytes, uri)
     }
-    val csv = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(CollectionShare.CSV_MIME)) { uri ->
-        pending[0]?.let { finishExport(context, scope, it, uri) }; pending[0] = null
-    }
+    val zip = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(CollectionShare.ZIP_MIME), onPicked)
+    val csv = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(CollectionShare.CSV_MIME), onPicked)
     return remember(zip, csv) {
         CollectionExporter { req ->
-            pending[0] = req
-            if (req.mime == CollectionShare.CSV_MIME) csv.launch(req.fileName) else zip.launch(req.fileName)
+            // Build the bytes BEFORE the picker so an unavailable item (catalog not loaded / row gone)
+            // never creates an empty document.
+            scope.launch {
+                val bytes = withContext(Dispatchers.IO) { req.bytes() }
+                if (bytes == null) {
+                    NavRequestBus.postMessage("Nothing to export")
+                } else {
+                    pendingBytes[0] = bytes; pendingName = req.fileName
+                    if (req.mime == CollectionShare.CSV_MIME) csv.launch(req.fileName) else zip.launch(req.fileName)
+                }
+            }
         }
     }
 }
@@ -103,8 +132,13 @@ fun rememberCollectionImporter(): () -> Unit {
         if (uri != null) scope.launch {
             val msg = withContext(Dispatchers.IO) {
                 val bytes = CollectionShare.readUri(context.contentResolver, uri) ?: return@withContext "Couldn't open that file"
-                runCatching { CollectionShare.summaryMessage(graph.collections.importAny(bytes)) }
-                    .getOrElse { CollectionShare.failureMessage(it) }
+                runCatching {
+                    if (CollectionFile.detectKind(bytes) == ImportKind.BACKUP) {
+                        com.levi.pocketdj.screens.settings.sections.BackupCoordinator.restore(graph, bytes)
+                    } else {
+                        CollectionShare.summaryMessage(graph.collections.importAny(bytes))
+                    }
+                }.getOrElse { CollectionShare.failureMessage(it) }
             }
             NavRequestBus.postMessage(msg)
         }

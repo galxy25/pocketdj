@@ -153,11 +153,13 @@ class ImportedSongsStore(private val file: File) {
 
         fun entriesFor(payload: PortableItems.Payload, nowMs: Double): Pair<List<SongEntry>, List<AlbumEntry>> {
             val albumNameById = payload.albums.associate { it.id to it.name }
+            val albumCoverById = payload.albums.mapNotNull { a -> a.coverArtUrl?.let { a.id to it } }.toMap()
             val songs = payload.songs.map { s ->
                 SongEntry(
                     songId = s.id, title = s.name, artist = s.artist, albumId = s.albumId,
                     album = s.albumId?.let(albumNameById::get), durationMs = s.lengthMs, bpm = s.bpm,
                     key = s.key, camelot = s.camelot, year = s.year, appleMusicId = s.appleMusicId, addedAtMs = nowMs,
+                    artworkUrl = s.albumId?.let { id -> albumCoverById[id] },
                 )
             }
             val albums = payload.albums.map { a ->

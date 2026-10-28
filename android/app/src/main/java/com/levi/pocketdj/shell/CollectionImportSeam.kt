@@ -1,6 +1,8 @@
 package com.levi.pocketdj.shell
 
 import com.levi.pocketdj.data.backup.CollectionShare
+import com.levi.pocketdj.data.collections.io.CollectionFile
+import com.levi.pocketdj.data.collections.io.ImportKind
 import com.levi.pocketdj.data.collections.io.ImportSummary
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -20,6 +22,8 @@ class CollectionImportSeam(
     private val import: (ByteArray) -> ImportSummary,
     private val postMessage: (String) -> Unit = NavRequestBus::postMessage,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** Full-backup restore (collections + sources + favorites). iOS routes `.backup` here, never to `importAny`. */
+    private val restoreBackup: ((ByteArray) -> String)? = null,
 ) {
     fun install(seams: DeepLinkSeams) {
         seams.importCollection = { uri -> open(uri) }
@@ -35,7 +39,11 @@ class CollectionImportSeam(
     /** Synchronous core (also the test entry): returns the user-facing message. */
     fun importNow(uri: String): String {
         val bytes = runCatching { read(uri) }.getOrNull() ?: return "Couldn't open that file"
-        return runCatching { CollectionShare.summaryMessage(import(bytes)) }
+        return runCatching {
+            val restore = restoreBackup
+            if (restore != null && CollectionFile.detectKind(bytes) == ImportKind.BACKUP) restore(bytes)
+            else CollectionShare.summaryMessage(import(bytes))
+        }
             .getOrElse { CollectionShare.failureMessage(it) }
     }
 }

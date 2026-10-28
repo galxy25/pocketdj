@@ -45,4 +45,21 @@ class CollectionImportSeamTest {
         val s = seam(mutableListOf(), import = { ImportSummary(ImportKind.POCKET, pockets = 1, unchanged = 1) }, scope = scope)
         assertEquals("Already up to date - nothing new to import", s.importNow("u"))
     }
+
+    @Test fun backupFilesRouteToFullRestoreNotImportAny() {
+        val scope = kotlinx.coroutines.CoroutineScope(Dispatchers.Unconfined)
+        var importAnyCalls = 0
+        var restored = 0
+        val s = CollectionImportSeam(
+            scope, { com.levi.pocketdj.data.backup.BackupZip.export(com.levi.pocketdj.data.backup.BackupPayload()) },
+            { importAnyCalls++; ImportSummary(ImportKind.BACKUP) }, { }, UnconfinedTestDispatcher(),
+            restoreBackup = { restored++; "Restored 2 sources" },
+        )
+        assertEquals("Restored 2 sources", s.importNow("u"))
+        assertEquals(1, restored); assertEquals(0, importAnyCalls)
+        // non-backup content still goes through importAny
+        val s2 = CollectionImportSeam(scope, { ByteArray(1) }, { importAnyCalls++; ImportSummary(ImportKind.POCKET, pockets = 1, added = 1) }, { }, UnconfinedTestDispatcher(), restoreBackup = { restored++; "x" })
+        assertEquals("Imported 1 pocket", s2.importNow("u"))
+        assertEquals(1, restored); assertEquals(1, importAnyCalls)
+    }
 }

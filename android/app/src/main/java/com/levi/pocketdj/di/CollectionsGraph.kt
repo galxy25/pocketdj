@@ -158,6 +158,11 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 com.levi.pocketdj.data.backup.CollectionShare.readUri(app.appContext.contentResolver, android.net.Uri.parse(uri))
             },
             import = { app.collections.importAny(it) },
+            restoreBackup = { bytes ->
+                kotlinx.coroutines.runBlocking {
+                    com.levi.pocketdj.screens.settings.sections.BackupCoordinator.restore(app, bytes)
+                }
+            },
         )
     }
 

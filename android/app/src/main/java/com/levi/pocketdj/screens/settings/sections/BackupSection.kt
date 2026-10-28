@@ -44,17 +44,18 @@ internal object BackupCoordinator {
         )
     }
 
+    suspend fun restore(host: SettingsHost, data: ByteArray): String = restore(host.graph, data)
+
     /** Merge a backup: collections (idempotent by id), sources (append unmatched), favorites (union). */
-    suspend fun restore(host: SettingsHost, data: ByteArray): String {
-        val g = host.graph
+    suspend fun restore(g: com.levi.pocketdj.di.AppGraph, data: ByteArray): String {
         val (payload, skipped) = BackupZip.import(data)
         val summary = g.collections.mergeBackupCollections(payload)
         val local = g.settings.current().sources
         val merged = BackupSources.merge(local, BackupSources.fromWire(payload.sourcesJson))
+        val sourcesAdded = (merged.size - local.size).coerceAtLeast(0)
         if (merged.size != local.size) { g.settings.setSources(merged); g.catalogRepository.refresh() }
-        payload.favoritesData?.let { runCatching { g.collectionsGraph.favorites.importMerging(String(it)) } }
-        val base = CollectionShare.summaryMessage(summary)
-        return if (skipped.items > 0) "$base (${skipped.items} catalog items not bundled)" else base
+        val favs = payload.favoritesData?.let { runCatching { g.collectionsGraph.favorites.importMerging(String(it)) }.getOrDefault(0) } ?: 0
+        return CollectionShare.restoreMessage(summary, sourcesAdded, favs, skipped.items)
     }
 }
 

@@ -59,4 +59,39 @@ class CollectionExportImportTest {
         val r = runCatching { CollectionShare.readBounded(big.inputStream(), 1024) }
         assertTrue(r.isFailure)
     }
+
+    @Test fun restoreMessageCountsSourcesAndFavorites() {
+        val none = ImportSummary(ImportKind.BACKUP, unchanged = 2)
+        assertEquals("Restored 2 sources, 40 favorites", CollectionShare.restoreMessage(none, 2, 40))
+        assertEquals("Already up to date - nothing new to import", CollectionShare.restoreMessage(none, 0, 0))
+        assertEquals(
+            "Restored 1 playlist, 1 source (3 catalog items not bundled)",
+            CollectionShare.restoreMessage(ImportSummary(ImportKind.BACKUP, playlists = 1, added = 1), 1, 0, 3),
+        )
+    }
+
+    @Test fun foreignFilesAreNotPocketDj() {
+        assertEquals(
+            "That isn't a PocketDJ file",
+            CollectionShare.summaryMessage(ImportSummary(ImportKind.COLLECTIONS_JSON)),
+        )
+        assertEquals(
+            "That isn't a PocketDJ file",
+            CollectionShare.failureMessage(kotlinx.serialization.SerializationException("Unexpected JSON token at offset 0")),
+        )
+        assertEquals("That isn't a PocketDJ file", CollectionShare.failureMessage(IllegalArgumentException("x")))
+    }
+
+    @Test fun lostExportBytesDeleteTheCreatedDocument() {
+        var deleted = 0
+        var written: ByteArray? = null
+        val msg = completeExport("W.pocket.pdjcollection", null, { written = it; true }, { deleted++ })
+        assertEquals(1, deleted); assertEquals(null, written)
+        assertEquals("Export was interrupted - please try again", msg)
+        // failed write also cleans up; success does not
+        assertEquals("Couldn't write the file", completeExport("a", byteArrayOf(1), { false }, { deleted++ }))
+        assertEquals(2, deleted)
+        assertEquals("Exported a", completeExport("a", byteArrayOf(1), { true }, { deleted++ }))
+        assertEquals(2, deleted)
+    }
 }

@@ -40,6 +40,9 @@ object CollectionShare {
 
     /** One-line import result for the snackbar (iOS wording family: counts, or "already up to date"). */
     fun summaryMessage(s: ImportSummary): String {
+        // A "JSON" import that processed nothing is a foreign file (a PDF / another app's settings.json decodes
+        // leniently to an empty document), not a PocketDJ file that happens to be current.
+        if (s.kind == ImportKind.COLLECTIONS_JSON && s.added + s.merged + s.unchanged == 0) return NOT_POCKETDJ
         if (s.alreadyUpToDate) return "Already up to date - nothing new to import"
         val parts = ArrayList<String>()
         fun add(n: Int, one: String, many: String) { if (n > 0) parts += "$n ${if (n == 1) one else many}" }
@@ -52,9 +55,32 @@ object CollectionShare {
         return "$verb $what"
     }
 
+    const val NOT_POCKETDJ = "That isn't a PocketDJ file"
+
+    /** Full-backup restore result (iOS `importBackup`): collection counts + sources + favorites. */
+    fun restoreMessage(s: ImportSummary, sourcesAdded: Int, favoritesAdded: Int, skippedItems: Int = 0): String {
+        val parts = ArrayList<String>()
+        fun add(n: Int, one: String, many: String) { if (n > 0) parts += "$n ${if (n == 1) one else many}" }
+        add(s.pockets, "pocket", "pockets")
+        add(s.playlists, "playlist", "playlists")
+        add(s.setlists, "setlist", "setlists")
+        add(s.folders, "folder", "folders")
+        add(sourcesAdded, "source", "sources")
+        add(favoritesAdded, "favorite", "favorites")
+        val base = when {
+            parts.isNotEmpty() && (s.added + s.merged > 0 || sourcesAdded > 0 || favoritesAdded > 0) ->
+                "Restored " + parts.joinToString(", ")
+            s.added + s.merged > 0 -> "Restored ${s.added + s.merged} item(s)"
+            else -> "Already up to date - nothing new to import"
+        }
+        return if (skippedItems > 0) "$base ($skippedItems catalog items not bundled)" else base
+    }
+
     /** User-facing text for a failed import (unreadable file / not a PocketDJ file). */
     fun failureMessage(t: Throwable): String = when {
-        t is BackupZipException && t.notABackup -> "That isn't a PocketDJ file"
+        t is BackupZipException && t.notABackup -> NOT_POCKETDJ
+        // kotlinx SerializationException extends IllegalArgumentException: non-JSON / foreign bytes
+        t is kotlinx.serialization.SerializationException || t is IllegalArgumentException -> NOT_POCKETDJ
         t is OutOfMemoryError -> "That file is too large to import"
         else -> "Couldn't import: ${t.message?.take(80) ?: "unreadable file"}"
     }
