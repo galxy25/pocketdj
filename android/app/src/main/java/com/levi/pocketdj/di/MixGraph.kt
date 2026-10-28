@@ -27,6 +27,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.levi.pocketdj.data.catalog.IndexSong
+import com.levi.pocketdj.data.collections.CollectionCatalog
+import com.levi.pocketdj.data.collections.Setlist
+import com.levi.pocketdj.data.burns.BurnState
+import com.levi.pocketdj.data.burns.BurnSong
+import com.levi.pocketdj.mix.download.AutoMixHost
+import com.levi.pocketdj.mix.download.AutoPlacement
+import com.levi.pocketdj.mix.download.CollectionMixDownloader
+import com.levi.pocketdj.mix.download.MixBurnStatus
+import com.levi.pocketdj.mix.download.MixDownloadBurns
+import com.levi.pocketdj.mix.download.MixDownloadRips
+import com.levi.pocketdj.mix.download.MixResolver
+import com.levi.pocketdj.mix.download.MixResolverSources
+import com.levi.pocketdj.mix.model.AutoMixItem
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
 import com.levi.pocketdj.shell.ResetHook
@@ -130,6 +144,44 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         }
     }
 
+    /**
+     * MIX-7: crate -> loadables. `streamable` is wired to the stream loader so a ripped-but-not-burned
+     * song is loadable (STREAMING MODE).
+     */
+    val mixResolver: MixResolver by lazy {
+        MixResolver(CatalogResolverSources(app), streamable = { mixStreamLoader.canStream(it) })
+    }
+
+    /** The Auto-DJ seam over the engine; the Auto-DJ package fills [EngineAutoMixHost]'s hooks. */
+    val autoMixHost: EngineAutoMixHost by lazy { EngineAutoMixHost(mixEngine, mixStreamLoader) }
+
+    /** MIX-7: app-scoped collection pull for the Mix tab (survives leaving the tab). */
+    val collectionMixDownloader: CollectionMixDownloader by lazy {
+        val burns = app.servicesGraph.burnStore
+        val ripsRepo = app.ripsRepository
+        val catalog = { app.catalogRepository.state.value.catalog }
+        CollectionMixDownloader(
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate),
+            burns = BurnStoreMixBurns(burns, app.servicesGraph.transfers),
+            rips = RipsMixRips(ripsRepo, app.ripServerClient, app.servicesGraph.ripCoordinator),
+            host = autoMixHost,
+        ).also { d ->
+            d.resolveRipIds = { mixResolver.memberIds(it) }
+            d.resolveLoadables = { mixResolver.loadables(it) }
+            d.resolveSourceName = { src ->
+                when (src) {
+                    is com.levi.pocketdj.mix.model.MixSource.Pocket -> app.collections.pocket(src.value)?.name
+                    is com.levi.pocketdj.mix.model.MixSource.Playlist -> app.collections.playlist(src.value)?.name
+                    is com.levi.pocketdj.mix.model.MixSource.Setlist -> app.collections.setlist(src.value)?.name
+                }
+            }
+            d.declaredMemberCount = { declaredMemberCount(app, it) }
+            d.catalogSongCount = { catalog()?.songsById?.size ?: 0 }
+            d.songLengthSeconds = { id -> catalog()?.songsById?.get(id)?.length?.takeIf { it > 0 }?.let { it / 1000.0 } }
+            d.songTitleArtist = { id -> catalog()?.songsById?.get(id)?.let { it.name to it.artist } ?: (id to "") }
+        }
+    }
+
     // ON_STOP: both documents are written inline so a process kill right after backgrounding
     // cannot lose the latest positions / events.
     override val flushables: List<Flushable> = listOf(
@@ -163,5 +215,118 @@ class BurnStoreTrackResolver(private val burns: BurnStore) : MixTrackResolver {
             gridBpm = grid?.bpm, firstDownbeatMs = grid?.firstDownbeatMs?.toInt(), steady = grid?.steady,
             beatsMs = local?.beatsMs?.takeIf { it.isNotEmpty() }, downbeatsMs = local?.downbeatsMs?.takeIf { it.isNotEmpty() },
         )
+    }
+}
+
+/** Catalog + collections + burn-existence view for [MixResolver]. */
+class CatalogResolverSources(private val app: AppGraph) : MixResolverSources {
+    private fun catalog() = app.catalogRepository.state.value.catalog
+    private fun cc(): CollectionCatalog? = catalog()?.let { c ->
+        CollectionCatalog(c.songsById, c.albumsById, app.collections.pockets.associateBy { it.id })
+    }
+    override fun pocketSongIds(pocketId: String): List<String> =
+        cc()?.resolvePocketSongs(pocketId, HashSet())?.map { it.id }.orEmpty()
+    override fun playlistSongIds(playlistId: String): List<String> {
+        val p = app.collections.playlist(playlistId) ?: return emptyList()
+        return cc()?.songsInPlaylist(p)?.map { it.id }.orEmpty()
+    }
+    override fun setlist(setlistId: String): Setlist? = app.collections.setlist(setlistId)
+    override fun song(songId: String): IndexSong? = catalog()?.songsById?.get(songId)
+    override fun isOnDisk(songId: String): Boolean = app.servicesGraph.burnStore.localUrl(songId) != null
+    override fun cleanOnly(source: com.levi.pocketdj.mix.model.MixSource): Boolean = when (source) {
+        is com.levi.pocketdj.mix.model.MixSource.Pocket -> app.collections.pocket(source.value)?.cleanOnly == true
+        is com.levi.pocketdj.mix.model.MixSource.Playlist -> app.collections.playlist(source.value)?.cleanOnly == true
+        is com.levi.pocketdj.mix.model.MixSource.Setlist -> false
+    }
+    override fun songsById(): Map<String, IndexSong> = catalog()?.songsById.orEmpty()
+}
+
+/** iOS `CollectionsStore.declaredMemberCount(for:)`: members the collection declares, resolved or not. */
+fun declaredMemberCount(app: AppGraph, src: com.levi.pocketdj.mix.model.MixSource): Int = when (src) {
+    is com.levi.pocketdj.mix.model.MixSource.Pocket ->
+        app.collections.pocket(src.value)?.let { it.songIds.size + it.albumIds.size + it.childPocketIds.size } ?: 0
+    is com.levi.pocketdj.mix.model.MixSource.Playlist ->
+        app.collections.playlist(src.value)?.let { p -> p.sequences.sumOf { countLeaves(it) } } ?: 0
+    is com.levi.pocketdj.mix.model.MixSource.Setlist ->
+        app.collections.setlist(src.value)?.tracks?.count { it.isText != true && it.songId.isNotEmpty() } ?: 0
+}
+
+private fun countLeaves(n: com.levi.pocketdj.data.collections.PlaylistNode): Int = when (n.kind) {
+    com.levi.pocketdj.data.collections.PlaylistNode.Kind.SEQUENCE -> n.children.orEmpty().sumOf { countLeaves(it) }
+    com.levi.pocketdj.data.collections.PlaylistNode.Kind.SONG,
+    com.levi.pocketdj.data.collections.PlaylistNode.Kind.ALBUM,
+    com.levi.pocketdj.data.collections.PlaylistNode.Kind.POCKET -> 1
+    else -> 0
+}
+
+class BurnStoreMixBurns(
+    private val burns: BurnStore,
+    private val transfers: com.levi.pocketdj.data.transfers.TransferCoordinator,
+) : MixDownloadBurns {
+    override fun isOnDisk(songId: String) = burns.localUrl(songId) != null
+    override val userBurnActive: Boolean get() = burns.loopActive
+    override suspend fun burn(songId: String, title: String, artist: String) {
+        burns.burn(listOf(BurnSong(songId, title, artist)))
+    }
+    override fun status(songId: String): MixBurnStatus? =
+        burns.items.value[songId]?.let { MixBurnStatus(it.state, it.error, it.bytes) }
+    override fun requestStop() = burns.requestStop()
+    override fun cancelTransfers(songIds: Collection<String>) = burns.cancelTransfers(songIds)
+    override fun watchFinalized(cb: ((String) -> Unit)?) {
+        burns.onAnyBurnFinalized = cb?.let { f -> { id: String, _: Long -> f(id) } }
+    }
+    override fun watchBytes(cb: ((String, Long) -> Unit)?) { transfers.onBytes = cb }
+}
+
+class RipsMixRips(
+    private val repo: com.levi.pocketdj.data.rips.RipsRepository,
+    private val client: com.levi.pocketdj.data.rips.RipServerClient,
+    private val coordinator: com.levi.pocketdj.data.rips.RipCollectionCoordinator,
+) : MixDownloadRips {
+    // Cached: hasServer is read once per run on the rip lane (a suspend settings read in the client).
+    override var hasServer: Boolean = true
+        private set
+    override fun isRipped(songId: String) = repo.entry(songId) != null
+    override fun durationMs(songId: String) = repo.entry(songId)?.durationMs
+    override val manifestCount: Int get() = repo.manifest.value.size
+    override suspend fun prepare() { hasServer = client.isConfigured() }
+    override suspend fun ripCollection(songIds: List<String>) {
+        hasServer = client.isConfigured()
+        coordinator.ripCollection(songIds) { repo.entry(it) != null }
+    }
+    override suspend fun cancelCollection(songIds: List<String>) { coordinator.cancelRips(songIds) }
+    override suspend fun refreshManifest() { repo.refresh() }
+}
+
+/**
+ * [AutoMixHost] over the real engine + stream loader. The engine-side facts exist today; the
+ * Auto-DJ queue operations are owned by the Auto-DJ package, which assigns [insertHook],
+ * [startHook], [labelProvider] and [upcomingProvider] when it lands. Until then they are inert,
+ * so a downloader run still fetches and reports progress but never appends to a mix.
+ */
+class EngineAutoMixHost(
+    private val engine: MixEngine,
+    private val loader: MixStreamLoader,
+) : AutoMixHost {
+    var insertHook: ((AutoMixItem, AutoPlacement) -> Unit)? = null
+    var startHook: ((List<AutoMixItem>, Boolean, Double, Double, String?) -> Unit)? = null
+    var labelProvider: (() -> String?)? = null
+    var upcomingProvider: (() -> List<String>)? = null
+
+    override val autoMixing get() = engine.autoMixing
+    override val autoEndedExhausted get() = engine.autoEndedExhausted
+    override val isRunning get() = engine.isRunning
+    override val deckGestureGeneration get() = engine.deckGestureGeneration
+    override val autoSourceLabel get() = labelProvider?.invoke()
+    override val autoUpcomingSongIds get() = upcomingProvider?.invoke().orEmpty()
+    override fun autoQueueInsert(item: AutoMixItem, placement: AutoPlacement) { insertHook?.invoke(item, placement) }
+    override fun startAutoMix(items: List<AutoMixItem>, shuffled: Boolean, lead: Double, fade: Double, label: String?) {
+        startHook?.invoke(items, shuffled, lead, fade, label)
+    }
+    override fun isStreaming(songId: String) = loader.isStreaming(songId)
+    override fun cancelStreams(songIds: List<String>) = loader.cancel(songIds)
+    override fun setStreamHooks(onBytes: ((String, Long) -> Unit)?, onFailed: ((String) -> Unit)?) {
+        loader.onBytes = onBytes
+        loader.onFailed = onFailed
     }
 }
