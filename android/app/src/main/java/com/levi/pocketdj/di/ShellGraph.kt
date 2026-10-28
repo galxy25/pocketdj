@@ -54,7 +54,10 @@ class ShellGraph(private val app: AppGraph) : FeatureModule {
     override val periodicWork = com.levi.pocketdj.work.ShellWork.specs
 
     override val settingsSections: List<SettingsSection> =
-        SettingsSections.builtin() + com.levi.pocketdj.screens.settings.sections.jukeboxSection()
+        SettingsSections.builtin() + com.levi.pocketdj.screens.settings.sections.jukeboxSection() +
+            com.levi.pocketdj.screens.settings.sections.profileSection() +
+            com.levi.pocketdj.screens.settings.sections.collectionsSection() +
+            com.levi.pocketdj.screens.settings.sections.ripFromCloudSection()
 
     /** Stage-1 "Link a device" probe; SVC-9 swaps in the S3 cloud-doc implementation. */
     @Volatile var linkDeviceProbe: LinkDeviceProbe = StubLinkDeviceProbe
