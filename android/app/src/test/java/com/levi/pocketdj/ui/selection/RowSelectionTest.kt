@@ -1,5 +1,6 @@
 package com.levi.pocketdj.ui.selection
 
+import com.levi.pocketdj.data.collections.SongTransfer
 import com.levi.pocketdj.data.catalog.IndexSong
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

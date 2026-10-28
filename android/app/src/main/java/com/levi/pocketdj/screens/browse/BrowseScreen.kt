@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.browse
 
+import com.levi.pocketdj.data.collections.SongTransfer
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
