@@ -144,6 +144,9 @@ class CatalogRepository(
         }
     }
 
+    /** Apple Music name->artist-id join rows of the last real documents (BRW-14 ownership + release feed). */
+    fun indexArtists(): List<IndexArtist> = lastRealDocs.flatMap { it.artists.orEmpty() }
+
     /** Exact documents (by identity) behind the currently-published catalog. */
     private var lastMergedInputs: List<IndexJson>? = null
 

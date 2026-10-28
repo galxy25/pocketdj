@@ -266,3 +266,33 @@ object ArtistsCatalogResponse {
     private fun JsonArray?.orEmpty(): JsonArray = this ?: JsonArray(emptyList())
 
 }
+
+/** Pure glue the launch wiring uses (kept out of the graph so it is unit-tested). */
+object ReleaseFeedWiring {
+    private val creditSplit = Regex("""\s*(?:,|&|;|/|\bfeat\.?\b|\bft\.?\b|\bfeaturing\b|\bwith\b|\bx\b)\s*""", RegexOption.IGNORE_CASE)
+
+    private fun norm(raw: String): String = raw.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+
+    /**
+     * Apple Music artist id for a played artist name from the indexed name table (keys already normalised):
+     * the whole credit first, then each name inside it in order ("A & B" is filed under A).
+     */
+    fun resolveArtistId(name: String, idByNormalizedName: Map<String, Int>): Int? {
+        idByNormalizedName[norm(name)]?.let { return it }
+        for (piece in name.split(creditSplit)) {
+            val k = norm(piece)
+            if (k.isNotEmpty()) idByNormalizedName[k]?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * Index of the first event that is NEW since the one with id [seenLastId]. Unknown id (a synced rewrite of
+     * the log) = nothing new: a replayed history is not a play; no previous event = all new.
+     */
+    fun newEventsStart(ids: List<String>, seenLastId: String?): Int {
+        if (seenLastId == null) return 0
+        val i = ids.lastIndexOf(seenLastId)
+        return if (i < 0) ids.size else i + 1
+    }
+}
