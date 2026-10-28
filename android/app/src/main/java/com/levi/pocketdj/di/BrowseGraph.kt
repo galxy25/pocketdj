@@ -1,13 +1,16 @@
 package com.levi.pocketdj.di
 
+import com.levi.pocketdj.screens.browse.BrowseSessionFlushable
 import com.levi.pocketdj.shell.FeatureModule
+import com.levi.pocketdj.shell.Flushable
 
 /**
- * Sidecar graph for the browse area (decision D3). Empty today: packages in this area
- * override the FeatureModule members they contribute (nav entries, settings sections,
- * deep-link handlers, flushables, reset hooks, sync entries, row resolvers, play-outcome
- * listeners, periodic work) and add their own lazies here — never in AppGraph.
+ * Sidecar graph for the browse area (decision D3). Packages in this area override the
+ * FeatureModule members they contribute and add their own lazies here, never in AppGraph.
  */
-class BrowseGraph(@Suppress("unused") private val app: AppGraph) : FeatureModule {
+class BrowseGraph(private val app: AppGraph) : FeatureModule {
     override val area: String = "browse"
+
+    override val flushables: List<Flushable> =
+        listOf(BrowseSessionFlushable { app.settings.setBrowseSnapshot(it) })
 }

@@ -44,4 +44,15 @@ class MainActivity : ComponentActivity() {
         IntentSink.dispatch(intent)
     }
 
+    // ProcessLifecycleOwner delays ON_STOP ~700 ms; flush on the Activity's own transitions so
+    // a debounced writer survives Home + immediate kill. flushNow is serialized + idempotent.
+    override fun onPause() {
+        super.onPause()
+        AppGraph.get(this).flushAsync()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        AppGraph.get(this).flushAsync()
+    }
 }

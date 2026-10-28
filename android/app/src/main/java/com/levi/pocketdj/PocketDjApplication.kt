@@ -4,21 +4,30 @@ import android.app.Application
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.shell.AppLifecycleObserver
 import com.levi.pocketdj.work.WorkScheduler
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
-/** Builds the graph at process start and installs the lifecycle doctrine. */
+/**
+ * Installs the lifecycle doctrine. The AppGraph is NOT built here: a WorkManager cold start
+ * builds only what the worker touches, and the UI paths (first ON_START / MainActivity) build
+ * the full graph, so a background wake does not pay for a launch plus a forced endpoint fetch.
+ */
 class PocketDjApplication : Application() {
     override fun onCreate() {
         super.onCreate()
-        val graph = AppGraph.get(this)
         val scheduler = WorkScheduler(this)
+        val firstForeground = AtomicBoolean(true)
         AppLifecycleObserver(
-            scope = graph.appScope,
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             onForeground = listOf(
-                { graph.refreshEndpoints() },
+                // Launch fetch is forced once per process; later foregrounds are throttled.
+                { AppGraph.get(this).refreshEndpoints(force = firstForeground.getAndSet(false)) },
                 { AppLifecycleObserver.widgetDrain() },
-                { scheduler.ensureScheduled(graph.features.periodicWork) },
+                { scheduler.ensureScheduled(AppGraph.get(this).features.periodicWork) },
             ),
-            flush = { graph.flushRegistry.flushAll(graph.features.flushables) },
+            flush = { AppGraph.get(this).flushNow() },
         ).install()
     }
 }

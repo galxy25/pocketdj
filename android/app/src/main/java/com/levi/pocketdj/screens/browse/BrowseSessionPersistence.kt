@@ -92,15 +92,15 @@ internal fun ClauseDoc.toClause(): Clause? {
 }
 
 /**
- * ON_STOP flush: writes the live session immediately so a change inside the 400 ms debounce
+ * Lifecycle flush: writes the live session immediately so a change inside the 400 ms debounce
  * window survives a background + kill. Skipped until the restore has run (never clobber the
- * persisted doc with defaults).
+ * persisted doc with defaults). Contributed via BrowseGraph.flushables.
  */
 class BrowseSessionFlushable(
-    private val store: com.levi.pocketdj.data.settings.AppSettingsStore,
+    private val write: suspend (BrowseSnapshot) -> Unit,
 ) : com.levi.pocketdj.shell.Flushable {
     override suspend fun flush() {
         if (!BrowseSession.restored) return
-        store.setBrowseSnapshot(BrowseSession.currentState().toSnapshot())
+        BrowseSession.persist(write)
     }
 }

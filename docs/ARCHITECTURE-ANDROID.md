@@ -345,7 +345,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
 | SURF-1 — Shell foundation: adaptive scaffold, FeatureModule registry + area sidecar graphs, settin… | 1 | Planned | — |
-| SURF-2 — Application lifecycle + background work: PocketDjApplication, ProcessLifecycle flush funn… | 2 | Planned | — |
+| SURF-2 — Application lifecycle + background work: PocketDjApplication, ProcessLifecycle flush funn… | 2 | PARTIAL | storage-prune measure-only (no soft-cap prune); jukebox onStart bootstrap deferred; emulator steps not run |
 | SURF-3 — Zero-to-hero onboarding (store, 3 stages, launch gate, mutating-intent veto, link-a-devic… | 3 | Planned | Real Apple Music sign-in completion in stage 2 (emulator verifies can… |
 | SURF-4 — Deep links + file opens: manifest filters, DeepLinkParser, pending-until-onboarding, disp… | 4 | Planned | App Links auto-verification (needs https://jukebox.pocket-dj.com/.wel… |
 | SURF-10 — Jukebox host parity gaps: played-history dedup rule, require-token default toggle, sessio… | 6 | Planned | Apple Music catalog search stage (needs AM sign-in) — seam only in th… |

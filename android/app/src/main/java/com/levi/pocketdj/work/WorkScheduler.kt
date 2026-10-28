@@ -47,24 +47,54 @@ object WorkSchedulerPolicy {
         }
 }
 
-class WorkScheduler(private val context: Context) {
+/** id -> Worker class. Modules that declare periodic work contribute their worker here. */
+object WorkerRegistry {
+    private val workers = java.util.concurrent.ConcurrentHashMap<String, Class<out androidx.work.ListenableWorker>>(
+        mapOf(
+            WorkIds.RIP_RECONCILE to RipReconcileWorker::class.java,
+            WorkIds.STORAGE_PRUNE to StoragePruneWorker::class.java,
+        ),
+    )
+
+    fun register(id: String, worker: Class<out androidx.work.ListenableWorker>) { workers[id] = worker }
+
+    fun resolve(id: String): Class<out androidx.work.ListenableWorker>? = workers[id]
+}
+
+/** What [WorkScheduler] hands to WorkManager for one unique periodic job. */
+data class WorkEnqueue(
+    val plan: WorkPlan,
+    val worker: Class<out androidx.work.ListenableWorker>,
+)
+
+class WorkScheduler(
+    private val enqueue: (WorkEnqueue) -> Unit,
+    private val logError: (String) -> Unit = { android.util.Log.e("PocketDJ", it) },
+) {
+    constructor(context: Context) : this({ realEnqueue(context.applicationContext, it) })
+
     /** Idempotent: KEEP policy means a second call changes nothing. */
     fun ensureScheduled(specs: List<PeriodicWorkSpec>) {
-        val wm = WorkManager.getInstance(context)
         for (plan in WorkSchedulerPolicy.plan(specs)) {
-            val worker = when (plan.uniqueName) {
-                WorkIds.RIP_RECONCILE -> RipReconcileWorker::class.java
-                WorkIds.STORAGE_PRUNE -> StoragePruneWorker::class.java
-                else -> continue
+            val worker = WorkerRegistry.resolve(plan.uniqueName)
+            if (worker == null) {
+                logError("[work] no worker registered for periodic work '${plan.uniqueName}'; NOT scheduled")
+                continue
             }
-            val request = PeriodicWorkRequest.Builder(worker, plan.intervalMinutes, TimeUnit.MINUTES)
+            enqueue(WorkEnqueue(plan, worker))
+        }
+    }
+
+    private companion object {
+        fun realEnqueue(context: Context, e: WorkEnqueue) {
+            val request = PeriodicWorkRequest.Builder(e.worker, e.plan.intervalMinutes, TimeUnit.MINUTES)
                 .setConstraints(
                     Constraints.Builder()
-                        .setRequiredNetworkType(if (plan.requiresConnected) NetworkType.CONNECTED else NetworkType.NOT_REQUIRED)
+                        .setRequiredNetworkType(if (e.plan.requiresConnected) NetworkType.CONNECTED else NetworkType.NOT_REQUIRED)
                         .build(),
                 )
                 .build()
-            wm.enqueueUniquePeriodicWork(plan.uniqueName, plan.policy, request)
+            WorkManager.getInstance(context).enqueueUniquePeriodicWork(e.plan.uniqueName, e.plan.policy, request)
         }
     }
 }
@@ -88,7 +118,8 @@ suspend fun runWorkBody(body: suspend () -> Unit): WorkOutcome =
 /** Test seam for the job bodies. */
 object WorkSeams {
     @Volatile var ripReconcile: suspend (Context) -> Unit = { ctx ->
-        AppGraph.get(ctx).ripsRepository.refresh()
+        // Strict: a failed fetch throws IOException so the worker returns retry().
+        AppGraph.get(ctx).ripsRepository.refreshStrict()
         android.util.Log.i("PocketDJ", "[work] rip-reconcile refreshed manifest")
     }
 

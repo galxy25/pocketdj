@@ -34,4 +34,22 @@ class WorkSchedulerPolicyTest {
         assertEquals(WorkOutcome.SUCCESS, runWorkBody { })
         assertEquals(WorkOutcome.RETRY, runWorkBody { throw IOException("net") })
     }
+
+    @Test fun ensureScheduledTwiceEnqueuesKeepOncePerUniqueNameAndTwiceIsSafe() {
+        val calls = mutableListOf<WorkEnqueue>()
+        val scheduler = WorkScheduler(enqueue = { calls += it }, logError = { })
+        scheduler.ensureScheduled(ShellWork.specs)
+        scheduler.ensureScheduled(ShellWork.specs)
+        // Every call uses KEEP (so WorkManager keeps the existing unique work and its period).
+        assertTrue(calls.all { it.plan.policy == androidx.work.ExistingPeriodicWorkPolicy.KEEP })
+        assertEquals(setOf("pdj.rip-reconcile", "pdj.storage-prune"), calls.map { it.plan.uniqueName }.toSet())
+        assertEquals(RipReconcileWorker::class.java, calls.first { it.plan.uniqueName == "pdj.rip-reconcile" }.worker)
+    }
+
+    @Test fun unknownSpecIsSkippedNotEnqueued() {
+        val calls = mutableListOf<WorkEnqueue>()
+        val scheduler = WorkScheduler(enqueue = { calls += it }, logError = { })
+        scheduler.ensureScheduled(listOf(PeriodicWorkSpec("pdj.nobody", 60)))
+        assertTrue(calls.isEmpty())
+    }
 }

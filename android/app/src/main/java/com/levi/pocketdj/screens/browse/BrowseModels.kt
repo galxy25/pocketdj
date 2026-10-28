@@ -15,6 +15,8 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
+import com.levi.pocketdj.data.settings.BrowseSnapshot
+import kotlinx.coroutines.sync.withLock
 
 /**
  * Browse kinds. Album, Song, Artist — order matches iOS `ShowTab`
@@ -235,8 +237,19 @@ object BrowseSession {
             }
                 .drop(1) // the just-restored state — nothing new to write
                 .debounce(WRITE_DEBOUNCE_MS)
-                .collectLatest { store.setBrowseSnapshot(it.toSnapshot()) }
+                .collectLatest { persist { snap -> store.setBrowseSnapshot(snap) } }
         }
+    }
+
+    /** One serialized writer for the debounced collector and the lifecycle flush. */
+    private val writeLock = kotlinx.coroutines.sync.Mutex()
+
+    /**
+     * Writes the LIVE state (read inside the lock), so a slow older write can never commit
+     * after a newer one and leave a stale snapshot behind.
+     */
+    internal suspend fun persist(write: suspend (BrowseSnapshot) -> Unit) {
+        writeLock.withLock { write(currentState().toSnapshot()) }
     }
 
     private const val WRITE_DEBOUNCE_MS = 400L

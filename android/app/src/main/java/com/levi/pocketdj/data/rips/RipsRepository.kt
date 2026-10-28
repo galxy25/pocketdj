@@ -68,12 +68,35 @@ class RipsRepository(
      * "Manifest fetch failure → keep cached copy"): the previous in-memory or
      * on-disk manifest is kept and returned.
      */
-    suspend fun refresh(): RipsManifest = withContext(Dispatchers.IO) {
+    suspend fun refresh(): RipsManifest =
+        try {
+            fetchManifest()
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            // Keep the previous in-memory manifest; try disk if we have nothing.
+            if (_manifest.value.isEmpty()) seedFromDisk()
+            _manifest.value
+        }
+
+    /**
+     * Like [refresh] but reports failure: any fetch/decode error surfaces as [java.io.IOException]
+     * (the cached manifest is still seeded). For background workers that must retry on failure.
+     */
+    suspend fun refreshStrict(): RipsManifest =
+        try {
+            fetchManifest()
+        } catch (error: Exception) {
+            if (error is kotlinx.coroutines.CancellationException) throw error
+            if (_manifest.value.isEmpty()) seedFromDisk()
+            throw if (error is java.io.IOException) error else java.io.IOException("rips manifest refresh failed", error)
+        }
+
+    private suspend fun fetchManifest(): RipsManifest = withContext(Dispatchers.IO) {
         val request = Request.Builder()
             .url(Endpoints.RIPS_MANIFEST_URL)
             .cacheControl(CacheControl.FORCE_NETWORK)
             .build()
-        try {
+        run {
             http.newCall(request).execute().use { response ->
                 if (!response.isSuccessful) error("HTTP ${response.code} fetching rips manifest")
                 val text = response.body?.string() ?: error("Empty rips manifest body")
@@ -92,11 +115,6 @@ class RipsRepository(
                 }
                 decoded
             }
-        } catch (error: Exception) {
-            if (error is kotlinx.coroutines.CancellationException) throw error
-            // Keep the previous in-memory manifest; try disk if we have nothing.
-            if (_manifest.value.isEmpty()) seedFromDisk()
-            _manifest.value
         }
     }
 }
