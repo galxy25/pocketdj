@@ -58,7 +58,12 @@ data class TakeResult(
     val events: List<StudioNoteEvent>,
     val bpm: Double,
     val instrument: InstrumentKey,
+    /** Overdub staffs 2..4 filed with the take (iOS `extraStaffs`). */
+    val extraStaffs: List<LiveExtraStaff> = emptyList(),
 )
+
+/** Outcome of [InstrumentEngine.finishOverdub]. */
+enum class OverdubFinish { INACTIVE, NOTHING, ADDED, CAP }
 
 /** Observable engine state (the Instruments tab renders off this). */
 data class InstrumentEngineState(
@@ -304,6 +309,35 @@ class InstrumentEngine(
 
     fun clearLive() { eventLog.clearLive(); _state.update { it.copy(liveEvents = emptyList(), liveCaptureFull = false) } }
 
+    /** Set by the overdub UI while the pass's monitoring click is on, so any path that ends the pass also stops the click. */
+    @Volatile var overdubMonitorClick = false
+
+    /**
+     * End an armed overdub pass (iOS `finishLiveOverdub`): stop the capture, the backing replay and the monitor click, and file
+     * a non-empty capture as the next live staff. [OverdubFinish.INACTIVE] when no pass was armed.
+     */
+    fun finishOverdub(instrument: InstrumentKey): OverdubFinish {
+        if (!overdub.isActive) return OverdubFinish.INACTIVE
+        val events = overdub.stop()
+        stopReplay()
+        if (overdubMonitorClick && !_state.value.isRecordingTake) setClickEnabled(false)
+        overdubMonitorClick = false
+        if (events.isEmpty()) return OverdubFinish.NOTHING
+        return if (overdub.appendStaff(instrument, events) == null) OverdubFinish.CAP else OverdubFinish.ADDED
+    }
+
+    /** Live "Clear" (iOS `clearLiveScore`): an armed pass ends UNFILED, the backing stops, the overdub staffs go with the live staff. */
+    fun clearLiveScore() {
+        if (overdub.isActive) {
+            overdub.stop()
+            stopReplay()
+            if (overdubMonitorClick && !_state.value.isRecordingTake) setClickEnabled(false)
+            overdubMonitorClick = false
+        }
+        overdub.clearStaffs()
+        clearLive()
+    }
+
     // ---- arpeggiator strikes (the SAME write path a hand key takes)
 
     /** One arp step ONSET: capture into the overdub staff while a pass is armed, else the live staff — NEVER both — then sound + highlight. */
@@ -459,7 +493,8 @@ class InstrumentEngine(
                 val wrapAt = anchor + (iter + 1) * (loop.second - loop.first).toLong() * 1_000_000L
                 val wait = (wrapAt - nanoClock()) / 1_000_000L
                 if (wait > 0) delay(wait)
-                primary?.allOff(); extraStaffs.forEach { it.first.allOff() }   // a note held across the wrap closes AT the boundary
+                if (events.isNotEmpty()) primary?.allOff()   // the primary is the user's overdub voice unless it is the backing
+                extraStaffs.forEach { it.first.allOff() }   // a note held across the wrap closes AT the boundary
                 iter++
                 kotlinx.coroutines.yield()
             }

@@ -58,6 +58,8 @@ class BleMidiScanner(private val context: Context, private val midiManager: Midi
     private val handler = Handler(Looper.getMainLooper())
     private val devicesByAddress = HashMap<String, BluetoothDevice>()
     private var scanCallback: ScanCallback? = null
+    /** BLE address -> the MidiDevice id `openBluetoothDevice` handed back (names are not guaranteed to agree between the two APIs). */
+    private val openIds = HashMap<String, Int>()
 
     private val adapter: BluetoothAdapter? get() = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
 
@@ -110,13 +112,13 @@ class BleMidiScanner(private val context: Context, private val midiManager: Midi
         _state.update { it.copy(devices = BleMidiList.setConnecting(it.devices, address, true)) }
         m.openBluetoothDevice(dev, { md ->
             if (md == null) _state.update { it.copy(devices = BleMidiList.setConnecting(it.devices, address, false), error = "Couldn't connect to that keyboard.") }
-            else { input.attach(md); _state.update { it.copy(devices = BleMidiList.setConnected(it.devices, address, true), error = null) } }
+            else { synchronized(openIds) { openIds[address] = md.info.id }; input.attach(md); _state.update { it.copy(devices = BleMidiList.setConnected(it.devices, address, true), error = null) } }
         }, handler)
     }
 
     /** Disconnect = close the MidiInput source that wraps this peripheral. */
-    fun disconnect(address: String, midiDeviceId: Int?) {
-        midiDeviceId?.let { input.disconnect(it) }
+    fun disconnect(address: String, midiDeviceId: Int? = null) {
+        (midiDeviceId ?: synchronized(openIds) { openIds.remove(address) })?.let { input.disconnect(it) }
         _state.update { it.copy(devices = BleMidiList.setConnected(it.devices, address, false)) }
     }
 

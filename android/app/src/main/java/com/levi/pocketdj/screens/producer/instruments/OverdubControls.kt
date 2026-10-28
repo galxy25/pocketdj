@@ -27,6 +27,7 @@ import com.levi.pocketdj.studio.engine.SynthVoice
 import com.levi.pocketdj.studio.midi.MidiSettings
 import com.levi.pocketdj.studio.model.InstrumentKey
 import kotlinx.coroutines.Dispatchers
+import com.levi.pocketdj.studio.engine.OverdubFinish
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -47,13 +48,9 @@ fun OverdubControls(graph: AppGraph, engine: InstrumentEngine, bpm: Int, onMessa
     val instrument = es.currentInstrument ?: InstrumentKey.PIANO
 
     fun finish() {
-        val wasMonitor = monitor.value
-        val events = od.stop()
-        engine.stopReplay()
-        if (wasMonitor) engine.setClickEnabled(false)
-        when {
-            events.isEmpty() -> onMessage("Nothing was played, so no staff was added.")
-            od.appendStaff(instrument, events) == null -> onMessage("A score holds at most ${OverdubMath.MAX_STAFFS} staffs.")
+        when (engine.finishOverdub(instrument)) {
+            OverdubFinish.NOTHING -> onMessage("Nothing was played, so no staff was added.")
+            OverdubFinish.CAP -> onMessage("A score holds at most ${OverdubMath.MAX_STAFFS} staffs.")
             else -> onMessage(null)
         }
     }
@@ -69,12 +66,21 @@ fun OverdubControls(graph: AppGraph, engine: InstrumentEngine, bpm: Int, onMessa
         val region = if (end == 0) Int.MAX_VALUE else end
         if (!od.start(0, region, loop.value, midTake = es.isRecordingTake)) { onMessage(OverdubMath.NO_ROOM_MESSAGE); return }
         onMessage(null)
+        engine.overdubMonitorClick = monitor.value
         if (monitor.value) engine.setClickEnabled(true, bpm.toDouble())
         if (end == 0) return                                   // overdub from silence: no backing
         od.setBackingPreparing(true)
         scope.launch {
             val extras = ArrayList<Pair<SynthVoice, List<com.levi.pocketdj.studio.model.StudioNoteEvent>>>()
+            var primaryEvents = es.liveEvents
             withContext(Dispatchers.Default) {
+                // Staff 1 plays through its OWN voice: the engine's live voice is the user's overdub voice and must stay free (iOS).
+                val bank1 = packs.localBankFile(instrument)
+                val v1 = if (bank1 != null && es.liveEvents.isNotEmpty()) runCatching { engine.createVoice() }.getOrNull() else null
+                if (v1 != null) {
+                    if (runCatching { v1.load(bank1!!.path) && v1.setPreset(0, instrument.gmProgram) }.getOrDefault(false)) { extras.add(v1 to es.liveEvents); primaryEvents = emptyList() }
+                    else runCatching { v1.close() }
+                }
                 for (s in st.staffs) {
                     val bank = packs.localBankFile(s.instrument) ?: continue
                     val v = runCatching { engine.createVoice() }.getOrNull() ?: continue
@@ -82,7 +88,7 @@ fun OverdubControls(graph: AppGraph, engine: InstrumentEngine, bpm: Int, onMessa
                 }
             }
             if (!od.isActive) { extras.forEach { runCatching { it.first.close() } }; return@launch }
-            val ok = engine.replay(es.liveEvents, 0, extras, if (loop.value) 0 to end else null)
+            val ok = engine.replay(primaryEvents, 0, extras, if (loop.value) 0 to end else null)
             if (ok) { od.setBackingReady(true); od.reanchorIfEmpty() }
             else { od.setBackingPreparing(false); od.reanchorIfEmpty(); extras.forEach { runCatching { it.first.close() } } }
         }

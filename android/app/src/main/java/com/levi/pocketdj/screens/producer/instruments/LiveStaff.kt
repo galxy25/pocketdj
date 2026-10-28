@@ -27,6 +27,7 @@ import com.levi.pocketdj.studio.model.StudioNoteEvent
 import com.levi.pocketdj.studio.store.StudioFamily
 import com.levi.pocketdj.studio.store.StudioFolders
 import kotlinx.coroutines.Dispatchers
+import com.levi.pocketdj.studio.engine.LiveExtraStaff
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -37,12 +38,22 @@ object LiveStaffSave {
     /** Floor for the take length so a one-tap capture still has a sane duration. */
     const val MIN_DURATION_MS = 500
 
-    /** The [TakeResult] to file for [events], or null when there is nothing to save. [newId] mints the take id. */
-    fun result(events: List<StudioNoteEvent>, instrument: InstrumentKey, newId: () -> String = StudioFactory::newTakeId): TakeResult? {
-        if (events.isEmpty()) return null
+    /**
+     * The [TakeResult] to file for the live staff [events] plus its overdub [extras] (iOS `saveLiveAsTake`), or null when every
+     * staff is empty. Overdubbing from silence leaves staff 1 empty: the first extra then becomes the primary staff.
+     */
+    fun result(
+        events: List<StudioNoteEvent>, instrument: InstrumentKey, extras: List<LiveExtraStaff> = emptyList(),
+        newId: () -> String = StudioFactory::newTakeId,
+    ): TakeResult? {
+        val nonEmpty = extras.filter { it.events.isNotEmpty() }
+        val primaryEvents: List<StudioNoteEvent>; val primaryInstrument: InstrumentKey; val rest: List<LiveExtraStaff>
+        if (events.isNotEmpty()) { primaryEvents = events; primaryInstrument = instrument; rest = nonEmpty }
+        else if (nonEmpty.isNotEmpty()) { primaryEvents = nonEmpty.first().events; primaryInstrument = nonEmpty.first().instrument; rest = nonEmpty.drop(1) }
+        else return null
         val id = newId()
-        val dur = maxOf(MIN_DURATION_MS, events.maxOf { it.offMs })
-        return TakeResult(id, StudioFolders.fileName(StudioFamily.TAKES, id), dur, events, LIVE_BPM, instrument)
+        val dur = maxOf(MIN_DURATION_MS, primaryEvents.maxOf { it.offMs }, rest.maxOfOrNull { s -> s.events.maxOf { it.offMs } } ?: 0)
+        return TakeResult(id, StudioFolders.fileName(StudioFamily.TAKES, id), dur, primaryEvents, LIVE_BPM, primaryInstrument, rest)
     }
 }
 
@@ -59,18 +70,23 @@ fun LiveStaff(graph: AppGraph, onMessage: (String) -> Unit, modifier: Modifier =
     var editing by remember { mutableStateOf(false) }
     var saving by remember { mutableStateOf(false) }
     val instrument = es.currentInstrument ?: InstrumentKey.PIANO
+    val od by engine.overdub.state.collectAsState()
+    val hasAnyStaff = es.liveEvents.isNotEmpty() || od.staffs.any { it.events.isNotEmpty() }
 
     Column(modifier.fillMaxWidth().testTag("live-staff"), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
             Text("Live score", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
-            if (es.liveEvents.isNotEmpty()) {
+            if (hasAnyStaff) {
                 OutlinedButton({ editing = !editing }, modifier = Modifier.testTag("live-edit")) { Text(if (editing) "Done" else "Edit") }
                 OutlinedButton(
                     onClick = {
-                        val r = LiveStaffSave.result(es.liveEvents, instrument) ?: return@OutlinedButton
+                        // An armed overdub pass is finished first so its staff is part of the take (iOS finishLiveOverdub).
+                        engine.finishOverdub(instrument)
+                        val extras = engine.overdub.state.value.staffs
+                        val r = LiveStaffSave.result(engine.state.value.liveEvents, instrument, extras) ?: return@OutlinedButton
                         saving = true
                         // Snapshot + clear at TAP time (iOS clears synchronously): notes played during the render belong to the next take.
-                        engine.clearLive(); editing = false
+                        engine.clearLive(); engine.overdub.clearStaffs(); editing = false
                         scope.launch {
                             try {
                                 val name = "Take ${studio.studioStore.takes(null).size + 1}"
@@ -79,7 +95,9 @@ fun LiveStaff(graph: AppGraph, onMessage: (String) -> Unit, modifier: Modifier =
                                 onMessage("Saved “$name” — find it under Takes.")
                             } catch (e: TakeFileException) {
                                 // Nothing was filed: put the capture back (unless the player already started a new one).
-                                if (engine.state.value.liveEvents.isEmpty()) engine.setLiveEvents(r.events)
+                                if (engine.state.value.liveEvents.isEmpty() && engine.overdub.state.value.staffs.isEmpty()) {
+                                    engine.setLiveEvents(r.events); r.extraStaffs.forEach { engine.overdub.appendStaff(it.instrument, it.events) }
+                                }
                                 onMessage(e.failure.message)
                             } finally { saving = false }
                         }
@@ -88,7 +106,7 @@ fun LiveStaff(graph: AppGraph, onMessage: (String) -> Unit, modifier: Modifier =
                 ) { Text(if (saving) "Saving…" else "Save as take") }
             }
         }
-        if (es.liveEvents.isEmpty() && !editing) {
+        if (!hasAnyStaff && !editing) {
             Text("Play the keys — your notes appear here as a score you can edit and save as a take.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         } else {
             ScoreEditor(

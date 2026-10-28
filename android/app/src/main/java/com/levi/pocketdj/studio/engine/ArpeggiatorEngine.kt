@@ -230,8 +230,16 @@ class ArpeggiatorEngine(
                     val offAt = cycleBase + ArpPattern.gateOffMs(k, step, s.swingPct)
                     sleepUntil(t0 + onAt)
                     if (!current(gen)) return@launch
-                    synchronized(lock) { sounding.add(note) }
+                    // Check + register atomically; a stop() landing during the strike is caught by the re-check below.
+                    val live = synchronized(lock) { if (generation == gen) { sounding.add(note); true } else false }
+                    if (!live) return@launch
                     host.arpStrikeOn(note)
+                    if (!current(gen)) {
+                        // stop() ran finish() before/while this onset landed: close it ourselves so the synth note cannot hang.
+                        synchronized(lock) { sounding.remove(note) }
+                        host.arpStrikeOff(note)
+                        return@launch
+                    }
                     sleepUntil(t0 + offAt)
                     if (!current(gen)) return@launch
                     strikeOff(note)

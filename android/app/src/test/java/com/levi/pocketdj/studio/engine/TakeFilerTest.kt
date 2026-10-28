@@ -55,6 +55,15 @@ class TakeFilerTest {
         assertTrue(filer.currentAudioFile(t)!!.name == "take-tk_rec.m4a")   // never edited => the raw file is current
     }
 
+    @Test fun overdubStaffsRideWithTheFiledTake() = runBlocking {
+        val (_, store, filer) = rig()
+        val extras = listOf(LiveExtraStaff("s2", InstrumentKey.VIOLIN, listOf(ev(0, 900))))
+        val t = filer.file(result(listOf(ev(0, 500))).copy(extraStaffs = extras), "Take 1", bank)
+        assertEquals(2, t.staffCount)
+        assertEquals(2, store.take("tk_rec")!!.staffCount)
+        assertEquals(InstrumentKey.VIOLIN, store.take("tk_rec")!!.extraStaffs!!.single().instrument)
+    }
+
     @Test fun missingNativeLibraryFailsTheFilingInsteadOfCrashing() = runBlocking {
         val env = TestEnv(tmp.newFolder("studio2")); val store = env.store(); val codec = TextCodec()
         val renderer = TakeRenderer(env.roots, store, { throw UnsatisfiedLinkError("libpdjdsp") }, codec, Dispatchers.Unconfined)

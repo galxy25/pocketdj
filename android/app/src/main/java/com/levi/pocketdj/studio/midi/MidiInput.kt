@@ -74,6 +74,14 @@ class MidiInput(private val manager: MidiManager?, private val sink: MidiNoteSin
         val m = manager ?: return
         if (!registered) { m.registerDeviceCallback(callback, handler); registered = true }
         refresh()
+        // iOS connects every source: open devices that were already plugged in, not only hot-plugged ones.
+        for (id in connectableIds()) connect(id)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun connectableIds(): List<Int> {
+        val m = manager ?: return emptyList()
+        return runCatching { m.devices.filter { it.outputPortCount > 0 && it.type != MidiDeviceInfo.TYPE_VIRTUAL }.map { it.id } }.getOrDefault(emptyList())
     }
 
     fun stop() {

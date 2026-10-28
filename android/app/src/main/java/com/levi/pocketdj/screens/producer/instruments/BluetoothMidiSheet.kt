@@ -38,12 +38,11 @@ import com.levi.pocketdj.studio.midi.MidiInput
  * attached — the emulator has no MIDI devices) plus the "Bluetooth MIDI…" connect sheet.
  */
 @Composable
-fun MidiDevicesSection(engine: InstrumentEngine, modifier: Modifier = Modifier) {
-    val ctx = LocalContext.current
-    val manager = remember { ctx.getSystemService(MidiManager::class.java) }
-    val input = remember { MidiInput(manager, EngineMidiSink(engine)) }
-    val scanner = remember { BleMidiScanner(ctx.applicationContext, manager, input) }
-    DisposableEffect(input) { input.start(); onDispose { scanner.stopScan(); input.stop() } }
+fun MidiDevicesSection(graph: com.levi.pocketdj.di.AppGraph, modifier: Modifier = Modifier) {
+    // App-scoped (StudioGraph): leaving this screen stops the scan but never drops a connected keyboard.
+    val input = graph.studioGraph.midiInput
+    val scanner = graph.studioGraph.bleMidiScanner
+    DisposableEffect(input) { input.start(); onDispose { scanner.stopScan() } }
     val st by input.state.collectAsState()
     var sheet by remember { mutableStateOf(false) }
 
@@ -93,11 +92,10 @@ fun BluetoothMidiSheet(scanner: BleMidiScanner, input: MidiInput, onDismiss: () 
                 )
             }
             st.devices.forEach { d ->
-                val openId = midi.devices.firstOrNull { it.transport == com.levi.pocketdj.studio.midi.MidiTransport.BLUETOOTH && it.name == d.name && it.connected }?.id
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.testTag("ble-midi-device")) {
                     Text(d.name, Modifier.weight(1f))
                     OutlinedButton(
-                        onClick = { if (d.connected) scanner.disconnect(d.address, openId) else scanner.connect(d.address) },
+                        onClick = { if (d.connected) scanner.disconnect(d.address) else scanner.connect(d.address) },
                         enabled = !d.connecting,
                     ) { Text(if (d.connected) "Connected" else if (d.connecting) "Connecting…" else "Connect") }
                 }
