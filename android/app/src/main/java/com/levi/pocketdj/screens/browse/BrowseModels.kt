@@ -242,6 +242,16 @@ object BrowseSession {
 
     private val attached = AtomicBoolean(false)
 
+    /**
+     * Final review: apply a parked search term (pocketdj://search, Assistant "search", ShellActions.search) to the
+     * search field. Returns true when one was consumed.
+     */
+    fun consumePendingQuery(): Boolean {
+        val q = com.levi.pocketdj.shell.NavRequestBus.takePendingBrowseQuery()?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+        query.value = q
+        return true
+    }
+
     /** Snapshot state to the live flows (the current session as a value). */
     @Volatile internal var restored = false
 

@@ -127,6 +127,11 @@ fun BrowseScreen(
     val scope = rememberCoroutineScope()
     val snackbar = remember { SnackbarHostState() }
 
+    // Cold and warm arrivals: a parked deep-link / Assistant search term lands in the search field.
+    LaunchedEffect(Unit) {
+        com.levi.pocketdj.shell.NavRequestBus.pendingBrowseQuery.collect { if (it != null) BrowseSession.consumePendingQuery() }
+    }
+
     LaunchedEffect(Unit) {
         graph.catalogRepository.loadIfNeeded()
         graph.ripsRepository.loadAtLaunch()
