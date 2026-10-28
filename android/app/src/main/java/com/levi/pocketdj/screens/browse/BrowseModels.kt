@@ -201,7 +201,9 @@ object BrowseSession {
     private val attached = AtomicBoolean(false)
 
     /** Snapshot state to the live flows (the current session as a value). */
-    private fun currentState(): BrowseSessionState = BrowseSessionState(
+    @Volatile internal var restored = false
+
+    internal fun currentState(): BrowseSessionState = BrowseSessionState(
         kind = kind.value,
         layout = layout.value,
         searchMode = searchMode.value,
@@ -226,6 +228,7 @@ object BrowseSession {
             searchMode.value = restored.searchMode
             filters.value = restored.filters
             sortKeys.value = restored.sortKeys
+            this@BrowseSession.restored = true
 
             combine(kind, layout, searchMode, filters, sortKeys) { _, _, _, _, _ ->
                 currentState()

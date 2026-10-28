@@ -114,6 +114,9 @@ class AppGraph private constructor(context: Context) {
     val servicesGraph: ServicesGraph by lazy { ServicesGraph(this) }
     val shellGraph: ShellGraph by lazy { ShellGraph(this) }
 
+    /** ON_STOP flush funnel (SURF-2). */
+    val flushRegistry: com.levi.pocketdj.shell.FlushRegistry = com.levi.pocketdj.shell.FlushRegistry()
+
     val features: FeatureModuleRegistry by lazy {
         FeatureModuleRegistry(
             listOf(
@@ -257,6 +260,7 @@ class AppGraph private constructor(context: Context) {
         // browse.md §7). Wired here (once, app-scoped) so it survives regardless
         // of which screen renders first.
         BrowseSession.attach(settings, appScope)
+        flushRegistry.register("browse-session", com.levi.pocketdj.screens.browse.BrowseSessionFlushable(settings))
         // One-shot, idempotent move of plaintext tokens into the SecretStore. Reads fall
         // back to the plaintext copy until it lands, so nothing races it.
         appScope.launch(Dispatchers.IO) {

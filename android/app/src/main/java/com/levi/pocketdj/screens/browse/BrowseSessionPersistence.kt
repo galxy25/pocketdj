@@ -90,3 +90,17 @@ internal fun ClauseDoc.toClause(): Clause? {
         id = id.ifEmpty { java.util.UUID.randomUUID().toString() },
     )
 }
+
+/**
+ * ON_STOP flush: writes the live session immediately so a change inside the 400 ms debounce
+ * window survives a background + kill. Skipped until the restore has run (never clobber the
+ * persisted doc with defaults).
+ */
+class BrowseSessionFlushable(
+    private val store: com.levi.pocketdj.data.settings.AppSettingsStore,
+) : com.levi.pocketdj.shell.Flushable {
+    override suspend fun flush() {
+        if (!BrowseSession.restored) return
+        store.setBrowseSnapshot(BrowseSession.currentState().toSnapshot())
+    }
+}
