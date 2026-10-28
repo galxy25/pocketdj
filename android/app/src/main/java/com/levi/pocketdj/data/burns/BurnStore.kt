@@ -681,6 +681,10 @@ class BurnStore(
     fun adoptStreamedFile(songId: String, title: String, artist: String, from: File): File? {
         val entry = rips.entry(songId) ?: return null
         if (_items.value[songId]?.state == BurnState.READY && localUrl(songId) != null) return null
+        // A burn run is writing files right now (possibly this very audio path): don't race it.
+        // The streamed file stays in the cache and plays from there.
+        // TODO(SVC-3): wire yieldBackgroundDownload so the background burn skips this song instead.
+        if (runLock.isLocked) return null
         val root = folder.activeWritable() ?: return null
         val size = from.takeIf { it.isFile }?.length() ?: return null
         if (size <= 0) return null
