@@ -80,6 +80,9 @@ class BurnStore(
     var onAnyBurnFinalized: ((songId: String, bytes: Long) -> Unit)? = null
 
     private val runLock = Mutex()
+
+    /** True only while an in-process burn loop holds the run lock (NOT background transfers). */
+    val loopActive: Boolean get() = runLock.isLocked
     private val localMemo = ConcurrentHashMap<String, Any>()
     private val none = Any()
 

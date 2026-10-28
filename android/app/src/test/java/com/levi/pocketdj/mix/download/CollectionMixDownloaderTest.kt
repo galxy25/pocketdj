@@ -59,6 +59,9 @@ class CollectionMixDownloaderTest {
         var refreshes = 0
         var onRefresh: (Int) -> Unit = {}
         override var hasServer = true
+        var serverAfterPrepare: Boolean? = null
+        var prepares = 0
+        override suspend fun prepare() { prepares++; serverAfterPrepare?.let { hasServer = it } }
         override fun isRipped(songId: String) = songId in ripped
         override fun durationMs(songId: String) = durations[songId]
         override val manifestCount get() = ripped.size
@@ -248,6 +251,16 @@ class CollectionMixDownloaderTest {
         assertEquals(listOf("a", "b", "c"), r.burns.burned)
         assertEquals(3, r.d.downloadedCount)
         assertFalse(r.d.isActive)
+    }
+
+    @Test fun ripLaneRefreshesServerFlagBeforeReadingIt() = runTest {
+        val r = rig(listOf("a", "z"), ripped = setOf("a"))
+        r.rips.serverAfterPrepare = false
+        r.d.begin(crate)
+        advanceTimeBy(100)
+        assertEquals(1, r.rips.prepares)
+        assertEquals(false, r.rips.hasServer)
+        r.d.cancel()
     }
 
     @Test fun ripPollStopsAtMaxTicks() = runTest {

@@ -39,6 +39,8 @@ interface MixDownloadBurns {
 /** The rips plane slice (production: [com.levi.pocketdj.data.rips.RipsRepository] + coordinator). */
 interface MixDownloadRips {
     val hasServer: Boolean
+    /** Refresh [hasServer] (a suspend settings read) before the rip lane reads it. */
+    suspend fun prepare() {}
     /** The manifest has a public rip for the song (iOS `rips.cachedURL != nil`). */
     fun isRipped(songId: String): Boolean
     fun durationMs(songId: String): Long?
@@ -352,6 +354,7 @@ class CollectionMixDownloader(
     // ---- rip lane ------------------------------------------------------------------------------
 
     private suspend fun ripAndPoll(run: Int, ids: List<String>) {
+        runCatching { rips.prepare() }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it }
         if (!rips.hasServer) {
             DiagLog.shared?.log("error", "mixdl rip lane: ${ids.size} tracks need rip but NO SERVER configured")
         } else {

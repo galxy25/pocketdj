@@ -16,3 +16,14 @@ state: implemented
 
 ## Questions for Levi
 - none
+
+## Review
+- userBurnActive counted background transfers -> fixed: BurnStore.loopActive (run lock held) now drives it.
+- memberIds skipped cleanOnly -> fixed: MixResolverSources.cleanOnly/songsById, CleanOnly.ripIds applied; MixResolverTest case added.
+- declaredMemberCount unwired -> fixed: ported in MixGraph and assigned.
+- RipsMixRips.hasServer stale -> fixed: MixDownloadRips.prepare() refreshed before ripAndPoll reads it; test added.
+- EngineAutoMixHost hooks unassigned -> acknowledged, PARTIAL: cross-package touchpoint. MIX-9/MIX-14 must assign insertHook/startHook/labelProvider/upcomingProvider and call noteAutoStarted; acceptance for late-arrival append / re-arm / zero-start is PARTIAL until then.
+- NIT CatalogResolverSources rebuild per call -> not done (optional).
+
+fixes applied
+Tests: 1946, 0 failures (was 1944).

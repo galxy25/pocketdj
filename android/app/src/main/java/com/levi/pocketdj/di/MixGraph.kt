@@ -175,6 +175,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
                     is com.levi.pocketdj.mix.model.MixSource.Setlist -> app.collections.setlist(src.value)?.name
                 }
             }
+            d.declaredMemberCount = { declaredMemberCount(app, it) }
             d.catalogSongCount = { catalog()?.songsById?.size ?: 0 }
             d.songLengthSeconds = { id -> catalog()?.songsById?.get(id)?.length?.takeIf { it > 0 }?.let { it / 1000.0 } }
             d.songTitleArtist = { id -> catalog()?.songsById?.get(id)?.let { it.name to it.artist } ?: (id to "") }
@@ -232,6 +233,30 @@ class CatalogResolverSources(private val app: AppGraph) : MixResolverSources {
     override fun setlist(setlistId: String): Setlist? = app.collections.setlist(setlistId)
     override fun song(songId: String): IndexSong? = catalog()?.songsById?.get(songId)
     override fun isOnDisk(songId: String): Boolean = app.servicesGraph.burnStore.localUrl(songId) != null
+    override fun cleanOnly(source: com.levi.pocketdj.mix.model.MixSource): Boolean = when (source) {
+        is com.levi.pocketdj.mix.model.MixSource.Pocket -> app.collections.pocket(source.value)?.cleanOnly == true
+        is com.levi.pocketdj.mix.model.MixSource.Playlist -> app.collections.playlist(source.value)?.cleanOnly == true
+        is com.levi.pocketdj.mix.model.MixSource.Setlist -> false
+    }
+    override fun songsById(): Map<String, IndexSong> = catalog()?.songsById.orEmpty()
+}
+
+/** iOS `CollectionsStore.declaredMemberCount(for:)`: members the collection declares, resolved or not. */
+fun declaredMemberCount(app: AppGraph, src: com.levi.pocketdj.mix.model.MixSource): Int = when (src) {
+    is com.levi.pocketdj.mix.model.MixSource.Pocket ->
+        app.collections.pocket(src.value)?.let { it.songIds.size + it.albumIds.size + it.childPocketIds.size } ?: 0
+    is com.levi.pocketdj.mix.model.MixSource.Playlist ->
+        app.collections.playlist(src.value)?.let { p -> p.sequences.sumOf { countLeaves(it) } } ?: 0
+    is com.levi.pocketdj.mix.model.MixSource.Setlist ->
+        app.collections.setlist(src.value)?.tracks?.count { it.isText != true && it.songId.isNotEmpty() } ?: 0
+}
+
+private fun countLeaves(n: com.levi.pocketdj.data.collections.PlaylistNode): Int = when (n.kind) {
+    com.levi.pocketdj.data.collections.PlaylistNode.Kind.SEQUENCE -> n.children.orEmpty().sumOf { countLeaves(it) }
+    com.levi.pocketdj.data.collections.PlaylistNode.Kind.SONG,
+    com.levi.pocketdj.data.collections.PlaylistNode.Kind.ALBUM,
+    com.levi.pocketdj.data.collections.PlaylistNode.Kind.POCKET -> 1
+    else -> 0
 }
 
 class BurnStoreMixBurns(
@@ -239,7 +264,7 @@ class BurnStoreMixBurns(
     private val transfers: com.levi.pocketdj.data.transfers.TransferCoordinator,
 ) : MixDownloadBurns {
     override fun isOnDisk(songId: String) = burns.localUrl(songId) != null
-    override val userBurnActive: Boolean get() = burns.progress.value != null
+    override val userBurnActive: Boolean get() = burns.loopActive
     override suspend fun burn(songId: String, title: String, artist: String) {
         burns.burn(listOf(BurnSong(songId, title, artist)))
     }
@@ -264,6 +289,7 @@ class RipsMixRips(
     override fun isRipped(songId: String) = repo.entry(songId) != null
     override fun durationMs(songId: String) = repo.entry(songId)?.durationMs
     override val manifestCount: Int get() = repo.manifest.value.size
+    override suspend fun prepare() { hasServer = client.isConfigured() }
     override suspend fun ripCollection(songIds: List<String>) {
         hasServer = client.isConfigured()
         coordinator.ripCollection(songIds) { repo.entry(it) != null }

@@ -20,6 +20,9 @@ class MixResolverTest {
         override fun setlist(setlistId: String) = setlists[setlistId]
         override fun song(songId: String) = songs[songId]
         override fun isOnDisk(songId: String) = songId in disk
+        val cleanSources = HashSet<MixSource>()
+        override fun cleanOnly(source: MixSource) = source in cleanSources
+        override fun songsById(): Map<String, IndexSong> = songs
         fun add(id: String, name: String = "N$id", onDisk: Boolean = true, bpm: Double? = 120.0, len: Long? = 200_000) {
             songs[id] = IndexSong(id = id, albumId = "alb$id", artist = "A$id", name = name, bpm = bpm,
                 key = "Am", camelot = "8A", length = len)
@@ -101,5 +104,18 @@ class MixResolverTest {
         val r = MixResolver(f)
         assertEquals(listOf("b", "a"), r.memberIds(MixSource.Setlist("s")))
         assertEquals(listOf("a", "b"), r.memberIds(MixSource.Pocket("p")))
+    }
+
+    @Test fun memberIdsAppliesCleanOnlyFilterForCleanCrates() {
+        val f = Fake()
+        val expl = "sng_0123456789ab"
+        f.songs[expl] = IndexSong(id = expl, artist = "A", name = "N", explicit = true, appleMusicId = "1")
+        f.songs["plain"] = IndexSong(id = "plain", artist = "A", name = "P", explicit = false)
+        f.pockets["p"] = listOf(expl, "plain")
+        val src = MixSource.Pocket("p")
+        assertEquals(listOf(expl, "plain"), MixResolver(f).memberIds(src))
+        f.cleanSources += src
+        // explicit with no clean edition is dropped, never fetched
+        assertEquals(listOf("plain"), MixResolver(f).memberIds(src))
     }
 }

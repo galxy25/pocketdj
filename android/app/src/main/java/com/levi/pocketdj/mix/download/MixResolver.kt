@@ -15,6 +15,10 @@ interface MixResolverSources {
     fun song(songId: String): IndexSong?
     /** NON-holding existence check for a burned file (iOS `BurnStore.localURL`). */
     fun isOnDisk(songId: String): Boolean
+    /** The pocket/playlist is clean-only (iOS `cleanOnly`); setlists are never filtered. */
+    fun cleanOnly(source: MixSource): Boolean = false
+    /** Catalog songs by id, for the clean-only edition filter. */
+    fun songsById(): Map<String, IndexSong> = emptyMap()
 }
 
 /**
@@ -48,7 +52,11 @@ class MixResolver(
                 .filter { it.isText != true }.map { it.songId }
         }
         val seen = HashSet<String>()
-        return raw.filter { it.isNotBlank() && seen.add(it) }
+        val deduped = raw.filter { it.isNotBlank() && seen.add(it) }
+        // iOS ripIds(forPocket/forPlaylist:) route through CleanOnly.ripIds.
+        return if (source !is MixSource.Setlist && sources.cleanOnly(source)) {
+            com.levi.pocketdj.data.edition.CleanOnly.ripIds(deduped, sources.songsById())
+        } else deduped
     }
 
     private fun loadables(songIds: List<String>): List<MixLoadable> {
