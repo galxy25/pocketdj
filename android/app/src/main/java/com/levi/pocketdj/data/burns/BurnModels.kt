@@ -84,6 +84,8 @@ data class BurnResult(
     val stopped: Boolean = false,
     val stemmedSongs: Int = 0,
     val beatGridded: Int = 0,
+    /** SVC-3: songs handed to background transfers (also counted in [burned]). */
+    val queued: Int = 0,
 )
 
 data class ArtistUsage(val artist: String, val songIds: List<String>, val bytes: Long)

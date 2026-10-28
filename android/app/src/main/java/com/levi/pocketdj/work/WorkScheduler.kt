@@ -148,9 +148,8 @@ private fun WorkOutcome.toResult() =
     if (this == WorkOutcome.SUCCESS) androidx.work.ListenableWorker.Result.success()
     else androidx.work.ListenableWorker.Result.retry()
 
-class RipReconcileWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
-    override suspend fun doWork() = runWorkBody { WorkSeams.ripReconcile(applicationContext) }.toResult()
-}
+/** SVC-3: the worker now lives with the transfers package. */
+typealias RipReconcileWorker = com.levi.pocketdj.data.transfers.RipReconcileWorker
 
 class StoragePruneWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork() = runWorkBody { WorkSeams.storagePrune(applicationContext) }.toResult()

@@ -6,6 +6,9 @@ import com.levi.pocketdj.data.catalog.IndexSong
 import com.levi.pocketdj.data.edition.SongVariant
 import com.levi.pocketdj.data.rips.RipManifestEntry
 import com.levi.pocketdj.data.store.VersionedJsonWriter
+import com.levi.pocketdj.data.transfers.TransferCoordinator
+import com.levi.pocketdj.data.transfers.TransferKind
+import com.levi.pocketdj.data.transfers.TransferRecord
 import java.io.File
 import java.io.IOException
 import java.nio.file.Files
@@ -52,6 +55,8 @@ class BurnStore(
     private val clock: () -> Long = System::currentTimeMillis,
     writerExecutor: Executor = VersionedJsonWriter.DIRECT,
     private val io: CoroutineDispatcher = Dispatchers.IO,
+    /** SVC-3: when set, downloads run as WorkManager jobs that survive process death (iOS `transfers`). */
+    private val transfers: TransferCoordinator? = null,
 ) {
     private val json = PdjJson.lenient
     private val writer = VersionedJsonWriter(ledgerFile, writerExecutor)
@@ -81,6 +86,13 @@ class BurnStore(
     private val now: Double get() = clock().toDouble()
 
     init {
+        transfers?.let { t ->
+            t.onBurnFinalized = { rec, bytes -> finalizeTransfer(rec, bytes) }
+            t.onBurnFailed = { rec, msg -> failTransfer(rec, msg) }
+            t.onProgress = { e, f ->
+                _progress.value = if (e > 0 && f < e) BurnProgress(f, e, "Downloading…") else null
+            }
+        }
         if (ledgerFile.isFile) {
             try {
                 val doc = json.decodeFromString(BurnDocument.serializer(), ledgerFile.readText())
@@ -268,6 +280,7 @@ class BurnStore(
         var folderUnavailable = false
         var stemmed = 0
         var gridded = 0
+        var queued = 0
 
         val root = folder.activeWritable()
         if (root == null) return BurnResult(failed = unique.size, total = unique.size)
@@ -315,6 +328,39 @@ class BurnStore(
                         if (url == null) {
                             setItem(errorItem(song, "couldn't get a playback URL — check the rip server"))
                             notRipped += 1
+                            continue
+                        }
+                        if (transfers != null) {
+                            if (transfers.records.isEmpty()) transfers.beginRun()
+                            val sidecarText = BurnSidecar.build(song.id, song, s, a, entry)
+                            setItem(
+                                BurnItem(
+                                    songId = song.id, title = song.title, artist = song.artist,
+                                    audioFileName = names.audio, sidecarFileName = names.sidecar,
+                                    source = entry.source ?: "digital", bpm = entry.bpm, musicalKey = entry.musicalKey,
+                                    camelot = entry.camelot, durationMs = entry.durationMs,
+                                    startMs = if (isAnalog) entry.startMs else null,
+                                    bytes = existing?.bytes ?: 0, rippedAt = entry.rippedAt, downloadedAt = existing?.downloadedAt ?: now,
+                                    state = BurnState.DOWNLOADING, wasAppStorage = !root.isUserFolder,
+                                    cutFileName = existing?.cutFileName, cutDownloadedAt = existing?.cutDownloadedAt,
+                                ),
+                            )
+                            // Persist the ledger row + the transfer record BEFORE the work exists.
+                            save()
+                            transfers.enqueue(
+                                url,
+                                TransferRecord(
+                                    songId = song.id, kind = TransferKind.BURN,
+                                    audioFileName = names.audio, sidecarFileName = names.sidecar, sidecarText = sidecarText,
+                                    wasAppStorage = !root.isUserFolder, manifestKey = entry.key,
+                                    source = entry.source ?: "digital", bpm = entry.bpm, musicalKey = entry.musicalKey,
+                                    camelot = entry.camelot, durationMs = entry.durationMs,
+                                    startMs = if (isAnalog) entry.startMs else null, rippedAt = entry.rippedAt,
+                                    title = song.title, artist = song.artist, createdAt = now,
+                                ),
+                            )
+                            queued += 1
+                            burned += 1
                             continue
                         }
                         existing?.let { priorReady[song.id] = it; patchItem(song.id) { it.copy(state = BurnState.DOWNLOADING) } }
@@ -368,12 +414,13 @@ class BurnStore(
             }
         } finally {
             save()
-            _progress.value = null
+            // With transfers the progress mirror belongs to the coordinator until it settles.
+            if (transfers == null || !transfers.progress.value.active) _progress.value = null
         }
         return BurnResult(
             burned = burned, notRipped = notRipped, failed = failed, total = unique.size,
             outOfSpace = outOfSpace, folderUnavailable = folderUnavailable, stopped = stopped,
-            stemmedSongs = stemmed, beatGridded = gridded,
+            stemmedSongs = stemmed, beatGridded = gridded, queued = queued,
         )
     }
 
@@ -794,6 +841,64 @@ class BurnStore(
     }
 
     // ---- reconcile / orphan adoption ----------------------------------------------------------
+
+    // ---- background transfers (SVC-3) ---------------------------------------------------------
+
+    /** A worker finished the files: upsert the `.ready` item (iOS `onBurnFinalized`). */
+    private fun finalizeTransfer(r: TransferRecord, bytes: Long) {
+        val prev = _items.value[r.songId]
+        setItem(
+            BurnItem(
+                songId = r.songId, title = r.title, artist = r.artist,
+                audioFileName = r.audioFileName, sidecarFileName = r.sidecarFileName,
+                source = r.source, bpm = r.bpm, musicalKey = r.musicalKey, camelot = r.camelot,
+                durationMs = r.durationMs, startMs = if (r.source == "analog") r.startMs else null,
+                bytes = bytes, rippedAt = r.rippedAt, downloadedAt = now,
+                state = BurnState.READY, error = null, wasAppStorage = r.wasAppStorage,
+                cutFileName = prev?.cutFileName, cutDownloadedAt = prev?.cutDownloadedAt,
+            ),
+        )
+        save()
+        onAnyBurnFinalized?.invoke(r.songId, bytes)
+    }
+
+    /** A worker failed terminally: the row shows the error, never a poisoned `.ready`. */
+    private fun failTransfer(r: TransferRecord, message: String) {
+        setItem(errorItem(BurnSong(r.songId, r.title, r.artist), message))
+        save()
+    }
+
+    /**
+     * Run AFTER `transfers.reconcileOnLaunch()`. A `.downloading` row with no live transfer record
+     * either finished on disk while we were dead (promote to `.ready`) or was lost (error row).
+     */
+    fun healStrandedDownloads(): Int {
+        val t = transfers ?: return 0
+        val live = t.records.map { it.songId }.toSet()
+        var healed = 0
+        for (item in _items.value.values.toList()) {
+            if (item.state != BurnState.DOWNLOADING || item.songId in live) continue
+            val f = itemDir(item)?.let { File(it, item.audioFileName) }
+            if (item.audioFileName.isNotEmpty() && f != null && f.isFile && f.length() > 0 && !BurnReconciler.isPoisoned(f)) {
+                patchItem(item.songId) { it.copy(state = BurnState.READY, bytes = f.length(), error = null) }
+            } else {
+                setItem(errorItem(BurnSong(item.songId, item.title, item.artist), "download interrupted"))
+            }
+            healed += 1
+        }
+        if (healed > 0) save()
+        return healed
+    }
+
+    /** Stop for background transfers: cancel work, drop records, drop their half-done rows. */
+    fun cancelTransfers(songIds: Collection<String>) {
+        val t = transfers ?: return
+        t.cancel(songIds)
+        for (id in songIds) {
+            if (_items.value[id]?.state == BurnState.DOWNLOADING) dropItems(listOf(id))
+        }
+        save()
+    }
 
     /** Drop items whose file vanished; delete+drop poisoned <4 KB XML/HTML "audio". Call at launch. */
     fun reconcileOnLaunch() {
