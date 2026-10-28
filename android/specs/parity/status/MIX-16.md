@@ -4,7 +4,7 @@ state: implemented
 - [x] MixPlayOutcomeBridge (deck-keyed, async event resolution, verdict table)
 - [x] MixJukeboxSource + MixJukeboxPort + MixJukeboxSeam; JukeboxRepository prefers the live mix (snapshot, placement, pending drain)
 - [x] MixFacadeImpl + MixGraph wiring (bridge hooks, jukebox seam, facade; ports shared with mixViewModel)
-- [x] Tests (39 new: bridge 20, source 11, facade 7, repo 1), specs/mix.md
+- [x] Tests (37 new: bridge 19, source 10, facade 7, repo 1), specs/mix.md
 - Suite: 4204 tests, 0 failures; assembleDebug green.
 
 ## Deviations / notes
