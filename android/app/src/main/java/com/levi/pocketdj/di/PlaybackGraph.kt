@@ -162,11 +162,27 @@ class PlaybackGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
+    /** Non-suspending mirror of EditionSettings (the decider is read on Main). */
+    @Volatile private var preferExplicitMirror: Boolean? = null
+
     /** Idempotent: connect the sequencer's capture seams. Called once from AppGraph init. */
     fun wire() {
         val seq = sequencer
         seq.historyContextProvider = { id -> app.collections.historyContext(id) }
         seq.originProvider = { id -> app.collections.originCollection(id) }
+        // Final review: the edition decision (clean-only collections + "Prefer explicit versions") was never wired.
+        seq.cleanOnlyProvider = { id ->
+            val origin = app.collections.originCollection(id)?.second
+            origin != null && (app.collections.pocket(origin)?.cleanOnly ?: app.collections.playlist(origin)?.cleanOnly) == true
+        }
+        seq.editionDecider = com.levi.pocketdj.data.edition.PolicyEditionDecider(
+            preferExplicit = { preferExplicitMirror },
+            song = { id -> app.catalogRepository.state.value.catalog?.songsById?.get(id) },
+            isStored = { id -> app.servicesGraph.burnStore.hasLocalFile(id) },
+        )
+        app.appScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            com.levi.pocketdj.data.edition.EditionSettings.flow(app.settings).collect { preferExplicitMirror = it }
+        }
         seq.outcomes = outcomes
         // PB-5: the History choke point arms the tracker; the sequencer feeds samples + advance-aways.
         seq.skipTracker = skipTracker
