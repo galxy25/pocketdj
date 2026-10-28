@@ -49,6 +49,8 @@ fun AddToPlaylistMenu(
     item: AddToItem,
     onDismiss: () -> Unit,
     onMore: () -> Unit,
+    /** Extra rows (label, action) appended after "More…" — e.g. Browse's Select / Copy. */
+    extraActions: List<Pair<String, () -> Unit>> = emptyList(),
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
@@ -87,6 +89,15 @@ fun AddToPlaylistMenu(
                     testTag = "ctx-add-playlist-more",
                     onClick = onMore,
                 )
+                extraActions.forEachIndexed { i, (label, action) ->
+                    MenuRow(
+                        icon = Icons.Filled.Search,
+                        label = label,
+                        checked = false,
+                        testTag = "ctx-extra-$i",
+                        onClick = { action(); onDismiss() },
+                    )
+                }
             }
         },
         confirmButton = {},

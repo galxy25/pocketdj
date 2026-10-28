@@ -2,6 +2,7 @@ package com.levi.pocketdj.screens.playlists
 
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -43,6 +44,10 @@ import com.levi.pocketdj.screens.collections.RemoveDuplicatesResultAlert
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.PlaylistNode
 import com.levi.pocketdj.data.rips.PlayResolver
+import com.levi.pocketdj.ui.selection.SelectionBar
+import com.levi.pocketdj.ui.selection.SelectionScope
+import com.levi.pocketdj.ui.selection.SongTransfer
+import com.levi.pocketdj.ui.selection.selectableRow
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.screens.browse.Fmt
 import com.levi.pocketdj.screens.browse.SongDetailSheet
@@ -119,7 +124,35 @@ fun PlaylistDetailScreen(
 
         val burnController = rememberCollectionBurnController(playlistId)
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        val rowSelection = remember { graph.collectionsGraph.rowSelection }
+        val selScope = "playlist:$playlistId"
+        // Chapters are keyed by NODE id (the same song may appear in several chapters); the
+        // payload translates node ids -> song ids in display order.
+        fun songNodes() = playlist.sequences.flatMap { it.children.orEmpty() }.filter {
+            it.kind == PlaylistNode.Kind.SONG && it.songId?.let { id ->
+                catalog?.songsById?.containsKey(id) == true && !PlayResolver.isStudioId(id)
+            } == true
+        }
+        SelectionScope(
+            selection = rowSelection,
+            scope = selScope,
+            pruneKey = playlist.sequences,
+            allIds = { songNodes().map { it.nodeId } },
+            payload = {
+                com.levi.pocketdj.ui.selection.playlistSelectionPayload(
+                    nodes = playlist.sequences.flatMap { it.children.orEmpty() }
+                        .filter { it.kind == PlaylistNode.Kind.SONG }
+                        .map { it.nodeId to it.songId },
+                    selection = rowSelection,
+                    songsById = catalog?.songsById.orEmpty(),
+                    isStudioId = PlayResolver::isStudioId,
+                )
+            },
+        )
+
+        Column(Modifier.fillMaxSize()) {
+        SelectionBar(rowSelection, selScope, store)
+        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
             item(key = "burn-bar") {
                 CollectionBurnBar(burnController, songIds = { store.songIdsForPlaylist(playlistId) }, noun = "playlist")
             }
@@ -221,6 +254,8 @@ fun PlaylistDetailScreen(
                         NodeRow(
                             node = node,
                             catalog = catalog,
+                            selection = rowSelection,
+                            selectionScope = selScope,
                             pocketName = { store.pocket(it)?.name },
                             manifestHit = node.songId?.let { manifest.containsKey(it) } ?: false,
                             rowNote = rememberRowNote(node.songId, node.songId?.let { manifest.containsKey(it) } ?: false),
@@ -290,6 +325,7 @@ fun PlaylistDetailScreen(
                     }
                 }
             }
+        }
         }
 
         SnackbarHost(hostState = snackbar, modifier = Modifier.align(Alignment.BottomCenter))
@@ -385,6 +421,8 @@ fun PlaylistDetailScreen(
 private fun NodeRow(
     node: PlaylistNode,
     catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
+    selection: com.levi.pocketdj.ui.selection.RowSelection,
+    selectionScope: String,
     pocketName: (String) -> String?,
     manifestHit: Boolean,
     rowNote: String? = null,
@@ -412,7 +450,7 @@ private fun NodeRow(
                     camelot = song.camelot,
                     lengthMs = song.length,
                     dimmed = !manifestHit,
-                    onClick = { onTapSong(song.id) },
+                    modifier = Modifier.selectableRow(selection, node.nodeId, selectionScope) { onTapSong(song.id) },
                     favoriteSongId = song.id, favoriteAppleMusicId = song.appleMusicId,
                     badges = {
                         node.repeatCount?.takeIf { it > 1 }?.let {

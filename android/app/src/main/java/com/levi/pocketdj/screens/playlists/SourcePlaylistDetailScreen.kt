@@ -2,6 +2,7 @@ package com.levi.pocketdj.screens.playlists
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -39,6 +40,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.rips.PlayResolver
+import com.levi.pocketdj.ui.selection.SelectionBar
+import com.levi.pocketdj.ui.selection.SelectionScope
+import com.levi.pocketdj.ui.selection.SongTransfer
+import com.levi.pocketdj.ui.selection.selectableRow
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.screens.browse.SongDetailSheet
@@ -104,7 +109,32 @@ fun SourcePlaylistDetailScreen(
             it.sourcePlaylistId == playlistId && (it.sourceName == sourceName || it.sourceName == null)
         }
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        val rowSelection = remember { graph.collectionsGraph.rowSelection }
+        val selScope = "source:$sourceName:$playlistId"
+        // Rows are keyed by SONG id (as iOS); a repeat gets an occurrence suffix so keys stay
+        // unique, and a reorder never moves the selection onto different songs.
+        val rowKeys = com.levi.pocketdj.ui.selection.stableKeys(songIds)
+        fun selectableIds() = songIds.indices.filter {
+            catalog.songsById.containsKey(songIds[it]) && !PlayResolver.isStudioId(songIds[it])
+        }.map { rowKeys[it] }
+        SelectionScope(
+            selection = rowSelection,
+            scope = selScope,
+            pruneKey = songIds,
+            allIds = { selectableIds() },
+            payload = {
+                SongTransfer.make(
+                    rowSelection.orderedSelection(selectableIds()).mapNotNull { k ->
+                        rowKeys.indexOf(k).takeIf { it >= 0 }?.let { songIds[it] }
+                    },
+                    catalog.songsById,
+                )
+            },
+        )
+
+        Column(Modifier.fillMaxSize()) {
+        SelectionBar(rowSelection, selScope, store)
+        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
             item(key = "title") {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -197,12 +227,13 @@ fun SourcePlaylistDetailScreen(
                             camelot = song.camelot,
                             lengthMs = song.length,
                             dimmed = !manifest.containsKey(songId),
-                            onClick = { detailSongId = songId },
+                            modifier = Modifier.selectableRow(rowSelection, rowKeys[index], selScope) { detailSongId = songId },
                             favoriteSongId = songId, favoriteAppleMusicId = song.appleMusicId,
                         )
                     }
                 }
             }
+        }
         }
 
         SnackbarHost(hostState = snackbar, modifier = Modifier.align(Alignment.BottomCenter))

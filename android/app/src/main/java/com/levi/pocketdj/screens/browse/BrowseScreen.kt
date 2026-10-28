@@ -78,10 +78,20 @@ import com.levi.pocketdj.ui.FavoriteToggle
 import com.levi.pocketdj.screens.collections.AddToCollectionSheet
 import com.levi.pocketdj.screens.collections.AddToItem
 import com.levi.pocketdj.screens.collections.AddToPlaylistMenu
+import com.levi.pocketdj.ui.selection.SelectionBar
+import com.levi.pocketdj.ui.selection.SelectionScope
+import com.levi.pocketdj.ui.selection.SelectionBarSemantics
+import com.levi.pocketdj.ui.selection.SongTransfer
+import com.levi.pocketdj.ui.selection.writeSongTransfer
+import com.levi.pocketdj.ui.selection.selectionDecor
+import com.levi.pocketdj.ui.selection.selectionTap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** RowSelection scope for the Browse Songs list. */
+internal const val BROWSE_SELECTION_SCOPE = "browse"
 
 /** Rows rendered per page of the incremental list (specs/browse.md §4.1). */
 private const val PAGE_SIZE = 120
@@ -247,10 +257,24 @@ fun BrowseScreen(
                 onDismiss = { addItem = null; addSheetOpen = false },
             )
         } else {
+            val songId = (item as? AddToItem.Song)?.id
+            val ctx = LocalContext.current
+            val sel = remember { graph.collectionsGraph.rowSelection }
+            val extras = if (songId == null) emptyList() else listOf<Pair<String, () -> Unit>>(
+                "Select" to { sel.enterSelectMode(BROWSE_SELECTION_SCOPE, songId) },
+                "Copy" to {
+                    val st = sel.state.value
+                    val picked = if (st.scopeId == BROWSE_SELECTION_SCOPE) sel.currentPayload()?.songIds else null
+                    val ids = SelectionBarSemantics.rowOrSelectionIds(picked, songId)
+                    val songs = catalogState.catalog?.songsById.orEmpty()
+                    writeSongTransfer(ctx, SongTransfer.make(ids, songs))
+                },
+            )
             AddToPlaylistMenu(
                 item = item,
                 onDismiss = { addItem = null },
                 onMore = { addSheetOpen = true },
+                extraActions = extras,
             )
         }
     }
@@ -408,7 +432,25 @@ private fun BrowseContent(
     // Paging resets when the CONSTRAINT changes (selection / mode), never when store contents do.
     val pagingKey = "${results.version}|${favoriteFilter.name}|${membership.selectionKey()}"
 
+    // Multi-select (COL-5): Songs list only, never in online mode. The registered universe is the
+    // FULL filtered list (shownSongs), not the rendered page.
+    val rowSelection = remember { AppGraph.get(context).collectionsGraph.rowSelection }
+    val selectable = kind == BrowseKind.SONGS && !online
+    if (selectable) {
+        SelectionScope(
+            selection = rowSelection,
+            scope = BROWSE_SELECTION_SCOPE,
+            pruneKey = System.identityHashCode(shownSongs),
+            allIds = { shownSongs.map { it.song.id } },
+            payload = {
+                val ordered = rowSelection.orderedSelection(shownSongs.map { it.song.id })
+                SongTransfer.make(ordered, catalog.songsById)
+            },
+        )
+    }
+
     Column(Modifier.fillMaxSize()) {
+        if (selectable) SelectionBar(rowSelection, BROWSE_SELECTION_SCOPE, collStore)
         SourcesRail(
             sources = catalog.availableSources,
             selected = filters.sources,
@@ -642,11 +684,23 @@ private fun BrowseContent(
                 } else {
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                         items(visible, key = { it.song.id }) { row ->
+                            val songId = row.song.id
                             BrowseSongRow(
                                 row = row,
-                                onClick = { onOpenSong(row.song.id) },
-                                onPlay = { onPlaySong(row.song.id) },
-                                onLongClick = { onAddSong(row.song.id) },
+                                modifier = Modifier.selectionDecor(rowSelection, songId, BROWSE_SELECTION_SCOPE),
+                                // Select mode armed HERE eats the tap; otherwise it opens as before.
+                                onClick = {
+                                    selectionTap(rowSelection, songId, BROWSE_SELECTION_SCOPE) { onOpenSong(songId) }
+                                },
+                                onPlay = { onPlaySong(songId) },
+                                // Armed: long-press toggles. Otherwise the COL-4 Add-to menu (with Select / Copy).
+                                onLongClick = {
+                                    if (rowSelection.state.value.isSelectMode(BROWSE_SELECTION_SCOPE)) {
+                                        rowSelection.handleLongPress(songId, BROWSE_SELECTION_SCOPE)
+                                    } else {
+                                        onAddSong(songId)
+                                    }
+                                },
                             )
                         }
                         if (visible.size < shownSongs.size) {

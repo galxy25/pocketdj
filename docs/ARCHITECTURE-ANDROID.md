@@ -399,7 +399,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | COL-10 — Favorites store + ♥ toggle + Browse favorite tri-state filter model + heart/unheart activ… | 3 | PARTIAL (JVM) | Browse ♥ + tri-state filter (song mode) wired in BrowseScreen/SongDetailSheet/AlbumDetailScreen; emulator drive not run (integrator). Open: backup-zip + profile-sync registration of `pocketdj-favorites.json`; `favorites.remapSongIds` has no caller (no Discover/amrec_ supersede path on Android yet — wire alongside CollectionsStore remap). |
 | COL-4 — AddToActions + Add-to sheet parity (Suggested + Recent, pockets A–Z, playlists A–Z, More…… | 5 | Merged (`796e5923`) | — |
 | COL-3 — SongDuplicateJudge (deterministic tiers) + Remove duplicates (collection, all collections… | 6 | Merged (`42809a00`) | — |
-| COL-5 — Multi-select: RowSelection + SelectableRow + SelectionBar on Browse and every collection … | 9 | Planned | — |
+| COL-5 — Multi-select: RowSelection + SelectableRow + SelectionBar on Browse and every collection … | 9 | PARTIAL | Multi-select on Browse, pocket, playlist, source playlist, set list (bar: Select all, Add to, Copy, Clear; clipboard capped). No paste UI, no hardware-keyboard range-select. Emulator steps NOT run (device-only). |
 | COL-7 — Source-sync completion: auto reconcile on catalog refresh, global + per-item toggles, dir… | 10 | Planned | — |
 | COL-12 — Recently added virtual playlist (derivation from IndexSong.dateAdded + add history) + Set… | 12 | Planned | — |
 | COL-8 — Apple Music write-back queue (durable, Web API transport via SVC-15, batch confirm, backf… | 13 | Planned | Needs a real Apple Music subscription + Music-User-Token; emulator ve… |

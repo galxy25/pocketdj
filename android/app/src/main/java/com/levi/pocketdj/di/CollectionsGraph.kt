@@ -54,6 +54,9 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     @Volatile
     var collectionSuggestions: ((String) -> List<com.levi.pocketdj.screens.collections.CollectionSuggestion>)? = null
 
+    /** Window-scoped multi-select state shared by Browse and every collection detail (COL-5). */
+    val rowSelection: com.levi.pocketdj.ui.selection.RowSelection by lazy { com.levi.pocketdj.ui.selection.RowSelection() }
+
     override val flushables: List<Flushable> = listOf(
         Flushable {
             app.collections.flushNow()
