@@ -275,7 +275,7 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
         override fun songExists(songId: String): Boolean = catalog?.songsById?.containsKey(songId) == true
         override fun songIdForAppleMusicId(appleMusicId: String): String? =
             catalog?.songs?.firstOrNull { it.appleMusicId == appleMusicId }?.id
-        override fun profileName(): String = ""
+        override fun profileName(): String = runCatching { app.servicesGraph.profile.name }.getOrDefault("")
         override fun pocketSongIds(pocketId: String): List<String> = app.collections.songIdsForPocket(pocketId)
         override val queue: MwFQueueSink = object : MwFQueueSink {
             private val seq get() = app.playbackGraph.sequencer
@@ -338,7 +338,24 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
             ),
         )
 
-    override val deepLinkHandlers: List<DeepLinkHandler> = listOf(
+    /** GM-10: pocketdj://mwf/<id> + https /mwf/<id>/ land on Games (known id pushes, unknown opens Join). */
+    val mwfDeepLinks: com.levi.pocketdj.data.games.friends.MwFDeepLinkHandler by lazy {
+        com.levi.pocketdj.data.games.friends.MwFDeepLinkHandler(
+            openLink = { friends.handleOpenedLink(it) },
+            postRoute = com.levi.pocketdj.shell.NavRequestBus::post,
+        )
+    }
+
+    override val deepLinkHandlers: List<DeepLinkHandler> by lazy { buildDeepLinkHandlers() }
+
+    private fun buildDeepLinkHandlers(): List<DeepLinkHandler> {
+        // The dispatcher (ShellGraph) parses/gates links and calls this seam; claim it now so a link
+        // parked before the Games area existed is replayed.
+        runCatching {
+            val shell = app.shellGraph
+            mwfDeepLinks.install(shell.deepLinkSeams) { shell.deepLinks.takePendingMwf() }
+        }
+        return listOf(
         DeepLinkHandler { intent ->
             if (isDebuggable() && (intent.getBooleanExtra(POCKETS_STUB_EXTRA, false) ||
                     intent.getStringExtra(POCKETS_STUB_EXTRA) == "true")
@@ -354,7 +371,8 @@ class GamesGraph(private val app: AppGraph) : FeatureModule {
             }
             false // never consumes the intent
         },
-    )
+        )
+    }
 
     companion object {
         // iOS ListeningPocketsCollections caps.
