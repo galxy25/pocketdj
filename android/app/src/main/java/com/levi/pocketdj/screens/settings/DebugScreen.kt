@@ -31,6 +31,7 @@ import com.levi.pocketdj.diag.DiagKeyImporter
 import com.levi.pocketdj.diag.DiagServices
 import com.levi.pocketdj.shell.SettingsHost
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -132,6 +133,62 @@ internal fun ColumnScope.DebugPanel(host: SettingsHost) {
     pendingMismatch?.let { warn ->
         SettingsCaption(warn)
         Button(onClick = { pendingText?.let { importNow(it, force = true) } }) { Text("Import anyway") }
+    }
+
+    SettingsDivider()
+    SettingsHeader("Recs")
+    var timbreStatus by remember { mutableStateOf("Timbre corpus: not loaded") }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                timbreStatus = "Timbre corpus: loading…"
+                val n = withContext(Dispatchers.IO) {
+                    com.levi.pocketdj.data.recs.TimbreCatalog(host.graph.catalogService) {
+                        "${com.levi.pocketdj.data.config.Endpoints.CATALOG_BASE}/timbre.json"
+                    }.vectors().size
+                }
+                timbreStatus = "Timbre corpus: $n rows"
+                diag.log.log("recs", "timbre corpus rows=$n")
+            }
+        }) { Text("Load timbre corpus") }
+        Text(timbreStatus, style = MaterialTheme.typography.bodySmall)
+    }
+
+    var editionStatus by remember { mutableStateOf("Edition probe: not run") }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val pref = com.levi.pocketdj.data.edition.EditionSettings.get(host.graph.settings)
+                val song = withContext(Dispatchers.IO) {
+                    host.graph.catalogRepository.catalogFlow.first()?.songs
+                        ?.firstOrNull { it.appleMusicIdExplicit != null && it.appleMusicIdExplicit != it.appleMusicId }
+                }
+                val d = com.levi.pocketdj.data.edition.EditionPolicy.decide(song, false, pref)
+                editionStatus = "Edition probe: pref=$pref song=${song?.id} base=${song?.appleMusicId} -> ${d.edition?.raw} ${d.catalogId}"
+                diag.log.log("recs", editionStatus)
+            }
+        }) { Text("Edition probe") }
+        Text(editionStatus, style = MaterialTheme.typography.bodySmall)
+    }
+
+    var seedStatus by remember { mutableStateOf("Seed: idle") }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        OutlinedButton(onClick = {
+            host.scope.launch {
+                val ids = withContext(Dispatchers.IO) {
+                    host.graph.catalogRepository.catalogFlow.first()?.songs?.take(500)?.map { it.id } ?: emptyList()
+                }
+                val store = host.graph.collections
+                val pl = store.playlists.firstOrNull { it.name == "Seed500" } ?: store.createPlaylist("Seed500")
+                val n = store.addSongs(
+                    ids,
+                    com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, pl.id),
+                )
+                // Deliberately NO flushNow(): the ON_STOP flush must persist this (COL-2 emulator step).
+                seedStatus = "Seed: added $n (no flush)"
+            }
+        }) { Text("Seed 500 songs") }
+        Text(seedStatus, style = MaterialTheme.typography.bodySmall)
     }
 
     SettingsDivider()

@@ -8,3 +8,15 @@ Emulator (emulator-5554, shots in pocketdj-parity/_shots/wave1/):
 - GM-2, MIX-0: pure JVM, pass.
 No FATAL/ANR in logcat.
 Open issues: nav label "Collections" truncates to "Collecti" at 411dp; amPlaylistId persistence decision (COL-1); amrec_album_ preview fallback deferred (SURF-1); Browse must consume NavRequestBus.pendingBrowseQuery; 13 screens still collect full catalog state (SVC-12 partial).
+
+## Wave 2
+Merged: SVC-5, COL-2, SURF-2, BRW-3, MIX-3, BRW-8 (only conflict: di/BrowseGraph.kt, BRW-3 settingsSections + SURF-2 flushables, both kept). Tests: 812 run, 0 failures (626 -> 812). assembleDebug green.
+Emulator (emulator-5554, shots in pocketdj-parity/_shots/wave2/). Debug-only seams added to Settings > Debug (Recs section + Seed 500 songs) for BRW-8, BRW-3, COL-2 steps.
+- SVC-5: PASS (fake non-AWS-valid key). Debug shows DISABLED - no diag key; key paste+import -> Key: AKIA..; real S3 PUT answered HTTP 403 (expected, fake secret); offline -> FAILING UnknownHostException; network back + telemetry on + tapping -> FAILING HTTP 403 (retry is event-driven, not timer-driven). Capture on/off -> saved session file, Share opens the system chooser. NOT verifiable: object landing in s3://pocketdj-logs-623170744161/diag/ and .pdjdiagkey From-file import (need a real write key from Levi).
+- COL-2: PASS. Seed 500 songs (no flush) -> HOME -> force-stop 0.3 s later -> relaunch: Seed500 playlist has 500 songs (ON_STOP flush works). Shuffle-play of the 500-song playlist: Now Playing opens, no ANR/FATAL; gfxinfo on software-rendered headless emulator 28% janky, p50 25 ms, p90 105 ms (not a device number).
+- SURF-2: PASS with caveat. Songs filter survived HOME + force-stop + relaunch. dumpsys jobscheduler shows both WorkManager jobs; forced run dispatches RipReconcileWorker and StoragePruneWorker but WorkManager defers a periodic job run before its schedule, so no manifest refresh log; the worker body is not exercised on the emulator.
+- BRW-3: PARTIAL. Settings > Explicit versions toggle ON persists UI-side; Edition probe (debug) resolves sng_1a7f6bc854af to explicit id 1771706119 with pref=true. The "song detail shows the resolved play id" half cannot pass until PlaybackController is wired to resolveForEdition (follow-up package). Device-only: real explicit/clean streaming.
+- BRW-8: PASS. Load timbre corpus -> 19,864 rows online (roadmap said ~14,916, corpus has grown); cold-start offline (wifi+data off, force-stop) -> 19,864 rows from disk cache.
+- MIX-3: no emulator steps (pure DSP, unit tests only).
+No FATAL/ANR from com.levi.pocketdj in logcat.
+Open issues: nothing calls NPLog/DiagLog yet outside diag/ and Debug (a capture with no app traffic saves no session); PlaybackController edition wiring; worker cold start still builds AppGraph (SURF-2); TimePitch allocates a new Sonic per applied step, no seam crossfade, needs device check (MIX-3); WorkManager periodic body untested on emulator; "Add to playlist" write-back resolution / membershipRevision not built (COL-2).
