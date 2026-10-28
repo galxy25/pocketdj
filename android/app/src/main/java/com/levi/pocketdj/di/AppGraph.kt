@@ -419,6 +419,10 @@ class AppGraph private constructor(context: Context) {
         appScope.launch { IntentSink.install(features.deepLinkHandlers) }
     }
 
+    // BRW-13: arm the rec-engine auto-flush loop. MUST stay the LAST initializer: its IO coroutine reads
+    // lazily-delegated properties (collections, collectionActivity) that are initialized in textual order.
+    init { browseGraph.startRecs() }
+
     companion object {
         @Volatile
         private var instance: AppGraph? = null

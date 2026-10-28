@@ -45,7 +45,7 @@ object ForYouRoutes {
  * fixture is any debug build so the tab is reachable on the emulator with seeded history.
  */
 object ForYouGate {
-    val REC_ENGINE_ENABLED = PrefKey.boolean("recEngineEnabled", false)
+    val REC_ENGINE_ENABLED = com.levi.pocketdj.data.recs.RecsSettings.REC_ENGINE_ENABLED
 
     fun visible(recEngineEnabled: Boolean, debugFixture: Boolean): Boolean = recEngineEnabled || debugFixture
 }

@@ -431,7 +431,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | BRW-7 — Collection timeline (F8) + timeline cue store + History ▸ Collection tab | 13 | PARTIAL | Follow-ups: timeline rows have no artwork thumbnails; owner-gate (`filterToOwnLibrary`) not applied until Android has owner identity (shared helper with COL-12); cue store synced as `timeline-cues` + cleared on account deletion (done) |
 | BRW-11 — For You feed store, feedback store, read-time refresh schedule, tiles/grid, recsEnabled t… | 14 | Planned | — |
 | BRW-12 — For You UI: History ▸ For You tab, tiles grid, song list, feedback buttons, recs toggle, … | 15 | PARTIAL | New/release feed (BRW-14) + cloud ranker deferred; emulator flows (👎 sink/dim, Refresh bar, recs-off notice) not yet driven |
-| BRW-13 — Cloud recommendation engine service + client + rec key (device-local) + Settings ▸ Recomm… | 16 | Planned | — |
+| BRW-13 — Cloud recommendation engine service + client + rec key (device-local) + Settings ▸ Recomm… | 16 | PARTIAL | Service, client, Settings, For You cloud zone, Suggested collections wired. Deferred: `RecSuggestionFilter` in the Add sheet, `similarSongs` in Gem Collector, `enqueueAudioAnalysis` producer. |
 | BRW-15 — Discover tab: Apple Music catalog search (SVC-15) ∥ rip-server /search, Songs\|Albums sco… | 17 | Planned | — |
 | BRW-16 — Discover ＋Add: provisional catalog entries, album fan-out, supersede, Remove from Library | 18 | Planned | Apple Music library write needs a signed-in Music-User-Token (works i… |
 | BRW-17 — '?♪?' recognizer: vendored ShazamKit-for-Android AAR + AudioRecord + catalog match + resu… | 19 | Planned | Live recognition needs a microphone + the vendored AAR's native libs;… |

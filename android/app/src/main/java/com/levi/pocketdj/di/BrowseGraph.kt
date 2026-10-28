@@ -7,6 +7,8 @@ import com.levi.pocketdj.screens.browse.BrowseSessionFlushable
 import com.levi.pocketdj.screens.settings.sections.editionSection
 import com.levi.pocketdj.screens.settings.sections.forYouSection
 import com.levi.pocketdj.screens.settings.sections.onlineSearchSection
+import com.levi.pocketdj.screens.settings.sections.recommendationsSection
+import com.levi.pocketdj.data.collections.recommendationsEnabled
 import com.levi.pocketdj.shell.FeatureModule
 import com.levi.pocketdj.shell.Flushable
 import com.levi.pocketdj.shell.SettingsSection
@@ -20,6 +22,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.plus
 
 /**
  * Sidecar graph for the browse area (decision D3). Packages in this area override the
@@ -80,9 +83,98 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
         }
     }
 
+    // ---- BRW-13: cloud recommendation engine ------------------------------------------------
+
+    /** Live mirrors of the device-local prefs (the service's gates are non-suspend). Default OFF until the first emission. */
+    private val recEnabledMirror = kotlinx.coroutines.flow.MutableStateFlow(false)
+
+    /** The privacy-gate mirror as a flow (UI that must retry once the GATE opens keys on this, not the raw pref). */
+    val recEnabled: kotlinx.coroutines.flow.StateFlow<Boolean> get() = recEnabledMirror
+    private val shareCountsMirror = java.util.concurrent.atomic.AtomicBoolean(true)
+    @Volatile private var deviceIdMirror: String = ""
+
+    private val recServiceLazy: Lazy<com.levi.pocketdj.data.recs.RecommendationService> = lazy {
+        val files = app.appContext.filesDir
+        val collections = app.collections
+        val svc = com.levi.pocketdj.data.recs.RecommendationService(
+            client = com.levi.pocketdj.data.recs.RecEngineClient(app.httpClient, deviceId = { deviceIdMirror }),
+            scope = app.appScope + Dispatchers.IO,
+            enabled = { recEnabledMirror.value },
+            shareLifetimePlayCounts = { shareCountsMirror.get() },
+            profileId = { app.servicesGraph.profile.id },
+            deviceId = { deviceIdMirror },
+            keyFile = java.io.File(files, REC_KEY_FILE),
+            stateFile = java.io.File(files, REC_SYNC_FILE),
+            pendingDeleteFile = java.io.File(files, REC_PENDING_DELETE_FILE),
+            playsProvider = {
+                com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext).events.map {
+                    com.levi.pocketdj.data.recs.RecPlayEventWire(it.id, it.songId, it.playedAt, it.source.token)
+                }
+            },
+            favoritesProvider = {
+                app.collectionsGraph.favorites.entries().map {
+                    com.levi.pocketdj.data.recs.RecFavoriteWire(it.songId, it.favorited, it.atMs)
+                }
+            },
+            activityProvider = {
+                app.collectionActivity.events.map {
+                    com.levi.pocketdj.data.recs.RecActivityWire(
+                        it.id, it.at, it.kind.token, it.itemId, it.collectionId, it.collectionKind, it.collectionName,
+                    )
+                }
+            },
+            collectionsProvider = {
+                val pockets = collections.pockets
+                val playlists = collections.playlists
+                val albums = com.levi.pocketdj.data.recs.RecCollectionFlattener.referencedAlbumIds(pockets, playlists)
+                val albumsById = app.catalogRepository.state.value.catalog?.albumsById
+                val tracks = if (albums.isEmpty() || albumsById == null) emptyMap()
+                else albums.mapNotNull { id -> albumsById[id]?.let { id to it.trackList } }.toMap()
+                com.levi.pocketdj.data.recs.RecCollectionFlattener.flatten(pockets, playlists, albumTracks = tracks)
+            },
+            recommendationsEnabledFor = { collections.recommendationsEnabled(it) },
+        )
+        svc.feedbackProvider = { since ->
+            recFeedbackStore.decisionsSince(since).map {
+                com.levi.pocketdj.data.recs.RecFeedbackWire(it.id, it.at, it.songId, it.verdict, it.surface, it.scope)
+            }
+        }
+        svc.playCountsProvider = { app.servicesGraph.playStats.playCountsSnapshot() }
+        svc.lastPlayedProvider = { app.servicesGraph.playStats.lastPlayedSnapshot() }
+        svc
+    }
+
+    /** The cloud rec engine (gate, flush, cloud zone, suggestions). Touch off-main: it reads its docs on first use. */
+    val recService: com.levi.pocketdj.data.recs.RecommendationService by recServiceLazy
+
+    /**
+     * Launch hook (additive line in AppGraph.init): mirror the prefs, then arm the auto-flush loop. The loop
+     * also finishes an owed server-side deletion regardless of the toggle; it exits at once when disabled.
+     */
+    fun startRecs() {
+        app.appScope.launch(Dispatchers.IO) {
+            deviceIdMirror = runCatching { app.settings.ensureInstallId() }.getOrDefault("")
+            launch { app.settings.flow(com.levi.pocketdj.data.recs.RecsSettings.SHARE_LIFETIME_PLAY_COUNTS).collect { shareCountsMirror.set(it) } }
+            // The mirror is set from EVERY emission of the flow (no get()+drop(1) gap where a toggle between the
+            // two is lost). The first emission lands BEFORE the service exists, so the first gate read is truthful.
+            var svc: com.levi.pocketdj.data.recs.RecommendationService? = null
+            app.settings.flow(com.levi.pocketdj.data.recs.RecsSettings.REC_ENGINE_ENABLED).distinctUntilChanged().collect { on ->
+                val prev = recEnabledMirror.value
+                recEnabledMirror.value = on
+                val s = svc
+                if (s == null) {
+                    svc = recService.also { it.startAutoFlush() }
+                } else if (prev != on) {
+                    s.enabledDidChange()
+                }
+            }
+        }
+    }
+
     override val flushables: List<Flushable> = listOf(
         BrowseSessionFlushable { app.settings.setBrowseSnapshot(it) },
         recsFlushable(recFeedbackLazy),
+        Flushable { if (recServiceLazy.isInitialized()) recServiceLazy.value.flushSoon() },
         object : Flushable {
             override suspend fun flush() {
                 if (!historyBrowseLazy.isInitialized()) return
@@ -114,19 +206,30 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
         )
     }
 
-    override val syncEntries: List<com.levi.pocketdj.shell.SyncEntry> = recsSyncEntries(recFeedbackLazy, forYouFeedLazy)
+    override val syncEntries: List<com.levi.pocketdj.shell.SyncEntry> = recsSyncEntries(recFeedbackLazy, forYouFeedLazy) +
+        // iOS cloudSync "rec-key": every device of the profile presents the SAME bearer key (server TOFU binding).
+        com.levi.pocketdj.shell.SyncEntry(REC_KEY_SYNC_KEY, REC_KEY_FILE, onPulled = { recServiceLazy.value.reloadKeyFromDisk() })
 
     /** Account deletion / "Erase everything" (iOS AccountDeletionService clears both). */
-    override val resetHooks: List<com.levi.pocketdj.shell.ResetHook> = recsResetHooks(recFeedbackLazy, forYouFeedLazy)
+    override val resetHooks: List<com.levi.pocketdj.shell.ResetHook> = recsResetHooks(recFeedbackLazy, forYouFeedLazy) +
+        // iOS AccountDeletionService: server DELETE first; a failure parks the credential in the tombstone.
+        com.levi.pocketdj.shell.ResetHook {
+            val svc = recServiceLazy.value
+            svc.clearLocal(cloudDeleted = svc.deleteCloudData())
+        }
 
     override val settingsSections: List<SettingsSection> by lazy {
-        listOf(editionSection(), onlineSearchSection(), forYouSection())
+        listOf(editionSection(), onlineSearchSection(), forYouSection(), recommendationsSection())
     }
 
     internal companion object {
         const val REC_FEEDBACK_SYNC_KEY = "rec-feedback"
         const val REC_FEEDBACK_FILE = "pocketdj-rec-feedback.json"
         const val FORYOU_FEED_SYNC_KEY = "foryou-feed"
+        const val REC_KEY_SYNC_KEY = "rec-key"
+        const val REC_KEY_FILE = "pocketdj-rec-key.json"
+        const val REC_SYNC_FILE = "pocketdj-rec-sync.json"
+        const val REC_PENDING_DELETE_FILE = "pocketdj-rec-pending-delete.json"
 
         /** iOS cloudSync "rec-feedback" + "foryou-feed". The sync engine runs off-main, so touching the lazies is safe. */
         fun recsSyncEntries(
