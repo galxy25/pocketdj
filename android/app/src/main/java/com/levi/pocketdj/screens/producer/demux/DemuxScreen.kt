@@ -175,7 +175,7 @@ private fun ReadyBody(session: DemuxSession, store: com.levi.pocketdj.studio.dem
     val version by player.version.collectAsState()
     val runs by store.chordRuns.collectAsState()
     var follow by remember { mutableStateOf(true) }
-    var clockMs by mutableIntStateOf(0)
+    var clockMs by remember { mutableIntStateOf(0) }
     LaunchedEffect(player) { while (true) { clockMs = (player.currentTimeSec * 1000).toInt(); delay(250) } }
     val doc = remember(revision, source.key) { store.document(source.key) }
 
