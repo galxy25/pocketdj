@@ -107,7 +107,6 @@ class AutoLibraryCallback(
             AutoId.Continue -> run { player.resumeHeld() }
             is AutoId.Mix -> {
                 val mix = tree.mix
-                android.util.Log.d("PocketDJ.autodbg", "select mix ${id.kind} mixWired=${mix != null}")
                 if (mix == null) done() else run { mix.select(id)?.let(toast) }
             }
             is AutoId.Song -> guardPlayable(mediaId) { player.playSong(id.ref, id.songId) }
