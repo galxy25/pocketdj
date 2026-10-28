@@ -386,6 +386,12 @@ internal fun storageCategoryMeta(category: Category): StorageCategoryMeta = when
         clearTitle = "Delete instruments?",
         clearBody = "Removes the downloaded instrument packs from this device. They can be downloaded again.",
     )
+    Category.MIX_SESSIONS -> StorageCategoryMeta(
+        title = "Mix sessions",
+        description = "Audio recorded from your mixes. A take being recorded right now is kept.",
+        clearTitle = "Delete mix recordings?",
+        clearBody = "Permanently deletes every recorded mix take from this device. Session logs are kept.",
+    )
 }
 
 private fun studioMeta(title: String, description: String, noun: String) = StorageCategoryMeta(

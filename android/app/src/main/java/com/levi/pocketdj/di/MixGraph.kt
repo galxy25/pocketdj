@@ -23,6 +23,7 @@ import com.levi.pocketdj.mix.engine.ResolvedTrack
 import com.levi.pocketdj.mix.engine.VoiceRunner
 import com.levi.pocketdj.mix.store.MixDeckSessionStore
 import com.levi.pocketdj.mix.store.MixSessionStore
+import com.levi.pocketdj.mix.recording.asRecordingSessions
 import com.levi.pocketdj.mix.stream.BurnStoreAdopter
 import com.levi.pocketdj.mix.stream.ConnectivityNetworkMonitor
 import com.levi.pocketdj.mix.stream.MixStreamLoader
@@ -78,6 +79,30 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         MixSessionStore(f, writer = VersionedJsonWriter(f, writerExecutor))
     }
     val mixSessions: MixSessionStore get() = sessionsLazy.value
+
+    /** MIX-12: the persistent house tap, installed once on the engine's graph (start/stop only gates it). */
+    val recordingTap: com.levi.pocketdj.mix.recording.RecordingTapSink by lazy {
+        com.levi.pocketdj.mix.recording.RecordingTapSink().also { mixEngine.graph.tapSink = it }
+    }
+
+    /** MIX-12: mix audio recorder. Call [com.levi.pocketdj.mix.recording.MixRecorder.recoverOrphans] at launch. */
+    val mixRecorder: com.levi.pocketdj.mix.recording.MixRecorder by lazy {
+        val tap = recordingTap
+        val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        com.levi.pocketdj.mix.recording.MixRecorder(
+            root = com.levi.pocketdj.mix.recording.SessionFolders.root(app.appContext.filesDir),
+            tap = tap,
+            sessions = mixSessions.asRecordingSessions(),
+            mixAudible = { mixEngine.isRunning },
+            makeWriter = { com.levi.pocketdj.mix.recording.AacAdtsWriter(it, tap, mixEngine.graph.sampleRate) },
+            postMain = { r -> mainHandler.post(r) },
+        )
+    }
+
+    /** MIX-12: Sessions-screen take playback; pauses the live mix first. */
+    val recordingPlayer: com.levi.pocketdj.mix.recording.RecordingPlayer by lazy {
+        com.levi.pocketdj.mix.recording.RecordingPlayer(pauseMix = { mixEngine.pauseBoth() })
+    }
 
     /**
      * MIX-6: growing-file song/stem streams. Built on first use; construction sweeps

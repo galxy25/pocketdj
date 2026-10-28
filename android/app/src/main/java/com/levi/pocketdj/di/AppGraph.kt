@@ -299,6 +299,14 @@ class AppGraph private constructor(context: Context) {
             clearLyrics = { browseGraph.lyricsStore.clearDisk() },
             burnOps = servicesGraph.burnStorageOps,
             studioOps = studioGraph.storageOps,
+            // MIX-12: recorded mix takes; delete-all never unlinks the in-flight take.
+            mixSessionsDir = com.levi.pocketdj.mix.recording.SessionFolders.root(appContext.filesDir),
+            clearMixSessions = {
+                com.levi.pocketdj.mix.recording.SessionFolders.deleteAll(
+                    com.levi.pocketdj.mix.recording.SessionFolders.root(appContext.filesDir),
+                    keep = mixGraph.mixRecorder.activeTake?.file,
+                )
+            },
         )
     }
 
