@@ -55,7 +55,7 @@ class JukeboxGraph private constructor(context: Context) {
         pocketDjName = {
             app.settings.get(OnboardingPrefs.PROFILE_NAME)
         },
-    )
+    ).also { it.queue = SequencerJukeboxQueue(app.playbackGraph.sequencer) }
 
     companion object {
         @Volatile

@@ -96,8 +96,8 @@ class ResumptionSnapshotTest {
             CollectionsStore.QueueRowSnapshot("a", "A", "x", 100_000, 3),
             CollectionsStore.QueueRowSnapshot("b", "B", "y"),
         )
-        assertNull(store.materializeNowPlayingSetlist("Mix", emptyList()))
-        val set = store.materializeNowPlayingSetlist("Friday", q)!!
+        assertNull(store.materializeNowPlayingSetlistIfMissing("Mix", emptyList()))
+        val set = store.materializeNowPlayingSetlistIfMissing("Friday", q)!!
         assertEquals(NOW_PLAYING_SETLIST_ID, set.id)
         assertEquals(NOW_PLAYING_PLAYLIST_ID, set.playlistId)
         assertEquals("now-playing", set.seed)
@@ -108,7 +108,7 @@ class ResumptionSnapshotTest {
         assertEquals(3, set.tracks[0].repeatCount)
         assertEquals(set.tracks.sumOf { it.shownMs }, set.totalMs)
         // an existing Now Playing setlist is returned as is (never rebuilt)
-        val again = store.materializeNowPlayingSetlist("Other", q.take(1))!!
+        val again = store.materializeNowPlayingSetlistIfMissing("Other", q.take(1))!!
         assertEquals(2, again.tracks.size)
         assertEquals(1, store.setlists.count { it.id == NOW_PLAYING_SETLIST_ID })
         assertTrue(rows("z").isNotEmpty())

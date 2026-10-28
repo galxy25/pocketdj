@@ -724,6 +724,26 @@ class SetlistSequencer(
         onHeldRestored()
     }
 
+    /**
+     * Audio is sounding outside any run (album queue, browse single, AM, stream): fold it into a
+     * one-row run resumed at [positionMs] so queue inserts land AFTER it instead of replacing it.
+     * No-op when a run already exists.
+     */
+    fun adoptForeign(current: QueueItem, positionMs: Long, context: PlayContext?) {
+        if (running) return
+        restoreHeld(
+            items = listOf(current),
+            index = 0,
+            sourceSetlistId = null,
+            context = context,
+            origin = null,
+            repeatMode = repeatMode,
+            shuffle = false,
+            resumeAtMs = positionMs,
+        )
+        resumeFromHold()
+    }
+
     /** First explicit ▶ on a held deck: start the current row, mid-song when a position was saved. */
     fun resumeFromHold() {
         if (!running || !held) return
