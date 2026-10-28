@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # COL-18 - History > Pockets screen
 
@@ -16,3 +16,16 @@ state: implemented
 
 ## Questions for Levi
 None.
+
+## Review
+fixes applied
+- MAJOR ledger row COL-18 -> fixed (PARTIAL, JVM-only, Noop provider, no Settings toggle; test androidLedgerRowIsNotPlanned)
+- MINOR play source -> fixed (SOURCE_SETLIST as iOS). Opening Now Playing after Play not wired: no nav seam in History; noted in ledger
+- MINOR ANSWERED migration -> fixed (stored ENABLED => answered, one-time at startup; debug hook sets ANSWERED; test answeredMigration)
+- MINOR opt-in flash -> fixed (null initial, render nothing until known)
+- MINOR hardcoded Noop provider -> fixed (CollectionsGraph.listeningContextProvider, shared with service)
+- MINOR localized dates / 24h -> fixed (getBestDateTimePattern skeletons, is24HourFormat; injectable for tests)
+- MINOR tzOffset crash -> fixed (zoneFor range check; test corruptOffsetFallsBackToDeviceZone)
+- NIT tautological assertion -> fixed
+- NIT stale pocketKey -> fixed (cleared when it resolves to nothing); serviceAvailable stays a plain var (rejected: no observable-state change needed for correctness)
+Tests: 5075 -> 5079, 0 failures; assembleDebug OK.

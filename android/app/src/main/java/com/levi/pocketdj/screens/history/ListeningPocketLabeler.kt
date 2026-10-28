@@ -85,12 +85,27 @@ class ListeningPocketLabeler(
             return if (lo == hi) "$lo BPM" else "$lo–$hi BPM"
         }
 
+        /** The pocket's own offset, or null when absent/out of range (java rejects beyond +-18h; iOS falls back to current). */
+        internal fun zoneFor(tzOffsetMin: Int?): ZoneOffset? =
+            tzOffsetMin?.takeIf { kotlin.math.abs(it) <= 18 * 60 }?.let { runCatching { ZoneOffset.ofTotalSeconds(it * 60) }.getOrNull() }
+
+        /** Localized day pattern (iOS "EEEdMMM" template), e.g. "EEE, MMM d" in en_US. Injectable for pure tests. */
+        var dayPattern: (Locale, String) -> String = { loc, skel -> bestPattern(loc, skel) }
+        /** 24h clock preference; null = follow the locale. Set from the system setting by the app. */
+        var is24Hour: () -> Boolean? = { null }
+
+        private fun bestPattern(loc: Locale, skel: String): String =
+            runCatching { android.text.format.DateFormat.getBestDateTimePattern(loc, skel) }.getOrNull()
+                ?: if (skel == "EEEdMMM") "EEE, d MMM" else "d MMM"
+
         /** "Fri, 10 Oct · 7:40 AM" in the pocket's own offset (device zone when unknown). */
         fun whenText(ms: Double, tzOffsetMin: Int?, locale: Locale = Locale.getDefault(), deviceZone: ZoneId = ZoneId.systemDefault()): String {
-            val zone: ZoneId = tzOffsetMin?.let { ZoneOffset.ofTotalSeconds(it * 60) } ?: deviceZone
+            val zone: ZoneId = zoneFor(tzOffsetMin) ?: deviceZone
             val at = Instant.ofEpochMilli(ms.toLong()).atZone(zone)
-            val day = DateTimeFormatter.ofPattern("EEE, d MMM", locale).format(at)
-            val time = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale).format(at)
+            val day = DateTimeFormatter.ofPattern(dayPattern(locale, "EEEdMMM"), locale).format(at)
+            val h24 = is24Hour()
+            val time = if (h24 == null) DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withLocale(locale).format(at)
+            else DateTimeFormatter.ofPattern(if (h24) "HH:mm" else "h:mm a", locale).format(at)
             return "$day · $time"
         }
 
@@ -99,7 +114,7 @@ class ListeningPocketLabeler(
                      locale: Locale = Locale.getDefault(), zone: ZoneId = ZoneId.systemDefault()): String? {
             if (ms == null) return null
             val at = Instant.ofEpochMilli(ms.toLong()).atZone(zone)
-            val pattern = if ((nowMs - ms) / 1000.0 < 6.5 * 86_400) "EEE" else "d MMM"
+            val pattern = if ((nowMs - ms) / 1000.0 < 6.5 * 86_400) "EEE" else dayPattern(locale, "dMMM")
             return "last " + DateTimeFormatter.ofPattern(pattern, locale).format(at)
         }
 

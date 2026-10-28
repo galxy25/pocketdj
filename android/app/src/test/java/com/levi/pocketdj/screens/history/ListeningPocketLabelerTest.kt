@@ -56,7 +56,8 @@ class ListeningPocketLabelerTest {
     @Test fun earlierPlace() {
         val l = ListeningPocketLabeler(results, null)
         assertEquals("Earlier place", l.contextLabel(ListeningContextTag.place("nope")))
-        assertEquals("Earlier place", ListeningPocketLabeler(null, null).label(feat("trip", "t", "").copy(label = "")).ifEmpty { "Earlier place" })
+        // an empty feature label stays empty (iOS behaves the same)
+        assertEquals("", ListeningPocketLabeler(null, null).label(feat("genre", "t", "").copy(label = "")))
     }
 
     @Test fun collectionNamesLocalOnly() {
@@ -83,6 +84,42 @@ class ListeningPocketLabelerTest {
         assertEquals(listOf("118–125 BPM", "House", "Happy", "A"), chips)
         assertEquals("120 BPM", ListeningPocketLabeler.bpmText(bpm.copy(lo = 119.6, hi = 120.4)))
         assertEquals(listOf("House"), l.chips(listOf(feat("genre", "House")), mapOf("bpm" to bpm.copy(defining = false))))
+    }
+
+    @Test fun usLocalizedDatesAndClockPreference() {
+        val oldDay = ListeningPocketLabeler.dayPattern; val old24 = ListeningPocketLabeler.is24Hour
+        try {
+            ListeningPocketLabeler.dayPattern = { _, skel -> if (skel == "EEEdMMM") "EEE, MMM d" else "MMM d" }
+            val ms = java.time.Instant.parse("2026-10-10T14:40:00Z").toEpochMilli().toDouble()
+            assertTrue(ListeningPocketLabeler.whenText(ms, -420, Locale.US, ZoneId.of("UTC")).startsWith("Sat, Oct 10 · 7:40"))
+            assertEquals("last Oct 10", ListeningPocketLabeler.lastText(ms, ms + 10 * 86_400_000.0, Locale.US, ZoneId.of("UTC")))
+            ListeningPocketLabeler.is24Hour = { true }
+            assertEquals("Sat, Oct 10 · 07:40", ListeningPocketLabeler.whenText(ms, -420, Locale.US, ZoneId.of("UTC")))
+        } finally { ListeningPocketLabeler.dayPattern = oldDay; ListeningPocketLabeler.is24Hour = old24 }
+    }
+
+    @Test fun corruptOffsetFallsBackToDeviceZone() {
+        val ms = java.time.Instant.parse("2026-10-10T14:40:00Z").toEpochMilli().toDouble()
+        assertEquals(null, ListeningPocketLabeler.zoneFor(25200))
+        assertEquals(null, ListeningPocketLabeler.zoneFor(-1081))
+        val s = ListeningPocketLabeler.whenText(ms, 25200, Locale.US, ZoneId.of("UTC"))
+        assertTrue(s, s.contains("2:40"))
+    }
+
+    @Test fun answeredMigration() {
+        val ps = com.levi.pocketdj.data.pockets.PocketsSettings
+        assertTrue(ps.needsAnsweredMigration(answered = false, enabledStored = true))   // said "Not now" on COL-17
+        assertEquals(false, ps.needsAnsweredMigration(answered = false, enabledStored = false))  // never asked
+        assertEquals(false, ps.needsAnsweredMigration(answered = true, enabledStored = true))
+    }
+
+    @Test fun androidLedgerRowIsNotPlanned() {
+        var d: java.io.File? = java.io.File("").absoluteFile
+        var f: java.io.File? = null
+        while (d != null && f == null) { f = java.io.File(d, "docs/ARCHITECTURE-ANDROID.md").takeIf { it.exists() }; d = d.parentFile }
+        org.junit.Assume.assumeTrue(f != null)
+        val row = f!!.readLines().first { it.startsWith("| COL-18 ") }
+        assertTrue(row, "Planned" !in row && "PARTIAL" in row)
     }
 
     @Test fun whenTextUsesThePocketsOwnOffset() {

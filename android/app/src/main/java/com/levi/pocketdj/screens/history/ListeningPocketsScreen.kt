@@ -84,6 +84,7 @@ internal object PocketsTabGate {
 
 /** Builds the labeler for [results] from the live collections (names stay local). */
 internal fun pocketLabelerFor(graph: AppGraph, results: ListeningPocketsResults?): ListeningPocketLabeler {
+    ListeningPocketLabeler.is24Hour = { android.text.format.DateFormat.is24HourFormat(graph.appContext) }
     val catalog = graph.catalogRepository.state.value.catalog
     val names = ListeningPocketLabeler.collectionNames(
         results,
@@ -91,7 +92,7 @@ internal fun pocketLabelerFor(graph: AppGraph, results: ListeningPocketsResults?
         playlists = graph.collections.playlists.map { it.id to it.name },
         sources = catalog?.playlists.orEmpty().map { it.playlist.id to it.playlist.name },
     )
-    return ListeningPocketLabeler(results, com.levi.pocketdj.data.location.NoopListeningContextProvider, names)
+    return ListeningPocketLabeler(results, graph.collectionsGraph.listeningContextProvider, names)
 }
 
 /** History ▸ Pockets. */
@@ -103,11 +104,14 @@ internal fun ListeningPocketsScreen(onOpen: (key: String) -> Unit, modifier: Mod
     val service = graph.collectionsGraph.listeningPockets
     val recOn by graph.browseGraph.recEnabled.collectAsState()
     val pocketsOn by graph.settings.flow(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED)
-        .collectAsState(initial = false)
+        .collectAsState(initial = null)
     val results by service.results.collectAsState()
     val refreshing by service.isRefreshing.collectAsState()
     val scope = rememberCoroutineScope()
-    val gateOpen = PocketsTabGate.gateOpen(recOn, pocketsOn)
+    // Unknown until the settings flow emits: render nothing rather than flash the opt-in at users who have it on.
+    val pocketsKnown = pocketsOn
+    if (pocketsKnown == null) return
+    val gateOpen = PocketsTabGate.gateOpen(recOn, pocketsKnown)
 
     LaunchedEffect(gateOpen) { if (gateOpen) service.refreshIfStale() }
 

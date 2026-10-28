@@ -149,6 +149,9 @@ class AppSettingsStore(
 
     suspend fun <T> get(key: PrefKey<T>): T = flow(key).first()
 
+    /** True when [key] has ever been written (distinguishes "never asked" from a stored default). */
+    suspend fun <T> isSet(key: PrefKey<T>): Boolean = prefsFlow.first().contains(key.key)
+
     suspend fun <T> set(key: PrefKey<T>, value: T) {
         dataStore.edit { it[key.key] = value }
     }

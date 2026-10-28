@@ -188,6 +188,9 @@ fun HistoryScreen(
         val key = pocketKey!!
         val pocket = results?.pockets?.firstOrNull { PocketsTabGate.pocketKey(it.id) == key }
         val pattern = results?.patterns?.firstOrNull { PocketsTabGate.patternKey(it.id) == key }
+        LaunchedEffect(results, key) {
+            if (results != null && pocket == null && pattern == null) pocketKey = null
+        }
         if (pocket != null || pattern != null) {
             ListeningPocketDetailScreen(
                 pocket = pocket, pattern = pattern,

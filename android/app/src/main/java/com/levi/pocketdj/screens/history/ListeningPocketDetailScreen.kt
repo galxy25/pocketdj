@@ -144,9 +144,9 @@ internal fun ListeningPocketDetailScreen(
                         enabled = songIds.isNotEmpty(),
                         onClick = {
                             scope.launch {
-                                // History source token 'pocket' (iOS playNow + pocket origin).
+                                // iOS playNow(songIds:name:) passes no source, which historyContext resolves to .setlist; 'pocket' is for collection Pockets.
                                 runCatching {
-                                    graph.shellGraph.shellActions.playSongIds(songIds, title, source = PlayContext.SOURCE_POCKET)
+                                    graph.shellGraph.shellActions.playSongIds(songIds, title, source = PlayContext.SOURCE_SETLIST)
                                 }.onFailure { if (it is kotlinx.coroutines.CancellationException) throw it else playError = it.message ?: "Couldn't play" }
                             }
                         },
