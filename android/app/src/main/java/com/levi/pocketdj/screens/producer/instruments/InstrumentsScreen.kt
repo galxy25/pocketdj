@@ -57,8 +57,13 @@ fun InstrumentsScreen(graph: AppGraph, modifier: Modifier = Modifier) {
     var section by rememberSaveable { mutableStateOf(InstrumentsSection.Play.name) }
     val current = InstrumentsSection.valueOf(section)
     val ctx = LocalContext.current
+    var scoreTakeId by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) {
         InstrumentEngine.DEBUG_THREADS = (ctx.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    }
+    scoreTakeId?.let { id ->
+        ScoreScreen(graph, id, onBack = { scoreTakeId = null }, onNeedPacks = { scoreTakeId = null; section = InstrumentsSection.Packs.name }, modifier = modifier)
+        return
     }
     Column(modifier.fillMaxSize().testTag("instruments-screen")) {
         SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp)) {
@@ -72,7 +77,7 @@ fun InstrumentsScreen(graph: AppGraph, modifier: Modifier = Modifier) {
         }
         when (current) {
             InstrumentsSection.Play -> PlaySection(graph, onNeedPacks = { section = InstrumentsSection.Packs.name })
-            InstrumentsSection.Takes -> TakesScreen(graph, onNeedPacks = { section = InstrumentsSection.Packs.name })
+            InstrumentsSection.Takes -> TakesScreen(graph, onNeedPacks = { section = InstrumentsSection.Packs.name }, onOpenScore = { scoreTakeId = it })
             InstrumentsSection.Packs -> Column(Modifier.verticalScroll(rememberScrollState())) { PacksSection(graph) }
         }
     }
@@ -185,6 +190,7 @@ private fun PlaySection(graph: AppGraph, onNeedPacks: () -> Unit) {
                 TextButton(onClick = { engine.clearLive() }, modifier = Modifier.testTag("live-clear")) { Text("Clear") }
             }
         }
+        LiveStaff(graph, onMessage = { message = it })
         message?.let { Text(it, Modifier.testTag("instruments-message"), color = MaterialTheme.colorScheme.onSurfaceVariant) }
     }
 }

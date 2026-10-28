@@ -69,7 +69,7 @@ object TakesCopy {
 
 /** The Takes list: replay, rename, delete, folders, instrument switch, tempo rescale, "use as sample" (copies the audio). */
 @Composable
-fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = Modifier) {
+fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = Modifier, onOpenScore: (String) -> Unit = {}) {
     val studio = graph.studioGraph
     val store = studio.studioStore
     val engine = studio.instrumentEngine
@@ -144,6 +144,7 @@ fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = M
                 val isPlaying = es.isReplaying && playingId == t.id
                 TakeRow(
                     t, folders, isPlaying, busy = busyId == t.id,
+                    onScore = { onOpenScore(t.id) },
                     onPlay = { if (isPlaying) engine.stopReplay() else scope.launch { play(t) } },
                     onRename = { renaming = t },
                     onInstrument = { k -> engine.stopReplay(); store.setTakeInstrument(t.id, k) },
@@ -189,7 +190,7 @@ fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = M
 @Composable
 private fun TakeRow(
     t: StudioTake, folders: List<com.levi.pocketdj.studio.model.StudioFolder>, playing: Boolean, busy: Boolean,
-    onPlay: () -> Unit, onRename: () -> Unit, onInstrument: (InstrumentKey) -> Unit, onTempo: () -> Unit, onUseAsSample: () -> Unit,
+    onPlay: () -> Unit, onScore: () -> Unit, onRename: () -> Unit, onInstrument: (InstrumentKey) -> Unit, onTempo: () -> Unit, onUseAsSample: () -> Unit,
     onMove: (String?) -> Unit, onNewFolderForMove: () -> Unit, onDelete: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -207,6 +208,7 @@ private fun TakeRow(
             IconButton(onClick = { menu = true }, modifier = Modifier.testTag("take-menu-${t.id}")) { Icon(Icons.Filled.MoreVert, "Take actions") }
             if (addTo) AddToCollectionSheet(item = AddToItem.Song(t.id), onDismiss = { addTo = false })
             DropdownMenu(menu, { menu = false }) {
+                DropdownMenuItem(text = { Text("Open score") }, onClick = { menu = false; onScore() }, modifier = Modifier.testTag("take-score-${t.id}"))
                 DropdownMenuItem(text = { Text("Use as sample") }, enabled = !busy, onClick = { menu = false; onUseAsSample() }, modifier = Modifier.testTag("take-use-as-sample-${t.id}"))
                 DropdownMenuItem(text = { Text("Add to…") }, onClick = { menu = false; addTo = true })
                 DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onRename() })
