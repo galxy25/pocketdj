@@ -52,4 +52,28 @@ class WorkSchedulerPolicyTest {
         scheduler.ensureScheduled(listOf(PeriodicWorkSpec("pdj.nobody", 60)))
         assertTrue(calls.isEmpty())
     }
+
+    private class MemStorage(var json: String?) : com.levi.pocketdj.onboarding.OnboardingMarkerStorage {
+        override suspend fun read() = json
+        override suspend fun write(json: String) { this.json = json }
+    }
+
+    private fun onboardingStore(json: String?, had: Boolean) = com.levi.pocketdj.onboarding.OnboardingStore(
+        MemStorage(json), had,
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined + kotlinx.coroutines.Job()),
+    )
+
+    @Test fun ripReconcileSkipsFetchWhileOnboardingIncomplete() = runBlocking {
+        var fetched = 0
+        val fresh = onboardingStore(null, had = false) // flow shows
+        assertEquals(false, runRipReconcileGated(fresh) { fetched++ })
+        assertEquals(0, fetched)
+    }
+
+    @Test fun ripReconcileFetchesOnceOnboardingComplete() = runBlocking {
+        var fetched = 0
+        val done = onboardingStore("""{"version":1,"state":"completed"}""", had = true)
+        assertEquals(true, runRipReconcileGated(done) { fetched++ })
+        assertEquals(1, fetched)
+    }
 }

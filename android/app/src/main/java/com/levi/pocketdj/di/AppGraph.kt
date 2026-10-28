@@ -69,10 +69,9 @@ class AppGraph private constructor(context: Context) {
             if (changed || force) {
                 android.util.Log.i("PocketDJ", "[endpoints] ${if (changed) "changed" else "checked"} ${RemoteEndpoints.summary}")
             }
-            // A flipped backend: re-read the rips manifest from the new bucket. The rips
-            // manifest is part of the launch pipeline, so it waits for onboarding (SURF-3).
+            // A flipped backend: re-read the rips manifest from the new bucket (the repository's
+            // launchGate holds it until onboarding completes).
             if (changed) {
-                onboarding.waitUntilComplete()
                 runCatching { ripsRepository.refresh() }
             }
         }
@@ -173,7 +172,7 @@ class AppGraph private constructor(context: Context) {
         http = httpClient,
         json = json,
         scope = appScope,
-    )
+    ).also { it.launchGate = { onboarding.waitUntilComplete() } } // SURF-3 gate seam
 
     /** Shared rip-server config used by both the rip client and the AM dev-token
      *  client (specs/applemusic.md §5, §8) — the AM token IS minted by the rip

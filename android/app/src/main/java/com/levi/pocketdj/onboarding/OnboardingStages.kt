@@ -289,7 +289,14 @@ fun OnboardingSourcesStage(graph: AppGraph, store: OnboardingStore) {
         ) {
             finishing = true
             scope.launch {
-                graph.settings.applyOnboardingSources(vinyl, digital, streaming)
+                try {
+                    graph.settings.applyOnboardingSources(vinyl, digital, streaming)
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // Never strand the user on stage 3: keep the default sources and finish.
+                    android.util.Log.e("PocketDJ", "[onboarding] saving sources failed; finishing with defaults", e)
+                }
                 store.complete()
             }
         }

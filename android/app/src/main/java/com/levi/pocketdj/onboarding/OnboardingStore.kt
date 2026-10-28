@@ -6,6 +6,7 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -123,11 +124,15 @@ class OnboardingStore(
     private val lock = Any()
 
     // Marker writes are applied strictly in submission order.
-    private val writes = Channel<OnboardingMarker>(Channel.UNLIMITED)
+    private class Write(val marker: OnboardingMarker, val ack: CompletableDeferred<Unit>? = null)
+    private val writes = Channel<Write>(Channel.UNLIMITED)
 
     init {
         scope.launch {
-            for (marker in writes) runCatching { storage.write(OnboardingMarkerCodec.encode(marker, nowMs())) }
+            for (w in writes) {
+                runCatching { storage.write(OnboardingMarkerCodec.encode(w.marker, nowMs())) }
+                w.ack?.complete(Unit)
+            }
         }
         scope.launch { load() }
     }
@@ -146,12 +151,12 @@ class OnboardingStore(
         when (decision) {
             OnboardingDecision.Skip -> finishLoaded(complete = true)
             OnboardingDecision.SkipAndStamp -> {
-                writes.trySend(OnboardingMarker.Completed)
+                writes.trySend(Write(OnboardingMarker.Completed))
                 finishLoaded(complete = true)
             }
             is OnboardingDecision.Show -> {
                 // Stamp `started` the moment the flow first presents so a force-quit resumes HERE.
-                writes.trySend(OnboardingMarker.Started(decision.stage))
+                writes.trySend(Write(OnboardingMarker.Started(decision.stage)))
                 if (completion.isCompleted) completion = CompletableDeferred()
                 _state.value = State(loaded = true, complete = false, stage = decision.stage)
             }
@@ -182,7 +187,7 @@ class OnboardingStore(
             val next = OnboardingStage.fromRaw(s.stage.raw + 1)
             if (next != null) {
                 _state.value = s.copy(stage = next)
-                writes.trySend(OnboardingMarker.Started(next))
+                writes.trySend(Write(OnboardingMarker.Started(next)))
             } else {
                 completeLocked()
             }
@@ -196,7 +201,7 @@ class OnboardingStore(
             if (!s.loaded || s.complete) return
             val prev = OnboardingStage.fromRaw(s.stage.raw - 1) ?: return
             _state.value = s.copy(stage = prev)
-            writes.trySend(OnboardingMarker.Started(prev))
+            writes.trySend(Write(OnboardingMarker.Started(prev)))
         }
     }
 
@@ -209,7 +214,7 @@ class OnboardingStore(
         val s = _state.value
         if (!s.loaded || s.complete) return
         _state.value = s.copy(complete = true)
-        writes.trySend(OnboardingMarker.Completed)
+        writes.trySend(Write(OnboardingMarker.Completed))
         completion.complete(Unit)
         runCatching { onComplete?.invoke() }
     }
@@ -223,18 +228,33 @@ class OnboardingStore(
         }
     }
 
-    /** Mutating-intent veto (iOS R4): throws while the flow is incomplete. */
+    /** Suspend until the persisted marker has been read (loaded=true). */
+    suspend fun awaitLoaded() {
+        state.first { it.loaded }
+    }
+
+    /** Mutating-intent veto (iOS R4): throws while the flow is incomplete. Non-suspending: a
+     *  not-yet-loaded store vetoes. Cold-start callers (SURF-5 ShellActions) use [vetoIfIncompleteAwaitingLoad]. */
     fun vetoIfIncomplete() {
         if (!isComplete) throw OnboardingIncompleteException()
     }
 
+    /** Like [vetoIfIncomplete] but first waits for the marker load, so an onboarded user is never vetoed by a cold start. */
+    suspend fun vetoIfIncompleteAwaitingLoad() {
+        awaitLoaded()
+        vetoIfIncomplete()
+    }
+
     /**
-     * SET-1's Reset everything: write `pending` so the flow re-runs on the next launch even
-     * though Settings is re-persisted afterwards. Live state is untouched (presentation is
-     * launch-only).
+     * SET-1's Reset everything: write `pending` so the flow re-runs on the next launch. Suspends
+     * until the write has been applied, through the same serialized writer as every marker write.
+     * MUST run AFTER the settings wipe (the marker shares the settings file); live state is
+     * untouched (presentation is launch-only).
      */
-    fun forcePending() {
-        writes.trySend(OnboardingMarker.Pending)
+    suspend fun forcePending() {
+        val ack = CompletableDeferred<Unit>()
+        writes.trySend(Write(OnboardingMarker.Pending, ack))
+        ack.await()
     }
 
     companion object {

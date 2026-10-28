@@ -3,7 +3,9 @@ package com.levi.pocketdj.onboarding
 import com.levi.pocketdj.data.config.Endpoints
 import com.levi.pocketdj.data.settings.AppSettings
 import com.levi.pocketdj.data.settings.SourceConfig
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
@@ -192,7 +194,7 @@ class OnboardingStoreTest {
         st.vetoIfIncomplete()
     }
 
-    @Test fun forcePending_writesPendingWithoutChangingLiveState() {
+    @Test fun forcePending_writesPendingWithoutChangingLiveState() = runTest {
         val s = FakeStorage()
         val st = store(s, had = true) // completes silently
         assertTrue(st.isComplete)
@@ -203,6 +205,33 @@ class OnboardingStoreTest {
         val next = store(s, had = true)
         assertFalse(next.isComplete)
         assertEquals(OnboardingStage.Profile, next.state.value.stage)
+    }
+
+    @Test fun forcePending_suspendsUntilWritten() = runTest {
+        val s = FakeStorage("""{"version":1,"state":"completed"}""")
+        val st = store(s, had = true)
+        st.forcePending()
+        // Returned => already applied, so a following wipe-ordering decision is deterministic.
+        assertEquals(OnboardingMarker.Pending, marker(s))
+    }
+
+    @Test fun vetoAwaitingLoad_doesNotVetoOnboardedColdStart() = runTest {
+        val gate = CompletableDeferred<Unit>()
+        val s = object : OnboardingMarkerStorage {
+            override suspend fun read(): String { gate.await(); return """{"version":1,"state":"completed"}""" }
+            override suspend fun write(json: String) {}
+        }
+        val st = OnboardingStore(s, true, scope())
+        assertThrows(OnboardingIncompleteException::class.java) { st.vetoIfIncomplete() } // not loaded yet
+        val job = launch(Dispatchers.Default) { st.vetoIfIncompleteAwaitingLoad() }
+        gate.complete(Unit)
+        job.join() // no exception
+        assertTrue(st.isComplete)
+    }
+
+    @Test fun vetoAwaitingLoad_vetoesIncompleteAfterLoad() = runTest {
+        val st = store()
+        assertThrows(OnboardingIncompleteException::class.java) { runBlocking { st.vetoIfIncompleteAwaitingLoad() } }
     }
 
     @Test fun markPendingAfterReset_static() = runTest {
