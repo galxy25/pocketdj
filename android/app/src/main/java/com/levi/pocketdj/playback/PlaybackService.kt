@@ -8,7 +8,12 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
+import androidx.media3.session.LibraryResult
+import androidx.media3.session.MediaLibraryService
+import androidx.media3.session.MediaConstants
+import com.google.common.collect.ImmutableList
+import com.levi.pocketdj.auto.AutoLibraryCallback
+import com.levi.pocketdj.auto.AutoNode
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import com.levi.pocketdj.playback.sequencer.RepeatMode
@@ -19,8 +24,15 @@ import com.levi.pocketdj.playback.session.SessionSwitchboard
 import com.levi.pocketdj.playback.session.TransportLog
 import com.levi.pocketdj.playback.session.TransportOwner
 import androidx.media3.session.SessionCommand
+import androidx.media3.session.CommandButton
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
 import androidx.media3.session.SessionCommands
 import androidx.media3.session.SessionResult
+import androidx.media3.session.SessionError
 
 /**
  * The one audio owner (locked decision 4): Media3 ExoPlayer hosted in a
@@ -34,9 +46,61 @@ import androidx.media3.session.SessionResult
 /** Connection hint set by the in-app MediaController so its commands are not logged as remote `rc`. */
 const val INTERNAL_HINT = "pdj.internal"
 
-class PlaybackService : MediaSessionService() {
+class PlaybackService : MediaLibraryService() {
 
-    private var mediaSession: MediaSession? = null
+    private var mediaSession: MediaLibrarySession? = null
+    private var autoScope: kotlinx.coroutines.CoroutineScope? = null
+    /** Latest search only (one entry): a keystroke-per-query session must not accumulate results. */
+    @Volatile private var autoSearchLatest: Pair<String, List<AutoNode>>? = null
+
+    /** SURF-8: the Android Auto browse/selection logic, built on the first library request (never on a plain start). */
+    private val auto: AutoLibraryCallback by lazy {
+        val app = com.levi.pocketdj.di.AppGraph.get(applicationContext)
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate)
+        autoScope = scope
+        val data = com.levi.pocketdj.auto.AppAutoData(app)
+        val main = android.os.Handler(android.os.Looper.getMainLooper())
+        val cb = AutoLibraryCallback(
+            tree = com.levi.pocketdj.auto.AutoBrowseTree(data),
+            addTargets = com.levi.pocketdj.auto.AutoAddTargets(com.levi.pocketdj.auto.AppAutoAddSink(app.collections)),
+            player = com.levi.pocketdj.auto.AppAutoPlayer(app),
+            scope = scope,
+            toast = { msg -> main.post { android.widget.Toast.makeText(applicationContext, msg, android.widget.Toast.LENGTH_SHORT).show() } },
+            // Phone toasts never reach the head unit: failures also go out as a session error the host displays.
+            carError = { msg ->
+                main.post {
+                    mediaSession?.sendError(
+                        androidx.media3.session.SessionError(androidx.media3.session.SessionError.ERROR_UNKNOWN, msg),
+                    )
+                }
+            },
+            notifyChildrenChanged = { parent, count -> mediaSession?.notifyChildrenChanged(parent, count, null) },
+            recentTargets = {
+                app.collections.recentAddTargets.mapNotNull {
+                    val k = when (it.kind) {
+                        com.levi.pocketdj.data.collections.AddTarget.Kind.POCKET -> com.levi.pocketdj.auto.AutoTargetKind.POCKET
+                        com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST -> com.levi.pocketdj.auto.AutoTargetKind.PLAYLIST
+                    }
+                    k to it.id
+                }
+            },
+            // Cache-first, single-flight, idempotent: the same load the app runs on every cold start.
+            warmUp = { app.catalogRepository.loadIfNeeded() },
+            catalogReady = { data.catalogReady },
+        )
+        data.onLibraryChanged = { main.post { cb.notifyLibraryChanged() } }
+        scope.launch {
+            app.catalogRepository.state.first { it.catalog != null }
+            cb.onCatalogReady()
+            // New/renamed pockets & playlists, adds that change counts, catalog refreshes: keep open lists fresh.
+            kotlinx.coroutines.flow.combine(
+                app.collections.state.map { Triple(it.pockets, it.playlists, it.recentAddTargets.size) },
+                app.catalogRepository.state.map { it.catalog },
+            ) { a, b -> a to b }.drop(1).collect { cb.notifyLibraryChanged() }
+        }
+        cb
+    }
+    private fun autoScopeOrNull(): kotlinx.coroutines.CoroutineScope? { auto; return autoScope }
     private var forwardingPlayer: SequencerForwardingPlayer? = null
     private var exoOwner: ExoOwner? = null
     private var exoPlayer: ExoPlayer? = null
@@ -139,8 +203,15 @@ class PlaybackService : MediaSessionService() {
         RunTransportBus.clearInstantMetadata = { md -> forwarding.clearInstantMetadata(md) }
         board.onChange = { o -> mediaSession?.let { s -> val p = (o ?: exo).sessionPlayer; if (s.player !== p) s.player = p }; refreshCustomLayout() }
 
-        mediaSession = MediaSession.Builder(this, board.sessionPlayer(forwarding))
-            .setCallback(SessionCallback())
+        mediaSession = MediaLibrarySession.Builder(this, board.sessionPlayer(forwarding), SessionCallback())
+            .setCommandButtonsForMediaItems(
+                listOf(
+                    CommandButton.Builder(CommandButton.ICON_PLAYLIST_ADD)
+                        .setDisplayName(AutoLibraryCallback.ADD_TO_LABEL)
+                        .setSessionCommand(SessionCommand(AutoLibraryCallback.ACTION_ADD_TO, android.os.Bundle.EMPTY))
+                        .build(),
+                ),
+            )
             .apply { sessionActivity?.let(::setSessionActivity) }
             .build()
         // The service can start AFTER the sequencer already runs (cold start from a first play): the
@@ -149,7 +220,7 @@ class PlaybackService : MediaSessionService() {
         forwarding.syncGate()
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? =
         mediaSession
 
     /**
@@ -217,6 +288,9 @@ class PlaybackService : MediaSessionService() {
         exoPlayer = null
         exoOwner = null
         mediaSession = null
+        autoScope?.cancel()
+        autoScope = null
+        autoSearchLatest = null
         super.onDestroy()
     }
 
@@ -262,13 +336,14 @@ class PlaybackService : MediaSessionService() {
      * ClippingConfiguration gives seek-to-start and the end boundary in one
      * shot, so auto-advance fires at `startMs + durationMs`, not file end).
      */
-    private inner class SessionCallback : MediaSession.Callback {
+    private inner class SessionCallback : MediaLibrarySession.Callback {
         override fun onConnect(
             session: MediaSession,
             controller: MediaSession.ControllerInfo,
         ): MediaSession.ConnectionResult {
             val cmds = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
                 .add(FavoriteCommand.sessionCommand)
+                .add(SessionCommand(AutoLibraryCallback.ACTION_ADD_TO, android.os.Bundle.EMPTY))
                 .build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(cmds)
@@ -347,7 +422,98 @@ class PlaybackService : MediaSessionService() {
                 refreshCustomLayout()
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
+            if (customCommand.customAction == AutoLibraryCallback.ACTION_ADD_TO) {
+                val mediaId = args.getString(MediaConstants.EXTRA_KEY_MEDIA_ID)
+                val node = mediaId?.let(auto::addToChooserNode)
+                // Open the chooser on the host (Android Auto honours the browse-node extra); a tap on a target adds.
+                return Futures.immediateFuture(
+                    if (node != null) {
+                        SessionResult(
+                            SessionResult.RESULT_SUCCESS,
+                            android.os.Bundle().apply { putString(AutoLibraryCallback.KEY_RESULT_BROWSE_NODE, node) },
+                        )
+                    } else {
+                        SessionResult(SessionError(SessionError.ERROR_BAD_VALUE, "Add to… isn't available for that row"))
+                    },
+                )
+            }
             return Futures.immediateFuture(SessionResult(SessionResult.RESULT_ERROR_NOT_SUPPORTED))
+        }
+
+        // ---- SURF-8: Android Auto / MediaBrowser library ----
+
+        private fun items(nodes: List<AutoNode>): ImmutableList<MediaItem> =
+            ImmutableList.copyOf(nodes.map(AutoLibraryCallback::toMediaItem))
+
+        override fun onGetLibraryRoot(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+            // System-UI media resumption (Android 11+) binds at boot with isRecent: don't build the graph or
+            // warm the catalog for that; resumption is the onPlaybackResumption path.
+            if (params?.isRecent == true) {
+                return Futures.immediateFuture(LibraryResult.ofError(LibraryResult.RESULT_ERROR_NOT_SUPPORTED))
+            }
+            return Futures.immediateFuture(LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(auto.onConnect()), params))
+        }
+
+        override fun onGetItem(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            mediaId: String,
+        ): ListenableFuture<LibraryResult<MediaItem>> {
+            val n = auto.getItem(mediaId)
+            return Futures.immediateFuture(
+                if (n == null) LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE)
+                else LibraryResult.ofItem(AutoLibraryCallback.toMediaItem(n), null),
+            )
+        }
+
+        override fun onGetChildren(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            parentId: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            val nodes = auto.getChildren(parentId, page, pageSize)
+            return Futures.immediateFuture(
+                if (nodes == null) LibraryResult.ofError(LibraryResult.RESULT_ERROR_BAD_VALUE)
+                else LibraryResult.ofItemList(items(nodes), params),
+            )
+        }
+
+        override fun onSearch(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            query: String,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<Void>> {
+            // Scoring scans the whole catalog: off the main thread, then notify.
+            autoScopeOrNull()?.launch(kotlinx.coroutines.Dispatchers.Default) {
+                val found = auto.search(query)
+                autoSearchLatest = query to found
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    session.notifySearchResultChanged(browser, query, found.size, params)
+                }
+            }
+            return Futures.immediateFuture(LibraryResult.ofVoid())
+        }
+
+        override fun onGetSearchResult(
+            session: MediaLibrarySession,
+            browser: MediaSession.ControllerInfo,
+            query: String,
+            page: Int,
+            pageSize: Int,
+            params: LibraryParams?,
+        ): ListenableFuture<LibraryResult<ImmutableList<MediaItem>>> {
+            val all = autoSearchLatest?.takeIf { it.first == query }?.second ?: auto.search(query)
+            val from = (page.toLong() * pageSize).coerceAtMost(all.size.toLong()).toInt()
+            val window = if (pageSize == Int.MAX_VALUE) all else all.subList(from, minOf(all.size, from + pageSize))
+            return Futures.immediateFuture(LibraryResult.ofItemList(items(window), params))
         }
 
         /**
@@ -366,6 +532,16 @@ class PlaybackService : MediaSessionService() {
             startIndex: Int,
             startPositionMs: Long,
         ): ListenableFuture<MediaSession.MediaItemsWithStartPosition> {
+            // SURF-8: a row picked in the car carries one of our browse ids. The sequencer owns the start (the
+            // collection queue, history tagged), so run it and refuse the controller's own set — same contract as
+            // the voice-search path below (device-only: a refused set shows no queue change in the host).
+            mediaItems.getOrNull(startIndex.coerceAtLeast(0))?.mediaId?.let { id ->
+                if (com.levi.pocketdj.auto.AutoId.decode(id) != null && auto.select(id) != null) {
+                    return Futures.immediateFailedFuture(
+                        UnsupportedOperationException("auto selection handled by the shell; player untouched"),
+                    )
+                }
+            }
             val item = mediaItems.singleOrNull()
                 ?.takeIf { it.mediaId.isEmpty() || it.localConfiguration == null }
             val query = item?.requestMetadata?.searchQuery
