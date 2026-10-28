@@ -49,12 +49,20 @@ fun LinkSourceSheet(
     sources: List<SourcePlaylist>,
     onDismiss: () -> Unit,
     onPick: (SourcePlaylist) -> Unit,
+    pocketName: String? = null,
 ) {
     var query by remember { mutableStateOf("") }
     val filtered = remember(sources, query) { filterSourcePlaylists(sources, query) }
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(horizontal = 16.dp)) {
             Text("Link to a playlist", style = MaterialTheme.typography.titleMedium)
+            if (pocketName != null) {
+                Text(
+                    "Follow an Apple Music playlist with \u201c$pocketName\u201d.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
@@ -106,6 +114,8 @@ internal fun androidx.compose.foundation.layout.ColumnScope.SourceSyncMenuItems(
     onSyncNow: () -> Unit,
     onDirection: (CollectionSyncDirection) -> Unit,
     onLink: (() -> Unit)?,
+    prefix: String = "pocket",
+    linkedName: String? = null,
 ) {
     if (!hasSource) {
         if (onLink != null) {
@@ -113,14 +123,14 @@ internal fun androidx.compose.foundation.layout.ColumnScope.SourceSyncMenuItems(
             DropdownMenuItem(
                 text = { Text("Link to Apple Music playlist…") },
                 onClick = { dismiss(); onLink() },
-                modifier = Modifier.testTag("pocket-link-source"),
+                modifier = Modifier.testTag("$prefix-link-source"),
             )
         }
         return
     }
     HorizontalDivider()
     Text(
-        "Apple Music sync",
+        linkedName?.let { "Linked to \u201c$it\u201d" } ?: "Linked to source playlist",
         style = MaterialTheme.typography.labelMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
@@ -130,35 +140,36 @@ internal fun androidx.compose.foundation.layout.ColumnScope.SourceSyncMenuItems(
             text = { Text(d.label) },
             trailingIcon = { if (d == direction) Icon(Icons.Filled.Check, contentDescription = "Selected") },
             onClick = { onDirection(d) },
-            modifier = Modifier.testTag("am-sync-direction-${d.raw}"),
+            modifier = Modifier.testTag("$prefix-am-sync-direction-${d.raw}"),
         )
     }
     DropdownMenuItem(
         text = { Text("Sync with source") },
         trailingIcon = { if (syncEnabled) Icon(Icons.Filled.Check, contentDescription = "On") },
         onClick = { onToggle(!syncEnabled) },
-        modifier = Modifier.testTag("sync-toggle"),
+        modifier = Modifier.testTag("$prefix-sync-toggle"),
     )
     DropdownMenuItem(
         text = { Text("Sync from source now") },
         onClick = { dismiss(); onSyncNow() },
-        modifier = Modifier.testTag("sync-now"),
+        modifier = Modifier.testTag("$prefix-sync-now"),
     )
     if (onLink != null) {
         DropdownMenuItem(
             text = { Text("Re-link to Apple Music playlist…") },
             onClick = { dismiss(); onLink() },
+            modifier = Modifier.testTag("$prefix-relink-source"),
         )
     }
 }
 
 /** Result alert for "Sync from source now" / link confirmation (null = hidden). */
 @Composable
-internal fun SourceSyncMessageAlert(message: String?, onDismiss: () -> Unit) {
+internal fun SourceSyncMessageAlert(message: String?, title: String = "Sync from source", onDismiss: () -> Unit) {
     if (message == null) return
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Sync from source") },
+        title = { Text(title) },
         text = { Text(message) },
         confirmButton = { TextButton(onClick = onDismiss) { Text("OK") } },
     )

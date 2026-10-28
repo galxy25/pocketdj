@@ -84,9 +84,13 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 .map { it.catalog }
                 .distinctUntilChanged { a, b -> a === b }
                 .collect { catalog ->
-                    runCatching {
+                    try {
                         val on = app.settings.get(SourceSyncSettings.SYNC_CONVERTED_POCKETS)
                         SourceSyncSettings.autoPass(on, catalog, app.collections)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        runCatching { android.util.Log.w("PocketDJ", "[source-sync] auto pass failed: $e") }
                     }
                 }
         }

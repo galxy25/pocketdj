@@ -91,6 +91,7 @@ fun PocketDetailScreen(
     var addNoteOpen by remember { mutableStateOf(false) }
     var linkOpen by remember { mutableStateOf(false) }
     var syncMessage by remember { mutableStateOf<String?>(null) }
+    var syncIsLink by remember { mutableStateOf(false) }
     var editNote by remember { mutableStateOf<PocketNote?>(null) }
 
     Box(modifier = modifier.fillMaxSize()) {
@@ -173,6 +174,7 @@ fun PocketDetailScreen(
                             direction = pocket.amSyncDir,
                             onToggle = { store.setPocketSourceSyncEnabled(it, pocketId) },
                             onSyncNow = {
+                                syncIsLink = false
                                 syncMessage = if (store.syncPocketFromSourceNow(pocketId)) {
                                     "Pocket updated from its source."
                                 } else {
@@ -181,6 +183,8 @@ fun PocketDetailScreen(
                             },
                             onDirection = { store.setAMSyncDirectionForPocket(it, pocketId) },
                             onLink = if (linkable.isNotEmpty()) ({ linkOpen = true }) else null,
+                            prefix = "pocket",
+                            linkedName = store.sourcePlaylistForPocket(pocketId)?.playlist?.name,
                         )
                         DropdownMenuItem(
                             text = { Text("Delete pocket") },
@@ -463,14 +467,16 @@ fun PocketDetailScreen(
     }
 
     RemoveDuplicatesResultAlert(dedupeResult) { dedupeResult = null }
-    SourceSyncMessageAlert(syncMessage) { syncMessage = null }
+    SourceSyncMessageAlert(syncMessage, title = if (syncIsLink) "Linked" else "Sync from source") { syncMessage = null }
     if (linkOpen) {
         LinkSourceSheet(
+            pocketName = pocket?.name,
             sources = linkable,
             onDismiss = { linkOpen = false },
             onPick = { sp ->
                 linkOpen = false
                 store.linkPocketToSource(pocketId, sp)
+                syncIsLink = true
                 syncMessage = "Linked to \u201c${sp.playlist.name}\u201d. Its songs now follow that playlist."
             },
         )

@@ -223,6 +223,8 @@ fun PlaylistDetailScreen(
                                 },
                                 onDirection = { store.setAMSyncDirectionForPlaylist(it, playlistId) },
                                 onLink = null,
+                                prefix = "playlist",
+                                linkedName = store.sourcePlaylistForPlaylist(playlistId)?.playlist?.name,
                             )
                         }
                         DropdownMenuItem(
