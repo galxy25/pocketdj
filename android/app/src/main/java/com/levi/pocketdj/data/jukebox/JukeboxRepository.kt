@@ -468,9 +468,23 @@ class JukeboxRepository(
                 _state.update { it.copy(transientError = "“${song.name}” isn't playable anymore") }
                 return
             }
+            // Studio mic capture owns the audio path: nothing may start sounding into the take.
+            if (!com.levi.pocketdj.studio.engine.AudioFocusPolicy.mayStartPlayback()) {
+                _state.update { it.copy(transientError = "Recording in progress - request not queued") }
+                return
+            }
             val item = QueueItem(id = song.id, title = song.name, artist = song.artist, lengthMs = song.length)
+            val np = playback.nowPlaying.value
+            val foreign = if (!target.isRunning && np != null && np.songId.isNotEmpty()) {
+                ForeignPlayback(
+                    QueueItem(id = np.songId, title = np.title ?: np.songId, artist = np.artist, lengthMs = np.durationMs),
+                    runCatching { playback.currentPositionMs() }.getOrDefault(0L),
+                )
+            } else {
+                null
+            }
             // The sequencer is Main-confined; every queue mutation hops there.
-            withContext(Dispatchers.Main) { JukeboxPlacement.place(target, item, action) }
+            withContext(Dispatchers.Main) { JukeboxPlacement.place(target, item, action, foreign = foreign) }
             kick()
         } catch (error: CancellationException) {
             throw error
@@ -517,7 +531,15 @@ interface JukeboxQueue {
     fun insertRandom(item: QueueItem, slot: (IntRange) -> Int)
     /** Nothing running: start a one-item run tagged with [context]. */
     fun startRun(item: QueueItem, context: PlayContext)
+    /**
+     * Audio is sounding outside any sequencer run (album queue, browse single, AM, stream): fold it
+     * into a one-row run at [positionMs] so an insert lands after it instead of replacing it.
+     */
+    fun adoptForeign(current: QueueItem, positionMs: Long, context: PlayContext)
 }
+
+/** What is audible while the sequencer is idle. */
+data class ForeignPlayback(val item: QueueItem, val positionMs: Long)
 
 /** Production [JukeboxQueue]: every accepted request goes through the [SetlistSequencer]. */
 class SequencerJukeboxQueue(private val sequencer: SetlistSequencer) : JukeboxQueue {
@@ -528,6 +550,9 @@ class SequencerJukeboxQueue(private val sequencer: SetlistSequencer) : JukeboxQu
     override fun insertRandom(item: QueueItem, slot: (IntRange) -> Int) =
         sequencer.insertRandomInQueue(listOf(item), slot)
     override fun startRun(item: QueueItem, context: PlayContext) = sequencer.play(listOf(item), context = context)
+    override fun adoptForeign(current: QueueItem, positionMs: Long, context: PlayContext) {
+        sequencer.adoptForeign(current, positionMs, context)
+    }
 }
 
 /** Placement rules for an accepted request (§4.3, §5). */
@@ -535,23 +560,22 @@ object JukeboxPlacement {
     /** History context of a run the jukebox started. */
     val CONTEXT = PlayContext(source = "jukebox", contextName = "Jukebox")
 
-    /** The slot range a RANDOM insert draws from: right after the current row through the very end. */
-    fun randomSlots(currentIndex: Int, count: Int): IntRange {
-        val lo = (currentIndex + 1).coerceIn(0, count)
-        return lo..count
-    }
-
     fun place(
         queue: JukeboxQueue,
         item: QueueItem,
         action: JukeboxDecisionAction,
         slot: (IntRange) -> Int = { Random.nextInt(it.first, it.last + 1) },
+        foreign: ForeignPlayback? = null,
     ) {
         if (!action.isPlacement) return
         if (!queue.isRunning) {
-            // Nothing playing: the accepted request starts the music with a one-item queue.
-            queue.startRun(item, CONTEXT)
-            return
+            if (foreign == null) {
+                // Nothing playing: the accepted request starts the music with a one-item queue.
+                queue.startRun(item, CONTEXT)
+                return
+            }
+            // Something is sounding outside the sequencer: keep it, queue the request behind it.
+            queue.adoptForeign(foreign.item, foreign.positionMs, CONTEXT)
         }
         when (action) {
             JukeboxDecisionAction.NEXT -> queue.insertNext(item)

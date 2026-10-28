@@ -17,9 +17,11 @@ class JukeboxPlacementTest {
         override fun append(item: QueueItem) { calls += "end:${item.id}" }
         override fun insertRandom(item: QueueItem, slot: (IntRange) -> Int) {
             calls += "random:${item.id}"
-            // index=2, count=6 -> tail slots 3..6
-            slotRange = JukeboxPlacement.randomSlots(2, 6)
+            slotRange = 3..6
             calls += "slot:${slot(slotRange!!)}"
+        }
+        override fun adoptForeign(current: QueueItem, positionMs: Long, context: PlayContext) {
+            calls += "adopt:${current.id}@$positionMs"
         }
         override fun startRun(item: QueueItem, context: PlayContext) {
             calls += "start:${item.id}"; startedContext = context
@@ -42,15 +44,20 @@ class JukeboxPlacementTest {
 
     @Test fun randomDrawsFromTailRangeViaInjectedSlotFn() {
         val q = Fake(true)
-        JukeboxPlacement.place(q, item, JukeboxDecisionAction.RANDOM) { it.last }
+        JukeboxPlacement.place(q, item, JukeboxDecisionAction.RANDOM, slot = { it.last })
         assertEquals(listOf("random:s1", "slot:6"), q.calls)
         assertEquals(3..6, q.slotRange)
     }
 
-    @Test fun randomSlotsAreIndexPlusOneThroughCount() {
-        assertEquals(1..5, JukeboxPlacement.randomSlots(0, 5))
-        assertEquals(5..5, JukeboxPlacement.randomSlots(4, 5)) // last row playing: only the end
-        assertEquals(5..5, JukeboxPlacement.randomSlots(9, 5)) // stale cursor clamps
+    @Test fun foreignPlaybackIsAdoptedNotReplaced() {
+        for (action in listOf(JukeboxDecisionAction.NEXT, JukeboxDecisionAction.END, JukeboxDecisionAction.RANDOM)) {
+            val q = Fake(false)
+            val foreign = ForeignPlayback(QueueItem(id = "album1"), 4_000)
+            JukeboxPlacement.place(q, item, action, foreign = foreign)
+            assertTrue("no replacing start for $action", q.calls.none { it.startsWith("start:") })
+            assertEquals("adopt:album1@4000", q.calls.first())
+            assertTrue(q.calls.size >= 2)
+        }
     }
 
     @Test fun idleStartsOneItemRunTaggedJukebox() {

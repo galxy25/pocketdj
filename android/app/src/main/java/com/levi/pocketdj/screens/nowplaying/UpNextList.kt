@@ -8,6 +8,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.background
@@ -45,6 +48,7 @@ import com.levi.pocketdj.playback.sequencer.QueueItem
 import com.levi.pocketdj.playback.sequencer.SetlistSequencer
 
 private val ROW_HEIGHT = 56.dp
+private val LIST_MAX_HEIGHT = 520.dp
 
 /**
  * Up Next: the sequencer's upcoming tail, windowed to [QueueReorder.WINDOW] rows (offsets stay 1:1 with
@@ -78,8 +82,11 @@ fun UpNextList(
             if (onOpenOrigin != null) TextButton(onClick = onOpenOrigin, modifier = Modifier.testTag("np-open-origin")) { Text("Origin") }
             TextButton(onClick = onOpenSetlist, modifier = Modifier.testTag("np-open-setlist")) { Text("Open set list") }
         }
-        rows.forEachIndexed { offset, item ->
-            key(item.uid) {
+        // Lazy: only the visible rows are composed (a 200-row window of swipe boxes recomposing on every
+        // publish was visible jank). Bounded height so it nests inside the compact layout's page scroll.
+        LazyColumn(Modifier.fillMaxWidth().heightIn(max = LIST_MAX_HEIGHT)) {
+        itemsIndexed(rows, key = { _, it -> it.uid }) { offset, item ->
+            run {
                 var menu by remember { mutableStateOf(false) }
                 val dismiss = rememberSwipeToDismissBoxState(
                     confirmValueChange = { v ->
@@ -147,13 +154,14 @@ fun UpNextList(
                 }
             }
         }
-        if (upcoming.size > rows.size) {
+        if (upcoming.size > rows.size) item(key = "more") {
             Text(
                 "+ ${upcoming.size - rows.size} more",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 8.dp),
             )
+        }
         }
     }
 }

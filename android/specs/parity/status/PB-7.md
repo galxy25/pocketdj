@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # PB-7 status
 - [x] QueueReorder (pure: window 200, uid-resolved move, clamp, origin route, layout rule)
@@ -19,3 +19,15 @@ state: implemented
 
 ## Questions for Levi
 - None.
+
+## Review
+- MAJOR JukeboxPlacement idle test replaced a sounding album -> fixed: place() takes ForeignPlayback (nowPlaying set while sequencer idle) and adopts it into a one-row run (SetlistSequencer.adoptForeign, resumes at the live position) before inserting; only truly-idle starts a run. Tests: JukeboxPlacementTest.foreignPlaybackIsAdoptedNotReplaced, SequencerJukeboxQueueTest.foreignPlaybackIdleSequencer_isAdoptedAndRequestQueuesAfterIt
+- MINOR startRun skipped recording guard -> fixed: applyPlacement checks AudioFocusPolicy.mayStartPlayback() and surfaces "Recording in progress"
+- MINOR Open set list used playNow -> fixed: CollectionsStore.materializeNowPlayingSetlist (all rows, titles, repeats; no revision/source change); test added
+- MINOR add-search no-op when sequencer idle -> fixed: addRows adopts sounding audio or starts a run via playQueue
+- MINOR random-slot test vacuous -> fixed: randomSlots deleted; SequencerJukeboxQueueTest runs production queue on real SetlistSequencer, asserts range 2..4 and final position
+- MINOR Up Next eager column -> fixed: LazyColumn keyed by uid, height-bounded (520dp) so it nests in the compact page scroll
+- NIT played menu -> fixed: Play again next/last + "Nothing played yet" empty state
+- Suite: 2221 tests, 0 failures (was 2216); assembleDebug OK
+
+fixes applied

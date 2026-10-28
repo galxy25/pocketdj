@@ -1463,6 +1463,46 @@ class CollectionsStore(
         set
     }
 
+    /**
+     * "Open set list": upsert ONLY the reserved Now Playing setlist from the LIVE queue (every row
+     * kept, non-catalog rows with their own title/artist, per-row repeat preserved). Unlike
+     * [playNow] it never bumps the restart revision nor touches the source/origin.
+     */
+    fun materializeNowPlayingSetlist(
+        name: String,
+        queue: List<com.levi.pocketdj.playback.sequencer.QueueItem>,
+    ): Setlist = synchronized(lock) {
+        val merged = catalogProvider?.invoke()
+        val tracks = queue.map { q ->
+            val s = merged?.songsById?.get(q.id)
+            SetlistTrack(
+                songId = q.id,
+                artist = s?.artist ?: q.artist.orEmpty(),
+                name = s?.name ?: q.title,
+                bpm = s?.bpm,
+                camelot = s?.camelot,
+                lengthMs = s?.length ?: q.lengthMs,
+                source = TrackSource.EXPLICIT,
+                repeatCount = q.repeatCount?.let { CollectionMembership.storedRepeat(it) },
+            )
+        }
+        val set = Setlist(
+            id = NOW_PLAYING_SETLIST_ID,
+            playlistId = NOW_PLAYING_PLAYLIST_ID,
+            name = name,
+            seed = "now-playing",
+            generatedAt = now(),
+            totalMs = tracks.sumOf { it.shownMs },
+            tracks = tracks,
+        )
+        publish { s ->
+            val idx = s.setlists.indexOfFirst { it.id == NOW_PLAYING_SETLIST_ID }
+            s.copy(setlists = if (idx >= 0) s.setlists.replaceAt(idx, set) else s.setlists + set)
+        }
+        save()
+        set
+    }
+
     /** ▶ Play a playlist (literal resolved order) — stamps `lastPlayedAt` first. */
     fun playNowPlaylist(playlistId: String, shuffle: Boolean = false, random: Random = Random): Setlist? {
         markPlaylistPlayed(playlistId)

@@ -27,7 +27,9 @@ import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.screens.browse.MinimalSong
 import com.levi.pocketdj.screens.browse.SongDetailSheet
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
+import com.levi.pocketdj.playback.QueuePlan
 import com.levi.pocketdj.playback.sequencer.QueueItem
+import kotlinx.coroutines.launch
 import com.levi.pocketdj.shell.NavRequestBus
 import com.levi.pocketdj.shell.ShellRoute
 import kotlinx.coroutines.Dispatchers
@@ -88,19 +90,45 @@ fun NowPlayingScreen(modifier: Modifier = Modifier) {
         val inCatalog = catalogState.catalog?.songsById?.containsKey(item.id) == true
         detail = item.id to if (inCatalog) null else MinimalSong(item.title, item.artist.orEmpty(), item.lengthMs)
     }
+    /**
+     * Add rows next/last. Sequencer idle: fold whatever is sounding (album, browse single, AM) into a
+     * run first so the add lands behind it; nothing sounding: start a run with the rows.
+     */
+    fun addRows(items: List<QueueItem>, next: Boolean) {
+        if (items.isEmpty()) return
+        if (!sequencer.isRunning) {
+            val playing = np
+            if (playing != null && playing.songId.isNotEmpty()) {
+                scope.launch {
+                    val pos = runCatching { graph.playbackController.currentPositionMs() }.getOrDefault(0L)
+                    sequencer.adoptForeign(
+                        QueueItem(playing.songId, playing.title ?: playing.songId, playing.artist, playing.durationMs),
+                        pos, null,
+                    )
+                    if (next) sequencer.insertNextInQueue(items) else sequencer.appendToQueue(items)
+                }
+            } else {
+                scope.launch {
+                    graph.playbackController.playQueue(
+                        items.map { QueuePlan.QueueEntry(it.id, it.repeatCount, it.title, it.artist, it.lengthMs) },
+                    )
+                }
+            }
+            return
+        }
+        if (next) sequencer.insertNextInQueue(items) else sequencer.appendToQueue(items)
+    }
     fun openSetlist() {
         val sid = seq.sourceSetlistId
         if (!QueueReorder.needsMaterialize(sid) { collections.setlist(it) != null }) {
             NavRequestBus.post(ShellRoute.Setlist(sid!!))
         } else if (seq.queue.isNotEmpty()) {
-            // Re-materialize the reserved set from the LIVE queue, keeping the run's origin.
-            val origin = seq.capturedOrigin
-            collections.playNow(
-                songIds = seq.queue.map { it.id },
-                name = seq.capturedContext?.contextName ?: "Now Playing",
-                sourceToken = origin?.first,
-                originId = origin?.second,
-            )?.let { NavRequestBus.post(ShellRoute.Setlist(NOW_PLAYING_SETLIST_ID)) }
+            // Re-materialize the reserved set from the LIVE queue (all rows, repeats kept).
+            collections.materializeNowPlayingSetlist(
+                seq.capturedContext?.contextName ?: "Now Playing",
+                seq.queue,
+            )
+            NavRequestBus.post(ShellRoute.Setlist(NOW_PLAYING_SETLIST_ID))
         }
     }
     val originRoute = QueueReorder.originRoute(seq.capturedOrigin)
@@ -131,17 +159,17 @@ fun NowPlayingScreen(modifier: Modifier = Modifier) {
         NowPlayingSeams.dspSlot?.invoke()
     }
     val playedPane: @Composable () -> Unit = {
-        if (seq.played.isNotEmpty()) PlayedList(seq.played, sequencer, ::showDetail)
+        PlayedList(seq.played, sequencer, ::showDetail)
     }
     val upNextPane: @Composable () -> Unit = {
         if (searching) {
             val merged = catalogState.catalog
             NowPlayingSearchResults(
                 results = results,
-                onAddNextSong = { sequencer.insertNextInQueue(listOf(NowPlayingSearch.queueItem(it))) },
-                onAddEndSong = { sequencer.appendToQueue(listOf(NowPlayingSearch.queueItem(it))) },
-                onAddNextAlbum = { a -> merged?.let { sequencer.insertNextInQueue(NowPlayingSearch.queueItems(a, it)) } },
-                onAddEndAlbum = { a -> merged?.let { sequencer.appendToQueue(NowPlayingSearch.queueItems(a, it)) } },
+                onAddNextSong = { addRows(listOf(NowPlayingSearch.queueItem(it)), true) },
+                onAddEndSong = { addRows(listOf(NowPlayingSearch.queueItem(it)), false) },
+                onAddNextAlbum = { a -> merged?.let { addRows(NowPlayingSearch.queueItems(a, it), true) } },
+                onAddEndAlbum = { a -> merged?.let { addRows(NowPlayingSearch.queueItems(a, it), false) } },
             )
         } else if (seq.isRunning) {
             UpNextList(

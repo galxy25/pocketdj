@@ -46,6 +46,14 @@ fun PlayedList(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(vertical = 8.dp).testTag("np-played-header"),
         )
+        if (played.isEmpty()) {
+            Text(
+                "Nothing played yet",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 8.dp).testTag("np-played-empty"),
+            )
+        }
         played.asReversed().forEachIndexed { offset, item ->
             var menu by remember(item.uid) { mutableStateOf(false) }
             Row(
@@ -61,6 +69,8 @@ fun PlayedList(
                 IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "Row actions") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(text = { Text("Rewind to here") }, onClick = { menu = false; sequencer.jumpToPlayed(item.uid) })
+                    DropdownMenuItem(text = { Text("Play again next") }, onClick = { menu = false; sequencer.insertNextInQueue(listOf(item.freshInstance())) })
+                    DropdownMenuItem(text = { Text("Play again last") }, onClick = { menu = false; sequencer.appendToQueue(listOf(item.freshInstance())) })
                     DropdownMenuItem(text = { Text("Play now") }, onClick = { menu = false; sequencer.playNow(item.freshInstance()) })
                     DropdownMenuItem(text = { Text("Song detail") }, onClick = { menu = false; onSongDetail(item) })
                 }
