@@ -215,7 +215,18 @@ final class PlaybackCoordinator {
         let token = playToken
         lastErrorMessage = nil
         for provider in providers(for: song) {
-            guard token == playToken else { return }
+            // CANCELLED ⇒ stand down before the NEXT provider. A cancelled caller (the set's
+            // stall hop cancels the stalled row's start) makes the in-flight provider throw
+            // CancellationError — which reads as "this provider couldn't play" and used to fall
+            // through to the rip provider, whose prefetched presign has no await that could
+            // throw: it loaded the STALLED song over the on-device row the set had just hopped
+            // to (drive log 2026-10-28 03:01:34 "AM tryPlay FAILED … CancellationError" →
+            // "engine.load title=Honey" → "setlist ADOPT jump"). A local-file hop never calls
+            // `play`, so the token alone didn't catch it.
+            guard token == playToken, !Task.isCancelled else {
+                NPLog.trace("coordinator: play \(song.id) cancelled/superseded before \(provider.backend) — standing down")
+                return
+            }
             // Switching backends: stop the previously-active one so two engines don't both
             // play (e.g. Apple Music wins after a prior rip, or vice-versa).
             if let active = activeBackend, active != provider.backend {
@@ -225,6 +236,11 @@ final class PlaybackCoordinator {
             guard token == playToken else {
                 NPLog.trace("coordinator: play \(song.id) superseded — standing down (won=\(won))")
                 if !won, provider.backend == .ripServer { _ = ripProvider.takeLastError() }   // stale — never the newer play's
+                return
+            }
+            if !won, Task.isCancelled {
+                if provider.backend == .ripServer { _ = ripProvider.takeLastError() }   // the cancel, not a dead source
+                NPLog.trace("coordinator: play \(song.id) cancelled — standing down")
                 return
             }
             if won {
@@ -278,6 +294,12 @@ final class PlaybackCoordinator {
             lastErrorMessage = "Couldn’t play this track."
         }
     }
+
+    /// Invalidate any `play` still in flight (its next provider / its error write stand down).
+    /// The set calls this whenever it starts a row — including the burned / studio / profile
+    /// branches that never go through `play` and so would otherwise leave an older resolve
+    /// with nothing newer to be superseded by.
+    func supersedePendingPlay() { playToken &+= 1 }
 
     /// Convenience for the row ▶ given only (id, title, artist) — projects a minimal
     /// `IndexSong` and plays it. (The provider chain only needs id/name/artist + the

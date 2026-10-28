@@ -496,6 +496,14 @@ extension AppleMusicPlaybackProvider {
             // succeed just before a newer call's queue-swap, and claiming nowPlaying/monitor
             // here resurrected the OLDER skip target over the newer one (Go Gina, 2026-08-20).
             guard ticket == tryPlayGeneration else { return false }
+            // CANCELLED after play() was accepted (the set hopped to an on-device row while this
+            // resolve was in flight): no newer AM intent owns the queue (the ticket is still
+            // ours), so this stream would sound over the row the set actually moved to. Stop it.
+            if Task.isCancelled {
+                DiagLog.shared.log("playback", "am tryPlay cancelled after play — stopping song=\(song.id)")
+                stop()
+                return false
+            }
             // 3) Cue: `play()` has returned (playback started), so the position write
             //    sticks — a write before the queue item is ready would be ignored.
             if let atMs, atMs > 0 { seek(to: Double(atMs) / 1000) }
