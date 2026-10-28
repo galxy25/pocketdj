@@ -372,6 +372,136 @@ class StudioGraph(private val app: AppGraph) : FeatureModule {
         }
     }
 
+    // ---- STU-14: Demuxer core (lazy; a user who never opens the Demuxer pays nothing)
+
+    /** `filesDir/demux-cache/<key>.json` + `audio/` + `stems/<key>/` (same layout as the iOS Application Support folder). */
+    val demuxStore: com.levi.pocketdj.studio.demux.DemuxStore by lazy {
+        val http = app.httpClient
+        com.levi.pocketdj.studio.demux.DemuxStore(
+            cacheDir = File(app.appContext.filesDir, "demux-cache").also { it.mkdirs() },
+            fetch = { url, dest ->
+                kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    runCatching {
+                        http.newCall(okhttp3.Request.Builder().url(url).build()).execute().use { r ->
+                            if (!r.isSuccessful) return@use false
+                            r.body?.byteStream()?.use { input -> dest.outputStream().use { input.copyTo(it) } }
+                            dest.length() > 0
+                        }
+                    }.getOrDefault(false)
+                }
+            },
+        )
+    }
+
+    val demuxStemClient: com.levi.pocketdj.studio.demux.DemuxStemClient by lazy {
+        com.levi.pocketdj.studio.demux.DemuxStemClient(
+            http = app.httpClient,
+            configProvider = {
+                val cur = app.settings.current()
+                com.levi.pocketdj.data.rips.RipServerClient.Config(cur.ripServerUrl, cur.ripToken, app.settings.ensureInstallId())
+            },
+            ripsBase = { com.levi.pocketdj.data.config.Endpoints.RIPS_BASE },
+        )
+    }
+
+    private val demuxPlayer: com.levi.pocketdj.studio.demux.StemPlayer by lazy {
+        val focus = AudioFocusPolicy.FocusHandle(audioManager) {
+            app.appScope.launch(Dispatchers.Main) { if (demuxPlayer.isPlaying) demuxPlayer.togglePlayPause() }
+        }
+        val request = {
+            // One audible owner: park Now Playing and every Studio voice before the Demuxer sounds.
+            app.appScope.launch { runCatching { app.playbackController.pause() } }
+            if (engineLazy.isInitialized()) studioEngine.pauseSample()
+            if (loopLazy.isInitialized()) loopAudition.stop()
+            if (patternLazy.isInitialized()) patternEngine.stopPattern()
+            focus.requestPlayback()
+            Unit
+        }
+        com.levi.pocketdj.studio.demux.RoutingStemPlayer(
+            single = com.levi.pocketdj.studio.demux.SingleFileStemPlayer(request) { focus.abandon() },
+            multi = com.levi.pocketdj.studio.demux.VoiceGroupStemPlayer(
+                sinkFactory = { StudioOutputs.create(audioManager) },
+                openSource = { f -> runCatching { com.levi.pocketdj.audio.core.Mp3Decoder(f) as com.levi.pocketdj.audio.core.PcmSource }.getOrNull() },
+                scope = app.appScope, focus = request, focusRelease = { focus.abandon() },
+            ),
+            scope = app.appScope,
+        )
+    }
+
+    /** The Demuxer's selection/resolve/stems state machine (one per app; the screen is a pure renderer of it). */
+    val demuxSession: com.levi.pocketdj.studio.demux.DemuxSession by lazy {
+        com.levi.pocketdj.studio.demux.DemuxSession(
+            app.appScope, demuxStore, DemuxAppEnv(), demuxPlayer,
+            @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class) Dispatchers.Default.limitedParallelism(1),
+        )
+    }
+
+    private inner class DemuxAppEnv : com.levi.pocketdj.studio.demux.DemuxEnv {
+        private val burns get() = app.servicesGraph.burnStore
+
+        override fun songInfo(songId: String): com.levi.pocketdj.studio.demux.DemuxSongInfo? {
+            val song = app.catalogRepository.state.value.catalog?.songsById?.get(songId) ?: return null
+            val len = song.length?.takeIf { it > 0 }?.toInt() ?: app.ripsRepository.entry(songId)?.durationMs?.takeIf { it > 0 }?.toInt() ?: 1
+            return com.levi.pocketdj.studio.demux.DemuxSongInfo(song.name, song.artist, len)
+        }
+
+        override fun localSong(songId: String): com.levi.pocketdj.studio.demux.DemuxLocalSong? =
+            burns.localUrlPreferringCut(songId)?.let {
+                com.levi.pocketdj.studio.demux.DemuxLocalSong(it.file, it.isCut, burns.startMs(songId)?.toInt() ?: 0)
+            }
+
+        override fun inManifest(songId: String) = app.ripsRepository.entry(songId) != null
+
+        override suspend fun burn(songId: String, title: String, artist: String): Boolean =
+            runCatching { burns.burn(listOf(BurnSong(songId, title, artist))).burned > 0 }.getOrDefault(false)
+
+        override suspend fun carve(src: File, startMs: Int, endMs: Int, dest: File): Boolean =
+            runCatching { studioRender.carveTrackRegion(src.path, startMs, endMs, dest); dest.isFile }.getOrDefault(false)
+
+        override fun studioFile(id: String): File? = studioStore.localUrlForPlayback(id)?.ref?.file?.takeIf { it.isFile }
+
+        override suspend fun hasServer() = app.ripServerClient.isConfigured()
+        override fun songStemsBurned(songId: String) = burns.stemsBurned(songId)
+        override fun songIsStemmed(songId: String) = app.ripsRepository.entry(songId)?.isStemmed == true
+        override suspend fun burnSongStems(songId: String) = burns.burnStems(songId)
+        override fun songStemFiles(songId: String) = burns.localStemFiles(songId)
+
+        override suspend fun stemifySong(songId: String): Boolean {
+            val tracker = app.ripJobTracker
+            tracker.stemify(songId)
+            val deadline = System.currentTimeMillis() + 4L * 60 * 60 * 1000 // matches the tracker's stemDeadlineMs
+            while (System.currentTimeMillis() < deadline) {
+                if (songIsStemmed(songId)) return true
+                val phase = tracker.stemJobs.value[songId]?.phase
+                // READY is terminal (the tracker already refreshed the manifest): stemmed or not, stop polling.
+                if (phase == com.levi.pocketdj.data.stems.StemPhase.READY) return songIsStemmed(songId)
+                if (phase == com.levi.pocketdj.data.stems.StemPhase.ERROR || phase == com.levi.pocketdj.data.stems.StemPhase.INELIGIBLE) return false
+                if (phase == null && !tracker.isStemPolling(songId)) return songIsStemmed(songId)
+                kotlinx.coroutines.delay(1_500)
+            }
+            return songIsStemmed(songId)
+        }
+
+        override suspend fun stemifyCustom(id: String, file: File) = demuxStemClient.stemifyCustom(id, file)
+
+        override suspend fun peaks(file: File, durationMs: Int): FloatArray = kotlinx.coroutines.withContext(Dispatchers.Default) {
+            if (file.extension.lowercase() == "mp3") com.levi.pocketdj.screens.mix.WaveformExtractor.peaks(file, null, null, 600)
+            else runCatching {
+                // 8 kHz is plenty for a 600-bucket envelope and keeps a long file under ~16 MB of float PCM.
+                com.levi.pocketdj.audio.core.AudioDecoder.decode(file.path, 8_000)
+                    ?.let { com.levi.pocketdj.screens.producer.common.WaveformMath.peaks(it, 600) }
+            }.getOrNull() ?: FloatArray(0)
+        }
+
+        override fun fileLengthMs(file: File): Int {
+            val r = android.media.MediaMetadataRetriever()
+            return try {
+                r.setDataSource(file.path)
+                r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toIntOrNull()?.coerceAtLeast(1) ?: 1
+            } catch (_: Exception) { 1 } finally { runCatching { r.release() } }
+        }
+    }
+
     override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection> by lazy { listOf(studioStorageSection()) }
 
     // A user who never touched Studio must not build/reconcile/rewrite the doc on ON_STOP.
