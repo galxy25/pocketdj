@@ -63,7 +63,7 @@ private fun NavRow(
 }
 
 /** Stage 1's internal machine: the choice, then the link probe's outcome. */
-private enum class ProfilePhase { Choosing, Probing, LinkUnavailable, LinkFound, Naming }
+private enum class ProfilePhase { Choosing, EnterCode, Probing, LinkUnavailable, LinkFound, Naming }
 
 /** Stage 1 — profile: name + "Use on this device" / "Link a device" (probe stubbed until SVC-9). */
 @Composable
@@ -73,6 +73,24 @@ fun OnboardingProfileStage(graph: AppGraph, store: OnboardingStore) {
     var name by rememberSaveable { mutableStateOf("") }
     var foundName by rememberSaveable { mutableStateOf("") }
     var unavailableReason by rememberSaveable { mutableStateOf("") }
+    var linkCode by rememberSaveable { mutableStateOf("") }
+    var restoring by remember { mutableStateOf(false) }
+    val probe = graph.shellGraph.linkDeviceProbe.takeUnless { it === StubLinkDeviceProbe }
+        ?: graph.servicesGraph.linkProbe
+
+    fun runProbe(block: suspend () -> LinkProbeResult) {
+        phase = ProfilePhase.Probing
+        scope.launch {
+            when (val r = block()) {
+                is LinkProbeResult.Existing -> { foundName = r.name; phase = ProfilePhase.LinkFound }
+                LinkProbeResult.Fresh -> phase = ProfilePhase.Naming
+                is LinkProbeResult.Unavailable -> {
+                    unavailableReason = r.reason
+                    phase = ProfilePhase.LinkUnavailable
+                }
+            }
+        }
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
         when (phase) {
@@ -85,17 +103,8 @@ fun OnboardingProfileStage(graph: AppGraph, store: OnboardingStore) {
                     )
                     Button(
                         onClick = {
-                            phase = ProfilePhase.Probing
-                            scope.launch {
-                                when (val r = graph.shellGraph.linkDeviceProbe.probe()) {
-                                    is LinkProbeResult.Existing -> { foundName = r.name; phase = ProfilePhase.LinkFound }
-                                    LinkProbeResult.Fresh -> phase = ProfilePhase.Naming
-                                    is LinkProbeResult.Unavailable -> {
-                                        unavailableReason = r.reason
-                                        phase = ProfilePhase.LinkUnavailable
-                                    }
-                                }
-                            }
+                            if (probe is CodeLinkProbe) phase = ProfilePhase.EnterCode
+                            else runProbe { probe.probe() }
                         },
                         modifier = Modifier.testTag("onboarding-choice-link"),
                     ) { Text("Link a device") }
@@ -111,6 +120,25 @@ fun OnboardingProfileStage(graph: AppGraph, store: OnboardingStore) {
                         modifier = Modifier.testTag("onboarding-choice-device"),
                     ) { Text("Use on this device") }
                 }
+            }
+            ProfilePhase.EnterCode -> OnboardingCard {
+                Text("Enter your link code", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "On your other device open Settings \u25B8 Link a device and type the code shown there.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                OutlinedTextField(
+                    value = linkCode,
+                    onValueChange = { linkCode = it },
+                    label = { Text("Link code") },
+                    modifier = Modifier.fillMaxWidth().testTag("onboarding-link-code"),
+                )
+                Button(
+                    enabled = linkCode.isNotBlank() && probe is CodeLinkProbe,
+                    onClick = { runProbe { (probe as CodeLinkProbe).link(linkCode) } },
+                    modifier = Modifier.testTag("onboarding-link-submit"),
+                ) { Text("Link") }
+                TextButton(onClick = { phase = ProfilePhase.Choosing }) { Text("Back") }
             }
             ProfilePhase.Probing -> OnboardingCard {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -134,7 +162,22 @@ fun OnboardingProfileStage(graph: AppGraph, store: OnboardingStore) {
                     if (foundName.isEmpty()) "Welcome back" else "Welcome back, $foundName",
                     style = MaterialTheme.typography.titleMedium,
                 )
-                Text("A PocketDJ profile already exists. Restoring arrives with device linking.")
+                Text("Linked. Restore your playlists, pockets, and history to this device?")
+                if (probe is CodeLinkProbe) {
+                    Button(
+                        enabled = !restoring,
+                        onClick = {
+                            restoring = true
+                            scope.launch {
+                                val ok = probe.restore()
+                                restoring = false
+                                if (ok) store.advance()
+                                else { unavailableReason = "Couldn't restore right now. You can sync later from Settings."; phase = ProfilePhase.LinkUnavailable }
+                            }
+                        },
+                        modifier = Modifier.testTag("onboarding-link-restore"),
+                    ) { Text(if (restoring) "Restoring\u2026" else "Restore my stuff") }
+                }
                 TextButton(onClick = { phase = ProfilePhase.Naming }) { Text("Start fresh on this device") }
             }
             ProfilePhase.Naming -> {

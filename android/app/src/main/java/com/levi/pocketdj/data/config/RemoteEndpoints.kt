@@ -35,7 +35,10 @@ enum class EndpointKey(val wire: String) {
     REC_ENGINE_BASE("recEngineBase"),
     LISTENING_POCKETS_BASE("listeningPocketsBase"),
     DIAG_LOGS_BASE("diagLogsBase"),
-    SEARCH_CONFIG_URL("searchConfigURL");
+    SEARCH_CONFIG_URL("searchConfigURL"),
+
+    /** OPTIONAL, never derived: absent => profile sync is disabled (SVC-8/9). */
+    PROFILE_SYNC_BASE("profileSyncBase");
 
     companion object {
         val REQUIRED = listOf(CATALOG_BASE, RIPS_BASE, AM_PLAYLIST_SYNC_BASE, REC_ENGINE_BASE, DIAG_LOGS_BASE)
@@ -49,7 +52,11 @@ data class EndpointConfig(
     val catalogAliases: Set<String> = emptySet(),
     val catalogDevAliases: Set<String> = emptySet(),
 ) {
+    /** The optional profile-sync Lambda base; null (absent in the doc) => sync disabled, no network. */
+    val profileSyncBase: String? get() = endpoints[EndpointKey.PROFILE_SYNC_BASE]
+
     fun url(key: EndpointKey): String = endpoints[key] ?: when (key) {
+        EndpointKey.PROFILE_SYNC_BASE -> "" // optional with no default: callers use profileSyncBase
         EndpointKey.CATALOG_BASE_DEV -> url(EndpointKey.CATALOG_BASE)
         EndpointKey.LISTENING_POCKETS_BASE -> url(EndpointKey.REC_ENGINE_BASE)
         EndpointKey.SEARCH_CONFIG_URL -> url(EndpointKey.CATALOG_BASE) + "/search-config.json"
@@ -162,6 +169,9 @@ object RemoteEndpoints {
     val summary: String get() = "env=${current.env} source=${source.label} fetch=$lastOutcome"
 
     fun url(key: EndpointKey): String = current.url(key)
+
+    /** Optional profile-sync base from the live doc; null => sync disabled. */
+    val profileSyncBase: String? get() = current.profileSyncBase
 
     /** Logs bucket name (host label before `.s3.`), e.g. `pocketdj-logs-623170744161`. */
     val diagBucket: String
