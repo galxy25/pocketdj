@@ -221,3 +221,21 @@ Integrator additions: MixRecordingUi.kt + MixScreen/MixSessionsScreen wiring (MI
 No FATAL EXCEPTION / ANR from com.levi.pocketdj in logcat.
 
 Open: Q54-Q58.
+
+## Wave 14
+
+Merged: SVC-10, BRW-11, GM-8, STU-14, SURF-7, STU-9 (no conflicts). JVM: 3993 tests, 0 failures (wave-13 3681 moved by the six packages' new tests). assembleDebug green.
+
+Emulator (emulator-5554), screenshots in pocketdj-parity/_shots/wave14:
+- GM-8 PASS: Games > In the Pocket (stub opt-in) shows round with dots/numbered songs and "In the pocket!"; typed feedback updates the 12/2000 counter, Save -> "Saved", feedback persisted across force-stop + relaunch. Mic icon showed (emulator has an on-device recognizer); real dictation device-only.
+- STU-9 PASS: Record take on the piano, Save as take, Takes > Open score renders the staff, Edit > Select a note > Undo > Cancel, PDF/MIDI/Audio each open the share sheet with Take 3.pdf/.mid/.m4a.
+- STU-14 PASS (after fixes): SeedTone sample -> chord timeline (Am) -> chord chip opens detail sheet; catalog song with local stems (Harbor Lights) -> 253 chords, Stems switch, 4-stem synced playback, mute/solo reflected in the rows.
+- SURF-7 PASS (after fix): widget placed from the launcher picker; idle view; play/pause glyph flips with playback; after process kill a widget tap restarts the service and resumes. Medium/large sizes and the queued-heart path not driven (Q62).
+- SVC-10 PARTIAL: Settings > Import server token saved -> pocketdj-settings-credentials.json updated with the token. Two-device pull/blank-pull steps not runnable (sync backend unavailable in this build, single emulator); covered by 22 JVM tests.
+- BRW-11: n/a (data layer; REC-5 renders).
+
+Integration fixes (not covered by package tests): (1) Demuxer stem rows never recomposed on mute/solo (StemRow skipped; version now passed as a parameter). (2) Demuxer track picker saw an empty catalog until Browse had been opened (now calls loadIfNeeded). (3) SURF-7: widget play with an idle player started PlaybackService via startForegroundService and never called startForeground -> OS ANR/kill after 10 s; PlaybackService now promotes with a placeholder on Media3's notification id and drops it if nothing plays.
+
+No FATAL EXCEPTION in logcat after the fixes.
+
+Open: Q50-Q53, Q59-Q63.

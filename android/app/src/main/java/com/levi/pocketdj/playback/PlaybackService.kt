@@ -152,6 +152,47 @@ class PlaybackService : MediaSessionService() {
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? =
         mediaSession
 
+    /**
+     * A widget / Bluetooth media button starts this service with startForegroundService(). Media3 only
+     * promotes to the foreground once it has a notification to show, which an IDLE player (nothing queued,
+     * the widget's "play" refused) never produces -> the OS kills the app 10 s later ("did not then call
+     * startForeground()"). Promote with a placeholder on Media3's own notification id (so a real playback
+     * notification replaces it in place), then drop it again if nothing started playing.
+     */
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val result = super.onStartCommand(intent, flags, startId)
+        if (intent?.action == Intent.ACTION_MEDIA_BUTTON) {
+            runCatching {
+                val nm = getSystemService(android.app.NotificationManager::class.java)
+                if (nm.getNotificationChannel(BOOT_CHANNEL) == null) {
+                    nm.createNotificationChannel(
+                        android.app.NotificationChannel(BOOT_CHANNEL, "Playback starting", android.app.NotificationManager.IMPORTANCE_LOW),
+                    )
+                }
+                val n = androidx.core.app.NotificationCompat.Builder(this, BOOT_CHANNEL)
+                    .setSmallIcon(com.levi.pocketdj.R.drawable.ic_widget_play)
+                    .setContentTitle("PocketDJ")
+                    .setOngoing(true)
+                    .build()
+                startForeground(BOOT_NOTIFICATION_ID, n)
+            }
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                val player = mediaSession?.player
+                if (player == null || (!player.isPlaying && !player.playWhenReady)) {
+                    runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+                    stopSelf()
+                }
+            }, 3_000L)
+        }
+        return result
+    }
+
+    companion object {
+        private const val BOOT_CHANNEL = "pdj_playback_boot"
+        /** Media3's DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID. */
+        private const val BOOT_NOTIFICATION_ID = 1001
+    }
+
     override fun onTaskRemoved(rootIntent: Intent?) {
         val player = mediaSession?.player
         if (player == null || !player.playWhenReady || player.mediaItemCount == 0) {
