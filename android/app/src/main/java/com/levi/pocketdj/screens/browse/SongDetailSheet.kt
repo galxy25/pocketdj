@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -27,6 +28,8 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -41,6 +44,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.data.share.ShareText
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.ui.FavoriteToggle
 import com.levi.pocketdj.screens.collections.AddToCollectionSheet
@@ -75,6 +79,11 @@ fun SongDetailSheet(
     val song = catalog?.songsById?.get(songId)
     val album = song?.albumId?.let { catalog.albumsById[it] }
     val source = catalog?.sourceOfSong?.get(songId)
+    // Lyrics: fetch-once + disk cache, only when lyricsStatus == "found" (gate lives in the store).
+    var lyrics by remember(songId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(song) {
+        lyrics = song?.let { graph.browseGraph.lyricsStore.lyrics(it) }
+    }
     val canPlay = playability(songId, manifest, settings?.hasRipServer == true, song?.appleMusicId)
 
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -146,6 +155,13 @@ fun SongDetailSheet(
                     modifier = Modifier.testTag("song-add-to-collection"),
                 ) {
                     Icon(Icons.Filled.AddCircleOutline, contentDescription = "Add to collection")
+                }
+                Spacer(Modifier.width(4.dp))
+                FilledTonalIconButton(
+                    onClick = { ShareText.send(context, ShareText.forSong(song), song.name) },
+                    modifier = Modifier.testTag("song-share"),
+                ) {
+                    Icon(Icons.Filled.Share, contentDescription = "Share")
                 }
             }
 
@@ -223,6 +239,24 @@ fun SongDetailSheet(
                     sentiments.forEach { keyword ->
                         AssistChip(onClick = {}, label = { Text(keyword) }, enabled = false)
                     }
+                }
+            }
+
+            lyrics?.takeIf { it.isNotBlank() }?.let { text ->
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    "LYRICS",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(Modifier.height(6.dp))
+                SelectionContainer {
+                    Text(
+                        text,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.fillMaxWidth().testTag("song-lyrics"),
+                    )
                 }
             }
         }

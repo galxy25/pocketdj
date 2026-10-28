@@ -305,6 +305,13 @@ internal fun storageCategoryMeta(category: Category): StorageCategoryMeta = when
         clearBody = "Every recorded play is removed from this device. Your settings, " +
             "sources, and install identity are kept. This can't be undone.",
     )
+    Category.LYRICS -> StorageCategoryMeta(
+        title = "Lyrics cache",
+        description = "Song lyrics saved for offline reading. Re-fetched when a song opens.",
+        clearTitle = "Clear lyrics cache?",
+        clearBody = "Removes saved lyrics text from this device. Lyrics re-download the " +
+            "next time you open a song that has them. Nothing else changes.",
+    )
     Category.ACTIVITY -> StorageCategoryMeta(
         title = "Activity log",
         description = "The add/remove history behind the Activity tab. Your collections stay.",

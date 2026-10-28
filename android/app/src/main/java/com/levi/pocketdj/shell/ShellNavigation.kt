@@ -468,7 +468,10 @@ private fun ShellNavHost(
             route = ALBUM_ROUTE,
             arguments = listOf(navArgument("albumId") { type = NavType.StringType }),
         ) { entry ->
-            AlbumDetailScreen(albumId = entry.arguments?.getString("albumId").orEmpty())
+            AlbumDetailScreen(
+                albumId = entry.arguments?.getString("albumId").orEmpty(),
+                onOpenSetlist = { id, autoplay -> nav.navigate(setlistRoute(id, autoplay)) },
+            )
         }
         composable(
             route = ARTIST_ROUTE,

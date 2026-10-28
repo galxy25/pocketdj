@@ -34,6 +34,15 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
 
     val searchService: SearchService by lazy { SearchService(app.httpClient, searchConfig) }
 
+    /** On-demand lyrics (memory -> disk `filesDir/lyrics-cache` -> catalog CDN). */
+    val lyricsStore: com.levi.pocketdj.data.lyrics.LyricsStore by lazy {
+        com.levi.pocketdj.data.lyrics.LyricsStore(
+            cacheDir = java.io.File(app.appContext.filesDir, com.levi.pocketdj.data.lyrics.LyricsStore.DIR_NAME),
+            baseUrl = { com.levi.pocketdj.data.config.Endpoints.CATALOG_BASE },
+            fetch = com.levi.pocketdj.data.lyrics.LyricsStore.httpFetcher(app.httpClient),
+        )
+    }
+
     override val settingsSections: List<SettingsSection> by lazy {
         listOf(editionSection(), onlineSearchSection())
     }
