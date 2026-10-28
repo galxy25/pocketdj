@@ -239,3 +239,16 @@ Integration fixes (not covered by package tests): (1) Demuxer stem rows never re
 No FATAL EXCEPTION in logcat after the fixes.
 
 Open: Q50-Q53, Q59-Q63.
+
+## Wave 15
+Merged: SVC-13, GM-10, SURF-8, STU-12, BRW-12, MIX-15 (all clean merges, no conflicts). JVM suite 4167 tests, 0 failures (4011 baseline + 153 package tests + 3 integration tests); assembleDebug OK.
+
+Emulator results:
+- BRW-12 PASS (after fix): For You refresh crashed silently (ICU regex rejects the JVM-only `(?U)` flag in RecSoundAdmit.genreBucket, swallowed in appScope) so the tab never showed tiles. Fixed + regression test. Then: tiles New/In Da Zone/SeedDup/SeedRip, In Da Zone rows with Buried badges, Not for me removes the row (90 -> 89), Refresh updates the freshness bar, long-press tile -> Recommendations off -> notice + tile gone, Settings > For You lists SeedDup.
+- MIX-15 PASS: Sessions list with Current badge, detail with 220-action replay (plays/advances), take playback + stop, rename, long-press delete -> new Session 2 current.
+- STU-12 PASS (logcat/position, not audible): 2-lane arrangement plays, Mute/Solo -> MultitrackPlayer applyMix (anySolo flips), Master FX Drive enable, Loop on wraps position 2->1->0. Oboe latency / FX quality device-only.
+- GM-10 PASS: New Session (QR + "Your turn!"), pocketdj://mwf/<id> from a curl-hosted session -> Join sheet with theme preview -> Join -> leaderboard has both; suggest from app, leader accept via broker -> accepted + score 1, +1 -> 2; Download to My Collections created pocket "MwF - Wave15 Host" (1 added, 1 not in library); wifi off -> "Can't reach the server - showing the last known state" + last updated; End -> "Session over", score recorded in Games (Best 2).
+- SURF-8 PASS via real media3 MediaBrowser (DHU not possible: emulator Android Auto is a stub with no head-unit server; DHU installed but cannot connect). Found+fixed: onConnect granted DEFAULT_SESSION_COMMANDS so every browse call returned PERMISSION_DENIED (-4); now DEFAULT_SESSION_AND_LIBRARY_COMMANDS (+ guard test). Tree verified after cold start: Playlists (50) / Pockets, Play all / Shuffle all / songs, "Not available here" non-playable rows, art urls, "No songs" empty, search, selecting a song plays (state READY, isPlaying), Add-to chooser lists pockets then playlists. Debug action "Auto browse smoke" added to Debug screen.
+- SVC-13 PARTIAL: Settings > Reset all app state with typed RESET -> app relaunches into onboarding (Link a device / Just this device). Delete account + other-device "profile not found" not runnable (no linked profile or sync backend, Q54/Q66).
+Not reproduced once: after Download > Open, Games tab taps briefly ignored (seen once next to a wifi toggle; 2 clean repros fine).
+No FATAL EXCEPTION after fixes. Open: Q64-Q68.
