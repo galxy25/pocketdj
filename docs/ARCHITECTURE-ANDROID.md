@@ -381,7 +381,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
 | PB-1 — SetlistSequencer core: cursor queue, live edits, repeat/shuffle, per-row resolve ladder, … | 4 | Planned | Apple Music rows inside a run (full-track rung) need a signed-in arm6… |
-| PB-2 — Session transport + one-owner arbiter: SequencerForwardingPlayer, SessionSwitchboard (Tra… | 5 | Planned | Bluetooth/headset routes, AVRCP head units and the actual lock-screen… |
+| PB-2 — Session transport + one-owner arbiter: SequencerForwardingPlayer, SessionSwitchboard (Tra… | 5 | PARTIAL (review fixes applied; onPlaybackResumption/ResumptionSnapshot deferred to PB-4, device-only items pending) | Bluetooth/headset routes, AVRCP head units and the actual lock-screen… |
 | PB-3 — Zero dead air: rip-on-demand resolver in runs, runway, watchdogs, stall hop, cascade brea… | 6 | Planned | Real cellular dead zones; Apple Music lane behaviours |
 | PB-6 — Now Playing deck screen (gold record at beat-grid BPM, transport, notices) + mini bar upg… | 6 | Planned | — |
 | PB-5 — History outcomes: SkipTracker + additive PlayEvent fields + progress/advance-away events … | 7 | Planned | — |

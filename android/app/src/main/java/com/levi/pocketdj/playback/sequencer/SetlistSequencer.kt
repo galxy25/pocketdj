@@ -94,6 +94,15 @@ class SetlistSequencer(
     private var memberIds: Set<String>? = null
 
     val isRunning: Boolean get() = running
+
+    /** A row's resolve/load is in flight (a remote idle ▶ must not double-start it). */
+    val isStartPending: Boolean get() = playJob?.isActive == true
+
+    /** Running, not held, and no row has produced audio yet (cascade-halted / never-started deck). */
+    val currentNeverSounded: Boolean get() = running && !held && !startedAnyRow && playJob?.isActive != true
+
+    /** Fired after [restoreHeld] installed a held deck (PB-2: consumes a latched remote ▶). */
+    @Volatile var onHeldRestored: () -> Unit = {}
     val isHeldForResume: Boolean get() = held
 
     /** Cursor position (game runs read it before [appendRows]). */
@@ -524,6 +533,7 @@ class SetlistSequencer(
         held = true
         pendingResumeMs = resumeAtMs
         queueEdited()
+        onHeldRestored()
     }
 
     /** First explicit ▶ on a held deck: start the current row, mid-song when a position was saved. */
