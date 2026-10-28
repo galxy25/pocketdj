@@ -36,6 +36,9 @@ class RipsRepository(
     private val _manifest = MutableStateFlow<RipsManifest>(emptyMap())
     val manifest: StateFlow<RipsManifest> = _manifest.asStateFlow()
 
+    /** Launch gate (installed by AppGraph from onboarding): network refreshes wait for it. */
+    @Volatile var launchGate: suspend () -> Unit = {}
+
     private val manifestFile = File(cacheDir, "rips-manifest.json")
 
     init {
@@ -72,6 +75,7 @@ class RipsRepository(
      */
     suspend fun refresh(): RipsManifest =
         try {
+            launchGate()
             fetchManifest()
         } catch (error: Exception) {
             if (error is kotlinx.coroutines.CancellationException) throw error
@@ -86,6 +90,7 @@ class RipsRepository(
      */
     suspend fun refreshStrict(): RipsManifest =
         try {
+            launchGate()
             fetchManifest()
         } catch (error: Exception) {
             if (error is kotlinx.coroutines.CancellationException) throw error

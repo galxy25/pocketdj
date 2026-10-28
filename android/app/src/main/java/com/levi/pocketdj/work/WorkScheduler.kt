@@ -115,12 +115,26 @@ suspend fun runWorkBody(body: suspend () -> Unit): WorkOutcome =
         WorkOutcome.SUCCESS
     }
 
+/**
+ * Rip-reconcile body: no manifest fetch before onboarding completes (SURF-3). While the flow is
+ * incomplete the run is skipped as a success (the next period picks it up). Returns whether it ran.
+ */
+suspend fun runRipReconcileGated(onboarding: com.levi.pocketdj.onboarding.OnboardingStore, refresh: suspend () -> Unit): Boolean {
+    onboarding.awaitLoaded()
+    if (!onboarding.isComplete) return false
+    refresh()
+    return true
+}
+
 /** Test seam for the job bodies. */
 object WorkSeams {
     @Volatile var ripReconcile: suspend (Context) -> Unit = { ctx ->
-        // Strict: a failed fetch throws IOException so the worker returns retry().
-        AppGraph.get(ctx).ripsRepository.refreshStrict()
-        android.util.Log.i("PocketDJ", "[work] rip-reconcile refreshed manifest")
+        val graph = AppGraph.get(ctx)
+        runRipReconcileGated(graph.onboarding) {
+            // Strict: a failed fetch throws IOException so the worker returns retry().
+            graph.ripsRepository.refreshStrict()
+            android.util.Log.i("PocketDJ", "[work] rip-reconcile refreshed manifest")
+        }
     }
 
     @Volatile var storagePrune: suspend (Context) -> Unit = { ctx ->
