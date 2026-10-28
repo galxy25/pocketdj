@@ -45,6 +45,10 @@ import androidx.compose.ui.unit.dp
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.SetlistTrack
 import com.levi.pocketdj.data.collections.TrackSource
+import com.levi.pocketdj.ui.selection.SelectionBar
+import com.levi.pocketdj.ui.selection.SelectionScope
+import com.levi.pocketdj.ui.selection.SongTransfer
+import com.levi.pocketdj.ui.selection.selectableRow
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.playback.QueueOutcome
 import com.levi.pocketdj.screens.browse.Fmt
@@ -166,7 +170,28 @@ fun SetlistDetailScreen(
 
         val burnController = rememberCollectionBurnController(setlistId)
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        val rowSelection = remember { graph.collectionsGraph.rowSelection }
+        val selScope = "setlist:$setlistId"
+        // Tracks are keyed by POSITION (a set list may repeat a song); payload maps back to song ids.
+        fun selectableIds() = setlist.tracks.indices.filter {
+            setlist.tracks[it].isText != true && setlist.tracks[it].songId.isNotEmpty()
+        }.map { it.toString() }
+        SelectionScope(
+            selection = rowSelection,
+            scope = selScope,
+            pruneKey = setlist.tracks,
+            allIds = { selectableIds() },
+            payload = {
+                SongTransfer.make(
+                    rowSelection.orderedSelection(selectableIds()).map { setlist.tracks[it.toInt()].songId },
+                    catalog?.songsById.orEmpty(),
+                )
+            },
+        )
+
+        Column(Modifier.fillMaxSize()) {
+        SelectionBar(rowSelection, selScope, store)
+        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
             item(key = "burn-bar") {
                 CollectionBurnBar(burnController, songIds = { store.songIdsForSetlist(setlistId) }, noun = "set list")
             }
@@ -276,6 +301,8 @@ fun SetlistDetailScreen(
             setlist.tracks.forEachIndexed { index, track ->
                 item(key = "row-$index-${track.rowId}") {
                     SetlistTrackRow(
+                        selection = rowSelection,
+                        selectionScope = selScope,
                         rowNumber = index + 1,
                         track = track,
                         catalog = catalog,
@@ -301,6 +328,7 @@ fun SetlistDetailScreen(
                     )
                 }
             }
+        }
         }
 
         SnackbarHost(hostState = snackbar, modifier = Modifier.align(Alignment.BottomCenter))
@@ -370,6 +398,8 @@ fun SetlistDetailScreen(
  */
 @Composable
 private fun SetlistTrackRow(
+    selection: com.levi.pocketdj.ui.selection.RowSelection,
+    selectionScope: String,
     rowNumber: Int,
     track: SetlistTrack,
     catalog: com.levi.pocketdj.data.catalog.MergedCatalog?,
@@ -440,7 +470,7 @@ private fun SetlistTrackRow(
             camelot = track.camelot,
             lengthMs = track.lengthMs,
             dimmed = dimmed,
-            onClick = onTap,
+            modifier = Modifier.selectableRow(selection, (rowNumber - 1).toString(), selectionScope, onTap),
             favoriteSongId = song?.id, favoriteAppleMusicId = song?.appleMusicId,
             leading = {
                 Text(

@@ -3,6 +3,7 @@ package com.levi.pocketdj.screens.playlists
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,6 +42,10 @@ import com.levi.pocketdj.screens.collections.RemoveDuplicatesResultAlert
 import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.collections.PocketNote
 import com.levi.pocketdj.data.rips.PlayResolver
+import com.levi.pocketdj.ui.selection.SelectionBar
+import com.levi.pocketdj.ui.selection.SelectionScope
+import com.levi.pocketdj.ui.selection.SongTransfer
+import com.levi.pocketdj.ui.selection.selectableRow
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.screens.browse.SongDetailSheet
 
@@ -103,7 +108,22 @@ fun PocketDetailScreen(
 
         val burnController = rememberCollectionBurnController(pocketId)
 
-        LazyColumn(modifier = Modifier.fillMaxSize()) {
+        val rowSelection = remember { graph.collectionsGraph.rowSelection }
+        val selScope = "pocket:$pocketId"
+        fun selectableIds() = pocket.songIds.filter { catalog?.songsById?.containsKey(it) == true && !PlayResolver.isStudioId(it) }
+        SelectionScope(
+            selection = rowSelection,
+            scope = selScope,
+            pruneKey = pocket.songIds,
+            allIds = { selectableIds() },
+            payload = {
+                SongTransfer.make(rowSelection.orderedSelection(selectableIds()), catalog?.songsById.orEmpty())
+            },
+        )
+
+        Column(Modifier.fillMaxSize()) {
+        SelectionBar(rowSelection, selScope, store)
+        LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
             item(key = "burn-bar") {
                 CollectionBurnBar(burnController, songIds = { store.songIdsForPocket(pocketId) }, noun = "pocket")
             }
@@ -311,7 +331,7 @@ fun PocketDetailScreen(
                                 camelot = song.camelot,
                                 lengthMs = song.length,
                                 dimmed = !manifest.containsKey(songId),
-                                onClick = { detailSongId = songId },
+                                modifier = Modifier.selectableRow(rowSelection, songId, selScope) { detailSongId = songId },
                                 favoriteSongId = songId, favoriteAppleMusicId = song.appleMusicId,
                                 badges = {
                                     pocket.songRepeats[songId]?.takeIf { it > 1 }?.let {
@@ -368,6 +388,7 @@ fun PocketDetailScreen(
                     }
                 }
             }
+        }
         }
 
         SnackbarHost(hostState = snackbar, modifier = Modifier.align(Alignment.BottomCenter))

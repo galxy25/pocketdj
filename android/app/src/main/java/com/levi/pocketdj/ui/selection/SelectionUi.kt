@@ -123,19 +123,29 @@ fun Modifier.selectableRow(
     scope: String,
     onOpen: (() -> Unit)?,
 ): Modifier {
+    val openLatest by rememberUpdatedState(onOpen)
+    return this
+        .selectionDecor(selection, id, scope)
+        .combinedClickable(
+            onClick = { selectionTap(selection, id, scope) { openLatest?.invoke() } },
+            onLongClick = { selection.handleLongPress(id, scope) },
+        )
+}
+
+/** Tap routing for rows that own their own click handler: [open] runs unless select mode eats the tap. */
+fun selectionTap(selection: RowSelection, id: String, scope: String, open: () -> Unit) {
+    if (selection.handleTap(id, scope) == RowSelection.TapOutcome.NAVIGATE) open()
+}
+
+/** Visuals only: selected highlight + (while armed in [scope]) the check badge. */
+@Composable
+fun Modifier.selectionDecor(selection: RowSelection, id: String, scope: String): Modifier {
     val state by selection.state.collectAsState()
     val selected = state.isSelected(id, scope)
     val armed = state.isSelectMode(scope)
     val accent = MaterialTheme.colorScheme.primary
     val dim = MaterialTheme.colorScheme.onSurfaceVariant
-    val openLatest by rememberUpdatedState(onOpen)
     return this
-        .combinedClickable(
-            onClick = {
-                if (selection.handleTap(id, scope) == RowSelection.TapOutcome.NAVIGATE) openLatest?.invoke()
-            },
-            onLongClick = { selection.handleLongPress(id, scope) },
-        )
         .let { if (selected) it.background(accent.copy(alpha = 0.26f), RoundedCornerShape(6.dp)) else it }
         .drawWithContent {
             drawContent()
