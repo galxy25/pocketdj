@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # MIX-17 Slot modulation (LFO beat-locked + envelope follower) on the FX rack
 

@@ -45,6 +45,7 @@ class ModControllerTest {
             h.engine.play(A)
         }
         fun step(atSec: Double): Boolean { pos = atSec; nano += 16_000_000; return driver.block?.invoke() ?: false }
+        val dj by lazy { AutoDj(h.engine, FakeSeams()) }
         val live: Double get() = h.engine.params.inputs(A).slots[0]!!.strength
     }
 
@@ -193,6 +194,48 @@ class ModControllerTest {
         // the glide machine's own write path composes through the same provider
         val viaList = r.h.engine.slotParamList(A)[0]!!.strength
         assertEquals(r.live, viaList, 1e-12)
+    }
+
+    @Test fun autoDjGlideStepComposesWithTheWobble() {
+        val r = Rig()
+        r.startPlaying(mod = SlotMod(ModSource.LFO, ModRate.BAR, depth = 0.2))
+        r.step(1.0)                                      // wave 1 => +0.2
+        r.dj.glide.setSlot(0, true, 0.6, A)              // the real glide write path
+        assertEquals(0.8, r.live, 1e-9)                  // modulated(newBase), not the bare 0.6
+        assertEquals(0.6, r.h.engine.deckState(A).slots[0].strength, 1e-12)
+    }
+
+    @Test fun rateOneAndAHalfShortensTheWallCycleThroughTheTick() {
+        val r = Rig()
+        r.pos = null
+        r.startPlaying(mod = SlotMod(ModSource.LFO, ModRate.BAR, depth = 0.5, shape = ModShape.SINE))
+        r.h.engine.setRate(1.5, A)
+        assertEquals(1.5, r.h.engine.deckState(A).rate, 1e-9)
+        val seen = ArrayList<Double>()
+        // position constant at 0: the clock extrapolates 1.5 x wall, clamped to 0.15 s of wall per stamp
+        fun wall(ms: Long) { r.nano += ms * 1_000_000; r.driver.block?.invoke(); seen += r.live }
+        r.nano += 16_000_000; r.driver.block?.invoke()   // stamp
+        wall(100)                                        // 0.1 s wall -> 0.15 s source -> phase 0.075
+        val expected = FxParams.modulated(0.5, SlotMod(ModSource.LFO, ModRate.BAR, depth = 0.5, shape = ModShape.SINE), 0.075, 0.0)
+        assertEquals(expected, seen.last(), 1e-6)
+        // 1.5x faster than rate 1.0 would give (0.05)
+        val slow = FxParams.modulated(0.5, SlotMod(ModSource.LFO, ModRate.BAR, depth = 0.5, shape = ModShape.SINE), 0.05, 0.0)
+        assertTrue(Math.abs(expected - slow) > 1e-3)
+    }
+
+    @Test fun diagReportsStartRateLimitedAndSnapBack() {
+        val r = Rig()
+        val lines = ArrayList<String>()
+        r.mc.diag = { lines += it }
+        r.startPlaying(mod = SlotMod(ModSource.LFO, ModRate.BAR, depth = 0.5))
+        r.step(0.5)
+        assertEquals(1, lines.count { it.startsWith("mod A slot0 src=lfo") })
+        r.step(0.6); r.step(0.7)                         // < 500 ms of nanoClock: no new line
+        assertEquals(1, lines.size)
+        r.nano += 600_000_000; r.step(1.0)
+        assertEquals(2, lines.size)
+        r.h.engine.pause(A); r.step(1.0)
+        assertTrue(lines.last().contains("snap-back"))
     }
 
     @Test fun idleLfoDoesNotRepublishInsideTheDeadBand() {

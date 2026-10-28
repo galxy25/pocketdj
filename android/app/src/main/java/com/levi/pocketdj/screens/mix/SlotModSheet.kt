@@ -94,7 +94,11 @@ object SlotModSheetRules {
 fun SlotModSheet(engine: MixEngine, deck: Deck, index: Int, tag: String, onDismiss: () -> Unit) {
     val ui by engine.ui.collectAsState()
     val d = ui.deck(deck)
-    val slot = d.slots.getOrNull(index) ?: run { onDismiss(); return }
+    val slot = d.slots.getOrNull(index)
+    if (slot == null) {
+        androidx.compose.runtime.LaunchedEffect(Unit) { onDismiss() }
+        return
+    }
     val mod = slot.mod
     val track = d.loaded
     val set = { m: SlotMod -> engine.setSlotMod(m, index, deck) }

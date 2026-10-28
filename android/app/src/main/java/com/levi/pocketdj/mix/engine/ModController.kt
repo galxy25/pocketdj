@@ -93,6 +93,7 @@ class ModController(
     private val wasActive = BooleanArray(Deck.entries.size)
     private val lastPos = arrayOfNulls<Double>(Deck.entries.size)
     private val stamp = arrayOfNulls<Long>(Deck.entries.size)
+    private val lastDiagNanos = LongArray(Deck.entries.size)
     private var handle: AutoCloseable? = null
 
     /** Diagnostics for the emulator pass: one line per mod write burst (rate-limited by the caller's diag sink). */
@@ -148,12 +149,14 @@ class ModController(
                 if (wasActive[di]) {
                     // SNAP-BACK: land every node on the stored strengths exactly once.
                     wasActive[di] = false
+                    diag?.invoke("mod ${d.name} snap-back")
                     phases[di].fill(null); written[di].fill(-1.0)
                     engine.reapplySlots(d)
                 }
                 continue
             }
             anyLive = true
+            val starting = !wasActive[di]
             wasActive[di] = true
             val step = ModMath.clockPosition(
                 playhead(d), engine.position(d), lastPos[di], stamp[di], now, st.rate,
@@ -166,6 +169,11 @@ class ModController(
                 phases[di][i] = if (slot.mod.source == ModSource.LFO && track != null)
                     ModMath.lfoPhase(track, slot, step.seconds) else null
                 val eff = strengthFor(d, i, slot)
+                if (diag != null && (starting || now - lastDiagNanos[di] >= DIAG_INTERVAL_NANOS)) {
+                    lastDiagNanos[di] = now
+                    diag?.invoke("mod ${d.name} slot$i src=${slot.mod.source.name.lowercase()} " +
+                        "phase=${phases[di][i]?.let { "%.3f".format(it) } ?: "-"} base=${"%.3f".format(slot.strength)} eff=${"%.3f".format(eff)}")
+                }
                 if (kotlin.math.abs(eff - written[di][i]) >= ModMath.DEAD_BAND) {
                     written[di][i] = eff
                     dirty = true
@@ -177,5 +185,5 @@ class ModController(
         return true
     }
 
-    private companion object { const val SLOTS = 4 }
+    private companion object { const val SLOTS = 4; const val DIAG_INTERVAL_NANOS = 500_000_000L }
 }

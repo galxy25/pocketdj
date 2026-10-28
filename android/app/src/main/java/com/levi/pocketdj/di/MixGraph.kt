@@ -233,7 +233,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             deckExtras = extras
             modControllerInst = com.levi.pocketdj.mix.engine.ModController(
                 engine = it, driver = com.levi.pocketdj.mix.engine.CoroutineTickDriver(main), hydrator = extras.hydrator,
-            ).also { m -> m.install() }
+            ).also { m -> m.diag = { l -> com.levi.pocketdj.mix.service.MixDiag.log(l) }; m.install() }
             mixStreamLoader.addStemListener { id -> extras.stems.streamProgressed(id) }
             // MIX-10: streaming decks. Progress events (main thread) pump every deck streaming the song;
             // the loader never evicts a stream a deck is playing.
