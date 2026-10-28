@@ -70,6 +70,10 @@ object MixPlayerStateMap {
         b.addAll(
             Player.COMMAND_PLAY_PAUSE, Player.COMMAND_STOP, Player.COMMAND_GET_METADATA,
             Player.COMMAND_GET_CURRENT_MEDIA_ITEM, Player.COMMAND_GET_TIMELINE,
+            // SURF-9: the car's Mix rows (Pause/Skip/Stop/New Mix) arrive as setMediaItem(mix:... id) and Media3
+            // drops the call when the command is unavailable. The session callback (onSetMediaItems) consumes our
+            // ids and refuses the set, so the Mix player itself is never handed a foreign item.
+            Player.COMMAND_SET_MEDIA_ITEM, Player.COMMAND_PREPARE,
         )
         if (canSkip) {
             b.addAll(
@@ -213,6 +217,14 @@ class MixSessionPlayer(
         )
         return b.build()
     }
+
+    // The command is exposed only so a car browse pick (setMediaItem(<our id>) + prepare) is not dropped; the
+    // session callback consumes our ids. Anything that still reaches the player is a harmless no-op - the
+    // sequencer owns the queue, and SimpleBasePlayer's default would THROW (emulator-verified crash).
+    override fun handleSetMediaItems(mediaItems: List<androidx.media3.common.MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> =
+        Futures.immediateVoidFuture()
+
+    override fun handlePrepare(): ListenableFuture<*> = Futures.immediateVoidFuture()
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
         router.setPlayWhenReady(playWhenReady)

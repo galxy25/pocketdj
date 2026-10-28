@@ -541,6 +541,7 @@ class PlaybackService : MediaLibraryService() {
             // SURF-8: a row picked in the car carries one of our browse ids. The sequencer owns the start (the
             // collection queue, history tagged), so run it and refuse the controller's own set — same contract as
             // the voice-search path below (device-only: a refused set shows no queue change in the host).
+            android.util.Log.d("PocketDJ.autodbg", "onSetMediaItems ids=${mediaItems.map { it.mediaId }} start=$startIndex")
             mediaItems.getOrNull(startIndex.coerceAtLeast(0))?.mediaId?.let { id ->
                 if (com.levi.pocketdj.auto.AutoId.decode(id) != null && auto.select(id) != null) {
                     return Futures.immediateFailedFuture(

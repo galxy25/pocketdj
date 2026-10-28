@@ -274,7 +274,26 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         // The dispatcher (ShellGraph) parses/gates file links and calls the seam; claim it here.
         wireCatalogSource()
         runCatching { importSeam.install(app.shellGraph.deepLinkSeams) }
-        emptyList()
+        // DEBUG-only emulator hooks for the COL-9 sync step: `-e pdj.amSyncBase <url>` points the
+        // Lambda client at a local mock; `-e pdj.fakeMut <token>` stands in for an Apple Music sign-in.
+        listOf(com.levi.pocketdj.shell.DeepLinkHandler { intent ->
+            if (com.levi.pocketdj.BuildConfig.DEBUG) {
+                intent.getStringExtra("pdj.amSyncBase")?.let { b ->
+                    app.appScope.launch { runCatching { app.settings.set(AmSyncSettings.BASE_OVERRIDE, b) } }
+                }
+                intent.getStringExtra("pdj.fakeMut")?.let { t ->
+                    app.appScope.launch { runCatching { app.settings.setMusicUserToken(t) } }
+                }
+            }
+            if (com.levi.pocketdj.BuildConfig.DEBUG && intent.hasExtra("pdj.autoDump")) {
+                com.levi.pocketdj.auto.AutoBrowseDebug.run(
+                    app.appContext, app.appScope,
+                    picks = intent.getStringExtra("pdj.autoPick").orEmpty().split("|").filter { it.isNotBlank() },
+                    roots = listOf("Mix", "Jukebox"),
+                )
+            }
+            false // never consumes the intent
+        })
     }
 
     override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection> by lazy {

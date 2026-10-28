@@ -50,6 +50,10 @@ object AppleMusicAdapterStateMap {
             Player.COMMAND_GET_METADATA,
             Player.COMMAND_GET_CURRENT_MEDIA_ITEM,
             Player.COMMAND_GET_TIMELINE,
+            // A car browse pick is setMediaItem(<our id>); Media3 drops it when the command is unavailable
+            // (emulator-verified for the Mix player). onSetMediaItems consumes our ids and refuses the set.
+            Player.COMMAND_SET_MEDIA_ITEM,
+            Player.COMMAND_PREPARE,
         )
         if (seekable) b.add(Player.COMMAND_SEEK_IN_CURRENT_MEDIA_ITEM)
         if (canSkip) {
@@ -200,6 +204,14 @@ class AppleMusicPlayerAdapter(
         )
         return b.build()
     }
+
+    // The command is exposed only so a car browse pick (setMediaItem(<our id>) + prepare) is not dropped; the
+    // session callback consumes our ids. Anything that still reaches the player is a harmless no-op - the
+    // sequencer owns the queue, and SimpleBasePlayer's default would THROW (emulator-verified crash).
+    override fun handleSetMediaItems(mediaItems: List<androidx.media3.common.MediaItem>, startIndex: Int, startPositionMs: Long): ListenableFuture<*> =
+        Futures.immediateVoidFuture()
+
+    override fun handlePrepare(): ListenableFuture<*> = Futures.immediateVoidFuture()
 
     override fun handleSetPlayWhenReady(playWhenReady: Boolean): ListenableFuture<*> {
         if (playWhenReady) {

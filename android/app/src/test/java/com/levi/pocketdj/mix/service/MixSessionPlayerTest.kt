@@ -37,6 +37,13 @@ class MixSessionPlayerTest {
         assertFalse(m.commands.contains(Player.COMMAND_PLAY_PAUSE))
     }
 
+    @Test fun carBrowsePicksStayReachableWhileAMixPlays() {
+        // Android Auto delivers Mix rows as setMediaItem(mix:...); without SET_MEDIA_ITEM Media3 drops them.
+        val m = MixPlayerStateMap.model(card(), running = true, canSkip = true)
+        assertTrue(m.commands.contains(Player.COMMAND_SET_MEDIA_ITEM))
+        assertTrue(m.commands.contains(Player.COMMAND_PREPARE))
+    }
+
     @Test fun pausedDeckKeepsTheCardButNotPlayWhenReady() {
         val m = MixPlayerStateMap.model(card(), running = false, canSkip = false)
         assertEquals(Player.STATE_READY, m.playbackState)
