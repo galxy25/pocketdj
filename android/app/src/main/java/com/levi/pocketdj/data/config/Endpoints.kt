@@ -10,7 +10,7 @@ package com.levi.pocketdj.data.config
 object Endpoints {
     // Account-bound bases are read LIVE from [RemoteEndpoints] (docs/design/remote-endpoints.md)
     // at request time, so a blue ↔ green backend flip needs no release. Compiled-in defaults =
-    // today's blue values (EndpointConfig.COMPILED_IN).
+    // today's green values (EndpointConfig.COMPILED_IN).
     val CATALOG_BASE_PROD: String get() = RemoteEndpoints.url(EndpointKey.CATALOG_BASE)
     val CATALOG_BASE_DEV: String get() = RemoteEndpoints.url(EndpointKey.CATALOG_BASE_DEV)
 

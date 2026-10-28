@@ -65,6 +65,17 @@ class CatalogRepository(
      */
     private val lastGoodBySource = HashMap<String, IndexJson>()
 
+    /** Exact documents (by identity) behind the currently-published catalog. */
+    private var lastMergedInputs: List<IndexJson>? = null
+
+    /** Test seam: number of [MergedCatalog.merge] calls made. */
+    @Volatile
+    var mergeCount = 0
+        private set
+
+    private fun sameInputs(a: List<IndexJson>?, b: List<IndexJson>): Boolean =
+        a != null && a.size == b.size && a.indices.all { a[it] === b[it] }
+
     /** Seed from cache (once) then refresh — call at app launch. */
     fun loadIfNeeded() {
         if (!inFlight.compareAndSet(false, true)) return
@@ -118,9 +129,12 @@ class CatalogRepository(
             _state.update { it.copy(phase = Phase.Loading) }
             return
         }
+        val inputs = cached + syntheticDocuments()
         val merged = withContext(Dispatchers.Default) {
-            MergedCatalog.merge(cached + syntheticDocuments())
+            mergeCount++
+            MergedCatalog.merge(inputs)
         }
+        lastMergedInputs = inputs
         _state.update { it.copy(catalog = merged, phase = Phase.Ready, error = null) }
     }
 
@@ -131,7 +145,7 @@ class CatalogRepository(
             val loaded = ArrayList<IndexJson>(sources.size)
             var lastError: String? = null
             for (source in sources) {
-                runCatching { service.load(source.url) }
+                runCatching { service.load(source.url, lastGoodBySource[source.url]) }
                     .onSuccess {
                         lastGoodBySource[source.url] = it.index
                         loaded.add(it.index)
@@ -157,9 +171,17 @@ class CatalogRepository(
                 }
                 return
             }
-            val merged = withContext(Dispatchers.Default) {
-                MergedCatalog.merge(loaded + syntheticDocuments())
+            val inputs = loaded + syntheticDocuments()
+            if (_state.value.catalog != null && sameInputs(lastMergedInputs, inputs)) {
+                // Every source unchanged (304 / failure on seed): skip the derived rebuild.
+                _state.update { it.copy(phase = Phase.Ready, error = lastError) }
+                return
             }
+            val merged = withContext(Dispatchers.Default) {
+                mergeCount++
+                MergedCatalog.merge(inputs)
+            }
+            lastMergedInputs = inputs
             _state.update {
                 it.copy(catalog = merged, phase = Phase.Ready, error = lastError)
             }

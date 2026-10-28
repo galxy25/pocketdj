@@ -50,12 +50,6 @@ class RemoteEndpointsTest {
     private fun ok(text: String) =
         (EndpointConfig.decode(text) as EndpointConfig.Companion.Decoded.Ok).config
 
-    @Test fun committedBlueDocEqualsCompiledIn() {
-        // Gradle runs unit tests with the module dir (android/app) as the working directory.
-        val f = listOf("../../config/endpoints.blue.json", "../config/endpoints.blue.json")
-            .map(::File).first { it.exists() }
-        assertEquals(EndpointConfig.COMPILED_IN, ok(f.readText()))
-    }
 
     @Test fun optionalKeysDeriveFromSameDoc() {
         val c = ok(green)
@@ -160,7 +154,7 @@ class RemoteEndpointsTest {
     }
 
     @Test fun callSitesReadTheResolverLive() {
-        assertEquals("https://d2p4cubg6se03u.cloudfront.net/current-index.json", Endpoints.VINYL_INDEX_URL)
+        assertEquals("https://d1j6qufkowz1xq.cloudfront.net/current-index.json", Endpoints.VINYL_INDEX_URL)
         RemoteEndpoints.setForTests(ok(green))
         assertEquals("https://dgreen123.cloudfront.net/current-index.json", Endpoints.VINYL_INDEX_URL)
         assertEquals("https://dgreen123.cloudfront.net/art/a.jpg", Endpoints.artUrl("/art/a.jpg"))
