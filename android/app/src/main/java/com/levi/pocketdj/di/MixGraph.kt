@@ -9,6 +9,8 @@ import com.levi.pocketdj.data.burns.BurnStore
 import com.levi.pocketdj.data.store.VersionedJsonWriter
 import com.levi.pocketdj.diag.NPLog
 import com.levi.pocketdj.mix.engine.CoroutineTickDriver
+import com.levi.pocketdj.mix.engine.BurnStemProvider
+import com.levi.pocketdj.mix.engine.MixDeckExtras
 import com.levi.pocketdj.mix.engine.MixEngine
 import com.levi.pocketdj.mix.engine.MixSourceOpener
 import com.levi.pocketdj.mix.engine.MixTrackResolver
@@ -114,6 +116,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
      * (Mix screen / launch task) invokes [MixEngine.restorePersistedMixIfIdle] and
      * [MixEngine.materializePendingRestoreIfNeeded]; they are not auto-run here.
      */
+    @Volatile private var deckExtras: MixDeckExtras? = null
+
+    /** MIX-8: the stem / loop / beat-grid controllers (built with, and hooked into, [mixEngine]). */
+    val mixDeckExtras: MixDeckExtras get() { mixEngine; return checkNotNull(deckExtras) }
+
     val mixEngine: MixEngine by lazy {
         val audio = app.appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         MixEngine(
@@ -135,6 +142,18 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         ).also {
             it.recorder = mixSessions
             val main = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+            // MIX-8: stems + loop + beat-grid controllers, hooked into the engine.
+            val burns = app.servicesGraph.burnStore
+            val extras = MixDeckExtras(
+                engine = it,
+                provider = BurnStemProvider(burns, mixStreamLoader),
+                runner = VoiceRunner { v -> val p = VoicePump(v).start(); AutoCloseable { p.stopAndJoin() } },
+                scope = main,
+                localGrid = { id -> burns.localBeatGrid(id) },
+                downloadGrid = { id -> burns.burnBeatGrid(id) },
+            )
+            deckExtras = extras
+            mixStreamLoader.addStemListener { id -> extras.stems.streamProgressed(id) }
             it.loadOffload = { work, commit ->
                 main.launch {
                     val p = withContext(Dispatchers.IO) { work() }

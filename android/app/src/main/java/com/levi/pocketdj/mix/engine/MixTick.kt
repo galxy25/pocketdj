@@ -90,10 +90,12 @@ internal class MixTick(private val e: MixEngine, private val driver: TickDriver)
             var p = e.position(d) + dt * st.rate
             if (p >= loop.second) p = loop.first + (p - loop.first) % (loop.second - loop.first)
             e.setPosition(d, p)
+            e.onDeckTick?.invoke(d, p)
             return
         }
         val pos = minOf(e.position(d) + dt * st.rate, dur)   // source advances at rate x wall time
         e.setPosition(d, pos)
+        e.onDeckTick?.invoke(d, pos)
         val autoRunning = e.autoMixing && e.autoDj?.isPaused != true
         if (pos >= dur && !autoRunning) {
             // A SUSPENDED machine never transitions, so a deck reaching its end retires like a
