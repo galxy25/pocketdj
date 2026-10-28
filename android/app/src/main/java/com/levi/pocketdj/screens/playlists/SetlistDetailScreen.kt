@@ -113,8 +113,8 @@ fun SetlistDetailScreen(
         if (setlistId != NOW_PLAYING_SETLIST_ID) {
             store.playlist(sl.playlistId)?.let { store.markPlaylistPlayed(it.id) }
         }
-        val ctx = store.historyContext(setlistId)
-        when (val outcome = graph.playbackController.playSetlist(sl, ctx)) {
+        // The sequencer captures the History context + origin ONCE from the setlist id.
+        when (val outcome = graph.playbackController.playSetlist(sl)) {
             is QueueOutcome.Started -> {
                 lastSkippedSummary = if (outcome.skippedEntryCount == 0) {
                     null
@@ -126,6 +126,17 @@ fun SetlistDetailScreen(
             is QueueOutcome.NothingPlayable ->
                 snackbar.showSnackbar("None of these tracks are playable on this device yet")
             is QueueOutcome.Failed -> snackbar.showSnackbar(outcome.message)
+        }
+    }
+
+    // A run of THIS set that ended having started nothing (every row unplayable / failed) raises a
+    // one-shot notice on the sequencer; surface it as the old "not playable" snackbar and ack it.
+    val seqState by graph.playbackController.sequencer.state.collectAsState()
+    LaunchedEffect(seqState.playbackNotice, seqState.deviceUnplayableSourceId) {
+        val notice = seqState.playbackNotice
+        if (notice != null && seqState.deviceUnplayableSourceId == setlistId) {
+            snackbar.showSnackbar(notice)
+            graph.playbackController.sequencer.clearDeviceUnplayable()
         }
     }
 

@@ -4,6 +4,7 @@ import android.app.PendingIntent
 import android.content.Intent
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
@@ -58,8 +59,13 @@ class PlaybackService : MediaSessionService() {
                 ) {
                     return
                 }
-                lastPlayEventSongId = songId
                 val extras = mediaItem.requestMetadata.extras
+                // A raw stream (jukebox Tune-In) is not a song: never a History row.
+                if (extras?.getBoolean(PlaybackContract.EXTRA_IS_STREAM, false) == true) {
+                    lastPlayEventSongId = null
+                    return
+                }
+                lastPlayEventSongId = songId
                 PlayEventBus.emit(
                     PlayStarted(
                         songId = songId,
@@ -70,8 +76,10 @@ class PlaybackService : MediaSessionService() {
                                 ?: PlayContext.SOURCE_BROWSER,
                             contextId = extras?.getString(PlaybackContract.EXTRA_CONTEXT_ID),
                             contextName = extras?.getString(PlaybackContract.EXTRA_CONTEXT_NAME),
+                            runTag = extras?.getString(PlaybackContract.EXTRA_RUN_TAG),
                         ),
                         atMs = System.currentTimeMillis(),
+                        originCollectionId = extras?.getString(PlaybackContract.EXTRA_ORIGIN_COLLECTION_ID),
                     ),
                 )
             }
@@ -86,7 +94,7 @@ class PlaybackService : MediaSessionService() {
             )
         }
 
-        mediaSession = MediaSession.Builder(this, player)
+        mediaSession = MediaSession.Builder(this, RunAwarePlayer(player))
             .setCallback(SessionCallback())
             .apply { sessionActivity?.let(::setSessionActivity) }
             .build()
@@ -109,6 +117,47 @@ class PlaybackService : MediaSessionService() {
         }
         mediaSession = null
         super.onDestroy()
+    }
+
+    /**
+     * Interim (until PB-2's SequencerForwardingPlayer): ExoPlayer holds ONE item during a sequencer
+     * run, so system next/previous (notification, lock screen, headset) would be unavailable. While a
+     * run is active, advertise them and route them to the sequencer through [RunTransportBus].
+     */
+    private class RunAwarePlayer(player: Player) : ForwardingPlayer(player) {
+        private fun active() = RunTransportBus.handler?.isRunActive == true
+
+        override fun getAvailableCommands(): Player.Commands {
+            val base = super.getAvailableCommands()
+            if (!active()) return base
+            return base.buildUpon()
+                .addAll(
+                    Player.COMMAND_SEEK_TO_NEXT,
+                    Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+                    Player.COMMAND_SEEK_TO_PREVIOUS,
+                    Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+                )
+                .build()
+        }
+
+        override fun isCommandAvailable(command: Int): Boolean = availableCommands.contains(command)
+
+        override fun hasNextMediaItem(): Boolean = active() || super.hasNextMediaItem()
+
+        override fun seekToNext() = routeNext { super.seekToNext() }
+        override fun seekToNextMediaItem() = routeNext { super.seekToNextMediaItem() }
+        override fun seekToPrevious() = routePrevious { super.seekToPrevious() }
+        override fun seekToPreviousMediaItem() = routePrevious { super.seekToPreviousMediaItem() }
+
+        private inline fun routeNext(fallback: () -> Unit) {
+            val h = RunTransportBus.handler
+            if (h != null && h.isRunActive) h.next() else fallback()
+        }
+
+        private inline fun routePrevious(fallback: () -> Unit) {
+            val h = RunTransportBus.handler
+            if (h != null && h.isRunActive) h.previous() else fallback()
+        }
     }
 
     /**

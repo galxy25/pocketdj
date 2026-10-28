@@ -241,6 +241,9 @@ class AppGraph private constructor(context: Context) {
         ripTracker = ripJobTracker,
     )
 
+    // PB-1: connect the sequencer's history-context / origin / outcome seams (additive).
+    init { playbackGraph.wire() }
+
     /**
      * Settings ▸ Storage measurement + clears (specs/storage.md §2). Clears are
      * wired to the REAL stores/caches and never touch settings/installId. Lazy —

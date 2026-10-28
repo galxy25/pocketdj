@@ -18,6 +18,8 @@ data class PlayContext(
     val source: String,
     val contextId: String? = null,
     val contextName: String? = null,
+    /** Game-run tag stamped on rows appended with `appendRows(runTag)`; null for ordinary plays. */
+    val runTag: String? = null,
 ) {
     companion object {
         const val SOURCE_BROWSER = "browser"
@@ -68,6 +70,11 @@ data class PlayStarted(
     val context: PlayContext,
     /** Epoch ms. */
     val atMs: Long,
+    /**
+     * The navigable origin collection (playlist/pocket id) of a `set_now_playing` run; set by the
+     * sequencer so History rows can attribute the play to the collection it came from.
+     */
+    val originCollectionId: String? = null,
 )
 
 /**
