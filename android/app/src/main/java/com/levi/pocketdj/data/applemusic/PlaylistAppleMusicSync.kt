@@ -185,7 +185,9 @@ class PlaylistAppleMusicSync(
             pullHalf(host, changes)
             finish(changes, errors)
         } catch (e: CancellationException) {
-            throw e // run stays not-completed => "Interrupted sync", resumable
+            // run stays not-completed => "Interrupted sync", resumable; show it as such, not a spinner
+            _ui.update { u -> u.copy(steps = u.steps.map { if (it.state == AmSyncStep.State.RUNNING) it.copy(state = AmSyncStep.State.INTERRUPTED) else it }) }
+            throw e
         } catch (e: Exception) {
             val msg = e.message ?: e.toString()
             failStep(msg)

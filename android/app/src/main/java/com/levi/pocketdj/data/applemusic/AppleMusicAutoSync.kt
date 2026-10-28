@@ -4,7 +4,6 @@ import android.content.Context
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import java.time.Instant
-import java.time.LocalDate
 import java.time.ZoneId
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -27,7 +26,7 @@ object AppleMusicAutoSync {
     fun isDue(nowMs: Double, lastRunMs: Double?, minutesOfDay: Int, zone: ZoneId = ZoneId.systemDefault()): Boolean {
         val now = Instant.ofEpochMilli(nowMs.toLong()).atZone(zone)
         val m = minutesOfDay.coerceIn(0, 1439)
-        val todayFire = LocalDate.from(now).atStartOfDay(zone).plusHours((m / 60).toLong()).plusMinutes((m % 60).toLong())
+        val todayFire = now.toLocalDate().atTime(m / 60, m % 60).atZone(zone)
         if (now.isBefore(todayFire)) return false
         if (lastRunMs == null || lastRunMs <= 0.0) return true
         return Instant.ofEpochMilli(lastRunMs.toLong()).isBefore(todayFire.toInstant())

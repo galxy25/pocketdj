@@ -146,7 +146,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             tokens = amTokens,
             jobs = SharedPrefsAmJobStore(app.appContext),
             baseProvider = {
-                val o = runCatching { app.settings.get(AmSyncSettings.BASE_OVERRIDE) }.getOrDefault("")
+                val o = if (com.levi.pocketdj.BuildConfig.DEBUG) runCatching { app.settings.get(AmSyncSettings.BASE_OVERRIDE) }.getOrDefault("") else ""
                 o.trim().ifEmpty { com.levi.pocketdj.data.config.RemoteEndpoints.url(com.levi.pocketdj.data.config.EndpointKey.AM_PLAYLIST_SYNC_BASE) }
             },
         )
@@ -183,10 +183,37 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
      * daily pass if its local fire time has passed (claim-before-run). Needs a loaded catalog.
      */
     suspend fun autoSyncTick() {
+        if (!app.onboarding.isComplete) return
         if (app.catalogRepository.state.value.catalog == null) return
         val host = amSyncHost
         playlistAmSync.resumeIfInterrupted(host)
         autoSyncGate.runIfDue { runFullPass() }
+    }
+
+    /**
+     * Manual Sync/Send/Get (iOS `runCollectionsNow`) on the APP scope so leaving Settings does not
+     * cancel it: playlist sync, converted-collections reconcile (not push-only), write-back backfill (not pull-only).
+     */
+    fun startManualSync(direction: PlaylistAppleMusicSync.Direction): kotlinx.coroutines.Job =
+        app.appScope.launch(Dispatchers.IO) { runManual(direction) }
+
+    suspend fun runManual(direction: PlaylistAppleMusicSync.Direction) {
+        playlistAmSync.syncNow(amSyncHost, direction)
+        if (direction != PlaylistAppleMusicSync.Direction.PUSH) {
+            app.catalogRepository.state.value.catalog?.let { app.collections.syncConvertedCollections(it.playlists) }
+        }
+        if (direction != PlaylistAppleMusicSync.Direction.PULL) backfillWriteBacks()
+    }
+
+    private suspend fun backfillWriteBacks() {
+        if (!writeBack.canWriteBack) return
+        val days = WriteBackSettings.clampDays(app.settings.get(WriteBackSettings.BACKFILL_DAYS))
+        val n = app.collections.backfillSourceWriteBacks(
+            events = app.collectionActivity.state.value.events,
+            days = days,
+            localInstallId = app.collectionActivity.installId,
+        )
+        if (n > 0) writeBack.runSoon()
     }
 
     /** The unattended full pass: two-way playlist sync, converted-collections reconcile, write-back backfill. */
@@ -194,15 +221,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         val catalog = app.catalogRepository.state.value.catalog
         playlistAmSync.syncNow(amSyncHost, PlaylistAppleMusicSync.Direction.BOTH)
         if (catalog != null) app.collections.syncConvertedCollections(catalog.playlists)
-        if (writeBack.canWriteBack) {
-            val days = WriteBackSettings.clampDays(app.settings.get(WriteBackSettings.BACKFILL_DAYS))
-            val n = app.collections.backfillSourceWriteBacks(
-                events = app.collectionActivity.state.value.events,
-                days = days,
-                localInstallId = app.collectionActivity.installId,
-            )
-            if (n > 0) writeBack.runSoon()
-        }
+        backfillWriteBacks()
     }
 
     override val periodicWork: List<com.levi.pocketdj.shell.PeriodicWorkSpec> by lazy {

@@ -58,6 +58,16 @@ class AutoSyncScheduleTest {
         assertFalse(AppleMusicAutoSync.isDue(at1620Utc, null, fire, la)) // 09:20 local
     }
 
+    @Test fun isDueUsesWallClockOnDstDays() {
+        val la = ZoneId.of("America/Los_Angeles")
+        fun lms(mo: Int, d: Int, h: Int, mi: Int) = ZonedDateTime.of(2026, mo, d, h, mi, 0, 0, la).toInstant().toEpochMilli().toDouble()
+        // Spring forward 2026-03-08 and fall back 2026-11-01: fire is wall-clock 16:20.
+        for ((mo, d) in listOf(3 to 8, 11 to 1)) {
+            assertFalse(AppleMusicAutoSync.isDue(lms(mo, d, 16, 19), null, fire, la))
+            assertTrue(AppleMusicAutoSync.isDue(lms(mo, d, 16, 20), null, fire, la))
+        }
+    }
+
     private class State(var last: Double? = null, var enabled: Boolean = true, var now: Double = 0.0)
 
     private fun gate(s: State) = AutoSyncGate(

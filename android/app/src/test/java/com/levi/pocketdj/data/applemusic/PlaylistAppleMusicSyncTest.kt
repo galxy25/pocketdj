@@ -9,6 +9,9 @@ import com.levi.pocketdj.data.collections.Pocket
 import com.levi.pocketdj.data.collections.SongDuplicateJudge
 import java.io.File
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -385,5 +388,25 @@ class PlaylistAppleMusicSyncTest {
         )
         assertEquals("Everything in sync", PlaylistAppleMusicSync.reportSummaryText(emptyList(), emptyList()))
         assertEquals("2 errors", PlaylistAppleMusicSync.reportSummaryText(emptyList(), listOf("a", "b")).substringAfter(" · "))
+    }
+
+    @Test fun cancelledSyncShowsInterruptedNotSpinner() = runBlocking {
+        val h = Host().apply { addSong("a"); playlist("pl1", "Mix", listOf("a")) }
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest) =
+                if (request.path == "/push") MockResponse().setResponseCode(202).setBody("""{"jobId":"j1"}""")
+                else MockResponse().setBody("""{"status":"running"}""")
+        }
+        val s = sync()
+        val job = kotlinx.coroutines.GlobalScope.launch(kotlinx.coroutines.Dispatchers.IO) { s.syncNow(h, PlaylistAppleMusicSync.Direction.BOTH) }
+        val deadline = System.currentTimeMillis() + 5_000
+        while (s.ui.value.steps.none { it.state == AmSyncStep.State.RUNNING } && System.currentTimeMillis() < deadline) delay(5)
+        assertTrue(s.ui.value.steps.any { it.state == AmSyncStep.State.RUNNING })
+        job.cancelAndJoin()
+        val ui = s.ui.value
+        assertFalse(ui.isSyncing)
+        assertFalse(ui.currentRunCompleted)
+        assertTrue(ui.steps.none { it.state == AmSyncStep.State.RUNNING })
+        assertTrue(ui.steps.any { it.state == AmSyncStep.State.INTERRUPTED })
     }
 }

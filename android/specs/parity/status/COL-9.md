@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 COL-9 Apple Music playlist sync (Lambda WS2): client, coordinator, audit/run persistence, daily auto-sync, Settings pane.
 
@@ -18,3 +18,17 @@ Deviations / notes
 
 ## Questions for Levi
 - Daily auto-sync default ON (iOS parity) means a signed-in Android user pushes collections at 4:20 PM daily; signed-out it fails quietly with "Sign in to Apple Music". OK?
+
+## Review
+
+fixes applied
+
+- MAJOR manual sync on screen scope: fixed. Buttons call `CollectionsGraph.startManualSync` (app scope); cancellation now flips RUNNING steps to INTERRUPTED. Test: `cancelledSyncShowsInterruptedNotSpinner`.
+- MINOR autoSyncTick onboarding guard: fixed (`!app.onboarding.isComplete` returns early).
+- MINOR manual buttons skip shared halves: fixed (`runManual` = syncNow, converted reconcile when not PUSH, write-back backfill when not PULL).
+- MINOR DST fire time: fixed (wall-clock `atTime`); test `isDueUsesWallClockOnDstDays`.
+- MINOR main-thread hydration: fixed (Settings section builds `playlistAmSync` via produceState on IO; buttons disabled until ready).
+- MINOR ledger row: fixed (COL-9 PARTIAL with device-only notes).
+- NIT base override: fixed (honoured only when BuildConfig.DEBUG).
+
+Tests: 4742 run, 0 failed; assembleDebug OK.

@@ -13,6 +13,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -151,8 +152,10 @@ fun appleMusicWriteBackSection() = SettingsSection("appleMusicWriteBack", 405) {
 fun appleMusicSyncSection() = SettingsSection("appleMusicSync", 404) { host ->
     val graph = host.graph
     val cg = graph.collectionsGraph
-    val sync = cg.playlistAmSync
-    val ui by sync.ui.collectAsState()
+    val syncState by produceState<PlaylistAppleMusicSync?>(null, cg) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { cg.playlistAmSync }
+    }
+    val ui by remember(syncState) { syncState?.ui ?: kotlinx.coroutines.flow.MutableStateFlow(com.levi.pocketdj.data.applemusic.AmSyncUi()) }.collectAsState()
     val autoEnabled by remember(graph) { graph.settings.flow(AmSyncSettings.AUTO_ENABLED) }.collectAsState(initial = true)
     val minutes by remember(graph) { graph.settings.flow(AmSyncSettings.AUTO_MINUTES) }
         .collectAsState(initial = com.levi.pocketdj.data.applemusic.AppleMusicAutoSync.DEFAULT_MINUTES)
@@ -162,20 +165,20 @@ fun appleMusicSyncSection() = SettingsSection("appleMusicSync", 404) { host ->
     var historyOpen by remember { mutableStateOf(false) }
 
     fun run(direction: PlaylistAppleMusicSync.Direction) {
-        host.scope.launch(kotlinx.coroutines.Dispatchers.IO) { sync.syncNow(cg.amSyncHost, direction) }
+        cg.startManualSync(direction)
     }
     fun fmt(ms: Double): String =
         java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT).format(java.util.Date(ms.toLong()))
 
     SettingsHeader("Apple Music syncing")
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-        Button(onClick = { run(PlaylistAppleMusicSync.Direction.BOTH) }, enabled = !ui.isSyncing, modifier = Modifier.testTag("am-sync-both")) {
+        Button(onClick = { run(PlaylistAppleMusicSync.Direction.BOTH) }, enabled = !ui.isSyncing && syncState != null, modifier = Modifier.testTag("am-sync-both")) {
             Text("\u21C5 Sync")
         }
-        OutlinedButton(onClick = { run(PlaylistAppleMusicSync.Direction.PUSH) }, enabled = !ui.isSyncing, modifier = Modifier.testTag("am-sync-push")) {
+        OutlinedButton(onClick = { run(PlaylistAppleMusicSync.Direction.PUSH) }, enabled = !ui.isSyncing && syncState != null, modifier = Modifier.testTag("am-sync-push")) {
             Text("\u2191 Send")
         }
-        OutlinedButton(onClick = { run(PlaylistAppleMusicSync.Direction.PULL) }, enabled = !ui.isSyncing, modifier = Modifier.testTag("am-sync-pull")) {
+        OutlinedButton(onClick = { run(PlaylistAppleMusicSync.Direction.PULL) }, enabled = !ui.isSyncing && syncState != null, modifier = Modifier.testTag("am-sync-pull")) {
             Text("\u2193 Get")
         }
     }
