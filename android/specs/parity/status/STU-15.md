@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-15 Demux drum pattern + melody + key + instrumental + cut sample + send stems to arrangement + lyrics sidecar panel
 

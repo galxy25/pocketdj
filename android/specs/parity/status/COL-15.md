@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # COL-15 - .pdjcollection / backup export-import UI, file-open handler, Imported source, Settings Backup
 

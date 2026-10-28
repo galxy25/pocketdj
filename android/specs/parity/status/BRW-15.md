@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # BRW-15 Discover tab (Apple Music catalog search ∥ rip-server /search)
 - [x] DiscoverModels.kt (DiscoverHit/AlbumHit/AlbumTrack, DiscoverMerge: term/merge/refine/mapping, DiscoverAddWording)

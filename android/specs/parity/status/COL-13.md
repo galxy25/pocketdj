@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # COL-13 — Per-collection sort/filter
 

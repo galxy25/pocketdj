@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # MIX-18 Now Playing Mix mini-panel (F4) + Stem Lock
 
