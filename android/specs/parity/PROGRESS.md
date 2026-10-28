@@ -127,3 +127,17 @@ Emulator-verified 2026-10-28 (emulator-5554, post SetGatedPlayer fix) with Setti
 - Environment traps: (a) the emulator's saved rip server URL was a blackhole (`https://10.255.255.1:9`, left by PB-3 testing) which made every burn presign hang ~40 s and report "couldn't get a playback URL"; cleared it in Settings > Import server. (b) With no reachable rip server MixStreamLoader cannot presign; the debug button sets `MixDebug.publicRips` to stream the public rips object instead.
 
 Ledger: ARCHITECTURE-ANDROID.md rows for every merged package still marked Planned (waves 1-7, 22 rows) set to Merged with merge commit; PB-2/SVC-3/MIX-6 rows updated with the results above. Open: Q27-Q28 added.
+
+## Wave 8
+
+Merged: PB-4, BRW-2, GM-1, MIX-8, GM-5, PB-7 (one conflict: CollectionsStore.materializeNowPlayingSetlist existed in both PB-4 and PB-7; PB-7's upsert-from-QueueItem keeps the name, PB-4's keep-if-present variant is now `materializeNowPlayingSetlistIfMissing`). JVM: 2443 tests, 0 failures. assembleDebug green.
+
+Emulator (emulator-5554), screenshots in pocketdj-parity/_shots/wave8:
+- PB-4 PASS after a fix: session file is the iOS shape; after force-stop + relaunch the restore was invisible (mini player required a live player). Added a held "Paused" strip with play to MiniPlayerBar; relaunch now shows it, no audio, file mtime unchanged, play resumes the run. No crash.
+- PB-7 PASS: drag reorder of an upcoming row, remove by X, search "love" then Add next for an album (3 tracks) and a song land after the current row (verified in the session file). Jukebox accept placement not driven (needs a guest request; JVM-covered).
+- BRW-2 PASS: In-pocket filter narrows to members (13 playlist members, 1 pocket song), In SeedRip + Not-in SeedDup, long-press add to SeedDup drops the row (13 -> 12) with the list not reset. Note: the filter sheet moves while settling; taps need fresh bounds.
+- GM-1 PASS: three cards, seeded runs (best 9, MwF 4), long-press delete Gem Collector, rotation during the dialog keeps it, Delete All -> empty, still empty after force-stop + relaunch.
+- MIX-8 PARTIAL: Mix debug "load 2 + play" plays both decks with the new engine hooks, no crash. Stem toggle, loop and beat-pulse steps cannot run (no UI until MIX-13/14, no stemmed burn); device-only steps not verifiable.
+- GM-5: pure JVM, no emulator steps.
+
+Open: Q29-Q34.

@@ -65,7 +65,11 @@ fun MiniPlayerBar(
 
     val np = nowPlaying
     val preparing = preparingId
-    if (hidden || (np == null && preparing == null)) return
+    // PB-4: a durable-session restore is HELD (no audio, no player card), so nowPlaying stays null;
+    // without this strip the restored deck (and its ▶) would be unreachable after a relaunch.
+    val seqState by graph.playbackGraph.sequencer.state.collectAsState()
+    val heldRow = if (seqState.isHeldForResume) seqState.queue.getOrNull(seqState.index) else null
+    if (hidden || (np == null && preparing == null && heldRow == null)) return
     // A Mix session owns the transport; the Mix screen is its own deck.
     val mixActive by NowPlayingSeams.mixSessionActiveFlow.collectAsState()
     if (mixActive) return
@@ -139,6 +143,36 @@ fun MiniPlayerBar(
                         modifier = Modifier.testTag("mini-next"),
                     ) {
                         Icon(Icons.Filled.SkipNext, contentDescription = "Next")
+                    }
+                    if (onExpand != null) {
+                        IconButton(onClick = onExpand, modifier = Modifier.testTag("mini-expand")) {
+                            Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Open Now Playing")
+                        }
+                    }
+                }
+
+                preparing == null && heldRow != null -> {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            heldRow.title,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            listOfNotNull(heldRow.artist, "Paused").joinToString(" · "),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    IconButton(
+                        onClick = { vm.togglePlayPause(vm.currentInputs()) },
+                        modifier = Modifier.testTag("mini-playpause"),
+                    ) {
+                        Icon(Icons.Filled.PlayArrow, contentDescription = "Play", tint = MaterialTheme.colorScheme.primary)
                     }
                     if (onExpand != null) {
                         IconButton(onClick = onExpand, modifier = Modifier.testTag("mini-expand")) {

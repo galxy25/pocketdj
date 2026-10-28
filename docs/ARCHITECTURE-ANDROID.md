@@ -385,8 +385,8 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | PB-3 — Zero dead air: rip-on-demand resolver in runs, runway, watchdogs, stall hop, cascade brea… | 6 | Merged (`0e051921`) | Real cellular dead zones; Apple Music lane behaviours |
 | PB-6 — Now Playing deck screen (gold record at beat-grid BPM, transport, notices) + mini bar upg… | 6 | Merged (`e3cb53ae`) | — |
 | PB-5 — History outcomes: SkipTracker + additive PlayEvent fields + progress/advance-away events … | 7 | PARTIAL | Unit-tested (1946 green), NOT emulator-verified (device-only: History glyph + live row, skip on real playback). Open: noteSkip per-song skip count unwired until a Kotlin PlayCountService exists |
-| PB-4 — Durable playback session: real-time snapshot, held restore, resume at position, materiali… | 8 | Planned | — |
-| PB-7 — Up Next, previously played, add-search, open set list, queue reorder; jukebox routed thro… | 8 | Planned | — |
+| PB-4 — Durable playback session: real-time snapshot, held restore, resume at position, materiali… | 8 | Merged (`ab68b736`) | Emulator-verified wave 8: held restore after force-stop (strip + deck, no audio, file mtime untouched), iOS-shape JSON, first play resumes. Fixed: MiniPlayerBar never showed the held deck. Device-only: Bluetooth resumption. |
+| PB-7 — Up Next, previously played, add-search, open set list, queue reorder; jukebox routed thro… | 8 | Merged (`9488b905`) | Emulator-verified wave 8: live reorder, remove, album+song Add next from search. Jukebox accept placement JVM-only (needs a guest request). |
 | PB-8 — Apple Music rows in a run: AppleMusicPlayerAdapter (SimpleBasePlayer TransportOwner) + en… | 9 | Planned | Full-track DRM playback requires a real device with a subscription (v… |
 | PB-10 — Gapless preload window (next resolved row pre-added to ExoPlayer) | 17 | Planned | — |
 
@@ -425,7 +425,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | BRW-5 — Online OpenSearch (aoss) search: device↔online toggle, SigV4-signed direct queries, claus… | 4 | Merged (`eb870525`) | — |
 | BRW-9 — Recs core B: identity + shaping (version/recording identity, membership, novelty, composi… | 4 | DONE | device-only: none (pure) |
 | BRW-4 — Song/Album detail parity: lyrics store + timed-lyrics sidecar + lyrics panel, share text,… | 5 | Merged (`01deb63a`) | — |
-| BRW-2 — Filter/sort sheets at full width + membership (in/not-in, none-of) + favorite + hide-skip… | 8 | Planned | — |
+| BRW-2 — Filter/sort sheets at full width + membership (in/not-in, none-of) + favorite + hide-skip… | 8 | Merged (`b6873a6e`) | Emulator-verified wave 8: In-pocket filter narrows to members, add-to-pocket while filtered drops the row with no scroll reset. Hide-skips wiring PARTIAL (History). |
 | BRW-6 — History screen parity: tab model (Playback \| Collection \| Pockets \| For You slots), en… | 9 | Planned | — |
 | BRW-10 — ZoneEngine: In Da Zone + collection suggestions + cloud shaping | 11 | Planned | — |
 | BRW-7 — Collection timeline (F8) + timeline cue store + History ▸ Collection tab | 13 | Planned | — |
@@ -449,7 +449,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | MIX-6 — MixStreamLoader: growing-file song streams (public rips object + Range) + stem sets, adop… | 5 | Merged (`2b5e0ca7`) | Emulator-verified 2026-10-28 (Debug "Mix stream open": file grows in cache/mixstream, completes, adopted into files/burns; presign bypassed by a debug flag since no rip server is reachable). Stream deck handover waits on the Mix UI (MIX-9+). |
 | MIX-5 — MixEngine core: decks, load/seek/transport, EQ, FX rack, Vol/crossfader, cue, lead/sync, … | 6 | PARTIAL | Device-only: audible tempo/pitch quality and cue routing, force-stop/relaunch restore. Deferred hooks: loop/stems (MIX-8), Auto-DJ (MIX-9), stream (MIX-10), silent-playing detector (MIX-11); launch-time `restorePersistedMixIfIdle` not auto-called (Mix tab parks via `materializePendingRestoreIfNeeded`) |
 | MIX-7 — MixResolver + CollectionMixDownloader (collection pull with progress/ETA + progressive el… | 7 | Merged (`1226d3a4`) | — |
-| MIX-8 — Loop (∞) + stem decks + zero-dead-air handover + beat-grid hydrate | 8 | Planned | Hearing the handover seam and loop click-freeness |
+| MIX-8 — Loop (∞) + stem decks + zero-dead-air handover + beat-grid hydrate | 8 | Merged (`db38384e`) | JVM only (50 tests); emulator smoke: two-deck Mix plays with the new hooks, no crash. Stem/loop/beat-pulse steps NOT drivable: no stem/loop UI (MIX-13/14) and no stemmed burn. Device-only: handover seam, loop click-freeness. |
 | MIX-10 — Streaming decks in the engine (growing-file playback, hold/resume, truncation, stem strea… | 9 | Planned | Cellular dead-zone behaviour |
 | MIX-9 — Auto-DJ machine + readiness rules + glide + remote freeze + jukebox queue seams | 9 | Planned | Real lock-screen transport and headset-button behaviour |
 | MIX-13 — Deck UI: DeckView + controls (sliders/knobs/steppers), seek slider, FX chips, stem pads, … | 10 | Planned | — |
@@ -487,8 +487,8 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
 | GM-2 — Gem Collector core: settings, recency, sampler, similarity, decision store, rec bridge (p… | 1 | DONE | device-only: none |
-| GM-1 — Games tab (7th destination via nav registry) + Scoreboard store (tombstones, union merge)… | 8 | Planned | — |
-| GM-5 — In the Pocket core: models, pockets results decode (PocketsModels owner), scorer, members… | 8 | DONE | device-only: none |
+| GM-1 — Games tab (7th destination via nav registry) + Scoreboard store (tombstones, union merge)… | 8 | Merged (`bb31d846`) | Emulator-verified wave 8: cards, seed, per-game delete, delete-all, persistence after relaunch, rotation during dialog. Gem Collector/In the Pocket openers pending their packages. |
+| GM-5 — In the Pocket core: models, pockets results decode (PocketsModels owner), scorer, members… | 8 | Merged (`73c168bd`) | Pure JVM (79 tests). Golden cross-platform scorer test OPEN. |
 | GM-3 — Gem Collector engine + GameRunPlayer over the sequencer (appendRows(runTag), preview-reso… | 9 | Planned | Apple Music preview resolution needs network; full-track AM is delibe… |
 | GM-4 — Gem Collector screens (setup / countdown / running / summary) + multi-collection filing v… | 10 | Planned | — |
 | GM-7 — In the Pocket store + PocketsBridge interface (NoPocketsBridge default) + rounds upload c… | 11 | Planned | Cloud mode needs real pockets results (services area + rec key) — ver… |

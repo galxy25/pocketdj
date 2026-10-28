@@ -37,6 +37,12 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 - **Q26 [SURF-5 / MIX-7]** Mini player shows the track title after a collection search/shortcut play (iOS-style), not the collection name the roadmap step says. Show the collection name? Also MixFacade and the MIX-7 Auto-DJ hooks await MIX-9/MIX-14. — *Default: track title.*
 - **Q27 [PB-2 / COL-10]** The notification/lock-screen heart was never bound (FavoriteCommand.seam stayed null); it is now wired to the favorites store (toggles the local favorite, queues the Apple Music mirror only if that opt-in is on). Keep the heart on the Android notification by default? -- *Default: shown whenever the standalone player owns audio.*
 - **Q28 [SVC-3]** A burn whose background download later fails (HTTP 400/403) is counted as `burned` in the immediate BurnResult (queued), then flips to an error row; the stem/beat-grid post-pass also still runs for those songs. iOS behaves the same way; tighten on Android (skip the post-pass for songs that failed)? -- *Default: match iOS.*
+- **Q29 [PB-4]** Restore assumes an edition row's storage id is `<songId>_<variant>`, and the stem lock is not carried (Android sequencer has no stem lock yet). OK until the stem-lock package? -- *Default: guess kept; stemLock round-trips as null.*
+- **Q30 [PB-4]** A held (restored) deck had no entry point: the mini player only showed for a live player. Added a "Paused" strip with a play button for the held deck (integration fix). Keep this, or hide the strip until the first play like iOS's no-card rule? -- *Default: strip shown.*
+- **Q31 [GM-5]** No golden cross-platform test for the In the Pocket scorer (needs reference output from the iOS Swift scorer). Capture one on a Mac? -- *Default: lambda-fixture tests only.*
+- **Q32 [BRW-2]** Hide-skips toggle is wired only for the filter state; History applies it later. changeOp clears the value (iOS keeps it). -- *Default: as built.*
+- **Q33 [GM-1]** Games tab: Gem Collector / In the Pocket cards are inert and Music with Friends New/Join absent until GM-3/4, GM-7/8, GM-10; no sync engine calls GameScoreboardStore.reloadFromDisk. -- *Default: tracking only.*
+- **Q34 [MIX-8]** Loop, stem decks and beat-pulse have no UI until MIX-13/14 and the emulator has no stemmed burn / stem server, so only a smoke run was possible. -- *Default: JVM-verified; verify on device once the Mix UI lands.*
 
 ## ANSWERED
 
