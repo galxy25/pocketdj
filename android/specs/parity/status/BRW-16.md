@@ -34,3 +34,15 @@ state: implemented
 New: DiscoverAddsStoreTest, DiscoverAddStateTest, SupersedeTest, DiscoverAddControllerTest, CatalogRepositoryTest, AlbumTracksParseTest.
 
 JVM tests 4744 total, 0 failures; assembleDebug green (my new tests: ~56 across 6 files).
+
+## Review
+- MAJOR ledger row not updated -> fixed (BRW-16 row = PARTIAL with device-only + not-ported notes; BrwReviewFixesTest guards it).
+- MINOR Remove from Library no confirm / main-thread write -> fixed (AlertDialog "Remove from Library?", removal on Dispatchers.IO).
+- MINOR skipped token mismatch -> fixed ("Apple Music write skipped: no Apple Music connection"; test updated).
+- MINOR onChanged re-fetched all sources -> fixed (CatalogRepository.remergeLocal, no fetch; Discover + Imported onChanged use it; refreshInternal with no loaded source still merges provisional/synthetic; tests added).
+- MINOR album errored set in-memory only -> fixed (AlbumEntry.failedTrackIds persisted from the rip tracker; userRemove drops the track from its album's trackIds; tests).
+- MINOR superseded album remap lasted one merge -> fixed (DiscoverAddsStore.supersedeAlbums persists remapped albumId on surviving entries; test).
+- MINOR edits outside owned files (CollectionsStore.remapSongIds, AppleMusicApi*) -> rejected: remap needs the store's internal node/pocket/setlist mutators (no public equivalents), and the additions are additive and self-contained. FLAGGED to merge coordinator: COL-6/COL-9 may conflict in CollectionsStore.kt / AppleMusicApi.kt.
+- NIT music-videos in album tracks -> fixed (only type "songs" kept; test).
+
+fixes applied

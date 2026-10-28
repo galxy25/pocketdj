@@ -211,7 +211,7 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
             java.io.File(app.appContext.filesDir, com.levi.pocketdj.data.discover.DiscoverAddsStore.FILE_NAME),
         ).also { store ->
             // A change (local add / user removal / cloud pull) rebuilds the live catalog ONCE.
-            store.onChanged = { app.catalogRepository.refresh() }
+            store.onChanged = { app.catalogRepository.remergeLocal() }
             // User gestures only (never a cloud pull): the History activity timeline.
             store.onUserCatalogAdd = { items, libraryWrite ->
                 app.appScope.launch(Dispatchers.IO) {
@@ -244,11 +244,23 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
             }
         }
         repo.onAlbumsSuperseded = { pairs ->
-            app.appScope.launch(Dispatchers.IO) { runCatching { discoverAdds.removeAlbums(pairs.map { it.first }) } }
+            app.appScope.launch(Dispatchers.IO) { runCatching { discoverAdds.supersedeAlbums(pairs) } }
         }
     }
 
-    init { wireDiscover() }
+    init {
+        wireDiscover()
+        // Terminal rip errors outlive the in-memory tracker: persist them onto the owning album.
+        app.appScope.launch(Dispatchers.IO) {
+            app.ripJobTracker.jobs.collect { jobs ->
+                runCatching {
+                    discoverAdds.recordFailedTracks(
+                        jobs.filterValues { it.phase == com.levi.pocketdj.data.rips.RipJob.PHASE_ERROR }.keys,
+                    )
+                }
+            }
+        }
+    }
 
     private val discoverRips = object : com.levi.pocketdj.screens.discover.DiscoverRipPort {
         override suspend fun configured() = app.ripServerClient.isConfigured()

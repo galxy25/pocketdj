@@ -73,9 +73,9 @@ class DiscoverAddControllerTest {
 
     @Test fun songAddWithoutServerStillBecomesACatalogCitizen() = runBlocking {
         val s = store()
-        val out = DiscoverAddController(s, FakeRips(server = false), FakeLibrary(token = "skipped: no Apple Music connection")).addSong(hit())
+        val out = DiscoverAddController(s, FakeRips(server = false), FakeLibrary(token = "Apple Music write skipped: no Apple Music connection")).addSong(hit())
         assertTrue(out.accepted)
-        assertEquals("skipped: no Apple Music connection", s.entry("amrec_11")?.libraryWrite) // truthful, not "confirmed"
+        assertEquals("Apple Music write skipped: no Apple Music connection", s.entry("amrec_11")?.libraryWrite) // truthful, not "confirmed"
     }
 
     @Test fun readyServerAnswerRefreshesTheManifestInsteadOfPolling() = runBlocking {

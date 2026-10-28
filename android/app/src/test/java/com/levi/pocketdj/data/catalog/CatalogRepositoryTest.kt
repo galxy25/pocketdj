@@ -99,4 +99,29 @@ class CatalogRepositoryTest {
         adds.userRemove("amrec_7"); await(r, 3)
         assertTrue(r.state.value.catalog!!.songsById["amrec_7"] == null)
     }
+
+    @Test fun localRemergeShowsAddWithoutAnyNetworkFetch() {
+        server.enqueue(MockResponse().setBody(body).setHeader("ETag", "\"v1\""))
+        val adds = DiscoverAddsStore(File(tmp.root, "d.json"))
+        val r = repo()
+        r.provisionalSources = { real -> adds.resolve(real) }
+        adds.onChanged = { r.remergeLocal() }
+        r.loadIfNeeded(); await(r, 1)
+        val requests = server.requestCount
+        adds.add(entry("amrec_8", "8"))
+        val end = System.currentTimeMillis() + 10_000
+        while (r.state.value.catalog!!.songsById["amrec_8"] == null && System.currentTimeMillis() < end) Thread.sleep(5)
+        assertEquals("Discover", r.state.value.catalog!!.sourceOfSong["amrec_8"])
+        assertEquals("no source was re-requested", requests, server.requestCount)
+    }
+
+    @Test fun provisionalRowsShowEvenWhenNoSourceLoads() {
+        server.enqueue(MockResponse().setResponseCode(500))
+        val adds = DiscoverAddsStore(File(tmp.root, "d.json"))
+        adds.add(entry("amrec_9", "9"))
+        val r = repo()
+        r.provisionalSources = { real -> adds.resolve(real) }
+        r.loadIfNeeded(); await(r, 1)
+        assertEquals("Discover", r.state.value.catalog?.sourceOfSong?.get("amrec_9"))
+    }
 }

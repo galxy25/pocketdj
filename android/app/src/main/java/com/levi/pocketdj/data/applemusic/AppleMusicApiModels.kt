@@ -121,6 +121,8 @@ object AppleMusicApiModels {
         return rows.mapNotNull { row ->
             val o = row.obj() ?: return@mapNotNull null
             val id = o["id"].str() ?: return@mapNotNull null
+            // music-videos (bonus clips) are not rippable songs.
+            if (o["type"].str().let { it != null && it != "songs" }) return@mapNotNull null
             val a = o["attributes"].obj()
             com.levi.pocketdj.screens.discover.DiscoverAlbumTrack(
                 id = id,

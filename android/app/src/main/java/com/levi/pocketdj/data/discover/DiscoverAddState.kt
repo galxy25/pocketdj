@@ -38,7 +38,7 @@ sealed interface DiscoverAddState {
          */
         fun of(entry: DiscoverAddsStore.AlbumEntry, readyIds: Set<String>, erroredIds: Set<String>): DiscoverAddState {
             if (entry.preparedCopies == false) return Added
-            return of(entry.trackIds.orEmpty(), readyIds, erroredIds)
+            return of(entry.trackIds.orEmpty(), readyIds, erroredIds + entry.failedTrackIds.orEmpty())
         }
     }
 }

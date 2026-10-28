@@ -23,4 +23,10 @@ class AlbumTracksParseTest {
         assertNull(AppleMusicApiModels.parseAlbumTracks("<html>"))
         assertEquals(emptyList<Any>(), AppleMusicApiModels.parseAlbumTracks("""{"data":[]}"""))
     }
+
+    @Test fun musicVideosAreDropped() {
+        val body = """{"data":[{"id":"1","type":"songs","attributes":{"name":"S","artistName":"A"}},
+            {"id":"2","type":"music-videos","attributes":{"name":"V","artistName":"A"}}]}"""
+        assertEquals(listOf("1"), AppleMusicApiModels.parseAlbumTracks(body)!!.map { it.id })
+    }
 }

@@ -46,7 +46,7 @@ interface DiscoverLibraryPort {
 object LibraryWrite {
     /** API accepted the write (the Web API's 2xx is its confirmation; there is no membership probe on Android). */
     const val CONFIRMED_WEB = "confirmed (web)"
-    const val SKIPPED_NO_CONNECTION = "skipped: no Apple Music connection"
+    const val SKIPPED_NO_CONNECTION = "Apple Music write skipped: no Apple Music connection"
     fun failed(message: String) = "Apple Music write failed: $message"
 }
 

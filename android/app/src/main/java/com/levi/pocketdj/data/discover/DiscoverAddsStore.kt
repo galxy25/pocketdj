@@ -70,6 +70,8 @@ class DiscoverAddsStore(private val file: File) {
         val libraryWrite: String? = null,
         val releaseDateMs: Double? = null,
         val lastRefreshAtMs: Double? = null,
+        /** Track ids whose rip reached a terminal error - persisted so a relaunch still settles to Partial. */
+        val failedTrackIds: List<String>? = null,
     )
 
     @Serializable
@@ -201,6 +203,38 @@ class DiscoverAddsStore(private val file: File) {
     }
 
     /**
+     * Supersede ALBUMS (provisional album id -> indexed album id): persist the remapped albumId on surviving
+     * song entries, then drop the provisional album rows. Never fires [onChanged].
+     */
+    fun supersedeAlbums(pairs: List<Pair<String, String>>) {
+        if (pairs.isEmpty()) return
+        synchronized(lock) {
+            val map = pairs.toMap()
+            val snap = _state.value
+            val entries = snap.entries.map { e -> e.albumId?.let(map::get)?.let { e.copy(albumId = it) } ?: e }
+            val albums = snap.albums.filterNot { it.albumId in map }
+            if (entries == snap.entries && albums.size == snap.albums.size) return
+            publish(Snapshot(entries, albums))
+            save()
+        }
+    }
+
+    /** Persist terminal-error track ids onto the albums that own them. Never fires [onChanged]. */
+    fun recordFailedTracks(failed: Set<String>) {
+        if (failed.isEmpty()) return
+        synchronized(lock) {
+            var changed = false
+            val albums = _state.value.albums.map { a ->
+                val fresh = a.trackIds.orEmpty().filter { it in failed && it !in a.failedTrackIds.orEmpty() }
+                if (fresh.isEmpty()) a else { changed = true; a.copy(failedTrackIds = a.failedTrackIds.orEmpty() + fresh) }
+            }
+            if (!changed) return
+            publish(_state.value.copy(albums = albums))
+            save()
+        }
+    }
+
+    /**
      * USER "Remove from Library" for a provisional Discover SONG - DISTINCT from the supersede [remove]
      * (which yields the id to its real indexed replacement). Drops the entry, refreshes the catalog and
      * returns its item so the caller can log `catalogRemove`. Idempotent (null when absent).
@@ -209,7 +243,20 @@ class DiscoverAddsStore(private val file: File) {
         val removed: Entry
         synchronized(lock) {
             removed = _state.value.entries.firstOrNull { it.songId == songId } ?: return null
-            publish(_state.value.copy(entries = _state.value.entries.filterNot { it.songId == songId }))
+            publish(
+                _state.value.copy(
+                    entries = _state.value.entries.filterNot { it.songId == songId },
+                    // A removed track must not pin its album's n/m forever.
+                    albums = _state.value.albums.map { a ->
+                        if (a.trackIds?.contains(songId) == true) {
+                            a.copy(
+                                trackIds = a.trackIds.filterNot { it == songId },
+                                failedTrackIds = a.failedTrackIds?.filterNot { it == songId },
+                            )
+                        } else a
+                    },
+                ),
+            )
             save()
         }
         onChanged?.invoke()
