@@ -569,7 +569,14 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
             app.catalogRepository.state
                 .map { it.catalog }
                 .distinctUntilChanged { a, b -> (a == null) == (b == null) }
-                .collect { c -> if (c != null) runCatching { favoritesSync.runIfReady() } }
+                .collect { c ->
+                    if (c != null) {
+                        runCatching { favoritesSync.runIfReady() }
+                        // Final review: the cold-launch ON_START tick bails (catalog still null); run the daily AM pass /
+                        // interrupted-sync resume as soon as the first catalog lands (iOS autoSyncIfDue on .loaded).
+                        runCatching { autoSyncTick() }
+                    }
+                }
         }
         app.appScope.launch(Dispatchers.Main) {
             runCatching {
