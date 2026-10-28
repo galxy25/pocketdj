@@ -204,6 +204,40 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
     }
     val cloudSync: CloudSyncService get() = cloudSyncLazy.value
 
+    /**
+     * Completes when the bounded launch pass has finished (or hit its deadline). DIVERGENCE from iOS:
+     * iOS pulls before onboarding resolves; here the launch pass waits for onboarding so it cannot race
+     * the zero-to-hero "restore" choice (pulls are otherwise ungated). Owners of restore-later stores
+     * (playback-session, mix-decks: registered file-only) MUST `awaitLaunchSync()` before reading their
+     * files.
+     */
+    val launchPass = kotlinx.coroutines.CompletableDeferred<Unit>()
+
+    /** Suspends until the launch pull landed, bounded; returns at once while onboarding is unresolved. */
+    suspend fun awaitLaunchSync(timeoutMs: Long = CloudSyncService.LAUNCH_DEADLINE_MS + 2_000L) {
+        if (!app.onboarding.isComplete) return
+        kotlinx.coroutines.withTimeoutOrNull(timeoutMs) { launchPass.await() }
+    }
+
+    /** iOS launch reconcile: a non-empty profile name wins over the PROFILE_NAME pref + performerName. */
+    private suspend fun reconcileProfileName() {
+        val name = profile.name
+        if (name.isEmpty()) return
+        if (app.settings.get(OnboardingPrefs.PROFILE_NAME) != ShellSettings.normalizeProfileName(name)) {
+            app.settings.set(OnboardingPrefs.PROFILE_NAME, ShellSettings.normalizeProfileName(name))
+        }
+        app.collections.performerName = name
+    }
+
+    /** Debug builds: swap the in-memory backend in/out live (Settings > Profile debug toggle). */
+    fun setDebugInMemoryDb(on: Boolean) {
+        if (!isDebuggableBuild()) return
+        if (on && cloudDocDatabase === UnavailableCloudDocDatabase) cloudDocDatabase = InMemoryCloudDocDatabase()
+        else if (!on && cloudDocDatabase is InMemoryCloudDocDatabase) cloudDocDatabase = UnavailableCloudDocDatabase
+    }
+
+    fun isDebuggable(): Boolean = isDebuggableBuild()
+
     private val syncStarted = java.util.concurrent.atomic.AtomicBoolean(false)
     @Volatile private var appForeground = false
 
@@ -221,10 +255,15 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
                 cloudDocDatabase = InMemoryCloudDocDatabase()
             }
             profile.migrateIfNeeded(app.settings.get(OnboardingPrefs.PROFILE_NAME))
+            reconcileProfileName()
             val svc = cloudSync
             app.onboarding.waitUntilComplete()
             profile.migrateIfNeeded(app.settings.get(OnboardingPrefs.PROFILE_NAME))
-            svc.syncAtLaunch()
+            try {
+                svc.syncAtLaunch()
+            } finally {
+                launchPass.complete(Unit)
+            }
             withContext(Dispatchers.Main) {
                 androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
                     androidx.lifecycle.LifecycleEventObserver { _, event ->
@@ -248,15 +287,16 @@ class ServicesGraph(private val app: AppGraph) : FeatureModule {
 
     /** The core synced documents (iOS names). Reload seams re-decode / merge the pulled file. */
     override val syncEntries: List<SyncEntry> = listOf(
-        SyncEntry(SyncRegistry.KEY_PROFILE, ProfileStore.FILE_NAME, onPulled = { profile.reloadFromDisk() }),
+        SyncEntry(SyncRegistry.KEY_PROFILE, ProfileStore.FILE_NAME, onPulled = { profile.reloadFromDisk(); false }),
         SyncEntry(SyncRegistry.KEY_COLLECTIONS, com.levi.pocketdj.data.collections.CollectionsStore.FILE_NAME,
-            onPulled = { app.collections.reloadFromDisk() }),
+            onPulled = { app.collections.reloadFromDisk() },
+            applyPayload = { app.collections.applyPulledPayload(it) }),
         SyncEntry(SyncRegistry.KEY_PLAY_HISTORY, com.levi.pocketdj.data.history.PlayHistoryStore.FILE_NAME,
             onPulled = { com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext).reloadFromDisk() }),
         SyncEntry(SyncRegistry.KEY_COLLECTION_ACTIVITY, com.levi.pocketdj.data.activity.CollectionActivityStore.FILE_NAME,
             onPulled = { app.collectionActivity.reloadFromDisk() }),
         SyncEntry(SyncRegistry.KEY_PLAY_STATS, com.levi.pocketdj.data.stats.PlayStatsStore.FILE_NAME,
-            onPulled = { playStats.reloadFromDisk() }),
+            onPulled = { playStats.reloadFromDisk(); false }),
     )
 
     override val resetHooks: List<ResetHook> = listOf(

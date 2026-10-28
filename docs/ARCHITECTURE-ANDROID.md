@@ -370,7 +370,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | SVC-15 — Apple Music Web API client: catalog search, library playlists CRUD, favorites, artists la… | 7 | Merged (`a6626196`) | Library (write) endpoints need a real Music-User-Token from the vendo… |
 | SVC-6 — PlayStatsStore + StorageManager prune engine + StoragePruneWorker + Storage screen burn/s… | 10 | DONE (device-only: worker cadence under Doze) | Periodic worker cadence under Doze (also pruneIfDue on each foreground). Open: delete-by-collection excludes setlists; play-stats cloud sync not wired. |
 | SVC-8 — Backend: pocketdj-profile-sync Lambda (S3 document store) + optional endpoint key | 10 | Planned | Deploy to the green account needs AWS profile llc; unit tests run aga… |
-| SVC-7 — Document sync engine (CloudSyncService verbatim port) + ProfileStore + in-memory CloudDoc… | 12 | Planned | — |
+| SVC-7 — Document sync engine (CloudSyncService verbatim port) + ProfileStore + in-memory CloudDoc… | 12 | PARTIAL | Engine + ProfileStore + registry done; backend is UnavailableCloudDocDatabase until SVC-9; emulator step (Profile debug toggle + Sync now) not yet run. |
 | SVC-9 — S3CloudDocDatabase + enroll + link-a-device (QR/code) + onboarding stage-1 probe | 13 | Planned | QR camera scanning is deferred (code entry only); nothing else. |
 | SVC-10 — Synced connection credentials doc (empty-secret guard) + diag-key sync doc + X-PocketDJ-P… | 14 | Planned | — |
 | SVC-13 — Reset everything (FeatureModule.resetHooks orchestrator, iOS mushroom-cloud order) + acco… | 15 | Planned | — |

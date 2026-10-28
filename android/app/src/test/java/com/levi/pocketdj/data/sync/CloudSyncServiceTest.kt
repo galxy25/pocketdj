@@ -133,6 +133,43 @@ class CloudSyncServiceTest {
         assertEquals("superset", String(f.db.get("profile")!!.payload))
     }
 
+    @Test fun reloadReportingResaveClearsWatermarkEvenWhenMtimeDoesNotMove() = runTest {
+        // Same-ms merge-save: the file mtime after reload EQUALS the pulled mtime, so only the
+        // reload's own "re-saved" report can tell the engine the superset must go back up.
+        val dir = tmp.newFolder()
+        val db = InMemoryCloudDocDatabase()
+        val svc = CloudSyncService(db, { true }, File(dir, "state.json"), backgroundScope, { 0L })
+        val file = File(dir, "profile.json")
+        svc.register("profile", file, reload = {
+            val m = file.lastModified()
+            file.writeText("superset")
+            assertTrue(file.setLastModified(m))
+            true
+        })
+        file.writeAt("old", localOld)
+        db.put(cloud("peer", localOld + 10_000))
+        svc.syncNow()
+        assertNull(svc.watermark("profile"))
+        assertTrue(db.saved.isEmpty())
+        svc.syncNow()
+        assertEquals(listOf("profile"), db.saved)
+        assertEquals("superset", String(db.get("profile")!!.payload))
+    }
+
+    @Test fun reloadReportingNoResaveKeepsWatermark() = runTest {
+        val dir = tmp.newFolder()
+        val db = InMemoryCloudDocDatabase()
+        val svc = CloudSyncService(db, { true }, File(dir, "state.json"), backgroundScope, { 0L })
+        val file = File(dir, "profile.json")
+        svc.register("profile", file, reload = { false })
+        file.writeAt("old", localOld)
+        db.put(cloud("peer", localOld + 10_000))
+        svc.syncNow()
+        assertEquals(file.lastModified().toDouble(), svc.watermark("profile"))
+        svc.syncNow()
+        assertTrue(db.saved.isEmpty())
+    }
+
     @Test fun watermarkSurvivesRestartViaStateFile() = runTest {
         val f = fixture()
         f.file.writeAt("mine", localOld + 50_000)

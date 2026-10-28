@@ -25,7 +25,7 @@ object SyncRegistry {
         val dup = entries.groupingBy { it.key }.eachCount().filterValues { it > 1 }.keys
         require(dup.isEmpty()) { "Duplicate sync key(s): ${dup.joinToString()}" }
         for (e in entries) {
-            service.register(e.key, File(filesDir, e.fileName), reload = e.onPulled)
+            service.register(e.key, File(filesDir, e.fileName), reload = e.onPulled, applyPayload = e.applyPayload)
         }
         return entries.map { it.key }
     }

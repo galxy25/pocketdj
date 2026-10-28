@@ -1768,6 +1768,17 @@ class CollectionsStore(
         return true
     }
 
+    /**
+     * Cloud-pull write seam: write the pulled bytes INLINE through this store's own version-ordered
+     * writer, superseding any queued pre-pull straggler so stale local bytes can never land after the
+     * pulled document. Follow with [reloadFromDisk].
+     */
+    fun applyPulledPayload(bytes: ByteArray) = synchronized(lock) {
+        dirty = false
+        val version = ++saveVersion
+        writer.flushNow(version) { String(bytes, Charsets.UTF_8) }
+    }
+
     // MARK: Full wipe
 
     /** Reset every family AND delete the on-disk document (Settings/tests seam). */

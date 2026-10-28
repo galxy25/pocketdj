@@ -57,8 +57,10 @@ class CloudSyncService(
     class Entry(
         val key: String,
         val file: File,
-        /** Re-decode the (just-overwritten) file into the live store. null = file-only (restore-later stores). */
-        val reload: (() -> Unit)? = null,
+        /** Re-decode the (just-overwritten) file into the live store. null = file-only (restore-later stores).
+         * The result reports a RE-SAVE: `true` = the reload merged and re-wrote the file (a superset of the
+         * cloud copy that must go back up). Any other result means "no re-save" (mtime change still counts). */
+        val reload: (() -> Any?)? = null,
         /**
          * OPTIONAL write seam for the pulled payload. When set, [applyPull] hands the bytes HERE
          * instead of writing [file] itself - for a store whose own writer runs off-thread on a
@@ -127,7 +129,7 @@ class CloudSyncService(
     fun register(
         key: String,
         file: File,
-        reload: (() -> Unit)? = null,
+        reload: (() -> Any?)? = null,
         applyPayload: ((ByteArray) -> Unit)? = null,
     ) {
         entries += Entry(key, file, reload, applyPayload)
@@ -377,9 +379,11 @@ class CloudSyncService(
         // (activity/history) re-saves a strictly newer superset; watermarking the post-reload mtime
         // would tell the next pass "already pushed" and the superset would never publish.
         val pulledMtime = fileMtimeMs(entry.file) ?: doc.modifiedAtMs
-        entry.reload?.invoke()
+        val resaved = entry.reload?.invoke() == true
         val afterReload = fileMtimeMs(entry.file)
-        if (afterReload != null && afterReload != pulledMtime) {
+        // The reload's own re-save report is authoritative: File.lastModified() is millisecond-grained
+        // and an inline merge-save can land in the same ms as the pull. The mtime compare is a backstop.
+        if (resaved || (afterReload != null && afterReload != pulledMtime)) {
             // The reload MERGED and re-saved: the file is now a superset of the cloud copy and must go
             // back up. Clear the watermark outright (an mtime-based one can fail to clear the sub-ms
             // epsilon of a small merge-save); a cleared watermark does not depend on timing.

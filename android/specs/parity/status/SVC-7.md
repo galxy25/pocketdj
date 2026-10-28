@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # SVC-7 Document sync engine + ProfileStore + in-memory CloudDocDatabase + SyncRegistry
 
@@ -18,3 +18,15 @@ state: implemented
 
 ## Questions for Levi
 - None blocking. Default `cloudSyncEnabled` = true (iOS parity); with no backend configured the Profile caption reads "Sync isn't set up on this device yet."
+
+## Review
+
+fixes applied
+
+- MAJOR CloudSyncService re-save detection -> fixed. `Entry.reload` / `SyncEntry.onPulled` now return a re-saved flag (`() -> Any?`, `true` = re-saved; backward compatible with Unit lambdas); the engine clears the watermark when it is true OR the mtime moved. Tests: `reloadReportingResaveClearsWatermarkEvenWhenMtimeDoesNotMove`, `reloadReportingNoResaveKeepsWatermark` (suite 3180 -> 3182, 0 failures).
+- MINOR launch name reconcile -> fixed. `reconcileProfileName()` in startCloudSync copies a non-empty profile name into the PROFILE_NAME pref and `collections.performerName` at launch. performerName has no consumer yet (studio package reads it); it is now at least seeded.
+- MINOR ProfileSection keystroke ordering -> fixed. Edits run on a single-parallelism lane (FIFO); the field adopts the persisted name only when no local write is in flight.
+- MINOR launch pass awaitable -> fixed. `ServicesGraph.launchPass` + `awaitLaunchSync()` (bounded; returns at once while onboarding is unresolved). Gating the launch pass on onboarding is an intentional, documented divergence from iOS (avoids racing the restore choice).
+- MINOR debug in-memory DB unreachable -> fixed. Debuggable builds get a "Debug: in-memory sync backend" switch in Settings > Profile that swaps the backend live.
+- MINOR ledger row -> fixed (PARTIAL).
+- NIT applyPayload seam -> fixed. `SyncEntry.applyPayload` passed through `SyncRegistry`; collections pulls write via `CollectionsStore.applyPulledPayload` (inline, version-ordered through its writer, supersedes queued stragglers).

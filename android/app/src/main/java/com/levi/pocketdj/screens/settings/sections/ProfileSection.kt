@@ -43,9 +43,16 @@ internal fun profileSection() = SettingsSection(PROFILE_SECTION_ID, 50) { host -
         }
         name = services.profile.name.ifEmpty { graph.settings.get(OnboardingPrefs.PROFILE_NAME) }
     }
-    // A cloud pull changes the profile name underneath us: follow it.
+    // Local edits go through ONE serialized lane (parallelism 1, FIFO) so a stale prefix can never be
+    // persisted after a newer one. While any local write is in flight the field is the source of truth;
+    // only a change that did NOT come from us (a cloud pull) is adopted back into the field.
+    val writeLane = remember { Dispatchers.IO.limitedParallelism(1) }
+    val inFlight = remember { java.util.concurrent.atomic.AtomicInteger(0) }
     val profileState by services.profile.state.collectAsState()
-    LaunchedEffect(profileState.name) { if (profileState.name.isNotEmpty()) name = profileState.name }
+    LaunchedEffect(profileState.name) {
+        val live = services.profile.state.value.name
+        if (inFlight.get() == 0 && live.isNotEmpty() && live != name) name = live
+    }
     val syncStatus by services.cloudSync.status.collectAsState()
     val syncOn by graph.settings.flow(SyncSettings.CLOUD_SYNC_ENABLED).collectAsState(initial = true)
 
@@ -54,8 +61,13 @@ internal fun profileSection() = SettingsSection(PROFILE_SECTION_ID, 50) { host -
         value = name,
         onValueChange = {
             name = it
-            host.scope.launch(Dispatchers.IO) {
-                services.profile.setName(ShellSettings.normalizeProfileName(it))
+            inFlight.incrementAndGet()
+            host.scope.launch(writeLane) {
+                try {
+                    services.profile.setName(ShellSettings.normalizeProfileName(it))
+                } finally {
+                    inFlight.decrementAndGet()
+                }
             }
         },
         label = { Text("Your PocketDJ name") },
@@ -81,6 +93,26 @@ internal fun profileSection() = SettingsSection(PROFILE_SECTION_ID, 50) { host -
         enabled = syncOn && !syncStatus.syncing,
         onClick = { host.scope.launch(Dispatchers.IO) { services.cloudSync.syncNow() } },
     ) { Text(if (syncStatus.syncing) "Syncing\u2026" else "Sync now") }
+    if (services.isDebuggable()) {
+        var inMemory by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) { inMemory = graph.settings.get(SyncSettings.DEBUG_IN_MEMORY_DB) }
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        ) {
+            Text("Debug: in-memory sync backend", modifier = Modifier.weight(1f))
+            Switch(
+                checked = inMemory,
+                onCheckedChange = { v ->
+                    inMemory = v
+                    host.scope.launch {
+                        graph.settings.set(SyncSettings.DEBUG_IN_MEMORY_DB, v)
+                        services.setDebugInMemoryDb(v)
+                    }
+                },
+            )
+        }
+    }
     SettingsCaption(
         syncStatus.lastError?.let { "Sync failed: $it" }
             ?: syncStatus.lastSummary
