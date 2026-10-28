@@ -89,7 +89,7 @@ class CatalogService(
                     response.code == 304 -> {
                         val cached = cachedIndexOrNull(url)
                             ?: throw IOException("304 with no usable cache for $url")
-                        Loaded(cached, fromCache = true)
+                        Loaded(cached, fromCache = true, changed = false)
                     }
 
                     response.isSuccessful -> {
@@ -127,14 +127,14 @@ class CatalogService(
                         if (seed != null) return@use Loaded(seed, fromCache = true, changed = false)
                         val cached = cachedIndexOrNull(url)
                             ?: throw IOException("HTTP ${response.code} for $url and no cache")
-                        Loaded(cached, fromCache = true)
+                        Loaded(cached, fromCache = true, changed = false)
                     }
                 }
             }
         } catch (error: Exception) {
             if (error is kotlinx.coroutines.CancellationException) throw error
             if (seed != null) return@withContext Loaded(seed, fromCache = true, changed = false)
-            cachedIndexOrNull(url)?.let { Loaded(it, fromCache = true) } ?: throw error
+            cachedIndexOrNull(url)?.let { Loaded(it, fromCache = true, changed = false) } ?: throw error
         }
     }
 

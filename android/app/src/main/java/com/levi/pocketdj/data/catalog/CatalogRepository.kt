@@ -3,9 +3,12 @@ package com.levi.pocketdj.data.catalog
 import com.levi.pocketdj.data.settings.AppSettingsStore
 import com.levi.pocketdj.data.settings.SourceConfig
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -41,6 +44,21 @@ class CatalogRepository(
 
     private val _state = MutableStateFlow(CatalogState())
     val state: StateFlow<CatalogState> = _state.asStateFlow()
+
+    /**
+     * Catalog-only view: emits only when the [MergedCatalog] instance changes, so
+     * collectors don't recompose on isRefreshing flips of an unchanged (304) refresh.
+     */
+    val catalogFlow: kotlinx.coroutines.flow.Flow<MergedCatalog?> =
+        _state.map { it.catalog }.distinctUntilChanged { a, b -> a === b }
+
+    /** Test seam: number of refreshInternal passes that have fully finished. */
+    private val _refreshCompletions = AtomicInteger(0)
+    val refreshCompletions: Int get() = _refreshCompletions.get()
+
+    private fun timing(msg: String) {
+        runCatching { android.util.Log.i("CatalogTiming", msg) }
+    }
 
     /**
      * Merge-order seam for later phases: synthetic local sources (iOS
@@ -120,6 +138,7 @@ class CatalogRepository(
 
     private suspend fun seedFromCache() {
         val sources = enabledSources()
+        val t0 = System.nanoTime()
         val cached = withContext(Dispatchers.IO) {
             sources.mapNotNull { source ->
                 service.cachedIndexOrNull(source.url)?.also { lastGoodBySource[source.url] = it }
@@ -136,10 +155,13 @@ class CatalogRepository(
         }
         lastMergedInputs = inputs
         _state.update { it.copy(catalog = merged, phase = Phase.Ready, error = null) }
+        timing("seed ready in ${(System.nanoTime() - t0) / 1_000_000} ms (${cached.size} sources)")
     }
 
     private suspend fun refreshInternal() {
         val sources = enabledSources()
+        val t0 = System.nanoTime()
+        var merged = false
         _state.update { it.copy(isRefreshing = true) }
         try {
             val loaded = ArrayList<IndexJson>(sources.size)
@@ -177,16 +199,19 @@ class CatalogRepository(
                 _state.update { it.copy(phase = Phase.Ready, error = lastError) }
                 return
             }
-            val merged = withContext(Dispatchers.Default) {
+            val mergedCatalog = withContext(Dispatchers.Default) {
                 mergeCount++
                 MergedCatalog.merge(inputs)
             }
+            merged = true
             lastMergedInputs = inputs
             _state.update {
-                it.copy(catalog = merged, phase = Phase.Ready, error = lastError)
+                it.copy(catalog = mergedCatalog, phase = Phase.Ready, error = lastError)
             }
         } finally {
             _state.update { it.copy(isRefreshing = false) }
+            timing("refresh complete in ${(System.nanoTime() - t0) / 1_000_000} ms (merged=$merged)")
+            _refreshCompletions.incrementAndGet()
         }
     }
 }

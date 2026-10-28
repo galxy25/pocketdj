@@ -48,14 +48,14 @@ class CatalogCacheTest {
         assertTrue(second.fromCache)
     }
 
-    @Test fun serviceWithoutSeedOn304DecodesCacheAndReportsChanged() = runTest {
+    @Test fun serviceWithoutSeedOn304DecodesCacheAndReportsUnchanged() = runTest {
         val svc = CatalogService(cacheDir, OkHttpClient())
         server.enqueue(MockResponse().setBody(body).setHeader("ETag", "\"v1\""))
         svc.load(url())
         server.enqueue(MockResponse().setResponseCode(304))
         val r = svc.load(url())
         assertTrue(r.fromCache)
-        assertTrue(r.changed)
+        assertFalse(r.changed)
     }
 
     @Test fun serviceReusesSeedOnNetworkFailureAndServerError() = runTest {
@@ -95,14 +95,10 @@ class CatalogCacheTest {
         return CatalogRepository(CatalogService(cacheDir, OkHttpClient()), store, scope)
     }
 
-    private fun waitIdle(r: CatalogRepository, min: Int) {
+    private fun awaitCompletions(r: CatalogRepository, n: Int) {
         val end = System.currentTimeMillis() + 10_000
-        while (System.currentTimeMillis() < end) {
-            val s = r.state.value
-            if (s.phase == CatalogRepository.Phase.Ready && !s.isRefreshing && r.mergeCount >= min) { Thread.sleep(100); if (!r.state.value.isRefreshing) return }
-            Thread.sleep(20)
-        }
-        throw AssertionError("repo never settled: ${r.state.value.phase}")
+        while (r.refreshCompletions < n && System.currentTimeMillis() < end) Thread.sleep(5)
+        if (r.refreshCompletions < n) throw AssertionError("only ${r.refreshCompletions}/$n refreshes completed")
     }
 
     @Test fun allSourcesUnchangedSkipsMergeAndKeepsCatalogInstance() {
@@ -110,15 +106,38 @@ class CatalogCacheTest {
         server.enqueue(MockResponse().setResponseCode(304))
         val r = repo()
         r.loadIfNeeded()
-        waitIdle(r, 1)
+        awaitCompletions(r, 1)
         val catalog = r.state.value.catalog
         val merges = r.mergeCount
         r.refresh()
-        val end = System.currentTimeMillis() + 10_000
-        while (server.requestCount < 2 && System.currentTimeMillis() < end) Thread.sleep(20)
-        Thread.sleep(300)
-        waitIdle(r, merges)
+        awaitCompletions(r, 2)
         assertEquals(merges, r.mergeCount)
+        assertSame(catalog, r.state.value.catalog)
+    }
+
+    @Test fun coldLaunchWithWarmCacheSeedsOnceAndSkipsMergeOn304() {
+        // Prime disk cache + validators exactly as a previous launch would have.
+        val aUrl = server.url("/a.json").toString()
+        server.enqueue(MockResponse().setBody(body).setHeader("ETag", "\"v1\""))
+        kotlinx.coroutines.runBlocking { CatalogService(cacheDir, OkHttpClient()).load(aUrl) }
+        // Fresh repository = cold launch.
+        server.enqueue(MockResponse().setResponseCode(304))
+        val r = repo()
+        r.loadIfNeeded()
+        awaitCompletions(r, 1)
+        assertEquals("seed merge only; 304 must reuse the seed", 1, r.mergeCount)
+        assertTrue(r.state.value.catalog != null)
+        assertEquals(CatalogRepository.Phase.Ready, r.state.value.phase)
+        // The refresh really went out conditionally.
+        assertEquals(2, server.requestCount)
+        server.takeRequest()
+        assertEquals("\"v1\"", server.takeRequest().getHeader("If-None-Match"))
+        // And the catalog instance survives a further unchanged refresh.
+        val catalog = r.state.value.catalog
+        server.enqueue(MockResponse().setResponseCode(304))
+        r.refresh()
+        awaitCompletions(r, 2)
+        assertEquals(1, r.mergeCount)
         assertSame(catalog, r.state.value.catalog)
     }
 
@@ -127,13 +146,11 @@ class CatalogCacheTest {
         server.enqueue(MockResponse().setBody(body.replace("\"s1\"", "\"s2\"")).setHeader("ETag", "\"v2\""))
         val r = repo()
         r.loadIfNeeded()
-        waitIdle(r, 1)
+        awaitCompletions(r, 1)
         val catalog = r.state.value.catalog
         val merges = r.mergeCount
         r.refresh()
-        val end = System.currentTimeMillis() + 10_000
-        while (r.mergeCount == merges && System.currentTimeMillis() < end) Thread.sleep(20)
-        waitIdle(r, merges + 1)
+        awaitCompletions(r, 2)
         assertEquals(merges + 1, r.mergeCount)
         assertTrue(r.state.value.catalog !== catalog)
     }
