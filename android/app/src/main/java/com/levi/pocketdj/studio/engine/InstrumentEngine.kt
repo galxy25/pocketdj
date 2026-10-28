@@ -267,6 +267,13 @@ class InstrumentEngine(
         eventLog.clearHighlights()
     }
 
+    /** Commit an EDITED live score (STU-9 live staff). Re-sorted by onset like the iOS host, and published immediately (the pump may be idle). */
+    fun setLiveEvents(events: List<StudioNoteEvent>) {
+        val sorted = events.sortedWith(compareBy({ it.onMs }, { it.note }))
+        eventLog.setLive(sorted)
+        _state.update { it.copy(liveEvents = sorted, liveCaptureFull = sorted.size >= InstrumentEventLog.MAX_LIVE_EVENTS) }
+    }
+
     fun clearLive() { eventLog.clearLive(); _state.update { it.copy(liveEvents = emptyList(), liveCaptureFull = false) } }
 
     // ---- click

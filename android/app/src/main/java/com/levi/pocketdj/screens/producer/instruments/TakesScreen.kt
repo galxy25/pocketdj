@@ -69,7 +69,7 @@ object TakesCopy {
 
 /** The Takes list: replay, rename, delete, folders, instrument switch, tempo rescale, "use as sample" (copies the audio). */
 @Composable
-fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = Modifier) {
+fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = Modifier, onOpenScore: (String) -> Unit = {}) {
     val studio = graph.studioGraph
     val store = studio.studioStore
     val engine = studio.instrumentEngine
@@ -89,6 +89,31 @@ fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = M
     var message by remember { mutableStateOf<String?>(null) }
 
     DisposableEffect(Unit) { onDispose { engine.stopReplay() } }
+
+    // Import a .mid onto the current instrument (piano when none is loaded); failures surface MidiImportException.message.
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    var importing by remember { mutableStateOf(false) }
+    val importLauncher = androidx.activity.compose.rememberLauncherForActivityResult(androidx.activity.result.contract.ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            importing = true
+            scope.launch {
+                try {
+                    val key = engine.state.value.currentInstrument ?: InstrumentKey.PIANO
+                    val (bytes, fileName) = withContext(Dispatchers.IO) {
+                        val b = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: throw com.levi.pocketdj.studio.midi.MidiImportException(com.levi.pocketdj.studio.midi.MidiImport.CANNOT_OPEN)
+                        val n = ctx.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+                        b to n
+                    }
+                    val t = com.levi.pocketdj.studio.midi.MidiImport.importTake(bytes, fileName, key, "Imported MIDI", studio.takeFiler, packs.localBankFile(key))
+                    message = "Imported “${t.name}”."
+                } catch (e: com.levi.pocketdj.studio.midi.MidiImportException) {
+                    message = e.message
+                    if (packs.localBankFile(engine.state.value.currentInstrument ?: InstrumentKey.PIANO) == null) onNeedPacks()
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e
+                } catch (e: Throwable) { message = "Couldn't import that MIDI file." } finally { importing = false }
+            }
+        }
+    }
 
     val folders = store.foldersOrdered(StudioFolderKind.TAKE)
     val inFolder = remember(doc, folderId) { store.takes(folderId) }
@@ -125,6 +150,7 @@ fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = M
                 IconButton(onClick = { folderId = null }) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back to all takes") }
                 Text(current.name, style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
             } else Box(Modifier.weight(1f))
+            TextButton(onClick = { importLauncher.launch(arrayOf("audio/midi", "audio/x-midi", "audio/mid", "application/octet-stream")) }, enabled = !importing, modifier = Modifier.testTag("take-import-midi")) { Text(if (importing) "Importing…" else "Import MIDI") }
             IconButton(onClick = { newFolder = true }, modifier = Modifier.testTag("take-new-folder")) { Icon(Icons.Filled.CreateNewFolder, "New folder") }
         }
         HorizontalDivider()
@@ -144,6 +170,7 @@ fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = M
                 val isPlaying = es.isReplaying && playingId == t.id
                 TakeRow(
                     t, folders, isPlaying, busy = busyId == t.id,
+                    onScore = { onOpenScore(t.id) },
                     onPlay = { if (isPlaying) engine.stopReplay() else scope.launch { play(t) } },
                     onRename = { renaming = t },
                     onInstrument = { k -> engine.stopReplay(); store.setTakeInstrument(t.id, k) },
@@ -189,7 +216,7 @@ fun TakesScreen(graph: AppGraph, onNeedPacks: () -> Unit, modifier: Modifier = M
 @Composable
 private fun TakeRow(
     t: StudioTake, folders: List<com.levi.pocketdj.studio.model.StudioFolder>, playing: Boolean, busy: Boolean,
-    onPlay: () -> Unit, onRename: () -> Unit, onInstrument: (InstrumentKey) -> Unit, onTempo: () -> Unit, onUseAsSample: () -> Unit,
+    onPlay: () -> Unit, onScore: () -> Unit, onRename: () -> Unit, onInstrument: (InstrumentKey) -> Unit, onTempo: () -> Unit, onUseAsSample: () -> Unit,
     onMove: (String?) -> Unit, onNewFolderForMove: () -> Unit, onDelete: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
@@ -207,6 +234,7 @@ private fun TakeRow(
             IconButton(onClick = { menu = true }, modifier = Modifier.testTag("take-menu-${t.id}")) { Icon(Icons.Filled.MoreVert, "Take actions") }
             if (addTo) AddToCollectionSheet(item = AddToItem.Song(t.id), onDismiss = { addTo = false })
             DropdownMenu(menu, { menu = false }) {
+                DropdownMenuItem(text = { Text("Open score") }, onClick = { menu = false; onScore() }, modifier = Modifier.testTag("take-score-${t.id}"))
                 DropdownMenuItem(text = { Text("Use as sample") }, enabled = !busy, onClick = { menu = false; onUseAsSample() }, modifier = Modifier.testTag("take-use-as-sample-${t.id}"))
                 DropdownMenuItem(text = { Text("Add to…") }, onClick = { menu = false; addTo = true })
                 DropdownMenuItem(text = { Text("Rename") }, onClick = { menu = false; onRename() })
