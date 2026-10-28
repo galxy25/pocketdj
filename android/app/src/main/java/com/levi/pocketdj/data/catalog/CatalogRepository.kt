@@ -144,6 +144,19 @@ class CatalogRepository(
         }
     }
 
+    /** Apple Music name->artist-id join rows of the last real documents (BRW-14 ownership + release feed). */
+    fun indexArtists(): List<IndexArtist> {
+        val docs = lastRealDocs
+        val memo = artistsMemo
+        if (memo != null && memo.first === docs) return memo.second
+        val flat = docs.flatMap { it.artists.orEmpty() }
+        artistsMemo = docs to flat
+        return flat
+    }
+
+    /** [indexArtists] result memoised on the identity of the docs list (callers can memo on the result's identity). */
+    @Volatile private var artistsMemo: Pair<List<IndexJson>, List<IndexArtist>>? = null
+
     /** Exact documents (by identity) behind the currently-published catalog. */
     private var lastMergedInputs: List<IndexJson>? = null
 

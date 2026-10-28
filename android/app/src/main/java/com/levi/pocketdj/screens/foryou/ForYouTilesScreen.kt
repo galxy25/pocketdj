@@ -315,8 +315,15 @@ fun ForYouTilesScreen(
 
     val snapshot = feedState.snapshot
     // The derivation key IS the by-construction link to the song list: same ForYouGrid function.
-    val tiles = remember(feedState.revision, snapshot.refreshedAtMs, fbState.revision, colState.revision) {
-        ForYouGrid.tiles(snapshot, stores.collections.asForYouCollections(), stores.feedback, null)
+    // The New tile's count / Coming soon / empty note come from the release feed (BRW-14). The service reads its
+    // file on first touch, so it is resolved off-main; the grid shows 0 until it is there.
+    val releaseFeed by produceState(graph.browseGraph.releaseFeedIfReady()) {
+        if (value == null) value = withContext(Dispatchers.IO) { graph.browseGraph.releaseFeed }
+    }
+    val releaseRev = releaseFeed?.revisionFlow?.collectAsState()?.value ?: 0
+    val releaseSource = remember(releaseFeed) { releaseFeed?.let { com.levi.pocketdj.data.recs.ReleaseFeedForYouSource(it) } }
+    val tiles = remember(feedState.revision, snapshot.refreshedAtMs, fbState.revision, colState.revision, releaseRev, releaseSource) {
+        ForYouGrid.tiles(snapshot, stores.collections.asForYouCollections(), stores.feedback, releaseSource)
     }
     val updatedLabel = remember(feedState.revision, snapshot.refreshedAtMs) {
         ForYouFeedStore.updatedLabel(snapshot.refreshedAtMs)

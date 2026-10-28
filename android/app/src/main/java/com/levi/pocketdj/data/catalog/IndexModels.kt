@@ -41,8 +41,10 @@ data class IndexArtist(
 
     companion object {
         /** trim, lowercase, collapse whitespace runs — must match the indexer's norm(). */
+        private val ws = Regex("\\s+")
+
         fun normalize(raw: String): String =
-            raw.trim().lowercase().split(Regex("\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+            raw.trim().lowercase().split(ws).filter { it.isNotEmpty() }.joinToString(" ")
     }
 }
 

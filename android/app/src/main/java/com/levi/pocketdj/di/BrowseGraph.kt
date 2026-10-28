@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.plus
@@ -153,6 +154,7 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
      * also finishes an owed server-side deletion regardless of the toggle; it exits at once when disabled.
      */
     fun startRecs() {
+        startReleaseFeed()
         app.appScope.launch(Dispatchers.IO) {
             deviceIdMirror = runCatching { app.settings.ensureInstallId() }.getOrDefault("")
             launch { app.settings.flow(com.levi.pocketdj.data.recs.RecsSettings.SHARE_LIFETIME_PLAY_COUNTS).collect { shareCountsMirror.set(it) } }
@@ -167,6 +169,135 @@ class BrowseGraph(private val app: AppGraph) : FeatureModule {
                     svc = recService.also { it.startAutoFlush() }
                 } else if (prev != on) {
                     s.enabledDidChange()
+                }
+            }
+        }
+    }
+
+    // ---- New releases feed (BRW-14) ----------------------------------------------------------
+
+    /** Synchronous mirror of "Apple Music is signed in" (the transport's canSync is read off suspend paths). */
+    private val amSignedIn = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private val releaseFeedLazy: Lazy<com.levi.pocketdj.data.recs.ReleaseFeedService> = lazy {
+        val tokens = com.levi.pocketdj.data.applemusic.DefaultAppleMusicTokens(app.musicKitDevTokenClient, app.settings)
+        val svc = com.levi.pocketdj.data.recs.ReleaseFeedService(
+            transport = com.levi.pocketdj.data.recs.AppleMusicReleaseTransport(
+                http = app.httpClient,
+                tokens = tokens,
+                canSyncProvider = { amSignedIn.get() },
+                baseOverride = { if (com.levi.pocketdj.BuildConfig.DEBUG) com.levi.pocketdj.data.applemusic.AppleMusicApi.debugBase else null },
+            ),
+            file = java.io.File(app.appContext.filesDir, com.levi.pocketdj.data.recs.ReleaseFeedService.FILE_NAME),
+            scope = app.appScope + Dispatchers.IO,
+        )
+        svc.ownsRelease = com.levi.pocketdj.data.recs.ReleaseOwnershipProbes.ownership { ownedCatalogIndexOrNull() }
+        svc.ownsReleaseVersion = com.levi.pocketdj.data.recs.ReleaseOwnershipProbes.version { ownedCatalogIndexOrNull() }
+        svc.playsForArtist = { id -> releasePlaysForArtist(id) }
+        svc
+    }
+
+    /** The New-releases feed. Reads its file on first touch: touch off Main (or via [releaseFeedIfReady]). */
+    val releaseFeed: com.levi.pocketdj.data.recs.ReleaseFeedService by releaseFeedLazy
+
+    /** Non-null once created; lets Main-thread composition read it without a disk hit. */
+    fun releaseFeedIfReady(): com.levi.pocketdj.data.recs.ReleaseFeedService? =
+        if (releaseFeedLazy.isInitialized()) releaseFeedLazy.value else null
+
+    @Volatile private var ownedIndexMemo: Pair<com.levi.pocketdj.data.catalog.MergedCatalog, com.levi.pocketdj.data.recs.OwnedCatalogIndex>? = null
+
+    /** Ownership joins for the current catalog; null until built off-main (the cold-launch default owns nothing). */
+    private fun ownedCatalogIndexOrNull(): com.levi.pocketdj.data.recs.OwnedCatalogIndex? {
+        val catalog = app.catalogRepository.state.value.catalog ?: return null
+        val memo = ownedIndexMemo
+        if (memo != null && memo.first === catalog) return memo.second
+        // Never build on the render path (54 ms measured on iOS): schedule it and answer "owns nothing" meanwhile.
+        scheduleOwnedIndexBuild(catalog)
+        return null
+    }
+
+    private val ownedIndexBuilding = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private fun scheduleOwnedIndexBuild(catalog: com.levi.pocketdj.data.catalog.MergedCatalog) {
+        if (!ownedIndexBuilding.compareAndSet(false, true)) return
+        app.appScope.launch(Dispatchers.Default) {
+            try {
+                val index = com.levi.pocketdj.data.recs.OwnedCatalogIndex(catalog, app.catalogRepository.indexArtists())
+                ownedIndexMemo = catalog to index
+                // The feed's filter just changed from "owns nothing" to the real answer: recompute the UI.
+                releaseFeedIfReady()?.ownershipChanged()
+            } finally {
+                ownedIndexBuilding.set(false)
+            }
+            // The catalog may have been swapped while building: build for the new one too.
+            val now = app.catalogRepository.state.value.catalog
+            if (now != null && ownedIndexMemo?.first !== now) scheduleOwnedIndexBuild(now)
+        }
+    }
+
+    /** Catalog song id that already claims this Apple Music track id (so a New queue plays it as the owned song). */
+    fun catalogSongIdForAppleMusicId(appleMusicId: String): String? = ownedCatalogIndexOrNull()?.songId(appleMusicId)
+
+    private val artistIdResolver = com.levi.pocketdj.data.recs.ArtistIdResolver { app.catalogRepository.indexArtists() }
+
+    /** Apple Music artist id for a played artist name (indexed name join); null when the index has none. */
+    private fun releaseArtistId(name: String): Int? = artistIdResolver.resolve(name)
+
+    private val releaseArtistNames = java.util.concurrent.ConcurrentHashMap<Int, String>()
+
+    private fun releasePlaysForArtist(artistId: Int): Int {
+        val name = releaseArtistNames[artistId] ?: return 0
+        val key = com.levi.pocketdj.data.recs.RecVersionIdentity.fold(name)
+        return com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext).events.count {
+            it.artist?.let { a -> com.levi.pocketdj.data.recs.RecVersionIdentity.fold(a) } == key
+        }
+    }
+
+    /**
+     * Launch hook (called from [startRecs]): mirror Apple Music sign-in, run the one-shot listening seed once
+     * the catalog + sign-in are there, and note every NEW play (the feed's only steady-state trigger).
+     */
+    private fun startReleaseFeed() {
+        app.appScope.launch(Dispatchers.IO) {
+            val feed = releaseFeed
+            // Mirror the sign-in from the SAME stream the seed combines on (set before the combine sees it).
+            val signedInFlow = app.settings.settings.map { it.hasAppleMusic }
+                .onEach { amSignedIn.set(it) }.distinctUntilChanged()
+            // Build the ownership index as soon as a catalog lands (not on the first render-path read).
+            launch { app.catalogRepository.catalogFlow.collect { c -> if (c != null) ownedCatalogIndexOrNull() } }
+            // Seed: needs the artist-id table (catalog) and a signed-in account; retried when either arrives.
+            launch {
+                kotlinx.coroutines.flow.combine(
+                    app.catalogRepository.catalogFlow,
+                    signedInFlow,
+                ) { catalog, signedIn -> catalog != null && signedIn }.collect { ready ->
+                    if (!ready || !feed.needsSeed) return@collect
+                    val now = System.currentTimeMillis().toDouble()
+                    val events = com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext).events
+                    val seeds = com.levi.pocketdj.data.recs.ReleaseFeedSeed.recentArtistNames(events, now).mapNotNull { n ->
+                        releaseArtistId(n)?.let { id -> releaseArtistNames[id] = n; id to n }
+                    }
+                    feed.seedFromRecentListening(seeds, now)
+                }
+            }
+            // Steady state: only events that appear AFTER launch and are fresh (a synced replay is not a play).
+            launch {
+                val store = com.levi.pocketdj.data.history.PlayHistoryStore.get(app.appContext)
+                var seen = store.events.lastOrNull()?.id
+                store.state.collect { st ->
+                    val events = st.events
+                    val from = com.levi.pocketdj.data.recs.ReleaseFeedWiring.newEventsStart(events.map { it.id }, seen)
+                    seen = events.lastOrNull()?.id ?: seen
+                    val now = System.currentTimeMillis().toDouble()
+                    for (e in events.subList(from, events.size)) {
+                        if (now - e.playedAt > 120_000.0) continue
+                        val name = e.artist?.takeIf { it.isNotBlank() }
+                            ?: e.songId.let { sid -> app.catalogRepository.state.value.catalog?.songsById?.get(sid)?.artist }?.takeIf { it.isNotBlank() }
+                            ?: continue
+                        val id = releaseArtistId(name) ?: continue
+                        releaseArtistNames[id] = name
+                        feed.noteArtistPlayed(id, name, now)
+                    }
                 }
             }
         }

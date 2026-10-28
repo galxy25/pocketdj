@@ -173,6 +173,12 @@ fun HistoryScreen(
     var showSort by remember { mutableStateOf(false) }
 
     val openRoute = forYouRoute
+    if (current == HistoryTab.FOR_YOU && openRoute != null &&
+        openRoute.kind == com.levi.pocketdj.data.recs.ForYouTileKind.NEW
+    ) {
+        com.levi.pocketdj.screens.foryou.NewReleasesScreen(onBack = { forYouRouteKey = null }, modifier = modifier)
+        return
+    }
     if (current == HistoryTab.FOR_YOU && openRoute != null) {
         com.levi.pocketdj.screens.foryou.ForYouSongListScreen(
             route = openRoute,
