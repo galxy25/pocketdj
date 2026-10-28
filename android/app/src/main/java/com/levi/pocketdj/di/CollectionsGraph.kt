@@ -57,6 +57,9 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     @Volatile
     var collectionSuggestions: ((String) -> List<com.levi.pocketdj.screens.collections.CollectionSuggestion>)? = null
 
+    /** Memoized virtual "Recently added" derivation (COL-12). */
+    val recentlyAdded: com.levi.pocketdj.data.collections.RecentlyAddedBuilder by lazy { com.levi.pocketdj.data.collections.RecentlyAddedBuilder() }
+
     /** Window-scoped multi-select state shared by Browse and every collection detail (COL-5). */
     val rowSelection: com.levi.pocketdj.ui.selection.RowSelection by lazy { com.levi.pocketdj.ui.selection.RowSelection() }
 

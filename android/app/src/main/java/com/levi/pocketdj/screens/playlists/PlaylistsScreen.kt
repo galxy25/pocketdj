@@ -23,6 +23,8 @@ import androidx.compose.material.icons.filled.CreateNewFolder
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.History
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material.icons.filled.Inventory2
 import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.LibraryMusic
@@ -65,6 +67,10 @@ import com.levi.pocketdj.data.collections.Playlist
 import com.levi.pocketdj.data.collections.Pocket
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.screens.browse.Fmt
+import androidx.compose.runtime.produceState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.launch
 
 /** Which create dialog is open (§2.5 toolbar). */
@@ -111,6 +117,18 @@ fun PlaylistsScreen(
     val sort = CollectionSortOrder.fromToken(settings?.collectionSort)
     val collapsedFolders = settings?.collapsedFolderIds ?: emptySet()
     val expandedSources = settings?.expandedSourceNames ?: emptySet()
+
+    val recentlyLimit by remember {
+        graph.settings.flow(com.levi.pocketdj.data.settings.ShellSettings.DEFAULT_RECENTLY_ADDED_COUNT)
+            .map { com.levi.pocketdj.data.settings.ShellSettings.clampRecentlyAdded(it) }
+    }.collectAsState(initial = com.levi.pocketdj.data.settings.ShellSettings.RECENTLY_ADDED_DEFAULT)
+    val activityState by graph.collectionActivity.state.collectAsState()
+    // Derived off-main + memoized on (catalog, activity revision, limit): null = no adds.
+    val recentlyAddedCount by produceState<Int?>(null, catalog, activityState.revision, recentlyLimit) {
+        value = if (catalog == null) null else withContext(Dispatchers.Default) {
+            graph.collectionsGraph.recentlyAdded.songIds(catalog, activityState.events, recentlyLimit).size
+        }
+    }
 
     var query by rememberSaveable { mutableStateOf("") }
 
@@ -203,6 +221,13 @@ fun PlaylistsScreen(
                     sort = sort,
                     query = trimmedQuery,
                     collapsedFolders = collapsedFolders,
+                    recentlyAddedCount = recentlyAddedCount,
+                    onOpenRecentlyAdded = {
+                        onOpenSourcePlaylist(
+                            com.levi.pocketdj.data.collections.RecentlyAdded.PLAYLIST_ID,
+                            com.levi.pocketdj.data.collections.RecentlyAdded.NAME,
+                        )
+                    },
                     onToggleFolder = { id, collapsed ->
                         scope.launch { graph.settings.setFolderCollapsed(id, collapsed) }
                     },
@@ -383,6 +408,8 @@ private fun LazyListScope.userTab(
     sort: CollectionSortOrder,
     query: String,
     collapsedFolders: Set<String>,
+    recentlyAddedCount: Int?,
+    onOpenRecentlyAdded: () -> Unit,
     onToggleFolder: (id: String, collapsed: Boolean) -> Unit,
     onOpenPlaylist: (String) -> Unit,
     onOpenPocket: (String) -> Unit,
@@ -442,7 +469,7 @@ private fun LazyListScope.userTab(
     }
 
     // Whole-tab empty state (§2.4).
-    if (state.playlists.isEmpty() && state.pockets.isEmpty()) {
+    if (state.playlists.isEmpty() && state.pockets.isEmpty() && recentlyAddedCount == 0) {
         item(key = "empty") {
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
@@ -472,6 +499,23 @@ private fun LazyListScope.userTab(
             }
         }
         return
+    }
+
+    // 0. Pinned virtual "Recently added" row (hidden when there are no adds).
+    if (recentlyAddedCount != null && recentlyAddedCount > 0) {
+        item(key = "hdr-recent") { SectionHeader("Recently added") }
+        item(key = "row-recent") {
+            androidx.compose.material3.ListItem(
+                headlineContent = { Text("$recentlyAddedCount songs — newest first") },
+                leadingContent = {
+                    androidx.compose.material3.Icon(androidx.compose.material.icons.Icons.Filled.History, contentDescription = null)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("recently-added-row")
+                    .clickable(onClick = onOpenRecentlyAdded),
+            )
+        }
     }
 
     // 1. "Your playlists" — top-level, active sort (§2.4).
