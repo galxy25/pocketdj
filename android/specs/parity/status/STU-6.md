@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # STU-6 Cues tab + cue-seek plumbing
 

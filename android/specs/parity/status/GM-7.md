@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # GM-7 In the Pocket store + PocketsBridge + rounds upload client
 

@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # SURF-6 — Settings shell rows
 
