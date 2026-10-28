@@ -343,6 +343,8 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
             },
         ) { innerPadding ->
             ShellNavHost(navController, startTab, appSnackbar, graph, Modifier.padding(innerPadding))
+            // COL-8: large-batch Apple Music write-back confirmation (renders nothing while idle).
+            com.levi.pocketdj.screens.collections.WriteBackConfirmDialog(graph.collections)
         }
     }
 }

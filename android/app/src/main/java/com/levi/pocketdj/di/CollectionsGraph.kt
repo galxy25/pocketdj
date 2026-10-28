@@ -1,5 +1,9 @@
 package com.levi.pocketdj.di
 
+import com.levi.pocketdj.data.applemusic.DefaultAppleMusicTokens
+import com.levi.pocketdj.data.applemusic.PlaylistWriteBack
+import com.levi.pocketdj.data.applemusic.WebApiPlaylistWriteBackTransport
+import com.levi.pocketdj.data.collections.CollectionsStore
 import com.levi.pocketdj.data.favorites.FavoritesAccess
 import com.levi.pocketdj.data.favorites.FavoritesStore
 import com.levi.pocketdj.data.favorites.favoriteActivityRecorder
@@ -63,8 +67,64 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
     /** Window-scoped multi-select state shared by Browse and every collection detail (COL-5). */
     val rowSelection: com.levi.pocketdj.ui.selection.RowSelection by lazy { com.levi.pocketdj.ui.selection.RowSelection() }
 
+    /**
+     * The durable Apple Music write-back queue (COL-8). Lazy - decodes its own device-local document
+     * on first touch. Transport = Apple Music Web API (dev token + Music-User-Token, SVC-15).
+     */
+    val writeBack: PlaylistWriteBack by lazy {
+        val tokens = DefaultAppleMusicTokens(app.musicKitDevTokenClient, app.settings)
+        PlaylistWriteBack(
+            file = File(app.appContext.filesDir, PlaylistWriteBack.FILE_NAME),
+            transport = WebApiPlaylistWriteBackTransport(app.appleMusicApi, tokens),
+            scope = app.appScope,
+        ).also { wb ->
+            // Catalog seam for the playlist JOIN tie-break (kept out of the queue so it stays data-layer free).
+            wb.appleMusicIdsForIndexPlaylist = { indexPlaylistId ->
+                val catalog = app.catalogRepository.state.value.catalog
+                catalog?.playlists?.firstOrNull { it.playlist.id == indexPlaylistId }
+                    ?.playlist?.songIds.orEmpty().mapNotNull { catalog?.songsById?.get(it)?.appleMusicId }
+            }
+        }
+    }
+
+    /**
+     * Wire the store's write-back seams (called once from AppGraph's `collections` initializer).
+     * Unconditional like the iOS wiring (append-only + non-destructive), gated only on `canWriteBack`.
+     * The queue itself is created lazily: nothing is read from disk until the first add/drain.
+     */
+    fun wireWriteBack(store: CollectionsStore) {
+        store.enqueueSourceWriteBack = { item ->
+            val wb = writeBack
+            if (!wb.canWriteBack) {
+                false
+            } else {
+                val job = wb.enqueue(
+                    item.indexPlaylistId, item.playlistName, item.songId, item.appleMusicId,
+                    item.title, item.artist, item.album, item.durationMs,
+                )
+                wb.runSoon()
+                job != null
+            }
+        }
+        store.enqueueSourceWriteBackBatch = { items ->
+            val wb = writeBack
+            if (!wb.canWriteBack) {
+                0
+            } else {
+                val queued = wb.enqueueMany(items)
+                if (queued > 0) wb.runSoon()
+                queued
+            }
+        }
+        store.canWriteBackUpstream = { writeBack.canWriteBack }
+        store.cancelPendingWriteBacks = { indexPlaylistId, songIds -> writeBack.cancelPending(indexPlaylistId, songIds) }
+    }
+
     override val settingsSections: List<com.levi.pocketdj.shell.SettingsSection> by lazy {
-        listOf(com.levi.pocketdj.screens.settings.sections.collectionsSyncSection())
+        listOf(
+            com.levi.pocketdj.screens.settings.sections.collectionsSyncSection(),
+            com.levi.pocketdj.screens.settings.appleMusicWriteBackSection(),
+        )
     }
 
     override val flushables: List<Flushable> = listOf(
@@ -79,6 +139,21 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
         // Warm the favorites doc off-main: the lazy constructor does a synchronous file read +
         // JSON decode that would otherwise land inside the first ♥ row's composition.
         app.appScope.launch(Dispatchers.IO) { favorites }
+        // COL-8: drain any write-back queued in a previous session (or backed off after a failure) -
+        // the queue has no internal timer, so launch is what re-arms it.
+        app.appScope.launch(Dispatchers.IO) { runCatching { writeBack.runSoon() } }
+        // ...and re-arm on every process foreground (iOS scenePhase .active) + after a Music-User-Token
+        // sign-in: a long-lived process would otherwise leave backed-off / signed-out jobs parked.
+        app.appScope.launch(Dispatchers.Main) {
+            runCatching {
+                androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle.addObserver(
+                    com.levi.pocketdj.data.applemusic.WriteBackForegroundDrain { writeBack.runSoon() },
+                )
+            }
+        }
+        app.appScope.launch(Dispatchers.IO) {
+            runCatching { app.musicKitAuth.onSignedIn = { writeBack.runSoon() } }
+        }
         // Converted-collection source sync (COL-7, iOS onCatalogAssigned): every NEW catalog
         // snapshot (cache seed + refresh) reconciles source-linked pockets/playlists, gated by
         // the global Settings toggle (default ON). Same-instance re-emissions are skipped.

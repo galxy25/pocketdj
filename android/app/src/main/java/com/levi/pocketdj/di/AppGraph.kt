@@ -336,6 +336,8 @@ class AppGraph private constructor(context: Context) {
             CollectionsStore(f, writer = VersionedJsonWriter(f, bgWriterExecutor))
         }.also { store ->
             store.catalogProvider = { catalogRepository.state.value.catalog }
+            // COL-8: Apple Music write-back seams (queue is lazy; nothing read until first use).
+            collectionsGraph.wireWriteBack(store)
             // STU-7: studio items count/realize/play with their real lengths (lazy; never builds the studio store for catalog ids).
             store.studioLookup = studioGraph.collectionsLookup
             // Warm the studio store on IO so statsForPocket/rows never do its first JSON read on main.

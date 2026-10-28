@@ -172,7 +172,9 @@ class CollectionsActivityChokePointsTest {
         assertNull(store.lastAddTarget)
         assertTrue(store.recentAddTargets.isEmpty())
         assertTrue(result.createdDuplicate)
-        assertEquals(false, result.writeBackEligible)
+        // COL-8: an Apple Music source + catalog song with identity IS write-back eligible; no seam wired here, so nothing queued.
+        assertEquals(true, result.writeBackEligible)
+        assertEquals(false, result.writeBackQueued)
         // And it must NOT advance the three-way-merge base snapshot.
         assertEquals(listOf("sng_1"), result.playlist.sourceSongIds)
     }

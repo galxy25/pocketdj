@@ -85,6 +85,10 @@ fun PocketDetailScreen(
     }
 
     var detailSongId by remember { mutableStateOf<String?>(null) }
+    var forceSyncMessage by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(forceSyncMessage) {
+        forceSyncMessage?.let { snackbar.showSnackbar(it); forceSyncMessage = null }
+    }
     var renameOpen by remember { mutableStateOf(false) }
     var deleteOpen by remember { mutableStateOf(false) }
     var dedupeResult by rememberSaveable { mutableStateOf<Int?>(null) }
@@ -336,6 +340,27 @@ fun PocketDetailScreen(
                                         store.movePocketSongs(pocketId, index, index + 1)
                                     },
                                 )
+                                // COL-8: manual escape hatch when a song the user KNOWS isn't in the real
+                                // Apple Music playlist reads as "already upstream" (stale snapshot).
+                                // Shown on every catalog row (like iOS) so an unlinked pocket explains NOT_LINKED.
+                                if (!PlayResolver.isStudioId(songId)) {
+                                    DropdownMenuItem(
+                                        text = { Text("Force Apple Music sync") },
+                                        onClick = {
+                                            dismiss()
+                                            val wb = graph.collectionsGraph.writeBack
+                                            val attempt = store.forceWriteBackSong(
+                                                songId, com.levi.pocketdj.data.collections.AddTarget.Kind.POCKET, pocketId,
+                                            )
+                                            if (attempt == com.levi.pocketdj.data.collections.CollectionsStore.WriteBackAttempt.QUEUED ||
+                                                attempt == com.levi.pocketdj.data.collections.CollectionsStore.WriteBackAttempt.DEDUPED
+                                            ) wb.runSoon()
+                                            forceSyncMessage = com.levi.pocketdj.data.applemusic.ForceSyncMessages.line(
+                                                attempt, wb.canWriteBack, wb.isUnsyncable(songId),
+                                            )
+                                        },
+                                    )
+                                }
                                 DropdownMenuItem(
                                     text = { Text("Remove") },
                                     onClick = { dismiss(); store.removeSongFromPocket(songId, pocketId) },
