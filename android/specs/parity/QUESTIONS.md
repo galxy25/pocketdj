@@ -106,6 +106,8 @@ Format: `Q<n> [wave/package] question — default meanwhile — why it matters`
 
 - **Q91 [COL-18]** (a) The Settings pockets toggle (not yet built, Q89a) must also set `LISTENING_POCKETS_ANSWERED` when it flips, otherwise the History tab keeps offering the opt-in after the user answered. (b) "Open Now Playing after Play" is not wired (no navigation seam from History). (c) With a location engine active the device label is the only authority and an unknown id reads "Earlier place" (as iOS); cloud label is fallback only when no engine is active. Confirm. -- *Default: as built.* -- Product.
 - **Q92 [COL-19]** `data_extraction_rules.xml` / `backup_rules.xml` exclude the listening-location store file; lines are not alphabetized, so a hand-merge is needed if another package touches them. COL-20 (location source) will need location permission + geocoding policy decision. -- *Default: as built.* -- Product.
+- **Q93 [COL-20]** Is an approximate-only (COARSE) location grant acceptable for places & trips? Android requests COARSE+FINE together; with COARSE alone accuracy is too poor for visits, so only movement hints (no places) are produced and the UI offers "Allow precise location". — *Default: require precise for places; coarse = hints only.* — Decides whether to relax the dwell accuracy gate (200 m) for approximate grants.
+
 
 ## ANSWERED
 
