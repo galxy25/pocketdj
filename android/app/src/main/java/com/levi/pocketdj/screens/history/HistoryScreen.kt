@@ -149,6 +149,17 @@ fun HistoryScreen(
                 com.levi.pocketdj.screens.foryou.ForYouGate.visible(on, com.levi.pocketdj.BuildConfig.DEBUG)
         }
     }
+    // COL-18 Pockets gate: rec engine AND pockets ON, or (once) the unanswered opt-in offer.
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.flow.combine(
+            graph.browseGraph.recEnabled,
+            graph.settings.flow(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED),
+            graph.settings.flow(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ANSWERED),
+        ) { rec, on, answered -> PocketsTabGate.tabVisible(rec, on, answered) }
+            .collect { HistoryTabGate.pocketsEnabled.value = it }
+    }
+    // The open pocket / pattern detail is hosted here (History owns the tab), like the For You list.
+    var pocketKey by rememberSaveable { mutableStateOf<String?>(null) }
     var forYouRefreshToken by remember { mutableIntStateOf(0) }
     // The open For You tile list is hosted here (History owns the tab), not a NavHost route.
     // Held as the encoded route so it survives navigate-away (⋯ ▸ Open collection), rotation and process death.
@@ -171,6 +182,21 @@ fun HistoryScreen(
     val inputs by state.inputs.collectAsState()
     var showFilter by remember { mutableStateOf(false) }
     var showSort by remember { mutableStateOf(false) }
+
+    if (current == HistoryTab.POCKETS && pocketKey != null) {
+        val results by graph.collectionsGraph.listeningPockets.results.collectAsState()
+        val key = pocketKey!!
+        val pocket = results?.pockets?.firstOrNull { PocketsTabGate.pocketKey(it.id) == key }
+        val pattern = results?.patterns?.firstOrNull { PocketsTabGate.patternKey(it.id) == key }
+        if (pocket != null || pattern != null) {
+            ListeningPocketDetailScreen(
+                pocket = pocket, pattern = pattern,
+                labeler = pocketLabelerFor(graph, results),
+                onBack = { pocketKey = null }, modifier = modifier,
+            )
+            return
+        }
+    }
 
     val openRoute = forYouRoute
     if (current == HistoryTab.FOR_YOU && openRoute != null &&
@@ -205,6 +231,8 @@ fun HistoryScreen(
                     Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
                 }
             }
+        } else if (current == HistoryTab.POCKETS) {
+            // Pockets has no search: pull-to-refresh inside the tab.
         } else Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
@@ -265,11 +293,9 @@ fun HistoryScreen(
                     )
                 },
             )
-            HistoryTab.POCKETS -> EmptyState(
-                icon = Icons.Filled.Layers,
-                title = "Listening pockets",
-                caption = "Pockets learned from your listening show up here.",
-                testTag = "history-pockets",
+            HistoryTab.POCKETS -> ListeningPocketsScreen(
+                onOpen = { pocketKey = it },
+                modifier = Modifier.testTag("history-pockets"),
             )
             HistoryTab.FOR_YOU -> com.levi.pocketdj.screens.foryou.ForYouTilesScreen(
                 refreshToken = forYouRefreshToken,

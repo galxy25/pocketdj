@@ -437,6 +437,7 @@ class CollectionsGraph(private val app: AppGraph) : FeatureModule {
                 override val recommendationsEnabled get() = app.browseGraph.recEnabled
                 override fun choose(on: Boolean) {
                     app.appScope.launch(Dispatchers.IO) {
+                        runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ANSWERED, true) }
                         runCatching { app.settings.set(com.levi.pocketdj.data.pockets.PocketsSettings.LISTENING_POCKETS_ENABLED, on) }
                     }
                 }
