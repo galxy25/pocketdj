@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # COL-18 - History > Pockets screen
 

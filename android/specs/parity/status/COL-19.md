@@ -1,4 +1,4 @@
-state: reviewed
+state: merged
 
 # COL-19 Listening places engine + location store
 
