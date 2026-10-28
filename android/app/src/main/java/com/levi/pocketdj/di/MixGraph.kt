@@ -96,7 +96,9 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
     }
 
     /** MIX-12: mix audio recorder. AppGraph calls recoverOrphans() off-main at launch. */
+    @Volatile private var recorderBuilt = false
     val mixRecorder: com.levi.pocketdj.mix.recording.MixRecorder by lazy {
+        recorderBuilt = true
         val tap = recordingTap
         val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
         com.levi.pocketdj.mix.recording.MixRecorder(
@@ -300,9 +302,16 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             albumId?.let { app.catalogRepository.state.value.catalog?.albumsById?.get(it)?.artCandidates()?.firstOrNull() }
         }
         lateinit var focus: com.levi.pocketdj.mix.service.MixFocusMachine
+        // Final review: an idle / displaced Mix must stop its AudioTrack + urgent render thread (pauseEngineIfIdle had no
+        // caller). A grace period keeps pause/resume taps from thrashing the HAL; the next play rebuilds the sink.
+        val parkHandler = android.os.Handler(android.os.Looper.getMainLooper())
+        val parkRunnable = Runnable { e.pauseEngineIfIdle() }
+        fun parkSinkSoon(delayMs: Long) { parkHandler.removeCallbacks(parkRunnable); parkHandler.postDelayed(parkRunnable, delayMs) }
+        e.keepEngineAlive = { recorderBuilt && mixRecorder.isRecording }   // an open take keeps the sink (and the decks) alive
+        e.setlistIsLive = { app.playbackGraph.sequencer.isRunning }       // never materialize a parked mix behind a live set list
         val player = com.levi.pocketdj.mix.service.MixSessionPlayer(
             android.os.Looper.getMainLooper(), com.levi.pocketdj.mix.service.EngineMixTransportPort(e, dj, art),
-            onHandoff = { focus.onHandoff() },
+            onHandoff = { focus.onHandoff(); parkSinkSoon(1_000) },
         )
         sessionPlayerRef = player
         val transport = object : com.levi.pocketdj.mix.service.FocusTransport {
@@ -314,7 +323,7 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             override val isOwner get() = com.levi.pocketdj.playback.session.SessionSwitchboard.shared.isActive(player)
             override fun remotePause() = dj.remotePause()
             override fun remotePlay() = dj.remotePlay()
-            override fun pauseBoth() = e.pauseBoth()
+            override fun pauseBoth() { e.pauseBoth(); parkSinkSoon(1_000) }
         }
         focus = com.levi.pocketdj.mix.service.MixFocusMachine(
             com.levi.pocketdj.mix.service.AndroidFocusSystem(audio) { change -> focus.onFocusChange(change) }, transport,
@@ -329,8 +338,11 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
             android.content.IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
             ContextCompat.RECEIVER_NOT_EXPORTED,
         )
-        e.onAudioStarted = { ensureMediaService(); player.onAudioStarted(); focus.onAudioStarted() }
-        e.onNowPlayingChanged = { player.refresh(); focus.onTransportIdle() }
+        e.onAudioStarted = { parkHandler.removeCallbacks(parkRunnable); ensureMediaService(); player.onAudioStarted(); focus.onAudioStarted() }
+        e.onNowPlayingChanged = {
+            player.refresh(); focus.onTransportIdle()
+            if (!e.mixWantsAudio) parkSinkSoon(15_000) else parkHandler.removeCallbacks(parkRunnable)
+        }
         e.onSinkRouting = { ok -> mainHandler.post { recovery.onSinkRouting(ok) } }   // fires on the render thread
         e.onHeartbeat = { player.refresh(); recovery.silentPlayingCheck() }
         dj.onSkipCommandsEnabled = { player.refresh() }
