@@ -78,6 +78,8 @@ class VersionedJsonWriter(
     }
 
     private fun applyWrite(version: Long, render: () -> String) {
+        // A burst of N events must not cost N full encodes: skip the render when a newer write already landed.
+        if (synchronized(applyLock) { version <= applied }) return
         val text = try {
             render()
         } catch (_: Exception) {

@@ -10,7 +10,10 @@ import kotlinx.coroutines.runBlocking
  * before the process can be frozen/killed after backgrounding. Attach to ProcessLifecycleOwner.
  */
 class FlushOnStop(private val registry: FeatureModuleRegistry) : DefaultLifecycleObserver {
+    private companion object { const val FLUSH_BUDGET_MS = 2_500L }
+
     override fun onStop(owner: LifecycleOwner) {
-        runBlocking(Dispatchers.IO) { registry.flushAll() }
+        // Bounded: a slow module flush (network diag upload, big documents) must not freeze the main looper.
+        runBlocking(Dispatchers.IO) { kotlinx.coroutines.withTimeoutOrNull(FLUSH_BUDGET_MS) { registry.flushAll() } }
     }
 }

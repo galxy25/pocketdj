@@ -20,6 +20,9 @@ class SeededFlag(
     private val value = AtomicBoolean(initial)
     private val last = AtomicLong(clock())
 
+    /** Kick one asynchronous read now (the constructor's initial value is a placeholder). */
+    fun refresh() { scope.launch { value.set(runCatching { read() }.getOrDefault(value.get())) } }
+
     fun get(): Boolean {
         val now = clock()
         val prev = last.get()

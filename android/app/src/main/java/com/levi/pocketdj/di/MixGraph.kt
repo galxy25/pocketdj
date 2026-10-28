@@ -136,8 +136,8 @@ class MixGraph(private val app: AppGraph) : FeatureModule {
         // with a throttled background refresh (not a coroutine per call).
         val flag = com.levi.pocketdj.mix.stream.SeededFlag(
             read = { client.isConfigured() }, scope = ioScope,
-            initial = runCatching { kotlinx.coroutines.runBlocking(Dispatchers.IO) { client.isConfigured() } }.getOrDefault(false),
-        )
+            initial = false,   // Final review: no runBlocking on the (main) thread that first touches the Mix; refreshed below
+        ).also { it.refresh() }
         val rips = object : MixStreamRips {
             override fun hasServer(): Boolean = MixDebug.publicRips || flag.get()
             override fun entry(songId: String) = ripsRepo.entry(songId)

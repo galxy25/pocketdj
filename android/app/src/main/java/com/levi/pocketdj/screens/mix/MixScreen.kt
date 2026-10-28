@@ -103,7 +103,11 @@ fun MixScreen(
             streams = mix.mixStreamDecks, cues = graph.studioGraph.cuePoints,
             onMod = { d, i -> modTarget = d to i },
             isStemmed = { id -> burns.stemsBurned(id) || burns.stemsRemote(id) },
-            peaksFor = { t -> MixWaveform.peaksForSong(t.songId, null, burns) },
+            peaksFor = { t ->
+                // Bound an analog shared-album burn to the SONG (catalog length), not to the end of the whole side.
+                val len = graph.catalogRepository.state.value.catalog?.songsById?.get(t.songId)?.length?.toInt()
+                MixWaveform.peaksForSong(t.songId, len, burns)
+            },
             art = { albumId, m ->
                 AlbumArt(albumId?.let { graph.catalogRepository.state.value.catalog?.albumsById?.get(it) }, m)
             },

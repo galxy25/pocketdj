@@ -35,6 +35,18 @@ class VersionedJsonWriterTest {
     }
 
     @Test
+    fun supersededWritesAreNeverRendered() {
+        val q = Queue()
+        val w = VersionedJsonWriter(file(), q)
+        var rendered = 0
+        w.write(1) { rendered++; "one" }
+        w.write(2) { rendered++; "two" }
+        q.runLast()
+        q.drain()
+        assertEquals("only the winning version is encoded", 1, rendered)
+    }
+
+    @Test
     fun flushNowBeatsStraggler() {
         val q = Queue()
         val w = VersionedJsonWriter(file(), q)
