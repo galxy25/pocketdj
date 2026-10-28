@@ -145,4 +145,17 @@ class PuzzleSettingsTest {
         )
         assertEquals("2:00 · ♥ favor · hip-hop · 1990–1999 · 3 targets", s.summaryLine)
     }
+
+    @Test fun roundLengthLabelIsAsciiUnderArabicLocale() {
+        val old = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale("ar", "EG"))
+            assertEquals("2:00", PuzzleSettings().roundLengthLabel)
+        } finally { java.util.Locale.setDefault(old) }
+    }
+
+    @Test fun integralFloatRoundSecondsDecodes() {
+        val s = PdjJson.lenient.decodeFromString(PuzzleSettings.serializer(), """{"roundSeconds":180.0}""")
+        assertEquals(180, s.roundSeconds)
+    }
 }

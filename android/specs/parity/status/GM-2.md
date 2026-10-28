@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # GM-2 Gem Collector core (pure)
 
@@ -15,3 +15,13 @@ state: implemented
 - PuzzleDecisionStore takes (file, scope, writeContext): production should pass the Games mainScope and Dispatchers.IO; tests use virtual time.
 - RecPuzzleEventWire lives in PuzzleRecEventBridge.kt (no GameKind yet; GAME_ID const = "collectorsPuzzle"). GM-1/rec package may move it.
 - Extra test-only file: PuzzleTestFixtures.kt. No files outside owned set touched.
+
+## Review
+- MINOR roundLengthLabel locale: fixed (Locale.ROOT; test under ar-EG)
+- MINOR pendingSave clear race: fixed (cleared under lock only if saveJob is this job)
+- MINOR writeContext default: fixed (Dispatchers.IO default; tests pass EmptyCoroutineContext explicitly; KDoc notes blocking construction read)
+- DOC ledger row GM-2: fixed (DONE, device-only: none)
+- NIT float roundSeconds: fixed (integral doubles accepted; test added)
+- NIT wrong-type settings row kept: rejected (intentional, arguably better; row retained with default settings)
+
+fixes applied

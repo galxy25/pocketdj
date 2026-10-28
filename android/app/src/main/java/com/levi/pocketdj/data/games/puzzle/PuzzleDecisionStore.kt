@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.EmptyCoroutineContext
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -41,12 +42,12 @@ const val PUZZLE_DECISIONS_SCHEMA_VERSION = 1
  *    it and a stale snapshot skips its write.
  *
  * @param scope owns the debounce job (production: the Games `mainScope`).
- * @param writeContext where the encode+write runs (production: `Dispatchers.IO`).
+ * @param writeContext where the encode+write runs (default `Dispatchers.IO`; tests inject a test dispatcher). Construction does a blocking read, so build off Main.
  */
 class PuzzleDecisionStore(
     private val file: File,
     private val scope: CoroutineScope,
-    private val writeContext: CoroutineContext = EmptyCoroutineContext,
+    private val writeContext: CoroutineContext = Dispatchers.IO,
     private val saveDebounceMs: Long = SAVE_DEBOUNCE_MS,
     private val json: Json = PdjJson.lenient,
     private val newId: () -> String = { UUID.randomUUID().toString().uppercase() },
@@ -266,7 +267,10 @@ class PuzzleDecisionStore(
                     }
                 }
                 if (!isActive) return@launch // a newer save superseded this one
-                pendingSave = false
+                // Only the CURRENT save may clear the flag, atomically with that check.
+                synchronized(lock) {
+                    if (saveJob === coroutineContext[Job]) pendingSave = false
+                }
             }
         }
     }

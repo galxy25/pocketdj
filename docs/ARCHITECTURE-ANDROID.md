@@ -486,7 +486,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 
 | Package | Wave | Status | Device-only |
 |---|---|---|---|
-| GM-2 — Gem Collector core: settings, recency, sampler, similarity, decision store, rec bridge (p… | 1 | Planned | — |
+| GM-2 — Gem Collector core: settings, recency, sampler, similarity, decision store, rec bridge (p… | 1 | DONE | device-only: none |
 | GM-1 — Games tab (7th destination via nav registry) + Scoreboard store (tombstones, union merge)… | 8 | Planned | — |
 | GM-5 — In the Pocket core: models, pockets results decode (PocketsModels owner), scorer, members… | 8 | Planned | — |
 | GM-3 — Gem Collector engine + GameRunPlayer over the sequencer (appendRows(runTag), preview-reso… | 9 | Planned | Apple Music preview resolution needs network; full-track AM is delibe… |

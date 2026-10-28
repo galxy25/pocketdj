@@ -14,6 +14,8 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.put
 
@@ -56,7 +58,7 @@ data class PuzzleSettings(
 
     /** mm:ss render of the round length ("2:00"). */
     val roundLengthLabel: String
-        get() = "%d:%02d".format(roundSeconds / 60, roundSeconds % 60)
+        get() = java.lang.String.format(java.util.Locale.ROOT, "%d:%02d", roundSeconds / 60, roundSeconds % 60)
 
     /** One-line human summary for the scoreboard: "2:00 · ♥ favor · hip-hop · 1990–1999 · 3 targets". */
     val summaryLine: String
@@ -168,7 +170,10 @@ object PuzzleSettingsSerializer : KSerializer<PuzzleSettings> {
     private fun int(e: JsonElement?): Int? {
         val p = e as? JsonPrimitive ?: return null
         if (p is JsonNull || p.isString) return null
-        return runCatching { p.int }.getOrNull()
+        p.intOrNull?.let { return it }
+        // Swift decodes an integral float ("120.0") into Int; match it.
+        val d = p.doubleOrNull ?: return null
+        return if (d == Math.floor(d) && d >= Int.MIN_VALUE && d <= Int.MAX_VALUE) d.toInt() else null
     }
 
     private fun strings(e: JsonElement?): List<String>? {

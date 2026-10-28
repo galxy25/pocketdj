@@ -45,7 +45,7 @@ class PuzzleDecisionStoreTest {
     private fun peerBytes(vararg rows: PuzzleDecisionStore.Decision): ByteArray =
         Json.encodeToString(PuzzleDecisionStore.Document.serializer(), PuzzleDecisionStore.Document(installId = "peer", decisions = rows.toList())).toByteArray()
 
-    private fun reload(f: File) = PuzzleDecisionStore(f, scope)
+    private fun reload(f: File) = PuzzleDecisionStore(f, scope, kotlin.coroutines.EmptyCoroutineContext)
 
     @Test fun recordAssignSkipExpired() {
         val s = store(file())
@@ -290,7 +290,7 @@ class PuzzleDecisionStoreTest {
         val good = PuzzleDecisionStore.Decision(id = "G", roundId = "R", at = 1000.0, songId = "sng_1", action = "assigned")
         val goodJson = Json.encodeToString(PuzzleDecisionStore.Decision.serializer(), good)
         f.writeText("""{ "schemaVersion": 1, "installId": "i1", "decisions": [ $goodJson, { "id": 42 }, "junk", null ] }""")
-        val s = PuzzleDecisionStore(f, scope)
+        val s = PuzzleDecisionStore(f, scope, kotlin.coroutines.EmptyCoroutineContext)
         assertEquals(1, s.decisions.size)
         assertEquals("sng_1", s.decisions.first().songId)
         assertEquals("i1", s.installId)
@@ -299,7 +299,7 @@ class PuzzleDecisionStoreTest {
     @Test fun corruptOrMissingFileStartsFreshWithAnInstallId() {
         val f = file()
         f.writeText("{{{ not json")
-        val s = PuzzleDecisionStore(f, scope)
+        val s = PuzzleDecisionStore(f, scope, kotlin.coroutines.EmptyCoroutineContext)
         assertTrue(s.decisions.isEmpty())
         assertTrue(s.installId.isNotBlank())
         assertTrue(PuzzleDecisionStore(file(), scope).installId.isNotBlank())
@@ -317,7 +317,7 @@ class PuzzleDecisionStoreTest {
                            "membershipCollectionIds":["pls_a"],"targetCollectionIds":["pkt_x"]},
                "someFutureField":true}]}""",
         )
-        val d = PuzzleDecisionStore(f, scope).decisions.single()
+        val d = PuzzleDecisionStore(f, scope, kotlin.coroutines.EmptyCoroutineContext).decisions.single()
         assertEquals(1761000000000.5, d.at, 0.0)
         assertEquals(PuzzleSettings.Bias.FAVOR, d.settings!!.playCountBias)
         assertEquals(PuzzleSettings.Similarity.ON, d.settings!!.similarity) // older iOS blob ⇒ default
