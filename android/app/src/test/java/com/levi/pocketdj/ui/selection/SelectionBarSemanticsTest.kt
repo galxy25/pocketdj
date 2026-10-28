@@ -1,5 +1,6 @@
 package com.levi.pocketdj.ui.selection
 
+import com.levi.pocketdj.data.collections.SongTransfer
 import com.levi.pocketdj.data.collections.AddTarget
 import com.levi.pocketdj.data.collections.CollectionsStore
 import java.io.File

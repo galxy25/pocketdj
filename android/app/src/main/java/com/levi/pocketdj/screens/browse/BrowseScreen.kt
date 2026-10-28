@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.browse
 
+import com.levi.pocketdj.data.collections.SongTransfer
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -82,8 +83,8 @@ import com.levi.pocketdj.screens.collections.AddToPlaylistMenu
 import com.levi.pocketdj.ui.selection.SelectionBar
 import com.levi.pocketdj.ui.selection.SelectionScope
 import com.levi.pocketdj.ui.selection.SelectionBarSemantics
-import com.levi.pocketdj.ui.selection.SongTransfer
 import com.levi.pocketdj.ui.selection.writeSongTransfer
+import com.levi.pocketdj.ui.dnd.songDragSource
 import com.levi.pocketdj.ui.selection.selectionDecor
 import com.levi.pocketdj.ui.selection.selectionTap
 import kotlinx.coroutines.Dispatchers
@@ -437,6 +438,7 @@ private fun BrowseContent(
     // Multi-select (COL-5): Songs list only, never in online mode. The registered universe is the
     // FULL filtered list (shownSongs), not the rendered page.
     val rowSelection = remember { AppGraph.get(context).collectionsGraph.rowSelection }
+    val selectionState by rowSelection.state.collectAsState()
     val selectable = kind == BrowseKind.SONGS && !online && !discover
     if (selectable) {
         SelectionScope(
@@ -698,22 +700,28 @@ private fun BrowseContent(
                     LazyColumn(modifier = Modifier.fillMaxSize()) {
                         items(visible, key = { it.song.id }) { row ->
                             val songId = row.song.id
+                            // COL-6: a selected row is the drag handle (long-press-drag exports the selection).
+                            val rowSelected = selectionState.isSelected(songId, BROWSE_SELECTION_SCOPE)
                             BrowseSongRow(
                                 row = row,
-                                modifier = Modifier.selectionDecor(rowSelection, songId, BROWSE_SELECTION_SCOPE),
+                                modifier = Modifier
+                                    .selectionDecor(rowSelection, songId, BROWSE_SELECTION_SCOPE)
+                                    .songDragSource(enabled = true) {
+                                        if (rowSelected) rowSelection.currentPayload() else com.levi.pocketdj.data.collections.SongTransfer(listOf(songId), null)
+                                    },
                                 // Select mode armed HERE eats the tap; otherwise it opens as before.
                                 onClick = {
                                     selectionTap(rowSelection, songId, BROWSE_SELECTION_SCOPE) { onOpenSong(songId) }
                                 },
                                 onPlay = { onPlaySong(songId) },
                                 // Armed: long-press toggles. Otherwise the COL-4 Add-to menu (with Select / Copy).
-                                onLongClick = {
+                                onLongClick = ({
                                     if (rowSelection.state.value.isSelectMode(BROWSE_SELECTION_SCOPE)) {
                                         rowSelection.handleLongPress(songId, BROWSE_SELECTION_SCOPE)
                                     } else {
                                         onAddSong(songId)
                                     }
-                                },
+                                }),
                             )
                         }
                         if (visible.size < shownSongs.size) {

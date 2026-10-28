@@ -1,5 +1,7 @@
 package com.levi.pocketdj.ui.selection
 
+import com.levi.pocketdj.data.collections.SongTransfer
+import com.levi.pocketdj.ui.dnd.songDragSource
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -143,10 +145,18 @@ fun Modifier.selectableRow(
     id: String,
     scope: String,
     onOpen: (() -> Unit)?,
+    rowSongId: String? = null,
 ): Modifier {
     val openLatest by rememberUpdatedState(onOpen)
+    val state by selection.state.collectAsState()
+    // COL-6: long-press-then-move drags the whole selection when this row is selected, else just
+    // this row (iOS `payloadForRow`). A stationary long-press keeps its long-click behavior.
+    val selected = state.isSelected(id, scope)
     return this
         .selectionDecor(selection, id, scope)
+        .songDragSource(enabled = selected || rowSongId != null) {
+            if (selected) selection.currentPayload() else rowSongId?.let { SongTransfer(listOf(it), null) }
+        }
         .combinedClickable(
             onClick = { selectionTap(selection, id, scope) { openLatest?.invoke() } },
             onLongClick = { selection.handleLongPress(id, scope) },

@@ -1,5 +1,11 @@
 package com.levi.pocketdj.screens.playlists
 
+import com.levi.pocketdj.ui.dnd.DropHighlight
+import com.levi.pocketdj.ui.dnd.acceptSongsInto
+import com.levi.pocketdj.ui.dnd.clipboardHasSongs
+import com.levi.pocketdj.ui.dnd.pasteSongsInto
+import com.levi.pocketdj.ui.dnd.songDropTarget
+import com.levi.pocketdj.data.collections.SongTransfer
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,7 +56,6 @@ import kotlinx.coroutines.withContext
 import com.levi.pocketdj.data.rips.PlayResolver
 import com.levi.pocketdj.ui.selection.SelectionBar
 import com.levi.pocketdj.ui.selection.SelectionScope
-import com.levi.pocketdj.ui.selection.SongTransfer
 import com.levi.pocketdj.ui.selection.selectableRow
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.screens.browse.Fmt
@@ -158,6 +163,7 @@ fun PlaylistDetailScreen(
         SelectionScope(
             selection = rowSelection,
             scope = selScope,
+            onPaste = { t -> acceptSongsInto(store, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, playlistId), t) },
             pruneKey = listOf(playlist.sequences, resolvedChapters),
             allIds = { songNodes().map { it.nodeId } },
             payload = {
@@ -170,7 +176,11 @@ fun PlaylistDetailScreen(
             },
         )
 
-        Column(Modifier.fillMaxSize()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .songDropTarget(highlight = DropHighlight.LIST) { t -> acceptSongsInto(store, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, playlistId), t) },
+        ) {
         SelectionBar(rowSelection, selScope, store)
         LazyColumn(modifier = Modifier.weight(1f).fillMaxWidth()) {
             item(key = "burn-bar") {
@@ -198,6 +208,11 @@ fun PlaylistDetailScreen(
                         Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
                     }
                     OverflowMenu { dismiss ->
+                        DropdownMenuItem(
+                            text = { Text("Paste songs") },
+                            enabled = clipboardHasSongs(context),
+                            onClick = { dismiss(); pasteSongsInto(context, store, com.levi.pocketdj.data.collections.AddTarget(com.levi.pocketdj.data.collections.AddTarget.Kind.PLAYLIST, playlistId)) },
+                        )
                         CollectionSortFilterMenuItems(
                             sortState, dismiss,
                             onSort = { showSort = true },
@@ -558,7 +573,7 @@ private fun NodeRow(
                     camelot = song.camelot,
                     lengthMs = song.length,
                     dimmed = !manifestHit,
-                    modifier = Modifier.selectableRow(selection, node.nodeId, selectionScope) { onTapSong(song.id) },
+                    modifier = Modifier.selectableRow(selection, node.nodeId, selectionScope, { onTapSong(song.id) }, rowSongId = song.id),
                     favoriteSongId = song.id, favoriteAppleMusicId = song.appleMusicId,
                     badges = {
                         node.repeatCount?.takeIf { it > 1 }?.let {

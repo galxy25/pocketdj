@@ -1,5 +1,6 @@
 package com.levi.pocketdj.screens.playlists
 
+import com.levi.pocketdj.data.collections.SongTransfer
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,7 +43,6 @@ import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
 import com.levi.pocketdj.data.rips.PlayResolver
 import com.levi.pocketdj.ui.selection.SelectionBar
 import com.levi.pocketdj.ui.selection.SelectionScope
-import com.levi.pocketdj.ui.selection.SongTransfer
 import com.levi.pocketdj.ui.selection.selectableRow
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.playback.PlayContext
@@ -286,7 +286,7 @@ fun SourcePlaylistDetailScreen(
                             camelot = song.camelot,
                             lengthMs = song.length,
                             dimmed = !manifest.containsKey(songId),
-                            modifier = Modifier.selectableRow(rowSelection, shownKeys[index], selScope) { detailSongId = songId },
+                            modifier = Modifier.selectableRow(rowSelection, shownKeys[index], selScope, { detailSongId = songId }, rowSongId = songId),
                             favoriteSongId = songId, favoriteAppleMusicId = song.appleMusicId,
                         )
                     }

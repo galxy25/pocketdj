@@ -407,7 +407,7 @@ accumulate in `android/specs/parity/PROGRESS.md`.
 | COL-16 — Listening pockets wire models (extending GM-5 PocketsModels), HTTP client, CollectionFlat… | 16 | DONE (JVM; branch `parity/COL-16`) | Pure JVM, no device-only items. Deviations: results decoder reused from GM-5; no postRounds (InThePocketRoundsClient owns it); client takes PocketsCredentials; Android-only byte-cap enforcement (largest fitting prefix). |
 | COL-13 — Per-collection sort/filter on every collection detail (BrowseEngine over the song subset,… | 17 | DONE | No device-only items. Deviations: setlist detail not wired (iOS has none); Remove hidden in non-default order. Unit tests: 4476 on parity/COL-13 (feat/android-parity baseline not recorded; +10 COL-13 tests) |
 | COL-15 — .pdjcollection / backup SAF export-import UI, tapped-file open (deep-link handler), provi… | 17 | Planned | — |
-| COL-6 — Song drag & drop + clipboard (SongTransfer payload, collection-row and whole-list drop ta… | 18 | Planned | — |
+| COL-6 — Song drag & drop + clipboard (SongTransfer payload, collection-row and whole-list drop ta… | 18 | PARTIAL | Code + JVM tests done; device-only: emulator drag (spring-load tab hover then drop on a Collections row) unverified |
 | COL-9 — Apple Music playlist sync (Lambda WS2): client, coordinator, audit/run persistence, daily… | 18 | Planned | Real subscription + MUT. |
 | COL-11 — Favorites two-way Apple Music sync (opt-in) + owner-seed opt-in (default OFF) | 19 | Planned | Real subscription + MUT. |
 | COL-17 — ListeningPocketsService (upload cadence, results cache, cursors/flushEpoch, delete cascad… | 20 | Planned | — |

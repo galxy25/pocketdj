@@ -3,50 +3,7 @@ package com.levi.pocketdj.ui.selection
 import com.levi.pocketdj.data.catalog.IndexSong
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
-
-/**
- * iOS `SongTransfer`: the song-id list that travels on the clipboard / drag, with a capped
- * human-readable text fallback so external apps paste something useful.
- */
-@Serializable
-data class SongTransfer(val songIds: List<String>, val text: String? = null) {
-    /** What an external app pastes: the text fallback, else the raw ids one per line. */
-    val plainTextExport: String get() = text ?: songIds.joinToString("\n")
-
-    fun toJson(): String = JSON.encodeToString(this)
-
-    companion object {
-        /** Cap the plain-text fallback so a 96k-song select-all still copies instantly. */
-        const val TEXT_LINE_CAP = 200
-
-        /** iOS `SongPasteboard.maxPayloadBytes`: refuse to decode anything bigger. */
-        const val MAX_PAYLOAD_BYTES = 8 * 1024 * 1024
-
-        /** Clipboard label / MIME-ish tag shared with iOS (`com.pocketdj.songlist`). */
-        const val CLIP_LABEL = "com.pocketdj.songlist"
-
-        private val JSON = Json { ignoreUnknownKeys = true }
-
-        fun make(ids: List<String>, songsById: Map<String, IndexSong>): SongTransfer {
-            val lines = ids.asSequence().take(TEXT_LINE_CAP)
-                .mapNotNull { songsById[it]?.let { s -> "${s.artist} — ${s.name}" } }
-                .toList()
-            val extra = ids.size - minOf(ids.size, TEXT_LINE_CAP)
-            val text = if (lines.isEmpty()) null
-            else lines.joinToString("\n") + if (extra > 0) "\n…and $extra more" else ""
-            return SongTransfer(ids, text)
-        }
-
-        /** Byte-capped decode boundary (null on oversize / malformed). */
-        fun decode(json: String): SongTransfer? {
-            if (json.toByteArray(Charsets.UTF_8).size > MAX_PAYLOAD_BYTES) return null
-            return runCatching { JSON.decodeFromString<SongTransfer>(json) }.getOrNull()
-        }
-    }
-}
+import com.levi.pocketdj.data.collections.SongTransfer
 
 /**
  * Immutable snapshot of the multi-select machine. Ids live in the ACTIVE list's id space
@@ -253,3 +210,7 @@ fun playlistSelectionPayload(
     val ordered = selection.orderedSelection(eligible.map { it.first })
     return SongTransfer.make(ordered.mapNotNull { byNode[it] }, songsById)
 }
+
+/** Back-compat alias (COL-6 moved SongTransfer to data.collections); drop once the parity wave lands. */
+@Deprecated("Use com.levi.pocketdj.data.collections.SongTransfer")
+typealias SongTransfer = com.levi.pocketdj.data.collections.SongTransfer

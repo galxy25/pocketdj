@@ -19,6 +19,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
+import com.levi.pocketdj.ui.dnd.springLoadTarget
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -291,6 +292,12 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
     val widthDp = LocalConfiguration.current.screenWidthDp
     val layout = navLayoutFor(widthDp)
 
+    // Composable context (the items lambda is not): one spring-load modifier per tab.
+    val springMods = PocketDjDestination.bottomNav.associateWith { dest ->
+        val sel = currentDestination?.hierarchy?.any { it.route == dest.route } == true
+        Modifier.springLoadTarget(sel) { navController.switchTab(dest, fresh = false) }
+    }
+
     NavigationSuiteScaffold(
         layoutType = if (layout == ShellNavLayout.Rail) {
             NavigationSuiteType.NavigationRail
@@ -303,6 +310,9 @@ private fun ShellContent(graph: AppGraph, startTab: PocketDjDestination) {
                 item(
                     selected = selected,
                     onClick = { navController.switchTab(dest, fresh = false) },
+                    // COL-6: a song drag hovering a tab switches to it, so a Browse selection can
+                    // be dropped onto a Collections row.
+                    modifier = springMods.getValue(dest),
                     icon = { Icon(dest.icon, contentDescription = dest.label) },
                     // Compact bar: label on the SELECTED item only, so seven destinations
                     // fit a 360 dp phone without wrapping. The rail has room for all.
