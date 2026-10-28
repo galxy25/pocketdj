@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.Layers
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.RemoveCircleOutline
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.SportsEsports
 import androidx.compose.material.icons.filled.Tune
@@ -135,10 +136,28 @@ fun HistoryScreen(
     modifier: Modifier = Modifier,
     onSongClick: (songId: String) -> Unit = {},
     onAlbumClick: (albumId: String) -> Unit = {},
+    /** kind = "playlist" | "pocket" (For You list menu: Open <collection>). */
+    onOpenCollection: (kind: String, id: String) -> Unit = { _, _ -> },
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
     LaunchedEffect(Unit) { graph.catalogRepository.loadIfNeeded() }
+    // For You gate: engine toggle (iOS recEngineEnabled) OR any debug build (the fixture).
+    LaunchedEffect(Unit) {
+        graph.settings.flow(com.levi.pocketdj.screens.foryou.ForYouGate.REC_ENGINE_ENABLED).collect { on ->
+            HistoryTabGate.forYouEnabled.value =
+                com.levi.pocketdj.screens.foryou.ForYouGate.visible(on, com.levi.pocketdj.BuildConfig.DEBUG)
+        }
+    }
+    var forYouRefreshToken by remember { mutableIntStateOf(0) }
+    // The open For You tile list is hosted here (History owns the tab), not a NavHost route.
+    // Held as the encoded route so it survives navigate-away (⋯ ▸ Open collection), rotation and process death.
+    var forYouRouteKey by rememberSaveable { mutableStateOf<String?>(null) }
+    val forYouRoute = forYouRouteKey?.let { key ->
+        com.levi.pocketdj.screens.foryou.ForYouRoutes.decode(key) { cid ->
+            graph.collections.playlist(cid)?.name ?: graph.collections.pocket(cid)?.name
+        }
+    }
     val catalogState by graph.catalogRepository.state.collectAsState()
     val catalog = catalogState.catalog ?: MergedCatalog.EMPTY
 
@@ -153,11 +172,34 @@ fun HistoryScreen(
     var showFilter by remember { mutableStateOf(false) }
     var showSort by remember { mutableStateOf(false) }
 
+    val openRoute = forYouRoute
+    if (current == HistoryTab.FOR_YOU && openRoute != null) {
+        com.levi.pocketdj.screens.foryou.ForYouSongListScreen(
+            route = openRoute,
+            onBack = { forYouRouteKey = null },
+            onOpenSong = onSongClick,
+            onOpenCollection = onOpenCollection,
+            modifier = modifier,
+        )
+        return
+    }
+
     Column(modifier = modifier.fillMaxSize()) {
         HistoryTabBar(tabs = tabs, current = current, onSelect = { tab = it })
 
-        // Search is shared by Playback + Collection; sort/filter are Playback-only.
-        Row(
+        // Search is shared by Playback + Collection; sort/filter are Playback-only. For You has no
+        // search: its row carries the menu Refresh (works under every cadence).
+        if (current == HistoryTab.FOR_YOU) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+            ) {
+                Text("Recommendations", style = MaterialTheme.typography.titleSmall, modifier = Modifier.weight(1f))
+                IconButton(onClick = { forYouRefreshToken += 1 }, modifier = Modifier.testTag("foryou-refresh")) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "Refresh")
+                }
+            }
+        } else Row(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp),
         ) {
@@ -223,11 +265,10 @@ fun HistoryScreen(
                 caption = "Pockets learned from your listening show up here.",
                 testTag = "history-pockets",
             )
-            HistoryTab.FOR_YOU -> EmptyState(
-                icon = Icons.Filled.History,
-                title = "For You",
-                caption = "Recommendations from your history show up here.",
-                testTag = "history-foryou",
+            HistoryTab.FOR_YOU -> com.levi.pocketdj.screens.foryou.ForYouTilesScreen(
+                refreshToken = forYouRefreshToken,
+                onOpenTile = { forYouRouteKey = com.levi.pocketdj.screens.foryou.ForYouRoutes.encode(it) },
+                modifier = Modifier.testTag("history-foryou"),
             )
         }
     }
