@@ -18,6 +18,9 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AddCircleOutline
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Shuffle
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalIconButton
@@ -42,7 +45,12 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.levi.pocketdj.data.catalog.AudioTrack
+import com.levi.pocketdj.data.catalog.IndexAlbum
 import com.levi.pocketdj.data.catalog.IndexSong
+import com.levi.pocketdj.data.collections.NOW_PLAYING_SETLIST_ID
+import com.levi.pocketdj.data.share.ShareText
+import com.levi.pocketdj.playback.PlayContext
 import com.levi.pocketdj.di.AppGraph
 import com.levi.pocketdj.ui.FavoriteToggle
 import com.levi.pocketdj.playback.PlayOutcome
@@ -63,6 +71,8 @@ import kotlinx.coroutines.launch
 fun AlbumDetailScreen(
     albumId: String,
     modifier: Modifier = Modifier,
+    /** Opens a setlist in Now Playing (shell nav); null disables Shuffle (no destination). */
+    onOpenSetlist: ((setlistId: String, autoplay: Boolean) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val graph = remember { AppGraph.get(context) }
@@ -154,6 +164,32 @@ fun AlbumDetailScreen(
                                     }
                                     Spacer(Modifier.width(8.dp))
                                 }
+                                if (onOpenSetlist != null && tracks.isNotEmpty() && anyPlayable) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            // Literal ids shuffled into the reserved Now Playing setlist,
+                                            // attributed source=album / contextName=album name (History).
+                                            val set = graph.collections.playNow(
+                                                songIds = tracks.map { it.id },
+                                                name = album.name,
+                                                shuffle = true,
+                                                sourceToken = PlayContext.SOURCE_ALBUM,
+                                                originId = album.id,
+                                            )
+                                            if (set != null) {
+                                                onOpenSetlist(NOW_PLAYING_SETLIST_ID, true)
+                                            } else {
+                                                scope.launch { snackbar.showSnackbar("Catalog isn't ready yet") }
+                                            }
+                                        },
+                                        modifier = Modifier.testTag("album-shuffle"),
+                                    ) {
+                                        Icon(Icons.Filled.Shuffle, contentDescription = null, modifier = Modifier.size(18.dp))
+                                        Spacer(Modifier.width(6.dp))
+                                        Text("Shuffle")
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                }
                                 // Add-to-Collection launch point (specs/playlists-ui.md §8.1).
                                 FilledTonalIconButton(
                                     onClick = { showAddSheet = true },
@@ -163,6 +199,13 @@ fun AlbumDetailScreen(
                                         Icons.Filled.AddCircleOutline,
                                         contentDescription = "Add album to collection",
                                     )
+                                }
+                                Spacer(Modifier.width(8.dp))
+                                FilledTonalIconButton(
+                                    onClick = { ShareText.send(context, ShareText.forAlbum(album), "${album.name} — ${album.artist}") },
+                                    modifier = Modifier.testTag("album-share"),
+                                ) {
+                                    Icon(Icons.Filled.Share, contentDescription = "Share album")
                                 }
                             }
                         }
@@ -183,6 +226,10 @@ fun AlbumDetailScreen(
                                 }
                             },
                         )
+                    }
+
+                    if (!album.audioTracks.isNullOrEmpty()) {
+                        item(key = "audio-analysis") { AudioAnalysisSection(album) }
                     }
                 }
             }
@@ -300,6 +347,71 @@ private fun AlbumTrackRow(
             }
 
             else -> Spacer(Modifier.width(12.dp))
+        }
+    }
+}
+
+/** Pure formatting for the audio-analysis rows (iOS `AudioSegmentRow`). */
+internal object AudioAnalysisFmt {
+    /** Row index: the segment's own track number, else its 1-based position. */
+    fun index(seg: AudioTrack, position: Int): Int = seg.trackNumber ?: position
+
+    fun range(seg: AudioTrack): String = "${Fmt.duration(seg.startMs)} – ${Fmt.duration(seg.endMs)}"
+
+    /** keyStrength 0..1 as a truncated whole percent, or an en dash. */
+    fun strength(seg: AudioTrack): String = seg.keyStrength?.let { "${(it * 100).toInt()}%" } ?: "–"
+
+    /** "m:ss total" from the album's audioDurationSec (truncated), or null when absent. */
+    fun total(durationSec: Double?): String? = durationSec?.let {
+        val s = it.toInt()
+        "%d:%02d total".format(s / 60, s % 60)
+    }
+}
+
+@Composable
+private fun AudioAnalysisSection(album: IndexAlbum) {
+    Column(Modifier.fillMaxWidth().padding(16.dp).testTag("album-audio-analysis")) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Audio analysis",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.weight(1f),
+            )
+            AudioAnalysisFmt.total(album.audioDurationSec)?.let {
+                Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        album.audioTracks.orEmpty().forEachIndexed { i, seg ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .let { if (i % 2 == 1) it.background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)) else it }
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    AudioAnalysisFmt.index(seg, i + 1).toString(),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(26.dp),
+                )
+                Text(
+                    AudioAnalysisFmt.range(seg),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(Fmt.bpm(seg.bpm), style = MaterialTheme.typography.labelMedium, modifier = Modifier.width(36.dp))
+                Box(Modifier.width(84.dp)) { KeyChip(seg.key?.takeIf { seg.camelot == null }, seg.camelot) }
+                Text(
+                    AudioAnalysisFmt.strength(seg),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.width(40.dp),
+                )
+            }
         }
     }
 }

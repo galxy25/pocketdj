@@ -51,6 +51,10 @@ class StorageService(
     private val clearBurns: (() -> Unit)? = null,
     /** SVC-2: `BurnStore.removeAllStems(protecting=...)`; beat grids and burned audio stay. */
     private val clearStems: (() -> Unit)? = null,
+    /** BRW-4: `filesDir/lyrics-cache/` - on-demand lyrics text, re-fetched when a song opens. */
+    private val lyricsCacheDir: File? = null,
+    /** BRW-4: `LyricsStore.clearDisk()` (also drops the in-memory tier). */
+    private val clearLyrics: (() -> Unit)? = null,
 ) {
     /** The five measured categories (specs/storage.md §2, ordered caches → docs). */
     enum class Category(val clearable: Boolean) {
@@ -61,6 +65,7 @@ class StorageService(
         COLLECTIONS(clearable = false), // user content — display-only (§2.3)
         PLAY_HISTORY(clearable = true),
         ACTIVITY(clearable = true),
+        LYRICS(clearable = true), // re-fetchable text cache (BRW-4)
         FAVORITES(clearable = false), // per-profile ♥ + tombstones — display-only, user content
     }
 
@@ -78,6 +83,7 @@ class StorageService(
             Category.PLAY_HISTORY -> fileSize(playHistoryFile)
             Category.ACTIVITY -> fileSize(activityFile)
             Category.FAVORITES -> favoritesFile?.let(::fileSize) ?: 0L
+            Category.LYRICS -> lyricsCacheDir?.let(::dirSize) ?: 0L
         }
     }
 
@@ -102,6 +108,9 @@ class StorageService(
             Category.ACTIVITY -> runCatching { clearActivity() }
             Category.BURNS -> runCatching { clearBurns?.invoke() }
             Category.STEMS -> runCatching { clearStems?.invoke() }
+            Category.LYRICS -> runCatching {
+                clearLyrics?.invoke() ?: lyricsCacheDir?.listFiles()?.forEach { it.delete() }
+            }
             Category.COLLECTIONS, Category.FAVORITES -> Unit // unreachable — guarded above
         }
         measure(category)
