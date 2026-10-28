@@ -289,6 +289,7 @@ class AppGraph private constructor(context: Context) {
             // BRW-4: lyrics cache measure + clear.
             lyricsCacheDir = File(appContext.filesDir, com.levi.pocketdj.data.lyrics.LyricsStore.DIR_NAME),
             clearLyrics = { browseGraph.lyricsStore.clearDisk() },
+            burnOps = servicesGraph.burnStorageOps,
         )
     }
 

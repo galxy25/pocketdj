@@ -1,5 +1,6 @@
 package com.levi.pocketdj.data.storage
 
+import com.levi.pocketdj.data.burns.ArtistUsage
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -55,7 +56,18 @@ class StorageService(
     private val lyricsCacheDir: File? = null,
     /** BRW-4: `LyricsStore.clearDisk()` (also drops the in-memory tier). */
     private val clearLyrics: (() -> Unit)? = null,
+    /** SVC-6: targeted burn/stem deletes + per-artist usage (wired to BurnStore). */
+    private val burnOps: BurnStorageOps? = null,
 ) {
+    /** The slice of BurnStore the Storage screen's targeted deletes use (a port for JVM tests). */
+    interface BurnStorageOps {
+        fun usageByArtist(): List<ArtistUsage>
+        fun stemUsageByArtist(): List<ArtistUsage>
+        fun approximateBytes(ids: List<String>): Long
+        fun removeBurns(songIds: List<String>)
+        fun removeStems(songIds: List<String>)
+    }
+
     /** The five measured categories (specs/storage.md §2, ordered caches → docs). */
     enum class Category(val clearable: Boolean) {
         CATALOG_CACHE(clearable = true),
@@ -114,6 +126,33 @@ class StorageService(
             Category.COLLECTIONS, Category.FAVORITES -> Unit // unreachable — guarded above
         }
         measure(category)
+    }
+
+    /** Downloaded songs grouped by artist (unique audio files counted once). */
+    suspend fun burnUsageByArtist(): List<ArtistUsage> =
+        withContext(Dispatchers.Default) { burnOps?.usageByArtist().orEmpty() }
+
+    suspend fun stemUsageByArtist(): List<ArtistUsage> =
+        withContext(Dispatchers.Default) { burnOps?.stemUsageByArtist().orEmpty() }
+
+    /** Bytes [songIds] would free if their downloads were deleted (collection delete preview). */
+    suspend fun approximateBurnBytes(songIds: List<String>): Long =
+        withContext(Dispatchers.Default) { burnOps?.approximateBytes(songIds) ?: 0L }
+
+    /**
+     * Delete the downloaded media of [songIds] (an artist's songs or a collection's members).
+     * Media only: the library, collections and catalog are untouched. Returns the re-measured
+     * [Category.BURNS] size.
+     */
+    suspend fun deleteBurns(songIds: List<String>): Long = withContext(Dispatchers.Default) {
+        runCatching { burnOps?.removeBurns(songIds) }
+        measure(Category.BURNS)
+    }
+
+    /** Delete only the stem files of [songIds]; burned audio and beat grids stay. */
+    suspend fun deleteStems(songIds: List<String>): Long = withContext(Dispatchers.Default) {
+        runCatching { burnOps?.removeStems(songIds) }
+        measure(Category.STEMS)
     }
 
     private fun fileSize(file: File): Long = if (file.isFile) file.length() else 0L

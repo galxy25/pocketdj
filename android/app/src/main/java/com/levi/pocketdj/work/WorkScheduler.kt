@@ -138,9 +138,9 @@ object WorkSeams {
     }
 
     @Volatile var storagePrune: suspend (Context) -> Unit = { ctx ->
-        // No destructive prune exists yet (LRP prune lands with storage work); measure only.
-        val total = AppGraph.get(ctx).storageService.measureAll().values.sum()
-        android.util.Log.i("PocketDJ", "[work] storage-prune checked, total=$total")
+        // SVC-6: soft-cap LRP prune. No cap => no-op; 20 h gate; stamp written before eviction.
+        val r = AppGraph.get(ctx).servicesGraph.storageManager.pruneIfDue()
+        android.util.Log.i("PocketDJ", "[work] storage-prune " + (r?.let { "evicted=${it.evicted} freed=${it.freedBytes}" } ?: "skipped"))
     }
 }
 
@@ -155,6 +155,6 @@ private fun WorkOutcome.toResult() =
 class RipReconcileWorker(ctx: Context, params: WorkerParameters) :
     com.levi.pocketdj.data.transfers.RipReconcileWorker(ctx, params)
 
-class StoragePruneWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
-    override suspend fun doWork() = runWorkBody { WorkSeams.storagePrune(applicationContext) }.toResult()
-}
+/** SVC-6: body lives in data.transfers; WorkManager persists this FQN for the scheduled request. */
+class StoragePruneWorker(ctx: Context, params: WorkerParameters) :
+    com.levi.pocketdj.data.transfers.StoragePruneWorker(ctx, params)
