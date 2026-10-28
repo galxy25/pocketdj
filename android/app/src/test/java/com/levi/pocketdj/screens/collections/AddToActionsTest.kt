@@ -1,7 +1,12 @@
 package com.levi.pocketdj.screens.collections
 
 import com.levi.pocketdj.data.collections.AddTarget
+import com.levi.pocketdj.data.PdjJson
+import com.levi.pocketdj.data.collections.CollectionsCodec
+import com.levi.pocketdj.data.collections.CollectionsDocument
 import com.levi.pocketdj.data.collections.CollectionsStore
+import com.levi.pocketdj.data.collections.Playlist
+import com.levi.pocketdj.data.collections.PlaylistNode
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -139,5 +144,40 @@ class AddToActionsTest {
         assertEquals(emptyList<AddTarget>(), s.state.value.recentAddTargets)
         actions.toggle(pt(pk.id))
         assertEquals(1, s.state.value.recentAddTargets.size)
+    }
+
+    @Test
+    fun removeAlbumPrunesNestedAndMultiChapterInOneMutationOneActivity() {
+        val album = { id: String -> PlaylistNode(nodeId = id, kind = PlaylistNode.Kind.ALBUM, albumId = "alb_1") }
+        val doc = CollectionsDocument(
+            playlists = listOf(
+                Playlist(
+                    id = "pls_1",
+                    name = "List",
+                    sequences = listOf(
+                        PlaylistNode(
+                            nodeId = "c1", kind = PlaylistNode.Kind.SEQUENCE,
+                            children = listOf(
+                                album("a1"),
+                                PlaylistNode(nodeId = "n", kind = PlaylistNode.Kind.SEQUENCE, children = listOf(album("a2"))),
+                            ),
+                        ),
+                        PlaylistNode(nodeId = "c2", kind = PlaylistNode.Kind.SEQUENCE, children = listOf(album("a3"))),
+                    ),
+                ),
+            ),
+        )
+        val file = File(tmp.root, CollectionsStore.FILE_NAME)
+        file.writeText(CollectionsCodec.encode(PdjJson.lenient, doc))
+        val s = CollectionsStore(file, now = { 1_750_000_000_000.0 })
+        val hooks = mutableListOf<CollectionsStore.ActivityHook>()
+        s.onActivity = { hooks += it }
+        val actions = AddToActions(AddToItem.Album("alb_1"), s)
+        assertTrue(actions.inPlaylist(s.playlist("pls_1")!!))
+        actions.remove(plt("pls_1"))
+        assertFalse(actions.inPlaylist(s.playlist("pls_1")!!))
+        assertEquals(1, hooks.size)
+        assertEquals(CollectionsStore.ActivityHook.Kind.REMOVE, hooks[0].kind)
+        assertEquals(0, s.removeAlbumFromPlaylist("alb_1", "pls_1"))
     }
 }

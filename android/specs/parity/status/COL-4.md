@@ -17,3 +17,13 @@ Deviations / notes:
 
 ## Questions for Levi
 None.
+
+## Review
+- MINOR removeAlbum semantics: fixed (`CollectionsStore.removeAlbumFromPlaylist` prunes recursively in one mutation, one remove activity; test `removeAlbumPrunesNestedAndMultiChapterInOneMutationOneActivity`).
+- MINOR Songs batch landing nothing: fixed ("Nothing to add" dialog with iOS copy, tap + chapter rows).
+- MINOR Suggested seam: fixed in sheet (resolved once per open via produceState on IO). Menu keeps the sync accessor (recomputed only on state change), as iOS's cached lookup.
+- NIT chapter rows while searching: fixed (shown during search).
+- NIT inline create sequenceId: fixed (first chapter id).
+- NIT ledger row in docs/ARCHITECTURE-ANDROID.md: left to integrator (COL-4 DONE; Suggested seam unwired; emulator steps pending).
+
+fixes applied

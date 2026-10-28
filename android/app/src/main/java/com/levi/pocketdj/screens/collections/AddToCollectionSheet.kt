@@ -155,6 +155,7 @@ private fun SheetContent(
     val focusRequester = remember { FocusRequester() }
     LaunchedEffect(searchFirst) { if (searchFirst) focusRequester.requestFocus() }
 
+    var nothingToAdd by remember { mutableStateOf(false) }
     // A row tap: ✓ ⇒ remove (stay open); otherwise add, then onAdded / dismiss per the params.
     fun tap(target: AddTarget, dedupe: CollectionsStore.BatchDedupe = CollectionsStore.BatchDedupe.WHOLE_COLLECTION) {
         val member = actions.isMember(target)
@@ -164,6 +165,7 @@ private fun SheetContent(
         } else {
             AddToSheetParams.tapOutcome(false, actions.add(target, dedupe), stayOpenAfterAdd)
         }
+        if (!member && item is AddToItem.Songs && !outcome.fireOnAdded) nothingToAdd = true
         if (outcome.fireOnAdded) onAdded?.invoke(target)
         if (outcome.dismiss) onDismiss()
     }
@@ -171,8 +173,16 @@ private fun SheetContent(
     val suggestSeam = graph.collectionsGraph.collectionSuggestions
     // Recent: targets that STILL RESOLVE, top 3; Suggested (song items only) above, deduped.
     val recents = actions.recentTargets(3)
-    val suggested = if (item is AddToItem.Song && suggestSeam != null) {
-        actions.suggestedTargets(suggestSeam(item.id), excluding = recents, limit = 3)
+    // Resolve the seam once per open, off the main thread (not on every recomposition/keystroke).
+    val suggestedWire by produceState(emptyList<CollectionSuggestion>(), item, suggestSeam) {
+        value = if (item is AddToItem.Song && suggestSeam != null) {
+            withContext(Dispatchers.IO) { suggestSeam(item.id) }
+        } else {
+            emptyList()
+        }
+    }
+    val suggested = if (item is AddToItem.Song) {
+        actions.suggestedTargets(suggestedWire, excluding = recents, limit = 3)
     } else {
         emptyList()
     }
@@ -192,6 +202,14 @@ private fun SheetContent(
     val noMatches = searching && shownSuggested.isEmpty() && shownRecents.isEmpty() &&
         pockets.isEmpty() && playlists.isEmpty() && !showSources
 
+    if (nothingToAdd && item is AddToItem.Songs) {
+        AlertDialog(
+            onDismissRequest = { nothingToAdd = false },
+            confirmButton = { TextButton(onClick = { nothingToAdd = false }) { Text("OK") } },
+            title = { Text("Nothing to add") },
+            text = { Text("All ${item.ids.size} selected songs are already in this list.") },
+        )
+    }
     Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding()) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -318,7 +336,7 @@ private fun SheetContent(
                         onClick = { tap(AddTarget(AddTarget.Kind.PLAYLIST, playlist.id)) },
                     )
                 }
-                if (!searching && playlist.sequences.size > 1) {
+                if (playlist.sequences.size > 1) {
                     items(playlist.sequences.size, key = { "seq-${playlist.id}-${playlist.sequences[it].nodeId}" }) { i ->
                         val seq = playlist.sequences[i]
                         TargetRow(
@@ -332,6 +350,7 @@ private fun SheetContent(
                                 val t = AddTarget(AddTarget.Kind.PLAYLIST, playlist.id, sequenceId = seq.nodeId)
                                 val added = actions.add(t, CollectionsStore.BatchDedupe.TARGET_CHAPTER)
                                 val o = AddToSheetParams.tapOutcome(false, added, stayOpenAfterAdd)
+                                if (!added && item is AddToItem.Songs) nothingToAdd = true
                                 if (o.fireOnAdded) onAdded?.invoke(t)
                                 if (o.dismiss) onDismiss()
                             },
@@ -345,7 +364,7 @@ private fun SheetContent(
                     testTag = "add-to-new-playlist",
                     onCreate = { name ->
                         val playlist = store.createPlaylist(name)
-                        tap(AddTarget(AddTarget.Kind.PLAYLIST, playlist.id))
+                        tap(AddTarget(AddTarget.Kind.PLAYLIST, playlist.id, sequenceId = playlist.sequences.firstOrNull()?.nodeId))
                     },
                 )
             }

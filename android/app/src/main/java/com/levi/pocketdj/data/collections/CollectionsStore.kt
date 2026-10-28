@@ -524,6 +524,28 @@ class CollectionsStore(
         emitRemoveActivity(itemId = itemId, collectionId = playlistId, kind = AddTarget.Kind.PLAYLIST, name = name)
     }
 
+    /**
+     * Remove every ALBUM node for [albumId] from a playlist (nested included) in ONE mutation
+     * with ONE remove activity — port of iOS `removeAlbum(_:fromPlaylist:)`. Returns nodes pruned.
+     */
+    fun removeAlbumFromPlaylist(albumId: String, playlistId: String): Int = synchronized(lock) {
+        val pl = playlist(playlistId) ?: return 0
+        var removed = 0
+        fun prune(nodes: List<PlaylistNode>): List<PlaylistNode> = nodes.mapNotNull { n ->
+            if (n.kind == PlaylistNode.Kind.ALBUM && n.albumId == albumId) {
+                removed++
+                null
+            } else {
+                n.children?.let { n.copy(children = prune(it)) } ?: n
+            }
+        }
+        val pruned = prune(pl.sequences)
+        if (removed == 0) return 0
+        mutatePlaylistLocked(playlistId) { it.copy(sequences = pruned) }
+        emitRemoveActivity(itemId = albumId, collectionId = playlistId, kind = AddTarget.Kind.PLAYLIST, name = pl.name)
+        removed
+    }
+
     /** Reorder a node within its chapter by `delta` (−1 up / +1 down; no-op at the ends). */
     fun moveNode(nodeId: String, playlistId: String, delta: Int) {
         if (delta == 0) return

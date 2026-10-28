@@ -144,10 +144,7 @@ class AddToActions(
             AddTarget.Kind.PLAYLIST -> when (item) {
                 is AddToItem.Songs -> store.removeSongsFromPlaylist(item.ids, target.id)
                 is AddToItem.Song -> store.removeSongsFromPlaylist(listOf(item.id), target.id)
-                is AddToItem.Album -> {
-                    val pl = store.playlist(target.id) ?: return
-                    albumNodeIds(pl.sequences, item.id).forEach { store.removeNode(it, target.id) }
-                }
+                is AddToItem.Album -> store.removeAlbumFromPlaylist(item.id, target.id)
             }
         }
     }
@@ -177,11 +174,6 @@ class AddToActions(
         walk(pl.sequences)
         return out
     }
-
-    private fun albumNodeIds(sequences: List<PlaylistNode>, albumId: String): List<String> =
-        sequences.flatMap { seq ->
-            seq.children.orEmpty().filter { it.kind == PlaylistNode.Kind.ALBUM && it.albumId == albumId }.map { it.nodeId }
-        }
 
     companion object {
         const val QUICK_LIMIT = 5
