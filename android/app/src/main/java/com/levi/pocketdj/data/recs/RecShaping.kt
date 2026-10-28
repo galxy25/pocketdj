@@ -246,7 +246,7 @@ object RecSoundAdmit {
 
     fun genreBucket(raw: String?): String? {
         if (raw == null) return null
-        val s = raw.lowercase().split(Regex("(?U)\\s+")).filter { it.isNotEmpty() }.joinToString(" ")
+        val s = raw.lowercase().split(Regex("[\\s\\p{Z}]+")).filter { it.isNotEmpty() }.joinToString(" ")
         return s.ifEmpty { null }
     }
 
