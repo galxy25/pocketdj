@@ -44,6 +44,8 @@ class RipServerClient(
         val baseUrl: String,
         val token: String,
         val installId: String,
+        /** Settings ▸ "Rip from cloud source": adds `ripFromCloud:true` to POST /rip bodies. */
+        val ripFromCloud: Boolean = false,
     ) {
         /** Trim whitespace and ONE trailing slash before concatenating paths. */
         val normalizedBase: String get() = baseUrl.trim().removeSuffix("/")
@@ -93,7 +95,7 @@ class RipServerClient(
             "Studio ids are device-local (not rippable): $songId"
         }
         val config = requireConfig()
-        val body = buildJsonObject { put("songId", songId) }.toString()
+        val body = ripBody(songId, config.ripFromCloud)
             .toRequestBody("application/json".toMediaType())
         val request = builder(config, url(config, "rip")).post(body).build()
         return execute(request) { text -> json.decodeFromString<RipJob>(text) }
@@ -465,3 +467,12 @@ class RipServerClient(
         }
     }
 }
+
+/**
+ * The POST /rip body (iOS RipsStore): `{"songId":…}` plus `"ripFromCloud":true` ONLY when the
+ * toggle is on — the key is omitted (not false) when off, for older-server compat.
+ */
+internal fun ripBody(songId: String, ripFromCloud: Boolean): String = buildJsonObject {
+    put("songId", songId)
+    if (ripFromCloud) put("ripFromCloud", true)
+}.toString()
