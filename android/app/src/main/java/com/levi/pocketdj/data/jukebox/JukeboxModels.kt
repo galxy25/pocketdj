@@ -108,3 +108,71 @@ data class JukeboxHealth(
     val service: String? = null,
     val version: Int? = null,
 )
+
+/**
+ * One row of `GET /sessions` (host/account bearer) — the guest URL for the QR,
+ * never a hostKey (the key only rides [JukeboxSessionInfo] from `GET /sessions/:id`).
+ */
+@Serializable
+data class JukeboxSessionRow(
+    val jukeboxId: String,
+    val name: String = "",
+    val url: String = "",
+    val timeless: Boolean? = null,
+    val expiresAt: Double? = null,
+)
+
+/** `GET /sessions` envelope. */
+@Serializable
+data class JukeboxSessionsPage(val sessions: List<JukeboxSessionRow> = emptyList())
+
+/** One locally-derived played-history row (newest first). */
+data class JukeboxPlayedEntry(val title: String, val artist: String, val atMs: Long)
+
+/** A title+artist pair identifying the on-air track. */
+data class JukeboxOnAir(val title: String, val artist: String)
+
+/**
+ * Local mirror of the broker's `notePlayed` after the 2026-07-22 fix
+ * (scripts/jukebox-server.mjs): a track only becomes history when a DIFFERENT
+ * track (or nothing) takes over, and consecutive repeats of the same outgoing
+ * track fold into ONE row (refreshing its timestamp) so play/pause/resume
+ * cycles and rewinds never stack duplicates. Pure.
+ */
+object JukeboxPlayedDedup {
+    const val DEFAULT_CAP = 30
+
+    /**
+     * @param played newest-first history so far
+     * @param previous the track on air at the previous snapshot (null = nothing)
+     * @param current the track on air now (null = nothing / paused-cleared)
+     */
+    fun apply(
+        played: List<JukeboxPlayedEntry>,
+        previous: JukeboxOnAir?,
+        current: JukeboxOnAir?,
+        nowMs: Long,
+        cap: Int = DEFAULT_CAP,
+    ): List<JukeboxPlayedEntry> {
+        if (previous == null || previous.title.isEmpty()) return played
+        // Same track still current = a position tick, a seek or a rewind: no transition.
+        if (current != null && current == previous) return played
+        val head = played.firstOrNull()
+        if (head != null && head.title == previous.title && head.artist == previous.artist) {
+            return listOf(head.copy(atMs = nowMs)) + played.drop(1)
+        }
+        return (listOf(JukeboxPlayedEntry(previous.title, previous.artist, nowMs)) + played).take(cap)
+    }
+}
+
+/** Outcome of the adopt guard (iOS `JukeboxStore.adopt` semantics). */
+enum class JukeboxAdoptDecision { NO_OP, REFUSE, PROCEED }
+
+object JukeboxAdoptGuard {
+    fun decide(currentSessionId: String?, starting: Boolean, targetId: String): JukeboxAdoptDecision =
+        when {
+            currentSessionId == targetId -> JukeboxAdoptDecision.NO_OP
+            currentSessionId != null || starting -> JukeboxAdoptDecision.REFUSE
+            else -> JukeboxAdoptDecision.PROCEED
+        }
+}

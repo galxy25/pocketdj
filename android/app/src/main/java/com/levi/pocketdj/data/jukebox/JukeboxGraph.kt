@@ -5,6 +5,7 @@ import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.emptyPreferences
 import com.levi.pocketdj.di.AppGraph
+import com.levi.pocketdj.onboarding.OnboardingPrefs
 import java.io.File
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,6 +52,9 @@ class JukeboxGraph private constructor(context: Context) {
         rips = app.ripsRepository,
         playback = app.playbackController,
         scope = app.appScope,
+        pocketDjName = {
+            app.settings.get(OnboardingPrefs.PROFILE_NAME)
+        },
     )
 
     companion object {

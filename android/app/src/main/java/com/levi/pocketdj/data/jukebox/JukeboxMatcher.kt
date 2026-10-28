@@ -83,3 +83,32 @@ object JukeboxMatcher {
     private const val MIN_ACCEPT_SCORE = 2
     private const val PERFECT_SCORE = 7
 }
+
+/**
+ * Seam: broadcast-into-Mix placement. When the Mix area wires a sink, an
+ * accepted request is offered to it first; returning true means "handled"
+ * and the repository skips its own Media3 queue edit. Default: not handled.
+ */
+fun interface JukeboxPlacementSink {
+    suspend fun place(
+        song: com.levi.pocketdj.data.catalog.IndexSong,
+        action: JukeboxDecisionAction,
+    ): Boolean
+
+    companion object {
+        val None = JukeboxPlacementSink { _, _ -> false }
+    }
+}
+
+/**
+ * Seam: the Apple-Music catalog search stage of the iOS four-stage matcher
+ * (needs an Apple Music sign-in — device-only). Consulted only when the
+ * local catalog match found nothing. Default: no match.
+ */
+fun interface JukeboxExternalMatch {
+    suspend fun match(title: String, artist: String): com.levi.pocketdj.data.catalog.IndexSong?
+
+    companion object {
+        val None = JukeboxExternalMatch { _, _ -> null }
+    }
+}

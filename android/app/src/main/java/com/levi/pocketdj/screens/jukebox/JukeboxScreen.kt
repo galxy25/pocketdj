@@ -50,6 +50,7 @@ import com.levi.pocketdj.data.jukebox.JukeboxDecisionAction
 import com.levi.pocketdj.data.jukebox.JukeboxGraph
 import com.levi.pocketdj.data.jukebox.JukeboxRepository
 import com.levi.pocketdj.data.jukebox.JukeboxSessionInfo
+import com.levi.pocketdj.data.jukebox.JukeboxSettings
 import com.levi.pocketdj.di.AppGraph
 
 /**
@@ -70,6 +71,8 @@ fun JukeboxScreen(modifier: Modifier = Modifier) {
     val state by graph.repository.state.collectAsState()
     val settings by appGraph.settings.settings.collectAsState(initial = null)
     val loadedSettings = settings ?: return
+    val pocketDjName by appGraph.settings.flow(com.levi.pocketdj.onboarding.OnboardingPrefs.PROFILE_NAME)
+        .collectAsState(initial = "")
 
     when {
         state.session != null -> LiveView(
@@ -81,6 +84,7 @@ fun JukeboxScreen(modifier: Modifier = Modifier) {
         else -> CreateView(
             state = state,
             defaultRequireToken = loadedSettings.jukeboxTokensRequiredByDefault,
+            defaultName = JukeboxSettings.defaultSessionName(pocketDjName),
             onStart = graph.repository::start,
             modifier = modifier,
         )
@@ -127,6 +131,7 @@ private fun NotConfiguredView(modifier: Modifier = Modifier) {
 private fun CreateView(
     state: JukeboxRepository.UiState,
     defaultRequireToken: Boolean,
+    defaultName: String,
     onStart: (name: String, requiresToken: Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -163,7 +168,7 @@ private fun CreateView(
             value = name,
             onValueChange = { name = it },
             label = { Text("Session name") },
-            placeholder = { Text(JukeboxRepository.DEFAULT_SESSION_NAME) },
+            placeholder = { Text(defaultName) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
         )
