@@ -94,6 +94,10 @@ internal fun onlineSearchSection() = SettingsSection(ONLINE_SEARCH_SECTION_ID, 3
             enabled = savedEndpoint != null,
             onClick = {
                 host.scope.launch {
+                    if (keyId.isNotBlank() != secret.isNotBlank()) {
+                        host.snackbar.showSnackbar("Enter both the key id and the secret")
+                        return@launch
+                    }
                     withContext(Dispatchers.IO) {
                         if (keyId.isNotBlank() && secret.isNotBlank()) {
                             SearchSettings.saveCreds(graph.secrets, keyId, secret)

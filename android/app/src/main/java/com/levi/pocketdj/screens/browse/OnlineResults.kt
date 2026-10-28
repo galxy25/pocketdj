@@ -74,6 +74,12 @@ internal fun OnlineResults(
     onAddAlbum: (String) -> Unit,
     onPlaySong: (String) -> Unit,
 ) {
+    // Stub rows (hit not in the local catalog) have no detail/playable target on Android.
+    val openAlbum: (String) -> Unit = { if (catalog.albumsById.containsKey(it)) onOpenAlbum(it) }
+    val addAlbum: (String) -> Unit = { if (catalog.albumsById.containsKey(it)) onAddAlbum(it) }
+    val openSong: (String) -> Unit = { if (catalog.songsById.containsKey(it)) onOpenSong(it) }
+    val addSong: (String) -> Unit = { if (catalog.songsById.containsKey(it)) onAddSong(it) }
+    val playSong: (String) -> Unit = { if (catalog.songsById.containsKey(it)) onPlaySong(it) }
     val failed = ui.state as? OnlineSearchModel.State.Failed
     when {
         failed != null -> EmptyState(failed.message)
@@ -90,7 +96,7 @@ internal fun OnlineResults(
         ) {
             items(ui.hits, key = { it.id }) { hit ->
                 val row = hit.toAlbumRow(catalog)
-                AlbumGridCard(row, onClick = { onOpenAlbum(hit.id) }, onLongClick = { onAddAlbum(hit.id) })
+                AlbumGridCard(row, onClick = { openAlbum(hit.id) }, onLongClick = { addAlbum(hit.id) })
             }
             if (ui.hasMore) item(key = "pager", span = { GridItemSpan(maxLineSpan) }) {
                 OnlinePager(ui.loadedCount, onLoadMore)
@@ -101,15 +107,15 @@ internal fun OnlineResults(
                 if (kind == BrowseKind.ALBUMS) {
                     AlbumListRow(
                         hit.toAlbumRow(catalog),
-                        onClick = { onOpenAlbum(hit.id) },
-                        onLongClick = { onAddAlbum(hit.id) },
+                        onClick = { openAlbum(hit.id) },
+                        onLongClick = { addAlbum(hit.id) },
                     )
                 } else {
                     BrowseSongRow(
                         row = hit.toSongRow(catalog),
-                        onClick = { onOpenSong(hit.id) },
-                        onPlay = { onPlaySong(hit.id) },
-                        onLongClick = { onAddSong(hit.id) },
+                        onClick = { openSong(hit.id) },
+                        onPlay = { playSong(hit.id) },
+                        onLongClick = { addSong(hit.id) },
                     )
                 }
             }

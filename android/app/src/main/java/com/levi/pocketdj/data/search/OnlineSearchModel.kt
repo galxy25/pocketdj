@@ -82,6 +82,8 @@ class OnlineSearchModel(
             return
         }
         ctx = Ctx(query, kind, clauses, sortKeys, creds)
+        // Pending, not "Loaded + empty": the UI must not flash "No matches" during the debounce.
+        _ui.value = _ui.value.copy(state = State.Loading)
         job = scope.launch {
             delay(debounceMs)
             loadFirstPage()

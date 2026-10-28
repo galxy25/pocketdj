@@ -1,4 +1,4 @@
-state: implemented
+state: reviewed
 
 # BRW-5 — Online OpenSearch (aoss) search
 
@@ -20,3 +20,14 @@ state: implemented
 
 ## Questions for Levi
 - None blocking. Credentials are Keystore-only and not synced between devices (iOS syncs them via SettingsCredentialsSync; that belongs to the profile-sync packages).
+
+## Review
+- OnlineResults stub rows dead end (MINOR) -> fixed: tap/play/add on hits not in the catalog are disabled (no-op) rather than landing on not-found. Full stub-through navigation not done.
+- Creds false "Add credentials" flash (MINOR) -> fixed: creds load tracked as not-yet-read; search waits for first read.
+- Local pipeline recompute in online mode (MINOR) -> fixed: produceState keyed to constant "online" and returns early.
+- False "No matches" during debounce (MINOR) -> fixed: searchDebounced sets Loading when creds present; test added (1107 tests, 0 failures).
+- Toggle hidden on Artists (NIT) -> not changed (Artists is always on-device; optional).
+- Save with only one field (NIT) -> fixed: snackbar asks for both fields.
+- Host override seed ordering (NIT) -> not changed (hidden by 300 ms debounce; optional).
+
+fixes applied

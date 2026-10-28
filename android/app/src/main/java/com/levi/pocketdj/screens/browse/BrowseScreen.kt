@@ -296,21 +296,27 @@ private fun BrowseContent(
     val onlineScope = rememberCoroutineScope()
     val onlineModel = remember { OnlineSearchModel(onlineGraph.browseGraph.searchService, onlineScope) }
     val secretsRev by onlineGraph.secrets.revision.collectAsState(initial = 0L)
-    val onlineCreds by produceState<com.levi.pocketdj.net.SigV4.Creds?>(null, secretsRev) {
-        value = withContext(Dispatchers.IO) { SearchSettings.creds(onlineGraph.secrets) }
+    // null = not read yet (no false "add credentials" error); Some(null) = read, none configured.
+    val onlineCredsLoad by produceState<List<com.levi.pocketdj.net.SigV4.Creds?>?>(null, secretsRev) {
+        value = listOf(withContext(Dispatchers.IO) { SearchSettings.creds(onlineGraph.secrets) })
     }
+    val onlineCreds = onlineCredsLoad?.firstOrNull()
     val onlineUi by onlineModel.ui.collectAsState()
     // Any query/kind/filter/SORT change (or creds change) RESETS and reloads page 1 (300 ms debounce
     // lives in the model); leaving online mode cancels in-flight work.
-    LaunchedEffect(online, kind, query, filters.clauses, sortKeys, onlineCreds) {
-        if (online) {
+    LaunchedEffect(online, kind, query, filters.clauses, sortKeys, onlineCredsLoad) {
+        if (online && onlineCredsLoad == null) {
+            // credentials still loading: wait
+        } else if (online) {
             onlineModel.searchDebounced(query, kind, filters.clauses, sortKeys, onlineCreds)
         } else {
             onlineModel.cancel()
         }
     }
 
-    val results by produceState(initialValue = BrowseResults(), resultsKey, favoriteFilter, favRevision) {
+    val results by produceState(initialValue = BrowseResults(), if (online) "online" else resultsKey, favoriteFilter, favRevision) {
+        // iOS parity: the heavy local filter/sort never runs in online mode.
+        if (online) return@produceState
         value = withContext(Dispatchers.Default) {
             // Pipeline (§4.1): base rows → text query → filter clauses → sort,
             // all in BrowseEngine.filterSort. A ~90k-row locale-aware pass on

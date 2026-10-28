@@ -170,6 +170,15 @@ class OnlineSearchModelTest {
         assertTrue(stub.calls.isEmpty())
     }
 
+    @Test fun debouncePendingShowsLoadingNotEmptyLoaded() = runTest {
+        val stub = Stub { SearchResults(hits(0 until 3), 3) }
+        val m = model(stub, this)
+        m.searchDebounced("m", BrowseKind.SONGS, creds = creds)
+        assertEquals(OnlineSearchModel.State.Loading, m.ui.value.state)
+        advanceTimeBy(1000)
+        assertEquals(OnlineSearchModel.State.Loaded, m.ui.value.state)
+    }
+
     @Test fun debounceCollapsesRapidQueriesIntoOneSearch() = runTest {
         val stub = Stub { SearchResults(hits(0 until 3), 3) }
         val m = model(stub, this)
